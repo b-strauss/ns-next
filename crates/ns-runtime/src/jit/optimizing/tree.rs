@@ -2,8 +2,8 @@
 //! body it compiles and, below it, what the caches recorded at each of its
 //! sends -- the receivers seen, in the cache's order, and the callee each
 //! reached, snapshotted in turn -- and a snapshot of every block literal
-//! of a snapshotted body (`docs/design/execution.md`, "Planned: the
-//! optimizing JIT", "Inlining"). Taken at the run loop's safepoint, as
+//! of a snapshotted body (`docs/design/execution.md`, "Inlining",
+//! "The snapshot tree and the plan"). Taken at the run loop's safepoint, as
 //! the snapshot is, so that the inlining plan and the graph read nothing
 //! the interpreter can change.
 //!

@@ -7146,7 +7146,9 @@ of the `do:` blocks with the walk's rule for homes -6.1% and -6.3% more
 in two sittings, Permute 70% and Storage 20% faster ("What inlining
 moved").
 
-Every end-of-batch group passed at the first run: `images` (1,078
+Every end-of-batch group passed without a code change -- the first
+`linux` run found Docker Desktop stopped, and passed once it was
+started: `images` (1,078
 tests), `caches` (539), `benchmarks` (139), `release-checks` (4,854,
 and both lints), `codegen`, `stress` -- the suite under each of the
 twelve modes and without the JIT, 5,056 tests each, and `run-corpus`

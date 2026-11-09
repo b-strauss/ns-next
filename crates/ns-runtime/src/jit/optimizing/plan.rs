@@ -1,5 +1,5 @@
-//! The inlining plan (`docs/design/execution.md`, "Planned: the
-//! optimizing JIT", "Inlining"): which sends of a compile are inlined, as
+//! The inlining plan (`docs/design/execution.md`, "Inlining",
+//! "The snapshot tree and the plan"): which sends of a compile are inlined, as
 //! what, and where each inlined scope lies, decided on the snapshot tree
 //! before the graph is built.
 //!

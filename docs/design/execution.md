@@ -1530,9 +1530,14 @@ outliers, CD and NBody, are the two programs of floating-point
 arithmetic on objects' slots, where the JVM keeps doubles unboxed in
 registers and fields, and ns-next tags or boxes every intermediate
 result and calls a leaf for every `Float` operator, since machine code
-has no `Float` templates yet; the narrowest, Queens and Permute, under
-6×, are programs of `SmallInteger` arithmetic, indexed access and small
-sends, the code inlining turns into nodes. What the comparison does not
+has no `Float` templates yet -- the leaf calls the code makes for every
+`Float` operator, not a profile, are what says so. The narrowest, Queens
+and Permute, under 6×, are programs of `SmallInteger` arithmetic,
+indexed access and small sends, all of which the plan may inline as
+nodes, and inlining measured them 76% and, with the `do:` block's
+elimination, 70% faster ("What inlining moved"); no profile of them was
+taken here, so what of their remaining gap is which cost is not
+measured. What the comparison does not
 cover: the five slow programs' `bench` figures include each
 application's setup and only one discarded warm-up run where Java's are
 a steady state after two seconds, which favours Java slightly; one
@@ -11529,10 +11534,14 @@ sees.
   `unpack_frame_array`, `:784-874`): it needs no form of the frame but
   the interpreter's.
 - **A frame that left its optimized code at a poll goes back into it**
-  once the safepoint is served, at that poll, unless the safepoint made
-  that impossible -- its copy freed or installed again, a frame among
-  its scopes reified, the stack rebuilt -- when its eliminated blocks
-  are made and every scope goes on in baseline code, as after any exit
+  once the safepoint is served, at that poll, unless the poll has no
+  entry, the exit was a stress mode's forced one, or the safepoint made
+  it impossible -- the stack rebuilt or its scopes no longer the
+  stack's innermost chain, a frame among them reified, its copy freed
+  or installed again, its feedback base slid, or no room left for its
+  scopes on the native stack, within the depth limit or at the stack's
+  end (`jit::resumed_at_poll`) -- when its eliminated blocks are made
+  and every scope goes on in baseline code, as after any exit
   (decided with the user on 2026-11-07; "Inlining", "Back into
   optimized code at a poll"). It is the one way into optimized code
   mid-body: every other frame that goes on mid-body goes on in its
@@ -11693,6 +11702,44 @@ metadata and the allocation's verifier), `emit.rs` (the code) and
 `mod.rs` (`optimizing::compile`) -- `heap/optimization_budgets.rs` (the
 budget rows), and in `jit/mod.rs` the budget leaf's work, the request,
 the compile and install at the safepoint, the entries and abandonment.
+
+### One tier, an SSA graph, the macro assembler
+
+The shape was decided with the road step's design (2026-11-04 and
+2026-11-05); Strongtalk's, HotSpot's and V8's citations here are as in
+"Planned: the optimizing JIT" below.
+
+- **One optimizing tier above the baseline, Maglev's shape**: a control
+  flow graph in SSA form, built in one pass over a body's register
+  bytecode, abstractly interpreting its registers -- each register maps
+  to the node that last defined it, as Maglev's `InterpreterFrameState`
+  maps Ignition's (`maglev/maglev-graph-builder.cc`;
+  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
+  reading the feedback as it goes. Each node emits its own code through
+  the macro assembler's idioms, with no instruction selection, and a
+  linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
+  kind, gives every value a register or its frame word, and a place in the raw
+  area once stage 5 unboxes a number. Rejected: a sea of nodes, which V8 left for a control-flow graph
+  in Turboshaft because nearly every operation sits on an effect chain,
+  graphs are hard to debug and compile slowly
+  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
+  everything is a send; Strongtalk's graph, which is not SSA and keeps
+  every value live across a basic block in a stack slot
+  (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
+  the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
+  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
+  its IR, decide inlining and which body is recompiled.
+- **The backend is the repository's own**: `ns-assembler`'s encoders and
+  the macro assembler the baseline JIT uses, so the write barrier, the
+  call through a cell, `enter_called` and the outer walk exist once, and
+  no file under `jit/` but `macro_assembler.rs` names a register. The
+  allocation is described by the interrupt points' metadata as it is made. Rejected:
+  Cranelift, which knows stack maps but no deoptimization point -- every
+  guard would pass every live value to a cold block -- and whose calling
+  convention and frames cannot express the activation stack, the cells
+  and the return addresses on the native stack; `regalloc2` behind the
+  same interface stays possible if a measurement shows linear scan
+  limits the peak.
 
 ### The budget
 
@@ -11992,10 +12039,15 @@ spans 600 under the zone and optimize stress modes together -- which
 then began at the same countdown every time and was never forced where
 the others fell. A forced exit
 counts against no exit budget. Beside the other stress modes, a mode
-that holds the safepoint request makes an activation's optimized code
-leave at its back edges' polls, and the frame goes back in at each, past
-the poll's test, so that a request still standing costs a turn of the
-loop ("Inlining", "Back into optimized code at a poll"). The zone stress mode's compactions alternate:
+that holds the safepoint request -- the moves, caches, collect,
+scavenge, suspend and zone modes (`hold_safepoints_for_stress`) --
+makes an activation's optimized code leave at every back edge's poll,
+and the frame goes back in there, past the poll's test, unless the
+safepoint's own work forbids it -- the suspend mode's rebuild of the
+stack, a compaction of the zone mode that spares no optimized body, a
+slide that frees the copy -- where it goes on in baseline code
+(`poll_deoptimizations`; "Inlining", "Back into optimized code at a
+poll"). The zone stress mode's compactions alternate:
 every other one keeps every body that has optimized code and slides it
 with the rest, so that a callee's optimized code, installed while the
 callee still ran its baseline code, is moved, run where it now lies and
@@ -12365,7 +12417,8 @@ megamorphic.
 `plan::plan` decides, on the tree and before the graph is built, which
 callees each scope inlines. The cost of a body is Strongtalk's model
 (`compiler/costModel.cpp:31-46`): an instruction 1, a send 5, a closure,
-an indirection vector or a non-local return 3, an `IntegerBinary` 2,
+an indirection vector or a non-local return 3, an `IntegerBinary` and a
+send whose site reached only accessors and fast paths 2 (`COST_CHEAP_SEND`),
 and a fallback way 1 an instruction. A method callee is inlined up to
 `METHOD_LIMIT`, 40, Strongtalk's; a block up to `BLOCK_LIMIT`, 140,
 twice Strongtalk's; either plus `BLOCK_ARGUMENT_BONUS`, 35, for each
@@ -12415,7 +12468,10 @@ speculates, at a site that never trapped (`build::Laying::expressed`);
 each trap runs the send again, whose error the interpreter raises.
 Sent, not expressed: a builtin class's accessor, whose class only the
 heap's tables name; `^<parameter> value` and `cull:`; and `Float`
-arithmetic, a leaf call until stage 5. **The accesses need no guard**:
+arithmetic, a leaf call until the baseline's `Float` templates in SSE2, the work
+right after this stage ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: performance
+and representation"), which optimized code then emits through the same
+templates; stage 5 unboxes it. **The accesses need no guard**:
 the field the lookup resolved the accessor to for the arm's receiver
 application -- and an inlined scope's own-slot read, at the plan's base
 for that application -- is read of an object the type-case's guard, or
@@ -12438,9 +12494,10 @@ an inlined send the type-case, each arm's entry and body, the send
 itself where the type-case falls through to it, and every arm's return
 to the instruction after the send, where the returns meet in a phi. The
 entry reads the receiver and the arguments, binds the parameters, the
-named temporaries to `nil` and the scope's receiver and current class
--- two header bindings (`HeaderBinding`), written back like registers
--- and ends, unwritten, every binding of the registers the callee is
+named temporaries to `nil` and the scope's receiver, a header binding
+(`HeaderBinding`) written back like a register -- its current class,
+the other, is bound only where a frame node reads it (below) -- and
+ends, unwritten, every binding of the registers the callee is
 laid over (`Node::Overlay`): the leftover analysis taints them there,
 so no value of the sender's is written into the callee's frame nor
 read after its return. The frame register moves only around a scope's
@@ -12701,51 +12758,17 @@ rest is not, and this section says only what is not. Strongtalk's citations are 
 `prior-art/jdk/src/hotspot/share/`, V8's to `prior-art/v8/src/` but for
 its design documents, under `prior-art/v8/docs/`.
 
-### One tier, an SSA graph, the macro assembler
-
-- **One optimizing tier above the baseline, Maglev's shape**: a control
-  flow graph in SSA form, built in one pass over a body's register
-  bytecode, abstractly interpreting its registers -- each register maps
-  to the node that last defined it, as Maglev's `InterpreterFrameState`
-  maps Ignition's (`maglev/maglev-graph-builder.cc`;
-  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
-  reading the feedback as it goes. Each node emits its own code through
-  the macro assembler's idioms, with no instruction selection, and a
-  linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
-  kind, gives every value a register, a frame slot or a place in the raw
-  area. Rejected: a sea of nodes, which V8 left for a control-flow graph
-  in Turboshaft because nearly every operation sits on an effect chain,
-  graphs are hard to debug and compile slowly
-  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
-  everything is a send; Strongtalk's graph, which is not SSA and keeps
-  every value live across a basic block in a stack slot
-  (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
-  the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
-  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
-  its IR, decide inlining and which body is recompiled.
-- **The backend is the repository's own**: `ns-assembler`'s encoders and
-  the macro assembler the baseline JIT uses, so the write barrier, the
-  call through a cell, `enter_called` and the outer walk exist once, and
-  no file under `jit/` but `macro_assembler.rs` names a register. The
-  allocator writes the deoptimization metadata as it allocates. Rejected:
-  Cranelift, which knows stack maps but no deoptimization point -- every
-  guard would pass every live value to a cold block -- and whose calling
-  convention and frames cannot express the activation stack, the cells
-  and the return addresses on the native stack; `regalloc2` behind the
-  same interface stays possible if a measurement shows linear scan
-  limits the peak.
-
 ### The compiler thread and the snapshot
 
 - **The optimizing compiler runs on a thread of its own and never
-  touches the heap.** When a compile is requested, the mutator builds a
-  snapshot that can cross threads: Strongtalk's `RScope` tree
-  (`compiler/rscope.cpp`), built eagerly down to what the inlining budget
-  could take -- the bodies' instructions, each site's feedback as
-  application ids and resolved targets, each application's layout and
-  chain, an epoch per application -- and no handle, since machine code
-  loads literals through the heap's tables; a body's instructions become
-  shareable across threads for it, or are copied. The thread compiles from it
+  touches the heap.** What is built takes the snapshot tree at the
+  safepoint, Strongtalk's `RScope` tree (`compiler/rscope.cpp`), down to
+  what the inlining limits could take, with no handle, since machine
+  code loads literals through the heap's tables, and compiles it there,
+  synchronously ("Inlining", "The snapshot tree and the plan"). What is
+  not: an epoch per application in the tree, the bodies' instructions
+  made shareable across threads or copied, and the thread, which
+  compiles from the tree
   alone and writes the code through the zone's writable view. A finished
   compile requests a safepoint; there the mutator checks the epoch of
   every application the code rests on and installs it, or discards it
@@ -12875,7 +12898,8 @@ measured, inlines type-cases, the always-inlined callees and blocks
 with their home ("Inlining" above). What is not:
 
 - **Always inlined, still sent**: `Float` arithmetic and comparisons,
-  which stay leaf calls until the representations of stage 5; outer
+  leaf calls until the `Float` templates in SSE2 that come right after this
+  stage, and boxed until stage 5 unboxes them; outer
   sends of fixed structure; a builtin class's accessor; and
   `^<parameter> value` and `cull:`, which activate a block, so that a
   block a quick method evaluates escapes and its callee is sent.

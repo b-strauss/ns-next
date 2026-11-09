@@ -1,5 +1,6 @@
 //! Each body's optimization budget by its code id, in a reservation of
-//! its own (`docs/design/execution.md`, "When a body is optimized"):
+//! its own (`docs/design/execution.md`, "The optimizing tier's
+//! foundation", "The budget"):
 //! baseline machine code subtracts the body's length at each entry and the
 //! jump's distance at each back jump from the body's row, and once the
 //! row falls below zero calls the budget leaf (`jit::leaves`), which

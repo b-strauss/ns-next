@@ -10671,7 +10671,7 @@ const A_SMALL_HOT_CALLEE: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// The run-out of a callee the caller's inlining plan would inline
     /// requests the caller, whose copy inlines it, rather than the callee
-    /// alone (`docs/design/execution.md`, "When a body is optimized"):
+    /// alone (`docs/design/execution.md`, "Inlining", "The recompilee walk"):
     /// `weigh:` is never optimized on its own. Pinned under the optimized
     /// lowering alone, whose caches give the plan its receivers, and under
     /// no stress mode that changes which copy runs when

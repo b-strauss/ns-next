@@ -71,9 +71,11 @@ Rust 1.98.0, edition 2021, seven crates:
   (`emit.rs`), installed beside its baseline code, entered at a push or
   a compiled call and left for the baseline code wherever a frame goes
   on mid-body, but for a frame that left at a poll's safepoint, which
-  goes back in there unless the safepoint freed or reinstalled its
-  copy, reified one of its scopes or rebuilt the stack
-  (`vm::after_safepoint`, `jit::resumed_at_poll`); a method's body optimized a copy per receiver
+  goes back in there unless the poll has no entry, the exit was forced
+  by a stress mode, or the safepoint rebuilt the stack, reified one of
+  its scopes, freed or reinstalled its copy, slid its feedback base or
+  left its scopes no room (`vm::after_safepoint`, `jit::resumed_at_poll`;
+  `execution.md`, "Inlining", "Back into optimized code at a poll"); a method's body optimized a copy per receiver
   application and entered application (`jit/mod.rs`'s
   `CustomizationKey`, `JitSlot::copies`), entered by a receiver-guarded
   cell, the push and, for a `super`, a private lexical or an
@@ -521,7 +523,7 @@ hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
 activation and never pushes; only the miss leaf, the initializer leaf
 and the forcing leaf compile and install a callee, and the twin leaf
-the running body's twin -- the budget leaf only parks its body's
+the running body's twin -- the budget leaf only parks or re-arms its body's
 budget and answers whether an optimization is due, whose exit
 (`ExitKind::BudgetSpent`) the run loop takes to walk up the stack for
 the frame to request (`jit::find_recompilee`) and record its request

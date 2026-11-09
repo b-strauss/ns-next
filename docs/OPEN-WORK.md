@@ -901,6 +901,13 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       slow, gave identical statistics, and the flag changes the code.
       Not found
       ([execution.md](design/execution.md), "What inlining moved").
+      The steady-state comparison against Java (2026-11-09) showed no
+      slow NBody run: its nine `bench` medians lay at 926 to 951 ms
+      ([execution.md](design/execution.md), "Against Java").
+    - *Mandelbrot's one slow median*: in the same steady-state
+      comparison one of Mandelbrot's nine `bench` medians, on build c,
+      was 1968 ms, two of its three runs slow,
+      against 1781 to 1808 ms for the other eight. Not looked into.
     - *A block handed on through a local loses its bonus*: the snapshot
       tree weighs a callee against `METHOD_LIMIT` plus the block
       argument bonus only for an argument a `MakeClosure` wrote, or a

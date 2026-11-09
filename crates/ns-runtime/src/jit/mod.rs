@@ -5413,7 +5413,7 @@ fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest) {
 pub(crate) const RECOMPILEE_SEARCH_LENGTH: usize = 10;
 
 /// The frame whose optimization the run-out of `triggering`'s budget
-/// requests (`docs/design/execution.md`, "When a body is optimized"):
+/// requests (`docs/design/execution.md`, "Inlining", "The recompilee walk"):
 /// Strongtalk's `findTopInlinableFrame`
 /// (`recompiler/recompiler.cpp:56-121`). From the triggering frame the
 /// walk goes up -- to a block's home, to the home of a method's block
