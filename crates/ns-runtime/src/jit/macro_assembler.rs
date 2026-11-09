@@ -2177,9 +2177,10 @@ impl MacroAssembler {
     /// declines. `object_class::identical` answers `true` for two different
     /// words only for two boxed floats of the same bits, and no float
     /// reaches this row's `==` on its left: every number is a `Value`, whose
-    /// `==` is `=` (`Kernel.ns`). Two different immediates are never
-    /// identical. `left` and `right` are kept; clobbers the flags,
-    /// `scratch` and `machine_words`.
+    /// `==` is `=` (`Kernel.ns`; pinned by `builtin_object_inheritance.rs`'s
+    /// `every_number_and_string_compares_identity_by_values_equality`).
+    /// Two different immediates are never identical. `left` and `right`
+    /// are kept; clobbers the flags, `scratch` and `machine_words`.
     pub(crate) fn jump_if_identity_undecided(
         &mut self,
         (left, right): (Register, Register),
