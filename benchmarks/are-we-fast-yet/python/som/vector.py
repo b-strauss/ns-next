@@ -1,7 +1,9 @@
 # Copied for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/vector.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/vector.py).
+# Changed for ns-next: remove_last, which upstream's Vector lacks, is added
+# for deltablueton80, whose port takes its work lists from the end, as the
+# Java Vector beside it adds removeLast.
 
 # This code is based on the SOM class library.
 #
@@ -107,6 +109,12 @@ class Vector:
             return None
         self._first_idx += 1
         return self._storage[self._first_idx - 1]
+
+    def remove_last(self):
+        if self.is_empty():
+            return None
+        self._last_idx -= 1
+        return self._storage[self._last_idx]
 
     def remove(self, obj):
         if self._storage is None or self.is_empty():

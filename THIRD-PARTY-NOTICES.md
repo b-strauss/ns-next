@@ -23,7 +23,10 @@ any names the upstream file it comes from in a header:
   the benchmarks, their harness and the SOM class library from Are We Fast
   Yet, under the same licences as the Java versions (below); each copied file
   keeps its upstream notice in its header, and a file with none upstream has
-  none here.
+  none here. `richards.py`, written after `Richards.ns`, carries the note on
+  Mario Wolczko's version that `java/Richards.java` carries, and the Python
+  translations of `RichardsTon80.ns` and `DeltaBlueTon80.ns` carry those
+  files' Apache License 2.0 header.
 
 Each of these licences requires its notice below to accompany every copy.
 
