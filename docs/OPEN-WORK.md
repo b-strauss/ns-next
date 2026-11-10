@@ -1170,6 +1170,62 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   Strongtalk's and V8's line rather than extend it.
   [execution.md](design/execution.md), "Planned: the optimizing JIT",
   "Stages".
+- **Research directions for the JIT, options** (noted with the user on
+  2026-11-10 as options, none decided; each to be designed and measured
+  before it is taken up). Four rest on Newspeak's own semantics, where
+  other VMs would have to speculate:
+  - **Specializing optimized code to a module instance.** Every class
+    name is a send -- an immutable slot such as `private List = platform
+    collections List`, or a walk out through `outer` -- and a module is
+    almost always instantiated once. Code compiled for that one instance
+    could take its immutable slots as constants: every import, class
+    reference and module constant a literal, its `new` devirtualized and
+    its factory inlined. V8's function context specialization does this
+    for a closure's context; in a language without globals it reaches
+    the whole program. It extends the customization per application
+    ("Customization" in "Planned: the optimizing JIT").
+  - **Capabilities as a proof of a closed world.** Only a holder of a
+    mirror can edit or reflect on a class, and a mirror is a
+    capability; a module never handed one cannot change its classes.
+    For such modules class-hierarchy assumptions, static resolution of
+    sends and even ahead-of-time compilation need no invalidation.
+    Optimization grounded in capability safety appears to be unexplored;
+    Smalltalk and JavaScript cannot offer it.
+  - **Value objects passed without a box.** A value object (§3.1.1) is
+    deeply immutable and has no observable identity, so it may be
+    passed across calls in registers (the scalarized calling convention
+    of Java's Valhalla), duplicated freely, and inlined into the fields
+    of its holder (Wimmer and Mössenböck, "Automatic Feedback-Directed
+    Object Inlining in the Java HotSpot VM", VEE 2007, never in
+    production for lack of immutability). CD lives on small vector
+    objects ("CD runs slower on ns-next than on CPython", below).
+  - **An image that carries profiles and optimized code**, so that a
+    program starts warm: HHVM's Jump-Start (Ottoni and Liu, CGO 2021)
+    shares profiles across a server fleet and Java's Leyden works
+    towards it; the invalidation per application already says when such
+    code no longer holds. [image-format.md](design/image-format.md).
+  And from recent research, rarely in production:
+  - **Deoptless** (Flückiger, Ječmen, Krynski and Vitek, PLDI 2022): a
+    failed assumption continues in a continuation compiled for the case
+    that failed, not in baseline code, sparing the round trip of a trap
+    and a recompilation.
+  - **Contextual dispatch** (Flückiger et al., OOPSLA 2020, the Ř VM):
+    several versions of a body chosen by the calling context --
+    argument types and constants -- the generalization of customizing
+    by the receiver.
+  - **Equality saturation in the mid-end**: Cranelift's acyclic
+    e-graphs (2023) apply rewrite rules without an order to get wrong;
+    the tag, untag and range rules of stage 5 could be stated that way.
+  - **Learned heuristics**: inlining limits chosen by a model trained on
+    the corpus and the benchmarks (LLVM's MLGO, Trofin et al., 2021)
+    instead of Strongtalk's fixed limits.
+  - **Copy-and-patch templates** (Xu and Kjolstad, OOPSLA 2021; CPython
+    3.13's JIT): baseline templates stitched from code LLVM compiled
+    ahead of time instead of written by hand.
+  - **Intel APX**: 32 general-purpose registers on coming x64 processors,
+    which the macro assembler's roles and the linear scan could use.
+  [execution.md](design/execution.md), "Planned: the optimizing JIT";
+  "Further JIT techniques" above.
 - **The recompilee walk takes a snapshot tree and a plan at every step**
   (noted at the inlining branch's final review, 2026-11-09).
   `jit::find_recompilee` asks `inlines` at each frame it goes up to,
