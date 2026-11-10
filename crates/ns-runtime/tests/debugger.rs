@@ -352,10 +352,20 @@ fn while_stopped<T: Send + 'static>(
     source: &str,
     query: impl FnOnce(&DebugRemote) -> T + Send + 'static,
 ) -> T {
+    while_stopped_after(Duration::from_millis(50), source, query)
+}
+
+/// `while_stopped` with the pause delayed by `delay`, long enough for a
+/// body to be compiled when the test is about machine code.
+fn while_stopped_after<T: Send + 'static>(
+    delay: Duration,
+    source: &str,
+    query: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> T {
     let (mut interpreter, instance) = instance_of(source);
     let remote = interpreter.attach_debugger();
     let agent = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(delay);
         remote.pause();
         let answer = panic::catch_unwind(AssertUnwindSafe(|| {
             expect_paused(&remote);
@@ -500,4 +510,79 @@ fn a_frame_index_past_the_stack_is_refused() {
         Event::Refused { command, .. } => assert_eq!(command, "Variables"),
         other => panic!("the refusal of a frame past the stack was expected, not {other:?}"),
     }
+}
+
+/// Recursion that never ends, whose only polls once compiled are the
+/// prologues' depth compare.
+const RECURSING: &str = indoc! {"
+    class Recursing = Object new () (
+      public run = (
+        [true] whileTrue: [self fib: 24]
+      )
+      fib: n = (
+        n < 2 ifTrue: [^n].
+        ^(self fib: n - 1) + (self fib: n - 2)
+      )
+    ) : ()
+"};
+
+/// A pause stops a program that spends its time in compiled recursion, and
+/// the stack it reads has the recursion's frames.
+#[test]
+fn a_pause_stops_compiled_recursion() {
+    let kinds: Vec<FrameKind> =
+        while_stopped_after(Duration::from_millis(200), RECURSING, |remote| {
+            stack_trace(remote)
+                .into_iter()
+                .map(|frame| frame.kind)
+                .collect()
+        });
+    let depth = kinds.iter().filter(|kind| **kind == method("fib:")).count();
+    assert!(depth > 1, "fib: frames more than one deep, not {depth}");
+}
+
+/// A loop in a method, which the optimize stress mode compiles to optimized
+/// code at once: its stop is deoptimized before the stack is read.
+const OPTIMIZED: &str = indoc! {"
+    class Optimized = Object new () (
+      public run = (
+        ^self spin
+      )
+      spin = (
+        | count |
+        count:: 0.
+        [count < 1000000000] whileTrue: [count:: count + 1].
+        ^count
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_stop_at_an_optimized_poll_is_deoptimized() {
+    let (mut interpreter, instance) = instance_of(OPTIMIZED);
+    interpreter.set_optimize_stress(true);
+    let remote = interpreter.attach_debugger();
+    let agent = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        remote.pause();
+        let answer = panic::catch_unwind(AssertUnwindSafe(|| {
+            expect_paused(&remote);
+            let frames = stack_trace(&remote);
+            let frame = frames
+                .iter()
+                .position(|frame| frame.kind == method("spin"))
+                .expect("the loop's method is on the stack");
+            variables(&remote, Command::Variables { frame });
+            continue_stopped(&remote);
+            remote.pause();
+            expect_paused(&remote);
+        }));
+        remote.send(Command::Terminate);
+        (answer, remote)
+    });
+    let result = run(&mut interpreter, &instance);
+    let (answer, remote) = agent.join().expect("the remote's thread");
+    drop(remote);
+    assert_terminated(result);
+    answer.unwrap_or_else(|failure| panic::resume_unwind(failure));
 }
