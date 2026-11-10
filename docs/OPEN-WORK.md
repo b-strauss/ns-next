@@ -1170,20 +1170,59 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   Strongtalk's and V8's line rather than extend it.
   [execution.md](design/execution.md), "Planned: the optimizing JIT",
   "Stages".
+- **Exploiting immutable slots** (noted with the user on 2026-11-10 as an
+  option, not decided). Nothing in the compiler or the JIT uses that a
+  slot is immutable (`=`, §6.3.2) -- only the parser and the dispatch,
+  which gives it no setter, know it; read-only locals have their
+  counterpart, never copied protectively ("Fewer protective copies").
+  After its initializer, an immutable slot is written only through a
+  mirror or by `become:`'s bulk forward, which both already invalidate
+  optimized copies ("Invalidation" in "Planned: the optimizing JIT").
+  Six optimizations rest on that:
+  1. **A load kept across sends.** A mutable slot is reloaded after every
+     send, which may have written it; an immutable one need not be:
+     optimized code keeps the value in a register across sends and
+     interrupt points. Sound because `InitializeSlot` for an object runs
+     only in that object's initializer frame, which cannot go on while
+     the code reading the slot runs above it.
+  2. **A load hoisted out of a loop**, which follows from 1 without an
+     analysis: `bodies` in NBody, a vector's fields in CD.
+  3. **A constant where the receiver is known** -- an inlined callee's
+     constant receiver, a module instance. The module case keys on the
+     values, not the instance: a module's immutable slots depend only on
+     its factory's arguments, there being no global namespace, so every
+     instance made with the same `platform` shares one copy in which
+     `private List = platform collections List` and every other import
+     and class reference is a literal, its `new` resolved and its factory
+     inlined; an instance with other values gets its own copy, entered
+     through one compare, as customization per application is
+     ("Customization"). A nested class keys on the outer slots its code
+     reads. HotSpot's trusted final fields fold the same for a constant
+     object; in Newspeak every class reference is such a load.
+  4. **A value speculated constant**: a site that has seen one value of
+     an immutable slot takes it as a constant behind a cheap guard -- V8's
+     const field tracking, Truffle's `@CompilationFinal`, HotSpot's
+     `@Stable` -- easier here, since the language states the
+     immutability rather than the VM guessing it.
+  5. **Escape analysis**: the immutable fields of an object whose
+     allocation is removed are SSA values with no stores to track.
+  6. **Value objects** (§3.1.1), immutable and without identity, take all
+     of the above and may be copied freely ("Research directions for the
+     JIT", below).
+  Open before it is built: whether a mirror can write an immutable slot
+  in ns-next, and if so that the write invalidates as an edit does; code
+  called from an initializer can read a slot not yet written, so 1 holds
+  there but 3 and 4 assume nothing; a lazy slot only once filled. 1 and
+  2 fit with stage 5 or right after it, 3 and 4 with the speculation.
+  [execution.md](design/execution.md), "Planned: the optimizing JIT".
 - **Research directions for the JIT, options** (noted with the user on
   2026-11-10 as options, none decided; each to be designed and measured
   before it is taken up). Four rest on Newspeak's own semantics, where
   other VMs would have to speculate:
-  - **Specializing optimized code to a module instance.** Every class
-    name is a send -- an immutable slot such as `private List = platform
-    collections List`, or a walk out through `outer` -- and a module is
-    almost always instantiated once. Code compiled for that one instance
-    could take its immutable slots as constants: every import, class
-    reference and module constant a literal, its `new` devirtualized and
-    its factory inlined. V8's function context specialization does this
-    for a closure's context; in a language without globals it reaches
-    the whole program. It extends the customization per application
-    ("Customization" in "Planned: the optimizing JIT").
+  - **Specializing optimized code to the values of a module's immutable
+    slots**: every import and class reference a literal, one copy shared
+    by every instance made with the same arguments ("Exploiting
+    immutable slots", above, point 3).
   - **Capabilities as a proof of a closed world.** Only a holder of a
     mirror can edit or reflect on a class, and a mirror is a
     capability; a module never handed one cannot change its classes.
