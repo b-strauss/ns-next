@@ -23,18 +23,28 @@
 //! which no retag of the mutator, the heap or any reference to them
 //! covers.
 //!
-//! The words are `Cell`s behind an `Rc` that this module never lends
-//! mutably (`Rc::get_mut` is never called): Rust reads and writes them
-//! only through shared references to interior-mutable cells, which assert
-//! no uniqueness, and machine code through the address `address` exposes,
-//! derived from the `Rc`'s own pointer without a reference in between. So
-//! no access from either side invalidates the other's, at any time -- the
-//! address does not even depend on being asked afresh. An `Rc` rather
-//! than a `Box`: a `Box` is retagged as unique wherever it moves, as a
-//! `&mut` is, an `Rc`'s pointer never.
+//! The words are atomics behind an `Arc` that this module never lends
+//! mutably (`Arc::get_mut` is never called): Rust reads and writes them
+//! only through shared references to atomics, which assert no uniqueness,
+//! and machine code through the address `address` exposes, derived from
+//! the `Arc`'s own pointer without a reference in between. So no access
+//! from either side invalidates the other's, at any time -- the address
+//! does not even depend on being asked afresh. An `Arc` rather than a
+//! `Box`: a `Box` is retagged as unique wherever it moves, as a `&mut`
+//! is, an `Arc`'s pointer never.
+//!
+//! Atomics, so that a clone can cross to another thread, which may arm
+//! the safepoint request while the mutator runs. The mutator's own
+//! accesses are `Relaxed`: on x64 and AArch64 a `Relaxed` load or store
+//! is the plain instruction a `Cell`'s would be, so the poll in Rust and
+//! the one in machine code are the same instructions as without another
+//! thread, and machine code's own plain stores stay correct. Only a
+//! change one thread makes to a word another may write at once is a
+//! `SeqCst` read-modify-write (`fetch_or`, `fetch_and`), paired with
+//! `fence` where an ordering beyond the one word is needed.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// How many immediates there are: `nil`, `false`, `true`, a `SmallInteger`
 /// and a `Float`, the indexes `Value::immediate_index` answers.
@@ -260,16 +270,16 @@ const _: () = assert!(MachineWord::FloatHeader.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
-/// to write its end.
+/// to write its end, and which may cross to another thread.
 #[derive(Clone)]
 pub(crate) struct MachineWords {
-    words: Rc<[Cell<u64>; WORD_COUNT]>,
+    words: Arc<[AtomicU64; WORD_COUNT]>,
 }
 
 impl MachineWords {
     pub(crate) fn new() -> MachineWords {
         let words = MachineWords {
-            words: Rc::new(std::array::from_fn(|_| Cell::new(0))),
+            words: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
         };
         words.set(
             MachineWord::UnpointedBudget,
@@ -280,19 +290,60 @@ impl MachineWords {
 
     #[inline(always)]
     pub(crate) fn get(&self, word: MachineWord) -> u64 {
-        self.words[word.index()].get()
+        self.words[word.index()].load(Ordering::Relaxed)
     }
 
     #[inline(always)]
     pub(crate) fn set(&self, word: MachineWord, value: u64) {
-        self.words[word.index()].set(value);
+        self.words[word.index()].store(value, Ordering::Relaxed);
+    }
+
+    /// Sets the bits of `bits` in `word` and answers its previous value:
+    /// one indivisible step, so that a bit another thread sets meanwhile
+    /// is never lost to this change, nor this one to its.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no thread arms the poll from outside the mutator yet"
+        )
+    )]
+    pub(crate) fn fetch_or(&self, word: MachineWord, bits: u64) -> u64 {
+        self.words[word.index()].fetch_or(bits, Ordering::SeqCst)
+    }
+
+    /// Clears the bits of `word` that `mask` does not hold and answers its
+    /// previous value, indivisibly, as `fetch_or` sets them.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no thread arms the poll from outside the mutator yet"
+        )
+    )]
+    pub(crate) fn fetch_and(&self, word: MachineWord, mask: u64) -> u64 {
+        self.words[word.index()].fetch_and(mask, Ordering::SeqCst)
+    }
+
+    /// A sequentially consistent fence: orders the `Relaxed` accesses
+    /// before and after it against another thread's `fetch_or` and
+    /// `fetch_and`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no thread arms the poll from outside the mutator yet"
+        )
+    )]
+    pub(crate) fn fence() {
+        std::sync::atomic::fence(Ordering::SeqCst);
     }
 
     /// The area's address, exposed, which machine code reads its words
     /// at (`jit::stubs::BlockWord::MachineWords`).
     #[cfg(ns_jit)]
     pub(crate) fn address(&self) -> usize {
-        Rc::as_ptr(&self.words).expose_provenance()
+        Arc::as_ptr(&self.words).expose_provenance()
     }
 
     /// `word`'s byte offset from the area's address.
@@ -361,5 +412,35 @@ mod tests {
         let other = words.clone();
         other.set(MachineWord::DepthCount, 7);
         assert_eq!(words.get(MachineWord::DepthCount), 7);
+    }
+
+    #[test]
+    fn a_clone_of_the_words_is_shared_across_threads() {
+        let words = MachineWords::new();
+        let other = words.clone();
+        let writer = std::thread::spawn(move || other.set(MachineWord::DepthLimit, 7));
+        assert!(writer.join().is_ok());
+        assert_eq!(words.get(MachineWord::DepthLimit), 7);
+    }
+
+    #[test]
+    fn fetch_or_and_fetch_and_change_bits_and_answer_the_previous_value() {
+        let words = MachineWords::new();
+        let other = words.clone();
+        let writer =
+            std::thread::spawn(move || other.fetch_or(MachineWord::SafepointRequested, 0b100));
+        assert_eq!(
+            words.fetch_or(MachineWord::SafepointRequested, 0b001) & 0b001,
+            0
+        );
+        let other_previous = writer.join();
+        assert!(other_previous.is_ok_and(|previous| previous & 0b100 == 0));
+        MachineWords::fence();
+        assert_eq!(words.get(MachineWord::SafepointRequested), 0b101);
+        assert_eq!(
+            words.fetch_and(MachineWord::SafepointRequested, !0b001),
+            0b101
+        );
+        assert_eq!(words.get(MachineWord::SafepointRequested), 0b100);
     }
 }
