@@ -187,7 +187,7 @@ impl Interpreter {
         // past its limit for a collection -- which the next poll serves.
         // Otherwise the request is cleared in this same call: while a real
         // one stands the depth limit is 0 and every compiled push is
-        // refused (`Heap::write_safepoint_request`), so a request left for
+        // refused (`Heap::synchronize_depth_limit`), so a request left for
         // the next poll to clear would cost a body that goes back into
         // machine code at its loop's head a turn whose compiled sends all
         // exit, and a second round trip through this slow path.
@@ -198,12 +198,14 @@ impl Interpreter {
             return rebuilt;
         }
         // The request served, a stress mode holds it again, as its own.
+        // The hold is a bit beside the VM's request, so the request is
+        // cleared first: holding alone would leave it, and the depth limit
+        // it lowers, standing.
+        self.world.clear_safepoint_request();
         #[cfg(debug_assertions)]
         if stressed {
             self.world.set_safepoint_requested(true);
-            return rebuilt;
         }
-        self.world.clear_safepoint_request();
         rebuilt
     }
 }

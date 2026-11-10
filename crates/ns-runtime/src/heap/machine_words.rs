@@ -71,7 +71,10 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
     /// path (`Heap::safepoint_requested`); machine code's poll compares
-    /// it with zero.
+    /// it with zero. A set of bits -- the VM's request, a stress mode's
+    /// hold, the debugger's pause and commands (`heap::REAL_REQUEST` and
+    /// its neighbours) -- each set and cleared by a read-modify-write, so
+    /// that no writer erases another's bit.
     SafepointRequested,
     /// How many activations count against the depth limit
     /// (`Heap::counted_depth`), suspended ones included: the heap's push
@@ -81,9 +84,9 @@ pub(crate) enum MachineWord {
     /// `MAX_ACTIVATION_DEPTH` while the depth limit's reserve is free,
     /// `MAX_ACTIVATION_DEPTH + DEPTH_RESERVE` while a VM error's `signal`
     /// holds it (`Mutator::set_depth_reserve`) -- and 0 while a real
-    /// safepoint request is pending, so that a compiled callee's one
-    /// compare refuses its push for the request too
-    /// (`Heap::write_safepoint_request`).
+    /// safepoint request that lowers it is pending, so that a compiled
+    /// callee's one compare refuses its push for the request too
+    /// (`Heap::synchronize_depth_limit`).
     DepthLimit,
     /// Where an ordinary push may end without a growth, in words from the
     /// activation stack's base (`FrameStack::ordinary_end`).
@@ -301,33 +304,20 @@ impl MachineWords {
     /// Sets the bits of `bits` in `word` and answers its previous value:
     /// one indivisible step, so that a bit another thread sets meanwhile
     /// is never lost to this change, nor this one to its.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no thread arms the poll from outside the mutator yet"
-        )
-    )]
     pub(crate) fn fetch_or(&self, word: MachineWord, bits: u64) -> u64 {
         self.words[word.index()].fetch_or(bits, Ordering::SeqCst)
     }
 
     /// Clears the bits of `word` that `mask` does not hold and answers its
     /// previous value, indivisibly, as `fetch_or` sets them.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no thread arms the poll from outside the mutator yet"
-        )
-    )]
     pub(crate) fn fetch_and(&self, word: MachineWord, mask: u64) -> u64 {
         self.words[word.index()].fetch_and(mask, Ordering::SeqCst)
     }
 
-    /// A sequentially consistent fence: orders the `Relaxed` accesses
-    /// before and after it against another thread's `fetch_or` and
-    /// `fetch_and`.
+    /// Stores `value` into `word`, sequentially consistent: the debugger's
+    /// agent stores 0 into the depth limit word this way after its
+    /// `fetch_or` of a request bit, so that the VM's fenced re-read of the
+    /// request word orders against both (`Heap::synchronize_depth_limit`).
     #[cfg_attr(
         not(test),
         expect(
@@ -335,6 +325,17 @@ impl MachineWords {
             reason = "no thread arms the poll from outside the mutator yet"
         )
     )]
+    pub(crate) fn set_sequentially_consistent(&self, word: MachineWord, value: u64) {
+        self.words[word.index()].store(value, Ordering::SeqCst);
+    }
+
+    /// A sequentially consistent fence, for one pairing: the VM's store
+    /// of the depth limit word, this fence, and its re-read of the
+    /// request word, against the debugger's agent's `fetch_or` of a
+    /// request bit and its store of 0 into the depth limit word -- a
+    /// store-buffering pattern, in which without the fence the VM's read
+    /// could miss the bit while its store lands after the agent's 0
+    /// (`Heap::synchronize_depth_limit`).
     pub(crate) fn fence() {
         std::sync::atomic::fence(Ordering::SeqCst);
     }

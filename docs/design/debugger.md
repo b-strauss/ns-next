@@ -15,7 +15,7 @@
 > `bytecode/compact.rs` (`EncodedBody`), `bytecode/leftovers.rs`, `vm.rs`
 > (the run loop, its safepoint, `resume_caller`, `send_destination`),
 > `heap/machine_words.rs` (the poll words), `heap.rs`
-> (`Heap::write_safepoint_request`), `types.rs` (`Continuation`,
+> (`Heap::synchronize_depth_limit`), `types.rs` (`Continuation`,
 > `SourceOrigin`), `interpreter/unwind.rs`, `interpreter/install.rs`,
 > `jit/materialize.rs`, `jit/mod.rs` (`abandon`, `invalidate_applications`,
 > `CopyDependencies`), `core-library/Kernel.ns` (the exceptions) and
@@ -149,8 +149,9 @@ what Newspeak's liveness requires beyond it.
   caller resumed and every backward jump, one compare of the request word;
   machine code polls at each loop's head, and at a compiled push through
   the prologue's compare of the depth with `DepthLimit`, which a real
-  request (the word's value 1), never a stress mode's hold (`STRESS_HOLD`,
-  2), sets to 0 (`Heap::write_safepoint_request`; [memory.md](memory.md),
+  request (a bit of `LOWERS_DEPTH_LIMIT`: the VM's, the debugger's pause
+  or commands), never a stress mode's hold (`STRESS_HOLD`), sets to 0
+  (`Heap::synchronize_depth_limit`; [memory.md](memory.md),
   "Where a collection can happen"; [execution.md](execution.md), "Polls
   and the depth check"). A compiled `ret` into a compiled caller does not
   poll. Leaving a stretch for a safepoint stores the running activation's

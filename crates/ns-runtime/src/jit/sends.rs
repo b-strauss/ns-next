@@ -88,9 +88,10 @@ const _: () = assert!(
 /// The depth limit word is a bound, not the limit: at or past it the
 /// interpreter decides, as it does while a `doesNotUnderstand:` handler
 /// holds the reserve the word does not count (`MachineWord::DepthLimit`).
-/// A real safepoint request lowers the word to 0, so that the one compare
-/// refuses every push while one is pending and the interpreter takes the
-/// safepoint at the push (`Heap::write_safepoint_request`); a stress
+/// A real safepoint request -- the VM's or the debugger's -- lowers the
+/// word to 0, so that the one compare refuses every push while one is
+/// pending and the interpreter takes the safepoint at the push
+/// (`Heap::synchronize_depth_limit`); a stress
 /// mode's hold leaves it, and the frames it lets nest take the hold at
 /// their polls.
 pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {

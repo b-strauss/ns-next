@@ -531,7 +531,7 @@ safepoint does. The safepoint serves a request -- a full collection if one
 is pending, which empties the nursery too, and otherwise a pending scavenge
 -- and clears the flag in the same call, so that no compiled push the
 next turn makes finds the request's depth limit of 0 and is refused
-(`Heap::write_safepoint_request`), unless serving it raised another
+(`Heap::synchronize_depth_limit`), unless serving it raised another
 request -- the compaction of the code zone a collection's freed code
 asks for, the collection a scavenge that leaves the old space past its
 limit asks for -- which the next poll serves, and except under a stress

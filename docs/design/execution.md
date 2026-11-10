@@ -15257,11 +15257,14 @@ above): a compiled callee's prologue compares the depth count with the
 `DepthLimit` machine word and nothing else, and a real safepoint request
 lowers that word to 0 while it is pending, so the one compare refuses the
 push for the depth and the request alike, and the interpreter takes the
-push and, at it, the safepoint. Every write of the request word goes
-through `Heap::write_safepoint_request`, which writes the limit word with
-it -- 0 exactly while the request word is a real request's 1, the limit
+push and, at it, the safepoint. The request word is a set of bits -- the
+VM's request (`REAL_REQUEST`), a stress mode's hold (`STRESS_HOLD`), the
+debugger's pause and commands -- each set by a `fetch_or` and cleared by
+a `fetch_and`, and every write of it, and of the depth limit, is followed
+by `Heap::synchronize_depth_limit`, which writes the limit word -- 0
+exactly while a bit of `LOWERS_DEPTH_LIMIT` is set, the limit
 `set_depth_limit` last set otherwise -- so a debug build's stress hold
-(`STRESS_HOLD`) lowers nothing and compiled frames still nest under a
+lowers nothing and compiled frames still nest under a
 stress mode, their polls taking the hold; the interpreter's own push
 compares against its constants and never reads the word. A back edge
 compares against the request word itself, one compare,
