@@ -5,9 +5,13 @@
 //! the commands it queued while the program runs and, for a pause, stops:
 //! it blocks on the command channel, between two stretches, where no
 //! handle is live and the whole stack is on the activation stack, until
-//! the agent continues or terminates the program.
+//! the agent continues or terminates the program. Meanwhile it answers the
+//! run's stack (`stack.rs`) and the values it hands out, held for the stop
+//! (`values.rs`).
 
 mod remote;
+mod stack;
+mod values;
 
 pub use remote::{
     Command, DebugRemote, Event, FrameDescription, FrameKind, StopReason, ValueDescription,
@@ -21,6 +25,7 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
 use crate::{Symbol, Value};
+use values::StopValues;
 
 /// The message of the error a run the debugger terminated ends with.
 const TERMINATED: &str = "the debugger terminated the program";
@@ -28,13 +33,19 @@ const TERMINATED: &str = "the debugger terminated the program";
 /// Why the program cannot serve a command that only a stop serves.
 const RUNNING: &str = "the program is running";
 
-/// Why a stop does not serve a command yet.
-const NOT_IMPLEMENTED: &str = "not yet implemented";
+/// Why a stop refuses `Variables` for a frame index past its stack.
+const NO_SUCH_FRAME: &str = "no frame at that index";
+
+/// Why a stop refuses `Children` for a value it did not hand out.
+const NO_SUCH_VALUE: &str = "no value of this stop has that id";
 
 /// The VM's end of an attached debugger, held by its `Interpreter`.
 pub(crate) struct Debugger {
     commands: Receiver<Command>,
     events: Sender<Event>,
+    /// The id the next stop's first value takes, past every id the stops
+    /// before handed out (`values::StopValues`).
+    next_value_id: u32,
 }
 
 /// The lock under which the poll is armed and the debugger's bits are
@@ -102,6 +113,7 @@ impl Interpreter {
         self.debugger = Some(Debugger {
             commands: command_receiver,
             events: event_sender,
+            next_value_id: 0,
         });
         DebugRemote::new(
             command_sender,
@@ -117,7 +129,7 @@ impl Interpreter {
     /// ran, then a pause, which stops until the agent continues or
     /// terminates. A remote that is gone detaches the debugger, and the
     /// program runs on.
-    pub(crate) fn serve_debugger(&mut self) -> Served {
+    pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
         let bits = self.enter(|mutator| mutator.heap.debugger_bits());
         if bits == 0 {
             return Served::GoOn;
@@ -135,7 +147,7 @@ impl Interpreter {
         let pause_requested = self.enter(|mutator| mutator.heap.debugger_bits()) & DEBUGGER_PAUSE;
         if pause_requested != 0 && self.debugger.is_some() {
             self.clear_debugger_bits(DEBUGGER_PAUSE);
-            return self.stop(StopReason::Pause);
+            return self.stop(StopReason::Pause, floor);
         }
         Served::GoOn
     }
@@ -173,30 +185,60 @@ impl Interpreter {
     /// optimized code that its poll left goes on in baseline code first,
     /// its eliminated blocks made, so that every frame the agent reads is
     /// the interpreter's word for word (`docs/design/debugger.md`,
-    /// "Reading the stack at a stop").
-    fn stop(&mut self, reason: StopReason) -> Served {
+    /// "Reading the stack at a stop"). The values the stop hands out are
+    /// held in its table, `floor` the run's base (`stack.rs`), and go
+    /// with it when the program goes on.
+    fn stop(&mut self, reason: StopReason, floor: usize) -> Served {
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         self.tell(Event::Stopped { reason });
-        loop {
+        let first_value_id = self
+            .debugger
+            .as_ref()
+            .map_or(0, |debugger| debugger.next_value_id);
+        let mut values = StopValues::starting_at(first_value_id);
+        let served = loop {
             let Some(debugger) = &self.debugger else {
                 // The remote is gone: as a `Continue`.
-                return Served::GoOn;
+                break Served::GoOn;
             };
             let Ok(command) = debugger.commands.recv() else {
                 self.detach_debugger();
-                return Served::GoOn;
+                break Served::GoOn;
             };
             match command {
                 Command::Continue => {
                     self.tell(Event::Continued);
-                    return Served::GoOn;
+                    break Served::GoOn;
                 }
-                Command::Terminate => return self.terminate(),
-                command @ (Command::StackTrace
-                | Command::Variables { .. }
-                | Command::Children { .. }) => self.refuse(&command, NOT_IMPLEMENTED),
+                Command::Terminate => break self.terminate(),
+                Command::StackTrace => {
+                    let frames =
+                        self.enter(|mutator| stack::stack_trace(mutator, floor, &mut values));
+                    self.tell(Event::StackTrace(frames));
+                }
+                Command::Variables { frame } => {
+                    match self.enter(|mutator| stack::variables(mutator, floor, frame, &mut values))
+                    {
+                        Some(variables) => self.tell(Event::Variables(variables)),
+                        None => self.refuse(&command, NO_SUCH_FRAME),
+                    }
+                }
+                Command::Children {
+                    value,
+                    start,
+                    count,
+                } => match self.enter(|mutator| values.children(mutator, value, start, count)) {
+                    Some(children) => self.tell(Event::Variables(children)),
+                    None => self.refuse(&command, NO_SUCH_VALUE),
+                },
             }
+        };
+        // The next stop's ids begin past this one's, so that none of
+        // this stop's names a value there.
+        if let Some(debugger) = &mut self.debugger {
+            debugger.next_value_id = values.next_first();
         }
+        served
     }
 
     /// The run ends: a pause still pending is moot, so its bit goes, and

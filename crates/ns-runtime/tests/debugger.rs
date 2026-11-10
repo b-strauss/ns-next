@@ -1,18 +1,21 @@
 //! The debugging API at the run loop's safepoint: a host attaches a
 //! debugger, pauses a running program from another thread, and continues
-//! or terminates it; a command queued while the program runs is served at
-//! the next safepoint (`docs/design/debugger.md`, decisions 7 and 9,
-//! "Commands while the program runs").
+//! or terminates it, and reads its stack and values while it is stopped; a
+//! command queued while the program runs is served at the next safepoint
+//! (`docs/design/debugger.md`, decisions 7 and 9, "Commands while the
+//! program runs", "Reading the stack at a stop", "Values the IDE holds").
 
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use indoc::indoc;
+use ns_runtime::debugger::FrameKind;
 use ns_runtime::{
-    Command, DebugRemote, Event, HostResult, HostSignal, Interpreter, Root, StopReason, Symbol,
-    ValueKind,
+    Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Root,
+    StopReason, Symbol, ValueKind, Variable,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -312,4 +315,189 @@ fn a_replaced_remote_s_pause_does_not_stop_the_run() {
     assert!(!stopped, "the replaced remote's pause stopped the run");
     assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
     drop(replaced);
+}
+
+/// A run that stops three sends deep, in a loop that never ends, with an
+/// `Array` among the arguments of the stopped method.
+const STACKED: &str = indoc! {"
+    class Stacked = Object new () (
+      public run = (
+        ^self outer: 5
+      )
+      outer: count = (
+        | items |
+        items:: Array new: 3.
+        items at: 1 put: 'one'.
+        ^self loop: count with: items
+      )
+      loop: count with: items = (
+        [true] whileTrue: []
+      )
+    ) : ()
+"};
+
+/// Sends `command` to the stopped program and answers its reply.
+fn request(remote: &DebugRemote, command: Command) -> Event {
+    remote.send(command);
+    remote
+        .next_event(EVENT_TIMEOUT)
+        .expect("the stopped program answers")
+}
+
+/// Runs `source`'s `run`, pauses it from another thread, answers what
+/// `query` answers while it is stopped, and terminates it. The run is
+/// terminated whatever `query` does, so that a failing assertion fails the
+/// test rather than leaving the loop running.
+fn while_stopped<T: Send + 'static>(
+    source: &str,
+    query: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> T {
+    let (mut interpreter, instance) = instance_of(source);
+    let remote = interpreter.attach_debugger();
+    let agent = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        remote.pause();
+        let answer = panic::catch_unwind(AssertUnwindSafe(|| {
+            expect_paused(&remote);
+            query(&remote)
+        }));
+        remote.send(Command::Terminate);
+        // Held until the run ended, so that the termination is not taken
+        // for the remote's departure.
+        (answer, remote)
+    });
+    let result = run(&mut interpreter, &instance);
+    let (answer, remote) = agent.join().expect("the remote's thread");
+    drop(remote);
+    assert_terminated(result);
+    answer.unwrap_or_else(|failure| panic::resume_unwind(failure))
+}
+
+fn stack_trace(remote: &DebugRemote) -> Vec<FrameDescription> {
+    match request(remote, Command::StackTrace) {
+        Event::StackTrace(frames) => frames,
+        other => panic!("a stack trace was expected, not {other:?}"),
+    }
+}
+
+fn variables(remote: &DebugRemote, command: Command) -> Vec<Variable> {
+    match request(remote, command) {
+        Event::Variables(variables) => variables,
+        other => panic!("variables were expected, not {other:?}"),
+    }
+}
+
+fn method(selector: &str) -> FrameKind {
+    FrameKind::Method {
+        selector: selector.to_owned(),
+    }
+}
+
+/// The index of the stopped `loop:with:` activation in the stack trace.
+fn loop_frame(remote: &DebugRemote) -> usize {
+    stack_trace(remote)
+        .iter()
+        .position(|frame| frame.kind == method("loop:with:"))
+        .expect("the loop's method is on the stack")
+}
+
+/// The variables of the stopped `loop:with:` activation.
+fn loop_variables(remote: &DebugRemote) -> Vec<Variable> {
+    let frame = loop_frame(remote);
+    variables(remote, Command::Variables { frame })
+}
+
+fn named<'variables>(variables: &'variables [Variable], name: &str) -> &'variables Variable {
+    variables
+        .iter()
+        .find(|variable| variable.name == name)
+        .unwrap_or_else(|| panic!("a variable named {name} was expected"))
+}
+
+#[test]
+fn the_stack_names_the_stopped_methods() {
+    let kinds: Vec<FrameKind> = while_stopped(STACKED, |remote| {
+        stack_trace(remote)
+            .into_iter()
+            .map(|frame| frame.kind)
+            .collect()
+    });
+    let innermost = kinds
+        .iter()
+        .position(|kind| *kind == method("loop:with:"))
+        .expect("the loop's method is on the stack");
+    assert_eq!(
+        kinds[innermost..],
+        [method("loop:with:"), method("outer:"), method("run")],
+        "the methods, innermost first, down to the run's base"
+    );
+}
+
+#[test]
+fn a_frame_s_variables_show_its_arguments() {
+    let variables = while_stopped(STACKED, loop_variables);
+    assert_eq!(variables[0].name, "self");
+    let count = named(&variables, "argument 1");
+    assert_eq!(count.value.label, "5");
+    let items = named(&variables, "argument 2");
+    assert_eq!(items.value.class_name, "Array");
+    assert_eq!(items.value.child_count, 3);
+}
+
+#[test]
+fn an_array_s_children_are_its_elements_paged() {
+    let children = while_stopped(STACKED, |remote| {
+        let items = named(&loop_variables(remote), "argument 2").value.id;
+        variables(
+            remote,
+            Command::Children {
+                value: items,
+                start: 0,
+                count: 2,
+            },
+        )
+    });
+    let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
+    assert_eq!(names, ["[1]", "[2]"]);
+    assert_eq!(children[0].value.label, "the String \"one\"");
+    assert_eq!(children[0].value.class_name, "String");
+    assert_eq!(children[1].value.label, "nil");
+}
+
+#[test]
+fn a_value_id_does_not_outlive_its_stop() {
+    let answer = while_stopped(STACKED, |remote| {
+        let items = named(&loop_variables(remote), "argument 2").value.id;
+        continue_stopped(remote);
+        remote.pause();
+        expect_paused(remote);
+        // The second stop hands out as many values as the first did, so
+        // that an id counted afresh from each stop's start would name
+        // the same argument again.
+        loop_variables(remote);
+        request(
+            remote,
+            Command::Children {
+                value: items,
+                start: 0,
+                count: 3,
+            },
+        )
+    });
+    match answer {
+        Event::Refused { command, .. } => assert_eq!(command, "Children"),
+        other => panic!("the refusal of a stale value id was expected, not {other:?}"),
+    }
+}
+
+#[test]
+fn a_frame_index_past_the_stack_is_refused() {
+    let answer = while_stopped(STACKED, |remote| {
+        let depth = stack_trace(remote).len();
+        request(remote, Command::Variables { frame: depth })
+    });
+    match answer {
+        Event::Refused { command, .. } => assert_eq!(command, "Variables"),
+        other => panic!("the refusal of a frame past the stack was expected, not {other:?}"),
+    }
 }

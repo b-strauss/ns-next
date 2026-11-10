@@ -88,7 +88,7 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
-        if self.serve_debugger() == crate::debugger::Served::Terminate {
+        if self.serve_debugger(floor) == crate::debugger::Served::Terminate {
             return SafepointOutcome::Terminate;
         }
         #[cfg(not(debug_assertions))]
