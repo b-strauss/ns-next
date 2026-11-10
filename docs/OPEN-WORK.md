@@ -1133,6 +1133,43 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   a float scratch register, would shrink them to the operation and its
   operand checks. [execution.md](design/execution.md), "Floats in
   machine code".
+- **Further JIT techniques, options beyond the ten stages** (noted with
+  the user on 2026-11-10 as options, none decided). The ten stages of
+  "Planned: the optimizing JIT" already plan unboxed numbers, on-stack
+  replacement into optimized code, counting at polymorphic sites, the
+  compiler thread, partial escape analysis with late inlining and range
+  analysis; a sea of nodes, a second optimizing tier now and Cranelift
+  are rejected there, with reasons. Five families are planned nowhere,
+  each to be weighed once the stages that precede it are built, each by
+  a measurement on the programs of "Against Java and CPython":
+  - **Loop optimizations** after stage 5: loop-invariant code motion,
+    global value numbering, loop peeling and unrolling, strength
+    reduction, and guards hoisted out of a loop -- C2's and Graal's
+    standard set, which NBody, Mandelbrot and the array programs would
+    meet first.
+  - **A better register allocator**: a graph-colouring or SSA-based one
+    (`regalloc2`, which "Planned: the optimizing JIT" keeps possible
+    behind the same interface) if a measurement shows the linear scan
+    limits the peak.
+  - **Code in step with the collector**: a write barrier left out where
+    the target is provably young, pretenuring by allocation site (V8's
+    allocation-site feedback), and allocations folded into one bump --
+    for CD and the allocating programs, once a profile shows where their
+    time goes ("CD runs slower on ns-next than on CPython", below).
+  - **Less warm-up**: machine code or profiles kept across runs, as V8's
+    code cache, Java's class-data sharing and Leyden, or .NET's
+    ReadyToRun do; an image ([image-format.md](design/image-format.md))
+    could carry them.
+  - **More speculation**: argument and return type profiles (HotSpot's),
+    class-hierarchy assumptions invalidated by an edit, and splitting --
+    duplicating a merge's tail rather than merging the types, Self's.
+  Considered and not pursued: SIMD vectorization, which serves only
+  loops over typed arrays, and a different architecture -- a tracing
+  JIT (PyPy, LuaJIT) or partial evaluation of an interpreter (Truffle,
+  on which SOMns runs) -- which would replace the method JIT in
+  Strongtalk's and V8's line rather than extend it.
+  [execution.md](design/execution.md), "Planned: the optimizing JIT",
+  "Stages".
 - **The recompilee walk takes a snapshot tree and a plan at every step**
   (noted at the inlining branch's final review, 2026-11-09).
   `jit::find_recompilee` asks `inlines` at each frame it goes up to,
