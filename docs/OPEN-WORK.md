@@ -1782,8 +1782,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
   suspended activations -- every `Continuation` variant (`NestedClass`,
-  holding a `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`,
-  `ReturnToSuspended`), the counting, the entered level -- and for
+  holding a `NestedClassCreation`, `Unwind`, `VmErrorSignalled`,
+  `Reexecute`, `ReturnToSuspended`), the counting, the entered level -- and for
   `depth_reserve`; suspending the whole stack into its frames exists
   (`Heap::suspend_activations`). The decoder refuses every frame not
   marked uncontinuable (decided with the user on 2026-10-24), so suspend
@@ -1817,10 +1817,32 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   deeper (the kernel's views and `StringBuilder` are declared directly in
   its root; a later module may nest one).
   [image-format.md](design/image-format.md), "Shipped names".
-- **The debugger**: suspend, inspect, edit-and-continue at statement
-  boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
-  (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
-  the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
+- **The debugger**, at the level of IntelliJ's Java debugger, plus
+  edit-and-continue of running activations; its design is decided (nine
+  decisions, 2026-11-10), nothing is built. In this order: the debugging API
+  at the run loop's safepoint, with atomic poll words for pause; the stop
+  locations and variable table, compiled again on demand and verified;
+  breakpoints patched in place (a method with a fast path replaced by one
+  without it while patched), stepping by one-shot breakpoints, method
+  breakpoints, exception breakpoints where the handler search invokes a
+  handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
+  about to send `defaultAction` for an uncaught one (a test-only
+  `resume_unhandled_exceptions` hook stands in today); the deoptimization
+  of a frame stopped at a poll of optimized code in every build; the DAP agent in
+  `ns-cli` and the plugin's `XDebugProcess`; evaluation as a block in the
+  stop's scope, conditional breakpoints and logpoints, watches and setting
+  variables, smart step into, restart frame, force return; hot swap,
+  edit-and-continue and `ActivationMirror`. It needs no yield path out of
+  `vm::run`. Still to decide, each before the stage that needs it: step
+  filters for the shipped modules and how a step behaves at their edge,
+  watchpoints on slots, access control in evaluation, marking objects, a
+  token for the socket, who listens, `ns-next load --debug`, evaluation at
+  the depth limit, restart and force return beyond the plain case, restart
+  and the indirection vector, assigning a captured variable, stepping out
+  of a frame that returns elsewhere, the breakable places before a
+  session, terminating a program that reaches no safepoint, and the memory
+  view, folding shipped frames and attaching. [debugger.md](design/debugger.md), "Open
+  questions".
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2196,8 +2218,6 @@ classes and a class from source with no predecessor are not edited
   only if a measurement shows `become:` frequent (decided with the user on
   2026-10-05). [object-model.md](design/object-model.md), "`become:` is
   an eager bulk forward".
-- **Whether a debugger forces `program_counter` at every instruction.**
-  [execution.md](design/execution.md), "Where `program_counter` is stored".
 - **The reference lowering's future.** It is the oracle today; the user said
   (2026-09-19) it should eventually be removed, with the goldens carrying the
   tests. [compiler.md](design/compiler.md), "The reference lowering".

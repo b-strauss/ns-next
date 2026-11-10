@@ -961,8 +961,10 @@ loop never switches activations between them. Keeping the store out of the
 straight-line arms takes a write off the hot path for a value nothing observes
 there.
 
-Whether a debugger will force `program_counter` at every instruction is an open question for
-the milestone that builds one; it is a deliberate trade, not an oversight.
+The planned debugger will not force `program_counter` at every
+instruction: a stop will leave its stretch for the safepoint, which stores
+the stopped frame's ([debugger.md](debugger.md), "9. A stop waits at the
+run loop's safepoint").
 
 ## Unwinding
 
@@ -11590,8 +11592,16 @@ three stages are built to it ("The baseline JIT's foundation", "The
 optimizing tier's foundation", "Speculation", "Inlining"); what is not
 built yet is said where it stands: the raw area (the optimizing tier's
 stage 5), a frame object for an inlined activation and the non-local
-return into an inlined home (stage 4), and reading an inlined
-activation for the debugger. The interpreter
+return into an inlined home (stage 4), and the deoptimization of a
+frame stopped at a poll of optimized code in a release build, which the
+debugger needs before it reads an inlined activation: the exit writes
+the inlined scopes' headers, but a poll's exit defers the blocks the copy
+eliminated, and only the debug-only `jit::deoptimize_stopped_at_poll`
+makes them during the safepoint; a release build makes them only after
+it, when the frame cannot go back in (`resumed_at_poll` calling
+`deoptimize_at_poll`) ([debugger.md](debugger.md), "Reading the stack at a
+stop").
+The interpreter
 stays the source of truth ([liveness-and-reflection.md](liveness-and-reflection.md),
 "The unifying principle"): every compiled frame can be turned into the
 interpreted activations it stands for, and nothing a program, the
@@ -15795,7 +15805,8 @@ baseline JIT's foundation" above).
   decision and an activation, which preserves this: the decision stays in
   `interpreter/`, and only running what it decided is the loop's.
 - **`program_counter` is stored only at observable points**, not at every instruction — a
-  deliberate hot-path trade the debugger milestone may have to revisit.
+  deliberate hot-path trade the planned debugger keeps, since a stop leaves
+  its stretch for the safepoint, which stores it ([debugger.md](debugger.md)).
 - **Activations are stack frames, reified on demand**, because the
   always-reified model cost about 41% of a send, before the arena, for a structure
   most activations never expose. The arena took the `Rc` box and the `RefCell`

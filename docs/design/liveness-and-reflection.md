@@ -28,7 +28,8 @@
 > trees and code ids nothing names, the caches' ranges -- so a program
 > that edits and installs in a loop keeps its tables at a bounded size,
 > road step 5b2c ("What the id has to carry").
-> **Planned:** the debugger, edit-and-continue and actors.
+> **Planned:** actors; the debugger and edit-and-continue are
+> [debugger.md](debugger.md)'s.
 > What else is built is the groundwork every part of it depends on —
 > reified activations and the kernel-private activation objects the
 > exceptions are built on ([core-library.md](core-library.md),
@@ -98,9 +99,14 @@ link — and it has four consumers:
 So the debugger, the MirrorBuilder and snapshotting are clients of **one
 reflective core** over the reified interpreter model. Snapshot means deoptimize
 everything to interpreter level, then serialize the logical graph. Load means
-deserialize, begin interpreting, re-JIT as code warms. Entering the debugger on a
-frame forces it, and usually its callers, to deoptimize first — debugging and
-JIT-optimizing the same frame simultaneously is explicitly not a goal.
+deserialize, begin interpreting, re-JIT as code warms. The debugger will read
+only interpreter frames: the exit that leaves machine code for a stop
+materializes every compiled frame of its stretch, a stop at a poll of
+optimized code, whose exit defers the blocks it eliminated, is deoptimized
+into baseline code before the debugger reads it, and a frame the debugger
+writes goes on interpreted ([debugger.md](debugger.md), "Reading the stack
+at a stop", "Writing a frame") — debugging and JIT-optimizing the same
+frame simultaneously is explicitly not a goal.
 
 ## Caches and their dependency keys
 
@@ -151,53 +157,30 @@ caches after it.
 
 ## Debugger
 
-1. **Suspend.** An uncaught error or a breakpoint reifies the activation chain as
-   a chain of context mirrors.
-2. **Inspect.** Read receiver, arguments, temps and the sender chain through
-   mirrors.
-3. **Edit and continue.** Recompile the edited method — new bytecode, new temp
-   count, new statement→program-counter table. For every affected context, the
-   active one and any pending frames running the same method, give it room for
-   the added slots, set the new ones to nil, and remap the program counter
-   through the statement→program-counter table. A running activation is an
-   entry in a stack where an entry in the middle cannot grow, so it is
-   divorced into a newly allocated, larger frame object, the VM rewrites every
-   reference to the old frame by a walk of every root the collector traces
-   (`trace.rs`) and every heap object, the new frame allocated old and born
-   remembered, and execution continues from the new frame as from any
-   suspended one, resumed onto the stack when something returns into it
-   ([execution.md](execution.md), "Suspending and resuming", "How
-   this meets the liveness requirements"; [object-model.md](object-model.md),
-   "The object layout"). That is the same move as forcing a frame out
-   of JIT-optimized form before debugging it, one level down, so the
-   requirement is met by the existing principle rather than in tension with
-   it. **Resume only at statement boundaries**, which is what keeps
-   program-counter remapping tractable: restart the current statement, or the
-   whole method with receiver and arguments preserved, rather than resuming
-   mid-expression.
-4. **Other context-mirror operations:** restart frame, force return value, step
-   into/over/out.
-5. **Breakpoints** by bytecode patching, or by a per-method debug flag that
-   forces interpretation with a per-statement callback.
+The debugger has a document of its own, [debugger.md](debugger.md): what it
+has to do, the nine decisions its design rests on, and the order of building
+it. Its debugging API is part of the reflective core this document
+requires, with two clients: the remote agent an IDE talks to, and
+`ActivationMirror`, through which a program reaches activations;
+edit-and-continue is described there ("Hot swap and edit-and-continue").
 
-Two things already in place serve this and are not to be regressed: the
-statement→program-counter table on every `CompiledCode`, and a chain of running activations
+Two things already in place serve it and are not to be regressed: the
+statement→program-counter table on every `CompiledCode`, through which
+edit-and-continue maps a frame's `program_counter` between an old and a
+new body (the debugger's stop locations, finer, are compiled again on
+demand, [debugger.md](debugger.md), decisions 4 and 5), and a chain of running activations
 walkable independently of the Rust stack — the activation stack — on which the
 trampoline runs every send without recursing through the Rust stack
 ([execution.md](execution.md), "The trampoline"), and with no Rust frame
 between the host and the loop, since nothing re-enters it from Rust ([execution.md](execution.md),
-"No re-entry from Rust"). Two things still block it. A running activation
-can be suspended into its frame and resumed from it within a run
-([execution.md](execution.md), "Suspending and resuming"), but there is no
-yield path out of the run loop ([image-format.md](image-format.md),
-"Planned: suspend and resume"). And an
-activation's `program_counter` is currently stored only at observable points, which the
-debugger milestone may need to revisit.
+"No re-entry from Rust").
 
 The reified frame is not the *default* representation of an activation; it is
-the one a block, and later a debugger, asks for. Nothing here loses a capability
-by that: every operation in this section already begins by reifying the chain it
-works on.
+the one a block, and later the debugger, asks for. Nothing here loses a
+capability by that: the debugger reads a stopped stack's frames on the
+activation stack without reifying them, and reifies a frame where it has to
+hold one -- to evaluate in it, to restart it, to move it onto edited code
+([debugger.md](debugger.md)).
 
 ## Mirrors and MirrorBuilder
 
