@@ -652,6 +652,9 @@ pub struct Interpreter {
     /// (`attach_debugger`, `serve_debugger`); `None` until a host attaches
     /// one, and again once its remote is gone.
     pub(crate) debugger: Option<crate::debugger::Debugger>,
+    /// The lock every remote of this interpreter arms the poll under, and
+    /// which of them may (`debugger::Arming`).
+    pub(crate) debugger_arming: crate::debugger::Arming,
 }
 
 impl Interpreter {
@@ -709,6 +712,7 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
             debugger: None,
+            debugger_arming: crate::debugger::Arming::default(),
         };
         #[cfg(debug_assertions)]
         {

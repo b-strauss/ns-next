@@ -386,11 +386,9 @@ fn terminate_at_safepoint(
                 .expect("internal: an exit carries its result"),
         ),
         Transfer::Switched => {
-            // A frame the unwind returned to that stopped in machine code
-            // goes on interpreted, as one a safepoint takes does.
-            if handoff.resume_in_machine_code {
-                mutator.heap.clear_compiled(handoff.activation);
-            }
+            // A termination's unwind switches only to an `ensure:` or
+            // `ifCurtailed:` block it pushed (`switch_to`), which starts
+            // interpreted: no frame it switches to resumes machine code.
             *frame = FrameRegisters::of(mutator, handoff.activation, handoff.program_counter);
             None
         }

@@ -4,6 +4,8 @@
 //! the next safepoint (`docs/design/debugger.md`, decisions 7 and 9,
 //! "Commands while the program runs").
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -278,4 +280,36 @@ fn a_stop_only_command_while_running_is_refused() {
     let result = run(&mut interpreter, &instance);
     drop(agent.join().expect("the remote's thread"));
     assert_terminated(result);
+}
+
+/// A remote whose debugger a later attachment replaced arms nothing: its
+/// pause would otherwise stop the run for the new remote, which never
+/// asked. The new remote's thread continues any stop it sees, so that a
+/// failure ends rather than hangs, and reports it.
+#[test]
+fn a_replaced_remote_s_pause_does_not_stop_the_run() {
+    let (mut interpreter, instance) = instance_of(COUNTING);
+    let replaced = interpreter.attach_debugger();
+    let current = interpreter.attach_debugger();
+    replaced.pause();
+    let finished = Arc::new(AtomicBool::new(false));
+    let agent = {
+        let finished = Arc::clone(&finished);
+        thread::spawn(move || {
+            let mut stopped = false;
+            while !finished.load(Ordering::SeqCst) {
+                if let Some(Event::Stopped { .. }) = current.next_event(Duration::from_millis(10)) {
+                    stopped = true;
+                    current.send(Command::Continue);
+                }
+            }
+            stopped
+        })
+    };
+    let count = expect_ok(run(&mut interpreter, &instance), "run");
+    finished.store(true, Ordering::SeqCst);
+    let stopped = agent.join().expect("the remote's thread");
+    assert!(!stopped, "the replaced remote's pause stopped the run");
+    assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
+    drop(replaced);
 }

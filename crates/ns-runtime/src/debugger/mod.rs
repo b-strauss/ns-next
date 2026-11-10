@@ -35,17 +35,43 @@ const NOT_IMPLEMENTED: &str = "not yet implemented";
 pub(crate) struct Debugger {
     commands: Receiver<Command>,
     events: Sender<Event>,
-    /// Held by the agent across its two writes that arm the poll -- the
-    /// request bit's `fetch_or` and the store of 0 into the depth limit
-    /// -- and by the VM across its clearing of a debugger bit, which
-    /// resynchronizes the limit. Without it the VM could serve and clear
-    /// the bit between the agent's two writes, and the agent's late 0
-    /// would leave the limit at 0 with no bit set: every compiled push
-    /// refused and counted as an exit until the next resynchronization.
-    /// Only the cold paths take it, never a poll. V8 arms its interrupts
-    /// the same way, under a lock (`StackGuard::RequestInterrupt` under
-    /// `ExecutionAccess`, `v8/src/execution/stack-guard.cc:169-183`).
-    arming: Arc<Mutex<()>>,
+}
+
+/// The lock under which the poll is armed and the debugger's bits are
+/// cleared, one per `Interpreter`, shared by every remote it ever handed
+/// out. Held by the agent across its two writes that arm the poll -- the
+/// request bit's `fetch_or` and the store of 0 into the depth limit --
+/// and by the VM across its clearing of a debugger bit, which
+/// resynchronizes the limit. Without it the VM could serve and clear the
+/// bit between the agent's two writes, and the agent's late 0 would leave
+/// the limit at 0 with no bit set: every compiled push refused and
+/// counted as an exit until the next resynchronization. One lock for
+/// every attachment, since a remote of an earlier one holding a lock of
+/// its own would reopen that race; what it guards says which remote may
+/// arm at all, so that one whose debugger is gone, detached or replaced,
+/// arms nothing. Only the cold paths take it, never a poll. V8 arms its
+/// interrupts the same way, under a lock (`StackGuard::RequestInterrupt`
+/// under `ExecutionAccess`, `v8/src/execution/stack-guard.cc:169-183`).
+#[derive(Default)]
+pub(crate) struct Arming {
+    attachments: Arc<Mutex<Attachments>>,
+}
+
+/// What the arming lock guards: which attachment is current.
+#[derive(Default)]
+pub(crate) struct Attachments {
+    /// The number of the attached debugger, `None` while none is.
+    current: Option<u64>,
+    /// The number the last attachment took.
+    last: u64,
+}
+
+impl Attachments {
+    /// Whether the remote of attachment `attachment` may arm the poll:
+    /// only that of the debugger attached now.
+    pub(crate) fn is_current(&self, attachment: u64) -> bool {
+        self.current == Some(attachment)
+    }
 }
 
 /// What serving the debugger at a safepoint decided.
@@ -65,14 +91,25 @@ impl Interpreter {
     pub fn attach_debugger(&mut self) -> DebugRemote {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
-        let arming = Arc::new(Mutex::new(()));
         let words = self.enter(|mutator| mutator.heap.machine_words_handle());
+        let attachments = Arc::clone(&self.debugger_arming.attachments);
+        let attachment = {
+            let mut guarded = attachments.lock().unwrap_or_else(PoisonError::into_inner);
+            guarded.last += 1;
+            guarded.current = Some(guarded.last);
+            guarded.last
+        };
         self.debugger = Some(Debugger {
             commands: command_receiver,
             events: event_sender,
-            arming: Arc::clone(&arming),
         });
-        DebugRemote::new(command_sender, event_receiver, words, arming)
+        DebugRemote::new(
+            command_sender,
+            event_receiver,
+            words,
+            attachments,
+            attachment,
+        )
     }
 
     /// Serves the debugger's bits at the run loop's safepoint, before
@@ -192,22 +229,28 @@ impl Interpreter {
 
     /// The remote is gone: the debugger goes, and with it every bit it
     /// left, which nobody is left to serve.
+    /// No attachment is current from here on, under the same lock, so
+    /// that a remote of this one still held arms nothing after the bits
+    /// are cleared.
     fn detach_debugger(&mut self) {
-        self.clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
+        let attachments = Arc::clone(&self.debugger_arming.attachments);
+        let mut guarded = attachments.lock().unwrap_or_else(PoisonError::into_inner);
+        guarded.current = None;
+        self.enter(|mutator| {
+            mutator
+                .heap
+                .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
+        });
+        drop(guarded);
         self.debugger = None;
     }
 
     /// Clears the debugger's `bits` under the arming lock, which keeps the
     /// clearing's resynchronization of the depth limit from falling
-    /// between the agent's two writes (`Debugger::arming`).
+    /// between the agent's two writes (`Arming`).
     fn clear_debugger_bits(&mut self, bits: u64) {
-        let arming = self
-            .debugger
-            .as_ref()
-            .map(|debugger| Arc::clone(&debugger.arming));
-        let _armed = arming
-            .as_ref()
-            .map(|arming| arming.lock().unwrap_or_else(PoisonError::into_inner));
+        let attachments = Arc::clone(&self.debugger_arming.attachments);
+        let _armed = attachments.lock().unwrap_or_else(PoisonError::into_inner);
         self.enter(|mutator| mutator.heap.clear_debugger_bits(bits));
     }
 }

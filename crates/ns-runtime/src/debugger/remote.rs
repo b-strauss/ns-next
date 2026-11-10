@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use super::Attachments;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
@@ -125,10 +126,13 @@ pub struct DebugRemote {
     commands: Sender<Command>,
     events: Receiver<Event>,
     words: MachineWords,
-    /// Shared with the VM's `Debugger`: held across the two writes that
-    /// arm the poll, so that the VM's clearing of a bit cannot fall
-    /// between them (`Debugger::arming`).
-    arming: Arc<Mutex<()>>,
+    /// The interpreter's arming lock: held across the two writes that arm
+    /// the poll, so that the VM's clearing of a bit cannot fall between
+    /// them (`Arming`).
+    arming: Arc<Mutex<Attachments>>,
+    /// The number of the attachment that handed this remote out, which
+    /// arms only while it is current.
+    attachment: u64,
 }
 
 impl DebugRemote {
@@ -136,13 +140,15 @@ impl DebugRemote {
         commands: Sender<Command>,
         events: Receiver<Event>,
         words: MachineWords,
-        arming: Arc<Mutex<()>>,
+        arming: Arc<Mutex<Attachments>>,
+        attachment: u64,
     ) -> DebugRemote {
         DebugRemote {
             commands,
             events,
             words,
             arming,
+            attachment,
         }
     }
 
@@ -174,9 +180,15 @@ impl DebugRemote {
     /// the next poll anywhere takes the safepoint -- a compiled callee's
     /// prologue compares the limit alone. Both writes sequentially
     /// consistent, against the VM's fenced re-read
-    /// (`Heap::synchronize_depth_limit`); the agent never clears a bit.
+    /// (`Heap::synchronize_depth_limit`); the agent never clears a bit. A
+    /// remote whose debugger is gone, detached or replaced by a later
+    /// attachment, arms nothing: its bit would stop the run for another
+    /// remote's debugger, or for none.
     fn arm(&self, bit: u64) {
-        let _armed = self.arming.lock().unwrap_or_else(PoisonError::into_inner);
+        let armed = self.arming.lock().unwrap_or_else(PoisonError::into_inner);
+        if !armed.is_current(self.attachment) {
+            return;
+        }
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);

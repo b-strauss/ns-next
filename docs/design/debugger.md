@@ -381,8 +381,13 @@ The machine words become `AtomicU64`s that the agent's thread reaches too
 AArch64, so neither the interpreter's poll nor machine code's changes. The
 agent sets a pause bit of its own in the request word and lowers
 `DepthLimit` to 0, so that the next poll anywhere -- interpreted or
-compiled, a push or a loop's head -- takes the safepoint. Ctrl-C and the
-actors' scheduler need the same word.
+compiled, a push or a loop's head -- takes the safepoint. The agent's two writes and the VM's clearing of a
+debugger bit, which resynchronizes the limit, hold one lock per
+interpreter (`debugger::Arming`), so that no clearing falls between the
+two writes and leaves the limit at 0 with no bit set; the lock also says
+which attachment is current, and a remote whose debugger was detached or
+replaced arms nothing. Ctrl-C and the actors' scheduler need the same
+word.
 
 Cog's heartbeat thread writes `stackLimit`
 (`forceInterruptCheckFromHeartbeat`,
