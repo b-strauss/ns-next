@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
+use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Root,
     StopReason, Symbol, ValueKind, Variable,
@@ -352,17 +353,23 @@ fn while_stopped<T: Send + 'static>(
     source: &str,
     query: impl FnOnce(&DebugRemote) -> T + Send + 'static,
 ) -> T {
-    while_stopped_after(Duration::from_millis(50), source, query)
+    while_stopped_after(Duration::from_millis(50), source, |_, _| {}, query).0
 }
 
 /// `while_stopped` with the pause delayed by `delay`, long enough for a
-/// body to be compiled when the test is about machine code.
+/// body to be compiled when the test is about machine code, and the
+/// interpreter set up by `set_up` once the instance exists. Answers what
+/// `query` answered with the JIT's statistics from before the run and after
+/// it.
 fn while_stopped_after<T: Send + 'static>(
     delay: Duration,
     source: &str,
+    set_up: impl FnOnce(&mut Interpreter, &Root),
     query: impl FnOnce(&DebugRemote) -> T + Send + 'static,
-) -> T {
+) -> (T, JitStatistics, JitStatistics) {
     let (mut interpreter, instance) = instance_of(source);
+    set_up(&mut interpreter, &instance);
+    let before = interpreter.jit_statistics();
     let remote = interpreter.attach_debugger();
     let agent = thread::spawn(move || {
         thread::sleep(delay);
@@ -380,7 +387,9 @@ fn while_stopped_after<T: Send + 'static>(
     let (answer, remote) = agent.join().expect("the remote's thread");
     drop(remote);
     assert_terminated(result);
-    answer.unwrap_or_else(|failure| panic::resume_unwind(failure))
+    let after = interpreter.jit_statistics();
+    let answer = answer.unwrap_or_else(|failure| panic::resume_unwind(failure));
+    (answer, before, after)
 }
 
 fn stack_trace(remote: &DebugRemote) -> Vec<FrameDescription> {
@@ -526,63 +535,110 @@ const RECURSING: &str = indoc! {"
     ) : ()
 "};
 
+/// Whether the JIT's counters mean what these tests assert: machine code
+/// exists in this build, the environment leaves it on, and no stress mode
+/// changes when it compiles and exits.
+fn counters_are_exact() -> bool {
+    cfg!(ns_jit)
+        && std::env::var_os("NS_NEXT_NO_JIT").is_none()
+        && !std::env::vars_os().any(|(name, value)| {
+            name.to_string_lossy().starts_with("NS_NEXT_STRESS_")
+                && !value.is_empty()
+                && value != "0"
+        })
+}
+
 /// A pause stops a program that spends its time in compiled recursion, and
-/// the stack it reads has the recursion's frames.
+/// the stack it reads has the recursion's frames. No optimization request
+/// asks for a safepoint, so the stop is the pause's own, taken at a poll of
+/// baseline machine code.
 #[test]
 fn a_pause_stops_compiled_recursion() {
-    let kinds: Vec<FrameKind> =
-        while_stopped_after(Duration::from_millis(200), RECURSING, |remote| {
+    let (kinds, before, after) = while_stopped_after(
+        Duration::from_millis(200),
+        RECURSING,
+        |interpreter, _| interpreter.set_optimization_budget(i64::MAX),
+        |remote| {
             stack_trace(remote)
                 .into_iter()
                 .map(|frame| frame.kind)
-                .collect()
-        });
+                .collect::<Vec<FrameKind>>()
+        },
+    );
     let depth = kinds.iter().filter(|kind| **kind == method("fib:")).count();
     assert!(depth > 1, "fib: frames more than one deep, not {depth}");
+    if counters_are_exact() {
+        assert!(
+            after.compiled_bodies > before.compiled_bodies,
+            "no body compiled: {after:?}"
+        );
+        assert!(
+            after.machine_entries > before.machine_entries,
+            "machine code never entered: {after:?}"
+        );
+        assert!(
+            after.pushes_refused + after.safepoint_exits
+                > before.pushes_refused + before.safepoint_exits,
+            "no poll of machine code found the pause: {before:?} {after:?}"
+        );
+    }
 }
 
-/// A loop in a method, which the optimize stress mode compiles to optimized
-/// code at once: its stop is deoptimized before the stack is read.
+/// A method whose optimized copy exists before the paused run: `forever`
+/// pushes `spin:` again and again, so that each push enters the copy and the
+/// pause finds the loop's poll in optimized code. The loop's block is one
+/// the copy eliminates.
 const OPTIMIZED: &str = indoc! {"
     class Optimized = Object new () (
       public run = (
-        ^self spin
+        [true] whileTrue: [self spin: 100000000]
       )
-      spin = (
+      public warm = (
+        ^self spin: 100
+      )
+      spin: limit = (
         | count |
         count:: 0.
-        [count < 1000000000] whileTrue: [count:: count + 1].
+        [count < limit] whileTrue: [count:: count + 1].
         ^count
       )
     ) : ()
 "};
 
+/// A stop at a poll of optimized code is deoptimized before the stack is
+/// read, and the program, continued, goes on and stops again.
 #[test]
 fn a_stop_at_an_optimized_poll_is_deoptimized() {
-    let (mut interpreter, instance) = instance_of(OPTIMIZED);
-    interpreter.set_optimize_stress(true);
-    let remote = interpreter.attach_debugger();
-    let agent = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
-        remote.pause();
-        let answer = panic::catch_unwind(AssertUnwindSafe(|| {
-            expect_paused(&remote);
-            let frames = stack_trace(&remote);
+    let ((), before, after) = while_stopped_after(
+        Duration::from_millis(100),
+        OPTIMIZED,
+        |interpreter, instance| {
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            for _ in 0..6 {
+                expect_ok(
+                    interpreter.send(instance, Symbol::intern("warm"), &[]),
+                    "warm",
+                );
+            }
+        },
+        |remote| {
+            let frames = stack_trace(remote);
             let frame = frames
                 .iter()
-                .position(|frame| frame.kind == method("spin"))
+                .position(|frame| frame.kind == method("spin:"))
                 .expect("the loop's method is on the stack");
-            variables(&remote, Command::Variables { frame });
-            continue_stopped(&remote);
+            variables(remote, Command::Variables { frame });
+            continue_stopped(remote);
             remote.pause();
-            expect_paused(&remote);
-        }));
-        remote.send(Command::Terminate);
-        (answer, remote)
-    });
-    let result = run(&mut interpreter, &instance);
-    let (answer, remote) = agent.join().expect("the remote's thread");
-    drop(remote);
-    assert_terminated(result);
-    answer.unwrap_or_else(|failure| panic::resume_unwind(failure));
+            expect_paused(remote);
+            stack_trace(remote);
+        },
+    );
+    if counters_are_exact() {
+        assert!(
+            after.poll_deoptimizations > before.poll_deoptimizations,
+            "no stop was deoptimized: {before:?} {after:?}"
+        );
+    }
 }
