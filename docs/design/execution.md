@@ -93,7 +93,7 @@
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
 > entry into machine code), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
-> `benchmarks/are-we-fast-yet/` (what "Measurements" times).
+> `benchmarks/are-we-fast-yet/newspeak/` (what "Measurements" times).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -1119,7 +1119,7 @@ about the code.
 
 ### The Are We Fast Yet benchmarks
 
-`benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
+`benchmarks/are-we-fast-yet/newspeak/` holds real programs to measure on, beside the
 microbenchmarks under `benchmarks/micro/`: all fourteen Are We Fast Yet
 benchmarks -- Bounce, CD, DeltaBlue, Havlak, Json, List, Mandelbrot,
 NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
@@ -1133,9 +1133,18 @@ folded into `CD.ns` as nested classes of `CD`, so CD too is reached as
 `manifest CD` (decided with the user on 2026-10-01). The benchmarks are
 adapted from SOMns's Newspeak versions
 (`prior-art/somns/core-lib/Benchmarks/`, MIT) into Primordial Soup's
-module shape and protocol: each is a module `usingPlatform:` whose one
+module shape and protocol: each is a module `usingPlatform:som:` whose one
 public method, `bench`, runs the workload once and signals an `Error` when
-its result is not the one Are We Fast Yet expects. The harness is adapted
+its result is not the one Are We Fast Yet expects. Its second argument is
+the one instance of `Som.ns`, which the harness makes: the SOM class
+library -- `Vector`, `Set`, `IdentitySet`, `Dictionary`,
+`IdentityDictionary` and `Random` -- that Are We Fast Yet has every
+language carry in its own code, so that every port does the same work in
+its collections, adapted from Are We Fast Yet's SOMns benchmarks'
+`Core.ns` (`prior-art/are-we-fast-yet/benchmarks/SOMns/Core.ns`, MIT) and
+method by method the `som` library of the Java and Python ports beside
+them; no benchmark uses the platform's collections (decided with the user
+on 2026-11-09). The harness is adapted
 from Primordial Soup's `BenchmarkRunner.ns`
 (`prior-art/primordialsoup/newspeak/BenchmarkRunner.ns`, Apache 2.0),
 `RichardsTon80.ns` from its `Richards.ns`
@@ -1177,7 +1186,7 @@ to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 So the tests that run every benchmark are not part of the suite.
 `crates/ns-cli/tests/run_benchmarks.rs` runs the harness on each benchmark
 by name, at full size, under both lowerings, each run a test of its own,
-and holds it to its line of `benchmarks/are-we-fast-yet.toml`,
+and holds it to its line of `benchmarks/are-we-fast-yet/newspeak.toml`,
 `<Name>: ok`; the hints' behaviour oracle does the same, every hint
 applied; the microbenchmarks under `benchmarks/micro/` go the same way
 against the `.toml` beside each; and `timed::<Name>` runs each benchmark
@@ -1200,7 +1209,7 @@ cargo nextest run --workspace --profile benchmarks-verify
 
 There are two ways to measure, and they report different things:
 
-- **`ns-next bench benchmarks/are-we-fast-yet -- <Name>`**,
+- **`ns-next bench benchmarks/are-we-fast-yet/newspeak -- <Name>`**,
   from the repository root, times the harness
   without `--timed`, which runs the benchmark named -- or, with no name,
   all sixteen in turn -- once and prints `<Name>: ok`. `bench` reports the
@@ -1215,8 +1224,8 @@ There are two ways to measure, and they report different things:
   compiling are. What carries over from the discarded run is what one
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
-  what lets `benchmarks/are-we-fast-yet.toml` pin its output and `bench` time it.
-- **`ns-next run benchmarks/are-we-fast-yet -- --timed [--warm-up <milliseconds>] [--measure <milliseconds>] [<Name>]`**
+  what lets `benchmarks/are-we-fast-yet/newspeak.toml` pin its output and `bench` time it.
+- **`ns-next run benchmarks/are-we-fast-yet/newspeak -- --timed [--warm-up <milliseconds>] [--measure <milliseconds>] [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
   the one named, it runs `bench` repeatedly for at least the warm-up window,
@@ -1233,8 +1242,8 @@ There are two ways to measure, and they report different things:
   ArgumentError`. A flag without `--timed`, a repeated flag, a flag without
   its value or any other value signals the usage error, whose text names
   the flags. Every `--timed` score in this section was taken with the
-  default windows. The Java counterparts (below) take the same flags with
-  the same defaults (decided with the user on 2026-10-22).
+  default windows. The Java and Python counterparts (below) take the same
+  flags with the same defaults (decided with the user on 2026-10-22).
 
 Either way the protocol of the `measuring-performance` skill applies, as it
 does to every figure in this section: release builds only, and every binary
@@ -1401,7 +1410,7 @@ processes. A compilation error fails every Java trial with `javac`'s
 output. The trials:
 
 - **`java::<Name>`**, for each benchmark: the Java harness run by name,
-  held to that benchmark's line of `benchmarks/are-we-fast-yet.toml`
+  held to that benchmark's line of `benchmarks/are-we-fast-yet/newspeak.toml`
   (`<Name>: ok`), so the `.ns` and Java programs share one record of what
   each must answer.
 - **`java-timed::<Name>`**: `--timed <Name>`, its score's shape checked as
@@ -1410,12 +1419,81 @@ output. The trials:
   (through the test hook) and **`java::missing-jdk-is-named`** (a
   `JAVA_HOME` that holds no JDK is named in the failure, and an empty one
   answers the tool's bare name, for `PATH`).
-- **`flags::ns-next::*` and `flags::java::*`**, on both harnesses:
+- **`flags::ns-next::*`, `flags::java::*` and `flags::python::*`**, on
+  the three harnesses:
   `windows-print-a-score` and `either-order` run `--timed --warm-up 0
   --measure 1 Sieve` and the flags swapped, and print a score of the right
   shape; `rejected` holds `--warm-up 5` without `--timed`, `--measure x`,
   `--measure -1`, a repeated `--warm-up` and `--measure` without a value
   to a non-zero exit, nothing on stdout and the usage on stderr.
+
+**The Python counterparts.** `benchmarks/are-we-fast-yet/python/` holds
+a Python counterpart of each of the sixteen programs and of the harness,
+so that ns-next's scores can also be put beside an interpreter's, CPython's,
+under the same protocol (decided with the user on 2026-11-09). They keep
+the Java counterparts' rules: the same work, not idiomatic Python -- the
+algorithm of the Newspeak version and the `som` collections under `som/`
+in place of Python's `list`, `dict` and `set`, which only the harness
+uses -- and no microbenchmarks. Thirteen benchmarks, `benchmark.py`, the
+harness and `som/` are Are We Fast Yet's own Python versions
+(`prior-art/are-we-fast-yet/benchmarks/Python/`, the commit the Java
+counterparts come from), adapted as the Java ones are: upstream's
+`harness.py` and `run.py` folded into `are_we_fast_yet.py`, which runs the
+`.ns` harness's command line and protocol and prints its lines; one
+`bench` that runs once at the `.ns` port's size and raises a
+`RuntimeError` with the port's `Error` text; the checks for upstream's
+other sizes dropped; names written out; `som/__init__.py`,
+`som/constants.py` and `som/random.py` copied unchanged. Upstream's
+`richards.py` is not taken, since its header carries a CC BY-NC-SA note:
+`richards.py` here is written after `Richards.ns` and
+`java/Richards.java`, and `richardston80.py` and `deltablueton80.py` are
+translated from the `.ns` ports, as their Java counterparts are. Where
+upstream's Python did other work than its ports, it was brought to theirs,
+each change named in the file's header: `som/set.py`'s `has_some` and
+`get_one` answer their result (upstream dropped it, so `contains` always
+answered false and Havlak's sets kept every duplicate), `json.py` parses
+an exponent as `java/json/` does, `deltablue.py`'s `ScaleConstraint`
+divides with `//` and its sort takes a comparator object, `havlak.py`'s
+depth-first search walks the successors with an index loop, and
+`som/vector.py` gains `remove_last` for `deltablueton80.py`, as the Java
+`Vector` gains `removeLast()`. Sieve and Queens fill their arrays in a
+loop in all three languages, since ns-next's core library has no native
+fill. With the SOM class library in the Newspeak ports too (above), the
+three ports do the same work, collections included, which was checked
+program by program across the three. The files keep
+upstream's notices as the Java ones do, `cd.py` adding CDx's BSD-3
+notice; `THIRD-PARTY-NOTICES.md`, "Are We Fast Yet", carries the texts.
+
+The same gate holds the Python counterparts under
+`benchmarks/are-we-fast-yet/python/` to the same record, so the profile
+`benchmarks-verify` needs Python as well: the `python` on `PATH`, with no
+variable to name another (decided with the user on 2026-11-10); the
+harness, `are_we_fast_yet.py`, runs the protocol above, an unknown name
+and a malformed command line ending the run with exit status 1 and the
+message on stderr, and its one test hook is the environment variable
+`ARE_WE_FAST_YET_FAIL_FIRST_CHECK=true`, which replaces the first
+selected benchmark with one whose check always fails. A missing `python`
+fails the trials and says the gate needs it, as a missing JDK does. Each
+trial runs `python -E -S -B are_we_fast_yet.py ...` in that directory:
+`-E` ignores every `PYTHON*` variable of the environment --
+`PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONWARNINGS`, `PYTHONINSPECT` and any
+a later release adds -- which could change the output or what is run,
+where removing them by name would miss one; `-S` imports no `site`, so no
+installed package's `.pth` file runs, the harness needing the standard
+library alone; `-B` writes no `__pycache__` into the source tree, which
+`-E` would otherwise allow by ignoring `PYTHONDONTWRITEBYTECODE`. `-I`
+would do the first two but also leave the script's directory off the
+module path, from which the harness imports its benchmarks. The hook's
+variable is removed from every trial but the one that sets it. The
+trials mirror Java's:
+
+- **`python::<Name>`**, each held to its line of
+  `benchmarks/are-we-fast-yet/newspeak.toml` with nothing on stderr, and
+  **`python-timed::<Name>`**, its score's shape checked.
+- **`python::unknown-benchmark`**, **`python::a-failing-check-prints-no-ok`**
+  (through the hook) and **`python::missing-python-is-named`** (a program
+  not on `PATH` fails with an error naming it and Python).
+- **`flags::python::*`**, as above.
 
 The default windows suit an interpreter; a JIT is still compiling after
 3 ms. A peak comparison gives both sides the same longer windows, for
@@ -1425,7 +1503,7 @@ a release build pinned as the `measuring-performance` skill says:
 ```bash
 javac --release 21 -encoding UTF-8 -d .temp/are-we-fast-yet-java $(find benchmarks/are-we-fast-yet/java -name '*.java')
 java -cp .temp/are-we-fast-yet-java AreWeFastYet --timed --warm-up 10000 Richards
-ns-next run benchmarks/are-we-fast-yet -- --timed --warm-up 10000 Richards
+ns-next run benchmarks/are-we-fast-yet/newspeak -- --timed --warm-up 10000 Richards
 ```
 
 Measure one benchmark per JVM or ns-next invocation, as the example does.
@@ -1549,7 +1627,115 @@ application's setup and only one discarded warm-up run where Java's are
 a steady state after two seconds, which favours Java slightly; one
 machine and one JVM; and no JVM tuning. What remains of
 the gap is what the stages of road step 9 after inlining are for
-(OPEN-WORK.md, "Next").
+(OPEN-WORK.md, "Next"). The later comparison, "Against Java and CPython"
+below, replaces this one as the baseline: the ports were aligned since --
+the SOM class library in the Newspeak ports, Sieve and Queens filling
+their arrays in a loop in every port, Java's Json reading its characters
+as an `int` -- and `Float` moved into machine code, so the two
+comparisons' figures are not directly comparable.
+
+### Against Java and CPython
+
+Measured on 2026-11-10 at `28bcb3f4`, as the baseline future optimization
+is measured against, asked for by the user: how far ns-next is from the
+JVM and from CPython's interpreter on the sixteen programs, now that the
+three ports do the same work -- every port carries the SOM class library
+and none uses its platform's collections ("The Are We Fast Yet
+benchmarks", above, and its "The Python counterparts"). The tree had the
+baseline JIT, the optimizing tier through its third stage, inlining, and
+`Float` in machine code.
+
+- **ns-next**: one release build, pinned as the `measuring-performance`
+  skill pins one (`RUSTFLAGS` `-C target-feature=+crt-static -C
+  target-cpu=x86-64-v2 -C llvm-args=-align-all-functions=6`), run as
+  `ns-next run benchmarks/are-we-fast-yet/newspeak -- --timed ...`.
+- **Java**: Amazon Corretto 27 (27.0.0.35.1), classes from
+  `javac --release 21`, the JVM's default flags.
+- **CPython 3.15.2**: `python -E -S -B are_we_fast_yet.py --timed ...`,
+  as the gate runs it.
+- **Protocol**: every side `--timed --warm-up 2000 --measure 3000`, one
+  process per program per side, three rounds, the order of the sides
+  rotated (ns-next, Java, Python; Java, Python, ns-next; Python,
+  ns-next, Java), every timed process started with the affinity of the
+  eight performance cores (`0xC03C03`), on an Intel Core Ultra 9 285K
+  under Windows 11, native. Each cell is the median of three scores, in
+  runs per second.
+
+Every harness creates the benchmark's instance before its windows and
+times only `bench` calls, so setup lies outside the window on all three
+sides; JVM startup is outside it, the JIT's warm-up inside the two
+seconds of warm-up.
+
+| Program | ns-next, runs/s | Java, runs/s | CPython, runs/s | Java is faster than ns-next by | ns-next is faster than CPython by |
+|---|---|---|---|---|---|
+| Bounce | 14513.8 | 188374.8 | 3009.0 | 13.0× | 4.8× |
+| CD | 0.4 | 64.7 | 1.1 | 161.8× | 0.4× |
+| DeltaBlue | 6.1 | 185.5 | 4.5 | 30.4× | 1.4× |
+| DeltaBlueTon80 | 1039.3 | 25821.5 | 550.1 | 24.8× | 1.9× |
+| Havlak | 1.2 | 42.9 | 0.7 | 35.8× | 1.7× |
+| Json | 536.4 | 20648.9 | 321.8 | 38.5× | 1.7× |
+| List | 20267.3 | 128670.7 | 4068.4 | 6.3× | 5.0× |
+| Mandelbrot | 2.2 | 23.2 | 1.1 | 10.5× | 2.0× |
+| NBody | 3.8 | 131.7 | 1.7 | 34.7× | 2.2× |
+| Permute | 15887.7 | 90429.7 | 1732.7 | 5.7× | 9.2× |
+| Queens | 17299.6 | 73566.0 | 2604.8 | 4.3× | 6.6× |
+| Richards | 89.3 | 3039.6 | 74.9 | 34.0× | 1.2× |
+| RichardsTon80 | 1380.5 | 32915.6 | 775.5 | 23.8× | 1.8× |
+| Sieve | 6439.5 | 227518.1 | 3832.6 | 35.3× | 1.7× |
+| Storage | 2383.7 | 39664.4 | 1561.9 | 16.6× | 1.5× |
+| Towers | 5775.6 | 51206.5 | 1282.9 | 8.9× | 4.5× |
+| Geometric mean | | | | 19.7× | 2.2× |
+
+The three scores of a cell lie within 7% of each other (max over min) on
+ns-next (Sieve 1.07, Bounce and Richards 1.06) and within 6% on CPython
+(NBody 1.06); on Java within 9% but for DeltaBlue, whose three scores,
+159.4 to 202.3, spread 27%, as in "Against Java" above. Noise far below
+the factors measured.
+
+What it does not cover: one ns-next build, not the three a side the
+`measuring-performance` skill pools, so code layout is not varied; one
+machine, native Windows only, one JVM and one CPython, with neither tuned,
+and no PyPy; the harnesses print one fraction digit, so the five slow
+programs' ns-next scores -- CD, DeltaBlue, Havlak, Mandelbrot and NBody,
+a few runs a second or less -- are coarse, a window can overshoot by a
+whole run, and their factors carry that error (CD's 0.4 is anything from
+0.35 to 0.45); `bench --iterations` was not used for them. No profile was
+taken on any side, so the findings below say where ns-next stands, not
+why.
+
+What it found:
+
+- **ns-next is 19.7× behind Java and 2.2× ahead of CPython** on the
+  geometric mean of the sixteen factors (Java 44× ahead of CPython). Since
+  the alignment the three ports do the same work, so the factors compare
+  the runtimes, not three programs.
+- **CD runs slower on ns-next than on CPython's interpreter**: 0.4 runs a
+  second against 1.1, CPython about 2.75× faster, and 162× behind Java,
+  the largest outlier on either side. Its `Float` arithmetic is already
+  in machine code ("Floats in machine code"), so its time goes elsewhere
+  -- the allocation of its `Vector2D` and `Vector3D` objects, the red-black tree, the
+  SOM collections, its sends -- but which of these, if any, is a guess:
+  CD was not profiled.
+- **The object- and send-heavy programs are barely ahead of an
+  interpreter**: Richards 1.2×, DeltaBlue 1.4×, Storage 1.5×, Havlak,
+  Json and Sieve 1.7×. In the code these programs actually run, the cost
+  per send, per allocation and per collection operation is high relative
+  to CPython's specializing interpreter. How much of their time runs in
+  optimized code and how much in baseline code or the interpreter was
+  not measured here.
+- **Where ns-next is well ahead**: Permute 9.2×, Queens 6.6×, List 5.0×,
+  Bounce 4.8×, Towers 4.5× -- `SmallInteger` arithmetic, indexed access
+  and small sends, which the optimizing tier lowers to nodes and inlines
+  ("What inlining moved"). These are also Java's narrowest leads (4.3×
+  to 13.0×).
+- **Java's lead is largest where the other two box or allocate**: CD
+  162×, Json 38.5×, Havlak 35.8×, Sieve 35.3×, NBody 34.7×, Richards 34×.
+  That boxing and allocation are what separates them is the reading the
+  programs suggest, not a measured cause.
+
+What to look at next is in OPEN-WORK.md, "Unexplained measurements and
+unmeasured decisions": CD against CPython, the send- and object-heavy
+programs against CPython, and the comparison in containers.
 
 ### What the eight-byte value moved
 
@@ -7047,7 +7233,7 @@ in its own `--target-dir`; all six binaries distinct, none importing
 spec-conformant lookup moved", `ns-next bench <source> --iterations 30`,
 five rounds a sitting, the six binaries rotating by one position from round
 to round; every run printed its recorded answer. Are We Fast Yet: `ns-next
-bench benchmarks/are-we-fast-yet --iterations N -- <Name>`, N = 3 for CD,
+bench benchmarks/are-we-fast-yet/newspeak --iterations N -- <Name>`, N = 3 for CD,
 Havlak, Mandelbrot, NBody and DeltaBlue and 10 for the rest, three rounds
 rotating; every run printed `<Name>: ok`.
 
@@ -10760,7 +10946,7 @@ heap allocation the loop chased on every send, and `LoadLiteral` matched on
 the literal's kind every time it ran, a constant included.
 
 **What the code holds**, counted on 2026-10-02 over the sixteen benchmark
-programs and the harness under `benchmarks/are-we-fast-yet/`,
+programs and the harness under `benchmarks/are-we-fast-yet/newspeak/`,
 `PlatformFactory.ns` and `CollectionsFactory.ns` under the optimized
 lowering (`Kernel.ns` left out, since only `resolve_kernel` compiles it):
 1,642 bodies, 23,635 instructions; the highest register index is 45, so
@@ -15537,7 +15723,9 @@ lookup's remembered answers ("The code zone").
   image by its digest, every Ubuntu package from the archive's snapshot
   at one moment (`APT::Snapshot`), Rust 1.98.0 with both targets,
   rustup-init, `cargo-nextest` and QEMU by their versions, a headless
-  OpenJDK 25 for the benchmarks' Java counterparts. QEMU is built in a
+  OpenJDK 25 for the benchmarks' Java counterparts and the snapshot's
+  `python3`, named `python` by `python-is-python3`, for their Python
+  counterparts. QEMU is built in a
   stage of its own from the newest stable release's tarball, checked
   against its SHA-256, `qemu-aarch64` alone and static. **QEMU 8.1 or
   newer** is what the suite needs: the code zone writes through its

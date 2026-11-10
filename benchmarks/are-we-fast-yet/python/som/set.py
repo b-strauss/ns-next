@@ -1,0 +1,60 @@
+# Adapted for ns-next from Are We Fast Yet
+# (https://github.com/smarr/are-we-fast-yet, commit
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/set.py).
+# Changed for ns-next: names are written out; has_some and get_one answer
+# their result, as the Java and Newspeak sets do -- upstream drops it, so
+# contains always answered false and add kept every duplicate, which made
+# Havlak do more work than its other ports.
+
+# This code is based on the SOM class library.
+#
+# Copyright (c) 2001-2021 see AUTHORS.md file
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the 'Software'), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+from som.constants import INITIAL_SIZE
+from som.vector import Vector
+
+
+class Set:
+    def __init__(self, size=INITIAL_SIZE):
+        self._items = Vector(size)
+
+    def size(self):
+        return self._items.size()
+
+    def for_each(self, block):
+        self._items.for_each(block)
+
+    def has_some(self, block):
+        return self._items.has_some(block)
+
+    def get_one(self, block):
+        return self._items.get_one(block)
+
+    def add(self, element):
+        if not self.contains(element):
+            self._items.append(element)
+
+    def collect(self, block):
+        collection = Vector()
+        self.for_each(lambda each: collection.append(block(each)))
+        return collection
+
+    def contains(self, element):
+        return self.has_some(lambda each: each == element)

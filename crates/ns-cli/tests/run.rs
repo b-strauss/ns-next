@@ -524,7 +524,7 @@ fn a_program_without_main_is_an_uncaught_does_not_understand() {
 
 /// The Are We Fast Yet harness's project directory.
 fn harness_project() -> std::path::PathBuf {
-    repository_root().join("benchmarks/are-we-fast-yet")
+    repository_root().join("benchmarks/are-we-fast-yet/newspeak")
 }
 
 /// `ns-next bench` times the untimed harness on one benchmark.

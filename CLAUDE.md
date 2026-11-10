@@ -225,12 +225,16 @@ module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
 Code included, through the server's formatting), and a structure view of its
 own over the server's document symbols.
 
-`benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
-Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
-project, with their Java counterparts under `java/`, compiled with plain
-`javac`; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
-Both are held to the outcomes recorded beside them, the Java counterparts
-to the same record, by
+`benchmarks/are-we-fast-yet/newspeak/` — the fourteen Are We Fast Yet benchmarks,
+Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM
+collection library they share (`Som.ns`), one
+project, with their Java counterparts under
+`benchmarks/are-we-fast-yet/java/`, compiled with plain
+`javac`, and their Python counterparts under
+`benchmarks/are-we-fast-yet/python/`; `benchmarks/micro/` — the
+microbenchmarks `ns-next bench` times.
+Both are held to the outcomes recorded beside them, the Java and Python
+counterparts to the same record, by
 `crates/ns-cli/tests/run_benchmarks.rs`, in the nextest profile
 `benchmarks-verify` only, which verifies them and measures nothing
 (`docs/design/execution.md`, "The Are We Fast Yet benchmarks").
@@ -667,7 +671,7 @@ The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
 The gates need, beyond that, the rustup targets of `memory`
 (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`) and `release-checks`
 (`aarch64-pc-windows-msvc`, `aarch64-apple-darwin`), `cargo-show-asm` for
-`codegen` and a JDK for `benchmarks`. `linux` and `aarch64` need Docker
+`codegen` and a JDK and a `python` on `PATH` for `benchmarks`. `linux` and `aarch64` need Docker
 (Docker Desktop, or a Docker engine on x86_64); everything else they need,
 QEMU included, is the pinned image `xtask/docker/Dockerfile` describes,
 which the groups build themselves, so nothing is set up by hand.
@@ -697,11 +701,11 @@ every one runs on 18 threads.
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
-| `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
+| `benchmarks` | the benchmark programs verified at full size, and their Java and Python counterparts; needs a JDK (`JAVA_HOME` or `PATH`) and a `python` on `PATH`; profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the twelve stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
-| `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
+| `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java and Python counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK and Python), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
 | `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
@@ -760,7 +764,7 @@ before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
-(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`),
+(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/newspeak/`),
 and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
 
 ## Conventions

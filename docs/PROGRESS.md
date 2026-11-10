@@ -63,6 +63,7 @@ first.
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
+| Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
 
 ## Notes
 
@@ -3677,7 +3678,7 @@ Commits: `072a102` (the plan's) to the commit of this entry.
 
 Seven of the Are We Fast Yet benchmarks -- Sieve, Permute, Queens, Towers,
 Bounce, Storage and List -- are runnable programs in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
 the root of the project in that directory, which reaches each
@@ -3729,7 +3730,7 @@ and "The numeric tower".
 Commits: `5699ab0` (the plan's) to the commit of this entry.
 
 Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape, and Primordial Soup's own Richards, the Ton80 version, comes
 in beside them as `RichardsTon80`: eleven programs under the one harness.
 Mandelbrot runs at SOMns's verified 750 and NBody at Are We Fast Yet's
@@ -3801,7 +3802,7 @@ Commits: `192c6d0` (the plan's) to the commit of this entry.
 
 DeltaBlue, Havlak, CD and Json, the last four Are We Fast Yet benchmarks,
 join the eleven programs of stages 1 and 2 in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape, and Primordial Soup's own DeltaBlue comes in beside them as
 `DeltaBlueTon80`: sixteen programs under the one harness. A `String` is now
 its code points, one byte or four each, so `size` and `at:` are one access.
@@ -5237,7 +5238,7 @@ and which gate ran when stood in five places that had drifted apart.
   profile, as had the hints' oracle (`hints`); the suite went to 26 s.
 - **The benchmarks out of the goldens.** The microbenchmarks moved from
   `goldens/tool/bench/` to `benchmarks/micro/`, the Are We Fast Yet
-  verification to `benchmarks/are-we-fast-yet.toml`, and the three other
+  verification to `benchmarks/are-we-fast-yet/newspeak.toml`, and the three other
   `awfy` goldens, which tested the harness's argument handling, are gone. A
   runner, `crates/ns-cli/tests/run_benchmarks.rs`, holds every benchmark
   program to its outcome, each Are We Fast Yet benchmark on its own, and
@@ -5835,7 +5836,7 @@ Plan: [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md);
 `THIRD-PARTY-NOTICES.md`, "Are We Fast Yet"; `prior-art/PROVENANCE.md`.
 
 Decided with the user on 2026-10-22. Every program of
-`benchmarks/are-we-fast-yet/` has a Java counterpart under `java/` that
+`benchmarks/are-we-fast-yet/newspeak/` has a Java counterpart under `benchmarks/are-we-fast-yet/java/` that
 does the same work, so ns-next's scores can be put beside a JVM's under one
 protocol. Are We Fast Yet is a submodule at `prior-art/are-we-fast-yet`,
 pinned at `74306fec`; its Java versions of the fourteen benchmarks and of
@@ -5853,7 +5854,7 @@ Java counterpart.
 
 The `benchmarks` gate compiles the Java sources with `javac --release 21`
 once per content, from `JAVA_HOME` or `PATH`, and holds each Java
-benchmark to its line of `benchmarks/are-we-fast-yet.toml`
+benchmark to its line of `benchmarks/are-we-fast-yet/newspeak.toml`
 (`java::<Name>`), its timed score to the harness's shape
 (`java-timed::<Name>`), and both harnesses' flags to a score and to the
 usage error (`flags::{ns-next,java}::*`); the default profile needs no JDK.
@@ -7256,3 +7257,75 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Templates for
 "The float row stubs could share their tail", "What `Float` in machine
 code left" and "A NaN's payload after arithmetic on two NaNs". Road step
 9's fourth stage, inlined frame objects, is next.
+
+## Python counterparts of the Are We Fast Yet benchmarks, and ns-next against Java and CPython (2026-11-10)
+
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
+"The Python counterparts", "Against Java and CPython";
+`THIRD-PARTY-NOTICES.md`, "Are We Fast Yet".
+
+Decided with the user on 2026-11-09. Every program of
+`benchmarks/are-we-fast-yet/newspeak/` has a Python counterpart under
+`benchmarks/are-we-fast-yet/python/`, so ns-next's scores can be put
+beside CPython's under the protocol the Java counterparts follow.
+Thirteen benchmarks, the harness and the `som` collections are Are We
+Fast Yet's own Python versions, adapted as the Java ones were -- one
+`bench` at the port's size raising the port's `Error` text, names
+written out -- and `richards.py`, whose upstream header carries a
+CC BY-NC-SA note, is written after `Richards.ns` and its Java
+counterpart; `richardston80.py` and `deltablueton80.py` are translated
+from the `.ns` ports. The Newspeak benchmarks moved into
+`benchmarks/are-we-fast-yet/newspeak/`, beside `java/` and `python/`.
+
+An audit of the three ports, program by program, found where they did
+different work, and they were aligned: the Newspeak ports carry the SOM
+class library, `Som.ns`, adapted from Are We Fast Yet's SOMns `Core.ns`
+and method by method from the Java and Python `som` libraries, and no
+benchmark uses the platform's collections, as no Java or Python one
+uses its language's; Sieve and Queens fill their arrays in a loop in
+every port; the Python `Set` answers `has_some` and `get_one`, without
+which Havlak kept every duplicate; the Python Json parses an exponent,
+and the Java Json reads its characters, as the other ports do; the
+Python DeltaBlue divides with `//` and sorts with a comparator object;
+the Python Havlak walks successors with an index loop. The `benchmarks`
+gate holds every Python program to its line of
+`benchmarks/are-we-fast-yet/newspeak.toml` (`python::<Name>`), its timed
+score to the harness's shape, and its harness's flags and test hook as
+it holds Java's, running `python -E -S -B`; the gate image has
+`python3`, named `python`, for the `linux` group.
+
+Then the three were measured, as the baseline future optimization is
+measured against: one pinned release build of ns-next, Corretto 27 and
+CPython 3.15.2, `--timed --warm-up 2000 --measure 3000`, three rounds
+rotated, on the eight performance cores. ns-next is 19.7× behind Java
+and 2.2× ahead of CPython on the geometric mean; CD is slower on ns-next
+than on CPython (0.4 against 1.1 runs a second), and Richards (1.2×),
+DeltaBlue (1.4×) and Storage (1.5×) barely ahead of it, where Permute
+(9.2×), Queens (6.6×) and List (5.0×) are well ahead ("Against Java and
+CPython"). No golden's outcome changed.
+
+The end-of-batch groups passed on the final tree: `commit` (5,120
+tests, the corpus "parsed 211, failed 0"), `images` (1,090), `caches`
+(545), `benchmarks` and `linux` (on `28bcb3f4`, the last commit that
+changed more than Markdown), `release-checks` (4,916, and both lints),
+`codegen`, `stress` -- the suite under each of the twelve modes and
+without the JIT, 5,120 tests each, and `run-corpus` "ran 6, failed 0,
+skipped 205" plain and under each mode -- and `aarch64` (5,116 tests
+under QEMU).
+
+- `bf35292b`, `08377462` -- upstream's Python versions copied unchanged,
+  and the bytecode caches ignored.
+- `206f741a` -- the Python Richards, RichardsTon80 and DeltaBlueTon80.
+- `ea2348ed`, `06eaa8a6`, `26599846` -- the harness protocol, names
+  written out and CDx's notice, and the Python `Set`'s answers.
+- `e9fb2386` -- the Newspeak benchmarks moved into `newspeak/`.
+- `006627cc`, `234835df`, `7691dad0` -- the alignment: the Python Json
+  and DeltaBlue, the Java Json, the fills in a loop, the SOM class
+  library in the Newspeak ports, and its review's findings.
+- `28bcb3f4` -- the Python programs in the `benchmarks` gate and the
+  gate image.
+- This commit -- the measurement and the documents.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "CD runs slower
+on ns-next than on CPython", "The send- and object-heavy programs are
+barely ahead of CPython" and "A comparison in containers".

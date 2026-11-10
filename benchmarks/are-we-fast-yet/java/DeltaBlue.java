@@ -4,7 +4,7 @@
  * benchmarks/Java/src/DeltaBlue.java).
  * Changed for ns-next: innerBenchmarkLoop, benchmark and verifyResult are
  * bench, which runs chainTest and projectionTest once at the size of
- * benchmarks/are-we-fast-yet/DeltaBlue.ns, 12000; their checks, in
+ * benchmarks/are-we-fast-yet/newspeak/DeltaBlue.ns, 12000; their checks, in
  * deltablue/Planner.java, are the benchmark's own, as in that port; the class
  * is final. That port's other departures answer Primordial Soup's protocol
  * and have no counterpart here.

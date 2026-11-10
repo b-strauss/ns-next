@@ -84,9 +84,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 # libc6-dev-arm64-cross gives it the target's C runtime and gives QEMU the
 # target's dynamic loader and libraries under /usr/aarch64-linux-gnu
 # (`QEMU_LD_PREFIX`); openjdk-25-jdk-headless, the newest LTS the snapshot
-# has, compiles and runs the benchmarks' Java counterparts; rsync copies
-# the checkout into the working copy; git lists the tracked sources for
-# `source_formatting`.
+# has, compiles and runs the benchmarks' Java counterparts; python3 runs
+# their Python counterparts, and python-is-python3 names it `python`, the
+# name the trials start it by; rsync copies the checkout into the working
+# copy; git lists the tracked sources for `source_formatting`.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         curl \
@@ -95,6 +96,8 @@ RUN apt-get update \
         gcc-aarch64-linux-gnu \
         libc6-dev-arm64-cross \
         openjdk-25-jdk-headless \
+        python3 \
+        python-is-python3 \
         rsync \
         git \
     && rm -rf /var/lib/apt/lists/*

@@ -40,7 +40,7 @@ class TimeFactory usingVmMirror: mirror = Value (
   /// `platform time`: the namespace of the clock's classes, today only
   /// `Stopwatch`.
   ///
-  /// It holds only what `benchmarks/are-we-fast-yet/AreWeFastYet.ns`
+  /// It holds only what `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`
   /// measures with.
   private class Time = Value () (
     /// Hands out the module's stopwatch class: `Stopwatch new` answers a
@@ -56,7 +56,7 @@ class TimeFactory usingVmMirror: mirror = Value (
   /// reading 0, it runs from `start` on. An object, not a value: its
   /// reading changes.
   ///
-  /// It holds only what `benchmarks/are-we-fast-yet/AreWeFastYet.ns`
+  /// It holds only what `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`
   /// sends. It keeps its reading in slots, so it is an object, not a
   /// value. Its readings are nanoseconds since an origin taken once per
   /// process, not the operating system's per-boot monotonic clock, so a

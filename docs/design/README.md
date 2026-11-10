@@ -91,15 +91,18 @@ guarantee it gives up or the complexity it adds.
 
 Real programs to measure the runtime on, beside the microbenchmarks under
 `benchmarks/micro/`, live in `benchmarks/`: today
-`benchmarks/are-we-fast-yet/`, the fourteen Are We Fast Yet benchmarks,
-Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, with
-their Java counterparts under `java/`, which
+`benchmarks/are-we-fast-yet/newspeak/`, the fourteen Are We Fast Yet benchmarks,
+Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM
+collection library they share (`Som.ns`), with
+their Java and Python counterparts under `benchmarks/are-we-fast-yet/java/`
+and `benchmarks/are-we-fast-yet/python/`, which
 [execution.md](execution.md), "The Are We Fast Yet benchmarks", describes.
 Every benchmark program is held to the outcome recorded beside it --
-`benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet.toml` -- by
+`benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet/newspeak.toml` -- by
 `crates/ns-cli/tests/run_benchmarks.rs`, under both lowerings, and each Java
-counterpart to the same line of `benchmarks/are-we-fast-yet.toml`, in the
-nextest profile `benchmarks-verify` only, which needs a JDK: a benchmark is
+and Python counterpart to the same line of `benchmarks/are-we-fast-yet/newspeak.toml`,
+in the nextest profile `benchmarks-verify` only, which needs a JDK and a `python`
+on `PATH`: a benchmark is
 sized to be measured, not to run on every commit. The profile verifies; it
 measures nothing.
 
@@ -410,7 +413,7 @@ the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `.toml` holds the recorded answer and nothing else. A new Are
 We Fast Yet benchmark is added to the harness tuple, its project file and
-`benchmarks/are-we-fast-yet.toml`, because the harness names each benchmark
+`benchmarks/are-we-fast-yet/newspeak.toml`, because the harness names each benchmark
 when it is instantiated; `run_benchmarks` takes the list of benchmarks it
 runs one by one from that `.toml`.
 
@@ -468,7 +471,7 @@ is the repository's code: the checkout is mounted read-only and rsynced
 into a working copy in a named volume first, so uncommitted work is
 checked too: `linux` the suite for `x86_64-unknown-linux-gnu`, System V's
 convention and Linux's memory layer, and the benchmark programs with their
-Java counterparts, and `aarch64` the suite cross-compiled for
+Java and Python counterparts, and `aarch64` the suite cross-compiled for
 `aarch64-unknown-linux-gnu` and run through the image's own pinned
 `qemu-aarch64` as the target's runner, the only run of AArch64's machine
 code; what the host needs is `CLAUDE.md`'s, "Working in this repository",

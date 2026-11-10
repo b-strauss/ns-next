@@ -6,10 +6,12 @@
 /// runs once at 250 aircraft and checks its own result; the module
 /// RedBlackTree.ns, which SOMns loads beside CD.ns, became the nested class
 /// RedBlackTree, its helper classes and treeMinimum: members of CD beside
-/// it; only Primordial Soup's protocol is sent, so SOMns's Vector is List,
-/// its float division // is /, so an Integer receiver's i // 10.0 is
-/// frame asFloat / 10.0, there being no Integer>>/; ~= and <> are
-/// (a == b) not and (a = b) not; names are written out.
+/// it; Vector is the SOM library's the harness hands every benchmark
+/// (Som.ns), as the Java and Python ports use theirs; otherwise only
+/// Primordial Soup's protocol is sent, so SOMns's float division // is /,
+/// so an Integer receiver's i // 10.0 is frame asFloat / 10.0, there being
+/// no Integer>>/; ~= and <> are (a == b) not and (a = b) not; names are
+/// written out.
 ///
 /// SOMns's own header of both files:
 ///
@@ -39,9 +41,9 @@
 /// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 /// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 /// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-class CD usingPlatform: platform = (
+class CD usingPlatform: platform som: som = (
   |
-    private List = platform collections List.
+    private Vector = som Vector.
     private MinX = 0.0.
     private MinY = 0.0.
     private MaxX = 1000.0.
@@ -193,9 +195,9 @@ class CD usingPlatform: platform = (
         allReduced
         collisions
       |
-      motions:: List new.
+      motions:: Vector new.
       seen:: RedBlackTree new.
-      frame do: [:aircraft |
+      frame forEach: [:aircraft |
         |
           oldPosition
           newPosition
@@ -207,15 +209,15 @@ class CD usingPlatform: platform = (
           /// Treat newly introduced aircraft as if they were stationary
           oldPosition:: newPosition.
         ].
-        motions add: (Motion new: aircraft callsign old: oldPosition new: newPosition).
+        motions append: (Motion new: aircraft callsign old: oldPosition new: newPosition).
       ].
       /// Remove aircraft that are no longer present
-      toRemove:: List new.
-      state do: [:entry | (seen at: entry key) ifFalse: [toRemove add: entry key]].
-      toRemove do: [:callsign | state remove: callsign].
+      toRemove:: Vector new.
+      state do: [:entry | (seen at: entry key) ifFalse: [toRemove append: entry key]].
+      toRemove forEach: [:callsign | state remove: callsign].
       allReduced:: reduceCollisionSet: motions.
-      collisions:: List new.
-      allReduced do: [:reduced |
+      collisions:: Vector new.
+      allReduced forEach: [:reduced |
         1 to: reduced size do: [:first |
           |
             motionOne
@@ -229,7 +231,7 @@ class CD usingPlatform: platform = (
             motionTwo:: reduced at: second.
             collision:: motionOne findIntersection: motionTwo.
             collision notNil ifTrue: [
-              collisions add: (Collision aircraftA: motionOne callsign
+              collisions append: (Collision aircraftA: motionOne callsign
                   aircraftB: motionTwo callsign
                   position: collision).
             ].
@@ -320,10 +322,10 @@ class CD usingPlatform: platform = (
       |
       array:: voxelMap at: voxel.
       array isNil ifTrue: [
-        array:: List new.
+        array:: Vector new.
         voxelMap at: voxel put: array.
       ].
-      array add: motion.
+      array append: motion.
     )
 
     private recurse: voxelMap seen: seen voxel: nextVoxel motion: motion = (
@@ -358,9 +360,9 @@ class CD usingPlatform: platform = (
         result
       |
       voxelMap:: RedBlackTree new.
-      motions do: [:motion | draw: motion on: voxelMap].
-      result:: List new.
-      voxelMap do: [:entry | entry value size > 1 ifTrue: [result add: entry value]].
+      motions forEach: [:motion | draw: motion on: voxelMap].
+      result:: Vector new.
+      voxelMap do: [:entry | entry value size > 1 ifTrue: [result append: entry value]].
       ^result.
     )
 
@@ -516,21 +518,21 @@ class CD usingPlatform: platform = (
 
   private class Simulator new: aircraftCount = (
     |
-      private aircrafts = List new.
+      private aircrafts = Vector new.
     |
-    0 to: aircraftCount - 1 do: [:index | aircrafts add: (CallSign new: index)].
+    0 to: aircraftCount - 1 do: [:index | aircrafts append: (CallSign new: index)].
   ) (
     public simulate: time = (
       |
         frame
       |
-      frame:: List new.
+      frame:: Vector new.
       0 to: aircrafts size - 2 by: 2 do: [:index |
-        frame add: (Aircraft new: (aircrafts at: index + 1)
+        frame append: (Aircraft new: (aircrafts at: index + 1)
             position: (Vector3D coordinateX: time
                 coordinateY: (time cos * 2.0) + (index * 3.0)
                 coordinateZ: 10.0)).
-        frame add: (Aircraft new: (aircrafts at: index + 2)
+        frame append: (Aircraft new: (aircrafts at: index + 2)
             position: (Vector3D coordinateX: time
                 coordinateY: (time sin * 2.0) + (index * 3.0)
                 coordinateZ: 10.0)).

@@ -1076,7 +1076,8 @@ mod tests {
     }
 
     /// `linux` also verifies the benchmark programs, as the host's
-    /// `benchmarks` group does, its image having a JDK; `aarch64` does not.
+    /// `benchmarks` group does, its image having a JDK and Python; `aarch64`
+    /// does not.
     #[test]
     fn only_linux_runs_the_benchmark_programs() {
         let runs_benchmarks = |name: &str| {

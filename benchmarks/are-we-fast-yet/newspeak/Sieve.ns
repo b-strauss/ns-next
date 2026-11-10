@@ -1,9 +1,11 @@
 /// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
 /// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-/// core-lib/Benchmarks/Permute.ns), one of the Are We Fast Yet benchmarks.
+/// core-lib/Benchmarks/Sieve.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; its factory takes, besides the platform, the SOM collection
+/// library the harness hands every benchmark (Som.ns), which it does not
+/// use; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,38 +26,35 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Permute usingPlatform: platform = (
-  |
-    count.
-    values.
-  |
-) (
+class Sieve usingPlatform: platform som: som = () (
   public bench = (
-    count:: 0.
-    values:: Array new: 7.
-    permute: 6.
-    count = 8660 ifFalse: [Error signal: 'Permute: expected 8660, got ' , count printString].
-    ^count.
+    |
+      result
+    |
+    result:: sieve: (Array new: 5000) size: 5000.
+    result = 669 ifFalse: [Error signal: 'Sieve: expected 669, got ' , result printString].
+    ^result.
   )
 
-  permute: size = (
-    count:: count + 1.
-    size = 0 ifFalse: [
-      permute: size - 1.
-      size to: 1 by: -1 do: [:index |
-        swap: size with: index.
-        permute: size - 1.
-        swap: size with: index.
+  sieve: flags size: size = (
+    |
+      primeCount
+    |
+    primeCount:: 0.
+    1 to: size do: [:index | flags at: index put: true].
+    2 to: size do: [:candidate |
+      (flags at: candidate - 1) ifTrue: [
+        |
+          multiple
+        |
+        primeCount:: primeCount + 1.
+        multiple:: candidate + candidate.
+        [multiple <= size] whileTrue: [
+          flags at: multiple - 1 put: false.
+          multiple:: multiple + candidate.
+        ].
       ].
     ].
-  )
-
-  swap: first with: second = (
-    |
-      temp
-    |
-    temp:: values at: first.
-    values at: first put: (values at: second).
-    values at: second put: temp.
+    ^primeCount.
   )
 )

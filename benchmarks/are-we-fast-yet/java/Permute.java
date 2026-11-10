@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Permute.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Permute.ns; names are written out.
+ * benchmarks/are-we-fast-yet/newspeak/Permute.ns; names are written out.
  */
 /* This code is based on the SOM class library.
  *

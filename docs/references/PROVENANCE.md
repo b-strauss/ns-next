@@ -164,7 +164,7 @@ documents under `docs/design/` too and are covered by
 arithmetic adapted from the first two and the `Fraction` the third models
 (`core-library.md`, "Large integers"); `prior-art/somns/` as a
 point of comparison throughout and as the source of the Are We Fast Yet
-benchmarks in `benchmarks/are-we-fast-yet/` (`docs/design/execution.md`, "The
+benchmarks in `benchmarks/are-we-fast-yet/newspeak/` (`docs/design/execution.md`, "The
 Are We Fast Yet benchmarks"); `prior-art/newspeak-benchmarks/` as a suite to
 measure the JIT tiers against (`execution.md`, "Planned: JIT tiers"); and
 `prior-art/strongtalk/` for its inline and lookup caches, its memory

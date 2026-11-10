@@ -3,11 +3,11 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/cd/CollisionDetector.java).
  * Changed for ns-next: names are written out, as in
- * benchmarks/are-we-fast-yet/CD.ns; the two tests for no motion in isInVoxel,
+ * benchmarks/are-we-fast-yet/newspeak/CD.ns; the two tests for no motion in isInVoxel,
  * longer for the names, are each split over two lines. Upstream's Java file
  * omits the licence notice, but it derives from Purdue University's CDx, under
  * the BSD-3 notice below, copied from the header of
- * benchmarks/are-we-fast-yet/CD.ns, which upstream's JavaScript and SOM
+ * benchmarks/are-we-fast-yet/newspeak/CD.ns, which upstream's JavaScript and SOM
  * versions of CD carry as well.
  */
 /*

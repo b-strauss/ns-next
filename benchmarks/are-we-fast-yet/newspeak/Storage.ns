@@ -1,9 +1,11 @@
 /// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
 /// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-/// core-lib/Benchmarks/Sieve.ns), one of the Are We Fast Yet benchmarks.
+/// core-lib/Benchmarks/Storage.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; the generator is the one of the SOM library the harness hands
+/// every benchmark (Som.ns), as the Java and Python ports take som.Random,
+/// where SOMns's comes from its harness; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,35 +26,29 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Sieve usingPlatform: platform = () (
+class Storage usingPlatform: platform som: som = (
+  |
+    private Random = som Random.
+    count.
+  |
+) (
   public bench = (
-    |
-      result
-    |
-    result:: sieve: (Array new: 5000) size: 5000.
-    result = 669 ifFalse: [Error signal: 'Sieve: expected 669, got ' , result printString].
-    ^result.
+    count:: 0.
+    buildTreeDepth: 7 with: Random new.
+    count = 5461 ifFalse: [Error signal: 'Storage: expected 5461, got ' , count printString].
+    ^count.
   )
 
-  sieve: flags size: size = (
+  buildTreeDepth: depth with: random = (
     |
-      primeCount
+      array
     |
-    primeCount:: 0.
-    1 to: size do: [:index | flags at: index put: true].
-    2 to: size do: [:candidate |
-      (flags at: candidate - 1) ifTrue: [
-        |
-          multiple
-        |
-        primeCount:: primeCount + 1.
-        multiple:: candidate + candidate.
-        [multiple <= size] whileTrue: [
-          flags at: multiple - 1 put: false.
-          multiple:: multiple + candidate.
-        ].
-      ].
-    ].
-    ^primeCount.
+    count:: count + 1.
+    depth = 1 ifTrue: [^Array new: random next \\ 10 + 1].
+    array:: Array new: 4.
+    /// SOMns's `Array new:withAll:` evaluates its block once per element,
+    /// in index order.
+    1 to: 4 do: [:index | array at: index put: (buildTreeDepth: depth - 1 with: random)].
+    ^array.
   )
 )

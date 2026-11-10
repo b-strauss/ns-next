@@ -5,7 +5,7 @@
  * nested classes read: the strengths, descendingStrengths and the two
  * directions. They cannot stay in the top-level DeltaBlueTon80, as a package
  * cannot import from the unnamed package; they are static, since they never
- * change and are compared by identity only. The module's List is som.Vector,
+ * change and are compared by identity only. The module's Vector is som.Vector,
  * its planner a field of the top-level DeltaBlueTon80.
  */
 /* Copyright 2008, the Newspeak project authors.

@@ -45,7 +45,7 @@ pub fn benchmark_programs() -> Vec<PathBuf> {
         .into_iter()
         .filter(|path| path.extension().is_some_and(|extension| extension == "ns"))
         .collect();
-    programs.push(benchmarks.join("are-we-fast-yet"));
+    programs.push(benchmarks.join("are-we-fast-yet/newspeak"));
     programs.sort();
     for program in &programs {
         assert!(
@@ -61,7 +61,7 @@ pub fn benchmark_programs() -> Vec<PathBuf> {
 /// with, and the outcome it must give.
 pub struct BenchmarkRun {
     /// `benchmarks/micro/bench_loop`, or for one benchmark of the Are We
-    /// Fast Yet harness `benchmarks/are-we-fast-yet/Havlak`.
+    /// Fast Yet harness `benchmarks/are-we-fast-yet/newspeak/Havlak`.
     pub name: String,
     pub program: PathBuf,
     pub arguments: Vec<String>,

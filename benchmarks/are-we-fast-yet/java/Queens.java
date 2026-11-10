@@ -3,8 +3,9 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Queens.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Queens.ns; the class is final; names are
- * written out.
+ * benchmarks/are-we-fast-yet/newspeak/Queens.ns; the class is final; names are
+ * written out; the arrays are filled in a loop, as the Newspeak port does,
+ * because ns-next's core library has no native fill.
  */
 /* This code is based on the SOM class library.
  *
@@ -28,9 +29,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-import java.util.Arrays;
-
-
 public final class Queens extends Benchmark {
 
   private boolean[] freeMaxs;
@@ -50,10 +48,22 @@ public final class Queens extends Benchmark {
   }
 
   private boolean queens() {
-    freeRows  = new boolean[ 8]; Arrays.fill(freeRows, true);
-    freeMaxs  = new boolean[16]; Arrays.fill(freeMaxs, true);
-    freeMins  = new boolean[16]; Arrays.fill(freeMins, true);
-    queenRows = new     int[ 8]; Arrays.fill(queenRows, -1);
+    freeRows  = new boolean[ 8];
+    for (int index = 0; index < 8; index++) {
+      freeRows[index] = true;
+    }
+    freeMaxs  = new boolean[16];
+    for (int index = 0; index < 16; index++) {
+      freeMaxs[index] = true;
+    }
+    freeMins  = new boolean[16];
+    for (int index = 0; index < 16; index++) {
+      freeMins[index] = true;
+    }
+    queenRows = new     int[ 8];
+    for (int index = 0; index < 8; index++) {
+      queenRows[index] = -1;
+    }
 
     return placeQueen(0);
   }

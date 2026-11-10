@@ -3,8 +3,9 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Sieve.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Sieve.ns; the class is final; names are written
- * out.
+ * benchmarks/are-we-fast-yet/newspeak/Sieve.ns; the class is final; names are written
+ * out; the flags are filled in a loop, as the Newspeak port does, because
+ * ns-next's core library has no native fill.
  */
 /* This code is based on the SOM class library.
  *
@@ -28,15 +29,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-import java.util.Arrays;
-
-
 public final class Sieve extends Benchmark {
 
   @Override
   public void bench() {
     boolean[] flags = new boolean[5000];
-    Arrays.fill(flags, true);
+    for (int index = 0; index < flags.length; index++) {
+      flags[index] = true;
+    }
     int result = sieve(flags, 5000);
     if (result != 669) {
       throw new IllegalStateException("Sieve: expected 669, got " + result);

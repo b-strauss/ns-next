@@ -1,9 +1,11 @@
 /// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
 /// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-/// core-lib/Benchmarks/Storage.ns), one of the Are We Fast Yet benchmarks.
+/// core-lib/Benchmarks/Permute.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; its factory takes, besides the platform, the SOM collection
+/// library the harness hands every benchmark (Som.ns), which it does not
+/// use; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,40 +26,38 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Storage usingPlatform: platform = (
+class Permute usingPlatform: platform som: som = (
   |
     count.
+    values.
   |
 ) (
   public bench = (
     count:: 0.
-    buildTreeDepth: 7 with: (Random new: 74755).
-    count = 5461 ifFalse: [Error signal: 'Storage: expected 5461, got ' , count printString].
+    values:: Array new: 7.
+    permute: 6.
+    count = 8660 ifFalse: [Error signal: 'Permute: expected 8660, got ' , count printString].
     ^count.
   )
 
-  buildTreeDepth: depth with: random = (
-    |
-      array
-    |
+  permute: size = (
     count:: count + 1.
-    depth = 1 ifTrue: [^Array new: random next \\ 10 + 1].
-    array:: Array new: 4.
-    /// SOMns's `Array new:withAll:` evaluates its block once per element,
-    /// in index order.
-    1 to: 4 do: [:index | array at: index put: (buildTreeDepth: depth - 1 with: random)].
-    ^array.
+    size = 0 ifFalse: [
+      permute: size - 1.
+      size to: 1 by: -1 do: [:index |
+        swap: size with: index.
+        permute: size - 1.
+        swap: size with: index.
+      ].
+    ].
   )
 
-  /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
-  class Random new: initialSeed = (
+  swap: first with: second = (
     |
-      seed ::= initialSeed.
+      temp
     |
-  ) (
-    public next = (
-      seed:: seed * 1309 + 13849 bitAnd: 65535.
-      ^seed.
-    )
+    temp:: values at: first.
+    values at: first put: (values at: second).
+    values at: second put: temp.
   )
 )

@@ -351,8 +351,8 @@ interner's number: a symbol a program makes has none until its text is
 interned, and its hash must not change when the canonical table adopts it
 ([memory.md](memory.md), "Weak references"). The interner computes it
 once per text it interns and stores it beside the text, so an interned
-symbol's `hash` is one probe of the canonical table and one read, as the
-symbol-keyed lookups of DeltaBlue need it ([execution.md](execution.md));
+symbol's `hash` is one probe of the canonical table and one read, as a
+`Map` keyed by symbols needs it;
 only a program-made symbol whose text nothing has interned hashes its
 text, in place. Being the text's, it is the same in every process and
 survives a snapshot.
@@ -1015,7 +1015,7 @@ None has an accessor on `Object`, since a program reaches them through the
 platform it is given.
 
 **`platform time` is Primordial Soup's `Time` facet, narrowed to its
-`Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
+`Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`,
 which measures with them ("The on-demand rule" below). `Time` is a value
 like the other members, and its one method, `Stopwatch`, is a class
 accessor, so an image names that class by its declaration,
@@ -1149,7 +1149,7 @@ whole core API ("The kernel completed to Primordial Soup's core API"
 below; decided with the user on 2026-10-06). An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
-`Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
+`Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`.
 The kernel facet, `platform kernel`, is outside the rule (decided with the
 user on 2026-10-11): it only hands out classes of `Kernel.ns`, which the
 kernel completion governs, and reaches no host, so `KernelNamespace>>Collection`
@@ -4312,8 +4312,8 @@ needs a name for.
   1 and makes room at the front the same way, by sliding right by half the
   empty slots after the elements, or by copying into a larger `Array` with
   the new room in front. The primary factory is `new: capacity`, so a
-  program may write `List new: 15` as a superclass clause, as DeltaBlue's
-  `Plan` does; the class side's `new` is `new: 3`, and `withAll:` copies
+  program may write `List new: 15` as a superclass clause; the class
+  side's `new` is `new: 3`, and `withAll:` copies
   any collection.
   Its protocol: `size`, `isEmpty`, `at:`, `at:put:`, `first`, `last`,
   `add:`, `addLast:`, `addFirst:`, `addAll:` (a list given itself is read
@@ -4403,8 +4403,8 @@ needs a name for.
   tombstones together; so a key stored again after its removal comes last
   in the order, and a long run of removals and insertions never fills the
   table with tombstones. `removeAll` keeps the capacity, as the Are We
-  Fast Yet `Dictionary` does, because Havlak empties and refills its map
-  for every loop search. Adding or removing a key counts as a
+  Fast Yet `Dictionary` does, so that a map emptied and refilled over and
+  over, as a loop search's, allocates no new table. Adding or removing a key counts as a
   modification, and an iteration signals `ConcurrentModification` after
   the block that did it; storing under an existing key does not
   (`goldens/library/collection/a_map_changed_while_iterated_signals`). The
@@ -4590,7 +4590,10 @@ became the removed mark. The remainder is the read of a private slot per
 element, a getter send in this VM, and the modification check after every
 block, which is all of DeltaBlue's loss; it was accepted with the user on
 2026-10-10, and the ways out are [OPEN-WORK.md](../OPEN-WORK.md)'s "The
-collections' remaining cost on Havlak and DeltaBlue".
+collections' remaining cost". The Are We Fast Yet benchmarks have since
+taken the SOM collection library of their own
+(`benchmarks/are-we-fast-yet/newspeak/Som.ns`), as every Are We Fast Yet
+port does, so none of them measures these collections any longer.
 
 ### What this step did not break
 
@@ -5404,10 +5407,10 @@ a non-integral literal is a binary float" above), and there is no
   insertion-ordered hash tables** (decided with the user on 2026-10-01, built the
   same day; "The collections module (plan 2)" above;
   [plan](../superpowers/plans/2026-10-01-1855-ns-next-are-we-fast-yet-stage-3.md)):
-  the Are We Fast Yet ports use a `List` as the upstream benchmark uses its
-  `Vector`, a queue being `add:` and `removeFirst`, and `List` keeps a first
-  index so that `removeFirst` moves nothing, rather than a port being
-  rewritten around a slow operation; `Map` and `Set` keep their keys in
+  a queue is `add:` and `removeFirst`, as Are We Fast Yet's `Vector` is
+  one of `append:` and `removeFirst`, and `List` keeps a first index so
+  that `removeFirst` moves nothing, rather than a program being rewritten
+  around a slow operation; `Map` and `Set` keep their keys in
   insertion order and rebuild their table from them, in a `lazy` slot; the
   representation of all three is private, but for `List`'s `size_` and
   the three hooks through which `IdentityMap` changes `Map`'s comparison.

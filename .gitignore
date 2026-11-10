@@ -9,3 +9,6 @@ Cargo.lock.orig
 /.temp
 /crates/ns-runtime/core-library/shipped-code.bin
 /crates/ns-runtime/core-library/shipped-code.bin.tmp
+
+# Python bytecode the benchmark harness leaves beside its sources.
+__pycache__/

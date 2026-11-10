@@ -4,7 +4,7 @@
  * benchmarks/Java/src/havlak/LoopTesterApp.java).
  * Changed for ns-next: names are written out, main's parameters and
  * constructControlFlowGraph's loop counters taking the names of
- * benchmarks/are-we-fast-yet/Havlak.ns (dummyLoopCount, parallelLoops,
+ * benchmarks/are-we-fast-yet/newspeak/Havlak.ns (dummyLoopCount, parallelLoops,
  * nestedLoops, baseLoops).
  */
 // Copyright 2011 Google Inc.

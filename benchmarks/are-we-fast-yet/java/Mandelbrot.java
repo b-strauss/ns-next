@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/Mandelbrot.java).
  * Changed for ns-next: innerBenchmarkLoop, benchmark and verifyResult are
- * bench, which runs once at benchmarks/are-we-fast-yet/Mandelbrot.ns's size,
+ * bench, which runs once at benchmarks/are-we-fast-yet/newspeak/Mandelbrot.ns's size,
  * 750, and checks its result, 50, with that port's message; the checks for
  * upstream's other sizes, 500 and 1, are dropped; the class is public; names
  * are written out.

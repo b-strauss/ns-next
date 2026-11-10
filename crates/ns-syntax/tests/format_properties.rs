@@ -212,7 +212,7 @@ fn a_comment_added_at_a_line_end_formats_to_a_fixed_point() {
     let sources = [
         "goldens/library/number/fraction/a_fraction_is_made_in_normal_form.ns",
         "goldens/language/syntax/line_comment.ns",
-        "benchmarks/are-we-fast-yet/Richards.ns",
+        "benchmarks/are-we-fast-yet/newspeak/Richards.ns",
     ];
     let mut variants = 0;
     for name in sources {

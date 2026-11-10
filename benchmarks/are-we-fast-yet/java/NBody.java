@@ -2,7 +2,7 @@
  * (https://github.com/smarr/are-we-fast-yet, commit
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/NBody.java).
  * Changed for ns-next: innerBenchmarkLoop, benchmark and verifyResult are
- * bench, which runs once at benchmarks/are-we-fast-yet/NBody.ns's size,
+ * bench, which runs once at benchmarks/are-we-fast-yet/newspeak/NBody.ns's size,
  * 250000 steps, and checks its energy, -0.1690859889909308, with that port's
  * message; the check for upstream's other size, 1, is dropped; names are
  * written out. Upstream's file carries no licence notice; its comment

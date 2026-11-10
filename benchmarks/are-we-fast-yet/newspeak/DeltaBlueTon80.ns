@@ -6,8 +6,13 @@
 /// Yet DeltaBlue, which is DeltaBlue.ns beside it. Changed for ns-next: the
 /// module is named DeltaBlueTon80 so that both sit in one harness; bench
 /// signals an Error rather than an Exception and answers true once its
-/// own checks pass, where Primordial Soup's answers the module; names are
-/// written out.
+/// own checks pass, where Primordial Soup's answers the module; its lists
+/// are Vectors of the SOM collection library the harness hands every
+/// benchmark (Som.ns), as in the other Are We Fast Yet ports and in the
+/// Java and Python translations of this one, where Primordial Soup's are
+/// Lists: add: is append:, do: is forEach:, and remove:ifAbsent: with an
+/// empty block is remove:, which copies the other constraints into new
+/// storage; names are written out.
 ///
 /// Copyright 2008, the Newspeak project authors.
 ///
@@ -15,9 +20,9 @@
 /// may not use this file except in compliance with the License. You may
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
-class DeltaBlueTon80 usingPlatform: platform = (
+class DeltaBlueTon80 usingPlatform: platform som: som = (
   |
-    private List = platform collections List.
+    private Vector = som Vector.
     private required = Strength name: 'required' value: 0.
     private strongPreferred = Strength name: 'strongPreferred' value: 1.
     private preferred = Strength name: 'preferred' value: 2.
@@ -48,16 +53,16 @@ class DeltaBlueTon80 usingPlatform: platform = (
   /// A Plan is an ordered list of constraints to be executed in sequence to resatisfy all currently satisfiable constraints in the face of one or more changing inputs.
   class Plan = (
     |
-      private constraints = List new.
+      private constraints = Vector new.
     |
   ) (
     public addConstraint: constraint <Constraint> = (
-      constraints add: constraint.
+      constraints append: constraint.
     )
 
     /// Execute my constraints in order.
     public execute = (
-      constraints do: [:constraint | constraint execute].
+      constraints forEach: [:constraint | constraint execute].
     )
   )
 
@@ -415,7 +420,7 @@ class DeltaBlueTon80 usingPlatform: platform = (
     class Variable name: variableName initialValue: initialValue = (
       |
         public value <Integer> ::= initialValue.
-        public constraints <List[Constraint]> = List new: 2.
+        public constraints <Vector[Constraint]> = Vector new: 2.
         public determinedBy <Constraint>.
         public mark <Integer> ::= 0.
         public walkStrength <Strength> ::= weakest.
@@ -425,23 +430,23 @@ class DeltaBlueTon80 usingPlatform: platform = (
     ) (
       /// Add the given constraint to the set of all constraints that refer to me.
       public addConstraint: constraint <Constraint> = (
-        constraints add: constraint.
+        constraints append: constraint.
       )
 
       /// Remove all traces of the given constraint from this variable.
       public removeConstraint: constraint <Constraint> = (
-        constraints remove: constraint ifAbsent: [].
+        constraints remove: constraint.
         determinedBy = constraint ifTrue: [determinedBy: nil].
       )
     )
 
-    public addConstraintsConsuming: variable <Variable> to: list <List[Constraints]> = (
+    public addConstraintsConsuming: variable <Variable> to: list <Vector[Constraints]> = (
       |
         determining <Constraint> = variable determinedBy.
       |
-      variable constraints do: [:constraint |
+      variable constraints forEach: [:constraint |
         ((constraint = determining) not and: [constraint isSatisfied]) ifTrue: [
-          list add: constraint.
+          list append: constraint.
         ].
       ].
     )
@@ -450,9 +455,9 @@ class DeltaBlueTon80 usingPlatform: platform = (
     public addPropagate: constraint <Constraint> mark: mark <Integer> ^<Boolean> = (
       /// Details: Cycles are detected when a marked variable is encountered downstream of the given constraint. The sender is assumed to have marked the inputs of the given constraint with the given mark. Thus, encountering a marked node downstream of the output constraint means that there is a path from the constraint's output to one of its inputs.
       |
-        todo <List[Constraint]> = List new.
+        todo <Vector[Constraint]> = Vector new.
       |
-      todo add: constraint.
+      todo append: constraint.
       [todo isEmpty] whileFalse: [
         |
           current <Constraint> = todo removeLast.
@@ -474,7 +479,7 @@ class DeltaBlueTon80 usingPlatform: platform = (
         first <Variable>
         last <Variable>
         editConstraint <Constraint>
-        editConstraints <List[Constraint]>
+        editConstraints <Vector[Constraint]>
         plan <Plan>
       |
       1 to: count do: [:index |
@@ -493,8 +498,8 @@ class DeltaBlueTon80 usingPlatform: platform = (
       ].
       StayConstraint variable: last strength: strongDefault.
       editConstraint:: EditConstraint variable: first strength: preferred.
-      editConstraints:: List new.
-      editConstraints add: editConstraint.
+      editConstraints:: Vector new.
+      editConstraints append: editConstraint.
       plan:: extractPlanFromConstraints: editConstraints.
       1 to: count do: [:index |
         first value: index.
@@ -505,12 +510,12 @@ class DeltaBlueTon80 usingPlatform: platform = (
     )
 
     /// Extract a plan for resatisfaction starting from the outputs of the given constraints, usually a set of input constraints.
-    public extractPlanFromConstraints: constraints <List[Constraint]> ^<Plan> = (
+    public extractPlanFromConstraints: constraints <Vector[Constraint]> ^<Plan> = (
       |
-        sources <List[Constraint]> = List new.
+        sources <Vector[Constraint]> = Vector new.
       |
-      constraints do: [:constraint |
-        (constraint isInput and: [constraint isSatisfied]) ifTrue: [sources add: constraint].
+      constraints forEach: [:constraint |
+        (constraint isInput and: [constraint isSatisfied]) ifTrue: [sources append: constraint].
       ].
       ^makePlan: sources.
     )
@@ -529,24 +534,24 @@ class DeltaBlueTon80 usingPlatform: platform = (
       /// Details: Retracting the given constraint may allow some currently unsatisfiable downstream constraint to be satisfied. We therefore collect a list of unsatisfied downstream constraints and attempt to satisfy each one in turn. This list is traversed by constraint strength, strongest first, as a heuristic for avoiding unnecessarily adding and then overriding weak constraints. Assume: the given constraint is satisfied.
       |
         outputVariable <Variable>
-        unsatisfied <List[Constraint]>
+        unsatisfied <Vector[Constraint]>
       |
       outputVariable:: constraint output.
       constraint markUnsatisfied.
       constraint removeFromGraph.
       unsatisfied:: removePropagateFrom: outputVariable.
       descendingStrengths do: [:strength |
-        unsatisfied do: [:each | each strength = strength ifTrue: [incrementalAdd: each]].
+        unsatisfied forEach: [:each | each strength = strength ifTrue: [incrementalAdd: each]].
       ].
     )
 
     /// Extract a plan for resatisfaction starting from the given source constraints, usually a set of input constraints. This method assumes that stay optimization is desired; the plan will contain only constraints whose output variables are not stay. Constraints that do no computation, such as stay and edit constraints, are not included in the plan.
-    public makePlan: sources <List[Constraint]> ^<Plan> = (
+    public makePlan: sources <Vector[Constraint]> ^<Plan> = (
       /// Details: The outputs of a constraint are marked when it is added to the plan under construction. A constraint may be appended to the plan when all its input variables are known. A variable is known if either a) the variable is marked (indicating that has been computed by a constraint appearing earlier in the plan), b) the variable is 'stay' (i.e. it is a constant at plan execution time), or c) the variable is not determined by any constraint. The last provision is for past states of history variables, which are not stay but which are also not computed by any constraint. Assume: sources are all satisfied.
       |
         mark <Integer> = newMark.
         plan <Plan> = Plan new.
-        todo <List[Constraint]> = sources.
+        todo <Vector[Constraint]> = sources.
       |
       [todo isEmpty] whileFalse: [
         |
@@ -575,15 +580,15 @@ class DeltaBlueTon80 usingPlatform: platform = (
         offset <Variable>
         source <Variable>
         destination <Variable>
-        destinations <List[Variable]>
+        destinations <Vector[Variable]>
       |
       scale:: Variable name: 'scale' initialValue: 10.
       offset:: Variable name: 'offset' initialValue: 1000.
-      destinations:: List new.
+      destinations:: Vector new.
       0 to: count - 1 do: [:index |
         source:: Variable name: 'src' , index printString initialValue: index.
         destination:: Variable name: 'dst' , index printString initialValue: index.
-        destinations add: destination.
+        destinations append: destination.
         StayConstraint variable: source strength: normal.
         ScaleConstraint source: source
             scale: scale
@@ -612,7 +617,7 @@ class DeltaBlueTon80 usingPlatform: platform = (
     /// The given variable has changed. Propagate new values downstream.
     public propagateFrom: variable <Variable> = (
       |
-        todo <List[Constraint]> = List new.
+        todo <Vector[Constraint]> = Vector new.
       |
       addConstraintsConsuming: variable to: todo.
       [todo isEmpty] whileFalse: [
@@ -625,31 +630,31 @@ class DeltaBlueTon80 usingPlatform: platform = (
     )
 
     /// Update the walkabout strengths and stay flags of all variables downstream of the given constraint. Answer a collection of unsatisfied constraints sorted in order of decreasing strength.
-    public removePropagateFrom: outputVariable <Variable> ^<List[Constraint]> = (
+    public removePropagateFrom: outputVariable <Variable> ^<Vector[Constraint]> = (
       |
-        unsatisfied <List[Constraint]>
-        todo <List[Variable]>
+        unsatisfied <Vector[Constraint]>
+        todo <Vector[Variable]>
       |
       outputVariable determinedBy: nil.
       outputVariable walkStrength: weakest.
       outputVariable stay: true.
-      unsatisfied:: List new.
-      todo:: List new.
-      todo add: outputVariable.
+      unsatisfied:: Vector new.
+      todo:: Vector new.
+      todo append: outputVariable.
       [todo isEmpty] whileFalse: [
         |
           variable <Variable>
           determining <Constraint>
         |
         variable:: todo removeLast.
-        variable constraints do: [:constraint |
-          constraint isSatisfied ifFalse: [unsatisfied add: constraint].
+        variable constraints forEach: [:constraint |
+          constraint isSatisfied ifFalse: [unsatisfied append: constraint].
         ].
         determining:: variable determinedBy.
-        variable constraints do: [:next |
+        variable constraints forEach: [:next |
           ((next = determining) not and: [next isSatisfied]) ifTrue: [
             next recalculate.
-            todo add: next output.
+            todo append: next output.
           ].
         ].
       ].
@@ -659,12 +664,12 @@ class DeltaBlueTon80 usingPlatform: platform = (
     public setValueOf: variable <Variable> to: newValue = (
       |
         editConstraint <Constraint>
-        editConstraints <List[Constraint]>
+        editConstraints <Vector[Constraint]>
         plan <Plan>
       |
       editConstraint:: EditConstraint variable: variable strength: preferred.
-      editConstraints:: List new.
-      editConstraints add: editConstraint.
+      editConstraints:: Vector new.
+      editConstraints append: editConstraint.
       plan:: extractPlanFromConstraints: editConstraints.
       10 timesRepeat: [
         variable value: newValue.

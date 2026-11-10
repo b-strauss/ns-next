@@ -3,7 +3,9 @@
 /// core-lib/Benchmarks/NBody.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; its factory takes, besides the platform, the SOM collection
+/// library the harness hands every benchmark (Som.ns), which it does not
+/// use; names are written out.
 ///
 /// SOMns's own header of the file:
 ///
@@ -34,7 +36,7 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class NBody usingPlatform: platform = () (
+class NBody usingPlatform: platform som: som = () (
   public bench = (
     |
       system
