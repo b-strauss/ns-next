@@ -20,8 +20,27 @@
 
 use super::Interpreter;
 
+/// What the run loop goes on with after its safepoint
+/// (`Interpreter::safepoint`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SafepointOutcome {
+    /// The frame the stretch left, as it left it.
+    Unchanged,
+    /// The suspend stress mode rebuilt the activation stack above the
+    /// run's floor: the running activation is a different stack frame,
+    /// whose state the loop reads again.
+    Rebuilt,
+    /// The debugger terminated the run, which the loop ends through the
+    /// unwinder from the top activation (`debugger::termination`).
+    Terminate,
+}
+
 impl Interpreter {
-    /// The run loop's safepoint, when the heap has asked for one. In a debug
+    /// The run loop's safepoint, when the heap has asked for one. An
+    /// attached debugger is served first (`serve_debugger`), before
+    /// anything below can leave early with a collection still requested
+    /// and a pause would wait for a later safepoint; a termination it
+    /// receives ends the safepoint there. In a debug
     /// build, the move stress mode moves everything when its schedule says
     /// one is due, the cache stress mode invalidates every inline cache on
     /// every safepoint (`docs/design/dispatch.md`, "Invalidation"), and the
@@ -59,14 +78,19 @@ impl Interpreter {
     /// and delete it, and the flag's load and branch with it, and the
     /// release binary that is measured would carry no poll at all.
     ///
-    /// Answers whether the suspend stress mode rebuilt the activation stack
-    /// above `floor`, the floor of the run `vm::run` is in: every
-    /// activation there suspended into its frame and the top one resumed,
-    /// so that the running activation is a different stack frame and the
-    /// loop must read its state again. Always `false` in a release build.
+    /// Answers `SafepointOutcome::Rebuilt` when the suspend stress mode
+    /// rebuilt the activation stack above `floor`, the floor of the run
+    /// `vm::run` is in: every activation there suspended into its frame
+    /// and the top one resumed, so that the running activation is a
+    /// different stack frame and the loop must read its state again --
+    /// never in a release build -- and `SafepointOutcome::Terminate` when
+    /// the debugger terminated the run.
     #[cold]
     #[inline(never)]
-    pub(crate) fn safepoint(&mut self, floor: usize) -> bool {
+    pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        if self.serve_debugger() == crate::debugger::Served::Terminate {
+            return SafepointOutcome::Terminate;
+        }
         #[cfg(not(debug_assertions))]
         let _ = floor;
         #[cfg(debug_assertions)]
@@ -195,7 +219,7 @@ impl Interpreter {
             || self.world.scavenge_requested()
             || self.world.code_zone_compaction_requested()
         {
-            return rebuilt;
+            return rebuilt.into();
         }
         // The request served, a stress mode holds it again, as its own.
         // The hold is a bit beside the VM's request, so the request is
@@ -206,7 +230,18 @@ impl Interpreter {
         if stressed {
             self.world.set_safepoint_requested(true);
         }
-        rebuilt
+        rebuilt.into()
+    }
+}
+
+impl From<bool> for SafepointOutcome {
+    /// Whether the suspend stress mode rebuilt the stack.
+    fn from(rebuilt: bool) -> SafepointOutcome {
+        if rebuilt {
+            SafepointOutcome::Rebuilt
+        } else {
+            SafepointOutcome::Unchanged
+        }
     }
 }
 

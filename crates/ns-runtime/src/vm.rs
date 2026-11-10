@@ -28,6 +28,7 @@ use crate::interpreter::locals::{
     receiver_keeps_entered_level, store_instance_field, store_vector, write_local,
     write_outer_local,
 };
+use crate::interpreter::safepoint::SafepointOutcome;
 use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Sent, Signal, Step,
@@ -249,29 +250,61 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
         match leave {
             leave @ (Leave::Safepoint | Leave::SafepointAtLoopHead) => {
                 let at_loop_head = matches!(leave, Leave::SafepointAtLoopHead);
-                // The suspend stress mode put a different frame on top --
-                // the running activation, suspended and resumed -- whose
-                // state the stretch wrote back before it left; it goes on
-                // interpreted, as a frame resumed does.
-                if interpreter.safepoint(floor) {
-                    frame = interpreter.enter(|mutator| {
-                        let top = mutator
-                            .heap
-                            .top_activation()
-                            .expect("internal: the safepoint resumed the running activation");
-                        FrameRegisters::of(
-                            mutator,
-                            top,
-                            mutator.heap.activation_program_counter(top),
-                        )
-                    });
-                } else {
-                    arrival = interpreter
-                        .enter(|mutator| after_safepoint(mutator, &mut frame, at_loop_head));
+                match take_safepoint(interpreter, &mut frame, floor, at_loop_head) {
+                    AfterSafepoint::Run(next) => arrival = next,
+                    AfterSafepoint::Exit(result) => return result,
                 }
             }
             Leave::BackEdge => arrival = Some(Arrival::BackEdge),
             Leave::Exit(result) => return result,
+        }
+    }
+}
+
+/// What `run` goes on with after `take_safepoint`.
+enum AfterSafepoint {
+    /// The frame `take_safepoint` left in `frame`, come into as `Run`
+    /// says (`after_safepoint`).
+    Run(Option<Arrival>),
+    /// The debugger's termination popped the run's floor: its result.
+    Exit(HostResult),
+}
+
+/// The run loop's safepoint (`Interpreter::safepoint`) and what the loop
+/// goes on with after it, out of line: only a safepoint pays for it, and
+/// the run loop, whose size is held to a budget (`cargo xtask gates
+/// codegen`), keeps one call.
+#[cold]
+#[inline(never)]
+fn take_safepoint(
+    interpreter: &mut Interpreter,
+    frame: &mut FrameRegisters,
+    floor: usize,
+    at_loop_head: bool,
+) -> AfterSafepoint {
+    match interpreter.safepoint(floor) {
+        // The suspend stress mode put a different frame on top -- the
+        // running activation, suspended and resumed -- whose state the
+        // stretch wrote back before it left; it goes on interpreted, as a
+        // frame resumed does.
+        SafepointOutcome::Rebuilt => {
+            *frame = interpreter.enter(|mutator| {
+                let top = mutator
+                    .heap
+                    .top_activation()
+                    .expect("internal: the safepoint resumed the running activation");
+                FrameRegisters::of(mutator, top, mutator.heap.activation_program_counter(top))
+            });
+            AfterSafepoint::Run(None)
+        }
+        SafepointOutcome::Unchanged => AfterSafepoint::Run(
+            interpreter.enter(|mutator| after_safepoint(mutator, frame, at_loop_head)),
+        ),
+        SafepointOutcome::Terminate => {
+            match interpreter.enter(|mutator| terminate_at_safepoint(mutator, frame, floor)) {
+                Some(result) => AfterSafepoint::Exit(result),
+                None => AfterSafepoint::Run(None),
+            }
         }
     }
 }
@@ -321,6 +354,50 @@ fn after_safepoint(
         mutator.jit.note_safepoint_resumption();
         Arrival::BackEdge
     })
+}
+
+/// The debugger terminated the run at the safepoint the stretch left
+/// `frame` for: the termination is raised in the top activation and
+/// handed to the one unwinder, as a leaf's termination is, so that every
+/// pending `ensure:` block runs on the way to the floor. Answers the run's
+/// result once the unwind popped the floor, or `None` with `frame` the
+/// block the unwind runs next, which the loop goes on with, interpreted.
+#[cold]
+#[inline(never)]
+fn terminate_at_safepoint(
+    mutator: &mut Mutator<'_>,
+    frame: &mut FrameRegisters,
+    floor: usize,
+) -> Option<HostResult> {
+    let mut handoff = Handoff {
+        activation: frame.activation,
+        code: None,
+        program_counter: frame.program_counter,
+        feedback_base: frame.feedback_base,
+        exit: None,
+        resume_in_machine_code: false,
+    };
+    let signal = crate::debugger::termination(mutator);
+    match unwind(mutator, signal, floor, &mut handoff) {
+        Transfer::Exited => Some(
+            handoff
+                .exit
+                .take()
+                .expect("internal: an exit carries its result"),
+        ),
+        Transfer::Switched => {
+            // A frame the unwind returned to that stopped in machine code
+            // goes on interpreted, as one a safepoint takes does.
+            if handoff.resume_in_machine_code {
+                mutator.heap.clear_compiled(handoff.activation);
+            }
+            *frame = FrameRegisters::of(mutator, handoff.activation, handoff.program_counter);
+            None
+        }
+        Transfer::Next | Transfer::Stopped | Transfer::StoppedAtSafepoint => {
+            unreachable!("internal: an unwind switches frames or exits")
+        }
+    }
 }
 
 /// Instructions of the running frame and every frame it switches to, inside

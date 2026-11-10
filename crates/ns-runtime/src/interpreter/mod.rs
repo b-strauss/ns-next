@@ -648,6 +648,10 @@ pub struct Interpreter {
     /// (`cache_invalidations`). Debug builds only.
     #[cfg(debug_assertions)]
     cache_invalidations: usize,
+    /// The attached debugger, which the run loop's safepoint serves
+    /// (`attach_debugger`, `serve_debugger`); `None` until a host attaches
+    /// one, and again once its remote is gone.
+    pub(crate) debugger: Option<crate::debugger::Debugger>,
 }
 
 impl Interpreter {
@@ -704,6 +708,7 @@ impl Interpreter {
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
+            debugger: None,
         };
         #[cfg(debug_assertions)]
         {

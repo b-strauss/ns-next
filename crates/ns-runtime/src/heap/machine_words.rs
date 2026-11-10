@@ -318,13 +318,6 @@ impl MachineWords {
     /// agent stores 0 into the depth limit word this way after its
     /// `fetch_or` of a request bit, so that the VM's fenced re-read of the
     /// request word orders against both (`Heap::synchronize_depth_limit`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no thread arms the poll from outside the mutator yet"
-        )
-    )]
     pub(crate) fn set_sequentially_consistent(&self, word: MachineWord, value: u64) {
         self.words[word.index()].store(value, Ordering::SeqCst);
     }

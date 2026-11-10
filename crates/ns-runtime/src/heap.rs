@@ -9777,6 +9777,14 @@ impl<'gc> Heap<'gc> {
         self.machine_words.get(MachineWord::SafepointRequested) & LOWERS_DEPTH_LIMIT != 0
     }
 
+    /// The debugger's bits of the request word that are set: the pause
+    /// the agent asked for and the commands it queued
+    /// (`Interpreter::serve_debugger`).
+    pub(crate) fn debugger_bits(&self) -> u64 {
+        self.machine_words.get(MachineWord::SafepointRequested)
+            & (DEBUGGER_PAUSE | DEBUGGER_COMMANDS)
+    }
+
     /// The VM's request served, and a stress mode's hold with it
     /// (`Interpreter::safepoint`). The debugger's bits stay: only
     /// `clear_debugger_bits` clears them, once the VM served them.
@@ -9793,10 +9801,6 @@ impl<'gc> Heap<'gc> {
     /// drained, so that a command queued meanwhile keeps its bit for the
     /// next safepoint (`docs/design/debugger.md`, "Commands while the
     /// program runs").
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no safepoint serves the debugger yet")
-    )]
     pub(crate) fn clear_debugger_bits(&mut self, bits: u64) {
         debug_assert_eq!(
             bits & !(DEBUGGER_PAUSE | DEBUGGER_COMMANDS),

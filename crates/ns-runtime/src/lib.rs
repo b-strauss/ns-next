@@ -24,6 +24,7 @@ pub mod builtins;
 pub mod bytecode;
 pub mod code_points;
 pub mod compiler;
+pub mod debugger;
 pub mod dispatch;
 pub mod hash;
 pub mod heap;
@@ -42,6 +43,11 @@ pub mod vm;
 
 pub use arbitrary_integer::ArbitraryInteger;
 pub use compiler::Lowering;
+// The debugger's `FrameKind` stays in `debugger`: the crate root's is the
+// activation kind of `types`.
+pub use debugger::{
+    Command, DebugRemote, Event, FrameDescription, StopReason, ValueDescription, ValueId, Variable,
+};
 
 /// Test helper: turns one test body into a module holding an `optimized` and
 /// a `reference` test, each binding `lowering` to that `Lowering` variant and
