@@ -14,8 +14,8 @@
 > the metadata (stop locations and variable tables, stage 2, next),
 > breakpoints and stepping, the DAP agent and the plugin, evaluation, hot
 > swap and edit-and-continue ("Planned: the order of building it"). The
-> design rests on fourteen decisions made with the user, nine on
-> 2026-11-10 and stage 2's five on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
+> design rests on fifteen decisions made with the user, nine on
+> 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
 > and leaves the questions in "Open questions" to be decided. It builds on
 > groundwork that exists: reified activations and the activation stack,
 > suspension into frames, the statement→program-counter table, stable
@@ -746,7 +746,7 @@ poll's cost inside machine code beyond what these programs exercise.
 ## The decisions
 
 Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
-to 14, stage 2's, on 2026-11-12, one at a time, each after the
+to 15, stage 2's, on 2026-11-12, one at a time, each after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
@@ -1134,6 +1134,21 @@ range and not outside it; there is no "not yet assigned".
 A stress mode of its own that asks for every pushed body's metadata is
 rejected: it covers only the bodies that run, which the oracle covers
 without a stress run.
+
+### 15. A send's selector has spans in the syntax tree
+
+The syntax tree keeps the span of every selector token: a `MessageSend`
+carries `selector_spans`, the one token of a unary or binary selector or
+each keyword of a keyword selector, which the parser fills as it reads
+them, so that a send's entry in the metadata names its receiver's span
+and its selector's (decision 4) without either lowering knowing the
+grammar. The tree drops only layout ([frontend.md](frontend.md), "AST"),
+and a keyword's place is not layout. A unary send to an implicit
+receiver, which the tree keeps as an `Identifier`, and a setter
+assignment take the identifier's span. Lexing the message's text again
+when the metadata is collected is rejected, as a second copy of which
+tokens make the selector; a span of the whole message instead of the
+selector's is rejected, since smart step into marks the selector.
 
 ## Planned: the mechanisms
 

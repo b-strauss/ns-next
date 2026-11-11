@@ -27,11 +27,13 @@ kept per body only when equal ([debugger.md](design/debugger.md),
 decisions 4 and 5, "Compiling the metadata again", "Planned: the order
 of building it"). Stage 1, the debugging API at the safepoint, is built
 (2026-11-11; "The debugging API at the safepoint"). Stage 2's questions
-were decided with the user on 2026-11-12 (decisions 10 to 14: a block's
+were decided with the user on 2026-11-12 (decisions 10 to 15: a block's
 whole lexical chain, a body found by its declaration and equal by its
 code with spans in the current text, a factory's frame from the class
-header, named variables only, and checks on three levels); its plan is
-being written on the branch `feature/debugger-metadata`.
+header, named variables only, checks on three levels, and selector spans
+in the syntax tree); its plan is
+`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`, built on
+the branch `feature/debugger-metadata`.
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
