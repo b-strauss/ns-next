@@ -404,14 +404,23 @@ impl Interpreter {
     }
 
     /// Drops every command queued for a run that is over, or that has not
-    /// begun, and clears the commands bit under the arming lock: a
+    /// begun, after clearing the commands bit under the arming lock: a
     /// command is served by the run it arrives during, and one left
     /// queued -- a `Terminate` sent after its run ended, or queued after
     /// the one that ended it -- would otherwise end the next run at its
-    /// first safepoint, a run nobody terminated. A pause asked between
-    /// runs is no command and stays, to stop the next run. A remote that
-    /// is gone detaches the debugger.
+    /// first safepoint, or be taken by its first stop, a run nobody
+    /// terminated. The bit is cleared before the queue is drained, as
+    /// `serve_queued_commands` clears it: the agent queues a command
+    /// before it sets the bit, so a command the drain misses keeps its bit
+    /// and is served, or dropped again, at the next safepoint; the other
+    /// order would leave it queued with its bit cleared, for a later stop
+    /// to take. A pause asked between runs is no command and stays, to
+    /// stop the next run. A remote that is gone detaches the debugger.
     pub(crate) fn drop_queued_commands(&mut self) {
+        if self.debugger.is_none() {
+            return;
+        }
+        self.clear_debugger_bits(DEBUGGER_COMMANDS);
         let Some(debugger) = &self.debugger else {
             return;
         };
@@ -424,8 +433,6 @@ impl Interpreter {
         };
         if disconnected {
             self.detach_debugger();
-        } else {
-            self.clear_debugger_bits(DEBUGGER_COMMANDS);
         }
     }
 

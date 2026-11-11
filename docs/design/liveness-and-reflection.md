@@ -108,8 +108,8 @@ materializes every compiled frame of its stretch, and a stop at a poll of
 optimized code, whose exit defers the blocks it eliminated, is deoptimized
 into baseline code before the debugger reads it ([debugger.md](debugger.md),
 "The stop"); a frame the debugger writes, which is planned, will go on
-interpreted ([debugger.md](debugger.md), "Writing a frame") — debugging and JIT-optimizing the same
-frame simultaneously is explicitly not a goal.
+interpreted ([debugger.md](debugger.md), "Writing a frame") — debugging
+and JIT-optimizing the same frame simultaneously is explicitly not a goal.
 
 ## Caches and their dependency keys
 

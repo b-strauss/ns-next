@@ -260,8 +260,10 @@ The remote has three operations:
   executes stops the next run at its first safepoint.
 - `send(command)` queues a command and then sets the commands bit, so that
   the next safepoint serves it while the program runs, or the stop serves
-  it while the program is stopped. A remote whose VM is gone queues it
-  nowhere and arms nothing.
+  it while the program is stopped. A command queued while no run
+  executes, or still queued when a run ends, is dropped unanswered
+  ("Commands while the program runs"). A remote whose VM is gone queues
+  it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
 
@@ -426,15 +428,19 @@ With the commands bit set, the queue is drained
 (`serve_queued_commands`): the bit is cleared first, under the arming
 lock, then every queued command is taken without waiting (`try_recv`). A
 `Terminate` ends the run, and the commands queued after it are dropped;
-any other command is refused, "the program is running". The agent queues a command before it sets the
-bit, and the VM clears the bit before it drains the queue, so that a
+any other command is refused, "the program is running". The agent queues
+a command before it sets the bit, and the VM clears the bit before it
+drains the queue, so that a
 command queued while the queue is drained keeps its bit set for the next
 safepoint; the other order would lose it, a `Terminate` sent to a fully
 compiled loop included.
 
-A command is served by the run it arrives during. `run_from_host` drops
-every queued command and clears the commands bit, under the arming lock,
-before a run starts and once it ended (`Interpreter::drop_queued_commands`):
+A command is served by the run it arrives during. `run_from_host` clears
+the commands bit, under the arming lock, and then drops every queued
+command, before a run starts and once it ended
+(`Interpreter::drop_queued_commands`), in the order the drain keeps and
+for its reason: a command the drop misses keeps its bit and is served, or
+dropped again, at the next safepoint. Without the drop,
 a command left queued -- a `Terminate` sent after its run ended, or queued
 after the one that ended it -- would otherwise end the next run at its
 first safepoint, or be taken by its first stop, a run nobody terminated
@@ -479,7 +485,8 @@ The stop then sends `Stopped { reason: Pause }` and blocks on the command
 channel (`recv`), on the VM's thread, between two stretches: no handle is
 live, and nothing pushes or pops until the program goes on. The stack is
 the activations on the activation stack and, below them, the senders a
-suspension left in their frame objects ("Reading the stack at a stop"). It serves `StackTrace`, `Variables` and
+suspension left in their frame objects ("Reading the stack at a stop").
+It serves `StackTrace`, `Variables` and
 `Children` ("Reading the stack at a stop", "Values the IDE holds") until a
 `Continue` or a `Terminate`. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
@@ -668,10 +675,11 @@ the poll words' ordering, and every later stage's tests, do not.
   the one that ended its run, the stack's frames, its suspended senders
   under the suspend stress mode and their variables, and a frame's
   arguments, an instance's fields and an `Array`'s children paged, a value
-  id that does not outlive its stop, a frame index past the stack refused, a pause that stops
-  compiled recursion at a poll of baseline machine code, and a stop at a
-  poll of optimized code deoptimized; where the JIT's counters are exact,
-  the last two assert the machine code they name. `heap.rs`'s unit tests
+  id that does not outlive its stop, a frame index past the stack
+  refused, a pause that stops compiled recursion at a poll of baseline
+  machine code, and a stop at a poll of optimized code deoptimized; where
+  the JIT's counters are exact, the last two assert the machine code they
+  name. `heap.rs`'s unit tests
   hold the bits: a debugger pause lowers the depth limit, serving the VM's
   request keeps the debugger's bits, a stress hold lowers nothing, and
   clearing the debugger's bits gives the limit back.
