@@ -7394,9 +7394,16 @@ register. `crates/ns-runtime/tests/debugger.rs` holds the API to its
 behaviour, the machine-code pauses to the machine code they name. No
 golden's outcome changed.
 
+Measured against `master`, three pinned builds a side, every process
+held to the performance cores: -0.61% on the geometric mean of the
+twenty-three sources, the two sides' builds interleaving, no program
+separated slower in the main sitting ("What stage 1 moved").
+
 The commit gates passed on every commit (`commit`, and `codegen` where
-the hot path's files changed); the end-of-batch groups run once the
-batch is closed.
+the hot path's files changed), and every end-of-batch group passed:
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
+-- the suite under each of the thirteen modes and without the JIT --
+`linux` and `aarch64`.
 
 - `b643ef3c` -- the debugger's design, decided.
 - `6aac21fe` -- the plan

@@ -711,6 +711,37 @@ the poll words' ordering, and every later stage's tests, do not.
 - Planned: **the plugin's tests** drive its `XDebugProcess` against the
   agent.
 
+### What stage 1 moved
+
+Stage 1 puts an atomic `Relaxed` load at every safepoint poll and moves
+the run loop's safepoint handling into a cold `take_safepoint`. It was
+measured against `master` in one sitting on 2026-11-11, by the protocol
+of "What floats in machine code moved" in
+[execution.md](execution.md): three pinned builds a side with the zone
+paddings, three rotated rounds, every process held to the eight
+performance cores.
+
+The geometric mean over the twenty-three sources is -0.61%; by build
+pair it is -0.39%, +0.96% and -2.37%, by round -0.18%, -0.50% and
+-1.14%, and the two sides' builds interleave. The seconds-long programs
+(CD, Havlak, Mandelbrot, NBody, DeltaBlue) are within 0.5%. Three
+programs lie outside 3% at eight iterations and none is separated
+slower: Towers (+4.9%, two single slow rounds on the branch; +1.2% at
+forty iterations), RichardsTon80 (-4.0%, separated faster; -0.9% at
+forty) and `bench_recursion` (-10.1%, the bimodal medians that both sides
+show; -0.5% at forty). Their sub-millisecond medians scatter, and the
+forty-iteration run, which confirms none of the movements, shows them to
+be noise. The one separation toward slower is Permute at forty
+iterations, +1.4% on a 75 microsecond program (+0.8%, +0.9% and +2.6%
+by build; +2.0% and not separated at eight); it stays unexplained, and
+a sweep of zone paddings could look at it.
+
+Not covered: the cold `take_safepoint` path with safepoints actually
+requested, since no program ran with a debugger attached or the pause
+stress mode, so only the poll on the ordinary path is timed; Linux,
+AArch64 and Windows on ARM; start-up, memory and `ns-next load`; and the
+poll's cost inside machine code beyond what these programs exercise.
+
 ## The decisions
 
 Decided with the user on 2026-11-10, one at a time, each after the
