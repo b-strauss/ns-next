@@ -114,7 +114,11 @@ Rust 1.98.0, edition 2021, seven crates:
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
   prepared from its module's current text in `edit.rs` and installed
-  atomically in `install.rs`), the core library
+  atomically in `install.rs`), the debugging API at the run loop's
+  safepoint (`debugger/`: `Interpreter::attach_debugger` hands out a
+  `DebugRemote`, whose thread pauses the run and reads its stack and
+  values at the stop; `debugger.md`, "The debugging API at the
+  safepoint"), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
   `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose

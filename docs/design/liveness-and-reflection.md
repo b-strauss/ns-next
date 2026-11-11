@@ -102,13 +102,13 @@ link — and it has four consumers:
 So the debugger, the MirrorBuilder and snapshotting are clients of **one
 reflective core** over the reified interpreter model. Snapshot means deoptimize
 everything to interpreter level, then serialize the logical graph. Load means
-deserialize, begin interpreting, re-JIT as code warms. The debugger will read
+deserialize, begin interpreting, re-JIT as code warms. The debugger reads
 only interpreter frames: the exit that leaves machine code for a stop
-materializes every compiled frame of its stretch, a stop at a poll of
+materializes every compiled frame of its stretch, and a stop at a poll of
 optimized code, whose exit defers the blocks it eliminated, is deoptimized
-into baseline code before the debugger reads it, and a frame the debugger
-writes goes on interpreted ([debugger.md](debugger.md), "Reading the stack
-at a stop", "Writing a frame") — debugging and JIT-optimizing the same
+into baseline code before the debugger reads it ([debugger.md](debugger.md),
+"The stop"); a frame the debugger writes, which is planned, will go on
+interpreted ([debugger.md](debugger.md), "Writing a frame") — debugging and JIT-optimizing the same
 frame simultaneously is explicitly not a goal.
 
 ## Caches and their dependency keys

@@ -2333,7 +2333,7 @@ no activation runs, every other compaction keeping each body that has
 optimized code ([execution.md](execution.md), "The code zone"),
 `NS_NEXT_STRESS_PAUSE`, which stops the run as a debugger's pause does,
 reads its whole stack and every value one level deep and continues
-([debugger.md](debugger.md), "Testing and gates"),
+([debugger.md](debugger.md), "The pause stress mode"),
 each of these seven keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),

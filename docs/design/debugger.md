@@ -265,9 +265,18 @@ The remote has three operations:
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
 
+The remote is served from another thread than the one running the
+interpreter: a stop blocks the running thread until a `Continue` or a
+`Terminate` arrives, so a host that pauses and then runs the program on
+one thread waits in the stop forever.
+
 Attaching again replaces the debugger: the earlier one's channels go with
-it, and its remote, still held, arms nothing from then on. Dropping the
-remote detaches the debugger ("Detaching" below).
+it, the commands still queued in them included, its pause and commands
+bits are cleared under the hold of the arming lock that makes the new
+attachment current, so that the new remote meets no stop it never asked
+for (`a_pause_before_a_replacement_does_not_stop_the_run`), and its
+remote, still held, arms nothing from then on. Dropping the remote
+detaches the debugger ("Detaching" below).
 
 ### Commands and events
 
@@ -295,7 +304,10 @@ and serves commands until a `Continue` or a `Terminate` (the one
 `StackTrace`, `Variables` and `Children` are served only at a stop; one
 that arrives while the program runs is refused with "the program is
 running". Every command a stop or a safepoint serves but `Terminate` is
-answered by one event, in the order the commands came.
+answered by one event, in the order the commands came. An agent therefore
+waits for `Stopped` before it sends a command only a stop serves: one sent
+right after `pause()` is refused or served depending on whether a
+safepoint drains the queue before the stop or the stop serves it.
 
 ### The poll words as atomics
 
@@ -411,13 +423,25 @@ The commands are served first, then the pause.
 ### Commands while the program runs
 
 With the commands bit set, the queue is drained
-(`serve_queued_commands`): the bit is cleared first, under the arming lock, then every queued command is taken without waiting
-(`try_recv`). A `Terminate` ends the run; any other command is refused,
-"the program is running". The agent queues a command before it sets the
+(`serve_queued_commands`): the bit is cleared first, under the arming
+lock, then every queued command is taken without waiting (`try_recv`). A
+`Terminate` ends the run, and the commands queued after it are dropped;
+any other command is refused, "the program is running". The agent queues a command before it sets the
 bit, and the VM clears the bit before it drains the queue, so that a
 command queued while the queue is drained keeps its bit set for the next
 safepoint; the other order would lose it, a `Terminate` sent to a fully
 compiled loop included.
+
+A command is served by the run it arrives during. `run_from_host` drops
+every queued command and clears the commands bit, under the arming lock,
+before a run starts and once it ended (`Interpreter::drop_queued_commands`):
+a command left queued -- a `Terminate` sent after its run ended, or queued
+after the one that ended it -- would otherwise end the next run at its
+first safepoint, or be taken by its first stop, a run nobody terminated
+(`a_terminate_after_its_run_ended_does_not_end_the_next`,
+`a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other`). A
+pause is no command: one asked between runs stays, and stops the next run
+at its first safepoint.
 
 Once the queue is drained, `serve_debugger` reads the pause bit again;
 if it is set, it is cleared, under the arming lock, and the program stops
@@ -428,6 +452,13 @@ copy -- delays the next poll, and with it the pause, until it returns; so
 does a leaf blocked waiting for input, reading the standard input among
 them, which no pause and no `Terminate` served at a safepoint reaches
 ("Open questions", "Terminating a program that reaches no safepoint").
+
+Planned: the DAP requests `setBreakpoints` and `disconnect` arrive while
+the program runs, as `pause` and `terminate` do. Each becomes a command
+the agent queues, setting the commands bit, and the next safepoint serves
+it from the queue without stopping, as it serves `Terminate` today: the
+breakpoints patched or restored, or the debugger detached with every
+breakpoint removed, and the program runs on.
 
 ### The stop
 
@@ -446,8 +477,9 @@ safepoint, and frames of earlier stretches by the exits that left them.
 
 The stop then sends `Stopped { reason: Pause }` and blocks on the command
 channel (`recv`), on the VM's thread, between two stretches: no handle is
-live, the whole stack is on the activation stack, and nothing pushes or
-pops until the program goes on. It serves `StackTrace`, `Variables` and
+live, and nothing pushes or pops until the program goes on. The stack is
+the activations on the activation stack and, below them, the senders a
+suspension left in their frame objects ("Reading the stack at a stop"). It serves `StackTrace`, `Variables` and
 `Children` ("Reading the stack at a stop", "Values the IDE holds") until a
 `Continue` or a `Terminate`. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
@@ -497,13 +529,29 @@ number. Names, lines, a frame's statement and the send it stands at, and
 scratch registers come with the metadata (stage 2; "Compiling the metadata
 again"); writing a frame is stage 5's ("Writing a frame").
 
-The run's activations (`stack::activations`) are walked from the top
-activation through each sender down to the run's floor
+The run's frames (`stack::frames`) are walked from the top activation
+through each sender down to the run's floor
 (`Heap::activation_position`): the activations below belong to the host's
-sends that started this run, which the stop does not show. The walk is
-made once per stop, at the first command that reads the stack, since
-nothing pushes or pops while the program is stopped, so reading every
-frame's variables costs the stack's depth, not its square.
+sends that started this run, which the stop does not show. Not every
+frame of the run is on the activation stack: a suspension
+(`Heap::suspend_activations`, which the suspend stress mode makes at the
+safepoints its schedule picks; [execution.md](execution.md),
+"Activations") moves every activation of the run into its frame object
+and resumes the top one, whose stack frame then returns to the suspended
+frame (`Heap::activation_suspended_sender`) rather than to the one below.
+From the activation whose sender is suspended the walk goes on through the
+senders the suspended frames name (`Heap::frame_sender`) until one names
+none. That chain stays within the run: only the run's own safepoint
+suspends, only its activations at its floor or above, and the lowest of
+them names no sender, since it returns below the floor. A suspended frame
+is held for the stop as a `Root` of its frame object
+(`stack::StackFrame::Suspended`) and read from it: its kind, its code, the
+program counter it stores (`Heap::frame_stored_program_counter`), its
+receiver and its registers (`Heap::frame_local`;
+`the_stack_reaches_suspended_senders`). The walk is made once per stop,
+at the first command that reads the stack, since nothing pushes or pops
+while the program is stopped, so reading every frame's variables costs
+the stack's depth, not its square.
 
 A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
 
@@ -524,7 +572,8 @@ past the arguments and the frame's header registers (`HEADER_REGISTERS`)
 up to the body's `local_count`, the first scratch register. A register the
 leftover analysis finds tainted before the frame's stored program counter
 (`CompiledCode::tainted_before`; `bytecode::leftovers`) is left out, as
-the collector's pre-pass nils it (`Heap::trace_stack`): such a word may be
+the collector's pre-pass nils it (`Heap::trace_stack`) and a suspension
+nils it in the frame object: such a word may be
 one a callee or a popped frame left, a stale handle, or a debug build's
 poison, whose read a debug build refuses. The analysis taints no register
 below `local_count` today, since a push fills them all; the check keeps
@@ -563,7 +612,8 @@ refused (`a_value_id_does_not_outlive_its_stop`); they wrap only after
 (`Heap::class_display_name`) and how many children it has.
 
 `Children` answers, from `start` and at most `count` of them: for an
-instance, its fields, named `field 0` up (`Heap::instance_field`); for an
+instance, its fields, named `field 0` up (`Heap::instance_field`;
+`an_instance_s_children_are_its_fields`); for an
 `Array`, its elements, named `[1]` up as `at:` counts
 (`Heap::array_element`; `an_array_s_children_are_its_elements_paged`).
 Every other value has none: an immediate, a `ByteArray`, a `String`, and
@@ -613,9 +663,12 @@ the poll words' ordering, and every later stage's tests, do not.
   terminate, the `ensure:` blocks a termination runs, a `Terminate` queued
   while running, a remote dropped before the run and while stopped, a
   pause while a collection is requested, a stop-only command refused while
-  running, a replaced remote's pause, the stack's frames and a frame's
-  arguments, an `Array`'s children paged, a value id that does not outlive
-  its stop, a frame index past the stack refused, a pause that stops
+  running, a replaced remote's pause and a pause asked before the
+  replacement, a `Terminate` sent after its run ended and one queued after
+  the one that ended its run, the stack's frames, its suspended senders
+  under the suspend stress mode and their variables, and a frame's
+  arguments, an instance's fields and an `Array`'s children paged, a value
+  id that does not outlive its stop, a frame index past the stack refused, a pause that stops
   compiled recursion at a poll of baseline machine code, and a stop at a
   poll of optimized code deoptimized; where the JIT's counters are exact,
   the last two assert the machine code they name. `heap.rs`'s unit tests
@@ -913,8 +966,8 @@ A breakpoint, a step's stop or a pause leaves its stretch for the run
 loop's safepoint, as a collection request does, and there calls the
 debugging API, which blocks on a channel and serves the agent's commands --
 reading the stack and values, setting breakpoints, evaluating -- answering
-on another; no handle is live there, and the whole stack is on the
-activation stack. Evaluating will push the expression's activation and
+on another; no handle is live there, and nothing pushes or pops while it
+waits. Evaluating will push the expression's activation and
 return into the loop, its return carried back into the stop by a
 `Continuation` variant of its own: the trampoline every send uses, never a
 re-entry of the loop from Rust ([execution.md](execution.md), "No re-entry
