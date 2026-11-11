@@ -4,10 +4,11 @@
 //! poll words from its own thread (`DebugRemote`); the safepoint serves
 //! the commands it queued while the program runs and, for a pause, stops:
 //! it blocks on the command channel, between two stretches, where no
-//! handle is live and the whole stack is on the activation stack, until
-//! the agent continues or terminates the program. Meanwhile it answers the
-//! run's stack (`stack.rs`) and the values it hands out, held for the stop
-//! (`values.rs`).
+//! handle is live and nothing pushes or pops, until the agent continues or
+//! terminates the program. Meanwhile it answers the run's stack
+//! (`stack.rs`) -- its activations on the activation stack and the
+//! senders suspended into their frame objects -- and the values it hands
+//! out, held for the stop (`values.rs`).
 
 mod remote;
 mod stack;
@@ -102,7 +103,7 @@ pub(crate) enum CommandSource {
 /// mode runs proves that reading a stopped stack -- every frame, every
 /// register the leftover analysis calls live, every value one level deep
 /// -- changes nothing and reads no dead register, which a debug build
-/// refuses (`docs/design/debugger.md`, "Testing and gates").
+/// refuses (`docs/design/debugger.md`, "The pause stress mode").
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StressReader {
@@ -171,20 +172,29 @@ pub(crate) enum Served {
 
 impl Interpreter {
     /// Attaches a debugger and answers its remote, which may move to
-    /// another thread; a debugger attached before replaces it. A pause
-    /// the remote asks while no run executes stops the next run at its
-    /// first safepoint.
+    /// another thread; a debugger attached before replaces it, its queued
+    /// commands dropped with its channels and its pause and commands bits
+    /// cleared, so that the new remote meets no stop it never asked for.
+    /// A pause the remote asks while no run executes stops the next run at
+    /// its first safepoint.
     pub fn attach_debugger(&mut self) -> DebugRemote {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
         let words = self.enter(|mutator| mutator.heap.machine_words_handle());
         let attachments = Arc::clone(&self.debugger_arming.attachments);
-        let attachment = {
-            let mut guarded = attachments.lock().unwrap_or_else(PoisonError::into_inner);
-            guarded.last += 1;
-            guarded.current = Some(guarded.last);
-            guarded.last
-        };
+        // The earlier attachment's bits are cleared under the hold that
+        // makes the new one current, so that no remote of the earlier one
+        // arms in between and leaves a bit the new one inherits.
+        let mut guarded = attachments.lock().unwrap_or_else(PoisonError::into_inner);
+        guarded.last += 1;
+        guarded.current = Some(guarded.last);
+        let attachment = guarded.last;
+        self.enter(|mutator| {
+            mutator
+                .heap
+                .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
+        });
+        drop(guarded);
         self.debugger = Some(Debugger {
             commands: command_receiver,
             events: event_sender,
@@ -245,7 +255,9 @@ impl Interpreter {
     /// Drains the commands queued while the program ran. The bit is
     /// cleared before the queue is drained, so that a command queued
     /// meanwhile keeps its bit for the next safepoint
-    /// (`docs/design/debugger.md`, "Commands while the program runs").
+    /// (`docs/design/debugger.md`, "Commands while the program runs"). A
+    /// `Terminate` ends the run, and the commands queued after it go with
+    /// the run (`drop_queued_commands`), never to the next.
     fn serve_queued_commands(&mut self) -> Served {
         self.clear_debugger_bits(DEBUGGER_COMMANDS);
         loop {
@@ -261,7 +273,10 @@ impl Interpreter {
                 }
             };
             match command {
-                Command::Terminate => return Served::Terminate,
+                Command::Terminate => {
+                    self.drop_queued_commands();
+                    return Served::Terminate;
+                }
                 command @ (Command::Continue
                 | Command::StackTrace
                 | Command::Variables { .. }
@@ -278,7 +293,7 @@ impl Interpreter {
     /// optimized code that its poll left goes on in baseline code first,
     /// its eliminated blocks made, so that every frame the agent reads is
     /// the interpreter's word for word (`docs/design/debugger.md`,
-    /// "Reading the stack at a stop"). The values the stop hands out are
+    /// "The stop"). The values the stop hands out are
     /// held in its table, `floor` the run's base (`stack.rs`), and go
     /// with it when the program goes on.
     fn stop(&mut self, reason: StopReason, floor: usize, mut source: CommandSource) -> Served {
@@ -289,9 +304,9 @@ impl Interpreter {
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
         let mut values = StopValues::starting_at(first_value_id);
-        // The run's activations, walked at the first command that reads
-        // them: nothing pushes or pops while the program is stopped.
-        let mut activations = None;
+        // The run's frames, walked at the first command that reads them:
+        // nothing pushes or pops while the program is stopped.
+        let mut frames = None;
         let served = loop {
             let command = match &mut source {
                 CommandSource::Remote => {
@@ -315,18 +330,16 @@ impl Interpreter {
                 }
                 Command::Terminate => break self.terminate(),
                 Command::StackTrace => {
-                    let frames = self.enter(|mutator| {
-                        let activations =
-                            activations.get_or_insert_with(|| stack::activations(mutator, floor));
-                        stack::stack_trace(mutator, activations, &mut values)
+                    let descriptions = self.enter(|mutator| {
+                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
+                        stack::stack_trace(mutator, frames, &mut values)
                     });
-                    self.answer(&mut source, Event::StackTrace(frames));
+                    self.answer(&mut source, Event::StackTrace(descriptions));
                 }
                 Command::Variables { frame } => {
                     match self.enter(|mutator| {
-                        let activations =
-                            activations.get_or_insert_with(|| stack::activations(mutator, floor));
-                        stack::variables(mutator, activations, frame, &mut values)
+                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
+                        stack::variables(mutator, frames, frame, &mut values)
                     }) {
                         Some(variables) => self.answer(&mut source, Event::Variables(variables)),
                         None => self.refuse(&mut source, &command, NO_SUCH_FRAME),
@@ -387,6 +400,32 @@ impl Interpreter {
             .is_some_and(|debugger| debugger.events.send(event).is_ok());
         if !delivered {
             self.detach_debugger();
+        }
+    }
+
+    /// Drops every command queued for a run that is over, or that has not
+    /// begun, and clears the commands bit under the arming lock: a
+    /// command is served by the run it arrives during, and one left
+    /// queued -- a `Terminate` sent after its run ended, or queued after
+    /// the one that ended it -- would otherwise end the next run at its
+    /// first safepoint, a run nobody terminated. A pause asked between
+    /// runs is no command and stays, to stop the next run. A remote that
+    /// is gone detaches the debugger.
+    pub(crate) fn drop_queued_commands(&mut self) {
+        let Some(debugger) = &self.debugger else {
+            return;
+        };
+        let disconnected = loop {
+            match debugger.commands.try_recv() {
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if disconnected {
+            self.detach_debugger();
+        } else {
+            self.clear_debugger_bits(DEBUGGER_COMMANDS);
         }
     }
 

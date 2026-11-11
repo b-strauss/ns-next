@@ -7686,6 +7686,19 @@ impl<'gc> Heap<'gc> {
             count_word(program_counter).bits();
     }
 
+    /// The program counter `frame` stores while its activation is not on
+    /// the stack: a suspended activation's, where it goes on from once
+    /// resumed -- the debugger's stop reads a suspended sender's here
+    /// (`debugger::stack`) -- or a returned one's last. A married frame's
+    /// lives on the activation stack (`activation_program_counter`).
+    pub(crate) fn frame_stored_program_counter(&self, frame: FrameReference<'gc>) -> usize {
+        debug_assert!(
+            self.frame_activation(frame).is_none(),
+            "a married frame's program counter lives on the activation stack"
+        );
+        self.frame_count_field(frame, frame_field::PROGRAM_COUNTER)
+    }
+
     pub fn frame_home(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.frame_frame_field(frame, frame_field::HOME)
     }
@@ -9896,9 +9909,11 @@ impl<'gc> Heap<'gc> {
         self.machine_words.address()
     }
 
-    /// Another handle to the machine words, for the JIT, whose budget
+    /// Another handle to the machine words: for the JIT, whose budget
     /// words name the unpointed budget among them before they name a row
-    /// (`JitState::share_machine_words`).
+    /// (`JitState::share_machine_words`), and for the debugger's remote,
+    /// which arms the poll through it from the agent's thread
+    /// (`Interpreter::attach_debugger`).
     pub(crate) fn machine_words_handle(&self) -> MachineWords {
         self.machine_words.clone()
     }

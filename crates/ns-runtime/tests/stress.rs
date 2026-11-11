@@ -717,8 +717,8 @@ ns_runtime::for_each_lowering! {
 
 // The pause stress mode: at the safepoints its schedule picks, the run
 // stops as for a debugger's pause, its whole stack and every value one
-// level deep read, and goes on (`docs/design/debugger.md`, "Testing and
-// gates").
+// level deep read, and goes on (`docs/design/debugger.md`, "The pause
+// stress mode").
 
 /// Closures that capture and write their method's locals, an array of
 /// them, and a recursion a thousand activations deep, each running a short

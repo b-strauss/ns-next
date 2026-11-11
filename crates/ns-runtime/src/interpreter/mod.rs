@@ -920,9 +920,14 @@ impl Interpreter {
         let result = match start {
             HostStart::Finished(result) => result,
             HostStart::Run(activation) => {
+                // A debugger's command is served by the run it arrives
+                // during: one queued between runs, or left by the run
+                // before, ends none (`Interpreter::drop_queued_commands`).
+                self.drop_queued_commands();
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                self.drop_queued_commands();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
                 // to the next check to find so.

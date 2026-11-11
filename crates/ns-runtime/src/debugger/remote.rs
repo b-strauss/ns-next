@@ -17,7 +17,12 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// What the agent asks of the VM. `Continue`, `StackTrace`, `Variables`
 /// and `Children` are served only while the program is stopped; one that
 /// arrives while it runs is refused (`Event::Refused`). `Terminate` is
-/// served either way.
+/// served either way. An agent waits for `Event::Stopped` before it sends
+/// a command only a stop serves: one sent right after
+/// `DebugRemote::pause` is refused or served depending on whether a
+/// safepoint drains the queue before the stop or the stop serves it. A
+/// command is served by the run it arrives during; one queued while no
+/// run executes, or still queued when a run ends, is dropped unanswered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.
@@ -122,6 +127,11 @@ pub struct ValueDescription {
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),
 /// which may move to another thread. Dropping it detaches the debugger: the
 /// program runs on, a stopped one included.
+///
+/// It is served from another thread than the one running the interpreter:
+/// a stop blocks the running thread until a `Continue` or a `Terminate`
+/// arrives, so a host that pauses and then runs the program on one thread
+/// waits in the stop forever.
 pub struct DebugRemote {
     commands: Sender<Command>,
     events: Receiver<Event>,
@@ -161,7 +171,8 @@ impl DebugRemote {
     }
 
     /// Queues `command` for the VM: the next safepoint serves it if the
-    /// program runs, the stop does if it is stopped. Queued before the bit
+    /// program runs, the stop does if it is stopped, and none if no run
+    /// executes, which drops it (`Command`). Queued before the bit
     /// is set, so that the safepoint that finds the bit finds the command;
     /// a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {

@@ -15,8 +15,8 @@
 //! activation runs freed (`docs/design/execution.md`, "The code zone") --
 //! and a stop as for a debugger's pause at the safepoints a seventh
 //! schedule picks, the whole stack and every value one level deep read
-//! before the run goes on (`docs/design/debugger.md`, "Testing and
-//! gates").
+//! before the run goes on (`docs/design/debugger.md`, "The pause
+//! stress mode").
 //! The step state's side of a
 //! move -- its own roots, forwarded after the heap's -- is
 //! `World::move_everything`, in `heap/world.rs`; a collection's is
@@ -356,9 +356,10 @@ impl StressMoves {
 }
 
 /// The schedule of the collect, the scavenge, the suspend, the zone and
-/// the pause stress modes: their work at every safepoint while the traced size is within
-/// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints --
-/// the pacing `StressMoves` uses, for the same reason.
+/// the pause stress modes: their work at every safepoint while the traced
+/// size is within `STRESS_MOVE_BUDGET`, and above it once per
+/// size-over-budget safepoints -- the pacing `StressMoves` uses, for the
+/// same reason.
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StressSchedule {

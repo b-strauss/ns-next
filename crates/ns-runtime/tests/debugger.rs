@@ -318,6 +318,95 @@ fn a_replaced_remote_s_pause_does_not_stop_the_run() {
     drop(replaced);
 }
 
+/// A pause the earlier remote asked before the replacement goes with its
+/// debugger: the new remote meets no stop it never asked for. Its thread
+/// continues any stop it sees, so that a failure ends rather than hangs.
+#[test]
+fn a_pause_before_a_replacement_does_not_stop_the_run() {
+    let (mut interpreter, instance) = instance_of(COUNTING);
+    let replaced = interpreter.attach_debugger();
+    replaced.pause();
+    let current = interpreter.attach_debugger();
+    let finished = Arc::new(AtomicBool::new(false));
+    let agent = {
+        let finished = Arc::clone(&finished);
+        thread::spawn(move || {
+            let mut stopped = false;
+            while !finished.load(Ordering::SeqCst) {
+                if let Some(Event::Stopped { .. }) = current.next_event(Duration::from_millis(10)) {
+                    stopped = true;
+                    current.send(Command::Continue);
+                }
+            }
+            stopped
+        })
+    };
+    let count = expect_ok(run(&mut interpreter, &instance), "run");
+    finished.store(true, Ordering::SeqCst);
+    let stopped = agent.join().expect("the remote's thread");
+    assert!(!stopped, "the earlier remote's pause stopped the run");
+    assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
+    drop(replaced);
+}
+
+/// A loop that ends, counting in a local so that every run counts afresh
+/// and reaches safepoints, and one that never ends.
+const RUNS: &str = indoc! {"
+    class Runs = Object new () (
+      public run = (
+        | count |
+        count:: 0.
+        [count < 100000] whileTrue: [count:: count + 1].
+        ^count
+      )
+      public forever = (
+        [true] whileTrue: []
+      )
+    ) : ()
+"};
+
+/// A `Terminate` sent after its run ended is served by no run: the next
+/// one, on the same interpreter and remote, finishes.
+#[test]
+fn a_terminate_after_its_run_ended_does_not_end_the_next() {
+    let (mut interpreter, instance) = instance_of(RUNS);
+    let remote = interpreter.attach_debugger();
+    let first = expect_ok(run(&mut interpreter, &instance), "the first run");
+    assert_eq!(small_integer(&mut interpreter, &first), 100_000);
+    remote.send(Command::Terminate);
+    let second = expect_ok(run(&mut interpreter, &instance), "the second run");
+    assert_eq!(small_integer(&mut interpreter, &second), 100_000);
+    drop(remote);
+}
+
+/// The commands queued after the `Terminate` that ended a run go with that
+/// run, while a pause asked between runs stays: the next run stops for
+/// the pause, and the stop takes the agent's `Continue`, not a stale
+/// `Terminate`, so the run finishes.
+#[test]
+fn a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other() {
+    let (mut interpreter, instance) = instance_of(RUNS);
+    let remote = interpreter.attach_debugger();
+    let agent = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        remote.send(Command::Terminate);
+        remote.send(Command::Terminate);
+        remote
+    });
+    let result = interpreter.send(&instance, Symbol::intern("forever"), &[]);
+    let remote = agent.join().expect("the remote's thread");
+    assert_terminated(result);
+    remote.pause();
+    let agent = thread::spawn(move || {
+        expect_paused(&remote);
+        continue_stopped(&remote);
+        remote
+    });
+    let count = expect_ok(run(&mut interpreter, &instance), "the next run");
+    drop(agent.join().expect("the remote's thread"));
+    assert_eq!(small_integer(&mut interpreter, &count), 100_000);
+}
+
 /// A run that stops three sends deep, in a loop that never ends, with an
 /// `Array` among the arguments of the stopped method.
 const STACKED: &str = indoc! {"
@@ -452,6 +541,45 @@ fn the_stack_names_the_stopped_methods() {
     );
 }
 
+/// Under the suspend stress mode every safepoint suspends the run's
+/// activations into their frame objects and resumes only the top one, so
+/// that at the stop `loop:with:` runs on the activation stack and its
+/// senders are suspended: the trace reaches them, and a suspended frame's
+/// variables are read from its frame object.
+#[cfg(debug_assertions)]
+#[test]
+fn the_stack_reaches_suspended_senders() {
+    let ((kinds, outer), _, _) = while_stopped_after(
+        Duration::from_millis(50),
+        STACKED,
+        |interpreter, _| interpreter.set_stress_suspend(true),
+        |remote| {
+            let kinds: Vec<FrameKind> = stack_trace(remote)
+                .into_iter()
+                .map(|frame| frame.kind)
+                .collect();
+            let frame = kinds
+                .iter()
+                .position(|kind| *kind == method("outer:"))
+                .expect("the suspended sender is on the stack");
+            (kinds, variables(remote, Command::Variables { frame }))
+        },
+    );
+    assert_eq!(
+        kinds,
+        [method("loop:with:"), method("outer:"), method("run")],
+        "the running activation, then its suspended senders down to the run's base"
+    );
+    assert_eq!(outer[0].name, "self");
+    assert_eq!(named(&outer, "argument 1").value.label, "5");
+    let items = outer
+        .iter()
+        .find(|variable| variable.value.class_name == "Array")
+        .expect("the suspended frame's local holds the Array");
+    assert!(items.name.starts_with("register "), "{}", items.name);
+    assert_eq!(items.value.child_count, 3);
+}
+
 #[test]
 fn a_frame_s_variables_show_its_arguments() {
     let variables = while_stopped(STACKED, loop_variables);
@@ -481,6 +609,37 @@ fn an_array_s_children_are_its_elements_paged() {
     assert_eq!(children[0].value.label, "the String \"one\"");
     assert_eq!(children[0].value.class_name, "String");
     assert_eq!(children[1].value.label, "nil");
+}
+
+#[test]
+fn an_instance_s_children_are_its_fields() {
+    let (receiver, children) = while_stopped(FOREVER, |remote| {
+        let frame = stack_trace(remote)
+            .iter()
+            .position(|frame| frame.kind == method("run"))
+            .expect("the loop's method is on the stack");
+        let receiver = named(&variables(remote, Command::Variables { frame }), "self")
+            .value
+            .clone();
+        let children = variables(
+            remote,
+            Command::Children {
+                value: receiver.id,
+                start: 0,
+                count: 8,
+            },
+        );
+        (receiver, children)
+    });
+    assert_eq!(receiver.class_name, "Forever");
+    assert_eq!(receiver.child_count, 1);
+    let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
+    assert_eq!(names, ["field 0"]);
+    assert!(
+        children[0].value.label.parse::<u64>().is_ok(),
+        "the count slot holds a number, not {}",
+        children[0].value.label
+    );
 }
 
 #[test]
@@ -586,8 +745,8 @@ fn a_pause_stops_compiled_recursion() {
 
 /// A method whose optimized copy exists before the paused run: `forever`
 /// pushes `spin:` again and again, so that each push enters the copy and the
-/// pause finds the loop's poll in optimized code. The loop's block is one
-/// the copy eliminates.
+/// pause finds the loop's poll in optimized code, which the stop
+/// deoptimizes before the stack is read.
 const OPTIMIZED: &str = indoc! {"
     class Optimized = Object new () (
       public run = (
