@@ -42,8 +42,10 @@ Create a todo for each item.
    makes optimized code leave for a safepoint at every tenth interrupt point
    it passes, which frees every body's optimized copies -- a body freed
    often sitting out ever more rounds -- before it installs
-   what was requested since; beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the thirteen suites at once,
+   what was requested since, and PAUSE stops the run as a debugger's pause
+   does at the safepoints its schedule picks, reads its whole stack and every
+   value one level deep, and continues; beside them the suite runs once with
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the fourteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,
