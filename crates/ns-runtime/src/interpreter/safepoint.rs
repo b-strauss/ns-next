@@ -440,19 +440,17 @@ impl Interpreter {
         self.world.set_scavenge_threshold(bytes);
     }
 
-    /// Sets the safepoint request exactly when a stress mode is on, since
-    /// any one alone must keep every safepoint coming back to `safepoint`:
+    /// Holds the stress modes' bit of the safepoint request
+    /// (`heap::STRESS_HOLD`) exactly while a stress mode is on, since any
+    /// one alone must keep every safepoint coming back to `safepoint`:
     /// what every `set_stress_*` does after switching its own mode.
     ///
-    /// Turning the last mode off this way drops `safepoint_requested` even
-    /// while a collection or a scavenge is still pending. Both self-heal:
-    /// the collection limits were never reset, so the next allocation that
-    /// reaches one asks again, and the scavenge was never served, so the
-    /// next allocation past eden's threshold, or the next old object to
-    /// join the remembered set past its limit, asks again -- each only
-    /// slightly later than it otherwise would have. Debug-only, since the
-    /// setters do not exist in a release build; not worth coupling the
-    /// flags together to close.
+    /// Turning the last mode off this way drops only the hold. A
+    /// collection, a scavenge or a compaction of the code zone still
+    /// pending keeps its own bit (`heap::REAL_REQUEST`), and the
+    /// debugger's pause and commands keep theirs, so the next poll still
+    /// serves each of them, and the depth limit stays lowered while any
+    /// of them stands (`Heap::synchronize_depth_limit`).
     pub(super) fn hold_safepoints_for_stress(&mut self) {
         let enabled = self.stress.is_some()
             || self.stress_caches

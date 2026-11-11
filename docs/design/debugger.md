@@ -1,24 +1,51 @@
 # The debugger
 
-> **Status:** planned; nothing of the debugger itself is built. Its design
-> rests on nine decisions made with the user on 2026-11-10 ("Planned: the
-> decisions"), on the mechanisms they imply ("Planned: the mechanisms"), and
-> leaves the questions in "Open questions" to be decided. It builds on
+> **Status:** **Partial:** stage 1 is built -- the debugging API at the
+> run loop's safepoint ("The debugging API at the safepoint"): a host
+> attaches a debugger and hands its remote to another thread, which pauses
+> the program wherever it runs, interpreted or in machine code, optimized
+> code included, queues commands the next safepoint serves, and, while the
+> program is stopped, reads its stack, each frame's receiver, arguments and
+> live registers, and the fields and elements of the values those answer,
+> then continues or terminates the run; the request word the poll reads is
+> a set of bits in atomic machine words, which the agent arms from its own
+> thread; and the pause stress mode stops every program at the safepoints
+> its schedule picks and reads its whole stack. Everything else is planned:
+> the metadata (stop locations and variable tables, stage 2, next),
+> breakpoints and stepping, the DAP agent and the plugin, evaluation, hot
+> swap and edit-and-continue ("Planned: the order of building it"). The
+> design rests on nine decisions made with the user on 2026-11-10 ("The
+> decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
+> and leaves the questions in "Open questions" to be decided. It builds on
 > groundwork that exists: reified activations and the activation stack,
 > suspension into frames, the statement→program-counter table, stable
 > call-site numbers, retained source, the unwinder's frame targets, the
 > JIT's materialization and invalidation, the safepoint poll, and the
 > MirrorBuilder's atomic install, each described in the document for its own
 > aspect ("What exists").
-> **Code:** none yet. The groundwork is in `crates/ns-runtime/src/bytecode.rs`
+> **Code:** stage 1 is `crates/ns-runtime/src/debugger/` (`mod.rs`: the
+> VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
+> the arming lock `Arming`, the pause stress mode's `StressReader`;
+> `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
+> cross to the agent's thread; `stack.rs`: the stack trace and a frame's
+> variables; `values.rs`: the values a stop holds, `StopValues`), the
+> request word's bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`,
+> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `LOWERS_DEPTH_LIMIT`,
+> `Heap::synchronize_depth_limit`, `Heap::clear_debugger_bits`),
+> `heap/machine_words.rs` (the machine words as atomics behind an `Arc`),
+> `interpreter/safepoint.rs` (`Interpreter::safepoint`, which serves the
+> debugger first, `SafepointOutcome`, the pause stress mode's schedule),
+> `vm.rs` (`take_safepoint`, `terminate_at_safepoint`), `jit/mod.rs`
+> (`deoptimize_stopped_at_poll`, in every JIT build), and the tests in
+> `crates/ns-runtime/tests/debugger.rs` and `tests/stress.rs` (the pause
+> stress mode). The groundwork is in `crates/ns-runtime/src/bytecode.rs`
 > (`CompiledCode::statement_program_counter`, `CallSite`),
 > `bytecode/compact.rs` (`EncodedBody`), `bytecode/leftovers.rs`, `vm.rs`
 > (the run loop, its safepoint, `resume_caller`, `send_destination`),
-> `heap/machine_words.rs` (the poll words), `heap.rs`
-> (`Heap::synchronize_depth_limit`), `types.rs` (`Continuation`,
-> `SourceOrigin`), `interpreter/unwind.rs`, `interpreter/install.rs`,
-> `jit/materialize.rs`, `jit/mod.rs` (`abandon`, `invalidate_applications`,
-> `CopyDependencies`), `core-library/Kernel.ns` (the exceptions) and
+> `types.rs` (`Continuation`, `SourceOrigin`), `interpreter/unwind.rs`,
+> `interpreter/install.rs`, `jit/materialize.rs`, `jit/mod.rs` (`abandon`,
+> `invalidate_applications`, `CopyDependencies`), `core-library/Kernel.ns`
+> (the exceptions) and
 > `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/run/`
 > (the run configurations).
 
@@ -97,6 +124,9 @@ what Newspeak's liveness requires beyond it.
 
 ## What exists
 
+The debugger's own first stage is described in the next section, "The
+debugging API at the safepoint". What it and the later stages build on:
+
 - **Activations** are frames of tagged words on an activation stack of their
   own, walkable without the Rust stack, reified on demand into frame objects
   and suspended into them and resumed lazily ([execution.md](execution.md),
@@ -136,9 +166,11 @@ what Newspeak's liveness requires beyond it.
   poll (`vm::after_safepoint`, `jit::resumed_at_poll`), restoring what the
   code past the poll reads from frame words or from the code's constants
   (`metadata::poll_restores`) and never looking at the frame's compiled
-  mark; the debug-only `jit::deoptimize_stopped_at_poll` makes the deferred
-  blocks and sends the frame on in baseline code instead
-  ([execution.md](execution.md), "Back into optimized code at a poll").
+  mark; `jit::deoptimize_stopped_at_poll`, in every JIT build, makes the
+  deferred blocks and sends the frame on in baseline code instead, which
+  the debugger's stop and termination and the suspend stress mode call
+  during the safepoint ([execution.md](execution.md), "Back into optimized
+  code at a poll"; "The stop" below).
   Freeing a body's machine code is safe for frames stopped in it,
   which go on interpreted (`jit/mod.rs`, `abandon`). An install frees
   every optimized copy that relied on an application it rebuilds
@@ -146,22 +178,26 @@ what Newspeak's liveness requires beyond it.
   code ids it inlined (`CopyDependencies::code_ids`), today so that a full
   collection keeps those ids alive.
 - **The safepoint poll**: the interpreter polls at every push, every
-  caller resumed and every backward jump, one compare of the request word;
-  machine code polls at each loop's head, and at a compiled push through
-  the prologue's compare of the depth with `DepthLimit`, which a real
-  request (a bit of `LOWERS_DEPTH_LIMIT`: the VM's, the debugger's pause
-  or commands), never a stress mode's hold (`STRESS_HOLD`), sets to 0
+  caller resumed and every backward jump, one compare of the whole request
+  word with zero; machine code polls at each loop's head the same way, and
+  at a compiled push through the prologue's compare of the depth with
+  `DepthLimit`, which a request that lowers it (a bit of
+  `LOWERS_DEPTH_LIMIT`: the VM's own, the debugger's pause or commands),
+  never a stress mode's hold (`STRESS_HOLD`), sets to 0
   (`Heap::synchronize_depth_limit`; [memory.md](memory.md),
   "Where a collection can happen"; [execution.md](execution.md), "Polls
-  and the depth check"). A compiled `ret` into a compiled caller does not
-  poll. Leaving a stretch for a safepoint stores the running activation's
-  `program_counter` (`vm.rs`). `Interpreter::safepoint` answers whether the
-  suspend stress mode rebuilt the stack, so that the loop reads its state
-  again, and is always `false` in a release build
-  (`interpreter/safepoint.rs`).
+  and the depth check"; "The poll words as atomics" below). A compiled
+  `ret` into a compiled caller does not poll. Leaving a stretch for a
+  safepoint stores the running activation's `program_counter` (`vm.rs`).
+  `Interpreter::safepoint` serves an attached debugger first and answers
+  a `SafepointOutcome` (`interpreter/safepoint.rs`): `Unchanged`;
+  `Rebuilt` when the suspend stress mode rebuilt the stack, so that the
+  loop reads its state again, never in a release build; and `Terminate`
+  when the debugger terminated the run, in every build.
 - **The words the poll reads** are two of the heap's machine words,
-  `Rc<[Cell<u64>; WORD_COUNT]>` (`heap/machine_words.rs`), which machine
-  code addresses from one base (`BlockWord::MachineWords`).
+  `Arc<[AtomicU64; WORD_COUNT]>` (`heap/machine_words.rs`), which machine
+  code addresses from one base (`BlockWord::MachineWords`) and a clone of
+  which the debugger's remote holds on its own thread.
 - **Every declaration keeps its text**, the core library's source is in the
   binary, and an image carries source unless built with `--strip-source`.
   An image does not record which lowering compiled its code
@@ -188,24 +224,460 @@ what Newspeak's liveness requires beyond it.
   configurations and talks to `ns-next-analyzer lsp` through the platform's
   LSP API ([editor-support.md](editor-support.md)).
 
-## Planned: the decisions
+## The debugging API at the safepoint
+
+Stage 1 of the debugger ("Planned: the order of building it") is built: the
+VM's side of decisions 7 and 9 and the part of decision 1 that pausing,
+reading and ending a run need. It lives in `crates/ns-runtime/src/debugger/`
+and is reached through `Interpreter::attach_debugger`; its only clients
+today are the test suite (`crates/ns-runtime/tests/debugger.rs`) and the
+pause stress mode, since the DAP agent in `ns-cli` is stage 4's. No
+breakpoint, step, evaluation or write of a frame exists yet: a program
+stops only for a pause, and a stop only reads.
+
+### The attachment and the remote
+
+`Interpreter::attach_debugger` (`debugger/mod.rs`) attaches a debugger to
+the interpreter and answers its remote, a `DebugRemote`
+(`debugger/remote.rs`), the agent's end, which may move to another
+thread. The two ends talk through two `std::sync::mpsc` channels, the
+commands to the VM and the events back; the interpreter holds the VM's
+end (`Interpreter::debugger`, a `debugger::Debugger`: the command
+receiver, the event sender and the id the next stop's first value takes).
+The remote holds besides a clone of the heap's machine words
+(`Heap::machine_words_handle`), through which it arms the poll, and the
+interpreter's arming lock with the number of the attachment that handed it
+out ("The arming lock" below). Nothing that crosses to the agent's thread
+holds a `Value`, a `Root`, a handle or a `Symbol`, each meaningful only on
+the VM's thread: a command and an event are text and numbers, and a value
+is named by a `ValueId` that the stop which handed it out resolves
+("Values the IDE holds" below).
+
+The remote has three operations:
+
+- `pause()` asks the program to stop at its next safepoint, interpreted or
+  in machine code, at a push or a loop's head. A pause asked while no run
+  executes stops the next run at its first safepoint.
+- `send(command)` queues a command and then sets the commands bit, so that
+  the next safepoint serves it while the program runs, or the stop serves
+  it while the program is stopped. A remote whose VM is gone queues it
+  nowhere and arms nothing.
+- `next_event(timeout)` answers the VM's next event, or `None` once the
+  timeout passed or the VM is gone.
+
+Attaching again replaces the debugger: the earlier one's channels go with
+it, and its remote, still held, arms nothing from then on. Dropping the
+remote detaches the debugger ("Detaching" below).
+
+### Commands and events
+
+The commands (`debugger::Command`):
+
+- `Continue` -- the stopped program goes on; answered by `Continued`.
+- `Terminate` -- the run ends as an uncaught termination does
+  ("Continuing and terminating" below); served whether the program is
+  stopped or running, and answered by no event: the host's send answers
+  the error.
+- `StackTrace` -- the stopped program's activations, innermost first;
+  answered by `Event::StackTrace`, a `FrameDescription` each.
+- `Variables { frame }` -- the variables of the activation at index
+  `frame` of the stack trace; answered by `Event::Variables`, or refused
+  with "no frame at that index".
+- `Children { value, start, count }` -- `count` children of a value the
+  stop handed out, from the `start`th; answered by `Event::Variables`, or
+  refused with "no value of this stop has that id".
+
+The events (`debugger::Event`): `Stopped { reason }`, the program stopped
+and serves commands until a `Continue` or a `Terminate` (the one
+`StopReason` is `Pause`); `StackTrace`; `Variables`, the answer to both
+`Variables` and `Children`; `Refused { command, reason }`, the command
+`Command::name` names not served; and `Continued`. `Continue`,
+`StackTrace`, `Variables` and `Children` are served only at a stop; one
+that arrives while the program runs is refused with "the program is
+running". Every command a stop or a safepoint serves but `Terminate` is
+answered by one event, in the order the commands came.
+
+### The poll words as atomics
+
+The heap's machine words are `Arc<[AtomicU64; WORD_COUNT]>`
+(`heap/machine_words.rs`; [execution.md](execution.md), "The machine
+words"), so that a clone of them crosses to the agent's thread; the words
+the poll reads cannot move to an area of their own, since machine code
+reaches every word from the one base. The argument that machine code's
+accesses do not alias the protected `&mut` the mutator is held by during
+an entry carries over: Rust reads and writes the words only through
+shared references to atomics, and machine code through the address
+derived from the `Arc`'s own pointer, which no retag covers. Every hot
+access of the VM's is a `Relaxed` load or store, on x64 and AArch64 the
+plain instruction a `Cell`'s was, so neither the interpreter's poll nor
+machine code's changed.
+
+The request word (`MachineWord::SafepointRequested`) is a set of bits
+(`heap.rs`):
+
+- `REAL_REQUEST` (bit 0) -- the VM's own request: a collection's, a
+  scavenge's, a full code zone's (`Heap::request_safepoint`);
+- `STRESS_HOLD` (bit 1) -- a stress mode's hold
+  (`Heap::set_safepoint_requested`, and `Heap::hold_safepoint_request`
+  for the deopt stress mode);
+- `DEBUGGER_PAUSE` (bit 2) -- the agent's pause;
+- `DEBUGGER_COMMANDS` (bit 3) -- the agent queued a command.
+
+Every write of the word, the VM's and the agent's, is a `SeqCst`
+read-modify-write -- a `fetch_or` to set a bit, a `fetch_and` to clear one,
+a locked instruction on x64, an atomic or exclusive-pair sequence on
+AArch64, on the cold path only -- so that no writer erases another's bit.
+The poll compares the whole word with zero: every bit takes the safepoint.
+`Heap::real_safepoint_requested` masks it with `LOWERS_DEPTH_LIMIT`
+(`REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS`), every bit but the
+stress hold's, and `Heap::debugger_bits` with the debugger's two. The VM
+clears its own bit and the hold once it served them
+(`Heap::clear_safepoint_request`), never the debugger's; only
+`Heap::clear_debugger_bits` clears those, once the VM served them. The
+agent never clears a bit.
+
+A compiled callee's prologue compares the depth count with the
+`DepthLimit` word alone, so a request that must stop compiled recursion
+lowers that word to 0. After every write of the request word, and of the
+limit (`Heap::set_depth_limit`, through which `Mutator::set_depth_reserve`
+writes), `Heap::synchronize_depth_limit` writes the word: 0 while a bit of
+`LOWERS_DEPTH_LIMIT` is set, the limit `set_depth_limit` last set
+otherwise. The debugger's bits therefore lower it as the VM's own request
+does, and the stress hold does not, so that compiled frames still nest
+under a stress mode ([execution.md](execution.md), "Polls and the depth
+check").
+
+The agent arms the poll with two writes (`DebugRemote::arm`): its bit's
+`fetch_or` into the request word, then a store of 0 into `DepthLimit`,
+both `SeqCst`. `DepthLimit` races with the VM's own writes of it, each of
+which stores the limit with a `Relaxed` store after reading the request
+word to decide it. That is the store-buffering pattern: without an
+ordering, the VM's read could miss the agent's bit while the VM's store of
+the full limit lands after the agent's 0, and the pause would be lost to
+every compiled push -- a computation that only recurses in machine code,
+whose prologues compare `DepthLimit` alone, would never stop. So
+`synchronize_depth_limit` stores the limit, issues a `SeqCst` fence
+(`MachineWords::fence`), reads the request word again and stores 0 if a
+lowering bit is set now: with the fence, either that second read sees the
+agent's bit, or the agent's store of 0 comes after the VM's store. A
+threaded test races the agent's two writes against the VM's writes of the
+limit over 10,000 rounds (`no_pause_is_lost_to_a_racing_depth_limit_write`,
+`heap.rs`); a model test of the ordering does not exist ("Testing and
+gates" below).
+
+### The arming lock
+
+The remote's two writes and the VM's clearing of a debugger bit, which
+resynchronizes the limit, hold one lock per interpreter
+(`debugger::Arming`, an `Arc<Mutex<Attachments>>` the interpreter holds
+and every remote it ever handed out shares): the agent across its
+`fetch_or` and its store of 0, the VM across `Heap::clear_debugger_bits`,
+in `Interpreter::clear_debugger_bits` and `detach_debugger`. Without it,
+the VM could serve the bit and clear it between the agent's two writes;
+the agent's late store of 0 would then land after the VM's
+resynchronization, leaving the request word at 0 and `DepthLimit` at 0:
+no poll takes a safepoint that would resynchronize it, and every compiled
+push is refused at the word and counted as an exit until something else
+writes the request word or the limit. One lock for every attachment,
+since a remote of an earlier attachment holding a lock of its own would
+reopen that race against the VM's clearing under another. V8 arms its
+interrupts the same way, under a lock (`StackGuard::RequestInterrupt`
+under `ExecutionAccess`, `v8/src/execution/stack-guard.cc:169-183`). Only
+the cold paths take the lock, never a poll.
+
+What the lock guards says which attachment is current (`Attachments`: the
+current attachment's number, `None` while no debugger is attached, and the
+last number taken). `attach_debugger` takes the next number and makes it
+current; `detach_debugger` makes none current under the same hold that
+clears the debugger's bits; and a remote arms only while its own number is
+current (`Attachments::is_current`). So a remote whose debugger was
+detached, or replaced by a later attachment, arms nothing: its bit would
+stop the run for another remote's debugger, or for none
+(`a_replaced_remote_s_pause_does_not_stop_the_run`).
+
+### Serving at the safepoint
+
+`Interpreter::safepoint` (`interpreter/safepoint.rs`) calls
+`Interpreter::serve_debugger` first, before the pause stress mode, the
+optimizing tier's install, the other stress modes, the code zone's
+compaction and a pending collection: a safepoint whose service raised
+another request returns before it clears the request, and a pause served
+after that point would wait for a later safepoint
+(`a_pause_while_a_collection_is_requested_is_served`). `serve_debugger`
+reads the debugger's bits; with none set the safepoint goes on. Bits set
+with no debugger attached are cleared, since nobody is left to stop for.
+The commands are served first, then the pause.
+
+### Commands while the program runs
+
+With the commands bit set, the queue is drained
+(`serve_queued_commands`): the bit is cleared first, under the arming lock, then every queued command is taken without waiting
+(`try_recv`). A `Terminate` ends the run; any other command is refused,
+"the program is running". The agent queues a command before it sets the
+bit, and the VM clears the bit before it drains the queue, so that a
+command queued while the queue is drained keeps its bit set for the next
+safepoint; the other order would lose it, a `Terminate` sent to a fully
+compiled loop included.
+
+Once the queue is drained, `serve_debugger` reads the pause bit again;
+if it is set, it is cleared, under the arming lock, and the program stops
+("The stop" below).
+
+A leaf that runs long -- a large `LargeInteger` multiplication, a large
+copy -- delays the next poll, and with it the pause, until it returns; so
+does a leaf blocked waiting for input, reading the standard input among
+them, which no pause and no `Terminate` served at a safepoint reaches
+("Open questions", "Terminating a program that reaches no safepoint").
+
+### The stop
+
+A stop (`Interpreter::stop`, `debugger/mod.rs`) first makes the frame its
+optimized code's poll left go on in baseline code
+(`jit::deoptimize_stopped_at_poll`, in every JIT build, counted in
+`JitStatistics::poll_deoptimizations`): the light exit of a poll in
+optimized code wrote the inlined scopes' headers but deferred the blocks
+the copy eliminated, and would go back into the optimized code at the
+poll, restoring values from the code's constants rather than the frame
+("What exists"). Made now, the deferred blocks exist and every frame of
+the stack is the interpreter's word for word before the agent reads it
+(`a_stop_at_an_optimized_poll_is_deoptimized`). Every other compiled frame
+of the stretch was materialized by the exit that left it for the
+safepoint, and frames of earlier stretches by the exits that left them.
+
+The stop then sends `Stopped { reason: Pause }` and blocks on the command
+channel (`recv`), on the VM's thread, between two stretches: no handle is
+live, the whole stack is on the activation stack, and nothing pushes or
+pops until the program goes on. It serves `StackTrace`, `Variables` and
+`Children` ("Reading the stack at a stop", "Values the IDE holds") until a
+`Continue` or a `Terminate`. A command the stop serves was queued with its
+bit set, which stays set: once the program goes on, the next safepoint
+clears it and finds the queue empty. A pause asked while stopped likewise
+stays set, and stops the program again at the next safepoint.
+
+### Continuing and terminating
+
+`Continue` answers `Continued` and returns into the safepoint, which goes
+on with the pause stress mode, the other stress modes and a pending
+collection, and clears the VM's request; the run loop goes on from the
+frame the stretch left, a frame the stop deoptimized in baseline code.
+
+`Terminate` -- at a stop, or drained while the program runs -- clears a
+pause still pending, which the end of the run makes moot, makes the frame
+an optimized poll left go on in baseline code, so that the unwind pops
+interpreter frames, and makes `Interpreter::safepoint` answer
+`SafepointOutcome::Terminate` at once, the rest of the safepoint undone: a
+request still standing is served at the next poll. The run loop
+(`vm::take_safepoint`) calls `vm::terminate_at_safepoint`, which raises the
+termination in the top activation (`debugger::termination`: a
+`Signal::Terminate` whose error has the selector `terminate`, the top
+activation's receiver and the message "the debugger terminated the
+program") and hands it to the one unwinder (`interpreter/unwind.rs`) with
+the run's floor, as the termination a leaf raises is handed: every pending
+`ensure:` and `ifCurtailed:` block runs on the way, each started
+interpreted, and once the floor is popped the host's send answers the
+error (`HostSignal::Error`; `terminate_runs_the_pending_ensure_blocks`,
+`a_terminate_queued_while_running_ends_the_run`).
+
+### Detaching
+
+Dropping the remote detaches the debugger. The VM notices it where it next
+talks to the remote -- a command channel found disconnected while draining
+or while stopped, or an event that cannot be sent -- and
+`detach_debugger` makes no attachment current and clears both debugger
+bits under one hold of the arming lock, then drops the debugger. A stopped
+program goes on as after a `Continue`, and a running one is never stopped
+again (`a_dropped_remote_lets_the_program_finish`,
+`a_remote_dropped_while_stopped_lets_the_program_finish`).
+
+### Reading the stack at a stop
+
+**Partial:** a stop answers the run's frames and, for each, its receiver,
+its arguments and its registers below the first scratch register, by
+number. Names, lines, a frame's statement and the send it stands at, and
+scratch registers come with the metadata (stage 2; "Compiling the metadata
+again"); writing a frame is stage 5's ("Writing a frame").
+
+The run's activations (`stack::activations`) are walked from the top
+activation through each sender down to the run's floor
+(`Heap::activation_position`): the activations below belong to the host's
+sends that started this run, which the stop does not show. The walk is
+made once per stop, at the first command that reads the stack, since
+nothing pushes or pops while the program is stopped, so reading every
+frame's variables costs the stack's depth, not its square.
+
+A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
+
+- `kind` -- what the activation runs (`FrameKind`, from its
+  `ActivationKind`): `Method { selector }`, `Block`, `Initializer`,
+  `SuperclassClause`, `Factory` or `TopLevel`;
+- `program_counter` -- the program counter its frame stores: for a frame
+  below the top the index of the send, or other instruction, it called
+  from, which its callee's return reads again; for the top frame where the
+  stretch left it;
+- `source` -- the span of its body's source (`CompiledCode::source`), the
+  whole body: the statement's span needs the stop locations;
+- `receiver` -- its receiver, described as every value is.
+
+A frame's variables (`stack::variables`) are `self`; `argument 1` up to
+`argument N`, the argument registers; and `register K` for each register
+past the arguments and the frame's header registers (`HEADER_REGISTERS`)
+up to the body's `local_count`, the first scratch register. A register the
+leftover analysis finds tainted before the frame's stored program counter
+(`CompiledCode::tainted_before`; `bytecode::leftovers`) is left out, as
+the collector's pre-pass nils it (`Heap::trace_stack`): such a word may be
+one a callee or a popped frame left, a stale handle, or a debug build's
+poison, whose read a debug build refuses. The analysis taints no register
+below `local_count` today, since a push fills them all; the check keeps
+the reader to it should that change. **Scratch registers are not shown in
+stage 1:** nothing says what a scratch register holds at a stop; with
+the variable table a frame's registers are shown by name over the range
+each is live in, and a scratch register only where the leftover analysis
+says it is not tainted.
+
+Reading changes nothing: no compiled mark is cleared, and every frame goes
+on as it would have, but the one the stop deoptimized, in baseline code.
+
+Planned on top of it: a frame shows its body's name (a block as "`[] in
+Foo bar`", from its home link), the source position of its statement and
+the send it stands at, and its registers through the variable table at its
+stored `program_counter`, a variable outside its live range shown as not
+yet assigned.
+
+### Values the IDE holds
+
+**Partial:** a stop holds the values it hands out and answers an
+instance's fields and an `Array`'s elements, paged. Holding a value past
+its stop, the elements of a `ByteArray` and a `String`, and a Newspeak
+collection's renderer are planned (below).
+
+Every value a stop describes (`values::StopValues::describe`) is held as a
+`Root` (`Heap::stash`) in the stop's table and named by a `ValueId`, its
+index there offset by the table's first id. The table goes with its stop,
+releasing every `Root`, when the program goes on or ends. The ids
+continue across the stops of one attachment (`Debugger::next_value_id`,
+`StopValues::next_first`), so that an id of an earlier stop, whose table
+is gone, names nothing in a later one rather than another value, and is
+refused (`a_value_id_does_not_outlive_its_stop`); they wrap only after
+2^32 values handed out. A `ValueDescription` carries the id, the label
+`Heap::describe` gives -- never `{:?}` -- the name of the value's class
+(`Heap::class_display_name`) and how many children it has.
+
+`Children` answers, from `start` and at most `count` of them: for an
+instance, its fields, named `field 0` up (`Heap::instance_field`); for an
+`Array`, its elements, named `[1]` up as `at:` counts
+(`Heap::array_element`; `an_array_s_children_are_its_elements_paged`).
+Every other value has none: an immediate, a `ByteArray`, a `String`, and
+a reified mixin, whose one field is an id that tells a reader nothing.
+Each child is described, and held, as every value is. The heap's accessors
+alone describe a value: no Newspeak code runs while the program is
+stopped.
+
+Planned: an object the IDE pins outlives its stop, as JDWP's object ids
+and their `DisableCollection` do; a `ByteArray`'s and a `String`'s
+elements are read by the heap's accessors and paged; a Newspeak collection
+(`List`, `Map`, `Set` of `CollectionsFactory.ns`) shows its slots until
+evaluation exists, then a renderer that runs Newspeak code (`size`, `do:`,
+`printString`) under a limit of time and sends, skipping breakpoints as
+every evaluation does.
+
+### The pause stress mode
+
+The pause stress mode (`NS_NEXT_STRESS_PAUSE`, debug builds, one of the
+`stress` gate's thirteen modes; `Interpreter::set_stress_pause` for a
+test, `Interpreter::stress_pauses` the count of its stops) stops the run
+at the safepoints its schedule picks -- paced by the traced size as the
+collect and suspend modes are (`StressSchedule`,
+`interpreter/safepoint.rs`) -- exactly as a pause does: right after the
+debugger is served, before anything else at the safepoint changes the
+stack or the heap, a frame its optimized code's poll left deoptimized
+first. No debugger need be attached: the stop takes its commands from a
+`CommandSource`, the attached debugger's channels or the mode's reader
+(`debugger::StressReader`), which asks for the stack trace, the variables
+of every frame and the first eight children of every variable's value,
+then continues; a refusal is the stop misreading its own stack, and
+panics. While the mode is on it holds the stress bit
+(`hold_safepoints_for_stress`), so that every poll comes to the
+safepoint. Every golden and the corpus run under it, so reading a stopped
+stack is shown never to change a program's outcome nor to read a register
+the leftover analysis calls dead, which a debug build refuses;
+`the_pause_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a program
+to its outcome under both lowerings with the mode on and off.
+
+### Testing and gates
+
+**Partial:** stage 1's tests and its stress mode exist; the model test of
+the poll words' ordering, and every later stage's tests, do not.
+
+- **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
+  a pause before the run and from another thread, continue and
+  terminate, the `ensure:` blocks a termination runs, a `Terminate` queued
+  while running, a remote dropped before the run and while stopped, a
+  pause while a collection is requested, a stop-only command refused while
+  running, a replaced remote's pause, the stack's frames and a frame's
+  arguments, an `Array`'s children paged, a value id that does not outlive
+  its stop, a frame index past the stack refused, a pause that stops
+  compiled recursion at a poll of baseline machine code, and a stop at a
+  poll of optimized code deoptimized; where the JIT's counters are exact,
+  the last two assert the machine code they name. `heap.rs`'s unit tests
+  hold the bits: a debugger pause lowers the depth limit, serving the VM's
+  request keeps the debugger's bits, a stress hold lowers nothing, and
+  clearing the debugger's bits gives the limit back.
+- **The pause stress mode** (above).
+- **The ordering of the poll words** is held by review, by the threaded
+  race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
+  which runs the agent's two writes against the VM's writes of the limit
+  for 10,000 rounds on whatever processor runs the suite, and by the
+  `aarch64` gate, which runs the suite on AArch64's encoding of these
+  accesses. Neither proves it: a race test only samples interleavings,
+  and QEMU's user mode does not reproduce AArch64's weak ordering. A
+  model test of the agent and the two writers in the style of `loom`,
+  which would explore every interleaving the memory model allows, does
+  not exist; it needs `loom` as a dev-dependency, to be justified when it
+  is built ([OPEN-WORK.md](../OPEN-WORK.md), "A model test of the poll
+  words' ordering").
+- Planned: **a breakpoint stress mode** patches every statement start of
+  every body a program runs, goes on at each, and holds every golden's
+  outcome under both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`;
+  a **step stress mode** steps into everything; both join the `stress`
+  gate.
+- Planned: **debugger goldens**, a `.ns` with a script of commands and the
+  stops, stacks and values expected, run by a scripted DAP client in
+  `ns-cli`'s tests.
+- Planned: **the `codegen` gate** after the `Cell` slots and the
+  `Breakpoint` arm, and a measurement (the `measuring-performance` skill)
+  that `--debug` with no breakpoint runs at plain speed. The `linux` and
+  `aarch64` gates already run the atomics on both architectures.
+- Planned: **the plugin's tests** drive its `XDebugProcess` against the
+  agent.
+
+## The decisions
 
 Decided with the user on 2026-11-10, one at a time, each after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
-mechanisms each implies are in the next section.
+mechanisms each implies are in "Planned: the mechanisms". Decision 7 is
+built, and of decisions 1 and 9 what pausing, reading the stack and
+ending a run need: the debugging API's first part, and the stop waiting
+at the safepoint ("The debugging API at the safepoint"). Everything else
+they decide is planned, and is written below as the design to build.
 
 ### 1. One debugging API in Rust, two clients over it
 
+**Partial:** the API's first part exists in `crates/ns-runtime/src/debugger/`
+-- attaching, pausing, the commands served while running, the stop,
+reading the stack and its values, continuing and terminating ("The
+debugging API at the safepoint") -- and its only clients are the tests and
+the pause stress mode; the rest of the API and both clients are planned.
+
 Every mechanism -- stopping and going on, the breakpoint instruction, the
 stepping state, reading and writing frames, the metadata, deoptimization --
-will sit behind one debugging API of `ns-runtime`. It has two clients: the
+sits, or will sit, behind one debugging API of `ns-runtime`. It will have two clients: the
 remote agent in `ns-cli`, which speaks the protocol to an IDE and is built
 first, and `ActivationMirror` in `MirrorsFactory.ns`, through new mirror
 leaves, which gives a program the access to activations §8.2 asks of
-mirrors. Evaluation and edit-and-continue run Newspeak code through the
-existing resolver, compiler and install.
+mirrors. Evaluation and edit-and-continue will run Newspeak code through
+the existing resolver, compiler and install.
 
 HotSpot is cut the same way: JVMTI is the one API, and the JDWP agent
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/`) one of its clients.
@@ -375,19 +847,19 @@ Kómpos added breakpoints for messages, promises and actors
 
 ### 7. Pause arms the poll words from the agent's thread
 
-The machine words become `AtomicU64`s that the agent's thread reaches too
-("The poll words as atomics" below); every hot access of the VM's is a
-`Relaxed` load or store, the same instruction as today's on x64 and
-AArch64, so neither the interpreter's poll nor machine code's changes. The
-agent sets a pause bit of its own in the request word and lowers
-`DepthLimit` to 0, so that the next poll anywhere -- interpreted or
-compiled, a push or a loop's head -- takes the safepoint. The agent's two writes and the VM's clearing of a
-debugger bit, which resynchronizes the limit, hold one lock per
-interpreter (`debugger::Arming`), so that no clearing falls between the
-two writes and leaves the limit at 0 with no bit set; the lock also says
-which attachment is current, and a remote whose debugger was detached or
-replaced arms nothing. Ctrl-C and the actors' scheduler need the same
-word.
+Built ("The poll words as atomics", "The arming lock"). The machine words
+are `AtomicU64`s that the agent's thread reaches too; every hot access of
+the VM's is a `Relaxed` load or store, the instruction a `Cell`'s was on
+x64 and AArch64, so neither the interpreter's poll nor machine code's
+changed. The agent sets a pause bit of its own in the request word and
+lowers `DepthLimit` to 0, so that the next poll anywhere -- interpreted or
+compiled, a push or a loop's head -- takes the safepoint. The agent's two
+writes and the VM's clearing of a debugger bit, which resynchronizes the
+limit, hold one lock per interpreter (`debugger::Arming`), so that no
+clearing falls between the two writes and leaves the limit at 0 with no
+bit set; the lock also says which attachment is current, and a remote
+whose debugger was detached or replaced arms nothing. Ctrl-C and the
+actors' scheduler, both planned, will arm the same word.
 
 Cog's heartbeat thread writes `stackLimit`
 (`forceInterruptCheckFromHeartbeat`,
@@ -433,13 +905,17 @@ local a lambda captured -- the case refused here too.
 
 ### 9. A stop waits at the run loop's safepoint
 
+**Partial:** a pause's stop is built ("Serving at the safepoint", "The
+stop"), serving the stack and values; a breakpoint's and a step's stop,
+setting breakpoints and evaluating are planned.
+
 A breakpoint, a step's stop or a pause leaves its stretch for the run
 loop's safepoint, as a collection request does, and there calls the
 debugging API, which blocks on a channel and serves the agent's commands --
 reading the stack and values, setting breakpoints, evaluating -- answering
 on another; no handle is live there, and the whole stack is on the
-activation stack. Evaluating pushes the expression's activation and
-returns into the loop, its return carried back into the stop by a
+activation stack. Evaluating will push the expression's activation and
+return into the loop, its return carried back into the stop by a
 `Continuation` variant of its own: the trampoline every send uses, never a
 re-entry of the loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). The debugger therefore needs no yield path out of `vm::run`;
@@ -458,7 +934,10 @@ across the safepoint into `World`, is rejected.
 What building the decisions changes, found by checking them against the
 code and the invariants in `CLAUDE.md` in three reviews; each is part of the
 design, not an option, unless it names an open question ("Open
-questions").
+questions"). The mechanisms stage 1 built -- the poll words as atomics,
+the commands served while the program runs, reading the stack at a stop
+and the values a stop holds -- are described in "The debugging API at the
+safepoint", with what of them is still planned.
 
 ### Where the original lives
 
@@ -617,8 +1096,9 @@ reaches the safepoint, which goes on without stopping when nothing was
 pushed. A loop with no send, or a statement whose sends are all answered by
 primitives, so takes the safepoint at every iteration until a push or a
 one-shot breakpoint ends the step, and machine code's loop-head poll exits
-at each. The request is a real one (the debugger's bit counts as real), so
-that a compiled prologue refuses the push. The safepoint recognizes a push by
+at each. The request lowers the depth limit -- a step bit of the
+debugger's in `LOWERS_DEPTH_LIMIT`, as the pause bit is ("The poll words
+as atomics") -- so that a compiled prologue refuses the push. The safepoint recognizes a push by
 a frame on top other than the stepping frame and above it -- not by a
 `program_counter` of 0, which a backward jump to the stepping body's first
 instruction, or a frame `retry` restarted, also shows -- and stops at the
@@ -627,104 +1107,11 @@ a method's or a block's -- whose first instruction makes its indirection
 vector (`MakeVector`, emitted before the local initializers and outside
 every statement's range, `compiler/lower.rs`).
 
-### The poll words as atomics
-
-The whole machine-word area becomes `Arc<[AtomicU64; WORD_COUNT]>`, since
-machine code addresses every word from one base and the two words cannot
-move to an area of their own; the argument of `heap/machine_words.rs` that
-machine code's accesses do not alias the protected `&mut` carries over to
-atomics. The request word, today one of the values 0, 1 and `STRESS_HOLD`
-tested by `== 1` (`Heap::real_safepoint_requested`), becomes a set of bits
--- the VM's real request, the stress hold, the debugger's pause and step
-bits, a "commands pending" bit -- with the real and the stress tests as
-masks. Every write of the request word becomes a read-modify-write:
-the VM's own sets too -- `write_safepoint_request`, `request_safepoint`,
-`hold_safepoint_request`, whole-word stores today -- become `fetch_or`,
-or they would erase the agent's bits and lose a pause. The agent sets its
-bits with `fetch_or` and then stores 0 into
-`DepthLimit`, both `SeqCst`, so that no store of the VM's can fall between
-its two writes unseen; it never clears a bit. The VM clears the bits it
-served -- its own, and the agent's pause and commands bits once it served
-them -- with `fetch_and`, a locked read-modify-write on x64 and an
-`ldclr` or exclusive pair on AArch64 -- the cold path only. `DepthLimit`
-races with the VM's own writes (`write_safepoint_request` and
-`set_depth_limit`, through which `set_depth_reserve` writes): each of these
-cold writers issues
-a `SeqCst` fence between storing `DepthLimit` and reading the request word
-again, and writes 0 if a real or debugger bit is set, so that a pause
-arriving between the two is not lost; without the fence a store→load
-reordering, which x64 allows, would lose it, and a fully compiled
-computation that only recurses, whose prologues compare `DepthLimit` alone,
-would never see the pause. The hot reads stay `Relaxed`. The ordering argument is held by review and
-by a model test of the agent and the two writers in the style of `loom`,
-a dev-dependency to be justified when it is built; the `aarch64` gate runs
-the suite on AArch64's encoding of these accesses, but QEMU's user mode
-does not reproduce AArch64's weak ordering, so it cannot confirm the
-argument.
-
-### Commands while the program runs
-
-`setBreakpoints`, `pause`, `terminate` and `disconnect` arrive while the
-program runs. The agent queues the command and sets the "commands pending"
-bit; the next safepoint serves the queue without stopping, unless the
-command is `pause`. The agent queues a command before it sets the bit,
-and the VM clears the bit before it drains the queue, so that a command
-queued while the queue is drained keeps its bit set for the next
-safepoint; the other order would lose it, a `pause` in a fully compiled
-loop included. A leaf that runs long (a large `LargeInteger`
-multiplication, a large copy) delays the next poll, and with it the pause,
-until it returns; so does a leaf blocked waiting for input, reading the
-standard input among them, which no pause and no `terminate` served at a
-safepoint reaches. The agent's thread then ends the process itself
-("Open questions").
-
-### Reading the stack at a stop
-
-A stop is reached through an exit from machine code or a safepoint. An
-exit has materialized every compiled frame of its stretch into the
-interpreter's frames, the inlined scopes of optimized code with their
-headers written and their eliminated blocks made (`jit/materialize.rs`);
-frames below, in earlier stretches, were materialized when their code left
-for the interpreter's send. A stop reached through a poll of optimized code
-(`StoppedAtPoll`) is the exception ("What exists"): its eliminated blocks
-are deferred, and it would go back into its optimized code at the poll,
-restoring constants from the code rather than the frame. So the debugger
-deoptimizes such a stop before the agent reads or writes the stack, as the
-debug-only `jit::deoptimize_stopped_at_poll` does today during the
-safepoint; `deoptimize_at_poll` itself is in every build, where
-`resumed_at_poll` calls it after the safepoint for a frame that cannot go
-back in, and only the wrapper that does it on demand during the safepoint
-is to be made available in every build: the deferred blocks are made and every
-scope goes on in baseline code. Only then is every frame of the stack the
-interpreter's word for word, a variable holding an eliminated block shows
-its closure, and a write reaches what the code reads. A frame that is only
-read goes back into its machine code when something returns into it.
-Frames of every kind appear on the stack: methods, blocks, initializers,
-superclass clauses; a frame shows its body's name (a block as
-"`[] in Foo bar`", from its home link), its source position, and the send
-it stands at. A frame's registers are shown through the variable table at
-its stored `program_counter`, and a scratch register only when the
-leftover analysis (`bytecode::leftovers`, `tainted_at`) says it is not
-tainted there: a frame may hold words a callee or a popped frame left,
-and a variable outside its live range is shown as not yet assigned.
-
-### Values the IDE holds
-
-An object the protocol names by an id is held as a `Root` in a table of
-the stop, released when the program goes on unless the IDE pins it, as
-JDWP's object ids and their `DisableCollection` do. A value's label comes
-from `Heap::describe`, never `{:?}`. A builtin's elements (`Array`,
-`ByteArray`, `String`) are read by the heap's accessors and paged; a
-Newspeak collection (`List`, `Map`, `Set` of `CollectionsFactory.ns`)
-shows its slots until evaluation exists, then a renderer that runs
-Newspeak code (`size`, `do:`, `printString`) under a limit of time and
-sends, skipping breakpoints as every evaluation does.
-
 ### Writing a frame
 
 Reading a compiled frame needs nothing; a frame whose variable is set, or
 that is restarted or forced to return, goes on in the interpreter -- a stop
-at an optimized poll having been deoptimized first (above): its
+at an optimized poll having been deoptimized first ("The stop"): its
 compiled mark is cleared (`Heap::clear_compiled`, as the run loop does
 where it gives a frame to the interpreter), as
 [liveness-and-reflection.md](liveness-and-reflection.md), "The unifying
@@ -744,9 +1131,9 @@ principle", requires.
   requests a safepoint, and so re-enters the stop's command loop, which
   finds the evaluation's frame gone. The run loop has to learn, in every
   build, that the stack changed at the safepoint -- which
-  `Interpreter::safepoint` answers today only for the suspend stress mode,
-  `false` in a release build -- when the debugger pushes the evaluation's
-  frame and when it returns. The variant is named in
+  `Interpreter::safepoint` answers today only for the suspend stress mode
+  (`SafepointOutcome::Rebuilt`), never in a release build -- when the
+  debugger pushes the evaluation's frame and when it returns. The variant is named in
   [image-format.md](image-format.md), "Planned: suspend and resume", for
   completeness; no image is written while an evaluation runs, so it is
   never encoded.
@@ -755,7 +1142,7 @@ principle", requires.
   write needs no machine code; the run loop could enter a reified frame in
   its body's reifying twin (`jit::entry_of_frame`), so this is a choice,
   not a necessity; a stop at an optimized poll is
-  deoptimized before ("Reading the stack at a stop"). The debugger makes
+  deoptimized before ("The stop"). The debugger makes
   the expression's closure itself, as a `MakeClosure` in the frame would,
   the stopped frame its creator, so that `LoadOuterLocal` and
   `StoreOuterLocal` at depth 1 reach the frame's registers. A block the
@@ -1039,36 +1426,6 @@ The agent measures the wall time from the resume to the stop, minus the
 time it spent serving commands meanwhile, and sends it with the `stopped`
 event, which the plugin shows inline as IntelliJ does.
 
-### Testing and gates
-
-- **The pause stress mode** (`NS_NEXT_STRESS_PAUSE`, debug builds, one
-  of the `stress` gate's modes; `Interpreter::set_stress_pause` for a
-  test) stops the run at the safepoints its schedule picks -- paced by
-  the traced size as the collect and suspend modes are (`StressSchedule`,
-  `interpreter/safepoint.rs`) -- exactly as a pause does: first at the
-  safepoint, a frame its optimized code's poll left deoptimized
-  (`jit::deoptimize_stopped_at_poll`). No debugger is attached: the stop
-  takes its commands from a `CommandSource`, the attached debugger's
-  channels or the mode's reader (`debugger::StressReader`), which asks
-  for the stack trace, the variables of every frame and the children
-  (from the first, eight of them) of every value those answered, then
-  continues; a refusal is a defect and panics. Every golden and the
-  corpus run under it, so that reading a stopped stack is shown never to
-  change a program's outcome nor to read a register the leftover
-  analysis calls dead, which a debug build refuses.
-- **A breakpoint stress mode** patches every statement start of every body
-  a program runs, goes on at each, and holds every golden's outcome under
-  both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`; a **step stress
-  mode** steps into everything; both join the `stress` gate.
-- **Debugger goldens**: a `.ns` with a script of commands and the stops,
-  stacks and values expected, run by a scripted DAP client in `ns-cli`'s
-  tests.
-- **The `codegen` gate** after the `Cell` slots and the `Breakpoint` arm;
-  a measurement (the `measuring-performance` skill) that `--debug` with no
-  breakpoint runs at plain speed; the `linux` and `aarch64` gates for the
-  atomics.
-- **The plugin's tests** drive its `XDebugProcess` against the agent.
-
 ## Open questions
 
 Raised by the reviews of these decisions; each is to be decided with the
@@ -1175,10 +1532,13 @@ own:
 
 ## Planned: the order of building it
 
-1. The debugging API at the safepoint: stopping, the command channel and
-   the commands served while running, the atomic poll words and pause, the
-   deoptimization of a stop at a poll of optimized code in every build,
-   the stack and values.
+Stages 2 to 6 remain, in this order; stage 1, the debugging API at the
+safepoint -- stopping, the command channel and the commands served while
+running, the atomic poll words and pause, the deoptimization of a stop at
+a poll of optimized code in every build, the stack and values -- is built
+("The debugging API at the safepoint"). The stages keep their numbers,
+which the text above refers to.
+
 2. The metadata: both lowerers' stop locations and variable tables,
    compiled again on demand and verified.
 3. Breakpoints (pending ones included), stepping, run to cursor, method

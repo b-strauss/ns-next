@@ -29,7 +29,10 @@
 > that edits and installs in a loop keeps its tables at a bounded size,
 > road step 5b2c ("What the id has to carry").
 > **Planned:** actors; the debugger and edit-and-continue are
-> [debugger.md](debugger.md)'s.
+> [debugger.md](debugger.md)'s, whose first stage, the debugging API at
+> the safepoint -- pausing a running program from another thread,
+> reading its stack and values, continuing and terminating it -- is
+> built.
 > What else is built is the groundwork every part of it depends on —
 > reified activations and the kernel-private activation objects the
 > exceptions are built on ([core-library.md](core-library.md),

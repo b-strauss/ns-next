@@ -501,10 +501,24 @@ absorb that, as they do in Cog and Primordial Soup, and an allocation that
 finds even the reserve spent goes old ("Generations").
 
 **The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
-compare of a flag the heap owns, `Heap::safepoint_requested`, a word of its
-machine words, which machine code's poll reads as well and which therefore
-lives apart from the heap's own bytes ([execution.md](execution.md), "The
-machine words"). The same area holds the other words machine code reads
+compare with zero of the request word the heap owns
+(`Heap::safepoint_requested`), a word of its machine words, which machine
+code's poll reads as well and which therefore lives apart from the heap's
+own bytes ([execution.md](execution.md), "The machine words"). The
+machine words are `AtomicU64`s behind an `Arc`, so that an attached
+debugger's agent can arm the request from its own thread; the poll's load
+is `Relaxed`, the plain load it was before, so the poll costs what it
+did. The request word is a set of bits, each set by a `fetch_or` and
+cleared by a `fetch_and` so that no writer erases another's: the VM's own
+request (`REAL_REQUEST`, which a collection's, a scavenge's and a full
+code zone's trigger set through `Heap::request_safepoint`), a stress
+mode's hold (`STRESS_HOLD`), and the debugger's pause and commands
+(`DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`; [debugger.md](debugger.md), "The
+poll words as atomics"). The poll takes the safepoint for any of them;
+every bit but the hold's lowers the depth limit machine code's prologues
+compare with to 0 while it stands (`LOWERS_DEPTH_LIMIT`,
+`Heap::synchronize_depth_limit`; [execution.md](execution.md), "Polls and
+the depth check"). The same area holds the other words machine code reads
 between two leaf calls: the depth count and its limit, the activation
 stack's ordinary end, each immediate's class and guard, the generation
 counter of a debug build, the receiver and class handed between machine
@@ -527,9 +541,13 @@ only right after they are written, and no collection runs between. When the flag
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
-safepoint does. The safepoint serves a request -- a full collection if one
+safepoint does. The safepoint serves an attached debugger first -- the
+commands it queued, then a pause, which stops the program there
+([debugger.md](debugger.md), "Serving at the safepoint") -- and then a
+request -- a full collection if one
 is pending, which empties the nursery too, and otherwise a pending scavenge
--- and clears the flag in the same call, so that no compiled push the
+-- and clears its own bit and the stress hold in the same call, leaving
+the debugger's bits, which only their service clears, so that no compiled push the
 next turn makes finds the request's depth limit of 0 and is refused
 (`Heap::synchronize_depth_limit`), unless serving it raised another
 request -- the compaction of the code zone a collection's freed code

@@ -755,8 +755,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
     - *A switch gives up one resumption* just after a served collection,
       since `Heap::real_safepoint_requested` still answers `true` before
       the request is cleared.
-    - *A host that toggles a stress mode* overwrites a pending real
-      safepoint request (debug builds only).
     - *The depth words rest on convention*: `Mutator::depth_reserve` is
       still `pub(crate)`, so that every change goes through
       `set_depth_reserve`, which writes `DepthLimit`, is a rule no type
@@ -1820,16 +1818,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**, at the level of IntelliJ's Java debugger, plus
   edit-and-continue of running activations; its design is decided (nine
-  decisions, 2026-11-10), nothing is built. In this order: the debugging API
-  at the run loop's safepoint, with atomic poll words for pause; the stop
-  locations and variable table, compiled again on demand and verified;
+  decisions, 2026-11-10). Its first stage is built (2026-11-11): the
+  debugging API at the run loop's safepoint, with atomic poll words a
+  remote arms from another thread to pause the program, the commands
+  served while it runs, the stop, which deoptimizes a frame stopped at a
+  poll of optimized code in every JIT build, the stack and values read at
+  it, continue and terminate, and the pause stress mode
+  ([debugger.md](design/debugger.md), "The debugging API at the
+  safepoint"). The rest, in this order: the stop locations and variable
+  table, compiled again on demand and verified (stage 2, next), which
+  also give a stopped frame its names, lines and scratch registers;
   breakpoints patched in place (a method with a fast path replaced by one
   without it while patched), stepping by one-shot breakpoints, method
   breakpoints, exception breakpoints where the handler search invokes a
   handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
   about to send `defaultAction` for an uncaught one (a test-only
-  `resume_unhandled_exceptions` hook stands in today); the deoptimization
-  of a frame stopped at a poll of optimized code in every build; the DAP agent in
+  `resume_unhandled_exceptions` hook stands in today); the DAP agent in
   `ns-cli` and the plugin's `XDebugProcess`; evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return; hot swap,
@@ -3126,6 +3130,26 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **A model test of the poll words' ordering** (noted 2026-11-11, with
+  the debugger's first stage). The debugger's agent sets its bit in the
+  request word and then stores 0 into `DepthLimit`, both `SeqCst`, from
+  its own thread, while the VM's writes of the limit store it, issue a
+  `SeqCst` fence and read the request word again
+  (`Heap::synchronize_depth_limit`); the argument that no pause is lost
+  to a store-buffering reordering rests on that fence. It is held by
+  review and by the threaded race test
+  `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`), which
+  samples interleavings on the processor that runs it and cannot show
+  that none loses the pause; the `aarch64` gate runs it under QEMU's
+  user mode, which does not reproduce AArch64's weak ordering. A model
+  test of the agent and the VM's two writers in the style of `loom`,
+  which explores every interleaving the memory model allows, would; it
+  needs `loom` as a dev-dependency, a new external dependency whose
+  reason has to survive review, and the machine words behind a seam
+  `loom`'s atomics can replace in the test build. It would cover the
+  arming lock's argument too, which no test drives into its race
+  ([debugger.md](design/debugger.md), "The poll words as atomics", "The
+  arming lock", "Testing and gates").
 - Road step 8's fifth stage's (noted 2026-11-02 to 2026-11-03): the
   wait of a body whose frame could not switch at a backward jump, or
   whose compile the exhausted zone held (`jit::back_edge_ready`), has no

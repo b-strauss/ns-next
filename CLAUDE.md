@@ -640,8 +640,10 @@ is indexed by (`jit::point_budget_words_after_collection`), or the word
 names another body's row, and by the budget leaf when the word named no
 row of its body's (`jit::budget_spent`) -- all outside it, and
 every other such word lives in the heap's machine words
-(`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
-`Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
+(`heap/machine_words.rs`, atomics behind an `Arc`, which the debugger's
+agent arms from its own thread, every hot access to them `Relaxed`) or
+the entry block (`ns_memory::EntryBlock`, `Cell`s behind an `Rc`).
+`CodeZone::enter` holds the mutator as a
 protected `&mut`, so machine code's access to a word inside it is
 undefined behaviour once a leaf has written that word, which no test and
 no tool detects (`execution.md`, "The baseline JIT's foundation", "The
