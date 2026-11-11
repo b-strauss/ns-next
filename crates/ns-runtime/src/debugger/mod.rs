@@ -85,6 +85,81 @@ impl Attachments {
     }
 }
 
+/// Where a stop takes its commands from and sends its answers to: the
+/// attached debugger's channels, or, in a debug build, the pause stress
+/// mode's reader, which needs no debugger.
+pub(crate) enum CommandSource {
+    /// The attached debugger's remote.
+    Remote,
+    /// The pause stress mode's reader.
+    #[cfg(debug_assertions)]
+    Reader(StressReader),
+}
+
+/// The pause stress mode's agent (`Interpreter::stop_for_stress`): it asks
+/// for the stack, the variables of every frame and the first children of
+/// every value those answered, then continues, so that every program the
+/// mode runs proves that reading a stopped stack -- every frame, every
+/// register the leftover analysis calls live, every value one level deep
+/// -- changes nothing and reads no dead register, which a debug build
+/// refuses (`docs/design/debugger.md`, "Testing and gates").
+#[cfg(debug_assertions)]
+#[derive(Default)]
+pub(crate) struct StressReader {
+    /// Whether the stack trace was asked for yet.
+    started: bool,
+    /// The commands the answers so far call for, in order.
+    pending: std::collections::VecDeque<Command>,
+    /// Whether the command last issued asks for a value's children, whose
+    /// answer is one level deep and calls for nothing more.
+    reading_children: bool,
+}
+
+#[cfg(debug_assertions)]
+impl StressReader {
+    /// How many children of each value the reader asks for.
+    const CHILDREN: usize = 8;
+
+    /// The reader's next command: the stack trace first, then what the
+    /// answers called for, then `Continue`.
+    fn next_command(&mut self) -> Command {
+        let command = if self.started {
+            self.pending.pop_front().unwrap_or(Command::Continue)
+        } else {
+            self.started = true;
+            Command::StackTrace
+        };
+        self.reading_children = matches!(command, Command::Children { .. });
+        command
+    }
+
+    /// Takes the stop's answer to the command last issued.
+    fn take(&mut self, event: Event) {
+        match event {
+            Event::StackTrace(frames) => {
+                self.pending
+                    .extend((0..frames.len()).map(|frame| Command::Variables { frame }));
+            }
+            Event::Variables(variables) => {
+                if !self.reading_children {
+                    self.pending
+                        .extend(variables.iter().map(|variable| Command::Children {
+                            value: variable.value.id,
+                            start: 0,
+                            count: StressReader::CHILDREN,
+                        }));
+                }
+            }
+            // The reader asks only for frames and values the stop handed
+            // out: a refusal is the stop misreading its own stack.
+            Event::Refused { command, reason } => {
+                panic!("internal: the pause stress mode's {command} was refused: {reason}")
+            }
+            Event::Stopped { .. } | Event::Continued => {}
+        }
+    }
+}
+
 /// What serving the debugger at a safepoint decided.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Served {
@@ -147,9 +222,24 @@ impl Interpreter {
         let pause_requested = self.enter(|mutator| mutator.heap.debugger_bits()) & DEBUGGER_PAUSE;
         if pause_requested != 0 && self.debugger.is_some() {
             self.clear_debugger_bits(DEBUGGER_PAUSE);
-            return self.stop(StopReason::Pause, floor);
+            return self.stop(StopReason::Pause, floor, CommandSource::Remote);
         }
         Served::GoOn
+    }
+
+    /// Stops the program as a pause does, for the pause stress mode, with
+    /// its reader as the agent; the program goes on.
+    #[cfg(debug_assertions)]
+    pub(crate) fn stop_for_stress(&mut self, floor: usize) {
+        let served = self.stop(
+            StopReason::Pause,
+            floor,
+            CommandSource::Reader(StressReader::default()),
+        );
+        debug_assert!(
+            served == Served::GoOn,
+            "internal: the pause stress mode's reader never terminates"
+        );
     }
 
     /// Drains the commands queued while the program ran. The bit is
@@ -175,52 +265,71 @@ impl Interpreter {
                 command @ (Command::Continue
                 | Command::StackTrace
                 | Command::Variables { .. }
-                | Command::Children { .. }) => self.refuse(&command, RUNNING),
+                | Command::Children { .. }) => {
+                    self.refuse(&mut CommandSource::Remote, &command, RUNNING);
+                }
             }
         }
     }
 
-    /// Stops the program for `reason`: tells the agent, then serves its
-    /// commands until it continues or terminates the program. A frame of
+    /// Stops the program for `reason`: tells the agent, then serves the
+    /// commands `source` gives until it continues or terminates the
+    /// program, answering to `source`. A frame of
     /// optimized code that its poll left goes on in baseline code first,
     /// its eliminated blocks made, so that every frame the agent reads is
     /// the interpreter's word for word (`docs/design/debugger.md`,
     /// "Reading the stack at a stop"). The values the stop hands out are
     /// held in its table, `floor` the run's base (`stack.rs`), and go
     /// with it when the program goes on.
-    fn stop(&mut self, reason: StopReason, floor: usize) -> Served {
+    fn stop(&mut self, reason: StopReason, floor: usize, mut source: CommandSource) -> Served {
         self.enter(crate::jit::deoptimize_stopped_at_poll);
-        self.tell(Event::Stopped { reason });
+        self.answer(&mut source, Event::Stopped { reason });
         let first_value_id = self
             .debugger
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
         let mut values = StopValues::starting_at(first_value_id);
+        // The run's activations, walked at the first command that reads
+        // them: nothing pushes or pops while the program is stopped.
+        let mut activations = None;
         let served = loop {
-            let Some(debugger) = &self.debugger else {
-                // The remote is gone: as a `Continue`.
-                break Served::GoOn;
-            };
-            let Ok(command) = debugger.commands.recv() else {
-                self.detach_debugger();
-                break Served::GoOn;
+            let command = match &mut source {
+                CommandSource::Remote => {
+                    let Some(debugger) = &self.debugger else {
+                        // The remote is gone: as a `Continue`.
+                        break Served::GoOn;
+                    };
+                    let Ok(command) = debugger.commands.recv() else {
+                        self.detach_debugger();
+                        break Served::GoOn;
+                    };
+                    command
+                }
+                #[cfg(debug_assertions)]
+                CommandSource::Reader(reader) => reader.next_command(),
             };
             match command {
                 Command::Continue => {
-                    self.tell(Event::Continued);
+                    self.answer(&mut source, Event::Continued);
                     break Served::GoOn;
                 }
                 Command::Terminate => break self.terminate(),
                 Command::StackTrace => {
-                    let frames =
-                        self.enter(|mutator| stack::stack_trace(mutator, floor, &mut values));
-                    self.tell(Event::StackTrace(frames));
+                    let frames = self.enter(|mutator| {
+                        let activations =
+                            activations.get_or_insert_with(|| stack::activations(mutator, floor));
+                        stack::stack_trace(mutator, activations, &mut values)
+                    });
+                    self.answer(&mut source, Event::StackTrace(frames));
                 }
                 Command::Variables { frame } => {
-                    match self.enter(|mutator| stack::variables(mutator, floor, frame, &mut values))
-                    {
-                        Some(variables) => self.tell(Event::Variables(variables)),
-                        None => self.refuse(&command, NO_SUCH_FRAME),
+                    match self.enter(|mutator| {
+                        let activations =
+                            activations.get_or_insert_with(|| stack::activations(mutator, floor));
+                        stack::variables(mutator, activations, frame, &mut values)
+                    }) {
+                        Some(variables) => self.answer(&mut source, Event::Variables(variables)),
+                        None => self.refuse(&mut source, &command, NO_SUCH_FRAME),
                     }
                 }
                 Command::Children {
@@ -228,8 +337,8 @@ impl Interpreter {
                     start,
                     count,
                 } => match self.enter(|mutator| values.children(mutator, value, start, count)) {
-                    Some(children) => self.tell(Event::Variables(children)),
-                    None => self.refuse(&command, NO_SUCH_VALUE),
+                    Some(children) => self.answer(&mut source, Event::Variables(children)),
+                    None => self.refuse(&mut source, &command, NO_SUCH_VALUE),
                 },
             }
         };
@@ -250,11 +359,23 @@ impl Interpreter {
         Served::Terminate
     }
 
-    fn refuse(&mut self, command: &Command, reason: &str) {
-        self.tell(Event::Refused {
-            command: String::from(command.name()),
-            reason: String::from(reason),
-        });
+    fn refuse(&mut self, source: &mut CommandSource, command: &Command, reason: &str) {
+        self.answer(
+            source,
+            Event::Refused {
+                command: String::from(command.name()),
+                reason: String::from(reason),
+            },
+        );
+    }
+
+    /// Sends `event` to whoever gave the command it answers.
+    fn answer(&mut self, source: &mut CommandSource, event: Event) {
+        match source {
+            CommandSource::Remote => self.tell(event),
+            #[cfg(debug_assertions)]
+            CommandSource::Reader(reader) => reader.take(event),
+        }
     }
 
     /// Sends `event` to the agent; a remote that is gone detaches the

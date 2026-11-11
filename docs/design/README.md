@@ -442,10 +442,11 @@ NS_NEXT_STRESS_ZONE=1 cargo nextest run --workspace     # compacting the code zo
 NS_NEXT_STRESS_OPTIMIZE=1 cargo nextest run --workspace # every body's optimization budget armed at 0, so that the next safepoint compiles its optimized code once its baseline code first spends
 NS_NEXT_STRESS_DEOPT=1 cargo nextest run --workspace    # OPTIMIZE, and optimized code leaving at every n-th interrupt point it passes, n drawn afresh at each safepoint
 NS_NEXT_STRESS_INVALIDATE=1 cargo nextest run --workspace # OPTIMIZE, and optimized code leaving for a safepoint at every tenth interrupt point it passes, which frees every body's copies -- a body freed often sitting out ever more rounds -- before it installs what was requested since
+NS_NEXT_STRESS_PAUSE=1 cargo nextest run --workspace    # stopping as for a debugger's pause at safepoints, the whole stack and every value one level deep read, then continuing
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
-# `cargo xtask gates stress` runs the thirteen suites at once, each into its own
+# `cargo xtask gates stress` runs the fourteen suites at once, each into its own
 # log, `.temp/stress-NO_JIT.log` the last's
 ```
 
@@ -492,12 +493,13 @@ its own, so cheap inputs share one. What bounds the suite's wall time is
 the longest test that cannot be split: the compilations of a body past the
 register ceiling, a few seconds each in a debug build.
 
-The invocations above are Git Bash syntax; the twelve stress modes do
+The invocations above are Git Bash syntax; the thirteen stress modes do
 anything only in a debug build, `NS_NEXT_NO_JIT` in every
 build ([memory.md](memory.md), "The move stress mode", "The gates the collector needs", "Generations";
 [dispatch.md](dispatch.md), "Invalidation"; [execution.md](execution.md),
 "The compact instruction encoding", "Suspending and resuming", "The code
-zone", "The optimizing tier's foundation", "Speculation", "Inlining"). Under the optimize stress
+zone", "The optimizing tier's foundation", "Speculation", "Inlining";
+[debugger.md](debugger.md), "Testing and gates"). Under the optimize stress
 mode the back-off of a body whose optimized code was abandoned or made
 not entrant is void, the budget times 4 to the version still 0, so a
 body is optimized again at its next spend until it is refused, one

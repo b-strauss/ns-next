@@ -1041,6 +1041,21 @@ event, which the plugin shows inline as IntelliJ does.
 
 ### Testing and gates
 
+- **The pause stress mode** (`NS_NEXT_STRESS_PAUSE`, debug builds, one
+  of the `stress` gate's modes; `Interpreter::set_stress_pause` for a
+  test) stops the run at the safepoints its schedule picks -- paced by
+  the traced size as the collect and suspend modes are (`StressSchedule`,
+  `interpreter/safepoint.rs`) -- exactly as a pause does: first at the
+  safepoint, a frame its optimized code's poll left deoptimized
+  (`jit::deoptimize_stopped_at_poll`). No debugger is attached: the stop
+  takes its commands from a `CommandSource`, the attached debugger's
+  channels or the mode's reader (`debugger::StressReader`), which asks
+  for the stack trace, the variables of every frame and the children
+  (from the first, eight of them) of every value those answered, then
+  continues; a refusal is a defect and panics. Every golden and the
+  corpus run under it, so that reading a stopped stack is shown never to
+  change a program's outcome nor to read a register the leftover
+  analysis calls dead, which a debug build refuses.
 - **A breakpoint stress mode** patches every statement start of every body
   a program runs, goes on at each, and holds every golden's outcome under
   both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`; a **step stress

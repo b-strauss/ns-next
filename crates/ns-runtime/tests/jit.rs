@@ -1035,14 +1035,14 @@ fn pins_the_tiers(lowering: Lowering) -> bool {
 }
 
 /// The stress modes that change which copy of a body runs when: by their
-/// compactions, collections, suspensions and moves, by compiling or
+/// compactions, collections, suspensions, moves and stops, by compiling or
 /// optimizing every body at once, or by leaving machine code at every
 /// poll or interrupt point -- the cache stress mode among them, since it
 /// holds the safepoint request, which every poll takes, and vacates the
 /// caches there -- and by freeing the copies at every tenth interrupt
 /// point optimized code passes, the invalidate stress mode. The wide
 /// stress mode changes no machine code's decision.
-const MODES_THAT_CHANGE_THE_COPY: [&str; 11] = [
+const MODES_THAT_CHANGE_THE_COPY: [&str; 12] = [
     "MOVES",
     "COLLECT",
     "SCAVENGE",
@@ -1054,6 +1054,7 @@ const MODES_THAT_CHANGE_THE_COPY: [&str; 11] = [
     "DEOPT",
     "CACHES",
     "INVALIDATE",
+    "PAUSE",
 ];
 
 /// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
@@ -3476,8 +3477,8 @@ fn the_zone_stress_mode_is_on() -> bool {
 /// mode, whose polls exit unconditionally, and every mode that holds the
 /// safepoint request, which a poll takes
 /// (`Interpreter::hold_safepoints_for_stress`).
-const MODES_THAT_POLL_OUT: [&str; 7] = [
-    "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
+const MODES_THAT_POLL_OUT: [&str; 8] = [
+    "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "PAUSE",
 ];
 
 /// Whether the environment turns `mode`'s stress mode on.

@@ -31,7 +31,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the suite under the twelve stress modes and without the JIT, then run-corpus plain and under each mode
+  stress               the suite under the thirteen stress modes and without the JIT, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
@@ -41,7 +41,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
-const STRESS_MODES: [&str; 12] = [
+const STRESS_MODES: [&str; 13] = [
     "MOVES",
     "CACHES",
     "COLLECT",
@@ -54,6 +54,7 @@ const STRESS_MODES: [&str; 12] = [
     "OPTIMIZE",
     "DEOPT",
     "INVALIDATE",
+    "PAUSE",
 ];
 
 /// The suite run beside the stress modes with the JIT off: every other
@@ -1115,9 +1116,17 @@ mod tests {
     }
 
     #[test]
-    fn the_stress_group_runs_twelve_modes() {
-        assert_eq!(STRESS_MODES.len(), 12);
-        for mode in ["JIT", "EXIT", "ZONE", "OPTIMIZE", "DEOPT", "INVALIDATE"] {
+    fn the_stress_group_runs_thirteen_modes() {
+        assert_eq!(STRESS_MODES.len(), 13);
+        for mode in [
+            "JIT",
+            "EXIT",
+            "ZONE",
+            "OPTIMIZE",
+            "DEOPT",
+            "INVALIDATE",
+            "PAUSE",
+        ] {
             assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
         }
     }

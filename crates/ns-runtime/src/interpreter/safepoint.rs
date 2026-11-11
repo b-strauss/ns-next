@@ -12,7 +12,11 @@
 //! mode that runs every program on from frames as a deoptimized one will
 //! (`docs/design/execution.md`, "Activations") -- and a compaction of the
 //! code zone at the safepoints a sixth schedule picks, every body no
-//! activation runs freed (`docs/design/execution.md`, "The code zone").
+//! activation runs freed (`docs/design/execution.md`, "The code zone") --
+//! and a stop as for a debugger's pause at the safepoints a seventh
+//! schedule picks, the whole stack and every value one level deep read
+//! before the run goes on (`docs/design/debugger.md`, "Testing and
+//! gates").
 //! The step state's side of a
 //! move -- its own roots, forwarded after the heap's -- is
 //! `World::move_everything`, in `heap/world.rs`; a collection's is
@@ -40,8 +44,10 @@ impl Interpreter {
     /// attached debugger is served first (`serve_debugger`), before
     /// anything below can leave early with a collection still requested
     /// and a pause would wait for a later safepoint; a termination it
-    /// receives ends the safepoint there. In a debug
-    /// build, the move stress mode moves everything when its schedule says
+    /// receives ends the safepoint there. In a debug build, the pause
+    /// stress mode stops the run there too, as a pause does, when its
+    /// schedule says one is due, reads the stack and continues; then the
+    /// move stress mode moves everything when its schedule says
     /// one is due, the cache stress mode invalidates every inline cache on
     /// every safepoint (`docs/design/dispatch.md`, "Invalidation"), and the
     /// collect stress mode runs a full collection when its own schedule says
@@ -51,7 +57,7 @@ impl Interpreter {
     /// mode suspends every activation of the run into its frame and
     /// resumes the top one when its own schedule says so, and the zone
     /// stress mode compacts the code zone, freeing every body no activation
-    /// runs, when its own schedule says so; any one of the six keeps the
+    /// runs, when its own schedule says so; any one of the seven keeps the
     /// request set, so that every safepoint comes here.
     ///
     /// A compaction of the code zone a compile that found it full asked
@@ -95,6 +101,22 @@ impl Interpreter {
         let _ = floor;
         #[cfg(debug_assertions)]
         let mut stressed = false;
+        // The pause stress mode's stop, where a debugger's pause stops:
+        // first, before anything else here changes the stack or the heap.
+        #[cfg(debug_assertions)]
+        {
+            let traced_size = self.world.traced_size();
+            if let Some(due) = self
+                .stress_pause
+                .as_mut()
+                .map(|stress| stress.due(traced_size))
+            {
+                if due {
+                    self.stop_for_stress(floor);
+                }
+                stressed = true;
+            }
+        }
         // Only the debug build's suspend stress mode rebuilds the stack.
         #[cfg_attr(
             not(debug_assertions),
@@ -333,8 +355,8 @@ impl StressMoves {
     }
 }
 
-/// The schedule of the collect, the scavenge and the suspend stress
-/// modes: their work at every safepoint while the traced size is within
+/// The schedule of the collect, the scavenge, the suspend, the zone and
+/// the pause stress modes: their work at every safepoint while the traced size is within
 /// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints --
 /// the pacing `StressMoves` uses, for the same reason.
 #[cfg(debug_assertions)]
@@ -437,7 +459,8 @@ impl Interpreter {
             || self.stress_collect.is_some()
             || self.stress_scavenge.is_some()
             || self.stress_suspend.is_some()
-            || self.stress_zone.is_some();
+            || self.stress_zone.is_some()
+            || self.stress_pause.is_some();
         self.world.set_safepoint_requested(enabled);
     }
 
@@ -517,6 +540,22 @@ impl Interpreter {
         self.stress_zone = enabled.then(StressSchedule::default);
         self.shrink_pairs_for_stress();
         self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the pause stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_PAUSE` says: the run stopped as for a
+    /// debugger's pause at the safepoints its schedule picks, its stack
+    /// read, and continued. For tests. Keeps the safepoint request set
+    /// while any other stress mode is on (`hold_safepoints_for_stress`).
+    pub fn set_stress_pause(&mut self, enabled: bool) {
+        self.stress_pause = enabled.then(StressSchedule::default);
+        self.hold_safepoints_for_stress();
+    }
+
+    /// How many times the pause stress mode has stopped the run since it
+    /// was turned on; 0 while it is off.
+    pub fn stress_pauses(&self) -> usize {
+        self.stress_pause.as_ref().map_or(0, |stress| stress.fired)
     }
 
     /// How many compactions the zone stress mode has made since it was

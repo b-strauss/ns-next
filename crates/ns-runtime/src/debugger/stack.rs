@@ -13,7 +13,9 @@ use crate::types::ActivationKind;
 /// The run's activations, innermost first, down to its base at `floor`
 /// (`Heap::activation_position`): the activations below belong to the
 /// host's sends that started this run, which the stop does not show.
-fn activations(mutator: &Mutator<'_>, floor: usize) -> Vec<ActivationReference> {
+/// Walked once per stop, which pushes and pops nothing, so that reading
+/// every frame's variables costs the stack's depth, not its square.
+pub(crate) fn activations(mutator: &Mutator<'_>, floor: usize) -> Vec<ActivationReference> {
     let heap = &mutator.heap;
     let mut activations = Vec::new();
     let mut next = heap.top_activation();
@@ -27,16 +29,16 @@ fn activations(mutator: &Mutator<'_>, floor: usize) -> Vec<ActivationReference> 
     activations
 }
 
-/// The run's frames, innermost first.
+/// The frames of the run's `activations`, innermost first.
 pub(crate) fn stack_trace(
     mutator: &Mutator<'_>,
-    floor: usize,
+    activations: &[ActivationReference],
     values: &mut StopValues,
 ) -> Vec<FrameDescription> {
     let heap = &mutator.heap;
-    activations(mutator, floor)
-        .into_iter()
-        .map(|activation| FrameDescription {
+    activations
+        .iter()
+        .map(|&activation| FrameDescription {
             kind: frame_kind(heap.activation_kind(activation)),
             program_counter: heap.activation_program_counter(activation),
             source: heap.activation_code(activation).source,
@@ -70,12 +72,12 @@ fn frame_kind(kind: ActivationKind<'_>) -> FrameKind {
 /// reader to it should that change.
 pub(crate) fn variables(
     mutator: &Mutator<'_>,
-    floor: usize,
+    activations: &[ActivationReference],
     frame: usize,
     values: &mut StopValues,
 ) -> Option<Vec<Variable>> {
     let heap = &mutator.heap;
-    let activation = *activations(mutator, floor).get(frame)?;
+    let activation = *activations.get(frame)?;
     let code = heap.activation_code(activation);
     let program_counter = u32::try_from(heap.activation_program_counter(activation))
         .expect("internal: a program counter fits its frame word");

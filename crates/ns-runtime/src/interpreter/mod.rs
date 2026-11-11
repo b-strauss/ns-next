@@ -643,6 +643,14 @@ pub struct Interpreter {
     /// cell. Debug builds only.
     #[cfg(debug_assertions)]
     stress_zone: Option<safepoint::StressSchedule>,
+    /// The pause stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_PAUSE`, or `set_stress_pause`): the run stopped as
+    /// for a debugger's pause at the safepoints its schedule picks, its
+    /// whole stack and every value one level deep read, and continued
+    /// (`debugger::StressReader`). Paced like the collect stress mode,
+    /// since a stop reads the whole run's stack. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_pause: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -709,6 +717,8 @@ impl Interpreter {
             stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
             #[cfg(debug_assertions)]
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
+            #[cfg(debug_assertions)]
+            stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
             debugger: None,
