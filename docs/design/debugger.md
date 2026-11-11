@@ -1520,9 +1520,9 @@ event, which the plugin shows inline as IntelliJ does.
 
 ## Open questions
 
-Raised by the reviews of these decisions; each is to be decided with the
-user, one at a time, before the stage that needs it. The proposal is a
-proposal.
+Raised by the reviews of these decisions and of stage 1; each is to be
+decided with the user, one at a time, before the stage that needs it.
+The proposal is a proposal.
 
 - **Step filters.** Whether step into skips the shipped modules' code by
   default, with a setting to step into it, and how a step behaves at its
@@ -1598,6 +1598,14 @@ proposal.
   in a leaf waiting for input, or in a long leaf, serves no `terminate`.
   Proposal: the agent's thread ends the process after a short grace
   period, as IntelliJ's stop button kills a JVM that does not answer.
+- **Commands between runs.** A command queued while no run executes, or
+  still queued when a run ends, is dropped without an answer today
+  ("Commands while the program runs"), which stage 1's clients, the tests
+  and the pause stress mode, never meet; an agent that sends a stop-only
+  command between runs gets no event and waits for its timeout. Whether
+  the DAP agent of stage 4 needs a `Refused` for each, sent when the
+  command is dropped, or whether it never sends a command between runs,
+  is to be decided with stage 4.
 - **Further IntelliJ features.** The memory view (the instances of a
   class, and the objects referring to one, through a walk of the heap at a
   stop), folding the shipped modules' frames in the stack, and attaching

@@ -84,10 +84,14 @@
 > the code zone's compaction and freeing in `jit/zone.rs`; the
 > optimizing compiler in `jit/optimizing/`, and its request, install,
 > entries, copies, traps, retirement and invalidation in `jit/mod.rs`),
-> `heap/machine_entries.rs` (the machine entry table the closure stubs
-> read), `heap/optimization_budgets.rs` (the budget rows baseline code
-> spends), `heap/optimized_copies.rs` (the dispatching rows the
-> dispatching stub compares), `crates/ns-assembler` (the operations, the x64 encoder in
+> `heap/machine_words.rs` (the machine words, atomics behind an `Arc`,
+> the safepoint request among them, which an attached debugger's remote
+> arms from its own thread; `crates/ns-runtime/src/debugger/` serves it at
+> the safepoint), `heap/machine_entries.rs` (the machine entry table the
+> closure stubs read), `heap/optimization_budgets.rs` (the budget rows
+> baseline code spends), `heap/optimized_copies.rs` (the dispatching rows
+> the dispatching stub compares), `crates/ns-assembler` (the
+> operations, the x64 encoder in
 > `x64.rs` and the AArch64 encoder in `aarch64.rs`),
 > `crates/ns-runtime/build.rs` (which targets set `cfg(ns_jit)`),
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
@@ -610,7 +614,7 @@ handle, and it is never serialized.
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last, and below a frame that
 returns to a suspended frame, the suspended frames by their `sender`. That is
-what the debugger will reflect over and what the collector scans. An image
+what the debugger reads at a stop and what the collector scans. An image
 serializes reified frames only, and is written when nothing is running
 ([image-format.md](image-format.md)).
 
@@ -14343,11 +14347,13 @@ words as atomics"). Every access of the mutator's to them is `Relaxed`
 -- on x64 and AArch64 the plain load or store a `Cell`'s would be, so the
 interpreter's poll and machine code's are the same instructions as
 without another thread, and machine code's own plain stores stay
-correct -- but a change to the request word, which another thread may
-change at once, which is a `SeqCst` `fetch_or` or `fetch_and`, and the
-fence `Heap::synchronize_depth_limit` issues between its store of the
-depth limit and its second read of the request word. Today they hold the safepoint request, which the interpreter's
-poll and machine code's both read (`Heap::safepoint_requested`); the
+correct -- with two exceptions on the cold path: a change to the request
+word, which another thread may change at the same time, is a `SeqCst`
+`fetch_or` or `fetch_and`, and `Heap::synchronize_depth_limit` issues a
+`SeqCst` fence between its store of the depth limit and its second read
+of the request word. Today they hold the safepoint request, which the
+interpreter's poll and machine code's both read
+(`Heap::safepoint_requested`); the
 depth count (`DepthCount`, which `Heap::counted_depth` reads and the
 push and pop write, so that the count lives nowhere else), the depth
 limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` exactly while a VM

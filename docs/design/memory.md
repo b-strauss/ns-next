@@ -92,13 +92,18 @@
 > doctests that pin the brand), `trace.rs` (every root the collector
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
-> (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
-> the switches of the memory-facing stress modes: moves, caches, collection,
-> scavenges, every instruction wide, suspensions and the code zone's
-> compaction; the JIT's, the exits', the optimizer's and the
-> deoptimizations' are in `jit/mod.rs`, which also
+> (the safepoint, which serves an attached debugger first
+> (`crates/ns-runtime/src/debugger/`), `Interpreter::tenure_now`,
+> `Interpreter::collect_now` and the switches of the memory-facing stress
+> modes: moves, caches, collection, scavenges, every instruction wide,
+> suspensions, the code zone's compaction and the debugger's pause; the
+> JIT's, the exits', the optimizer's and the deoptimizations' are in
+> `jit/mod.rs`, which also
 > reads the zone's to force the JIT on),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
+> `heap/machine_words.rs` (the words the poll reads, atomics behind an
+> `Arc`, the request word a set of bits an attached debugger's remote
+> arms from its own thread),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
 > `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`

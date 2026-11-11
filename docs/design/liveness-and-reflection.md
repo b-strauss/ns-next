@@ -50,7 +50,10 @@
 > (`interpreter/reclaim.rs`, `heap/reclaim.rs`), a declaration's text
 > (`mixin.rs`'s `DeclarationText`), the edit and the install
 > (`interpreter/edit.rs`, `interpreter/install.rs`), the image's
-> `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`).
+> `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`), and the
+> debugger's first stage, which reads a stopped run's activations and
+> values (`crates/ns-runtime/src/debugger/`, its tests
+> `crates/ns-runtime/tests/debugger.rs`; [debugger.md](debugger.md)).
 
 This is the constraints document. It binds every milestone even though it
 implements none of them: the point is that the runtime's shape must not foreclose
@@ -180,9 +183,10 @@ between the host and the loop, since nothing re-enters it from Rust ([execution.
 
 The reified frame is not the *default* representation of an activation; it is
 the one a block, and later the debugger, asks for. Nothing here loses a
-capability by that: the debugger reads a stopped stack's frames on the
-activation stack without reifying them, and reifies a frame where it has to
-hold one -- to evaluate in it, to restart it, to move it onto edited code
+capability by that: the debugger reads a stopped stack's frames where they
+are -- on the activation stack, or in the frame objects a suspension left --
+without reifying any, and will reify a frame where it has to hold one --
+to evaluate in it, to restart it, to move it onto edited code
 ([debugger.md](debugger.md)).
 
 ## Mirrors and MirrorBuilder

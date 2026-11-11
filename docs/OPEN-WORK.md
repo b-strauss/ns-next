@@ -1845,9 +1845,48 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   the depth limit, restart and force return beyond the plain case, restart
   and the indirection vector, assigning a captured variable, stepping out
   of a frame that returns elsewhere, the breakable places before a
-  session, terminating a program that reaches no safepoint, and the memory
-  view, folding shipped frames and attaching. [debugger.md](design/debugger.md), "Open
+  session, terminating a program that reaches no safepoint, the memory
+  view, folding shipped frames and attaching, and, for stage 4, whether
+  a command queued while no run executes is answered: today it is
+  dropped without an event, so an agent that sends a stop-only command
+  between runs waits for its timeout, where a DAP agent may want a
+  `Refused`. [debugger.md](design/debugger.md), "Open
   questions".
+  - **What stage 1's reviews left** (2026-11-11), none of them a wrong
+    outcome:
+    - *A stop holds a value once per mention*: every description
+      (`values::StopValues::describe`) stashes a new `Root`, so a value
+      the agent reads twice in one stop takes two `Root`s and two ids,
+      and the table grows with the reads rather than the values; and the
+      ids, continued across the stops of one attachment, wrap after
+      2^32 values handed out, past which an id of an earlier stop could
+      name a value of a later one ([debugger.md](design/debugger.md),
+      "Values the IDE holds").
+    - *Tests*: `Children` from a `start` past the last child, the pause
+      of a remote whose debugger was detached rather than replaced, and
+      the refusal's text for a stale value id
+      (`a_value_id_does_not_outlive_its_stop` asserts only the command's
+      name) have none; `a_pause_while_a_collection_is_requested_is_served`
+      cannot tell a pause served before the early return of a safepoint
+      whose service raised a request from one served at a later
+      safepoint, since no deterministic setup keeps a collection
+      requested at the stop; and the order in which
+      `Interpreter::drop_queued_commands` clears the commands bit before
+      it drains is held by review only, since the race needs the agent's
+      `send` between two instructions of the VM's thread and the runtime
+      has no hook there ([debugger.md](design/debugger.md), "Commands
+      while the program runs", "Testing and gates").
+    - *The machine-code assertions skip every stress mode*:
+      `counters_are_exact` (`crates/ns-runtime/tests/debugger.rs`)
+      turns off the assertions of `a_pause_stops_compiled_recursion` and
+      `a_stop_at_an_optimized_poll_is_deoptimized` on the JIT's counters
+      under any `NS_NEXT_STRESS_*`, where only the modes that change
+      when code is compiled or left (JIT, EXIT, ZONE, OPTIMIZE, DEOPT,
+      INVALIDATE) make them inexact.
+    - *A fence that tests nothing*: the unit test
+      `fetch_or_and_fetch_and_change_bits_and_answer_the_previous_value`
+      (`heap/machine_words.rs`) calls `MachineWords::fence` after joining
+      the writer thread, whose join already orders its write.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2270,6 +2309,18 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **What stage 1 of the debugger moved, unmeasured** (2026-11-11). The
+  measurement against `master` found no slowdown (-0.61% on the geometric
+  mean), but Permute at forty iterations is separated slower, +1.4% on a
+  75 microsecond program (+0.8%, +0.9% and +2.6% by build; +2.0% and not
+  separated at eight iterations), unexplained; a sweep of the zone
+  paddings, which shift its code's layout, would say whether it is
+  layout. And the cold path the batch moved into `vm::take_safepoint` was
+  never timed with safepoints actually requested -- no program ran with a
+  debugger attached or under the pause stress mode -- so what a pause, a
+  queued command or a stop costs a running program is unknown, as is the
+  poll's cost inside machine code beyond what the benchmark programs
+  exercise ([debugger.md](design/debugger.md), "What stage 1 moved").
 - **CD runs slower on ns-next than on CPython** (2026-11-10). In the
   three-language comparison CD made 0.4 runs a second on ns-next, 1.1 on
   CPython 3.15's interpreter and 64.7 on the JVM: the one program ns-next

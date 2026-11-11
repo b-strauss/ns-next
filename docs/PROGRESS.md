@@ -64,6 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
+| The debugger: designed in nine decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode | In progress | 2026-11-11 (stage 1) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md) |
 
 ## Notes
 
@@ -7418,8 +7419,19 @@ the hot path's files changed), and every end-of-batch group passed:
   poll included, and the tests assert the machine code they name.
 - `96a3559b`, `638c0483` -- the pause stress mode, named wherever the
   stress modes are listed.
-- This commit -- the documents.
+- `48549efa` -- the documents.
+- `7d45c17e`, `43ceb8da`, `8306c772` -- the final review's fixes: the
+  stack trace reaches the senders a suspension left in their frame
+  objects, a re-attach clears the replaced debugger's bits, and the
+  commands still queued before a run starts and once it ended are
+  dropped, their bit cleared before the queue is drained.
+- `7f44351d` -- what stage 1 moved.
+- This commit -- the batch's open work and the documents checked for a
+  fresh session.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
-(stage 2, the metadata, next) and "A model test of the poll words'
-ordering".
+(stage 2, the metadata, next, and what stage 1's reviews left), "A model
+test of the poll words' ordering" and "What stage 1 of the debugger
+moved, unmeasured"; the final review raised one more open question, an
+answer to the commands queued while no run executes
+([debugger.md](design/debugger.md), "Open questions").

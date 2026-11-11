@@ -2472,8 +2472,9 @@ for what each activation's `Continuation` carries in Rust: a nested class's
 on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
 a value, restarts or terminates), the end of the run a VM error's `signal`
 returns into (`VmErrorSignalled`) and the instruction a future's forcing
-runs again (`Reexecute`) -- and, once the debugger is built, the return of
-an expression it evaluates into its stop, named here for completeness: no
+runs again (`Reexecute`) -- and, once the debugger evaluates expressions,
+the return of an expression it evaluates into its stop, named here for
+completeness: no
 image is written while an evaluation runs, so it is never encoded
 ([debugger.md](debugger.md), "Evaluation"). An image records none of them today, and a
 suspended activation without its continuation would resume without the
