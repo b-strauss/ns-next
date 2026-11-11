@@ -14,8 +14,8 @@
 > the metadata (stop locations and variable tables, stage 2, next),
 > breakpoints and stepping, the DAP agent and the plugin, evaluation, hot
 > swap and edit-and-continue ("Planned: the order of building it"). The
-> design rests on nine decisions made with the user on 2026-11-10 ("The
-> decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
+> design rests on fourteen decisions made with the user, nine on
+> 2026-11-10 and stage 2's five on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
 > and leaves the questions in "Open questions" to be decided. It builds on
 > groundwork that exists: reified activations and the activation stack,
 > suspension into frames, the statement→program-counter table, stable
@@ -595,9 +595,10 @@ on as it would have, but the one the stop deoptimized, in baseline code.
 
 Planned on top of it: a frame shows its body's name (a block as "`[] in
 Foo bar`", from its home link), the source position of its statement and
-the send it stands at, and its registers through the variable table at its
-stored `program_counter`, a variable outside its live range shown as not
-yet assigned.
+the send it stands at, and its named variables through the variable
+table at its stored `program_counter` -- a block's over its whole lexical
+chain (decision 10), never a scratch register, and a variable only over
+its scope's range (decision 13).
 
 ### Values the IDE holds
 
@@ -744,7 +745,8 @@ poll's cost inside machine code beyond what these programs exercise.
 
 ## The decisions
 
-Decided with the user on 2026-11-10, one at a time, each after the
+Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
+to 14, stage 2's, on 2026-11-12, one at a time, each after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
@@ -1020,6 +1022,118 @@ V8's embedder runs a message loop while paused (`runMessageLoopOnPause`,
 debugged process is suspended while the debugger runs beside it. Leaving
 `vm::run` at every stop and every evaluation, and moving the loop's state
 across the safepoint into `World`, is rejected.
+
+### 10. A block's frame shows its whole lexical chain
+
+Decided with the user on 2026-11-12, for stage 2, as decisions 11 to 14
+are. A block's frame shows every variable in scope at its stop: its own
+parameters and temporaries and those of every enclosing block and of its
+method, the innermost of a name shadowing the others. Each is read where
+it lives for that frame: a copied value from the block's own register, a
+vector variable through the vector the frame holds, and a variable the
+block did not capture from the register of the creating activation,
+reached through the closure's `captured_frame` chain, while that
+activation still runs or kept its registers; a variable that lives
+nowhere any more -- its activation returned without a divorce that kept
+its registers, and nothing captured it -- is shown as not available, as
+V8 shows a variable optimized out. Under the reference lowering every
+outer variable is read by reference, so the two lowerings show the same
+names, differing only in which are available after the creator returned.
+
+Primordial Soup does the same: its `DebugInfo` lists every variable of
+the family with its `contextDepth`, and `localsDo:` shows each of a depth
+at most the frame's, read through `enclosingActivation`, a returned
+context's as `nil`
+(`primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns:647-698`).
+Showing only what the block's frame holds, as JDWP shows a Java lambda's
+captured values and V8 a closure's context-allocated variables, is
+rejected: it would show closure conversion, an implementation detail,
+differently under each lowering, and evaluation (decision 8) needs the
+whole chain anyway.
+
+### 11. A body is found by its declaration and equal by its code
+
+A body compiled again is found by its declaration's path -- the names
+from the module's root class, the side, the selector or the kind of
+initializer, and for a block its place in its family -- and is equal to
+the running body when its instructions and side tables are (decision 5),
+whatever its `source` span. Every span of the metadata is in the
+module's current text (`Heap::module_source`), which the compilation
+reads. So a body an edit elsewhere in its module moved keeps its
+metadata, at the place its text now stands; a superseded version still
+running gets the metadata of its current version when the two compile
+equal, its text then unchanged in the current module, and none when the
+edit changed it. Primordial Soup likewise compiles a method's current
+source again (`compileMethodSource: rawMethod source`,
+`primordialsoup/newspeak/Mirrors.ns:2719`).
+
+Requiring the span to be equal too is rejected: every body after an
+edited declaration would lose its names and lines, which under hot swap
+(stage 6) is the common case. Answering spans in the coordinates of the
+text the body's version was read in is rejected, as rebasing spans was
+for the image ([object-model.md](object-model.md), "Source retention and
+provenance"): the agent would have to map each frame's text onto the one
+the IDE shows.
+
+### 12. A factory's frame takes its metadata from the class header
+
+A factory's body is synthesized from its arity (`compiler::factory_body`)
+and has no source, yet stands on every stack between the sender of `C
+x: a` and `C`'s initializer. Its frame takes its metadata from the class
+header: its arguments are named as the factory's parameters in the
+header, it stands at the header's factory message pattern, and it has no
+statement start, so no step stops in it. Its body is equal by
+construction, `factory_body` of the same arity. Primordial Soup's
+`computeDebugInfo:` takes a factory's from the class header the same way
+(`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
+names or position is rejected, since it would be the one frame of an
+ordinary program without a place; hiding it contradicts the
+specification's "accurate and complete stack traces" (§3.6,
+`newspeak-spec.pdf` p. 17) and would need rules of its own for step out,
+restart and force return.
+
+### 13. A frame shows named variables only
+
+A frame shows `self` and its named variables; a scratch register is never
+shown as a variable, as JDWP does not show the JVM's operand stack, V8 no
+intermediate value and Primordial Soup no synthetic local
+(`isSynthetic`, `Newspeak2PrimordialSoupCompilation.ns:693-698`). What a
+scratch register holds at a stop differs between the lowerings -- the
+reference lowering never reuses one, the optimized one resets them at
+every statement -- and the return value of the last call reads its
+send's destination register itself ("The return value of the last
+call"). Showing every scratch register the leftover analysis does not
+taint, and doing so on request, are rejected. A temporary is `nil` from
+its scope's start, so a variable is shown over its scope's instruction
+range and not outside it; there is no "not yet assigned".
+
+### 14. The metadata is checked on three levels
+
+- Targeted tests in `crates/ns-runtime/tests/debugger.rs`: named
+  variables; a block's outer chain, copied, in a vector, by reference,
+  and after its creator returned; a factory's frame; a body after an
+  edit of another declaration; a superseded version the edit changed;
+  an image built with `--strip-source`; and an image whose code the
+  reference lowering compiled.
+- An oracle over every body: a test compiles every body of every golden
+  again under the lowering it runs under, both of them, and requires it
+  equal, and holds the tables to their invariants -- every statement
+  start within the body and at the start of every
+  `statement_program_counter` range, every send entry naming a send of
+  exactly its `CallSite`, every variable's register below `local_count`
+  and its range within the body, every span within the module's text;
+  the shipped modules' bodies are checked once by a test of their own,
+  not per golden; the `images` gate runs it through `build` and `load`,
+  which checks the trial of the optimized lowering and then the
+  reference lowering.
+- The pause stress mode's reader asks for every frame's name, position
+  and named variables through the tables, its outer chain included, so
+  that every golden and the corpus read named variables at real stops,
+  and a debug build refuses a table that names a dead register.
+
+A stress mode of its own that asks for every pushed body's metadata is
+rejected: it covers only the bodies that run, which the oracle covers
+without a stress run.
 
 ## Planned: the mechanisms
 
