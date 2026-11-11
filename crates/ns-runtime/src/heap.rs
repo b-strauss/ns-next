@@ -402,10 +402,31 @@ const FLOAT_DISPATCH_INDEX: usize = 4;
 /// field, the double's bits (`allocate_float`, `set_float_class`).
 const BOXED_FLOAT_WORDS: usize = 2;
 
-/// What `MachineWord::SafepointRequested` reads while only a stress mode
-/// holds the request (`Heap::set_safepoint_requested`,
-/// `Heap::hold_safepoint_request`); a real request writes 1 over it.
-pub(crate) const STRESS_HOLD: u64 = 2;
+/// The bit of `MachineWord::SafepointRequested` the VM's own request sets:
+/// a collection's, a scavenge's, a full code zone's
+/// (`Heap::request_safepoint`).
+pub(crate) const REAL_REQUEST: u64 = 1 << 0;
+
+/// The bit of `MachineWord::SafepointRequested` a stress mode holds
+/// (`Heap::set_safepoint_requested`, `Heap::hold_safepoint_request`): every
+/// poll takes it, but it lowers no depth limit, so that compiled frames
+/// still nest under a stress mode.
+pub(crate) const STRESS_HOLD: u64 = 1 << 1;
+
+/// The bit of `MachineWord::SafepointRequested` the debugger's agent sets
+/// to pause the program at its next safepoint; only the VM clears it, once
+/// it served it (`Heap::clear_debugger_bits`).
+pub(crate) const DEBUGGER_PAUSE: u64 = 1 << 2;
+
+/// The bit of `MachineWord::SafepointRequested` the debugger's agent sets
+/// once it queued a command for the next safepoint to serve; only the VM
+/// clears it, before it drains the queue (`Heap::clear_debugger_bits`).
+pub(crate) const DEBUGGER_COMMANDS: u64 = 1 << 3;
+
+/// The request bits that lower `MachineWord::DepthLimit` to 0 while set,
+/// so that a compiled callee's one compare refuses its push for them too:
+/// every bit but the stress hold's (`Heap::synchronize_depth_limit`).
+pub(crate) const LOWERS_DEPTH_LIMIT: u64 = REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS;
 
 /// `Value::immediate_index`'s for a `SmallInteger`, which machine code's
 /// guard and class idioms compute as it does.
@@ -2228,8 +2249,8 @@ pub struct Heap<'gc> {
     /// Otherwise the safepoint that takes a request clears it.
     machine_words: MachineWords,
     /// The limit `set_depth_limit` was last given, which the
-    /// `MachineWord::DepthLimit` word holds while no real safepoint
-    /// request is pending (`write_safepoint_request`).
+    /// `MachineWord::DepthLimit` word holds while no request bit that
+    /// lowers it is set (`synchronize_depth_limit`).
     depth_limit: usize,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
@@ -7134,15 +7155,12 @@ impl<'gc> Heap<'gc> {
 
     /// Sets the depth limit: the limit with the reserve free, or past the
     /// reserve while it is held (`Mutator::set_depth_reserve`). Its word
-    /// takes it at once unless a real safepoint request holds the word at
-    /// 0, in which case the request's clearing gives it the limit
-    /// (`write_safepoint_request`).
+    /// takes it at once unless a request bit that lowers it holds the
+    /// word at 0, in which case clearing the bit gives it the limit
+    /// (`synchronize_depth_limit`).
     pub(crate) fn set_depth_limit(&mut self, limit: usize) {
         self.depth_limit = limit;
-        if !self.real_safepoint_requested() {
-            self.machine_words
-                .set(MachineWord::DepthLimit, limit as u64);
-        }
+        self.synchronize_depth_limit();
     }
 
     /// The word of the machine words `word` names, for a test.
@@ -7666,6 +7684,19 @@ impl<'gc> Heap<'gc> {
         );
         self.frame_words_mut(frame)[frame_field::PROGRAM_COUNTER] =
             count_word(program_counter).bits();
+    }
+
+    /// The program counter `frame` stores while its activation is not on
+    /// the stack: a suspended activation's, where it goes on from once
+    /// resumed -- the debugger's stop reads a suspended sender's here
+    /// (`debugger::stack`) -- or a returned one's last. A married frame's
+    /// lives on the activation stack (`activation_program_counter`).
+    pub(crate) fn frame_stored_program_counter(&self, frame: FrameReference<'gc>) -> usize {
+        debug_assert!(
+            self.frame_activation(frame).is_none(),
+            "a married frame's program counter lives on the activation stack"
+        );
+        self.frame_count_field(frame, frame_field::PROGRAM_COUNTER)
     }
 
     pub fn frame_home(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
@@ -9750,68 +9781,121 @@ impl<'gc> Heap<'gc> {
         self.machine_words.get(MachineWord::SafepointRequested) != 0
     }
 
-    /// Whether a real request is pending -- a collection's, an
-    /// interrupt's -- rather than a stress mode's hold (`STRESS_HOLD`),
-    /// which the run loop takes at its next poll all the same.
+    /// Whether a request that lowers the depth limit is pending -- the
+    /// VM's own, a collection's or a full code zone's, or the debugger's
+    /// pause or commands -- rather than only a stress mode's hold
+    /// (`STRESS_HOLD`), which the run loop takes at its next poll all the
+    /// same.
     pub(crate) fn real_safepoint_requested(&self) -> bool {
-        self.machine_words.get(MachineWord::SafepointRequested) == 1
+        self.machine_words.get(MachineWord::SafepointRequested) & LOWERS_DEPTH_LIMIT != 0
     }
 
-    /// A request served (`Interpreter::safepoint`).
+    /// The debugger's bits of the request word that are set: the pause
+    /// the agent asked for and the commands it queued
+    /// (`Interpreter::serve_debugger`).
+    pub(crate) fn debugger_bits(&self) -> u64 {
+        self.machine_words.get(MachineWord::SafepointRequested)
+            & (DEBUGGER_PAUSE | DEBUGGER_COMMANDS)
+    }
+
+    /// The VM's request served, and a stress mode's hold with it
+    /// (`Interpreter::safepoint`). The debugger's bits stay: only
+    /// `clear_debugger_bits` clears them, once the VM served them.
     pub(crate) fn clear_safepoint_request(&mut self) {
-        self.write_safepoint_request(0);
+        self.machine_words.fetch_and(
+            MachineWord::SafepointRequested,
+            !(REAL_REQUEST | STRESS_HOLD),
+        );
+        self.synchronize_depth_limit();
     }
 
-    /// Writes the safepoint request's word, the one way it is written, and
-    /// with it the depth limit's: 0 exactly while a real request (1) is
-    /// pending, the limit `set_depth_limit` last set otherwise. A compiled
-    /// callee's prologue compares the depth count with that one word, so a
-    /// real request refuses every compiled push without a compare of its
-    /// own, and the interpreter takes the push and the safepoint
-    /// (`jit::sends::prologue`). A stress mode's hold (`STRESS_HOLD`)
-    /// lowers nothing, so that under a stress mode compiled frames still
-    /// nest.
-    fn write_safepoint_request(&mut self, word: u64) {
+    /// The debugger's `bits` served: the pause the VM stopped for, the
+    /// commands it is about to drain -- cleared before the queue is
+    /// drained, so that a command queued meanwhile keeps its bit for the
+    /// next safepoint (`docs/design/debugger.md`, "Commands while the
+    /// program runs").
+    pub(crate) fn clear_debugger_bits(&mut self, bits: u64) {
+        debug_assert_eq!(
+            bits & !(DEBUGGER_PAUSE | DEBUGGER_COMMANDS),
+            0,
+            "only the debugger's bits"
+        );
         self.machine_words
-            .set(MachineWord::SafepointRequested, word);
-        let limit = if word == 1 {
+            .fetch_and(MachineWord::SafepointRequested, !bits);
+        self.synchronize_depth_limit();
+    }
+
+    /// Writes the depth limit's word after every write of the request
+    /// word and of the limit: 0 while a bit of `LOWERS_DEPTH_LIMIT` is
+    /// set, the limit `set_depth_limit` last set otherwise. A compiled
+    /// callee's prologue compares the depth count with that one word, so a
+    /// pending request refuses every compiled push without a compare of
+    /// its own, and the interpreter takes the push and the safepoint
+    /// (`jit::sends::prologue`). A stress mode's hold lowers nothing, so
+    /// that under a stress mode compiled frames still nest.
+    ///
+    /// The debugger's agent sets its bit with a `fetch_or` and then stores
+    /// 0 into the limit word, from another thread. The fence between this
+    /// store and the second read of the request word closes the
+    /// store-buffering race: without it, the read could miss the agent's
+    /// bit while this store lands after the agent's 0, and the pause would
+    /// be lost to every compiled push -- a computation that only recurses
+    /// in machine code would never stop. With it, either this second read
+    /// sees the bit, or the agent's store of 0 comes after this one.
+    fn synchronize_depth_limit(&self) {
+        let lowered = |words: &MachineWords| {
+            words.get(MachineWord::SafepointRequested) & LOWERS_DEPTH_LIMIT != 0
+        };
+        let limit = if lowered(&self.machine_words) {
             0
         } else {
             self.depth_limit as u64
         };
         self.machine_words.set(MachineWord::DepthLimit, limit);
+        MachineWords::fence();
+        if limit != 0 && lowered(&self.machine_words) {
+            self.machine_words.set(MachineWord::DepthLimit, 0);
+        }
     }
 
-    /// Holds the request set for a stress mode, or drops it. A held
-    /// request reads `STRESS_HOLD`, not a real request's 1: every poll
-    /// takes it, but a compiled callee's machine entry refuses only a real
-    /// one (`jit::sends::prologue`), so that under a stress mode compiled
-    /// frames still nest, and the collections the mode makes at the polls
-    /// inside them run over the frames the exit materializes.
+    /// Holds the request set for a stress mode, or drops the hold. The
+    /// hold is its own bit (`STRESS_HOLD`): every poll takes it, but a
+    /// compiled callee's machine entry refuses only a request that lowers
+    /// the depth limit (`jit::sends::prologue`), so that under a stress
+    /// mode compiled frames still nest, and the collections the mode makes
+    /// at the polls inside them run over the frames the exit
+    /// materializes. Dropping it leaves every other bit standing.
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
-        let word = if requested { STRESS_HOLD } else { 0 };
-        self.write_safepoint_request(word);
+        if requested {
+            self.machine_words
+                .fetch_or(MachineWord::SafepointRequested, STRESS_HOLD);
+        } else {
+            self.machine_words
+                .fetch_and(MachineWord::SafepointRequested, !STRESS_HOLD);
+        }
+        self.synchronize_depth_limit();
     }
 
     /// Holds the request for the deopt stress mode's next safepoint, as a
-    /// stress mode holds it (`STRESS_HOLD`), unless a request stands
-    /// already, a real one above all, whose lowered depth limit this must
-    /// not raise: the safepoint sets the countdown a forced exit spent
-    /// (`jit::JitState::take_forced_exit`). In every build, as the mode's
-    /// hook is.
+    /// stress mode holds it (`STRESS_HOLD`), beside any request standing
+    /// already, whose bits it leaves: the safepoint sets the countdown a
+    /// forced exit spent (`jit::JitState::take_forced_exit`). In every
+    /// build, as the mode's hook is.
     #[cfg(ns_jit)]
     pub(crate) fn hold_safepoint_request(&mut self) {
-        if !self.safepoint_requested() {
-            self.write_safepoint_request(STRESS_HOLD);
-        }
+        self.machine_words
+            .fetch_or(MachineWord::SafepointRequested, STRESS_HOLD);
+        self.synchronize_depth_limit();
     }
 
     /// Asks the run loop's next safepoint to take its slow path: an
     /// allocation's limits, and a compile that found the code zone full
     /// (`jit::after_compile_trigger`).
     pub(crate) fn request_safepoint(&mut self) {
-        self.write_safepoint_request(1);
+        self.machine_words
+            .fetch_or(MachineWord::SafepointRequested, REAL_REQUEST);
+        self.synchronize_depth_limit();
     }
 
     // ---------- What machine code is entered with ----------
@@ -9825,9 +9909,11 @@ impl<'gc> Heap<'gc> {
         self.machine_words.address()
     }
 
-    /// Another handle to the machine words, for the JIT, whose budget
+    /// Another handle to the machine words: for the JIT, whose budget
     /// words name the unpointed budget among them before they name a row
-    /// (`JitState::share_machine_words`).
+    /// (`JitState::share_machine_words`), and for the debugger's remote,
+    /// which arms the poll through it from the agent's thread
+    /// (`Interpreter::attach_debugger`).
     pub(crate) fn machine_words_handle(&self) -> MachineWords {
         self.machine_words.clone()
     }
@@ -20223,9 +20309,114 @@ mod tests {
         heap.set_safepoint_requested(false);
         assert_eq!(
             heap.machine_word(MachineWord::DepthLimit),
-            MAX_ACTIVATION_DEPTH as u64,
-            "dropping the hold over a real request gives the limit back"
+            0,
+            "dropping the hold leaves a real request standing"
         );
+        heap.clear_safepoint_request();
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            MAX_ACTIVATION_DEPTH as u64,
+            "serving the real request gives the limit back"
+        );
+    }
+
+    /// The agent's two writes, as its thread makes them: the bit, then the
+    /// limit word, both sequentially consistent (`fetch_or` is).
+    fn arm_a_debugger_pause(words: &MachineWords) {
+        words.fetch_or(MachineWord::SafepointRequested, DEBUGGER_PAUSE);
+        words.set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+
+    #[test]
+    fn a_debugger_pause_lowers_the_depth_limit() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        let mut heap = Heap::new();
+        arm_a_debugger_pause(&heap.machine_words);
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        assert_eq!(heap.machine_word(MachineWord::DepthLimit), 0);
+        assert!(heap.real_safepoint_requested());
+    }
+
+    #[test]
+    fn serving_the_vm_s_request_keeps_the_debugger_s_bits() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        let mut heap = Heap::new();
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        arm_a_debugger_pause(&heap.machine_words);
+        heap.request_safepoint();
+        heap.clear_safepoint_request();
+        assert_eq!(
+            heap.machine_word(MachineWord::SafepointRequested),
+            DEBUGGER_PAUSE
+        );
+        assert_eq!(heap.machine_word(MachineWord::DepthLimit), 0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_stress_hold_does_not_lower_the_depth_limit() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        let mut heap = Heap::new();
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        heap.set_safepoint_requested(true);
+        assert!(heap.safepoint_requested());
+        assert!(!heap.real_safepoint_requested());
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            MAX_ACTIVATION_DEPTH as u64
+        );
+    }
+
+    #[test]
+    fn clearing_the_debugger_s_bits_restores_the_depth_limit() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        let mut heap = Heap::new();
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        arm_a_debugger_pause(&heap.machine_words);
+        heap.clear_debugger_bits(DEBUGGER_PAUSE);
+        assert_eq!(heap.machine_word(MachineWord::SafepointRequested), 0);
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            MAX_ACTIVATION_DEPTH as u64
+        );
+    }
+
+    /// The store-buffering race the fence closes: the VM stores the limit
+    /// and reads the request word, the agent sets its bit and stores 0
+    /// into the limit. Without the fence, the VM's read may miss the bit
+    /// while its store lands after the agent's 0, and the pause is lost to
+    /// every compiled push.
+    #[test]
+    fn no_pause_is_lost_to_a_racing_depth_limit_write() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        use std::sync::{Arc, Barrier};
+        const ROUNDS: usize = 10_000;
+        const WRITES_PER_ROUND: usize = 4;
+        let mut heap = Heap::new();
+        let agent_words = heap.machine_words_handle();
+        let barrier = Arc::new(Barrier::new(2));
+        let agent_barrier = Arc::clone(&barrier);
+        let agent = std::thread::spawn(move || {
+            for _ in 0..ROUNDS {
+                agent_barrier.wait();
+                arm_a_debugger_pause(&agent_words);
+                agent_barrier.wait();
+            }
+        });
+        for round in 0..ROUNDS {
+            barrier.wait();
+            for _ in 0..WRITES_PER_ROUND {
+                heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+            }
+            barrier.wait();
+            assert_eq!(
+                heap.machine_word(MachineWord::DepthLimit),
+                0,
+                "the pause of round {round} was lost"
+            );
+            heap.clear_debugger_bits(DEBUGGER_PAUSE);
+        }
+        assert!(agent.join().is_ok());
     }
 
     #[test]

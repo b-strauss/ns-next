@@ -643,11 +643,26 @@ pub struct Interpreter {
     /// cell. Debug builds only.
     #[cfg(debug_assertions)]
     stress_zone: Option<safepoint::StressSchedule>,
+    /// The pause stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_PAUSE`, or `set_stress_pause`): the run stopped as
+    /// for a debugger's pause at the safepoints its schedule picks, its
+    /// whole stack and every value one level deep read, and continued
+    /// (`debugger::StressReader`). Paced like the collect stress mode,
+    /// since a stop reads the whole run's stack. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_pause: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
     #[cfg(debug_assertions)]
     cache_invalidations: usize,
+    /// The attached debugger, which the run loop's safepoint serves
+    /// (`attach_debugger`, `serve_debugger`); `None` until a host attaches
+    /// one, and again once its remote is gone.
+    pub(crate) debugger: Option<crate::debugger::Debugger>,
+    /// The lock every remote of this interpreter arms the poll under, and
+    /// which of them may (`debugger::Arming`).
+    pub(crate) debugger_arming: crate::debugger::Arming,
 }
 
 impl Interpreter {
@@ -703,7 +718,11 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
+            stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
+            #[cfg(debug_assertions)]
             cache_invalidations: 0,
+            debugger: None,
+            debugger_arming: crate::debugger::Arming::default(),
         };
         #[cfg(debug_assertions)]
         {
@@ -901,9 +920,14 @@ impl Interpreter {
         let result = match start {
             HostStart::Finished(result) => result,
             HostStart::Run(activation) => {
+                // A debugger's command is served by the run it arrives
+                // during: one queued between runs, or left by the run
+                // before, ends none (`Interpreter::drop_queued_commands`).
+                self.drop_queued_commands();
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                self.drop_queued_commands();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
                 // to the next check to find so.

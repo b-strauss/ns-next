@@ -64,6 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
+| The debugger: designed in nine decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode | In progress | 2026-11-11 (stage 1) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md) |
 
 ## Notes
 
@@ -7329,3 +7330,108 @@ under QEMU).
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "CD runs slower
 on ns-next than on CPython", "The send- and object-heavy programs are
 barely ahead of CPython" and "A comparison in containers".
+
+## The debugger designed, and its first stage: the debugging API at the safepoint (2026-11-11)
+
+[debugger.md](design/debugger.md), "The debugging API at the safepoint",
+"The decisions"; [execution.md](design/execution.md), "The machine
+words", "Polls and the depth check".
+
+The debugger was designed with the user on 2026-11-10 in nine
+decisions, each after the specification, the prior art and the
+repository's invariants: one debugging API in Rust with the DAP agent in
+`ns-cli` and `ActivationMirror` as its clients, breakpoints patched into
+the body in place, stepping by one-shot breakpoints and the safepoint,
+statement starts as stop locations with every send recorded, the
+metadata compiled again on demand and verified, DAP over a localhost
+socket, pause arming the poll words from the agent's thread, an
+expression evaluated as a block in the stop's scope, and a stop waiting
+at the run loop's safepoint; the mechanisms they imply were checked
+against the code in three reviews, and fifteen smaller questions are
+left open, each to be decided before the stage that needs it. The order
+of building it is six stages.
+
+The first stage is built. `Interpreter::attach_debugger` hands out a
+`DebugRemote` that may move to another thread: its `pause` stops the
+program at its next safepoint wherever it runs -- interpreted, in a
+loop of baseline machine code, in compiled recursion, at a poll of
+optimized code -- and its `send` queues a command the next safepoint
+serves while the program runs. The heap's machine words became
+`AtomicU64`s behind an `Arc`, every hot access `Relaxed`, the plain
+instruction the `Cell`s compiled to, so the interpreter's poll and
+machine code's are unchanged (the codegen gate's count of `vm::run`
+unchanged by the atomics, and at 9,283 instructions and 46 wide loads
+with the debugger's service). The request word became a set of bits -- the VM's
+request, the stress hold, the debugger's pause and commands -- each set
+by a `fetch_or` and cleared by a `fetch_and`, so that no writer erases
+another's; every bit but the hold's lowers `DepthLimit` to 0, and
+`Heap::synchronize_depth_limit` fences its store of the limit against
+the agent's two writes, so that a pause is never lost to a racing write
+of the limit. One arming lock per interpreter, shared by every remote it
+hands out, keeps the VM's clearing of a debugger bit from falling
+between the agent's two writes, and says which attachment is current,
+so that a detached or replaced remote arms nothing.
+
+The safepoint serves the debugger first: the commands queued while the
+program runs, the bit cleared before the queue is drained, and then a
+pause, whose stop makes a frame its optimized code's poll left go on in
+baseline code (`jit::deoptimize_stopped_at_poll`, now in every JIT
+build), sends `Stopped` and blocks on the command channel. A stop
+answers the run's frames, innermost first, each with its kind, its
+program counter, its body's span and its receiver; a frame's receiver,
+arguments and the registers below its first scratch register that the
+leftover analysis does not find tainted; and an instance's fields and
+an `Array`'s elements, paged, every value held as a `Root` for the stop
+and named by an id no later stop reuses. `Continue` goes on;
+`Terminate`, at a stop or while running, ends the run through the one
+unwinder, its `ensure:` blocks run, the host's send answering "the
+debugger terminated the program"; a dropped remote detaches the
+debugger and lets the program finish. The pause stress mode
+(`NS_NEXT_STRESS_PAUSE`) stops every program at the safepoints its
+schedule picks and reads its whole stack, every frame's variables and
+every value one level deep, so that the stress gate, thirteen modes now,
+shows reading a stopped stack never changes an outcome nor reads a dead
+register. `crates/ns-runtime/tests/debugger.rs` holds the API to its
+behaviour, the machine-code pauses to the machine code they name. No
+golden's outcome changed.
+
+Measured against `master`, three pinned builds a side, every process
+held to the performance cores: -0.61% on the geometric mean of the
+twenty-three sources, the two sides' builds interleaving, no program
+separated slower in the main sitting ("What stage 1 moved").
+
+The commit gates passed on every commit (`commit`, and `codegen` where
+the hot path's files changed), and every end-of-batch group passed:
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
+-- the suite under each of the thirteen modes and without the JIT --
+`linux` and `aarch64`.
+
+- `b643ef3c` -- the debugger's design, decided.
+- `6aac21fe` -- the plan
+  (`docs/superpowers/plans/2026-11-10-2318-debugger-stage-1.md`).
+- `38435766` -- the machine words as atomics shared through an `Arc`.
+- `4feb72ec` -- the safepoint request as a set of bits, the debugger's
+  among them, and the fenced synchronization of the depth limit.
+- `27276716`, `2c014414` -- pause, continue and terminate at the
+  safepoint, and one arming lock per interpreter.
+- `f48844c9` -- the stack and values of a stopped run.
+- `b578a325`, `6312276c` -- a pause stops machine code, an optimized
+  poll included, and the tests assert the machine code they name.
+- `96a3559b`, `638c0483` -- the pause stress mode, named wherever the
+  stress modes are listed.
+- `48549efa` -- the documents.
+- `7d45c17e`, `43ceb8da`, `8306c772` -- the final review's fixes: the
+  stack trace reaches the senders a suspension left in their frame
+  objects, a re-attach clears the replaced debugger's bits, and the
+  commands still queued before a run starts and once it ended are
+  dropped, their bit cleared before the queue is drained.
+- `7f44351d` -- what stage 1 moved.
+- This commit -- the batch's open work and the documents checked for a
+  fresh session.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
+(stage 2, the metadata, next, and what stage 1's reviews left), "A model
+test of the poll words' ordering" and "What stage 1 of the debugger
+moved, unmeasured"; the final review raised one more open question, an
+answer to the commands queued while no run executes
+([debugger.md](design/debugger.md), "Open questions").

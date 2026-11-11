@@ -84,10 +84,14 @@
 > the code zone's compaction and freeing in `jit/zone.rs`; the
 > optimizing compiler in `jit/optimizing/`, and its request, install,
 > entries, copies, traps, retirement and invalidation in `jit/mod.rs`),
-> `heap/machine_entries.rs` (the machine entry table the closure stubs
-> read), `heap/optimization_budgets.rs` (the budget rows baseline code
-> spends), `heap/optimized_copies.rs` (the dispatching rows the
-> dispatching stub compares), `crates/ns-assembler` (the operations, the x64 encoder in
+> `heap/machine_words.rs` (the machine words, atomics behind an `Arc`,
+> the safepoint request among them, which an attached debugger's remote
+> arms from its own thread; `crates/ns-runtime/src/debugger/` serves it at
+> the safepoint), `heap/machine_entries.rs` (the machine entry table the
+> closure stubs read), `heap/optimization_budgets.rs` (the budget rows
+> baseline code spends), `heap/optimized_copies.rs` (the dispatching rows
+> the dispatching stub compares), `crates/ns-assembler` (the
+> operations, the x64 encoder in
 > `x64.rs` and the AArch64 encoder in `aarch64.rs`),
 > `crates/ns-runtime/build.rs` (which targets set `cfg(ns_jit)`),
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
@@ -610,7 +614,7 @@ handle, and it is never serialized.
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last, and below a frame that
 returns to a suspended frame, the suspended frames by their `sender`. That is
-what the debugger will reflect over and what the collector scans. An image
+what the debugger reads at a stop and what the collector scans. An image
 serializes reified frames only, and is written when nothing is running
 ([image-format.md](image-format.md)).
 
@@ -867,13 +871,21 @@ enters again. A scavenge is requested by an allocation that fills eden to its
 threshold or finds eden spent, and by a remembered set past its limit, through
 the barrier or after a scavenge; a full collection once the old space's
 occupancy reaches its limit, checked by an allocation that goes old and after
-every scavenge ([memory.md](memory.md), "Generations"); and the debug-build
-move, cache, collection, scavenge and suspend stress modes keep the flag set
-while they are on. The stretch also writes the running activation's
-`program_counter` into its stack frame as it leaves, so that a suspension at
-the safepoint finds it; `Interpreter::safepoint` answers whether the suspend
-stress mode rebuilt the stack, and `run` then reads its `FrameRegisters`
-afresh from the top frame ("Suspending and resuming" above). That is sound
+every scavenge ([memory.md](memory.md), "Generations"); an attached
+debugger's agent sets it from its own thread, for a pause or a command it
+queued ([debugger.md](debugger.md), "The debugging API at the safepoint");
+and the debug-build stress modes that work at the safepoint -- the move,
+cache, collect, scavenge, suspend, zone and pause modes -- hold it set while
+they are on. The flag is a word of bits, one per kind of request, and the
+poll tests the whole word ("Polls and the depth check" below). The stretch
+also writes the running activation's `program_counter` into its stack frame
+as it leaves, so that a suspension at the safepoint finds it;
+`Interpreter::safepoint` answers a `SafepointOutcome`: `Rebuilt` when the
+suspend stress mode rebuilt the stack, and `run` then reads its
+`FrameRegisters` afresh from the top frame ("Suspending and resuming"
+above), and `Terminate` when the debugger terminated the run, which `run`
+ends through the unwinder from the top activation
+(`vm::terminate_at_safepoint`). That is sound
 because of what `run` carries across the safepoint, which the compiler holds
 it to, since the stretch's entry has ended before it: `FrameRegisters` — the
 running `ActivationReference`, the word offset of its frame on the stack, and
@@ -961,8 +973,11 @@ loop never switches activations between them. Keeping the store out of the
 straight-line arms takes a write off the hot path for a value nothing observes
 there.
 
-Whether a debugger will force `program_counter` at every instruction is an open question for
-the milestone that builds one; it is a deliberate trade, not an oversight.
+The debugger does not force `program_counter` at every instruction: a
+stop leaves its stretch for the safepoint, which stores the stopped
+frame's, and a pause's stop is built so ([debugger.md](debugger.md), "9. A
+stop waits at the run loop's safepoint", "The stop"); a breakpoint's and a
+step's stop, planned, will do the same.
 
 ## Unwinding
 
@@ -11589,9 +11604,17 @@ activation may assume. The baseline JIT and the optimizing tier's first
 three stages are built to it ("The baseline JIT's foundation", "The
 optimizing tier's foundation", "Speculation", "Inlining"); what is not
 built yet is said where it stands: the raw area (the optimizing tier's
-stage 5), a frame object for an inlined activation and the non-local
-return into an inlined home (stage 4), and reading an inlined
-activation for the debugger. The interpreter
+stage 5), a frame object for an inlined activation and the
+non-local return into an inlined home (stage 4). A frame stopped at a
+poll of optimized code is deoptimized on demand in every JIT build: the
+exit writes the inlined scopes' headers, but a poll's exit defers the
+blocks the copy eliminated, and `jit::deoptimize_stopped_at_poll` makes
+them during the safepoint, for the debugger's stop and termination and
+the suspend stress mode, before anything reads or rebuilds the stack;
+otherwise they are made after it, when the frame cannot go back in
+(`resumed_at_poll` calling `deoptimize_at_poll`) ([debugger.md](debugger.md),
+"The stop").
+The interpreter
 stays the source of truth ([liveness-and-reflection.md](liveness-and-reflection.md),
 "The unifying principle"): every compiled frame can be turned into the
 interpreted activations it stands for, and nothing a program, the
@@ -12996,7 +13019,9 @@ turn of the loop. Otherwise its blocks are made and every scope goes
 on in baseline code, as after any exit (`deoptimize_at_poll`); the
 suspend stress mode, the one rebuild of the stack, deoptimizes a
 stopped frame before it suspends (`jit::deoptimize_stopped_at_poll`),
-and a forced exit at a poll is deoptimized at once.
+as the debugger's stop does before the agent reads the stack and its
+termination before the unwind pops the frame ([debugger.md](debugger.md),
+"The stop"), and a forced exit at a poll is deoptimized at once.
 
 **The poll's entry restores what the code past it reads**
 (`metadata::poll_restores`, which the emitter and a debug build's
@@ -14310,12 +14335,25 @@ a foreign one to the protected reference, undefined behaviour under the
 aliasing model once a leaf has written the word, though no processor
 notices and Miri cannot run machine code to find it. Such words are the
 heap's **machine words** (`heap/machine_words.rs`): an allocation of
-their own, `Cell`s behind an `Rc` the heap holds, which Rust reads and
-writes only through shared references and never borrows mutably, and
-which machine code reaches through block word `MachineWords` (11). An
-`Rc` rather than a `Box`, since a `Box` is retagged as unique wherever it
-moves. Today they hold the safepoint request, which the interpreter's
-poll and machine code's both read (`Heap::safepoint_requested`); the
+their own, `AtomicU64`s behind an `Arc` the heap holds, which Rust reads
+and writes only through shared references and never borrows mutably
+(`Arc::get_mut` is never called), and which machine code reaches through
+block word `MachineWords` (11), an address derived from the `Arc`'s own
+pointer. An `Arc` rather than a `Box`, since a `Box` is retagged as
+unique wherever it moves, and an `Arc` rather than an `Rc`, so that a
+clone crosses to another thread: an attached debugger's agent arms the
+safepoint request from its own ([debugger.md](debugger.md), "The poll
+words as atomics"). Every access of the mutator's to them is `Relaxed`
+-- on x64 and AArch64 the plain load or store a `Cell`'s would be, so the
+interpreter's poll and machine code's are the same instructions as
+without another thread, and machine code's own plain stores stay
+correct -- with two exceptions on the cold path: a change to the request
+word, which another thread may change at the same time, is a `SeqCst`
+`fetch_or` or `fetch_and`, and `Heap::synchronize_depth_limit` issues a
+`SeqCst` fence between its store of the depth limit and its second read
+of the request word. Today they hold the safepoint request, which the
+interpreter's poll and machine code's both read
+(`Heap::safepoint_requested`); the
 depth count (`DepthCount`, which `Heap::counted_depth` reads and the
 push and pop write, so that the count lives nowhere else), the depth
 limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` exactly while a VM
@@ -15247,14 +15285,40 @@ above): a compiled callee's prologue compares the depth count with the
 `DepthLimit` machine word and nothing else, and a real safepoint request
 lowers that word to 0 while it is pending, so the one compare refuses the
 push for the depth and the request alike, and the interpreter takes the
-push and, at it, the safepoint. Every write of the request word goes
-through `Heap::write_safepoint_request`, which writes the limit word with
-it -- 0 exactly while the request word is a real request's 1, the limit
-`set_depth_limit` last set otherwise -- so a debug build's stress hold
-(`STRESS_HOLD`) lowers nothing and compiled frames still nest under a
-stress mode, their polls taking the hold; the interpreter's own push
-compares against its constants and never reads the word. A back edge
-compares against the request word itself, one compare,
+push and, at it, the safepoint. The request word
+(`MachineWord::SafepointRequested`) is a set of bits (`heap.rs`): the
+VM's own request (`REAL_REQUEST`, bit 0: a collection's, a scavenge's, a
+full code zone's, `Heap::request_safepoint`), a stress mode's hold
+(`STRESS_HOLD`, bit 1), and an attached debugger's pause and commands
+(`DEBUGGER_PAUSE`, bit 2, and `DEBUGGER_COMMANDS`, bit 3), which its
+agent sets from its own thread ([debugger.md](debugger.md), "The poll
+words as atomics"). Each bit is set by a `SeqCst` `fetch_or` and cleared
+by a `fetch_and`, so that no writer erases another's: the VM clears its
+own bit and the hold once it served them (`Heap::clear_safepoint_request`),
+the debugger's only once it served those (`Heap::clear_debugger_bits`),
+and the agent clears none. `LOWERS_DEPTH_LIMIT` is every bit but the
+hold's (`REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS`), and a "real"
+request (`Heap::real_safepoint_requested`) is one of its bits. Every
+write of the request word, and of the depth limit, is followed by
+`Heap::synchronize_depth_limit`, which writes the limit word -- 0 exactly
+while a bit of `LOWERS_DEPTH_LIMIT` is set, the limit `set_depth_limit`
+last set otherwise. The debugger's bits therefore lower it as the VM's own
+request does, so that a pause stops a computation that only recurses in
+machine code, whose prologues read nothing but the limit; a debug build's
+stress hold lowers nothing, so compiled frames still nest under a stress
+mode, their polls taking the hold. The agent's two writes -- its bit,
+then a store of 0 into the limit word, both `SeqCst` -- race with the
+VM's own writes of the limit, so `synchronize_depth_limit` issues a
+`SeqCst` fence between its store of the limit and a second read of the
+request word, and stores 0 if a lowering bit is set by then: either the
+second read sees the agent's bit, or the agent's 0 lands after the VM's
+store, and no pause is lost to a store-buffering reordering, which x64
+allows. One lock per interpreter keeps the VM's clearing of a debugger bit
+from falling between the agent's two writes ([debugger.md](debugger.md),
+"The arming lock"). The interpreter's own push compares against its
+constants and never reads the limit word. A back edge compares the
+whole request word with zero, as the interpreter's poll does, so that
+every bit, the hold's included, takes the safepoint -- one compare,
 as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
 a back edge only when its budget runs out
 (`src/interpreter/interpreter-generator.cc:2520-2521`). A back edge's
@@ -15795,7 +15859,9 @@ baseline JIT's foundation" above).
   decision and an activation, which preserves this: the decision stays in
   `interpreter/`, and only running what it decided is the loop's.
 - **`program_counter` is stored only at observable points**, not at every instruction — a
-  deliberate hot-path trade the debugger milestone may have to revisit.
+  deliberate hot-path trade the debugger keeps, since a stop leaves
+  its stretch for the safepoint, which stores it ([debugger.md](debugger.md),
+  "The stop").
 - **Activations are stack frames, reified on demand**, because the
   always-reified model cost about 41% of a send, before the arena, for a structure
   most activations never expose. The arena took the `Rc` box and the `RefCell`

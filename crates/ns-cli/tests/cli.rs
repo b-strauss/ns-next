@@ -504,6 +504,7 @@ fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) ->
         "CACHES",
         "INVALIDATE",
         "WIDE",
+        "PAUSE",
     ] {
         command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
     }
@@ -710,6 +711,7 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_OPTIMIZE")
         .env_remove("NS_NEXT_STRESS_DEOPT")
         .env_remove("NS_NEXT_STRESS_INVALIDATE")
+        .env_remove("NS_NEXT_STRESS_PAUSE")
         .output()
         .unwrap();
     assert_eq!(

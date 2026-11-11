@@ -714,3 +714,74 @@ ns_runtime::for_each_lowering! {
         assert!(suspensions > 0, "the suspend stress mode never suspended");
     }
 }
+
+// The pause stress mode: at the safepoints its schedule picks, the run
+// stops as for a debugger's pause, its whole stack and every value one
+// level deep read, and goes on (`docs/design/debugger.md`, "The pause
+// stress mode").
+
+/// Closures that capture and write their method's locals, an array of
+/// them, and a recursion a thousand activations deep, each running a short
+/// loop whose back edge is a safepoint, so that the stops read deep stacks
+/// of blocks, arrays and instances.
+const PAUSED_PROGRAM: &str = indoc! {"
+    class Paused = Object new (
+    ) (
+      class Holder = Object new (
+        | public blocks = Array new: 4. public total ::= 0. |
+      ) (
+      ) : ()
+      depth: count holder: holder = (
+        | index ::= 0. |
+        [index < 2] whileTrue: [index:: index + 1].
+        count = 0 ifTrue: [^0].
+        holder total: holder total + 1.
+        ^count + (self depth: count - 1 holder: holder)
+      )
+      public run = (
+        | sum holder |
+        sum:: 0.
+        holder:: Holder new.
+        1 to: 4 do: [:index | holder blocks at: index put: [:each | sum:: sum + (each * index)]].
+        1 to: 100 do: [:each | holder blocks do: [:block | block value: each]].
+        sum:: sum + (self depth: 1000 holder: holder).
+        ^sum + holder total
+      )
+    ) : ()
+"};
+
+/// How a run of `source`'s `run` ended, and how often the pause stress
+/// mode stopped it.
+fn run_paused(source: &str, lowering: Lowering, pause: bool) -> (String, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_stress_pause(pause);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (outcome, interpreter.stress_pauses())
+}
+
+ns_runtime::for_each_lowering! {
+    fn the_pause_stress_mode_keeps_outcomes(lowering) {
+        let (plain, plain_pauses) = run_paused(PAUSED_PROGRAM, lowering, false);
+        assert_eq!(plain, "answered 552000", "the control");
+        assert_eq!(plain_pauses, 0);
+        let (paused, pauses) = run_paused(PAUSED_PROGRAM, lowering, true);
+        assert_eq!(paused, plain);
+        assert!(pauses > 0, "the pause stress mode never stopped");
+    }
+}

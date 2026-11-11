@@ -92,13 +92,18 @@
 > doctests that pin the brand), `trace.rs` (every root the collector
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
-> (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
-> the switches of the memory-facing stress modes: moves, caches, collection,
-> scavenges, every instruction wide, suspensions and the code zone's
-> compaction; the JIT's, the exits', the optimizer's and the
-> deoptimizations' are in `jit/mod.rs`, which also
+> (the safepoint, which serves an attached debugger first
+> (`crates/ns-runtime/src/debugger/`), `Interpreter::tenure_now`,
+> `Interpreter::collect_now` and the switches of the memory-facing stress
+> modes: moves, caches, collection, scavenges, every instruction wide,
+> suspensions, the code zone's compaction and the debugger's pause; the
+> JIT's, the exits', the optimizer's and the deoptimizations' are in
+> `jit/mod.rs`, which also
 > reads the zone's to force the JIT on),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
+> `heap/machine_words.rs` (the words the poll reads, atomics behind an
+> `Arc`, the request word a set of bits an attached debugger's remote
+> arms from its own thread),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
 > `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`
@@ -501,10 +506,24 @@ absorb that, as they do in Cog and Primordial Soup, and an allocation that
 finds even the reserve spent goes old ("Generations").
 
 **The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
-compare of a flag the heap owns, `Heap::safepoint_requested`, a word of its
-machine words, which machine code's poll reads as well and which therefore
-lives apart from the heap's own bytes ([execution.md](execution.md), "The
-machine words"). The same area holds the other words machine code reads
+compare with zero of the request word the heap owns
+(`Heap::safepoint_requested`), a word of its machine words, which machine
+code's poll reads as well and which therefore lives apart from the heap's
+own bytes ([execution.md](execution.md), "The machine words"). The
+machine words are `AtomicU64`s behind an `Arc`, so that an attached
+debugger's agent can arm the request from its own thread; the poll's load
+is `Relaxed`, the plain load it was before, so the poll costs what it
+did. The request word is a set of bits, each set by a `fetch_or` and
+cleared by a `fetch_and` so that no writer erases another's: the VM's own
+request (`REAL_REQUEST`, which a collection's, a scavenge's and a full
+code zone's trigger set through `Heap::request_safepoint`), a stress
+mode's hold (`STRESS_HOLD`), and the debugger's pause and commands
+(`DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`; [debugger.md](debugger.md), "The
+poll words as atomics"). The poll takes the safepoint for any of them;
+every bit but the hold's lowers the depth limit machine code's prologues
+compare with to 0 while it stands (`LOWERS_DEPTH_LIMIT`,
+`Heap::synchronize_depth_limit`; [execution.md](execution.md), "Polls and
+the depth check"). The same area holds the other words machine code reads
 between two leaf calls: the depth count and its limit, the activation
 stack's ordinary end, each immediate's class and guard, the generation
 counter of a debug build, the receiver and class handed between machine
@@ -527,11 +546,15 @@ only right after they are written, and no collection runs between. When the flag
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
-safepoint does. The safepoint serves a request -- a full collection if one
+safepoint does. The safepoint serves an attached debugger first -- the
+commands it queued, then a pause, which stops the program there
+([debugger.md](debugger.md), "Serving at the safepoint") -- and then a
+request -- a full collection if one
 is pending, which empties the nursery too, and otherwise a pending scavenge
--- and clears the flag in the same call, so that no compiled push the
+-- and clears its own bit and the stress hold in the same call, leaving
+the debugger's bits, which only their service clears, so that no compiled push the
 next turn makes finds the request's depth limit of 0 and is refused
-(`Heap::write_safepoint_request`), unless serving it raised another
+(`Heap::synchronize_depth_limit`), unless serving it raised another
 request -- the compaction of the code zone a collection's freed code
 asks for, the collection a scavenge that leaves the old space past its
 limit asks for -- which the next poll serves, and except under a stress
@@ -2304,7 +2327,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are twelve stress modes, each a gate of its own at the end of a batch,
+There are thirteen stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2313,7 +2336,10 @@ barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`,
 `NS_NEXT_STRESS_ZONE`, which compacts the code zone, freeing every body
 no activation runs, every other compaction keeping each body that has
 optimized code ([execution.md](execution.md), "The code zone"),
-each of these six keeping the safepoint flag set while it is on,
+`NS_NEXT_STRESS_PAUSE`, which stops the run as a debugger's pause does,
+reads its whole stack and every value one level deep and continues
+([debugger.md](debugger.md), "The pause stress mode"),
+each of these seven keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
@@ -2985,7 +3011,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name twelve stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name thirteen stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

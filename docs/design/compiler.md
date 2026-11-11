@@ -860,8 +860,11 @@ consumers — debugger, JIT deopt, image snapshot, mirrors — so it is emitted 
 the start rather than added when the first of them is built.
 
 An inlined block's statements are part of the enclosing statement's range;
-`statement_program_counter` records only the code body's own statements. A debugger wanting
-finer stepping inside inlined blocks would extend the table.
+`statement_program_counter` records only the code body's own statements. The planned
+debugger does not extend it: its stop locations, inlined blocks' statements
+included, and its variable table are collected by the lowerers when it
+compiles a body again on demand ([debugger.md](debugger.md), decisions 4
+and 5, "Compiling the metadata again").
 
 **A send's `CallSite` is its number within its code family**
 (`bytecode::CallSite { number: u32 }`). A family is one root body — a method,

@@ -6489,11 +6489,12 @@ pub(crate) enum Resumption {
 /// exit does, but made none of the blocks the copy eliminated that are
 /// live in the frame, whose registers hold `nil` for them meanwhile.
 /// Nothing reads those words before the frame goes back in or makes the
-/// blocks: the safepoint runs no Newspeak code -- neither a mirror nor a
-/// debugger reads a frame there, and no leaf reifies one -- the
-/// collector's pre-pass and trace read a `nil` as any other word, and
-/// the one thing at a safepoint that rebuilds the stack, the suspend
-/// stress mode, makes the blocks first (`deoptimize_stopped_at_poll`).
+/// blocks: the safepoint runs no Newspeak code -- no mirror reads a frame
+/// there, and no leaf reifies one -- the collector's pre-pass and trace
+/// read a `nil` as any other word, and what at a safepoint reads the
+/// stack or rebuilds it -- a debugger's stop, its termination, the
+/// suspend stress mode -- makes the blocks first, the frame going on in
+/// baseline code (`deoptimize_stopped_at_poll`).
 /// The copy is named by its body and key and by its installation, never
 /// by an address, so that a compaction that moved it, or a freeing that
 /// took it, meanwhile is found.
@@ -7074,17 +7075,17 @@ fn deoptimize_at_poll(mutator: &mut Mutator<'_>, stopped: StoppedAtPoll) {
 /// Makes the frame the last poll's light exit left go on in baseline code
 /// or the interpreter, if there is one: the safepoint is about to rebuild
 /// the stack (`Interpreter::safepoint`'s suspension), after which no frame
-/// is where the exit left it, and the blocks the copy eliminated are made
-/// while it still is. Debug builds only, where the suspend stress mode
-/// exists.
-#[cfg(all(ns_jit, debug_assertions))]
+/// is where the exit left it, or a debugger is about to read it or end
+/// the run (`Interpreter::serve_debugger`), and the blocks the copy
+/// eliminated are made while every frame is where the exit left it.
+#[cfg(ns_jit)]
 pub(crate) fn deoptimize_stopped_at_poll(mutator: &mut Mutator<'_>) {
     if let Some(stopped) = mutator.jit.take_stopped_at_poll() {
         deoptimize_at_poll(mutator, stopped);
     }
 }
 
-#[cfg(all(not(ns_jit), debug_assertions))]
+#[cfg(not(ns_jit))]
 pub(crate) fn deoptimize_stopped_at_poll(_mutator: &mut Mutator<'_>) {}
 
 /// The entry `resumed_at_poll` answered for `activation`, the physical

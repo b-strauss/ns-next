@@ -12,7 +12,11 @@
 //! mode that runs every program on from frames as a deoptimized one will
 //! (`docs/design/execution.md`, "Activations") -- and a compaction of the
 //! code zone at the safepoints a sixth schedule picks, every body no
-//! activation runs freed (`docs/design/execution.md`, "The code zone").
+//! activation runs freed (`docs/design/execution.md`, "The code zone") --
+//! and a stop as for a debugger's pause at the safepoints a seventh
+//! schedule picks, the whole stack and every value one level deep read
+//! before the run goes on (`docs/design/debugger.md`, "The pause
+//! stress mode").
 //! The step state's side of a
 //! move -- its own roots, forwarded after the heap's -- is
 //! `World::move_everything`, in `heap/world.rs`; a collection's is
@@ -20,9 +24,30 @@
 
 use super::Interpreter;
 
+/// What the run loop goes on with after its safepoint
+/// (`Interpreter::safepoint`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SafepointOutcome {
+    /// The frame the stretch left, as it left it.
+    Unchanged,
+    /// The suspend stress mode rebuilt the activation stack above the
+    /// run's floor: the running activation is a different stack frame,
+    /// whose state the loop reads again.
+    Rebuilt,
+    /// The debugger terminated the run, which the loop ends through the
+    /// unwinder from the top activation (`debugger::termination`).
+    Terminate,
+}
+
 impl Interpreter {
-    /// The run loop's safepoint, when the heap has asked for one. In a debug
-    /// build, the move stress mode moves everything when its schedule says
+    /// The run loop's safepoint, when the heap has asked for one. An
+    /// attached debugger is served first (`serve_debugger`), before
+    /// anything below can leave early with a collection still requested
+    /// and a pause would wait for a later safepoint; a termination it
+    /// receives ends the safepoint there. In a debug build, the pause
+    /// stress mode stops the run there too, as a pause does, when its
+    /// schedule says one is due, reads the stack and continues; then the
+    /// move stress mode moves everything when its schedule says
     /// one is due, the cache stress mode invalidates every inline cache on
     /// every safepoint (`docs/design/dispatch.md`, "Invalidation"), and the
     /// collect stress mode runs a full collection when its own schedule says
@@ -32,7 +57,7 @@ impl Interpreter {
     /// mode suspends every activation of the run into its frame and
     /// resumes the top one when its own schedule says so, and the zone
     /// stress mode compacts the code zone, freeing every body no activation
-    /// runs, when its own schedule says so; any one of the six keeps the
+    /// runs, when its own schedule says so; any one of the seven keeps the
     /// request set, so that every safepoint comes here.
     ///
     /// A compaction of the code zone a compile that found it full asked
@@ -59,18 +84,39 @@ impl Interpreter {
     /// and delete it, and the flag's load and branch with it, and the
     /// release binary that is measured would carry no poll at all.
     ///
-    /// Answers whether the suspend stress mode rebuilt the activation stack
-    /// above `floor`, the floor of the run `vm::run` is in: every
-    /// activation there suspended into its frame and the top one resumed,
-    /// so that the running activation is a different stack frame and the
-    /// loop must read its state again. Always `false` in a release build.
+    /// Answers `SafepointOutcome::Rebuilt` when the suspend stress mode
+    /// rebuilt the activation stack above `floor`, the floor of the run
+    /// `vm::run` is in: every activation there suspended into its frame
+    /// and the top one resumed, so that the running activation is a
+    /// different stack frame and the loop must read its state again --
+    /// never in a release build -- and `SafepointOutcome::Terminate` when
+    /// the debugger terminated the run.
     #[cold]
     #[inline(never)]
-    pub(crate) fn safepoint(&mut self, floor: usize) -> bool {
+    pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        if self.serve_debugger(floor) == crate::debugger::Served::Terminate {
+            return SafepointOutcome::Terminate;
+        }
         #[cfg(not(debug_assertions))]
         let _ = floor;
         #[cfg(debug_assertions)]
         let mut stressed = false;
+        // The pause stress mode's stop, where a debugger's pause stops:
+        // first, before anything else here changes the stack or the heap.
+        #[cfg(debug_assertions)]
+        {
+            let traced_size = self.world.traced_size();
+            if let Some(due) = self
+                .stress_pause
+                .as_mut()
+                .map(|stress| stress.due(traced_size))
+            {
+                if due {
+                    self.stop_for_stress(floor);
+                }
+                stressed = true;
+            }
+        }
         // Only the debug build's suspend stress mode rebuilds the stack.
         #[cfg_attr(
             not(debug_assertions),
@@ -187,7 +233,7 @@ impl Interpreter {
         // past its limit for a collection -- which the next poll serves.
         // Otherwise the request is cleared in this same call: while a real
         // one stands the depth limit is 0 and every compiled push is
-        // refused (`Heap::write_safepoint_request`), so a request left for
+        // refused (`Heap::synchronize_depth_limit`), so a request left for
         // the next poll to clear would cost a body that goes back into
         // machine code at its loop's head a turn whose compiled sends all
         // exit, and a second round trip through this slow path.
@@ -195,16 +241,29 @@ impl Interpreter {
             || self.world.scavenge_requested()
             || self.world.code_zone_compaction_requested()
         {
-            return rebuilt;
+            return rebuilt.into();
         }
         // The request served, a stress mode holds it again, as its own.
+        // The hold is a bit beside the VM's request, so the request is
+        // cleared first: holding alone would leave it, and the depth limit
+        // it lowers, standing.
+        self.world.clear_safepoint_request();
         #[cfg(debug_assertions)]
         if stressed {
             self.world.set_safepoint_requested(true);
-            return rebuilt;
         }
-        self.world.clear_safepoint_request();
-        rebuilt
+        rebuilt.into()
+    }
+}
+
+impl From<bool> for SafepointOutcome {
+    /// Whether the suspend stress mode rebuilt the stack.
+    fn from(rebuilt: bool) -> SafepointOutcome {
+        if rebuilt {
+            SafepointOutcome::Rebuilt
+        } else {
+            SafepointOutcome::Unchanged
+        }
     }
 }
 
@@ -296,10 +355,11 @@ impl StressMoves {
     }
 }
 
-/// The schedule of the collect, the scavenge and the suspend stress
-/// modes: their work at every safepoint while the traced size is within
-/// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints --
-/// the pacing `StressMoves` uses, for the same reason.
+/// The schedule of the collect, the scavenge, the suspend, the zone and
+/// the pause stress modes: their work at every safepoint while the traced
+/// size is within `STRESS_MOVE_BUDGET`, and above it once per
+/// size-over-budget safepoints -- the pacing `StressMoves` uses, for the
+/// same reason.
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StressSchedule {
@@ -381,26 +441,25 @@ impl Interpreter {
         self.world.set_scavenge_threshold(bytes);
     }
 
-    /// Sets the safepoint request exactly when a stress mode is on, since
-    /// any one alone must keep every safepoint coming back to `safepoint`:
+    /// Holds the stress modes' bit of the safepoint request
+    /// (`heap::STRESS_HOLD`) exactly while a stress mode is on, since any
+    /// one alone must keep every safepoint coming back to `safepoint`:
     /// what every `set_stress_*` does after switching its own mode.
     ///
-    /// Turning the last mode off this way drops `safepoint_requested` even
-    /// while a collection or a scavenge is still pending. Both self-heal:
-    /// the collection limits were never reset, so the next allocation that
-    /// reaches one asks again, and the scavenge was never served, so the
-    /// next allocation past eden's threshold, or the next old object to
-    /// join the remembered set past its limit, asks again -- each only
-    /// slightly later than it otherwise would have. Debug-only, since the
-    /// setters do not exist in a release build; not worth coupling the
-    /// flags together to close.
+    /// Turning the last mode off this way drops only the hold. A
+    /// collection, a scavenge or a compaction of the code zone still
+    /// pending keeps its own bit (`heap::REAL_REQUEST`), and the
+    /// debugger's pause and commands keep theirs, so the next poll still
+    /// serves each of them, and the depth limit stays lowered while any
+    /// of them stands (`Heap::synchronize_depth_limit`).
     pub(super) fn hold_safepoints_for_stress(&mut self) {
         let enabled = self.stress.is_some()
             || self.stress_caches
             || self.stress_collect.is_some()
             || self.stress_scavenge.is_some()
             || self.stress_suspend.is_some()
-            || self.stress_zone.is_some();
+            || self.stress_zone.is_some()
+            || self.stress_pause.is_some();
         self.world.set_safepoint_requested(enabled);
     }
 
@@ -480,6 +539,22 @@ impl Interpreter {
         self.stress_zone = enabled.then(StressSchedule::default);
         self.shrink_pairs_for_stress();
         self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the pause stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_PAUSE` says: the run stopped as for a
+    /// debugger's pause at the safepoints its schedule picks, its stack
+    /// read, and continued. For tests. Keeps the safepoint request set
+    /// while any other stress mode is on (`hold_safepoints_for_stress`).
+    pub fn set_stress_pause(&mut self, enabled: bool) {
+        self.stress_pause = enabled.then(StressSchedule::default);
+        self.hold_safepoints_for_stress();
+    }
+
+    /// How many times the pause stress mode has stopped the run since it
+    /// was turned on; 0 while it is off.
+    pub fn stress_pauses(&self) -> usize {
+        self.stress_pause.as_ref().map_or(0, |stress| stress.fired)
     }
 
     /// How many compactions the zone stress mode has made since it was

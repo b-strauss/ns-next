@@ -220,7 +220,7 @@ impl CodeZone {
     /// run machine code to say so. Such words live in allocations the
     /// context only points to, which no retag of it covers and which Rust
     /// never borrows mutably while code runs: `ns-runtime`'s machine words
-    /// (`heap/machine_words.rs`, cells behind an `Rc`), and the object
+    /// (`heap/machine_words.rs`, atomics behind an `Arc`), and the object
     /// space and the activation stack, reservations of this crate's that
     /// no leaf holds a mutable borrow of once it returns. Their addresses
     /// come from `Reservation::base_address`, the reservation's own

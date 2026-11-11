@@ -15,6 +15,20 @@ when they were written.
 
 ## Next
 
+**The debugger's stage 2, the metadata** (decided with the user on
+2026-11-11: the debugger goes on before road step 9 resumes): both
+lowerers collect every body's stop locations -- the statement starts,
+those of blocks and inlined blocks included, and every send with its
+`CallSite` and the span of its receiver and selector -- and its variable
+table -- each named variable's place and the instruction range it is
+live in -- when the debugger compiles the body's source again on
+demand, the result compared with the running body slot for slot and
+kept per body only when equal ([debugger.md](design/debugger.md),
+decisions 4 and 5, "Compiling the metadata again", "Planned: the order
+of building it"). Stage 1, the debugging API at the safepoint, is built
+(2026-11-11; "The debugging API at the safepoint"). The stage gets its
+open questions settled and its plan when it starts.
+
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
 along the receiver types the inline caches recorded, built to the
@@ -67,7 +81,7 @@ optimized code, every x86_64 binary built for x86-64-v2; measured
 -10.1% on the geometric mean against `master`, Mandelbrot 75% and NBody
 72% faster ("What floats in machine code moved").
 
-The next stage of road step 9 is the **fourth, inlined frame objects
+When the work returns to road step 9, its next stage is the **fourth, inlined frame objects
 and the non-local return into an inlined home**, with `NS_NEXT_STRESS_INLINED_FRAMES`
 ("Planned: the optimizing JIT", "Closures, frames and non-local return
 in inlined scopes", "Stages"), which lifts the plan's rule that sends
@@ -755,8 +769,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
     - *A switch gives up one resumption* just after a served collection,
       since `Heap::real_safepoint_requested` still answers `true` before
       the request is cleared.
-    - *A host that toggles a stress mode* overwrites a pending real
-      safepoint request (debug builds only).
     - *The depth words rest on convention*: `Mutator::depth_reserve` is
       still `pub(crate)`, so that every change goes through
       `set_depth_reserve`, which writes `DepthLimit`, is a rule no type
@@ -1679,8 +1691,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **The stress gate's time** (noted with the user on 2026-11-01, to be
   taken up in a session of its own). The stress step of `cargo xtask
   gates end-of-batch` takes about 965 s (2026-11-07; 690 s with one
-  mode fewer on 2026-11-06): the thirteen suites run at once, so both
-  the slowest mode and the CPU work of all thirteen count. Measure first:
+  mode fewer on 2026-11-06), when its thirteen suites ran at once; the
+  fourteen it runs now do too, so both the slowest mode and the CPU work
+  of all of them count. Measure first:
   the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
   test's time, from which the slowest tests per mode and each crate's
   share follow. The candidates, none measured yet:
@@ -1782,8 +1795,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
   suspended activations -- every `Continuation` variant (`NestedClass`,
-  holding a `NestedClassCreation`, `Unwind`, `VmErrorSignalled`, `Future`,
-  `ReturnToSuspended`), the counting, the entered level -- and for
+  holding a `NestedClassCreation`, `Unwind`, `VmErrorSignalled`,
+  `Reexecute`, `ReturnToSuspended`), the counting, the entered level -- and for
   `depth_reserve`; suspending the whole stack into its frames exists
   (`Heap::suspend_activations`). The decoder refuses every frame not
   marked uncontinuable (decided with the user on 2026-10-24), so suspend
@@ -1817,10 +1830,77 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   deeper (the kernel's views and `StringBuilder` are declared directly in
   its root; a later module may nest one).
   [image-format.md](design/image-format.md), "Shipped names".
-- **The debugger**: suspend, inspect, edit-and-continue at statement
-  boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
-  (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
-  the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
+- **The debugger**, at the level of IntelliJ's Java debugger, plus
+  edit-and-continue of running activations; its design is decided (nine
+  decisions, 2026-11-10). Its first stage is built (2026-11-11): the
+  debugging API at the run loop's safepoint, with atomic poll words a
+  remote arms from another thread to pause the program, the commands
+  served while it runs, the stop, which deoptimizes a frame stopped at a
+  poll of optimized code in every JIT build, the stack and values read at
+  it, continue and terminate, and the pause stress mode
+  ([debugger.md](design/debugger.md), "The debugging API at the
+  safepoint"). The rest, in this order: the stop locations and variable
+  table, compiled again on demand and verified (stage 2, next), which
+  also give a stopped frame its names, lines and scratch registers;
+  breakpoints patched in place (a method with a fast path replaced by one
+  without it while patched), stepping by one-shot breakpoints, method
+  breakpoints, exception breakpoints where the handler search invokes a
+  handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
+  about to send `defaultAction` for an uncaught one (a test-only
+  `resume_unhandled_exceptions` hook stands in today); the DAP agent in
+  `ns-cli` and the plugin's `XDebugProcess`; evaluation as a block in the
+  stop's scope, conditional breakpoints and logpoints, watches and setting
+  variables, smart step into, restart frame, force return; hot swap,
+  edit-and-continue and `ActivationMirror`. It needs no yield path out of
+  `vm::run`. Still to decide, each before the stage that needs it: step
+  filters for the shipped modules and how a step behaves at their edge,
+  watchpoints on slots, access control in evaluation, marking objects, a
+  token for the socket, who listens, `ns-next load --debug`, evaluation at
+  the depth limit, restart and force return beyond the plain case, restart
+  and the indirection vector, assigning a captured variable, stepping out
+  of a frame that returns elsewhere, the breakable places before a
+  session, terminating a program that reaches no safepoint, the memory
+  view, folding shipped frames and attaching, and, for stage 4, whether
+  a command queued while no run executes is answered: today it is
+  dropped without an event, so an agent that sends a stop-only command
+  between runs waits for its timeout, where a DAP agent may want a
+  `Refused`. [debugger.md](design/debugger.md), "Open
+  questions".
+  - **What stage 1's reviews left** (2026-11-11), none of them a wrong
+    outcome:
+    - *A stop holds a value once per mention*: every description
+      (`values::StopValues::describe`) stashes a new `Root`, so a value
+      the agent reads twice in one stop takes two `Root`s and two ids,
+      and the table grows with the reads rather than the values; and the
+      ids, continued across the stops of one attachment, wrap after
+      2^32 values handed out, past which an id of an earlier stop could
+      name a value of a later one ([debugger.md](design/debugger.md),
+      "Values the IDE holds").
+    - *Tests*: `Children` from a `start` past the last child, the pause
+      of a remote whose debugger was detached rather than replaced, and
+      the refusal's text for a stale value id
+      (`a_value_id_does_not_outlive_its_stop` asserts only the command's
+      name) have none; `a_pause_while_a_collection_is_requested_is_served`
+      cannot tell a pause served before the early return of a safepoint
+      whose service raised a request from one served at a later
+      safepoint, since no deterministic setup keeps a collection
+      requested at the stop; and the order in which
+      `Interpreter::drop_queued_commands` clears the commands bit before
+      it drains is held by review only, since the race needs the agent's
+      `send` between two instructions of the VM's thread and the runtime
+      has no hook there ([debugger.md](design/debugger.md), "Commands
+      while the program runs", "Testing and gates").
+    - *The machine-code assertions skip every stress mode*:
+      `counters_are_exact` (`crates/ns-runtime/tests/debugger.rs`)
+      turns off the assertions of `a_pause_stops_compiled_recursion` and
+      `a_stop_at_an_optimized_poll_is_deoptimized` on the JIT's counters
+      under any `NS_NEXT_STRESS_*`, where only the modes that change
+      when code is compiled or left (JIT, EXIT, ZONE, OPTIMIZE, DEOPT,
+      INVALIDATE) make them inexact.
+    - *A fence that tests nothing*: the unit test
+      `fetch_or_and_fetch_and_change_bits_and_answer_the_previous_value`
+      (`heap/machine_words.rs`) calls `MachineWords::fence` after joining
+      the writer thread, whose join already orders its write.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2196,8 +2276,6 @@ classes and a class from source with no predecessor are not edited
   only if a measurement shows `become:` frequent (decided with the user on
   2026-10-05). [object-model.md](design/object-model.md), "`become:` is
   an eager bulk forward".
-- **Whether a debugger forces `program_counter` at every instruction.**
-  [execution.md](design/execution.md), "Where `program_counter` is stored".
 - **The reference lowering's future.** It is the oracle today; the user said
   (2026-09-19) it should eventually be removed, with the goldens carrying the
   tests. [compiler.md](design/compiler.md), "The reference lowering".
@@ -2245,6 +2323,18 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **What stage 1 of the debugger moved, unmeasured** (2026-11-11). The
+  measurement against `master` found no slowdown (-0.61% on the geometric
+  mean), but Permute at forty iterations is separated slower, +1.4% on a
+  75 microsecond program (+0.8%, +0.9% and +2.6% by build; +2.0% and not
+  separated at eight iterations), unexplained; a sweep of the zone
+  paddings, which shift its code's layout, would say whether it is
+  layout. And the cold path the batch moved into `vm::take_safepoint` was
+  never timed with safepoints actually requested -- no program ran with a
+  debugger attached or under the pause stress mode -- so what a pause, a
+  queued command or a stop costs a running program is unknown, as is the
+  poll's cost inside machine code beyond what the benchmark programs
+  exercise ([debugger.md](design/debugger.md), "What stage 1 moved").
 - **CD runs slower on ns-next than on CPython** (2026-11-10). In the
   three-language comparison CD made 0.4 runs a second on ns-next, 1.1 on
   CPython 3.15's interpreter and 64.7 on the JVM: the one program ns-next
@@ -3105,6 +3195,26 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **A model test of the poll words' ordering** (noted 2026-11-11, with
+  the debugger's first stage). The debugger's agent sets its bit in the
+  request word and then stores 0 into `DepthLimit`, both `SeqCst`, from
+  its own thread, while the VM's writes of the limit store it, issue a
+  `SeqCst` fence and read the request word again
+  (`Heap::synchronize_depth_limit`); the argument that no pause is lost
+  to a store-buffering reordering rests on that fence. It is held by
+  review and by the threaded race test
+  `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`), which
+  samples interleavings on the processor that runs it and cannot show
+  that none loses the pause; the `aarch64` gate runs it under QEMU's
+  user mode, which does not reproduce AArch64's weak ordering. A model
+  test of the agent and the VM's two writers in the style of `loom`,
+  which explores every interleaving the memory model allows, would; it
+  needs `loom` as a dev-dependency, a new external dependency whose
+  reason has to survive review, and the machine words behind a seam
+  `loom`'s atomics can replace in the test build. It would cover the
+  arming lock's argument too, which no test drives into its race
+  ([debugger.md](design/debugger.md), "The poll words as atomics", "The
+  arming lock", "Testing and gates").
 - Road step 8's fifth stage's (noted 2026-11-02 to 2026-11-03): the
   wait of a body whose frame could not switch at a backward jump, or
   whose compile the exhausted zone held (`jit::back_edge_ready`), has no
