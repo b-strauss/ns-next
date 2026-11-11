@@ -15,6 +15,20 @@ when they were written.
 
 ## Next
 
+**The debugger's stage 2, the metadata** (decided with the user on
+2026-11-11: the debugger goes on before road step 9 resumes): both
+lowerers collect every body's stop locations -- the statement starts,
+those of blocks and inlined blocks included, and every send with its
+`CallSite` and the span of its receiver and selector -- and its variable
+table -- each named variable's place and the instruction range it is
+live in -- when the debugger compiles the body's source again on
+demand, the result compared with the running body slot for slot and
+kept per body only when equal ([debugger.md](design/debugger.md),
+decisions 4 and 5, "Compiling the metadata again", "Planned: the order
+of building it"). Stage 1, the debugging API at the safepoint, is built
+(2026-11-11; "The debugging API at the safepoint"). The stage gets its
+open questions settled and its plan when it starts.
+
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
 along the receiver types the inline caches recorded, built to the
@@ -67,7 +81,7 @@ optimized code, every x86_64 binary built for x86-64-v2; measured
 -10.1% on the geometric mean against `master`, Mandelbrot 75% and NBody
 72% faster ("What floats in machine code moved").
 
-The next stage of road step 9 is the **fourth, inlined frame objects
+When the work returns to road step 9, its next stage is the **fourth, inlined frame objects
 and the non-local return into an inlined home**, with `NS_NEXT_STRESS_INLINED_FRAMES`
 ("Planned: the optimizing JIT", "Closures, frames and non-local return
 in inlined scopes", "Stages"), which lifts the plan's rule that sends
