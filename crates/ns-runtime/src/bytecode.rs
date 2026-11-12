@@ -863,8 +863,68 @@ impl CompiledCode {
             )
     }
 
+    /// The slot the run loop fetches, `Breakpoint` where one is set
+    /// (`compact::EncodedBody::slot`).
     pub(crate) fn slot(&self, index: usize) -> CompactInstruction {
         self.body.slot(index)
+    }
+
+    /// The instruction slot `index` holds without its breakpoint
+    /// (`compact::EncodedBody::original`).
+    pub(crate) fn original(&self, index: usize) -> CompactInstruction {
+        self.body.original(index)
+    }
+
+    /// Sets a breakpoint at instruction `index`: the run loop's fetch
+    /// answers `Breakpoint` there, and every other reader the instruction
+    /// it replaced (`docs/design/debugger.md`, "Where the original
+    /// lives"). Patching a patched index changes nothing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the breakpoints, which patch a body, are not built yet"
+        )
+    )]
+    pub(crate) fn patch(&self, index: usize) {
+        self.body.patch(index);
+    }
+
+    /// Removes the breakpoint at instruction `index`, if one is set.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the breakpoints, which patch a body, are not built yet"
+        )
+    )]
+    pub(crate) fn restore(&self, index: usize) {
+        self.body.restore(index);
+    }
+
+    /// Whether a breakpoint is set at instruction `index`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the breakpoints, which patch a body, are not built yet"
+        )
+    )]
+    pub(crate) fn is_patched(&self, index: usize) -> bool {
+        self.body.is_patched(index)
+    }
+
+    /// Whether a breakpoint is set anywhere in this body, its blocks' own
+    /// bodies not included.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the breakpoints, which patch a body, are not built yet"
+        )
+    )]
+    pub(crate) fn has_patches(&self) -> bool {
+        self.body.has_patches()
     }
 
     /// The cached send at `index`, read without decoding it
@@ -886,7 +946,7 @@ impl CompiledCode {
     #[doc(hidden)]
     pub fn is_wide(&self, index: usize) -> bool {
         matches!(
-            self.body.slot(index),
+            self.body.original(index),
             CompactInstruction::Wide { .. }
                 | CompactInstruction::SendPublicWide { .. }
                 | CompactInstruction::SendInlinableWide { .. }
@@ -2442,5 +2502,133 @@ method foo: (args 1, registers 4)
         assert_ne!(body(payload), body(f64::NAN));
         assert_ne!(body(0.0), body(-0.0));
         assert_ne!(body(1.5), body(2.5));
+    }
+
+    /// The first method of a module whose only one sends `print:` to its
+    /// argument, compiled under the optimized lowering, and the index of
+    /// that send.
+    fn method_with_a_send() -> (CompiledCode, usize) {
+        let source = indoc::indoc! {"
+            class Patched = (
+            ) (
+              run: other = (
+                other print: 3.
+                ^other
+              )
+            )
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = match crate::resolve(
+            module,
+            Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("patched.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("does not resolve"),
+        };
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
+        let code = crate::compiler::compile_method(
+            method,
+            &resolved.bindings,
+            crate::compiler::Lowering::Optimized,
+            None,
+        );
+        let send = (0..code.instruction_count())
+            .find(|index| code.cached_send(*index).is_some())
+            .expect("the method's send");
+        (code, send)
+    }
+
+    /// Only the run loop's fetch sees a breakpoint: the decoded view and
+    /// the readers that match a slot without decoding it answer the
+    /// original.
+    #[test]
+    fn a_patched_slot_is_a_breakpoint_only_to_the_fetch() {
+        let (code, send) = method_with_a_send();
+        let slot = code.slot(send);
+        let instruction = code.instruction(send);
+        let instructions = code.instructions();
+        let cached_send = code.cached_send(send);
+        assert!(!code.is_patched(send) && !code.has_patches());
+
+        code.patch(send);
+
+        assert_eq!(code.slot(send), CompactInstruction::Breakpoint);
+        assert_eq!(code.original(send), slot);
+        assert!(code.instruction(send).is_identical_to(&instruction));
+        let after = code.instructions();
+        assert_eq!(after.len(), instructions.len());
+        assert!(after
+            .iter()
+            .zip(&instructions)
+            .all(|(after, before)| after.is_identical_to(before)));
+        assert_eq!(code.cached_send(send), cached_send);
+        assert!(code.is_send(send));
+        assert!(code.is_patched(send) && code.has_patches());
+        assert!(!code.is_patched(send + 1));
+        assert_eq!(code.original(send + 1), code.slot(send + 1));
+    }
+
+    #[test]
+    fn restoring_a_slot_gives_back_its_instruction() {
+        let (code, send) = method_with_a_send();
+        let slot = code.slot(send);
+
+        code.patch(send);
+        code.patch(send);
+        assert_eq!(
+            code.original(send),
+            slot,
+            "a second patch of the same index keeps the first original"
+        );
+
+        code.restore(send);
+        assert_eq!(code.slot(send), slot);
+        assert!(!code.is_patched(send) && !code.has_patches());
+
+        code.restore(send);
+        assert_eq!(
+            code.slot(send),
+            slot,
+            "restoring an unpatched slot is a no-op"
+        );
+    }
+
+    #[test]
+    fn a_patched_body_compiles_alike_its_unpatched_twin() {
+        let (code, send) = method_with_a_send();
+        let (again, _) = method_with_a_send();
+        code.patch(send);
+        assert!(compiles_alike(&code, &again));
+        assert!(compiles_alike(&again, &code));
+        assert_eq!(code, again);
+    }
+
+    #[test]
+    fn patching_keeps_the_body_s_identity() {
+        let (code, send) = method_with_a_send();
+        let identity = code.body().identity();
+        code.patch(send);
+        assert_eq!(code.body().identity(), identity);
+        code.restore(send);
+        assert_eq!(code.body().identity(), identity);
+    }
+
+    /// A copy of a body is another body, which no breakpoint was set in.
+    #[test]
+    fn a_copy_of_a_patched_body_is_unpatched() {
+        let (code, send) = method_with_a_send();
+        let slot = code.slot(send);
+        code.patch(send);
+        let copy = code.clone();
+        assert_eq!(copy.slot(send), slot);
+        assert!(!copy.has_patches());
+        assert!(code.is_patched(send));
     }
 }

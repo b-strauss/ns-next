@@ -1207,13 +1207,16 @@ fn run_stretch<'gc>(
                                         }
                                     }
                                     // §6.3.2's simultaneous slot clauses: one arm and one call,
-                                    // out of line (`simultaneous_clause_instruction`).
+                                    // out of line (`simultaneous_clause_instruction`). A
+                                    // breakpoint shares the arm until it has its own: an arm
+                                    // of its own costs the loop's code in every other arm.
                                     slot @ (CompactInstruction::MakeFuture { .. }
                                     | CompactInstruction::ResolveFuture { .. }
                                     | CompactInstruction::LoadOwnSlot { .. }
                                     | CompactInstruction::InitializeSlotProvisionally {
                                         ..
-                                    }) => {
+                                    }
+                                    | CompactInstruction::Breakpoint) => {
                                         break 'decided simultaneous_clause_instruction(
                                             mutator,
                                             activation,
@@ -3151,6 +3154,8 @@ fn simultaneous_clause_instruction<'gc>(
                 handoff,
             )
         }
+        // Nothing patches a slot yet.
+        CompactInstruction::Breakpoint => unreachable!("internal: no slot is patched yet"),
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
     }
 }
@@ -3383,7 +3388,18 @@ fn unwind<'gc>(
 /// The register a send writes its value to: where a callee's value goes when
 /// the loop resumes the caller.
 fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
-    match code.slot(program_counter) {
+    send_destination_in(code, code.slot(program_counter), program_counter)
+}
+
+/// The register the send in `slot`, at `program_counter`, writes its value
+/// to.
+#[inline(always)]
+fn send_destination_in(
+    code: &CompiledCode,
+    slot: CompactInstruction,
+    program_counter: usize,
+) -> u16 {
+    match slot {
         CompactInstruction::SendPublic0 { destination, .. }
         | CompactInstruction::SendPublic1 { destination, .. }
         | CompactInstruction::SendPublic2 { destination, .. }
@@ -3425,6 +3441,26 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
                 "internal: a caller resumed at an instruction that is not a send: {other:?}"
             ),
         },
+        other => destination_behind(code, other, program_counter),
+    }
+}
+
+/// The destination of a send a caller resumes at whose slot holds no send:
+/// a breakpoint replaced it, and the destination is the original's. Taken
+/// in the match's fallback arm, out of line, so that the breakpoint adds no
+/// arm to the match a resumption runs: one more arm turned its bit test
+/// into a jump table.
+#[cold]
+#[inline(never)]
+fn destination_behind(
+    code: &CompiledCode,
+    slot: CompactInstruction,
+    program_counter: usize,
+) -> u16 {
+    match slot {
+        CompactInstruction::Breakpoint => {
+            send_destination_in(code, code.original(program_counter), program_counter)
+        }
         other => unreachable!(
             "internal: a caller resumed at an instruction that is not a send: {other:?}"
         ),
@@ -3465,4 +3501,40 @@ fn make_value<'gc>(
             return Err(body_too_large_error_named(named, receiver, *limit));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::{CallSite, CodeKind};
+    use ns_syntax::Span;
+
+    /// A caller resumed at a send a breakpoint replaced writes the value
+    /// where the send would have: the destination is the original's.
+    #[test]
+    fn a_caller_resumed_at_a_patched_send_takes_the_original_s_destination() {
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::SendPublic {
+                    selector: Symbol::intern("value"),
+                    receiver_register: 0,
+                    argument_base: 20,
+                    argument_sources: vec![],
+                    destination: 17,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 17 },
+            ],
+            1,
+            40,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(send_destination(&code, 0), 17);
+        code.patch(0);
+        assert_eq!(code.slot(0), CompactInstruction::Breakpoint);
+        assert_eq!(send_destination(&code, 0), 17);
+    }
 }
