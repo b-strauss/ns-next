@@ -91,6 +91,12 @@ Module {
                                         eventual: false,
                                         type_arguments: None,
                                         comments: [],
+                                        selector_spans: [
+                                            Span {
+                                                start: 76,
+                                                end: 86,
+                                            },
+                                        ],
                                         span: Span {
                                             start: 67,
                                             end: 86,
@@ -211,6 +217,12 @@ Module {
                                                         eventual: false,
                                                         type_arguments: None,
                                                         comments: [],
+                                                        selector_spans: [
+                                                            Span {
+                                                                start: 131,
+                                                                end: 136,
+                                                            },
+                                                        ],
                                                         span: Span {
                                                             start: 120,
                                                             end: 152,

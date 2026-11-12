@@ -607,6 +607,7 @@ impl<'a> Parser<'a> {
                     eventual,
                     type_arguments,
                     comments: Vec::new(),
+                    selector_spans: vec![selector_token.span],
                     span,
                 },
             })));
@@ -619,7 +620,7 @@ impl<'a> Parser<'a> {
             if !self.at_binary_operator() {
                 return receiver;
             }
-            let (operator, argument) = self.parse_binary_operator_and_argument();
+            let (operator, operator_span, argument) = self.parse_binary_operator_and_argument();
             let span = expression_span(&receiver).merge(expression_span(&argument));
             receiver = bare(ExpressionKind::Send(Box::new(Send {
                 span,
@@ -630,6 +631,7 @@ impl<'a> Parser<'a> {
                     eventual,
                     type_arguments: None,
                     comments: Vec::new(),
+                    selector_spans: vec![operator_span],
                     span,
                 },
             })));
@@ -637,20 +639,20 @@ impl<'a> Parser<'a> {
     }
 
     /// `binarySelector unaryExpression`, the cursor at the selector.
-    fn parse_binary_operator_and_argument(&mut self) -> (String, Expression) {
+    fn parse_binary_operator_and_argument(&mut self) -> (String, crate::span::Span, Expression) {
         if self.at(TokenKind::Number) {
             self.split_negative_number();
         }
         let operator = self.bump();
         let argument = self.parse_unary_message();
-        (self.text(operator).to_string(), argument)
+        (self.text(operator).to_string(), operator.span, argument)
     }
 
     /// `keywordMsg → (keyword binaryExpression)+` sent to `receiver`.
     fn parse_keyword_messages(&mut self, receiver: Expression) -> Expression {
         let eventual = self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
         let start = expression_span(&receiver);
-        let (selector, arguments, end) = self.parse_keyword_parts(start);
+        let (selector, selector_spans, arguments, end) = self.parse_keyword_parts(start);
         let span = start.merge(end);
         bare(ExpressionKind::Send(Box::new(Send {
             span,
@@ -661,30 +663,38 @@ impl<'a> Parser<'a> {
                 eventual,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans,
                 span,
             },
         })))
     }
 
     /// The `(keyword binaryExpression)+` at the cursor: the selector, the
-    /// arguments, and the span of the last argument (`start` when there is
-    /// none).
+    /// span of each keyword token, the arguments, and the span of the last
+    /// argument (`start` when there is none).
     fn parse_keyword_parts(
         &mut self,
         start: crate::span::Span,
-    ) -> (String, Vec<Expression>, crate::span::Span) {
+    ) -> (
+        String,
+        Vec<crate::span::Span>,
+        Vec<Expression>,
+        crate::span::Span,
+    ) {
         let mut selector = String::new();
+        let mut selector_spans = Vec::new();
         let mut arguments = Vec::new();
         let mut end = start;
         while self.at(TokenKind::Keyword) {
             let keyword = self.bump();
+            selector_spans.push(keyword.span);
             selector.push_str(self.text(keyword).trim_end_matches(':'));
             selector.push(':');
             let argument = self.parse_binary_message();
             end = expression_span(&argument);
             arguments.push(argument);
         }
-        (selector, arguments, end)
+        (selector, selector_spans, arguments, end)
     }
 
     /// §5.4.3: a setter keyword begins an expression and is sent to the
@@ -710,23 +720,25 @@ impl<'a> Parser<'a> {
             parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
         if self.at(TokenKind::Keyword) {
-            let (selector, arguments, end) = self.parse_keyword_parts(start);
+            let (selector, selector_spans, arguments, end) = self.parse_keyword_parts(start);
             return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
                 eventual,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans,
                 span: start.merge(end),
             });
         }
         if self.at_binary_operator() {
-            let (operator, argument) = self.parse_binary_operator_and_argument();
+            let (operator, operator_span, argument) = self.parse_binary_operator_and_argument();
             return Some(MessageSend {
                 selector: Selector::Binary(operator),
                 eventual,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans: vec![operator_span],
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
             });
@@ -741,6 +753,7 @@ impl<'a> Parser<'a> {
                 eventual,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans: vec![selector_token.span],
                 span: selector_token.span,
             });
         }

@@ -154,11 +154,15 @@ fn erase(module: &mut Module) {
                     arguments,
                     type_arguments,
                     comments,
+                    selector_spans,
                     span,
                     ..
                 } = message;
                 erase_annotation(type_arguments);
                 erase_comments(comments);
+                selector_spans
+                    .iter_mut()
+                    .for_each(|selector_span| *selector_span = NOWHERE);
                 *span = NOWHERE;
                 pending.extend(arguments.iter_mut().map(Pending::Expression));
             }

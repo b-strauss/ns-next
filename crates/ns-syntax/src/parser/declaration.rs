@@ -1079,6 +1079,7 @@ impl<'a> Parser<'a> {
                 eventual: false,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans: vec![selector_token.span],
                 span: selector_token.span,
             });
         } else if self.at_binary_operator() {
@@ -1092,6 +1093,7 @@ impl<'a> Parser<'a> {
                 eventual: false,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans: vec![operator.span],
                 span: operator
                     .span
                     .merge(super::expression::expression_span(&argument)),
@@ -1099,11 +1101,13 @@ impl<'a> Parser<'a> {
             });
         } else if self.at(TokenKind::Keyword) {
             let mut selector = String::new();
+            let mut selector_spans = Vec::new();
             let mut arguments = Vec::new();
             let start = self.current().span;
             let mut end = start;
             while self.at(TokenKind::Keyword) {
                 let keyword = self.bump();
+                selector_spans.push(keyword.span);
                 selector.push_str(self.text(keyword).trim_end_matches(':'));
                 selector.push(':');
                 let argument = self.parse_binary_message();
@@ -1116,6 +1120,7 @@ impl<'a> Parser<'a> {
                 eventual: false,
                 type_arguments: None,
                 comments: Vec::new(),
+                selector_spans,
                 span: start.merge(end),
             });
         }
@@ -4042,5 +4047,92 @@ mod type_annotation_tests {
             type_text(module.root_class.type_parameters.as_ref().expect("[E]")),
             "[ E ]"
         );
+    }
+}
+
+#[cfg(test)]
+mod selector_span_tests {
+    use super::*;
+    use indoc::indoc;
+
+    fn module(source: &str) -> Module {
+        match crate::parse(source) {
+            Ok(module) => module,
+            Err(diagnostics) => panic!("parse errors: {diagnostics:#?}"),
+        }
+    }
+
+    /// The texts of the source the first statement's send's selector spans
+    /// cover, in a one-class module whose one method holds `body`.
+    fn first_send_selector_texts(body: &str) -> Vec<String> {
+        let source = format!("class C = () (\n    public m = ( {body} )\n)\n");
+        let module = module(&source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let StatementKind::Expression(expression) = &method.body.statements[0].kind else {
+            panic!("an expression statement");
+        };
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        send.message
+            .selector_spans
+            .iter()
+            .map(|span| span.text(&source).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_keyword_send_keeps_each_keyword_s_span() {
+        assert_eq!(first_send_selector_texts("a at: 1 put: 2"), ["at:", "put:"]);
+    }
+
+    #[test]
+    fn a_unary_and_a_binary_send_keep_their_selector_s_span() {
+        assert_eq!(first_send_selector_texts("a foo"), ["foo"]);
+        assert_eq!(first_send_selector_texts("a + b"), ["+"]);
+        assert_eq!(first_send_selector_texts("a - 1"), ["-"]);
+    }
+
+    #[test]
+    fn every_message_of_a_cascade_keeps_its_selector_s_spans() {
+        let source = indoc! {"
+            class C = () (
+                public m = ( a foo; bar: 1; + 2; baz )
+            )
+        "};
+        let module = module(source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let StatementKind::Expression(expression) = &method.body.statements[0].kind else {
+            panic!("an expression statement");
+        };
+        let ExpressionKind::Cascade(cascade) = &expression.kind else {
+            panic!("a cascade");
+        };
+        let texts: Vec<Vec<&str>> = std::iter::once(&cascade.first)
+            .chain(&cascade.rest)
+            .map(|message| {
+                message
+                    .selector_spans
+                    .iter()
+                    .map(|span| span.text(source))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, [vec!["foo"], vec!["bar:"], vec!["+"], vec!["baz"]]);
+    }
+
+    #[test]
+    fn a_clause_message_keeps_its_selector_s_spans() {
+        let source = indoc! {"
+            class C = S x: 1 y: 2 ( ) ( )
+        "};
+        let module = module(source);
+        let superclass = module.root_class.superclass.as_ref().expect("S x: 1 y: 2");
+        let texts: Vec<&str> = superclass.messages[0]
+            .selector_spans
+            .iter()
+            .map(|span| span.text(source))
+            .collect();
+        assert_eq!(texts, ["x:", "y:"]);
     }
 }
