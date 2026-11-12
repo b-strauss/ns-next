@@ -1937,8 +1937,10 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       again", "Which lowering").
     - *Each stop walks every method family per frame*:
       `stack::origin_of` finds a block's member by walking the families
-      of its current class's level, every frame at every stop; the
-      pause stress mode's time is where it would show.
+      of its current class's level, and of each version of it an
+      install superseded that the heap still holds when the current
+      one holds none, every frame at every stop; the pause stress
+      mode's time is where it would show.
     - *The oracle's gaps*: a golden that does not parse or resolve, and
       one whose `build` fails, passes its `debug_metadata` trial without
       being held to its recorded failure; a statement range's end, a

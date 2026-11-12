@@ -1068,18 +1068,19 @@ ns_runtime::for_each_lowering! {
 }
 
 /// A method that replaces itself through a MirrorBuilder and then loops
-/// in its superseded body, which the module's text no longer holds.
+/// in a block of its superseded body, which the module's text no longer
+/// holds.
 const CHANGING: &str = indoc! {"
     class Changing usingPlatform: platform = Object new (
       | mirrors = platform mirrors. |
     ) (
       public class Subject = Object new () (
         public spin: count = (
-          | items |
+          | items block |
           items:: Array new: 2.
           change.
-          [true] whileTrue: [].
-          ^items
+          block:: [:limit | [true] whileTrue: []. limit].
+          ^block value: count
         )
       )
       public run = (
@@ -1093,30 +1094,130 @@ const CHANGING: &str = indoc! {"
     ) : ()
 "};
 
+/// The index of the frame named `[] in Subject>>spin:` nearest the
+/// method's: the block `spin:` creates, below the loop's blocks the
+/// reference lowering sends `value` to.
+fn spinning_block(frames: &[FrameDescription]) -> usize {
+    frames
+        .iter()
+        .rposition(|frame| frame.name == "[] in Subject>>spin:")
+        .unwrap_or_else(|| {
+            panic!(
+                "a frame of spin:'s block was expected in {:?}",
+                frame_names(frames)
+            )
+        })
+}
+
+/// The stack and the variables of the frame named `Subject>>spin:` and of
+/// its block's (`spinning_block`) of `source`'s `run` under `lowering`,
+/// sent to the module's instance made `usingPlatform:`.
+fn spinning_subject(
+    source: &'static str,
+    lowering: Lowering,
+) -> (Vec<FrameDescription>, Vec<Variable>, Vec<Variable>) {
+    let (mut interpreter, class) = load(source, lowering);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    let ((frames, method, block), _, _) =
+        while_stopped_in(interpreter, &instance, PAUSE_DELAY, |remote| {
+            let (frames, method) = frame_and_variables(remote, "Subject>>spin:");
+            let block = variables(
+                remote,
+                Command::Variables {
+                    frame: spinning_block(&frames),
+                },
+            );
+            (frames, method, block)
+        });
+    (frames, method, block)
+}
+
 ns_runtime::for_each_lowering! {
     /// A frame running a body its module's text no longer compiles to has
     /// no metadata: it keeps its name, has no location and shows its
-    /// arguments and registers by number (decision 5).
+    /// arguments and registers by number (decision 5). Its version is
+    /// found all the same: its block's frame is named for the method that
+    /// creates it, and has no metadata either, since the family's root
+    /// does not compile alike.
     fn a_changed_superseded_body_shows_unnamed_registers(lowering) {
-        let (mut interpreter, class) = load(CHANGING, lowering);
-        let platform = interpreter.platform();
-        let instance = expect_ok(
-            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
-            "usingPlatform:",
-        );
-        let ((frames, variables), _, _) =
-            while_stopped_in(interpreter, &instance, PAUSE_DELAY, |remote| {
-                frame_and_variables(remote, "Subject>>spin:")
-            });
+        let (frames, method, block) = spinning_subject(CHANGING, lowering);
         let spinning = frame_named(&frames, "Subject>>spin:");
         assert_eq!(frames[spinning].location, None);
-        assert_eq!(variables[0].name, "self");
-        assert_eq!(value_of(&variables, "argument 1").label, "5");
-        let items = variables
+        assert_eq!(method[0].name, "self");
+        assert_eq!(value_of(&method, "argument 1").label, "5");
+        let items = method
             .iter()
             .find(|variable| shown(variable).class_name == "Array")
             .expect("a register holds the Array");
         assert!(items.name.starts_with("register "), "{}", items.name);
+        let looping = spinning_block(&frames);
+        assert_eq!(frames[looping].location, None);
+        assert_eq!(names(&block), ["self", "argument 1"]);
+        assert_eq!(value_of(&block, "argument 1").label, "5");
+    }
+}
+
+/// A method whose running adds another method to its class through a
+/// MirrorBuilder, and then loops in a block of its own body, which the
+/// install superseded but did not change.
+const ADDING: &str = indoc! {"
+    class Adding usingPlatform: platform = Object new (
+      | mirrors = platform mirrors. |
+    ) (
+      public class Subject = Object new () (
+        public spin: count = (
+          | items block |
+          items:: Array new: 2.
+          change.
+          block:: [:limit | [true] whileTrue: []. limit].
+          ^block value: count
+        )
+      )
+      public run = (
+        ^Subject new spin: 5
+      )
+      public change = (
+        | builder = (mirrors ClassMirror reflecting: Subject) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: 'public other = ( ^7 )'.
+        builder install
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An install rebuilds every body of the declaration it edits, so a
+    /// frame still running one runs a superseded version. When the edit
+    /// left its body alone, the version compiles alike with the current
+    /// text, and the frame and its block's keep their names, their
+    /// location and their named variables (decision 11).
+    fn an_unchanged_superseded_body_keeps_its_metadata(lowering) {
+        let (frames, method, block) = spinning_subject(ADDING, lowering);
+        let spinning = frame_named(&frames, "Subject>>spin:");
+        let location = frames[spinning]
+            .location
+            .clone()
+            .expect("the superseded method is located");
+        assert_eq!(location.module, "Adding");
+        assert_eq!(location.statement.text(ADDING), "^block value: count");
+        assert_eq!(names(&method), ["self", "count", "items", "block"]);
+        assert_eq!(value_of(&method, "count").label, "5");
+        assert_eq!(value_of(&method, "items").class_name, "Array");
+        let looping = spinning_block(&frames);
+        let location = frames[looping]
+            .location
+            .clone()
+            .expect("the superseded block is located");
+        assert!(
+            ["[true] whileTrue: []", "true"].contains(&location.statement.text(ADDING)),
+            "{}",
+            location.statement.text(ADDING)
+        );
+        assert_eq!(value_of(&block, "limit").label, "5");
+        assert_eq!(value_of(&block, "count").label, "5");
     }
 }
 

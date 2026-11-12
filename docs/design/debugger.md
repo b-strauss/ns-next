@@ -622,10 +622,20 @@ clause's in the nested declaration whose clause it is, a factory's in its
 class's declaration, and a block's in the member of its current class's
 level -- or of a nested declaration's clause -- whose body creates it,
 walked transitively through `created_blocks`. The mixin is the version
-the frame runs, possibly one an edit superseded; the metadata cache
-(`metadata::Cache`) compiles the level again on the first ask and keeps
-each body's tables, or none. The metadata is looked up before any handle
-is read off the frame.
+whose member holds the frame's body (`stack::running_version`): the
+version its class names, or else the newest version of the same id an
+install superseded that the heap still holds (`Heap::superseded_mixins`,
+which keeps every version a running body was compiled in). The class
+alone does not tell: an install re-applies every class object of the
+declaration it edits over the new version
+(`Heap::class_install_application`) and rebuilds every body of it and of
+its nested declarations, so a frame still running a body of the old
+version, edited or not, names the current version through its class. The
+activation's entered application (`frame_header::ENTERED_LEVEL`) would
+name the old version, but a push records it only for a body that
+addresses its own slots. The metadata cache (`metadata::Cache`) compiles
+the level again on the first ask and keeps each body's tables, or none.
+The metadata is looked up before any handle is read off the frame.
 
 A frame's variables (`stack::variables`) are `self`, then, with the
 body's metadata, each variable of its table once -- the innermost of a
@@ -714,10 +724,10 @@ outward, and, for a factory, the header's factory pattern
   no tables: it is not the source's body.
 - **What is compiled: the declaration's level.** A frame's body is named
   by a `BodyOrigin` (`stack::origin_of`, "Reading the stack at a stop"):
-  the version of the mixin the frame runs, held as the frame's
-  application holds it -- possibly a version an edit superseded, which
-  keeps its id -- and the member: a method or a lazy slot's getter, an
-  initializer body, the superclass clause or the factory.
+  the version of the mixin whose member holds the frame's body --
+  possibly a version an edit superseded, which keeps its id -- and the
+  member: a method or a lazy slot's getter, an initializer body, the
+  superclass clause or the factory.
   `again::compile_level` finds the declaration's path from its module's
   root by that version's id (`Heap::known_mixin_id`,
   `Mutator::path_from_module_root`; a class side's through its instance
@@ -902,7 +912,10 @@ stage's tests, do not.
   method's variables; an outer variable of a creator that returned
   without keeping its registers, not available; a factory's frame named
   by its header's parameters; a superseded body its edit changed, shown
-  by number and without a location; an image without source, its frames
+  by number and without a location, its block's frame still named for
+  its method; a superseded body an install into its declaration left
+  alone, and its block's, named, located in the current text and showing
+  their named variables; an image without source, its frames
   named and their variables numbered; and a vector variable's current
   value in every frame of its chain.
 - **The collection and the pairing** (`debugger/metadata/tests.rs`):

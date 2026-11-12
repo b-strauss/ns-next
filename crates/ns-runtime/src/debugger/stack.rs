@@ -236,9 +236,13 @@ fn frame_kind(kind: ActivationKind<'_>) -> FrameKind {
 /// that carries the body (`Heap::initializer_mixin`), a superclass
 /// clause's the nested declaration it is the clause of, a factory's its
 /// class's declaration, and a block's that of the body whose family holds
-/// it. Each is the version the frame runs, possibly one an edit
-/// superseded. `None` for a top-level frame, and for a block no body of
-/// its class's level creates.
+/// it. Each is the version whose member holds the frame's body
+/// (`running_version`): an install re-applies every class object of the
+/// declaration it edits over the new version and rebuilds every body of
+/// it, so a frame still running a body of the old version names the
+/// current version through its class, and only the body tells the two
+/// apart. `None` for a top-level frame, and for a block no body of its
+/// class's level creates.
 fn origin_of<'gc>(
     heap: &Heap<'gc>,
     frame: Frame<'gc>,
@@ -257,23 +261,42 @@ fn origin_of<'gc>(
             .or_else(|| level_mixin(class))
     };
     match frame.kind(heap) {
-        ActivationKind::Method(selector) => Some(BodyOrigin {
-            mixin: level_mixin(frame.current_class(heap)?)?,
-            member: Member::Method(selector),
-        }),
-        ActivationKind::Initializer(level, body) => Some(BodyOrigin {
-            mixin: heap.initializer_mixin(level, body)?,
-            member: Member::Initializer(body),
-        }),
+        ActivationKind::Method(selector) => {
+            let current = level_mixin(frame.current_class(heap)?)?;
+            let mixin = running_version(heap, &current, |version| {
+                version
+                    .compiled_method(selector)
+                    .is_some_and(|method| Rc::ptr_eq(&method.code, code))
+            })
+            .unwrap_or(current);
+            Some(BodyOrigin {
+                mixin,
+                member: Member::Method(selector),
+            })
+        }
+        ActivationKind::Initializer(level, body) => {
+            let current = heap.initializer_mixin(level, body)?;
+            let mixin = running_version(heap, &current, |version| {
+                body.code_of(version)
+                    .is_some_and(|initializer| Rc::ptr_eq(&initializer, code))
+            })
+            .unwrap_or(current);
+            Some(BodyOrigin {
+                mixin,
+                member: Member::Initializer(body),
+            })
+        }
         ActivationKind::SuperclassClause(declaring) => {
             let mixin = heap
                 .nested_mixins(&level_mixin(declaring)?)
                 .into_iter()
-                .find(|nested| {
-                    nested
-                        .superclass_clause_code
-                        .as_ref()
-                        .is_some_and(|clause| Rc::ptr_eq(clause, code))
+                .find_map(|nested| {
+                    running_version(heap, &nested, |version| {
+                        version
+                            .superclass_clause_code
+                            .as_ref()
+                            .is_some_and(|clause| Rc::ptr_eq(clause, code))
+                    })
                 })?;
             Some(BodyOrigin {
                 mixin,
@@ -291,17 +314,29 @@ fn origin_of<'gc>(
             let own = body_less
                 .into_iter()
                 .chain(std::iter::once(Rc::clone(&level)))
-                .find_map(|mixin| {
-                    let member = member_holding(&mixin, code)?;
-                    Some(BodyOrigin { mixin, member })
+                .find_map(|current| {
+                    let mut member = None;
+                    let mixin = running_version(heap, &current, |version| {
+                        member = member_holding(version, code);
+                        member.is_some()
+                    })?;
+                    Some(BodyOrigin {
+                        mixin,
+                        member: member?,
+                    })
                 });
             // A block of a superclass clause runs with the declaring
             // class as its current class, as the clause does.
             own.or_else(|| {
                 heap.nested_mixins(&level).into_iter().find_map(|nested| {
-                    let clause = nested.superclass_clause_code.as_ref()?;
-                    family_holds(clause, code).then(|| BodyOrigin {
-                        mixin: Rc::clone(&nested),
+                    let mixin = running_version(heap, &nested, |version| {
+                        version
+                            .superclass_clause_code
+                            .as_ref()
+                            .is_some_and(|clause| family_holds(clause, code))
+                    })?;
+                    Some(BodyOrigin {
+                        mixin,
                         member: Member::SuperclassClause,
                     })
                 })
@@ -309,6 +344,27 @@ fn origin_of<'gc>(
         }
         ActivationKind::TopLevel => None,
     }
+}
+
+/// The version of `current`'s mixin `holds` accepts: `current` itself,
+/// else the newest version an install superseded that the heap still
+/// holds (`Heap::superseded_mixins`) -- it keeps every version some
+/// running body was compiled in -- under the same id. `None` when no
+/// version is accepted.
+fn running_version(
+    heap: &Heap<'_>,
+    current: &Rc<Mixin>,
+    mut holds: impl FnMut(&Mixin) -> bool,
+) -> Option<Rc<Mixin>> {
+    if holds(current) {
+        return Some(Rc::clone(current));
+    }
+    let id = heap.known_mixin_id(current)?;
+    heap.superseded_mixins()
+        .iter()
+        .rev()
+        .find(|version| heap.known_mixin_id(version) == Some(id) && holds(version))
+        .cloned()
 }
 
 /// The member of `mixin` whose family -- its body and the blocks it
