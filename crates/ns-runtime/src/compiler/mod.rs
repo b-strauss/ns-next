@@ -343,7 +343,7 @@ pub(crate) fn compile_method(
     collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     if lowering == Lowering::Reference {
-        return reference::compile_method(method, bindings);
+        return reference::compile_method(method, bindings, collector);
     }
     let argument_count = argument_count_of(&method.pattern);
     let captures = Rc::new(capture::analyze(
@@ -389,8 +389,7 @@ pub(crate) fn compile_mixin_bodies(
     collector: Option<&MetadataCollector>,
 ) {
     if lowering == Lowering::Reference {
-        // The reference lowering collects nothing yet.
-        reference::compile_mixin_bodies(mixin, bindings);
+        reference::compile_mixin_bodies(mixin, bindings, collector);
     } else {
         compile_mixin_bodies_optimized(mixin, bindings, collector);
     }
@@ -593,7 +592,13 @@ pub(crate) fn compile_lazy_slot_getter(
     collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     if lowering == Lowering::Reference {
-        return reference::compile_lazy_slot_getter(initializer, own_index, span, bindings);
+        return reference::compile_lazy_slot_getter(
+            initializer,
+            own_index,
+            span,
+            bindings,
+            collector,
+        );
     }
     let captures = Rc::new(capture::analyze(
         RootBody {

@@ -2756,11 +2756,11 @@ fn variable_place(access: Access) -> VariablePlace {
 /// A send's receiver span -- `None` where nothing in the source spells
 /// one -- and its selector tokens' spans, as the debugger's metadata names
 /// them (`docs/design/debugger.md`, decision 15).
-type SendSpans<'text> = (Option<Span>, &'text [Span]);
+pub(super) type SendSpans<'text> = (Option<Span>, &'text [Span]);
 
 /// The span of a send's receiver, `None` for the implicit receiver the
 /// parser made up.
-fn receiver_span(receiver: &Expression) -> Option<Span> {
+pub(super) fn receiver_span(receiver: &Expression) -> Option<Span> {
     (!receiver.synthesized).then_some(receiver.span)
 }
 

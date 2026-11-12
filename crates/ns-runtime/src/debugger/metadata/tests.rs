@@ -635,3 +635,292 @@ fn an_initializer_s_prologue_slots_and_lazy_getter_are_collected() {
     let metadata = collector.take(full).expect("the initializer's metadata");
     assert_eq!(statement_texts(&metadata, source), vec!["Bare", "u = 1."]);
 }
+
+/// `source`'s first method compiled under `lowering` with a collector, and
+/// the collector, for a test that walks the whole family of bodies.
+fn collected_under(source: &str, lowering: Lowering) -> (Rc<CompiledCode>, MetadataCollector) {
+    let collector = MetadataCollector::new();
+    let code = Rc::new(compile(source, lowering, Some(&collector)));
+    (code, collector)
+}
+
+#[test]
+fn both_lowerings_name_the_same_variables_of_a_block() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: p = ( | t u | ^[:b | t + b + u. u:: 1 ] )
+        ) : ()
+    "};
+    let (optimized_method, optimized_collector) = collected_under(source, Lowering::Optimized);
+    let (reference_method, reference_collector) = collected_under(source, Lowering::Reference);
+    let names = |metadata: &BodyMetadata| {
+        metadata
+            .variables
+            .iter()
+            .map(|entry| (entry.name, entry.depth))
+            .collect::<Vec<_>>()
+    };
+    let optimized_method_metadata = optimized_collector
+        .take(&optimized_method)
+        .expect("the optimized method's metadata");
+    let reference_method_metadata = reference_collector
+        .take(&reference_method)
+        .expect("the reference method's metadata");
+    assert_eq!(
+        names(&optimized_method_metadata),
+        names(&reference_method_metadata)
+    );
+    // The reference lowering keeps every variable in a register of its
+    // body, in the order the resolver numbers them: the parameter, then
+    // the temporaries past the header's numbers.
+    let temporary = |position: u16| HEADER_REGISTERS + position;
+    assert_eq!(
+        reference_method_metadata.variables.to_vec(),
+        vec![
+            variable("p", 0, VariablePlace::Register(0)),
+            variable("t", 0, VariablePlace::Register(temporary(1))),
+            variable("u", 0, VariablePlace::Register(temporary(2))),
+        ]
+    );
+
+    let optimized_block = optimized_collector
+        .take(&first_block(&optimized_method))
+        .expect("the optimized block's metadata");
+    let reference_block = reference_collector
+        .take(&first_block(&reference_method))
+        .expect("the reference block's metadata");
+    assert_eq!(names(&optimized_block), names(&reference_block));
+    // Every enclosing variable is read through the captured frames, at the
+    // register its declaring body keeps it in.
+    let outer = |register: u16| VariablePlace::Outer { hops: 1, register };
+    assert_eq!(
+        reference_block.variables.to_vec(),
+        vec![
+            variable("b", 0, VariablePlace::Register(0)),
+            variable("p", 1, outer(0)),
+            variable("t", 1, outer(temporary(1))),
+            variable("u", 1, outer(temporary(2))),
+        ]
+    );
+}
+
+/// Every (receiver, selector) pair of the sends the family of bodies of
+/// `code` records, as text, sorted.
+fn send_pairs(
+    code: &Rc<CompiledCode>,
+    collector: &MetadataCollector,
+    source: &str,
+) -> Vec<(Option<String>, Vec<String>)> {
+    let mut bodies = Vec::new();
+    family(code, &mut bodies);
+    let mut pairs = Vec::new();
+    for body in &bodies {
+        let metadata = collector.take(body).expect("every body's metadata");
+        for entry in metadata.sends.iter() {
+            let (receiver, selector) = send_texts(entry, source);
+            pairs.push((
+                receiver.map(str::to_owned),
+                selector.into_iter().map(str::to_owned).collect(),
+            ));
+        }
+    }
+    pairs.sort();
+    pairs
+}
+
+#[test]
+fn both_lowerings_record_the_same_sends_by_span() {
+    // No send sits inside an inlined block: the optimized lowering lowers
+    // such a block twice, inline and as the fallback closure of the
+    // conditional's fallback send, and records the sends of both, where
+    // the reference lowering lowers it once. A loop is left out too, as
+    // its own test says.
+    let source = indoc! {"
+        class X = Object new (
+        | s ::= 0. |
+        ) (
+          m: x with: y = (
+            foo.
+            s:: 3.
+            x foo; bar: 1 baz: 2; qux.
+            y at: 1 put: x.
+            x + 1.
+            x ifTrue: [ 2 ] ifFalse: [ 3 ].
+            x and: [ y ].
+            ^[:b | b zip: x ]
+          )
+          foo = ( )
+        ) : ()
+    "};
+    let (optimized_code, optimized) = collected_under(source, Lowering::Optimized);
+    let (reference_code, reference) = collected_under(source, Lowering::Reference);
+    let expected = send_pairs(&optimized_code, &optimized, source);
+    assert_eq!(expected.len(), 10, "{expected:?}");
+    assert_eq!(send_pairs(&reference_code, &reference, source), expected);
+}
+
+#[test]
+fn a_while_loop_s_value_sends_name_its_source_send_in_the_reference_lowering() {
+    // The optimized lowering emits no send for a `whileTrue:` loop, so the
+    // two lowerings differ here by exactly the loop's two `value` sends,
+    // which the reference lowering gives the loop's spans.
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: x = ( [ x foo ] whileTrue: [ x bar ]. ^x )
+        ) : ()
+    "};
+    let (optimized_code, optimized) = collected_under(source, Lowering::Optimized);
+    let (reference_code, reference) = collected_under(source, Lowering::Reference);
+    let optimized_pairs = send_pairs(&optimized_code, &optimized, source);
+    let mut reference_pairs = send_pairs(&reference_code, &reference, source);
+    let loop_send = (Some("[ x foo ]".to_owned()), vec!["whileTrue:".to_owned()]);
+    assert!(!optimized_pairs.contains(&loop_send));
+    let before = reference_pairs.len();
+    reference_pairs.retain(|pair| *pair != loop_send);
+    assert_eq!(before - reference_pairs.len(), 2);
+    assert_eq!(reference_pairs, optimized_pairs);
+}
+
+#[test]
+fn a_reference_send_entry_is_uncached() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: x = ( x ifTrue: [ 1 ]. [ x foo ] whileFalse: [ x ]. ^x bar: 2 )
+        ) : ()
+    "};
+    let (code, collector) = collected_under(source, Lowering::Reference);
+    let mut bodies = Vec::new();
+    family(&code, &mut bodies);
+    let mut entries = 0;
+    for body in &bodies {
+        let metadata = collector.take(body).expect("every body's metadata");
+        let sends: Vec<u32> = (0..body.instruction_count())
+            .filter(|index| body.instruction(*index).call_site().is_some())
+            .map(|index| u32::try_from(index).expect("small"))
+            .collect();
+        assert_eq!(
+            metadata
+                .sends
+                .iter()
+                .map(|entry| entry.index)
+                .collect::<Vec<_>>(),
+            sends,
+            "an entry for every send instruction and no other"
+        );
+        for entry in metadata.sends.iter() {
+            assert_eq!(entry.call_site, Some(crate::bytecode::CallSite::UNCACHED));
+            entries += 1;
+        }
+        for (position, entry) in metadata.statements.iter().enumerate() {
+            assert_eq!(entry.instructions, statement_range(body, position));
+        }
+    }
+    // `ifTrue:`, `bar:`, `whileFalse:`'s two `value` sends and the
+    // condition block's `foo`.
+    assert_eq!(entries, 5);
+}
+
+#[test]
+fn both_lowerings_record_the_same_initializer_statements() {
+    let source = indoc! {"
+        class Outer = Object new (
+        ) (
+          class Mixer = Object new () ()
+          class Applied x: a = Object new <: Mixer new (
+            |
+              s = a foo.
+              u = 1.
+            |
+          ) (
+            lazy t = 3 bar.
+          )
+          class Bare = (
+            |
+              v = 1.
+            |
+          ) ()
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let Ok(resolved) = crate::resolve(
+        module,
+        Rc::from(source),
+        crate::SourceOrigin::File(PathBuf::from("t.ns")),
+    ) else {
+        panic!("does not resolve");
+    };
+    let statements_of = |name: &str, lowering: Lowering| {
+        let declaration = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .find(|declaration| declaration.name.name == name)
+            .expect("a nested class");
+        let collector = MetadataCollector::new();
+        let mut mixin = mixin_of(declaration);
+        crate::compiler::compile_mixin_bodies(
+            &mut mixin,
+            &resolved.bindings,
+            lowering,
+            Some(&collector),
+        );
+        let full = mixin.initializer_code.as_ref().expect("a full initializer");
+        let metadata = collector.take(full).expect("the initializer's metadata");
+        for (position, entry) in metadata.statements.iter().enumerate() {
+            assert_eq!(entry.instructions, statement_range(full, position));
+        }
+        let clause = mixin.superclass_clause_code.as_ref().map(|clause| {
+            collector
+                .take(clause)
+                .expect("the superclass clause's metadata")
+        });
+        (
+            metadata
+                .statements
+                .iter()
+                .map(|entry| entry.span)
+                .collect::<Vec<_>>(),
+            metadata.variables.to_vec(),
+            clause.map(|clause| -> Vec<_> {
+                clause.statements.iter().map(|entry| entry.span).collect()
+            }),
+        )
+    };
+    for name in ["Applied", "Bare"] {
+        assert_eq!(
+            statements_of(name, Lowering::Reference),
+            statements_of(name, Lowering::Optimized),
+            "{name}"
+        );
+    }
+    let (spans, _, _) = statements_of("Bare", Lowering::Reference);
+    let texts: Vec<_> = spans.iter().map(|span| span.text(source)).collect();
+    assert_eq!(texts, vec!["Bare", "v = 1."]);
+}
+
+#[test]
+fn compiling_the_reference_lowering_without_a_collector_emits_the_same_code() {
+    let source = indoc! {"
+        class X = Object new (
+        | s ::= 0. |
+        ) (
+          m: p = (
+            | t u a = 1. |
+            u:: p + 1.
+            s:: t.
+            p foo; bar: [ a ].
+            [ u < 3 ] whileTrue: [ u:: u + 1 ].
+            ^u
+          )
+        ) : ()
+    "};
+    let collector = MetadataCollector::new();
+    assert_eq!(
+        compile(source, Lowering::Reference, None),
+        compile(source, Lowering::Reference, Some(&collector))
+    );
+}

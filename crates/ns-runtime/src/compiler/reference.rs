@@ -14,12 +14,15 @@ use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind}
 use ns_syntax::Span;
 
 use super::control_flow;
-use super::lower::{lower_literal, selector_of};
+use super::lower::{lower_literal, receiver_span, selector_of, Collecting, SendSpans};
 use super::simultaneous;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
     register_written, registers_read, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
     Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
+};
+use crate::debugger::metadata::{
+    BodyMetadata, MetadataCollector, SendEntry, StatementEntry, VariableEntry, VariablePlace,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -27,32 +30,43 @@ use crate::Symbol;
 
 type Bindings = Rc<HashMap<Span, Binding>>;
 
-pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Bindings) -> CompiledCode {
+pub(crate) fn compile_method(
+    method: &ast::MethodDeclaration,
+    bindings: &Bindings,
+    collector: Option<&MetadataCollector>,
+) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Method,
         super::argument_count_of(&method.pattern),
-        method.body.temporaries.len(),
+        &method.body.temporaries,
         bindings,
+        super::collecting(collector, || {
+            crate::resolver::pattern_parameter_names(&method.pattern)
+        }),
     );
     body.local_initializers(&method.body.temporaries);
     body.statements_and_end(&method.body.statements);
     body.finish(method.span)
 }
 
-pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
-    let own = Rc::new(initializer(mixin, bindings, None));
+pub(crate) fn compile_mixin_bodies(
+    mixin: &mut Mixin,
+    bindings: &Bindings,
+    collector: Option<&MetadataCollector>,
+) {
+    let own = Rc::new(initializer(mixin, bindings, None, collector));
     mixin.initializer_code = Some(match super::Prologue::of(mixin, true) {
-        Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue))),
+        Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue), collector)),
         None => Rc::clone(&own),
     });
     mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
         super::Prologue::of(mixin, false)
-            .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue))))
+            .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue), collector)))
     };
     mixin.own_initializer_code = Some(own);
-    mixin.superclass_clause_code = superclass_clause(mixin, bindings).map(Rc::new);
+    mixin.superclass_clause_code = superclass_clause(mixin, bindings, collector).map(Rc::new);
 }
 
 /// `prologue`'s clauses when there is one -- the full or the standalone
@@ -67,16 +81,25 @@ fn initializer(
     mixin: &Mixin,
     bindings: &Bindings,
     prologue: Option<super::Prologue<'_>>,
+    collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Initializer,
         super::factory_argument_count(mixin),
-        0,
+        &[],
         bindings,
+        super::collecting(collector, || {
+            mixin
+                .declaration
+                .as_ref()
+                .and_then(|declaration| declaration.factory.as_ref())
+                .map(crate::resolver::pattern_parameter_names)
+                .unwrap_or_default()
+        }),
     );
     let mut source_span: Option<Span> = None;
     if let Some(prologue) = prologue {
-        body.prologue(prologue.superclass, prologue.applied, prologue.has_body);
+        body.prologue(prologue);
         source_span = prologue.merge_spans(source_span);
     }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
@@ -112,14 +135,18 @@ fn initializer(
                 });
             }
         }
-        body.record_statement(start);
+        body.record_statement(start, declaration.span);
         source_span = Some(super::merge_span(source_span, declaration.span));
     }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
-        let simultaneous_with_initializer = slot.declaration.as_ref().is_some_and(|declaration| {
-            declaration.simultaneous && declaration.initializer.is_some()
-        });
-        if slot.lazy || !simultaneous_with_initializer {
+        let Some(declaration) = slot
+            .declaration
+            .as_ref()
+            .filter(|declaration| declaration.simultaneous && declaration.initializer.is_some())
+        else {
+            continue;
+        };
+        if slot.lazy {
             continue;
         }
         let start = body.code.len();
@@ -137,7 +164,7 @@ fn initializer(
             source: resolved,
             own_index: super::own_slot_index(own_index),
         });
-        body.record_statement(start);
+        body.record_statement(start, declaration.span);
     }
     for statement in &mixin.initializer_expressions {
         source_span = Some(super::merge_span(
@@ -159,21 +186,32 @@ pub(crate) fn compile_lazy_slot_getter(
     own_index: u32,
     span: Span,
     bindings: &Bindings,
+    collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
-    let mut body = Body::new(CodeKind::Method, 0, 0, bindings);
+    let mut body = Body::new(
+        CodeKind::Method,
+        0,
+        &[],
+        bindings,
+        super::collecting(collector, Vec::new),
+    );
     body.emit(Instruction::ReturnSlotIfFilled { own_index });
     let start = body.code.len();
     let source = body.value(initializer);
     body.emit(Instruction::InitializeSlot { source, own_index });
     // One statement, its `Return` included, as a `^e` statement's is.
     body.emit(Instruction::Return { register: source });
-    body.record_statement(start);
+    body.record_statement(start, span);
     body.finish(span)
 }
 
 /// The superclass clause as a single `^ec`. The expression is
 /// `interpreter::nested`'s, the one definition of what a clause evaluates.
-fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
+fn superclass_clause(
+    mixin: &Mixin,
+    bindings: &Bindings,
+    collector: Option<&MetadataCollector>,
+) -> Option<CompiledCode> {
     let declaration = mixin.declaration.as_ref()?;
     let clause = declaration.superclass.as_ref()?;
     let statements = [Statement::of_return(
@@ -182,7 +220,13 @@ fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode>
             &declaration.mixin_applications,
         ),
     )];
-    let mut body = Body::new(CodeKind::SuperclassClause, 0, 0, bindings);
+    let mut body = Body::new(
+        CodeKind::SuperclassClause,
+        0,
+        &[],
+        bindings,
+        super::collecting(collector, Vec::new),
+    );
     body.statements_and_end(&statements);
     Some(body.finish(clause.span))
 }
@@ -214,15 +258,36 @@ struct Body<'a> {
     too_large: Option<BodyLimit>,
     code: CodeBuilder,
     statement_program_counter: Vec<(usize, Range<usize>)>,
+    /// Where the debugger's metadata goes, when it is collected, and what
+    /// has been collected so far (`docs/design/debugger.md`, "Compiling the
+    /// metadata again"): `Some` together. Collected on the side, as
+    /// `lower.rs`'s `Lowerer` does; no instruction depends on it.
+    collector: Option<&'a MetadataCollector>,
+    collected: Option<Collected>,
+    /// The variable names of every body this one is nested in, outermost
+    /// first, parallel to `enclosing_argument_counts`; empty when no
+    /// metadata is collected.
+    enclosing_variable_names: Vec<Rc<[Symbol]>>,
+}
+
+/// The tables a collecting `Body` builds as it lowers.
+struct Collected {
+    /// The body's own variable names by resolver index: its parameters,
+    /// then its temporaries.
+    names: Rc<[Symbol]>,
+    statements: Vec<StatementEntry>,
+    sends: Vec<SendEntry>,
 }
 
 impl<'a> Body<'a> {
     fn new(
         kind: CodeKind,
         argument_count: usize,
-        temporary_count: usize,
+        temporaries: &[ast::SlotDeclaration],
         bindings: &'a Bindings,
+        collecting: Option<Collecting<'a>>,
     ) -> Self {
+        let temporary_count = temporaries.len();
         // Checked in every build: a wrapped sum would place scratch
         // registers on top of the named locals. A body whose named locals do
         // not fit is too large before it lowers anything, and lowers
@@ -238,6 +303,28 @@ impl<'a> Body<'a> {
             Some(_) => super::parameter_limit_passed(argument_count),
         };
         let first_scratch = first_scratch.unwrap_or(u16::MAX);
+        let (collector, collected) = match collecting {
+            Some(Collecting {
+                collector,
+                parameters,
+            }) => {
+                let names = parameters
+                    .into_iter()
+                    .chain(
+                        temporaries
+                            .iter()
+                            .map(|temporary| Symbol::intern(&temporary.name.name)),
+                    )
+                    .collect();
+                let collected = Collected {
+                    names,
+                    statements: Vec::new(),
+                    sends: Vec::new(),
+                };
+                (Some(collector), Some(collected))
+            }
+            None => (None, None),
+        };
         Body {
             bindings,
             kind,
@@ -248,6 +335,9 @@ impl<'a> Body<'a> {
             too_large,
             code: CodeBuilder::new(),
             statement_program_counter: Vec::new(),
+            collector,
+            collected,
+            enclosing_variable_names: Vec::new(),
         }
     }
 
@@ -304,10 +394,20 @@ impl<'a> Body<'a> {
         self.bindings.get(&span).copied()
     }
 
-    fn record_statement(&mut self, start: usize) {
+    /// Records the statement that began at instruction `start` and ends
+    /// here, and its source `span` in the debugger's metadata. The
+    /// reference lowering inlines no block, so a statement start is a
+    /// statement range, always.
+    fn record_statement(&mut self, start: usize, span: Span) {
         let index = self.statement_program_counter.len();
-        self.statement_program_counter
-            .push((index, start..self.code.len()));
+        let end = self.code.len();
+        self.statement_program_counter.push((index, start..end));
+        if let Some(collected) = self.collected.as_mut() {
+            collected.statements.push(StatementEntry {
+                instructions: Self::target(start)..Self::target(end),
+                span,
+            });
+        }
     }
 
     /// An initializer's clauses, in `lower.rs`'s order
@@ -320,12 +420,17 @@ impl<'a> Body<'a> {
     /// the superclass clause the class `n + 1` steps up -- one step fewer
     /// each for a body-less declaration (`has_body` false), whose body runs
     /// at the level its last clause adds (`super::superclass_steps`).
-    fn prologue(
-        &mut self,
-        superclass: Option<&ast::SuperclassClause>,
-        applied: &[ast::SuperclassClause],
-        has_body: bool,
-    ) {
+    ///
+    /// Each statement's span in the debugger's metadata is its clause's:
+    /// the checks' that of every `<:` clause together, and the
+    /// superclass's, where no clause is written, the declaration's name.
+    fn prologue(&mut self, prologue: super::Prologue<'_>) {
+        let super::Prologue {
+            superclass,
+            applied,
+            has_body,
+            declaration_name,
+        } = prologue;
         let count = applied.len();
         let own_level = usize::from(has_body);
         let superclass_steps = super::superclass_steps(count, own_level);
@@ -335,7 +440,7 @@ impl<'a> Body<'a> {
             u16::try_from(count + own_level - 1 - index)
                 .expect("internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler")
         };
-        if count > 0 {
+        if let (Some(first), Some(last)) = (applied.first(), applied.last()) {
             let start = self.code.len();
             for (index, clause) in applied.iter().enumerate().rev() {
                 self.emit(Instruction::CheckAppliedClause {
@@ -343,7 +448,7 @@ impl<'a> Body<'a> {
                     selector: super::clause_selector(Some(clause)),
                 });
             }
-            self.record_statement(start);
+            self.record_statement(start, first.span.merge(last.span));
         }
         let start = self.code.len();
         let (argument_base, argument_sources) = self.arguments(super::clause_arguments(superclass));
@@ -355,7 +460,10 @@ impl<'a> Body<'a> {
             argument_sources,
             destination,
         });
-        self.record_statement(start);
+        self.record_statement(
+            start,
+            superclass.map_or(declaration_name, |clause| clause.span),
+        );
         for (index, clause) in applied.iter().enumerate() {
             let start = self.code.len();
             let (argument_base, argument_sources) =
@@ -367,7 +475,7 @@ impl<'a> Body<'a> {
                 argument_sources,
                 destination,
             });
-            self.record_statement(start);
+            self.record_statement(start, clause.span);
         }
     }
 
@@ -406,7 +514,7 @@ impl<'a> Body<'a> {
             let slot =
                 self.local_register(0, super::temporary_index(self.argument_count, position));
             self.emit(Instruction::StoreLocal { source, slot });
-            self.record_statement(start);
+            self.record_statement(start, temporary.span);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
             if self.too_large.is_some() {
@@ -433,7 +541,7 @@ impl<'a> Body<'a> {
                 source: resolved,
                 slot,
             });
-            self.record_statement(start);
+            self.record_statement(start, temporary.span);
         }
     }
 
@@ -482,7 +590,7 @@ impl<'a> Body<'a> {
                 }
             }
         };
-        self.record_statement(start);
+        self.record_statement(start, statement.span);
         value
     }
 
@@ -618,13 +726,16 @@ impl<'a> Body<'a> {
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&id.name);
                 let (argument_base, argument_sources) = self.arguments(&[]);
-                self.emit_send(into, |destination, call_site| Instruction::SendLexical {
-                    depth,
-                    selector,
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                let spans = (None, std::slice::from_ref(&id.span));
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendLexical {
+                        depth,
+                        selector,
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
             // A `super`-prefixed inheritance-clause receiver, `super Foo`:
@@ -632,12 +743,15 @@ impl<'a> Body<'a> {
             Some(Binding::SuperSend) => {
                 let selector = Symbol::intern(&id.name);
                 let (argument_base, argument_sources) = self.arguments(&[]);
-                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
-                    selector,
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                let spans = (None, std::slice::from_ref(&id.span));
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendSuper {
+                        selector,
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
             // No binding: the deferred unresolved-identifier error
@@ -676,13 +790,16 @@ impl<'a> Body<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
-                self.emit_send(None, |destination, call_site| Instruction::SendLexical {
-                    depth,
-                    selector,
-                    argument_base: value_register,
-                    argument_sources: vec![value_register],
-                    destination,
-                    call_site,
+                let spans = (None, std::slice::from_ref(&target.span));
+                self.emit_send(None, spans, |destination, call_site| {
+                    Instruction::SendLexical {
+                        depth,
+                        selector,
+                        argument_base: value_register,
+                        argument_sources: vec![value_register],
+                        destination,
+                        call_site,
+                    }
                 });
             }
             Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
@@ -696,6 +813,10 @@ impl<'a> Body<'a> {
 
     fn send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
+        let spans = (
+            receiver_span(&send.receiver),
+            &send.message.selector_spans[..],
+        );
         match self.binding(send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -704,23 +825,27 @@ impl<'a> Body<'a> {
             }
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
-                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
-                    selector,
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendSuper {
+                        selector,
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
             Some(Binding::LexicalSend { depth }) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
-                self.emit_send(into, |destination, call_site| Instruction::SendLexical {
-                    depth,
-                    selector,
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendLexical {
+                        depth,
+                        selector,
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
             // An ordinary send. The ones the optimized lowering inlines are
@@ -733,10 +858,10 @@ impl<'a> Body<'a> {
             Some(Binding::Local(_) | Binding::OuterLocal { .. } | Binding::MirrorSend) | None => {
                 match control_flow::recognize(send) {
                     Some(control_flow::InlineForm::WhileTrue { condition, body }) => {
-                        return self.while_loop(condition, body, true, into);
+                        return self.while_loop(send, condition, body, true, into);
                     }
                     Some(control_flow::InlineForm::WhileFalse { condition, body }) => {
-                        return self.while_loop(condition, body, false, into);
+                        return self.while_loop(send, condition, body, false, into);
                     }
                     _ => {}
                 }
@@ -744,47 +869,57 @@ impl<'a> Body<'a> {
                 if control_flow::recognize(send).is_some()
                     || control_flow::recognize_mirror_send(self.bindings, send).is_some()
                 {
-                    self.inlinable_send(receiver_register, &send.message, into)
+                    self.inlinable_send(receiver_register, &send.receiver, &send.message, into)
                 } else {
-                    self.public_send(receiver_register, &send.message, into)
+                    self.public_send(receiver_register, &send.receiver, &send.message, into)
                 }
             }
         }
     }
 
+    /// `receiver` is the expression the receiver register was lowered
+    /// from, whose span the debugger's metadata names.
     fn public_send(
         &mut self,
         receiver_register: u16,
+        receiver: &Expression,
         message: &ast::MessageSend,
         into: Option<u16>,
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        self.emit_send(into, |destination, call_site| Instruction::SendPublic {
-            selector,
-            receiver_register,
-            argument_base,
-            argument_sources,
-            destination,
-            call_site,
+        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        self.emit_send(into, spans, |destination, call_site| {
+            Instruction::SendPublic {
+                selector,
+                receiver_register,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            }
         })
     }
 
     fn inlinable_send(
         &mut self,
         receiver_register: u16,
+        receiver: &Expression,
         message: &ast::MessageSend,
         into: Option<u16>,
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        self.emit_send(into, |destination, call_site| Instruction::SendInlinable {
-            selector,
-            receiver_register,
-            argument_base,
-            argument_sources,
-            destination,
-            call_site,
+        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        self.emit_send(into, spans, |destination, call_site| {
+            Instruction::SendInlinable {
+                selector,
+                receiver_register,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            }
         })
     }
 
@@ -797,8 +932,13 @@ impl<'a> Body<'a> {
     /// count as the inlined bodies have none (`docs/design/compiler.md`,
     /// "The reference lowering", "How the limit counts"). A non-Boolean
     /// condition signals as the inlined guard does; the loop answers nil.
+    ///
+    /// The `value` sends it synthesizes are sends of the debugger's metadata
+    /// and name the source's `whileTrue:` send, `send`, the only one the
+    /// source spells.
     fn while_loop(
         &mut self,
+        send: &ast::Send,
         condition: &ast::BlockExpression,
         body: &ast::BlockExpression,
         while_true: bool,
@@ -807,7 +947,11 @@ impl<'a> Body<'a> {
         let condition_register = self.block(condition, None);
         let body_register = self.block(body, None);
         let loop_start = self.code.len();
-        let condition_value = self.value_send(condition_register);
+        let spans = (
+            receiver_span(&send.receiver),
+            &send.message.selector_spans[..],
+        );
+        let condition_value = self.value_send(condition_register, spans);
         let not_boolean_jump = self.code.len();
         self.emit(Instruction::JumpIfNotBoolean {
             register: condition_value,
@@ -825,7 +969,7 @@ impl<'a> Body<'a> {
                 target: 0,
             }
         });
-        self.value_send(body_register);
+        self.value_send(body_register, spans);
         self.emit(Instruction::Jump {
             target: Self::target(loop_start),
         });
@@ -839,15 +983,17 @@ impl<'a> Body<'a> {
 
     /// `value` sent to the closure in `receiver_register`, marked as the
     /// activation of a block the optimized lowering inlines.
-    fn value_send(&mut self, receiver_register: u16) -> u16 {
+    fn value_send(&mut self, receiver_register: u16, spans: SendSpans<'_>) -> u16 {
         let argument_base = self.next_register;
-        self.emit_send(None, |destination, call_site| Instruction::SendInlinable {
-            selector: Symbol::VALUE,
-            receiver_register,
-            argument_base,
-            argument_sources: Vec::new(),
-            destination,
-            call_site,
+        self.emit_send(None, spans, |destination, call_site| {
+            Instruction::SendInlinable {
+                selector: Symbol::VALUE,
+                receiver_register,
+                argument_base,
+                argument_sources: Vec::new(),
+                destination,
+                call_site,
+            }
         })
     }
 
@@ -877,9 +1023,9 @@ impl<'a> Body<'a> {
             .split_last()
             .expect("internal: a cascade has a first message");
         for message in earlier {
-            self.public_send(receiver_register, message, None);
+            self.public_send(receiver_register, &cascade.receiver, message, None);
         }
-        self.public_send(receiver_register, last, into)
+        self.public_send(receiver_register, &cascade.receiver, last, into)
     }
 
     fn block(&mut self, block: &ast::BlockExpression, into: Option<u16>) -> u16 {
@@ -888,14 +1034,23 @@ impl<'a> Body<'a> {
             .iter()
             .map(|parameter| Symbol::intern(&parameter.name.name))
             .collect();
+        let collecting = self.collector.map(|collector| Collecting {
+            collector,
+            parameters: parameters.clone(),
+        });
         let mut inner = Body::new(
             CodeKind::Block,
             parameters.len(),
-            block.body.temporaries.len(),
+            &block.body.temporaries,
             self.bindings,
+            collecting,
         );
         inner.enclosing_argument_counts = self.enclosing_argument_counts.clone();
         inner.enclosing_argument_counts.push(self.argument_count);
+        if let Some(collected) = &self.collected {
+            inner.enclosing_variable_names = self.enclosing_variable_names.clone();
+            inner.enclosing_variable_names.push(collected.names.clone());
+        }
         inner.local_initializers(&block.body.temporaries);
         inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
@@ -915,26 +1070,87 @@ impl<'a> Body<'a> {
     /// The reference lowering is the uncached oracle (`docs/design/compiler.md`,
     /// "The reference lowering"): every send it emits carries `UNCACHED`, so a
     /// send it compiles always runs the full lookup, never a cache hit.
+    /// `spans` are the send's receiver's and selector's in the debugger's
+    /// metadata, which records every send that is emitted, the ones the
+    /// optimized lowering inlines included.
     fn emit_send(
         &mut self,
         into: Option<u16>,
+        spans: SendSpans<'_>,
         build: impl FnOnce(u16, CallSite) -> Instruction,
     ) -> u16 {
         let destination = self.target_register(into);
+        let index = self.code.len();
         self.emit(build(destination, CallSite::UNCACHED));
+        // Not emitted when the body is too large, and `finish` keeps none
+        // of it.
+        if self.code.len() > index {
+            if let Some(collected) = self.collected.as_mut() {
+                let (receiver, selector) = spans;
+                collected.sends.push(SendEntry {
+                    index: Self::target(index),
+                    call_site: Some(CallSite::UNCACHED),
+                    receiver,
+                    selector: selector.into(),
+                });
+            }
+        }
         destination
     }
 
-    fn finish(self, source: Span) -> CompiledCode {
+    /// The variable table of the debugger's metadata: this body's own
+    /// variables, then each enclosing body's, outward. Nothing is copied
+    /// into a closure, so every enclosing variable is read through the
+    /// captured frames, in the register its declaring body keeps it in
+    /// (`docs/design/debugger.md`, decision 10).
+    fn collected_variables(&self, names: &[Symbol]) -> Vec<VariableEntry> {
+        let own = names.iter().enumerate().map(|(index, name)| VariableEntry {
+            name: *name,
+            depth: 0,
+            place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
+        });
+        let enclosing = self
+            .enclosing_variable_names
+            .iter()
+            .rev()
+            .enumerate()
+            .flat_map(|(offset, names)| {
+                // One per enclosing body, and the parser bounds the nesting
+                // far below `u16::MAX`.
+                let depth = u16::try_from(offset + 1)
+                    .expect("internal: more block nesting than the parser admits");
+                names
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, name)| VariableEntry {
+                        name: *name,
+                        depth,
+                        place: VariablePlace::Outer {
+                            hops: depth,
+                            register: self.local_register(depth, super::local_index(index)),
+                        },
+                    })
+            });
+        own.chain(enclosing).collect()
+    }
+
+    /// Answers the body, and records its debugger metadata when it is
+    /// collected. A body past a limit has none (`Lowerer::finish`).
+    fn finish(mut self, source: Span) -> CompiledCode {
         if let Some(limit) = self.too_large {
             return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
+        let metadata = self.collected.take().map(|collected| BodyMetadata {
+            variables: self.collected_variables(&collected.names).into(),
+            statements: collected.statements.into(),
+            sends: collected.sends.into(),
+        });
         if cfg!(debug_assertions) {
             let instructions = self.code.instructions();
             check_shape(&instructions, self.first_scratch);
             check_leftovers(&instructions, self.first_scratch, self.next_register);
         }
-        CompiledCode::from_builder(
+        let code = CompiledCode::from_builder(
             self.kind,
             self.code,
             self.argument_count,
@@ -943,7 +1159,11 @@ impl<'a> Body<'a> {
             self.first_scratch,
             self.statement_program_counter,
             source,
-        )
+        );
+        if let (Some(collector), Some(metadata)) = (self.collector, metadata) {
+            collector.record(&code, metadata);
+        }
+        code
     }
 }
 
@@ -1078,7 +1298,7 @@ mod tests {
             .methods()
             .nth(index)
             .expect("a method");
-        compile_method(method, &resolved.bindings)
+        compile_method(method, &resolved.bindings, None)
     }
 
     fn method(declaration: &str) -> String {
@@ -1277,7 +1497,7 @@ mod tests {
             .next()
             .expect("a nested class");
         let method = nested.instance_side.methods().next().expect("a method");
-        compile_method(method, &resolved.bindings)
+        compile_method(method, &resolved.bindings, None)
     }
 
     /// The mirror send the optimized lowering lowers inline is a real send
@@ -1675,7 +1895,7 @@ mod tests {
     #[test]
     fn a_body_past_the_instruction_limit_is_too_large() {
         let bindings: Bindings = Rc::new(HashMap::new());
-        let mut body = Body::new(CodeKind::Method, 0, 0, &bindings);
+        let mut body = Body::new(CodeKind::Method, 0, &[], &bindings, None);
         let destination = body.fresh();
         let limit = crate::bytecode::INSTRUCTION_LIMIT as usize;
         for _ in 0..limit {
