@@ -10,12 +10,20 @@
 > then continues or terminates the run; the request word the poll reads is
 > a set of bits in atomic machine words, which the agent arms from its own
 > thread; and the pause stress mode stops every program at the safepoints
-> its schedule picks and reads its whole stack. Everything else is planned:
-> the metadata (stop locations and variable tables, stage 2, next),
-> breakpoints and stepping, the DAP agent and the plugin, evaluation, hot
-> swap and edit-and-continue ("Planned: the order of building it"). The
-> design rests on nine decisions made with the user on 2026-11-10 ("The
-> decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
+> its schedule picks and reads its whole stack. Stage 2 is built too --
+> the metadata ("Compiling the metadata again"): both lowerers collect a
+> body's statement starts, its sends with their receiver and selector
+> spans and its named variables when the debugger compiles the body's
+> declaration again from its module's current text, kept per body only
+> when the body compiled again is alike; a stopped frame shows its name,
+> the statement and the send it stands at, and its named variables over
+> its whole lexical chain, and the oracle holds every body of every
+> golden and of the shipped modules to compiling again alike. Everything
+> else is planned: breakpoints and stepping (stage 3, next), the DAP
+> agent and the plugin, evaluation, hot swap and edit-and-continue
+> ("Planned: the order of building it"). The
+> design rests on fifteen decisions made with the user, nine on
+> 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
 > and leaves the questions in "Open questions" to be decided. It builds on
 > groundwork that exists: reified activations and the activation stack,
 > suspension into frames, the statement→program-counter table, stable
@@ -23,12 +31,22 @@
 > JIT's materialization and invalidation, the safepoint poll, and the
 > MirrorBuilder's atomic install, each described in the document for its own
 > aspect ("What exists").
-> **Code:** stage 1 is `crates/ns-runtime/src/debugger/` (`mod.rs`: the
+> **Code:** stages 1 and 2 are `crates/ns-runtime/src/debugger/` (`mod.rs`: the
 > VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
 > the arming lock `Arming`, the pause stress mode's `StressReader`;
 > `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
-> cross to the agent's thread; `stack.rs`: the stack trace and a frame's
-> variables; `values.rs`: the values a stop holds, `StopValues`), the
+> cross to the agent's thread; `stack.rs`: the stack trace, a frame's
+> body found by its declaration (`origin_of`) and its variables;
+> `values.rs`: the values a stop holds, `StopValues`; `metadata/`: the
+> tables (`mod.rs`: `BodyMetadata`, `MetadataCollector`), a declaration's
+> level compiled again and paired (`again.rs`), the cache (`cache.rs`)
+> and the oracle, `Interpreter::check_debug_metadata` (`check.rs`)),
+> the collection in both lowerers (`compiler/lower.rs`,
+> `compiler/reference.rs`, the `collector` parameter of the entry points
+> in `compiler/mod.rs`), `Mutator::mixin_level`
+> (`interpreter/instantiate.rs`), `bytecode::compiles_alike`, the cache
+> cleared at an install (`interpreter/install.rs`), the selector spans
+> (`ns_syntax::ast::MessageSend::selector_spans`), the
 > request word's bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`,
 > `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `LOWERS_DEPTH_LIMIT`,
 > `Heap::synchronize_depth_limit`, `Heap::clear_debugger_bits`),
@@ -37,8 +55,10 @@
 > debugger first, `SafepointOutcome`, the pause stress mode's schedule),
 > `vm.rs` (`take_safepoint`, `terminate_at_safepoint`), `jit/mod.rs`
 > (`deoptimize_stopped_at_poll`, in every JIT build), and the tests in
-> `crates/ns-runtime/tests/debugger.rs` and `tests/stress.rs` (the pause
-> stress mode). The groundwork is in `crates/ns-runtime/src/bytecode.rs`
+> `crates/ns-runtime/tests/debugger.rs`, `tests/stress.rs` (the pause
+> stress mode), `debugger/metadata/tests.rs` and the oracle's runners
+> `crates/ns-cli/tests/debug_metadata.rs` and `golden_round_trips.rs`
+> ("Testing and gates"). The groundwork is in `crates/ns-runtime/src/bytecode.rs`
 > (`CompiledCode::statement_program_counter`, `CallSite`),
 > `bytecode/compact.rs` (`EncodedBody`), `bytecode/leftovers.rs`, `vm.rs`
 > (the run loop, its safepoint, `resume_caller`, `send_destination`),
@@ -135,7 +155,9 @@ debugging API at the safepoint". What it and the later stages build on:
   instruction range (`bytecode.rs:532`; [compiler.md](compiler.md),
   "Safepoints and call-site identity"); an inlined block's statements are
   part of their enclosing statement's range. A body carries one `source`
-  span; there is no table of local names.
+  span and stores no table of local names: the debugger's tables are
+  collected when it compiles the body again ("Compiling the metadata
+  again").
 - **A send's `CallSite`** is its stable number within its code family
   (`bytecode.rs:99`).
 - **A caller's stored `program_counter` names its send.** While a callee
@@ -226,9 +248,12 @@ debugging API at the safepoint". What it and the later stages build on:
 
 ## The debugging API at the safepoint
 
-Stage 1 of the debugger ("Planned: the order of building it") is built: the
-VM's side of decisions 7 and 9 and the part of decision 1 that pausing,
-reading and ending a run need. It lives in `crates/ns-runtime/src/debugger/`
+Stages 1 and 2 of the debugger ("Planned: the order of building it") are
+built: the VM's side of decisions 7 and 9 and the part of decision 1 that
+pausing, reading and ending a run need, and the metadata of decisions 4,
+5 and 10 to 15, which give a stopped frame its name, its place and its
+named variables ("Reading the stack at a stop", "Compiling the metadata
+again"). It lives in `crates/ns-runtime/src/debugger/`
 and is reached through `Interpreter::attach_debugger`; its only clients
 today are the test suite (`crates/ns-runtime/tests/debugger.rs`) and the
 pause stress mode, since the DAP agent in `ns-cli` is stage 4's. No
@@ -530,11 +555,13 @@ again (`a_dropped_remote_lets_the_program_finish`,
 
 ### Reading the stack at a stop
 
-**Partial:** a stop answers the run's frames and, for each, its receiver,
-its arguments and its registers below the first scratch register, by
-number. Names, lines, a frame's statement and the send it stands at, and
-scratch registers come with the metadata (stage 2; "Compiling the metadata
-again"); writing a frame is stage 5's ("Writing a frame").
+**Partial:** a stop answers the run's frames and, for each, its name,
+its receiver and, from its body's metadata ("Compiling the metadata
+again"), the statement and the send it stands at in its module's current
+text and its named variables over its whole lexical chain (decisions 10,
+12 and 13); a frame whose body has no metadata shows its arguments and its
+registers below the first scratch register, by number. Writing a frame is
+stage 5's ("Writing a frame").
 
 The run's frames (`stack::frames`) are walked from the top activation
 through each sender down to the run's floor
@@ -565,39 +592,233 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
 - `kind` -- what the activation runs (`FrameKind`, from its
   `ActivationKind`): `Method { selector }`, `Block`, `Initializer`,
   `SuperclassClause`, `Factory` or `TopLevel`;
+- `name` -- what it runs as a reader names it, after the declaration its
+  body belongs to: `Foo>>bar`, `Foo class>>bar`, `[] in Foo>>bar`,
+  `Foo initializer`, `Foo superclass clause`, `Foo class>>new:` for a
+  factory, `top level`; after its current class where no declaration
+  holds the body;
 - `program_counter` -- the program counter its frame stores: for a frame
   below the top the index of the send, or other instruction, it called
   from, which its callee's return reads again; for the top frame where the
   stretch left it;
 - `source` -- the span of its body's source (`CompiledCode::source`), the
-  whole body: the statement's span needs the stop locations;
+  whole body;
+- `location` -- with the body's metadata, where it stands
+  (`FrameLocation`): the name of its module's root class, the innermost
+  statement whose instructions hold its program counter -- an inlined
+  block's statement inside its loop or conditional, the body's `source`
+  for the return it ends with -- or a factory's class header pattern
+  (decision 12), and for a frame below the top the receiver and selector
+  spans of the send it waits on; every span in the module's current text
+  (decision 11). `None` without metadata (decision 5): a module without
+  text, an image's without its source among them, or a body its text no
+  longer compiles to, as a superseded version an edit changed;
 - `receiver` -- its receiver, described as every value is.
 
-A frame's variables (`stack::variables`) are `self`; `argument 1` up to
-`argument N`, the argument registers; and `register K` for each register
-past the arguments and the frame's header registers (`HEADER_REGISTERS`)
-up to the body's `local_count`, the first scratch register. A register the
-leftover analysis finds tainted before the frame's stored program counter
-(`CompiledCode::tainted_before`; `bytecode::leftovers`) is left out, as
-the collector's pre-pass nils it (`Heap::trace_stack`) and a suspension
-nils it in the frame object: such a word may be
-one a callee or a popped frame left, a stale handle, or a debug build's
-poison, whose read a debug build refuses. The analysis taints no register
-below `local_count` today, since a push fills them all; the check keeps
-the reader to it should that change. **Scratch registers are not shown in
-stage 1:** nothing says what a scratch register holds at a stop; with
-the variable table a frame's registers are shown by name over the range
-each is live in, and a scratch register only where the leftover analysis
-says it is not tainted.
+A frame's body is found by its declaration (`stack::origin_of`, a
+`BodyOrigin`): a method's in its current class's mixin, an initializer's
+in the mixin carrying the body (`Heap::initializer_mixin`), a superclass
+clause's in the nested declaration whose clause it is, a factory's in its
+class's declaration, and a block's in the member of its current class's
+level -- or of a nested declaration's clause -- whose body creates it,
+walked transitively through `created_blocks`. The mixin is the version
+whose member holds the frame's body (`stack::running_version`): the
+version its class names, or else the newest version of the same id an
+install superseded that the heap still holds (`Heap::superseded_mixins`,
+which keeps every version a running body was compiled in). The class
+alone does not tell: an install re-applies every class object of the
+declaration it edits over the new version
+(`Heap::class_install_application`) and rebuilds every body of it and of
+its nested declarations, so a frame still running a body of the old
+version, edited or not, names the current version through its class. The
+activation's entered application (`frame_header::ENTERED_LEVEL`) would
+name the old version, but a push records it only for a body that
+addresses its own slots. The metadata cache (`metadata::Cache`) compiles
+the level again on the first ask and keeps each body's tables, or none.
+The metadata is looked up before any handle is read off the frame.
+
+A frame's variables (`stack::variables`) are `self`, then, with the
+body's metadata, each variable of its table once -- the innermost of a
+name, the body's own coming first -- each read where it lives:
+
+- in a register of the frame itself, a parameter, a temporary or a value
+  it was handed;
+- in a register of the frame `hops` closures' captured frames out
+  (`Heap::activation_captured`, `Heap::frame_captured`): a block's outer
+  variable it did not capture, read from the nearest frame of its chain,
+  innermost first, whose layout holds a copy of it -- an enclosing block
+  that was handed it -- or else from the frame that declares it, as a
+  block reading by reference resolves it; read while that frame's
+  activation runs, is
+  suspended, or returned keeping its registers
+  (`Heap::frame_registers_kept`: a divorce of a frame marked by
+  `retain_registers` leaves `true` in its married word) -- or when the
+  closure that hopped to it reads its creator by reference, whose creation
+  marked it, which covers a frame an image decoded; otherwise the variable
+  lives nowhere any more and has no value, shown as not available
+  (decision 10);
+- in a slot of an indirection vector, read through the register that
+  holds it, its own frame's or one `hops` out; a vector variable read
+  before its vector is made, a register still `nil`, reads `nil`, as
+  every temporary does before it is written (decision 13).
+
+A variable entry carries no instruction range: an inlined block declares
+no parameter and no temporary, so every variable a body names is in scope
+over the whole body, `nil` from its start.
+
+A frame without metadata keeps its name, which comes from its
+declaration, not from the text: a frame of an image without source shows
+the mixin's name the image carries, no location and its variables by
+number. A frame's variables without metadata are stage 1's: `argument 1`
+up to `argument N`, the
+argument registers, and `register K` for each register past the frame's
+header registers (`HEADER_REGISTERS`) up to the body's `local_count`, the
+first scratch register. A scratch register is never shown (decision 13).
+A register of the frame's own the leftover analysis finds tainted before
+the frame's stored program counter (`CompiledCode::tainted_before`;
+`bytecode::leftovers`) is not read -- a named one is not available, a
+numbered one left out -- as the collector's pre-pass nils it
+(`Heap::trace_stack`) and a suspension nils it in the frame object: such
+a word may be one a callee or a popped frame left, a stale handle, or a
+debug build's poison, whose read a debug build refuses; another frame's
+register is read only below its body's `local_count`, and while that frame
+runs only where the analysis at its own program counter calls it live.
+The analysis taints no register below `local_count` today, since a push
+fills them all; the check keeps the reader to it should that change.
 
 Reading changes nothing: no compiled mark is cleared, and every frame goes
 on as it would have, but the one the stop deoptimized, in baseline code.
 
-Planned on top of it: a frame shows its body's name (a block as "`[] in
-Foo bar`", from its home link), the source position of its statement and
-the send it stands at, and its registers through the variable table at its
-stored `program_counter`, a variable outside its live range shown as not
-yet assigned.
+### Compiling the metadata again
+
+The metadata of decisions 4, 5 and 10 to 12 is built
+(`crates/ns-runtime/src/debugger/metadata/`). A body's tables
+(`BodyMetadata`) are its statement starts (`StatementEntry`: the
+instructions one statement compiled to and its span), its sends
+(`SendEntry`: the index, the `CallSite`, the receiver's span and the
+selector tokens' spans), its named variables (`VariableEntry`: the name,
+the lexical depth in frame scopes, and the place, a `VariablePlace` --
+`Register`, `Outer { hops, register }` or `Vector { vector, slot }`, the
+vector held in a register of the frame or of one `hops` out), the body's
+own first, parameters before temporaries, then each enclosing scope's
+outward, and, for a factory, the header's factory pattern
+(`factory_pattern`). Every span is in the module's current text
+(decision 11).
+
+- **Both lowerers collect.** The reference lowering is an independent
+  module, not a mode ([compiler.md](compiler.md), "The reference
+  lowering"), so both lowerers collect. Every entry point of
+  `compiler/mod.rs` takes a `collector: Option<&MetadataCollector>`;
+  each lowerer records a body's tables as it finishes the body, keyed by
+  the body's identity (`EncodedBody::identity`), so that a family's
+  blocks, which the compilation hands back only inside their creators'
+  `MakeClosure`s, are found by their code; the kernel's unwind-marker
+  bodies, cloned once compiled, move their entry (`rekey`). Without a
+  collector each lowering emits exactly the code it emits with one. A
+  prologue entry's statement is its clause's span, a `<:` clause check's
+  the clauses' spans merged, a superclass initialization no clause
+  writes the declaration's name, and a slot's initializer its slot
+  declaration; a `SendMirror` has a send entry without a call site, a
+  `ResolveFuture` and an initializer invocation none. A body past the
+  compiler's limits, which raises `Literal::BodyTooLarge` first, records
+  no tables: it is not the source's body. It drops the blocks it compiled
+  before it found itself too large, and their tables with them
+  (`MetadataCollector::forget_family`): the collector holds the tables
+  of no body but those the compilation still holds, since a body that
+  records none -- one past a limit -- allocated where a dropped one was
+  would otherwise be answered the dropped one's.
+- **What is compiled: the declaration's level.** A frame's body is named
+  by a `BodyOrigin` (`stack::origin_of`, "Reading the stack at a stop"):
+  the version of the mixin whose member holds the frame's body --
+  possibly a version an edit superseded, which keeps its id -- and the
+  member: a method or a lazy slot's getter, an initializer body, the
+  superclass clause or the factory.
+  `again::compile_level` finds the declaration's path from its module's
+  root by that version's id (`Heap::known_mixin_id`,
+  `Mutator::path_from_module_root`; a class side's through its instance
+  side's), parses and resolves the module's current text
+  (`Heap::module_source`) with `resolver::resolve`, as
+  `interpreter/edit.rs` prepares an edit, finds the declaration
+  (`edit::find_declaration`) and compiles its level alone -- its methods,
+  its initializer bodies, its clause and its class side, never its nested
+  declarations -- through `Mutator::mixin_level`, the function that builds
+  a level when a module loads, given the collector and no nested
+  declarations, so that the level compiles again exactly as it was
+  built. It registers nothing -- no mixin id, no code id -- and runs
+  nothing. A module without text, or a text that does not parse, does not
+  resolve or holds no such declaration, answers no metadata, never a
+  panic: an image's text is untrusted input.
+- **Pairing.** Each running body of the level -- the frame's side's, and
+  for an instance side its class side's too, a declared one or the one
+  synthesized for a declaration that declares none, which holds the
+  factory alone -- is paired with the body compiled again in the same
+  place: a method by its selector, the three initializer bodies and the
+  clause by their fields. The running version's bodies are paired, not
+  the current version's, so that a superseded version still running
+  takes the metadata of the current text when the two compile alike, and
+  none when the edit changed it (decision 11). A family whose root
+  compiles alike pairs its blocks with the blocks compiled again in
+  creation order (`created_blocks`), walked by a worklist rather than a
+  recursion, since an image's nesting is not bounded by the text; a
+  family whose root does not compile alike gets no tables at all, since a
+  block's tables name its creators' registers, which only an equal root
+  vouches for.
+- **What "equal" means.** `bytecode::compiles_alike`: equal kind, counts,
+  `local_count`, `family_size`, `outer_reach`, own-slot addressing,
+  `statement_program_counter` and instructions
+  (`Instruction::is_identical_to`), a `MakeClosure`'s block compared by
+  the same function; `source`, the unwind marker -- an image's body
+  carries none, and where it is is decided by the instructions compared
+  -- and the caches are ignored. `CompiledCode` is destructured there, so
+  that a field added to it must be decided. Planned with breakpoints
+  (stage 3): a patched slot compared by its original ("Where the
+  original lives").
+- **A factory's body** (decision 12) takes the metadata `factory_again`
+  makes from the class header: the header's parameter names in the
+  registers a factory takes its arguments in, no statement start and no
+  send, and as its place the header's factory pattern, or the class's
+  name for a header that writes none. Any body that compiles alike with
+  `compiler::factory_body` of the header's arity takes it, a factory body
+  no mixin holds -- a host's `instantiate` builds its own -- included.
+- **Which lowering.** The cache compiles a level under the interpreter's
+  lowering first, then under the other one only when the first left a
+  body of the level unpaired, and keeps every pairing either found,
+  never replacing one by the other's or by none. An image does not
+  record which lowering compiled its code, so its bodies may pair under
+  either (decision 5). A program read from source takes the other
+  lowering's pairing too: a pairing still requires `compiles_alike`, so
+  the tables are right whichever lowering made them, and the reference
+  lowering's sends carry the uncached call site, so that a body with a
+  send compiles alike only under the lowering that made it. A level with
+  a body neither lowering pairs -- a superseded version an edit changed,
+  a body past the limits -- is compiled twice.
+- **The cache** (`metadata::Cache`, `Mutator::debug_metadata`, on the
+  mutator so that the pause stress mode, which runs with no debugger
+  attached, reads through it too) keeps each body's metadata, or `None`
+  for a body that pairs with none, keyed by the body's address, for every
+  body of the level compiled, so that the other frames of the level
+  compile nothing. It holds each body weakly: a strong hold would keep
+  every body the debugger ever looked at alive, and with it its inline
+  caches' family (`InlineCaches::forget_families` frees a family only
+  once the family alone holds its body); a `Weak` still keeps the body's
+  allocation, so that no other body takes its address while the entry
+  lives, and the entries of dead bodies are dropped at the next miss. It
+  holds no mixin, so that a superseded version is dropped once nothing
+  runs it. Every install clears it (`interpreter/install.rs`): an
+  install changes the module's text, which every span counts in, and may
+  replace what the bodies pair with.
+- **Shipped bodies.** A shipped module's body -- its module's root
+  decides, since a class side synthesized for a shipped declaration is
+  not marked shipped -- is compiled again from the shipped resolution
+  the boot made, cached per thread (`interpreter::kernel::resolved_kernel`,
+  `core_library::resolved_shipped_module`), and the text the binary
+  embeds, so that its `SendMirror` sites are the same and the bodies can
+  be equal; there is no new caller of `resolver::resolve_kernel`, and a
+  program's text is resolved with `resolve`, so that no text compiled
+  again records a mirror send. The first lock of the VM mirror permits a
+  shipped module resolved with it (`CLAUDE.md`, "The VM mirror is a
+  capability"); still, the result is only compared and its tables kept,
+  never installed, run or handed to anything but the metadata cache.
 
 ### Values the IDE holds
 
@@ -650,20 +871,27 @@ stack or the heap, a frame its optimized code's poll left deoptimized
 first. No debugger need be attached: the stop takes its commands from a
 `CommandSource`, the attached debugger's channels or the mode's reader
 (`debugger::StressReader`), which asks for the stack trace, the variables
-of every frame and the first eight children of every variable's value,
+of every frame and the first eight children of every value a variable has,
 then continues; a refusal is the stop misreading its own stack, and
-panics. While the mode is on it holds the stress bit
+panics. The stack trace and the variables are read through the metadata
+as an agent's are, so every frame's body is found by its declaration and
+compiled again on the first stop in it, and its name, its location and
+its named variables, the outer chain of a block included, are read at
+real stops; a variable not available has no value to ask children of.
+While the mode is on it holds the stress bit
 (`hold_safepoints_for_stress`), so that every poll comes to the
 safepoint. Every golden and the corpus run under it, so reading a stopped
 stack is shown never to change a program's outcome nor to read a register
-the leftover analysis calls dead, which a debug build refuses;
+the leftover analysis calls dead, which a debug build refuses -- a
+variable table that named a dead register included;
 `the_pause_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a program
 to its outcome under both lowerings with the mode on and off.
 
 ### Testing and gates
 
-**Partial:** stage 1's tests and its stress mode exist; the model test of
-the poll words' ordering, and every later stage's tests, do not.
+**Partial:** stage 1's and stage 2's tests and the pause stress mode
+exist; the model test of the poll words' ordering, and every later
+stage's tests, do not.
 
 - **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
   a pause before the run and from another thread, continue and
@@ -683,6 +911,67 @@ the poll words' ordering, and every later stage's tests, do not.
   hold the bits: a debugger pause lowers the depth limit, serving the VM's
   request keeps the debugger's bits, a stress hold lowers nothing, and
   clearing the debugger's bits gives the limit back.
+- **The metadata at a stop** (`tests/debugger.rs`, each under both
+  lowerings but the image without source's): a frame named and located,
+  the send it waits on included; a frame's named variables; a block's
+  view of its method's variables; an outer variable of a creator that
+  returned without keeping its registers, not available; a block two
+  deep reading its method's variable two captured frames out, while the
+  method runs and after it returned; a returned creator's frame an
+  image decoded, read through the closure that reads it by reference; a
+  factory's frame named by its header's parameters; a superseded body its edit changed, shown
+  by number and without a location, its block's frame still named for
+  its method; a superseded body an install into its declaration left
+  alone, and its block's, named, located in the current text and showing
+  their named variables; an image without source, its frames
+  named and their variables numbered; and a vector variable's current
+  value in every frame of its chain.
+- **The collection and the pairing** (`debugger/metadata/tests.rs`):
+  statement starts, an inlined block's included, and their spans; a
+  send's call site, receiver and selector, an implicit receiver's, a
+  setter's, a cascade's, an integer fallback's and a conditional
+  fallback's; a block's whole lexical chain, a shadowed name, and a
+  variable an enclosing block was handed; an initializer's prologue,
+  slots and lazy getter; both lowerings naming the same variables, sends
+  by span and initializer statements, a block two deep's included;
+  either lowering compiling without a
+  collector emitting exactly the code it emits with one, so that no
+  golden, no shipped-code fingerprint and no image changes; every body of
+  a level compiling again alike, an unwind marker's body included; a
+  body past a limit leaving no tables of the blocks it dropped, and no
+  such body of a level getting tables;
+  `compiles_alike` ignoring spans but not instructions; an install
+  moving the spans of a body it did not edit; a reference-lowered
+  image's body paired under the reference lowering; and a crafted image
+  text without the declaration giving no metadata.
+- **The oracle** (decision 14), `Interpreter::check_debug_metadata`
+  (`debugger/metadata/check.rs`, `#[doc(hidden)]`): every body of every
+  loaded declaration compiled again, required alike, and its tables, read
+  through the cache as a stopped frame reads them, held to their
+  invariants -- every statement range within the body, every
+  `statement_program_counter` range starting at a statement start, every
+  send entry a send of exactly its call site and every send named by
+  one, every variable's registers below the reading body's `local_count`
+  and every hop within its lexical depth, every span within the module's
+  text. Only a body past a compiler limit, which raises
+  `Literal::BodyTooLarge` first and records no tables, may have none.
+  `crates/ns-cli/tests/debug_metadata.rs` runs it over every golden under
+  each lowering, from source and without running it, in the default
+  suite (`debug_metadata::<lowering>::<path>`), a golden whose modules do
+  not resolve passing unchecked, and `debug_metadata::floor` requires
+  at least 500 goldens, at least four of them projects, to resolve, so
+  that a drift in how a golden's modules are read cannot stop the check
+  silently;
+  `every_shipped_body_compiles_again_alike` (`tests/debugger.rs`) runs
+  it once over the shipped modules, the lazy ones built first; and
+  `golden_round_trips.rs` runs it over every golden's artifact `build`
+  wrote under each lowering and `load` decoded, in the profile `images`,
+  where the artifact's text pairs under the interpreter's lowering or the
+  other. Its own tests (`check.rs`, `a_program_s_bodies_are_checked`
+  and `a_broken_table_fails_the_check`) check a program's bodies and fail
+  a broken table, and `debugger/metadata/tests.rs`'s
+  `a_body_that_compiles_again_otherwise_fails_the_check` fails an
+  image's body whose text, patched, compiles otherwise.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -742,17 +1031,34 @@ stress mode, so only the poll on the ordinary path is timed; Linux,
 AArch64 and Windows on ARM; start-up, memory and `ns-next load`; and the
 poll's cost inside machine code beyond what these programs exercise.
 
+### What stage 2 moved
+
+Nothing on the hot path, so stage 2 was not measured. The lowerers take
+an optional collector, and without one emit exactly the code they emitted
+before (`compiling_without_a_collector_emits_the_same_code` and its
+reference twin): every golden's outcome, the shipped code's fingerprint
+and `tests/fixtures/golden-image.bin` are unchanged, and compiling
+outside a debugger's stop collects nothing. The divorce that copies a
+frame's registers into its frame object, already the cold divorce,
+writes `true` rather than nil into the married word; machine code's
+inline divorce, which takes only a frame that keeps none, is unchanged.
+Everything else stage 2 adds runs only at a stop.
+
 ## The decisions
 
-Decided with the user on 2026-11-10, one at a time, each after the
+Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
+to 15, stage 2's, on 2026-11-12, one at a time, each after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
-mechanisms each implies are in "Planned: the mechanisms". Decision 7 is
-built, and of decisions 1 and 9 what pausing, reading the stack and
-ending a run need: the debugging API's first part, and the stop waiting
-at the safepoint ("The debugging API at the safepoint"). Everything else
-they decide is planned, and is written below as the design to build.
+mechanisms each implies are in "Planned: the mechanisms". Decisions 7
+and 10 to 15 are built, and of decisions 1 and 9 what pausing, reading
+the stack and ending a run need: the debugging API's first part, and the
+stop waiting at the safepoint ("The debugging API at the safepoint"); of
+decision 4 the tables, and of decision 5 the compilation again, the
+comparison and the cache ("Compiling the metadata again"), which a stop
+reads and a breakpoint will. Everything else they decide is planned, and
+is written below as the design to build.
 
 ### 1. One debugging API in Rust, two clients over it
 
@@ -853,15 +1159,23 @@ call would run it interpreted.
 
 ### 4. Stop locations are statement starts; every send is recorded
 
-The metadata of a body will list:
+**Partial:** the tables are built (`debugger::metadata::BodyMetadata`,
+"Compiling the metadata again"), and a stopped frame's location reads
+them; the breakpoints and steps that stop at them are stage 3's.
+
+The metadata of a body lists:
 
 - every **statement start** -- the body's own, every block's and every
-  inlined block's -- with its source span. A line breakpoint, a step over
-  and a step into stop only there. A line breakpoint sits at the first
+  inlined block's, and every initializer, slot and prologue entry
+  `statement_program_counter` gives a range -- with its source span. A
+  line breakpoint, a step over and a step into will stop only there. A
+  line breakpoint sits at the first
   statement beginning on its line, or the next line that has one, and each
   block body beginning on the line is a variant of it.
-- every **send**: its instruction's index, its `CallSite` and the span of
-  its receiver and selector, for smart step into's targets and for
+- every **send**, a `SendMirror` among them: its instruction's index, its
+  `CallSite` (none for a `SendMirror`) and the span of its receiver
+  (none for an implicit receiver and a setter assignment) and of its
+  selector's tokens, for smart step into's targets and for
   highlighting the send a frame stands at, a frame below the top included
   (Primordial Soup's `ActivationMirror>>sourceRange`, through `Simulator
   bciBefore:in:`, `primordialsoup/newspeak/Mirrors.ns:207-216`).
@@ -884,17 +1198,20 @@ place of their own in the source.
 
 ### 5. The metadata is compiled again on demand and verified
 
-Neither table is stored. The first time the debugger needs a body's --
-a stop in it, or a breakpoint the IDE sets -- it compiles the body's source
-again, the lowerer collecting the stop locations and the **variable table**
-on the side: each named variable's place (a register, a slot of the
-indirection vector, a copied value) and the instruction range it is live
-in. The result is compared with the running body; only an equal body gets
-the tables, cached by the body ("Compiling the metadata again" below). A
-body whose source is gone (an image built with `--strip-source`) or whose
-recompilation differs (code an older binary compiled) gets none, and its
-frames show without names and lines, as Java's do for a class compiled
-without `-g`.
+Built ("Compiling the metadata again"; a breakpoint the IDE sets is
+stage 3's). Neither table is stored. The first time the debugger needs a
+body's -- a stop in it, or a breakpoint the IDE sets -- it compiles the
+body's source again, the lowerer collecting the stop locations and the
+**variable table** on the side: each named variable's place (a register,
+a register of an enclosing frame, a slot of an indirection vector), over
+the whole body, since an inlined block declares no variable of its own
+(decision 13). The result is compared with the running body; only an
+equal body gets the tables, cached by the body. A body whose source is
+gone (an image built with `--strip-source`) or whose recompilation
+differs (code an older binary compiled, a superseded version an edit
+changed) gets none, and its frames show without variable names and
+source positions, as Java's do for a class compiled without `-g`; a
+frame keeps its name, which its declaration gives.
 
 This rests on the invariant that compiling a resolved module is total and
 deterministic. Primordial Soup does the same, recompiling a method for its
@@ -1021,15 +1338,150 @@ debugged process is suspended while the debugger runs beside it. Leaving
 `vm::run` at every stop and every evaluation, and moving the loop's state
 across the safepoint into `World`, is rejected.
 
+### 10. A block's frame shows its whole lexical chain
+
+Decided with the user on 2026-11-12, for stage 2, as decisions 11 to 14
+are. A block's frame shows every variable in scope at its stop: its own
+parameters and temporaries and those of every enclosing block and of its
+method, the innermost of a name shadowing the others. Each is read where
+it lives for that frame: a copied value from the block's own register, a
+vector variable through the vector the frame holds, and a variable the
+block did not capture from the register of the creating activation,
+reached through the closure's `captured_frame` chain, while that
+activation still runs or kept its registers; a variable that lives
+nowhere any more -- its activation returned without a divorce that kept
+its registers, and nothing captured it -- is shown as not available, as
+V8 shows a variable optimized out. Under the reference lowering every
+outer variable is read by reference, so the two lowerings show the same
+names, differing only in which are available after the creator returned.
+
+Primordial Soup does the same: its `DebugInfo` lists every variable of
+the family with its `contextDepth`, and `localsDo:` shows each of a depth
+at most the frame's, read through `enclosingActivation`, a returned
+context's as `nil`
+(`primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns:647-698`).
+Showing only what the block's frame holds, as JDWP shows a Java lambda's
+captured values and V8 a closure's context-allocated variables, is
+rejected: it would show closure conversion, an implementation detail,
+differently under each lowering, and evaluation (decision 8) needs the
+whole chain anyway.
+
+### 11. A body is found by its declaration and equal by its code
+
+A body compiled again is found by its declaration's path -- the names
+from the module's root class, the side, the selector or the kind of
+initializer, and for a block its place in its family -- and is equal to
+the running body when its instructions and side tables are (decision 5),
+whatever its `source` span. Every span of the metadata is in the
+module's current text (`Heap::module_source`), which the compilation
+reads. So a body an edit elsewhere in its module moved keeps its
+metadata, at the place its text now stands; a superseded version still
+running gets the metadata of its current version when the two compile
+equal, its text then unchanged in the current module, and none when the
+edit changed it. Primordial Soup likewise compiles a method's current
+source again (`compileMethodSource: rawMethod source`,
+`primordialsoup/newspeak/Mirrors.ns:2719`).
+
+Requiring the span to be equal too is rejected: every body after an
+edited declaration would lose its names and lines, which under hot swap
+(stage 6) is the common case. Answering spans in the coordinates of the
+text the body's version was read in is rejected, as rebasing spans was
+for the image ([object-model.md](object-model.md), "Source retention and
+provenance"): the agent would have to map each frame's text onto the one
+the IDE shows.
+
+### 12. A factory's frame takes its metadata from the class header
+
+A factory's body is synthesized from its arity (`compiler::factory_body`)
+and has no source, yet stands on every stack between the sender of `C
+x: a` and `C`'s initializer. Its frame takes its metadata from the class
+header: its arguments are named as the factory's parameters in the
+header, it stands at the header's factory message pattern, and it has no
+statement start, so no step stops in it. Its body is equal by
+construction, `factory_body` of the same arity. Primordial Soup's
+`computeDebugInfo:` takes a factory's from the class header the same way
+(`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
+names or position is rejected, since it would be the one frame of an
+ordinary program without a place; hiding it contradicts the
+specification's "accurate and complete stack traces" (§3.6,
+`newspeak-spec.pdf` p. 17) and would need rules of its own for step out,
+restart and force return.
+
+### 13. A frame shows named variables only
+
+A frame shows `self` and its named variables; a scratch register is never
+shown as a variable, as JDWP does not show the JVM's operand stack, V8 no
+intermediate value and Primordial Soup no synthetic local
+(`isSynthetic`, `Newspeak2PrimordialSoupCompilation.ns:693-698`). What a
+scratch register holds at a stop differs between the lowerings -- the
+reference lowering never reuses one, the optimized one resets them at
+every statement -- and the return value of the last call reads its
+send's destination register itself ("The return value of the last
+call"). Showing every scratch register the leftover analysis does not
+taint, and doing so on request, are rejected. A temporary is `nil` from
+its scope's start, so a variable is shown over its scope's instruction
+range and not outside it; there is no "not yet assigned". A scope that
+is not a frame's -- an inlined block's -- declares no variable, so every
+variable a frame shows is in scope over its whole body, and the table
+records no range.
+
+### 14. The metadata is checked on three levels
+
+- Targeted tests at a stop, in `crates/ns-runtime/tests/debugger.rs`,
+  each under both lowerings but the image without source's: named
+  variables; a block's outer chain, copied, in a vector, by reference,
+  two frames out, after its creator returned, and from a creator's
+  frame an image decoded; a factory's frame; a superseded version an install into its declaration
+  left alone, and one the edit changed; and an image without its source.
+  Unit tests in `debugger/metadata/tests.rs`: a body after an edit of
+  another declaration (`an_install_moves_the_spans_of_an_unedited_body`)
+  and an image whose code the reference lowering compiled
+  (`a_reference_lowered_image_body_pairs_with_the_reference_lowering`).
+- An oracle over every body: a test compiles every body of every golden
+  again under the lowering it runs under, both of them, and requires it
+  equal, and holds the tables to their invariants -- every statement
+  start within the body and at the start of every
+  `statement_program_counter` range, every send entry naming a send of
+  exactly its `CallSite`, every variable's register below `local_count`
+  and its range within the body, every span within the module's text;
+  the shipped modules' bodies are checked once by a test of their own,
+  not per golden; the `images` gate runs it through `build` and `load`,
+  which checks the trial of the optimized lowering and then the
+  reference lowering.
+- The pause stress mode's reader asks for every frame's name, position
+  and named variables through the tables, its outer chain included, so
+  that every golden and the corpus read named variables at real stops,
+  and a debug build refuses a table that names a dead register.
+
+A stress mode of its own that asks for every pushed body's metadata is
+rejected: it covers only the bodies that run, which the oracle covers
+without a stress run.
+
+### 15. A send's selector has spans in the syntax tree
+
+The syntax tree keeps the span of every selector token: a `MessageSend`
+carries `selector_spans`, the one token of a unary or binary selector or
+each keyword of a keyword selector, which the parser fills as it reads
+them, so that a send's entry in the metadata names its receiver's span
+and its selector's (decision 4) without either lowering knowing the
+grammar. The tree drops only layout ([frontend.md](frontend.md), "AST"),
+and a keyword's place is not layout. A unary send to an implicit
+receiver, which the tree keeps as an `Identifier`, and a setter
+assignment take the identifier's span. Lexing the message's text again
+when the metadata is collected is rejected, as a second copy of which
+tokens make the selector; a span of the whole message instead of the
+selector's is rejected, since smart step into marks the selector.
+
 ## Planned: the mechanisms
 
 What building the decisions changes, found by checking them against the
 code and the invariants in `CLAUDE.md` in three reviews; each is part of the
 design, not an option, unless it names an open question ("Open
-questions"). The mechanisms stage 1 built -- the poll words as atomics,
-the commands served while the program runs, reading the stack at a stop
-and the values a stop holds -- are described in "The debugging API at the
-safepoint", with what of them is still planned.
+questions"). The mechanisms stages 1 and 2 built -- the poll words as
+atomics, the commands served while the program runs, reading the stack at
+a stop, compiling the metadata again and the values a stop holds -- are
+described in "The debugging API at the safepoint", with what of them is
+still planned.
 
 ### Where the original lives
 
@@ -1037,7 +1489,8 @@ The run loop is not the only reader of a slot: `send_destination`
 (`vm.rs`), two leaves in `jit/leaves.rs`, and the decoded view
 (`CompiledCode::instruction`, `instructions`) read it, and the decoded view
 feeds the leftover analysis, `jit::baseline::lower`, the optimizing tier's
-snapshot and build, the image encoder, `shipped-code` and `disasm`. So the
+snapshot and build, the image encoder, `shipped-code`, `disasm` and the
+debugger's `compiles_alike`. So the
 original of a patched slot is kept on the body, beside `EncodedBody::slots`,
 and every reader but two sees the original without reaching the debugger:
 the decoded view answers it, and `send_destination` reads it. Only the run
@@ -1435,32 +1888,6 @@ unwind is.
   afresh (`restart:withLookup:` and `lookupNewMethod:`,
   `primordialsoup/newspeak/Mirrors.ns:2325-2337`, `:2307-2315`).
 
-### Compiling the metadata again
-
-- **Which lowering.** The lowering is chosen once per interpreter, so for
-  a program read from source it is known. An image does not record which
-  lowering compiled its code; the agent tries the optimized lowering, then
-  the reference lowering, and takes the one whose body is equal.
-- **Both lowerers collect.** The reference lowering is an independent
-  module, not a mode ([compiler.md](compiler.md), "The reference
-  lowering"), so both lowerers collect stop locations and variables.
-- **What "equal" means.** Equal decoded instructions and side tables,
-  block literals compared as bodies rather than by identity, symbols by
-  name; a patched slot by its original.
-- **What is compiled.** The whole module is parsed and resolved from its
-  current text, as `interpreter/edit.rs` prepares an edit, and only the
-  class subtree the body belongs to is compiled.
-- **Shipped bodies.** A shipped module's body is compiled again from the
-  shipped resolution the boot made, cached per thread
-  (`interpreter::kernel::resolved_kernel`,
-  `core_library::resolved_shipped_module`), so that its `SendMirror` sites
-  are the same and the bodies can be equal; no new caller of
-  `resolver::resolve_kernel` is needed. The first lock of the VM mirror
-  permits a shipped module resolved with it (`CLAUDE.md`, "The VM mirror
-  is a capability"); still, the result is only compared and its tables
-  kept, never installed, run or handed to anything but the metadata
-  cache.
-
 ### Method breakpoints
 
 A method breakpoint patches the body's first statement start (for a
@@ -1558,7 +1985,8 @@ The proposal is a proposal.
 - **Who listens.** `ns-next` listens and prints its port (proposed), or the
   IDE listens and passes its port.
 - **Debugging an image.** Whether `ns-next load --debug` exists; an image
-  built with `--strip-source` shows no names or lines.
+  built with `--strip-source` shows its frames' names but no variable
+  names and no lines.
 - **Evaluation at the depth limit.** A reserve of its own, or refused.
 - **Restart and force return beyond the plain case.** Whether a restart of
   an initializer or a superclass clause, a forced return for the other
@@ -1632,15 +2060,17 @@ own:
 
 ## Planned: the order of building it
 
-Stages 2 to 6 remain, in this order; stage 1, the debugging API at the
+Stages 3 to 6 remain, in this order. Stage 1, the debugging API at the
 safepoint -- stopping, the command channel and the commands served while
 running, the atomic poll words and pause, the deoptimization of a stop at
 a poll of optimized code in every build, the stack and values -- is built
-("The debugging API at the safepoint"). The stages keep their numbers,
-which the text above refers to.
+("The debugging API at the safepoint"), and so is stage 2, the metadata:
+both lowerers' stop locations and variable tables, compiled again on
+demand and verified, which give a stopped frame its name, its place and
+its named variables ("Reading the stack at a stop", "Compiling the
+metadata again"). The stages keep their numbers, which the text above
+refers to.
 
-2. The metadata: both lowerers' stop locations and variable tables,
-   compiled again on demand and verified.
 3. Breakpoints (pending ones included), stepping, run to cursor, method
    breakpoints and exception breakpoints; the breakpoint and step stress
    modes.

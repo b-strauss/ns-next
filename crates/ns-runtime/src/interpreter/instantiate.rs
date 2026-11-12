@@ -9,6 +9,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::debugger::metadata::MetadataCollector;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassLevel, Heap, Root};
 use crate::mixin::{
@@ -36,7 +37,12 @@ use super::{
 /// (`compiler::unwind_marker`). `class_accessor_root` is the module root a
 /// method may be a pure class accessor of (`MixinMethod::class_accessor`):
 /// the root of a shipped module other than the kernel, and `None` for every
-/// other body.
+/// other body. `collector`, when given, collects every body's debugger
+/// metadata (`compiler::compile_method`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a different fact about the body the table is built from; a struct of them would only rename the list"
+)]
 fn build_methods(
     body: &ast::ClassBody,
     slots: &[MixinSlot],
@@ -45,11 +51,17 @@ fn build_methods(
     kernel_block: bool,
     class_accessor_root: Option<&ast::ClassDeclaration>,
     lowering: crate::compiler::Lowering,
+    collector: Option<&MetadataCollector>,
 ) -> IdentityMap<Symbol, MethodEntry> {
     let mut methods: IdentityMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
     for declaration in body.methods() {
-        let mut method =
-            MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, kernel, lowering);
+        let mut method = MixinMethod::from_declaration(
+            Rc::new(declaration.clone()),
+            bindings,
+            kernel,
+            lowering,
+            collector,
+        );
         method.class_accessor = class_accessor_root.and_then(|root| {
             crate::compiler::primitive_method::recognize_class_accessor(declaration, bindings, root)
         });
@@ -59,6 +71,10 @@ fn build_methods(
             {
                 let mut code = (*method.code).clone();
                 code.unwind_marker = Some(marker);
+                // The clone is a body of its own, so the tables move to it.
+                if let Some(collector) = collector {
+                    collector.rekey(&method.code, &code);
+                }
                 method.code = Rc::new(code);
             }
         }
@@ -88,6 +104,7 @@ fn build_methods(
             declaration.span,
             bindings,
             lowering,
+            collector,
         );
         let getter = MixinMethod::lazy_slot_getter(slot, Rc::new(code));
         let previous = methods.insert(getter.selector, MethodEntry::Compiled(Rc::new(getter)));
@@ -160,6 +177,51 @@ fn declaration_text(
         "internal: a parsed declaration's nested declarations lie within it, in order"
     );
     text.map(Rc::new)
+}
+
+/// The metaclass mixin a class side becomes: `newspeak-spec.pdf` §6.3's
+/// "the class side, together with the primary factory method". So
+/// `factory` -- the enclosing declaration's, since a class side declares
+/// no factory pattern of its own -- joins the class side's own members as
+/// an entry of this method table, found by the ordinary lookups like any
+/// other. Before that it was a case ahead of the lookup, which cost every
+/// send to a class object a factory-selector compare and needed a
+/// re-check wherever a cache could record the decision.
+///
+/// Kept separate from `Mutator::mixin_level` and deliberately small: a
+/// class side has no nested classes of its own to load -- only its
+/// instance side's `nested_classes` recurse. `declaration` is `None`
+/// because a `ClassBody` is not itself an `ast::ClassDeclaration`; there is
+/// no single declaration node to keep as provenance for it. `text` is its
+/// instance side's, whose declaration holds the class side's text.
+/// `lowering` and `collector` are the level's.
+fn build_class_side(
+    side: &ast::ClassBody,
+    factory: Factory,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    kernel: bool,
+    text: Option<Rc<DeclarationText>>,
+    lowering: crate::compiler::Lowering,
+    collector: Option<&MetadataCollector>,
+) -> Rc<Mixin> {
+    let slots = build_slots(side);
+    let mut methods = build_methods(
+        side, &slots, bindings, kernel, false, None, lowering, collector,
+    );
+    let (selector, entry) = crate::mixin::factory_entry(Some(factory));
+    methods.insert(selector, entry);
+    let mut mixin = Mixin {
+        methods,
+        slots,
+        has_initializer_expressions: !side.initializer_expressions.is_empty(),
+        initializer_expressions: side.initializer_expressions.clone(),
+        span: side.span,
+        shipped: kernel,
+        text,
+        ..Mixin::empty(Symbol::CLASS_SIDE)
+    };
+    crate::compiler::compile_mixin_bodies(&mut mixin, bindings, lowering, collector);
+    Rc::new(mixin)
 }
 
 impl Interpreter {
@@ -383,7 +445,8 @@ impl<'gc> Mutator<'gc> {
         mixin
     }
 
-    /// `build_mixin`'s work, before the mixin is shared.
+    /// `build_mixin`'s work, before the mixin is shared: the level under
+    /// this interpreter's lowering, with its nested declarations.
     fn mixin_of(
         &mut self,
         declaration: &ast::ClassDeclaration,
@@ -391,6 +454,47 @@ impl<'gc> Mutator<'gc> {
         bindings: &Rc<HashMap<Span, Binding>>,
         source: ModuleSource,
         module_text: &Rc<str>,
+    ) -> Mixin {
+        self.mixin_level(
+            declaration,
+            root,
+            bindings,
+            source,
+            module_text,
+            self.lowering,
+            None,
+            |mutator| {
+                declaration
+                    .instance_side
+                    .nested_classes()
+                    .map(|nested| mutator.build_mixin(nested, root, bindings, source, module_text))
+                    .collect()
+            },
+        )
+    }
+
+    /// The mixin of `declaration`'s own level -- its methods, initializer
+    /// bodies, clause and class side -- compiled under `lowering`, its
+    /// nested declarations those `nested` builds, which it calls where
+    /// `build_mixin` has always built them, between the method table and
+    /// the class side. Registers nothing and runs nothing, so that the
+    /// debugger compiles a level again with it (`collector` given, and no
+    /// nested declarations) exactly as the level was built
+    /// (`debugger::metadata::again`).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the declaration, where it was read and how to compile it, each a different fact"
+    )]
+    pub(crate) fn mixin_level(
+        &mut self,
+        declaration: &ast::ClassDeclaration,
+        root: &ast::ClassDeclaration,
+        bindings: &Rc<HashMap<Span, Binding>>,
+        source: ModuleSource,
+        module_text: &Rc<str>,
+        lowering: crate::compiler::Lowering,
+        collector: Option<&MetadataCollector>,
+        nested: impl FnOnce(&mut Self) -> Vec<Rc<Mixin>>,
     ) -> Mixin {
         let kernel = source.is_shipped();
         let slots = build_slots(&declaration.instance_side);
@@ -411,13 +515,10 @@ impl<'gc> Mutator<'gc> {
             kernel,
             kernel_block,
             class_accessor_root,
-            self.lowering,
+            lowering,
+            collector,
         );
-        let nested = declaration
-            .instance_side
-            .nested_classes()
-            .map(|nested| self.build_mixin(nested, root, bindings, source, module_text))
-            .collect();
+        let nested = nested(self);
         // §6's unnumbered introduction, before §6.1 begins: "If the
         // signature is omitted it defaults to `new`" -- a class written
         // without a factory pattern is instantiated by `new`. A separate
@@ -438,10 +539,17 @@ impl<'gc> Mutator<'gc> {
             },
         };
         let text = declaration_text(declaration, root, source, module_text);
-        let class_side = declaration
-            .class_side
-            .as_ref()
-            .map(|side| self.build_class_side(side, factory, bindings, kernel, text.clone()));
+        let class_side = declaration.class_side.as_ref().map(|side| {
+            build_class_side(
+                side,
+                factory,
+                bindings,
+                kernel,
+                text.clone(),
+                lowering,
+                collector,
+            )
+        });
         let mut mixin = Mixin {
             name: Symbol::intern(&declaration.name.name),
             access: crate::dispatch::effective_access(declaration.access),
@@ -485,49 +593,8 @@ impl<'gc> Mutator<'gc> {
             enclosing: std::cell::OnceCell::new(),
             text,
         };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, lowering, collector);
         mixin
-    }
-
-    /// The metaclass mixin a class side becomes: `newspeak-spec.pdf` §6.3's
-    /// "the class side, together with the primary factory method". So
-    /// `factory` -- the enclosing declaration's, since a class side declares
-    /// no factory pattern of its own -- joins the class side's own members as
-    /// an entry of this method table, found by the ordinary lookups like any
-    /// other. Before that it was a case ahead of the lookup, which cost every
-    /// send to a class object a factory-selector compare and needed a
-    /// re-check wherever a cache could record the decision.
-    ///
-    /// Kept separate from `build_mixin` and deliberately small: a class side
-    /// has no nested classes of its own to load -- only its instance side's
-    /// `nested_classes` recurse. `declaration` is `None` because a
-    /// `ClassBody` is not itself an `ast::ClassDeclaration`; there is no
-    /// single declaration node to keep as provenance for it. `text` is its
-    /// instance side's, whose declaration holds the class side's text.
-    fn build_class_side(
-        &mut self,
-        side: &ast::ClassBody,
-        factory: Factory,
-        bindings: &Rc<HashMap<Span, Binding>>,
-        kernel: bool,
-        text: Option<Rc<DeclarationText>>,
-    ) -> Rc<Mixin> {
-        let slots = build_slots(side);
-        let mut methods = build_methods(side, &slots, bindings, kernel, false, None, self.lowering);
-        let (selector, entry) = crate::mixin::factory_entry(Some(factory));
-        methods.insert(selector, entry);
-        let mut mixin = Mixin {
-            methods,
-            slots,
-            has_initializer_expressions: !side.initializer_expressions.is_empty(),
-            initializer_expressions: side.initializer_expressions.clone(),
-            span: side.span,
-            shipped: kernel,
-            text,
-            ..Mixin::empty(Symbol::CLASS_SIDE)
-        };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
-        Rc::new(mixin)
     }
 
     /// §6.3's instantiation, the action of a factory entry: the entry's

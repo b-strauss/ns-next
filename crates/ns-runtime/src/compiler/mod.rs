@@ -30,12 +30,13 @@ use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 use ns_syntax::Span;
 
 use crate::bytecode::{BodyLimit, CodeKind, CompiledCode, Instruction, Literal};
+use crate::debugger::metadata::MetadataCollector;
 use crate::mixin::Mixin;
 use crate::types::Binding;
 use crate::Symbol;
 
 use capture::{BodyKey, RootBody};
-use lower::{Enclosing, Lowerer};
+use lower::{Collecting, Enclosing, Lowerer};
 
 /// A method's parameter count, `instantiate::pattern_parameter_count`'s one
 /// definition, shared with the interpreter's factory-arity guard. Left
@@ -51,6 +52,18 @@ fn argument_count_of(pattern: &ast::MessagePattern) -> usize {
 /// `argument_count_of` is.
 fn factory_argument_count(mixin: &Mixin) -> usize {
     mixin.factory.map_or(0, |factory| factory.argument_count)
+}
+
+/// What a root body's lowerer collects into, when `collector` is given:
+/// the body's parameters named `parameters()`.
+fn collecting(
+    collector: Option<&MetadataCollector>,
+    parameters: impl FnOnce() -> Vec<Symbol>,
+) -> Option<Collecting<'_>> {
+    collector.map(|collector| Collecting {
+        collector,
+        parameters: parameters(),
+    })
 }
 
 /// `count` as the `u16` a `CompiledCode` stores an arity in, or `u16::MAX`
@@ -248,6 +261,9 @@ pub(super) struct Prologue<'a> {
     /// declaration's body runs at its class object, the level its last
     /// clause adds, so they are counted from 0 (`Mixin::has_body`).
     pub(super) has_body: bool,
+    /// The declaration's name, the span the debugger's metadata gives the
+    /// superclass's initialization where no superclass clause is written.
+    pub(super) declaration_name: Span,
 }
 
 impl<'a> Prologue<'a> {
@@ -264,6 +280,7 @@ impl<'a> Prologue<'a> {
                 &[]
             },
             has_body: mixin.has_body,
+            declaration_name: declaration.name.span,
         })
     }
 
@@ -316,13 +333,17 @@ fn parameters_of(mut parameters: Vec<Symbol>, code: &CompiledCode) -> Vec<Symbol
     parameters
 }
 
-pub fn compile_method(
+/// `collector`, when given, collects the debugger's metadata of the method
+/// and every block in it (`docs/design/debugger.md`, "Compiling the
+/// metadata again"); the code is the same either way.
+pub(crate) fn compile_method(
     method: &ast::MethodDeclaration,
     bindings: &Rc<HashMap<Span, Binding>>,
     lowering: Lowering,
+    collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     if lowering == Lowering::Reference {
-        return reference::compile_method(method, bindings);
+        return reference::compile_method(method, bindings, collector);
     }
     let argument_count = argument_count_of(&method.pattern);
     let captures = Rc::new(capture::analyze(
@@ -344,6 +365,9 @@ pub fn compile_method(
         false,
         Enclosing::default(),
         0,
+        collecting(collector, || {
+            crate::resolver::pattern_parameter_names(&method.pattern)
+        }),
     );
     lowerer.lower_local_initializers(&method.body.temporaries);
     lowerer.lower_body(&method.body.statements);
@@ -356,25 +380,31 @@ pub fn compile_method(
 /// arguments when the declaration has them, and each `<:` clause's message
 /// arguments. Called while the mixin is still a value, before it is wrapped
 /// in the `Rc` every application shares -- the one moment it can be
-/// written.
+/// written. `collector`, when given, collects every body's debugger
+/// metadata, as `compile_method`'s does.
 pub(crate) fn compile_mixin_bodies(
     mixin: &mut Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
     lowering: Lowering,
+    collector: Option<&MetadataCollector>,
 ) {
     if lowering == Lowering::Reference {
-        reference::compile_mixin_bodies(mixin, bindings);
+        reference::compile_mixin_bodies(mixin, bindings, collector);
     } else {
-        compile_mixin_bodies_optimized(mixin, bindings);
+        compile_mixin_bodies_optimized(mixin, bindings, collector);
     }
     mixin.mark_declaration_code();
 }
 
 /// `compile_mixin_bodies` under the optimized lowering.
-fn compile_mixin_bodies_optimized(mixin: &mut Mixin, bindings: &Rc<HashMap<Span, Binding>>) {
-    let own = Rc::new(compile_mixin_initializer(mixin, bindings));
+fn compile_mixin_bodies_optimized(
+    mixin: &mut Mixin,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    collector: Option<&MetadataCollector>,
+) {
+    let own = Rc::new(compile_mixin_initializer(mixin, bindings, collector));
     mixin.initializer_code = Some(
-        compile_mixin_full_initializer(mixin, bindings, true)
+        compile_mixin_full_initializer(mixin, bindings, true, collector)
             .map_or_else(|| Rc::clone(&own), Rc::new),
     );
     // A body-less declaration's class object is never reached outside it,
@@ -382,10 +412,11 @@ fn compile_mixin_bodies_optimized(mixin: &mut Mixin, bindings: &Rc<HashMap<Span,
     mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
-        compile_mixin_full_initializer(mixin, bindings, false).map(Rc::new)
+        compile_mixin_full_initializer(mixin, bindings, false, collector).map(Rc::new)
     };
     mixin.own_initializer_code = Some(own);
-    mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
+    mixin.superclass_clause_code =
+        compile_superclass_clause(mixin, bindings, collector).map(Rc::new);
 }
 
 /// A mixin's full instance initializer, or with `with_applied_clauses`
@@ -397,9 +428,15 @@ fn compile_mixin_full_initializer(
     mixin: &Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
     with_applied_clauses: bool,
+    collector: Option<&MetadataCollector>,
 ) -> Option<CompiledCode> {
     let prologue = Prologue::of(mixin, with_applied_clauses)?;
-    Some(compile_initializer_body(mixin, bindings, Some(prologue)))
+    Some(compile_initializer_body(
+        mixin,
+        bindings,
+        Some(prologue),
+        collector,
+    ))
 }
 
 /// A mixin's own part of the instance initializer: each of `mixin`'s own
@@ -421,16 +458,21 @@ fn compile_mixin_full_initializer(
 /// real `MixinApplication.own_slot_base` (`Heap::activation_slot_base`) --
 /// to turn `own_index` into the absolute index the instance array actually
 /// needs.
-fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
-    compile_initializer_body(mixin, bindings, None)
+fn compile_mixin_initializer(
+    mixin: &Mixin,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    collector: Option<&MetadataCollector>,
+) -> CompiledCode {
+    compile_initializer_body(mixin, bindings, None, collector)
 }
 
 /// An initializer body: `prologue`'s clauses, when there is one, then the
-/// own part.
+/// own part. Its variables are the factory's parameters.
 fn compile_initializer_body(
     mixin: &Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
     prologue: Option<Prologue<'_>>,
+    collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
     // Each own slot's future block (§6.3.2), by own index, for a simultaneous
@@ -480,14 +522,18 @@ fn compile_initializer_body(
         false,
         Enclosing::default(),
         0,
+        collecting(collector, || {
+            mixin
+                .declaration
+                .as_ref()
+                .and_then(|declaration| declaration.factory.as_ref())
+                .map(crate::resolver::pattern_parameter_names)
+                .unwrap_or_default()
+        }),
     );
     let mut source: Option<Span> = None;
     if let Some(prologue) = prologue {
-        lowerer.lower_instance_initialization_prologue(
-            prologue.superclass,
-            prologue.applied,
-            prologue.has_body,
-        );
+        lowerer.lower_instance_initialization_prologue(prologue);
         source = prologue.merge_spans(source);
     }
     for (own_index, slot) in mixin.slots.iter().enumerate() {
@@ -498,10 +544,18 @@ fn compile_initializer_body(
             continue;
         };
         if let Some(block) = &future_blocks[own_index] {
-            lowerer.lower_simultaneous_slot_initializer(block, own_slot_index(own_index));
+            lowerer.lower_simultaneous_slot_initializer(
+                block,
+                own_slot_index(own_index),
+                declaration.span,
+            );
             source = Some(merge_span(source, declaration.span));
         } else if let Some(initializer) = &declaration.initializer {
-            lowerer.lower_slot_initializer(initializer, own_slot_index(own_index));
+            lowerer.lower_slot_initializer(
+                initializer,
+                own_slot_index(own_index),
+                declaration.span,
+            );
             source = Some(merge_span(source, declaration.span));
         }
     }
@@ -509,8 +563,9 @@ fn compile_initializer_body(
     // in the simultaneous slot clause has been executed" -- each simultaneous
     // slot read back and stored resolved, in declaration order.
     for (own_index, future_block) in future_blocks.iter().enumerate() {
-        if future_block.is_some() && !mixin.slots[own_index].lazy {
-            lowerer.lower_simultaneous_slot_end(own_slot_index(own_index));
+        let slot = &mixin.slots[own_index];
+        if let (Some(_), false, Some(declaration)) = (future_block, slot.lazy, &slot.declaration) {
+            lowerer.lower_simultaneous_slot_end(own_slot_index(own_index), declaration.span);
         }
     }
     for statement in &mixin.initializer_expressions {
@@ -526,16 +581,24 @@ fn compile_initializer_body(
 /// `InitializeSlot` at `own_index` and answers it. The resolver scoped `initializer` as a unary method's body --
 /// no factory parameter is in scope (§6: they are "in scope in the instance
 /// initializer but not in the rest of the class body") -- so it lowers as
-/// one. `span` is the slot declaration's.
+/// one. `span` is the slot declaration's. `collector`, when given, collects
+/// the getter's debugger metadata, as `compile_method`'s does.
 pub(crate) fn compile_lazy_slot_getter(
     initializer: &ast::Expression,
     own_index: u32,
     span: Span,
     bindings: &Rc<HashMap<Span, Binding>>,
     lowering: Lowering,
+    collector: Option<&MetadataCollector>,
 ) -> CompiledCode {
     if lowering == Lowering::Reference {
-        return reference::compile_lazy_slot_getter(initializer, own_index, span, bindings);
+        return reference::compile_lazy_slot_getter(
+            initializer,
+            own_index,
+            span,
+            bindings,
+            collector,
+        );
     }
     let captures = Rc::new(capture::analyze(
         RootBody {
@@ -556,8 +619,9 @@ pub(crate) fn compile_lazy_slot_getter(
         false,
         Enclosing::default(),
         0,
+        collecting(collector, Vec::new),
     );
-    lowerer.lower_lazy_slot_getter(initializer, own_index);
+    lowerer.lower_lazy_slot_getter(initializer, own_index, span);
     lowerer.finish(span)
 }
 
@@ -575,6 +639,7 @@ pub(crate) fn compile_lazy_slot_getter(
 fn compile_superclass_clause(
     mixin: &Mixin,
     bindings: &Rc<HashMap<Span, Binding>>,
+    collector: Option<&MetadataCollector>,
 ) -> Option<CompiledCode> {
     let declaration = mixin.declaration.as_ref()?;
     let clause = declaration.superclass.as_ref()?;
@@ -603,6 +668,7 @@ fn compile_superclass_clause(
         false,
         Enclosing::default(),
         0,
+        collecting(collector, Vec::new),
     );
     lowerer.lower_body(&statements);
     Some(lowerer.finish(clause.span))

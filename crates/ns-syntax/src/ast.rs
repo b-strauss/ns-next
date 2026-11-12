@@ -558,6 +558,7 @@ impl Send {
             eventual: self.message.eventual,
             type_arguments: self.message.type_arguments.take(),
             comments: std::mem::take(&mut self.message.comments),
+            selector_spans: std::mem::take(&mut self.message.selector_spans),
             span: self.message.span,
         };
         (receiver, message)
@@ -595,6 +596,11 @@ pub struct MessageSend {
     /// The comments attached to the message, in source order (the rule is
     /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
+    /// One span per selector token in source order: the identifier of a
+    /// unary selector, the operator of a binary one, each keyword with its
+    /// colon. A debugger names a send's selector tokens by them. Empty for a
+    /// message the compiler builds.
+    pub selector_spans: Vec<Span>,
     pub span: Span,
 }
 
@@ -709,6 +715,7 @@ mod tests {
                             eventual: false,
                             type_arguments: None,
                             comments: Vec::new(),
+                            selector_spans: Vec::new(),
                             span,
                         },
                         span,

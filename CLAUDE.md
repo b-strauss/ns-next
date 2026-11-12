@@ -6,8 +6,8 @@ Rust 1.98.0, edition 2021, seven crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   the AST is lossless except for layout -- parentheses, literal spellings,
-  type annotations as tokens, the prologue, `<-:`, members in source order
-  -- and every comment is attached to its node (`attach.rs`;
+  type annotations as tokens, the prologue, `<-:`, members in source order,
+  a message's selector tokens' spans -- and every comment is attached to its node (`attach.rs`;
   `docs/design/frontend.md`, "AST", "Comments"); a doc comment's tags and
   summary are `doc_comment.rs`'s, the grammar the JetBrains plugin's
   `NewspeakDocTags` repeats (`docs/design/editor-support.md`, "Doc
@@ -117,8 +117,13 @@ Rust 1.98.0, edition 2021, seven crates:
   atomically in `install.rs`), the debugging API at the run loop's
   safepoint (`debugger/`: `Interpreter::attach_debugger` hands out a
   `DebugRemote`, whose thread pauses the run and reads its stack and
-  values at the stop; `debugger.md`, "The debugging API at the
-  safepoint"), the core library
+  values at the stop, each frame named, placed and its variables named
+  by its body's metadata, which `debugger/metadata/` compiles again from
+  the module's current text through either lowerer's collector, keeps
+  per body only when the body compiled again is alike
+  (`bytecode::compiles_alike`), caches weakly and clears at every
+  install; `debugger.md`, "The debugging API at the safepoint",
+  "Compiling the metadata again"), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
   `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose

@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in nine decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode | In progress | 2026-11-11 (stage 1) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md) |
+| The debugger: designed in fifteen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md) |
 
 ## Notes
 
@@ -7435,3 +7435,98 @@ test of the poll words' ordering" and "What stage 1 of the debugger
 moved, unmeasured"; the final review raised one more open question, an
 answer to the commands queued while no run executes
 ([debugger.md](design/debugger.md), "Open questions").
+
+## The debugger's stage 2: the metadata (2026-11-12)
+
+[debugger.md](design/debugger.md), "Compiling the metadata again",
+"Reading the stack at a stop", decisions 10 to 15;
+[compiler.md](design/compiler.md), "Safepoints and call-site identity";
+[frontend.md](design/frontend.md), "AST".
+
+Stage 2's questions were decided with the user on 2026-11-12 in six
+decisions: a block's frame shows its whole lexical chain, a body is
+found by its declaration and equal by its code with every span in its
+module's current text, a factory's frame takes its metadata from the
+class header, a frame shows named variables only, the metadata is
+checked on three levels, and a send's selector has spans in the syntax
+tree.
+
+A `MessageSend` keeps the span of each selector token
+(`selector_spans`). Both lowerers take an optional collector and record,
+for each body they finish, its statement starts -- an inlined block's,
+an initializer's, a slot's and a prologue entry's included -- its sends
+with their call site and the spans of their receiver and selector, and
+its named variables, each placed in a register of its frame, of an
+enclosing frame `hops` captured frames out, or in an indirection
+vector's slot; a block's variable it did not capture is read from the
+nearest frame of its chain that was handed it. Without a collector each
+lowering emits exactly the code it emitted before, so no golden, no
+shipped-code fingerprint and no image changed.
+
+The debugger finds a frame's body by its declaration and the version of
+the mixin it runs, compiles that declaration's level again from its
+module's current text through `Mutator::mixin_level` -- registering
+nothing and running nothing, a shipped module from the boot's own
+resolution -- under the interpreter's lowering and then the other, and
+pairs each running body with the body compiled again, keeping its
+tables only when the two compile alike (`bytecode::compiles_alike`), a
+block's only when its family's root does. A factory's frame takes its
+parameters and its place from the class header. The cache holds each
+body weakly, keeps a body that pairs with none as having none, and is
+cleared at every install. A stopped frame now shows its name, its
+module, the statement and, below the top, the send it stands at, and
+its named variables over its whole lexical chain -- a variable whose
+activation returned without keeping its registers as not available,
+which the frame object's married word, `true` for a divorce that kept
+them, tells apart from `nil`; a frame without metadata -- an image
+without source, a superseded body its edit changed -- keeps its name and
+shows its registers by number.
+
+The oracle, `Interpreter::check_debug_metadata`, compiles every body of
+every loaded declaration again, requires it alike and holds its tables
+to their invariants, read through the cache as a stop reads them: over
+every golden under each lowering from source in the default suite
+(`crates/ns-cli/tests/debug_metadata.rs`), over every golden's artifact
+through `build` and `load` in the `images` profile, and over the shipped
+modules once. It found no defect. The pause stress mode reads every
+frame's name, location and named variables at real stops. Nothing on the
+hot path changed, so the stage was not measured ("What stage 2
+moved").
+
+The whole-branch review found two defects, both fixed before the merge:
+a frame running a superseded body was never paired, since an install
+points every class object at the current version, so its version is now
+found among the superseded ones that hold the frame's body; and a body
+past a limit could take the tables of a block it dropped, whose address
+a later body reused, so such a body now forgets its blocks' tables.
+
+The commit gates passed on every commit (`commit`, and `codegen` and
+`images` where their files changed), and every end-of-batch group passed
+on the final tree: `images`, `caches`, `benchmarks`, `release-checks`,
+`codegen`, `stress` -- the suite under each of the thirteen modes and
+without the JIT -- `linux` and `aarch64`.
+
+- `159dbebd` -- the plan
+  (`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`) and
+  the selector spans in the design.
+- `cd4f8b13` -- a message keeps its selector tokens' spans.
+- `3f99ffd5`, `c8a8c57a` -- the optimized lowering collects a body's
+  metadata, and a block's variable is read from the nearest frame handed
+  it.
+- `28a1d522` -- the reference lowering collects it.
+- `d23947ae` -- a declaration's level compiled again, paired and cached.
+- `7a841e20`, `e4d3fb1e` -- a stopped frame's name, place and named
+  variables, and a vector variable read before its vector is made.
+- `ac9050a4` -- the oracle over every golden, from source and from an
+  image, and over the shipped modules.
+- `6135c2e5`, `2a0c2ba2` -- the documents.
+- `74abeaa0`, `1b0e49b9`, `23c099ed`, `e3e789c1` -- the whole-branch
+  review's fixes: a superseded body paired against the version it runs,
+  a body past a limit drops its blocks' tables, a block two deep, a
+  decoded creator and a floor under the oracle.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
+(stage 3, breakpoints and stepping, next, and what stage 2's reviews
+left) and "A valid method whose body is one long chain of messages
+aborts `ns-next run`", which the debugger's compilation of an image's
+text now reaches too.

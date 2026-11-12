@@ -91,9 +91,43 @@ pub struct ValueId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameDescription {
     pub kind: FrameKind,
+    /// What the frame runs, as a reader names it: `Foo>>bar`,
+    /// `Foo class>>bar`, `[] in Foo>>bar`, `Foo initializer`,
+    /// `Foo superclass clause`, `Foo class>>new:` for a factory and
+    /// `top level`.
+    pub name: String,
     pub program_counter: usize,
     pub source: ns_syntax::Span,
+    /// Where the frame stands in its module's current text; `None` for a
+    /// frame whose body has no metadata -- a module without text, or a
+    /// body its current text no longer compiles to (decision 5).
+    pub location: Option<FrameLocation>,
     pub receiver: ValueDescription,
+}
+
+/// Where a frame stands, in the current text of its module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameLocation {
+    /// The name of the module's root class; the spans count in its
+    /// current text.
+    pub module: String,
+    /// The innermost statement whose instructions hold the frame's
+    /// program counter; for a factory, the class header's factory
+    /// pattern (decision 12).
+    pub statement: ns_syntax::Span,
+    /// The send at the frame's program counter, for a frame below the
+    /// top, which waits for that send's answer.
+    pub send: Option<SendLocation>,
+}
+
+/// The source of one send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendLocation {
+    /// `None` where nothing in the source spells the receiver: an
+    /// implicit-receiver send and a setter assignment.
+    pub receiver: Option<ns_syntax::Span>,
+    /// The selector's tokens, one per keyword.
+    pub selector: Vec<ns_syntax::Span>,
 }
 
 /// What an activation runs.
@@ -111,7 +145,10 @@ pub enum FrameKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variable {
     pub name: String,
-    pub value: ValueDescription,
+    /// `None` for a variable that lives nowhere any more: a block's outer
+    /// variable whose activation returned without keeping its registers,
+    /// and that nothing captured (decision 10). A child always has one.
+    pub value: Option<ValueDescription>,
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its

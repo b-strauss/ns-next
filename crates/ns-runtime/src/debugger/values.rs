@@ -93,7 +93,7 @@ impl StopValues {
             };
             children.push(Variable {
                 name,
-                value: self.describe(mutator, child),
+                value: Some(self.describe(mutator, child)),
             });
         }
         Some(children)

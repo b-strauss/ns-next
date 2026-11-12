@@ -482,6 +482,7 @@ impl<'tree> Builder<'tree, '_> {
                     eventual,
                     type_arguments,
                     comments,
+                    selector_spans: _,
                     span,
                 } = message;
                 let mut known = None;

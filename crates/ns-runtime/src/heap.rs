@@ -5637,6 +5637,19 @@ impl<'gc> Heap<'gc> {
         self.mixin_row(id).map(|row| row.current.clone())
     }
 
+    /// The id of every mixin this heap names, in row order: what the
+    /// debugger's check over every body walks
+    /// (`Interpreter::check_debug_metadata`).
+    pub(crate) fn mixin_ids(&self) -> Vec<MixinId> {
+        self.tables
+            .mixins
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_some())
+            .filter_map(|(index, _)| MixinId::from_index(index))
+            .collect()
+    }
+
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the
@@ -8499,7 +8512,13 @@ impl<'gc> Heap<'gc> {
         words[frame_field::PROGRAM_COUNTER] = program_counter;
         words[frame_field::SENDER] = Word::NIL.bits();
         words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
-        words[frame_field::MARRIED] = Word::NIL.bits();
+        // Machine code's inline divorce writes nil here, for a frame that
+        // does not keep its registers only (`jit::sends`).
+        words[frame_field::MARRIED] = if flags.retains_registers {
+            Value::boolean(true).word().bits()
+        } else {
+            Word::NIL.bits()
+        };
         // The divorce copied registers into an object the stack's roots
         // no longer cover: an old frame that now holds a young value is
         // remembered like any other old holder.
@@ -8896,6 +8915,18 @@ impl<'gc> Heap<'gc> {
     /// Whether `frame`'s activation is suspended into it.
     pub fn frame_is_suspended(&self, frame: FrameReference<'gc>) -> bool {
         self.suspension_row(frame).is_some()
+    }
+
+    /// Whether `frame`'s registers can be read: married to a running
+    /// activation, suspended, or divorced with its registers kept -- what a
+    /// block reaching them by reference needs (`retain_registers`). A
+    /// frame divorced without them has nil where they were, which names
+    /// no value it held, so the debugger shows such a variable as not
+    /// available rather than as nil. A frame an image decoded records
+    /// neither, and answers `false`.
+    pub(crate) fn frame_registers_kept(&self, frame: FrameReference<'gc>) -> bool {
+        let married = self.frame_field(frame, frame_field::MARRIED);
+        married.as_small_integer().is_some() || married.as_boolean() == Some(true)
     }
 
     /// Whether `frame`'s activation has not returned yet: it is married to
@@ -16673,7 +16704,8 @@ mod tests {
 
     /// The divorce after a collection writes into the compacted object: a
     /// retained activation's registers are found there once it is popped,
-    /// and an unretained one's stay nil. Both frames are moved, by the
+    /// and an unretained one's stay nil, which `frame_registers_kept` tells
+    /// apart from a register holding nil. Both frames are moved, by the
     /// garbage below them.
     #[test]
     fn a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained() {
@@ -16710,6 +16742,13 @@ mod tests {
             "the collection moved the frame"
         );
 
+        for root in [retained_root, unretained_root] {
+            let frame = heap
+                .object_frame(root.as_object().expect("an object"))
+                .expect("a frame");
+            assert!(heap.frame_registers_kept(frame), "a married frame's are");
+        }
+
         heap.pop_activation(unretained);
         heap.pop_activation(retained);
 
@@ -16717,6 +16756,7 @@ mod tests {
             .object_frame(retained_root.as_object().expect("an object"))
             .expect("a frame");
         assert!(heap.frame_activation(retained_frame).is_none());
+        assert!(heap.frame_registers_kept(retained_frame));
         assert_eq!(
             heap.frame_local(retained_frame, 0).as_small_integer(),
             Some(7)
@@ -16730,6 +16770,7 @@ mod tests {
             .object_frame(unretained_root.as_object().expect("an object"))
             .expect("a frame");
         assert!(heap.frame_activation(unretained_frame).is_none());
+        assert!(!heap.frame_registers_kept(unretained_frame));
         assert!(heap.frame_local(unretained_frame, 0).is_nil());
         assert!(heap
             .frame_local(unretained_frame, first_above_header(1))

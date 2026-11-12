@@ -469,8 +469,9 @@ hands back the frame's continuation (`Popped`), which the loop applies to
 the activation's value ("The VM" below). If the activation was reified,
 its frame object is **divorced**: its `program_counter` takes the stack
 frame's last stored one, the
-married field becomes nil, `uncontinuable` becomes true and `sender` becomes
-nil. Then the stack's top is set back to the top the frame was pushed at,
+married field becomes `true` when the divorce kept the frame's registers
+(below) and nil when it did not (`Heap::frame_registers_kept`),
+`uncontinuable` becomes true and `sender` becomes nil. Then the stack's top is set back to the top the frame was pushed at,
 its caller's window end or past it, the caller's registers above its slots
 its own again ("Representation" above).
 
@@ -633,7 +634,13 @@ tiers"). A frame object is in one of three states, told by its married word
   the heap's side table of suspensions (`Heap`'s `suspensions`); the frame
   holds every register, its program counter and, in `sender`, the frame of
   the activation it returns to, or nil when it returns to the host;
-- **returned**: nil, as the divorce leaves it, `uncontinuable` true.
+- **returned**: `uncontinuable` true, and `true` when the divorce kept the
+  registers below the body's `local_count` (`retains_registers`), nil when
+  it did not -- machine code's inline divorce, which takes only a frame
+  that keeps none, writes nil, and a decoded frame has nil too. The
+  debugger asks it (`Heap::frame_registers_kept`) before it reads a
+  returned frame's register for a block, so that a register the divorce
+  dropped shows as not available rather than as nil.
 
 A married or a suspended frame is running (`Heap::frame_is_running`); only a
 married one has a stack frame (`Heap::frame_activation`), so every reader

@@ -735,7 +735,9 @@ pub(in crate::heap) mod frame_field {
     /// the activation the frame is married to, while it runs; a
     /// `SmallInteger` < 0, `-(row + 1)`, naming its row in the heap's side
     /// table of suspensions, while its activation is suspended into it
-    /// (`Heap::suspend_activations`); nil once it has returned.
+    /// (`Heap::suspend_activations`); once it has returned, `true` when
+    /// the divorce kept its registers (`Heap::frame_registers_kept`) and
+    /// nil otherwise, which is also a decoded frame's.
     pub(in crate::heap) const MARRIED: usize = 9;
     /// How many fixed fields there are: register field `index` is word
     /// `COUNT + index`, the arguments first and then the registers above

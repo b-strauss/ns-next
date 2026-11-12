@@ -702,7 +702,7 @@ fn compile_first_method(source: &str, lowering: Lowering) -> CompiledCode {
         .methods()
         .next()
         .expect("a method");
-    crate::compiler::compile_method(method, &resolved.bindings, lowering)
+    crate::compiler::compile_method(method, &resolved.bindings, lowering, None)
 }
 
 /// The code `code` and every block it creates, blocks first.

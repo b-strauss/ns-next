@@ -2264,8 +2264,13 @@ married field holds a *stack* offset as a `SmallInteger`, and no stack frame
 moves, and the stack frame's `reified` word is forwarded like any other
 word. While it is married the frame's own registers are nil and skipped by
 the trace, since the live ones are the stack's. The divorce on pop writes the program
-counter and the uncontinuable flag, clears the marriage, and copies the
-registers into the frame object only when the activation retains them.
+counter and the uncontinuable flag, ends the marriage, and copies the
+registers into the frame object only when the activation retains them,
+leaving `true` in the married field when it did and nil when it did not,
+so that a reader tells a register the divorce dropped from one that held
+nil (`Heap::frame_registers_kept`; [execution.md](execution.md),
+"Suspending and resuming"). Neither is a stack offset, so a returned frame's registers
+are traced.
 
 **A frame can be tenured while it is married.** A scavenge copies a young
 married frame like any other object -- its registers skipped, since they

@@ -485,6 +485,11 @@ What a reader of the source sees beyond the meaning is therefore kept:
   runs it as an ordinary one ("What is kept but ignored, and what a reprint
   drops"). A unary message keeps the type arguments after its selector
   (`a foo[E]`).
+- **Selector tokens.** A `MessageSend` keeps the span of each of its selector
+  tokens in source order, `selector_spans`: the identifier of a unary
+  selector, the operator of a binary one, each keyword with its colon. What
+  the debugger's send entries name (`debugger.md`); the printer and the
+  analyzer read the selector as text.
 - **Type annotations** are `TypeAnnotation { tokens, span }`, each token
   its lexer kind and text, from the opening `<`, `[` or `where` through the
   closer that ends it, at every place one may stand: a class's type

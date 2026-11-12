@@ -587,6 +587,11 @@ pub struct Mutator<'gc> {
     /// once the first one is made, never cleared. A number, not a handle,
     /// so nothing traces it.
     pub(crate) futures_made: bool,
+    /// The debugger metadata of every body asked about, compiled again
+    /// (`debugger::metadata::Cache`): on the mutator, so that the pause
+    /// stress mode, which runs with no debugger attached, reads through it
+    /// too. Holds no handle, so nothing traces it.
+    pub(crate) debug_metadata: crate::debugger::metadata::Cache,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only

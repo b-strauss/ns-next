@@ -703,7 +703,9 @@ fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
     }
 }
 
-fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
+/// A pattern's parameter names, in the order `LocalScope::new` indexes
+/// them.
+pub(crate) fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
         ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name.name)],

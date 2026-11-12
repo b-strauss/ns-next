@@ -533,6 +533,7 @@ mod tests {
                 &Rc::new(HashMap::new()),
                 false,
                 crate::compiler::Lowering::Optimized,
+                None,
             ))),
         );
         // The application chain must be linked wherever the class-object

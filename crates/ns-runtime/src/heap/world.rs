@@ -147,6 +147,7 @@ impl World {
                 depth_reserve: None,
                 taking_depth_reserve: false,
                 futures_made: false,
+                debug_metadata: crate::debugger::metadata::Cache::default(),
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();
