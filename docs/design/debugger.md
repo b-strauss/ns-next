@@ -1608,21 +1608,37 @@ has to decide which view it wants.
 
 A method with a `MethodFastPath` never runs its body (`mixin.rs`): a quick
 method (`^true`, `^false`, `^nil`, `^self`, `^` a parameter), a method
-that only sends `value` or `cull:` to a block parameter, and a mirror
-forwarder whose leaf does not decline. The interpreter's `act` and machine
-code's stubs read the fast path off the method on every hit, and the
-optimizing tier inlines a quick method without looking at its body. So a
-line breakpoint or a method breakpoint in, for example, a program's
-`isEmpty = ( ^true )` would never stop. Patching such a method therefore
-also replaces the method in its mixin's method table by one without the
-fast path, the same body otherwise, and then invalidates the inline
-caches (`Interpreter::invalidate_caches`) and frees every optimized copy
-that inlined the method, as an install does; removing the last breakpoint
-puts the method with its fast path back the same way. A check on every
-hit whether the method is patched is rejected: a cache records what the
-lookup decided and re-reads only what its key does not cover (`CLAUDE.md`,
-"A cache records what the lookup decided; it never decides"), so the
-check would cost every send of every fast-path method.
+that only sends `value` or `cull:` to a block parameter, a builtin class
+accessor, and a mirror forwarder whose leaf does not decline. Only the
+shipped modules' methods have one: `compiler::primitive_method::recognize`
+gives the quick methods and the class accessors only to the kernel's
+resolution, and a mirror forwarder needs the `MirrorSend` binding only
+`resolve_kernel` records. The interpreter's `act` and machine code's
+stubs read the fast path off the method on every hit, and the optimizing
+tier inlines a quick method without looking at its body. So a line
+breakpoint or a method breakpoint the user sets in, for example,
+`True>>ifTrue:` -- which stops, since the step filter decides only where a
+step lands (decision 16) -- would never stop.
+
+The fast path is therefore switched off on the method for as long as a
+breakpoint is set in its body: `MixinMethod::fast_path` is a
+`Cell<Option<MethodFastPath>>`, written only by the debugger -- cleared by
+the first breakpoint, put back by the removal of the last -- which then
+invalidates the inline caches and their machine cells
+(`Interpreter::invalidate_caches`) and frees every optimized copy, since a
+copy that inlined a quick method records no code id of it
+(`jit::invalidate_all_optimized`); setting a breakpoint is rare. Reading
+it costs every hit what reading the field cost, one load, and no check is
+added. Replacing the method in its mixin's method table, Squeak's way of
+recompiling a method with a `break`, is rejected: a shipped mixin is
+never replaced (`Heap::replace_mixin` refuses one), and everything that
+finds a shipped mixin by its declaration or its address -- the shipped
+world's tables, the image encoder, `Heap::class_is_shipped`, the
+metadata cache -- would have to follow a replacement. A check on every
+hit whether the method is patched is rejected too: a cache records what
+the lookup decided and re-reads only what its key does not cover
+(`CLAUDE.md`, "A cache records what the lookup decided; it never
+decides"), so the check would cost every send of every fast-path method.
 
 ### Stopping at and going past a breakpoint
 
