@@ -710,7 +710,7 @@ fn both_lowerings_name_the_same_variables_of_a_block() {
     let source = indoc! {"
         class X = Object new (
         ) (
-          m: p = ( | t u | ^[:b | t + b + u. u:: 1 ] )
+          m: p = ( | t u | ^[:b | t + b + u. u:: 1. [:c | c + b ] ] )
         ) : ()
     "};
     let (optimized_method, optimized_collector) = collected_under(source, Lowering::Optimized);
@@ -764,6 +764,34 @@ fn both_lowerings_name_the_same_variables_of_a_block() {
             variable("u", 1, outer(temporary(2))),
         ]
     );
+
+    // A block two frames in reads its method's variables two hops out.
+    let optimized_inner = optimized_collector
+        .take(&first_block(&first_block(&optimized_method)))
+        .expect("the optimized inner block's metadata");
+    let reference_inner = reference_collector
+        .take(&first_block(&first_block(&reference_method)))
+        .expect("the reference inner block's metadata");
+    assert_eq!(names(&optimized_inner), names(&reference_inner));
+    let twice_out = |register: u16| VariablePlace::Outer { hops: 2, register };
+    assert_eq!(
+        reference_inner.variables.to_vec(),
+        vec![
+            variable("c", 0, VariablePlace::Register(0)),
+            variable("b", 1, outer(0)),
+            variable("p", 2, twice_out(0)),
+            variable("t", 2, twice_out(temporary(1))),
+            variable("u", 2, twice_out(temporary(2))),
+        ]
+    );
+    // No block reads `p`, so the optimized inner block reads it where
+    // its method declares it, two hops out (decision 10).
+    let parameter = optimized_inner
+        .variables
+        .iter()
+        .find(|entry| entry.name == Symbol::intern("p"))
+        .expect("p is named");
+    assert_eq!(parameter.place, twice_out(0));
 }
 
 /// Every (receiver, selector) pair of the sends the family of bodies of

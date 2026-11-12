@@ -34,28 +34,54 @@ fn main() {
             ));
         }
     }
+    trials.push(Trial::test(
+        "debug_metadata::floor",
+        most_goldens_are_checked,
+    ));
     libtest_mimic::run(&arguments, trials).exit();
+}
+
+/// The fewest goldens, and project goldens, whose modules resolve and so
+/// are checked: a trial of a golden that does not passes without checking
+/// anything, so a drift in how a golden's modules are read -- the project
+/// file's format, a path -- would otherwise stop the oracle silently.
+/// Every project golden resolves today, and all but a few of the others
+/// (533 of 545 programs, 4 projects among them); the floor leaves room
+/// for goldens of failures that do not resolve.
+const CHECKED_FLOOR: usize = 500;
+const CHECKED_PROJECT_FLOOR: usize = 4;
+
+/// At least `CHECKED_FLOOR` goldens, `CHECKED_PROJECT_FLOOR` of them
+/// projects, have modules that resolve, which their trials check.
+fn most_goldens_are_checked() -> Result<(), Failed> {
+    let mut checked = 0;
+    let mut projects = 0;
+    for program in common::golden_programs() {
+        if resolved_modules(&program)?.is_some() {
+            checked += 1;
+            if program.is_dir() {
+                projects += 1;
+            }
+        }
+    }
+    if checked < CHECKED_FLOOR || projects < CHECKED_PROJECT_FLOOR {
+        return Err(format!(
+            "{checked} goldens, {projects} of them projects, resolve and are checked; at least {CHECKED_FLOOR}, {CHECKED_PROJECT_FLOOR} of them projects, were expected"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Every body of `program`'s modules, loaded as `run` loads them under
 /// `lowering` but not run, compiles again alike with tables that hold
 /// their invariants. A golden whose source does not parse or resolve has
-/// nothing to compile, and passes.
+/// nothing to compile, and passes (`most_goldens_are_checked` holds how
+/// many do).
 fn every_body_compiles_again_alike(program: &Path, lowering: Lowering) -> Result<(), Failed> {
-    let Some(sources) = module_sources(program)? else {
+    let Some(resolved_modules) = resolved_modules(program)? else {
         return Ok(());
     };
-    let mut resolved_modules = Vec::with_capacity(sources.len());
-    for (name, source) in sources {
-        let Ok(module) = ns_syntax::parse(&source) else {
-            return Ok(());
-        };
-        let origin = ns_runtime::SourceOrigin::Embedded(name);
-        let Ok(resolved) = ns_runtime::resolve(module, Rc::from(source.as_str()), origin) else {
-            return Ok(());
-        };
-        resolved_modules.push(resolved);
-    }
     let mut interpreter = Interpreter::bootstrap_with(lowering);
     for resolved in &resolved_modules {
         interpreter.load_module(resolved);
@@ -65,6 +91,26 @@ fn every_body_compiles_again_alike(program: &Path, lowering: Lowering) -> Result
         return Err("no body of the program was checked".into());
     }
     Ok(())
+}
+
+/// `program`'s modules resolved, as `run` resolves them; `None` when one
+/// does not parse or resolve, or the project file would be refused.
+fn resolved_modules(program: &Path) -> Result<Option<Vec<ns_runtime::ResolvedModule>>, Failed> {
+    let Some(sources) = module_sources(program)? else {
+        return Ok(None);
+    };
+    let mut resolved_modules = Vec::with_capacity(sources.len());
+    for (name, source) in sources {
+        let Ok(module) = ns_syntax::parse(&source) else {
+            return Ok(None);
+        };
+        let origin = ns_runtime::SourceOrigin::Embedded(name);
+        let Ok(resolved) = ns_runtime::resolve(module, Rc::from(source.as_str()), origin) else {
+            return Ok(None);
+        };
+        resolved_modules.push(resolved);
+    }
+    Ok(Some(resolved_modules))
 }
 
 /// The modules `run` compiles for `program`, in its module order, each

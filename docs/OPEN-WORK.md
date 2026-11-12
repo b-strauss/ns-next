@@ -1949,16 +1949,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       slot's index (the tables record no vector's size) are not checked
       (`debugger/metadata/check.rs`).
     - *Tests*: none of a text that parses but does not resolve, of the
-      class-side branch of `compile_level` with a registered id, of the
-      decoded frame's `outer_reach` fallback when a variable is read
-      from a returned frame, nor of a vector variable read before its
-      `MakeVector` ran; `a_vector_variable_shows_its_current_value` does
-      not assert which `VectorHolder` it read through;
-      `a_frame_is_named_and_located` checks that the top frame waits on
-      no send only under the optimized lowering; the cross-lowering
-      variable test covers one block level, no `hops` of 2; and
-      `tests.rs`'s assertion message names five bodies where it asserts
-      at least four.
+      class-side branch of `compile_level` with a registered id, nor of
+      a vector variable read before its `MakeVector` ran;
+      `a_vector_variable_shows_its_current_value` does not assert which
+      `VectorHolder` it read through; `a_frame_is_named_and_located`
+      checks that the top frame waits on no send only under the
+      optimized lowering; and `tests.rs`'s assertion message names five
+      bodies where it asserts at least four.
     - *Code*: the reference lowering's send entry tells a send was
       emitted by the code's length rather than by the `BodyTooLarge`
       check; a local initializer's statement span includes its period,

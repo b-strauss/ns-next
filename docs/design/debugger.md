@@ -915,7 +915,10 @@ stage's tests, do not.
   lowerings but the image's): a frame named and located, the send it
   waits on included; a frame's named variables; a block's view of its
   method's variables; an outer variable of a creator that returned
-  without keeping its registers, not available; a factory's frame named
+  without keeping its registers, not available; a block two deep reading
+  its method's variable two captured frames out, while the method runs
+  and after it returned; a returned creator's frame an image decoded,
+  read through the closure that reads it by reference; a factory's frame named
   by its header's parameters; a superseded body its edit changed, shown
   by number and without a location, its block's frame still named for
   its method; a superseded body an install into its declaration left
@@ -930,7 +933,8 @@ stage's tests, do not.
   fallback's; a block's whole lexical chain, a shadowed name, and a
   variable an enclosing block was handed; an initializer's prologue,
   slots and lazy getter; both lowerings naming the same variables, sends
-  by span and initializer statements; either lowering compiling without a
+  by span and initializer statements, a block two deep's included;
+  either lowering compiling without a
   collector emitting exactly the code it emits with one, so that no
   golden, no shipped-code fingerprint and no image changes; every body of
   a level compiling again alike, an unwind marker's body included; a
@@ -953,7 +957,11 @@ stage's tests, do not.
   `Literal::BodyTooLarge` first and records no tables, may have none.
   `crates/ns-cli/tests/debug_metadata.rs` runs it over every golden under
   each lowering, from source and without running it, in the default
-  suite (`debug_metadata::<lowering>::<path>`);
+  suite (`debug_metadata::<lowering>::<path>`), a golden whose modules do
+  not resolve passing unchecked, and `debug_metadata::floor` requires
+  at least 500 goldens, every project golden among them, to resolve, so
+  that a drift in how a golden's modules are read cannot stop the check
+  silently;
   `every_shipped_body_compiles_again_alike` (`tests/debugger.rs`) runs
   it once over the shipped modules, the lazy ones built first; and
   `golden_round_trips.rs` runs it over every golden's artifact `build`
@@ -1419,12 +1427,16 @@ records no range.
 
 ### 14. The metadata is checked on three levels
 
-- Targeted tests in `crates/ns-runtime/tests/debugger.rs`: named
-  variables; a block's outer chain, copied, in a vector, by reference,
-  and after its creator returned; a factory's frame; a body after an
-  edit of another declaration; a superseded version the edit changed;
-  an image built with `--strip-source`; and an image whose code the
-  reference lowering compiled.
+- Targeted tests at a stop, in `crates/ns-runtime/tests/debugger.rs`,
+  each under both lowerings but one image's: named variables; a block's
+  outer chain, copied, in a vector, by reference, two frames out, after
+  its creator returned, and from a creator's frame an image decoded; a
+  factory's frame; a superseded version an install into its declaration
+  left alone, and one the edit changed; and an image without its source.
+  Unit tests in `debugger/metadata/tests.rs`: a body after an edit of
+  another declaration (`an_install_moves_the_spans_of_an_unedited_body`)
+  and an image whose code the reference lowering compiled
+  (`a_reference_lowered_image_body_pairs_with_the_reference_lowering`).
 - An oracle over every body: a test compiles every body of every golden
   again under the lowering it runs under, both of them, and requires it
   equal, and holds the tables to their invariants -- every statement

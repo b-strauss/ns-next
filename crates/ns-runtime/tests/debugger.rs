@@ -1027,6 +1027,113 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A block two deep, stopped in a loop inside it while the method that
+/// declares `unused` -- which no block reads -- still runs.
+const DEEP_RUNNING: &str = indoc! {"
+    class Deep = Object new () (
+      public run = (
+        ^self make: 3
+      )
+      make: limit = (
+        | unused first |
+        unused:: 42.
+        first:: [
+          | middle inner |
+          middle:: limit.
+          inner:: [
+            | count |
+            count:: middle.
+            [true] whileTrue: [count:: count + 1]
+          ].
+          inner value
+        ].
+        ^first value
+      )
+    ) : ()
+"};
+
+/// The block two deep of `DEEP_RUNNING`, stored by a method that
+/// returned and evaluated afterwards.
+const DEEP_RETURNED: &str = indoc! {"
+    class Deep = Object new (
+      | block |
+    ) (
+      public run = (
+        self make: 3.
+        ^block value
+      )
+      make: limit = (
+        | unused |
+        unused:: 42.
+        block:: [
+          | middle inner |
+          middle:: limit.
+          inner:: [
+            | count |
+            count:: middle.
+            [true] whileTrue: [count:: count + 1]
+          ].
+          inner value
+        ]
+      )
+    ) : ()
+"};
+
+/// The variables of the block two deep of `source`'s `make:` -- the
+/// frame named for `make:` nearest the top, since the reference lowering
+/// sends `value` to the loop's blocks and stops in them, the one whose
+/// own variable is `count`.
+fn innermost_deep_block(lowering: Lowering, source: &'static str) -> Vec<Variable> {
+    while_stopped_under(lowering, source, |remote| {
+        let frames = stack_trace(remote);
+        let mut found = None;
+        for (frame, description) in frames.iter().enumerate() {
+            if description.name != "[] in Deep>>make:" {
+                continue;
+            }
+            let variables = variables(remote, Command::Variables { frame });
+            if variables
+                .get(1)
+                .is_some_and(|variable| variable.name == "count")
+            {
+                found = Some(variables);
+                break;
+            }
+        }
+        found.unwrap_or_else(|| {
+            panic!(
+                "a frame of the inner block was expected in {:?}",
+                frame_names(&frames)
+            )
+        })
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block two deep reads a variable of its method that no block
+    /// reads two captured frames out: while the method runs, from its
+    /// activation; after it returned, from its frame object, which only
+    /// the reference lowering's creation of the outer block, reading its
+    /// method by reference, made keep its registers.
+    fn a_block_two_deep_reads_its_method_s_variable_two_frames_out(lowering) {
+        let running = innermost_deep_block(lowering, DEEP_RUNNING);
+        assert_eq!(names(&running)[..4], ["self", "count", "middle", "inner"]);
+        assert_eq!(value_of(&running, "middle").label, "3");
+        assert_eq!(value_of(&running, "limit").label, "3");
+        assert_eq!(value_of(&running, "unused").label, "42");
+        assert_eq!(value_of(&running, "first").class_name, "Closure");
+
+        let returned = innermost_deep_block(lowering, DEEP_RETURNED);
+        assert_eq!(value_of(&returned, "middle").label, "3");
+        assert_eq!(value_of(&returned, "limit").label, "3");
+        let unused = named(&returned, "unused");
+        match lowering {
+            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Reference => assert_eq!(shown(unused).label, "42"),
+        }
+    }
+}
+
 /// An instance created through a factory whose initializer never ends.
 const FACTORIES: &str = indoc! {"
     class Factories = Object new () (
@@ -1249,6 +1356,71 @@ fn an_image_without_source_shows_unnamed_frames() {
     assert_eq!(frames[looping].location, None);
     assert_eq!(names(&variables), ["self", "argument 1", "argument 2"]);
     assert_eq!(value_of(&variables, "argument 1").label, "5");
+}
+
+/// A block stored by a method that returned, as `RETURNED`'s, with the
+/// method sent before the image is written and the block evaluated
+/// after it is loaded.
+const KEPT: &str = indoc! {"
+    class Kept = Object new (
+      | block |
+    ) (
+      public prepare = (
+        self make: 3
+      )
+      make: limit = (
+        | unused |
+        unused:: 42.
+        block:: [
+          | count |
+          count:: limit.
+          [true] whileTrue: [count:: count + 1]
+        ]
+      )
+      public run = (
+        ^block value
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A returned creator's frame an image decoded is read through the
+    /// closure that reads it by reference -- the reference lowering's
+    /// block -- since its record does not say whether it kept its
+    /// registers; the optimized lowering's block reads none of it, and
+    /// the variable it did not copy is not available (decision 10).
+    fn a_decoded_creator_s_variable_is_read_through_a_closure_reading_it(lowering) {
+        let (mut interpreter, class) = load(KEPT, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+            "prepare",
+        );
+        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let bytes = interpreter
+            .enter(|mutator| {
+                let class = mutator.fetch(&class).as_object().expect("the module class");
+                let modules = [ns_runtime::image::ModuleSource {
+                    class,
+                    origin: &origin,
+                    with_source: true,
+                }];
+                ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut image = ns_runtime::image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+        let instance = image.roots.remove(0);
+        let ((_, variables), _, _) =
+            while_stopped_in(image.interpreter, &instance, PAUSE_DELAY, |remote| {
+                frame_and_variables(remote, "[] in Kept>>make:")
+            });
+        assert_eq!(value_of(&variables, "limit").label, "3");
+        let unused = named(&variables, "unused");
+        match lowering {
+            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Reference => assert_eq!(shown(unused).label, "42"),
+        }
+    }
 }
 
 /// A method temporary its block assigns, which the optimized lowering
