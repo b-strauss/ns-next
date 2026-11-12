@@ -7493,6 +7493,19 @@ frame's name, location and named variables at real stops. Nothing on the
 hot path changed, so the stage was not measured ("What stage 2
 moved").
 
+The whole-branch review found two defects, both fixed before the merge:
+a frame running a superseded body was never paired, since an install
+points every class object at the current version, so its version is now
+found among the superseded ones that hold the frame's body; and a body
+past a limit could take the tables of a block it dropped, whose address
+a later body reused, so such a body now forgets its blocks' tables.
+
+The commit gates passed on every commit (`commit`, and `codegen` and
+`images` where their files changed), and every end-of-batch group passed
+on the final tree: `images`, `caches`, `benchmarks`, `release-checks`,
+`codegen`, `stress` -- the suite under each of the thirteen modes and
+without the JIT -- `linux` and `aarch64`.
+
 - `159dbebd` -- the plan
   (`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`) and
   the selector spans in the design.
@@ -7506,7 +7519,11 @@ moved").
   variables, and a vector variable read before its vector is made.
 - `ac9050a4` -- the oracle over every golden, from source and from an
   image, and over the shipped modules.
-- This commit -- the documents.
+- `6135c2e5`, `2a0c2ba2` -- the documents.
+- `74abeaa0`, `1b0e49b9`, `23c099ed`, `e3e789c1` -- the whole-branch
+  review's fixes: a superseded body paired against the version it runs,
+  a body past a limit drops its blocks' tables, a block two deep, a
+  decoded creator and a floor under the oracle.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
 (stage 3, breakpoints and stepping, next, and what stage 2's reviews

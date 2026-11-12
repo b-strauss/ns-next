@@ -959,7 +959,7 @@ stage's tests, do not.
   each lowering, from source and without running it, in the default
   suite (`debug_metadata::<lowering>::<path>`), a golden whose modules do
   not resolve passing unchecked, and `debug_metadata::floor` requires
-  at least 500 goldens, every project golden among them, to resolve, so
+  at least 500 goldens, at least four of them projects, to resolve, so
   that a drift in how a golden's modules are read cannot stop the check
   silently;
   `every_shipped_body_compiles_again_alike` (`tests/debugger.rs`) runs
