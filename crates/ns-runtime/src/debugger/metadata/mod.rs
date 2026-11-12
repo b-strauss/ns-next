@@ -15,6 +15,7 @@ use crate::Symbol;
 
 pub(crate) mod again;
 mod cache;
+mod check;
 
 pub(crate) use cache::Cache;
 

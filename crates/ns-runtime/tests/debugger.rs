@@ -1202,3 +1202,17 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+ns_runtime::for_each_lowering! {
+    /// Every body of every shipped module, the lazy ones built first,
+    /// compiles again alike under the interpreter's lowering, and its
+    /// tables hold their invariants (decision 14): the shipped modules
+    /// are checked here once, not with every golden.
+    fn every_shipped_body_compiles_again_alike(lowering) {
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        match interpreter.check_debug_metadata(true) {
+            Ok(count) => assert!(count > 0, "no shipped body was checked"),
+            Err(failure) => panic!("{failure}"),
+        }
+    }
+}

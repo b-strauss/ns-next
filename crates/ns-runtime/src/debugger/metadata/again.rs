@@ -37,6 +37,7 @@ pub(crate) struct BodyOrigin {
 }
 
 /// The member of a mixin a body belongs to.
+#[derive(Clone)]
 pub(crate) enum Member {
     /// A method, or a lazy slot's getter, of the mixin's side.
     Method(Symbol),
@@ -90,13 +91,6 @@ impl FactoryAgain {
 /// `None` when the module has no text, or the text does not parse, resolve
 /// or hold the declaration -- an image's text is untrusted, so none of them
 /// panics.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the check over every golden that compiles each level again is to come"
-    )
-)]
 pub(crate) fn compile_level_again(
     mutator: &mut Mutator<'_>,
     running: &Rc<Mixin>,

@@ -5637,6 +5637,19 @@ impl<'gc> Heap<'gc> {
         self.mixin_row(id).map(|row| row.current.clone())
     }
 
+    /// The id of every mixin this heap names, in row order: what the
+    /// debugger's check over every body walks
+    /// (`Interpreter::check_debug_metadata`).
+    pub(crate) fn mixin_ids(&self) -> Vec<MixinId> {
+        self.tables
+            .mixins
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_some())
+            .filter_map(|(index, _)| MixinId::from_index(index))
+            .collect()
+    }
+
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the

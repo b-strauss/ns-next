@@ -1325,3 +1325,29 @@ fn a_reference_lowered_image_body_pairs_with_the_reference_lowering() {
         );
     });
 }
+
+#[test]
+fn a_body_that_compiles_again_otherwise_fails_the_check() {
+    let source = indoc! {"
+        class Root = Object new (
+        ) (
+          public class Inner = () (
+            public m = ( ^11 )
+          )
+        ) : ()
+    "};
+    let bytes = image_under(source, Lowering::Optimized);
+    match loaded_image(&bytes).interpreter.check_debug_metadata(false) {
+        Ok(count) => assert!(count > 0),
+        Err(failure) => panic!("{failure}"),
+    }
+    // The text answers another literal than the code the image carries.
+    let mut image = loaded_image(&patched(&bytes, "( ^11 )", "( ^12 )"));
+    match image.interpreter.check_debug_metadata(false) {
+        Ok(count) => panic!("{count} bodies passed"),
+        Err(failure) => assert!(
+            failure.contains("Inner>>m does not compile again alike"),
+            "{failure}"
+        ),
+    }
+}

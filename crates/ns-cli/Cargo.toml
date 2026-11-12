@@ -35,6 +35,12 @@ harness = false
 name = "golden_round_trips"
 harness = false
 
+# One trial per golden and lowering (`libtest-mimic`), as `run_goldens`:
+# the debugger's metadata of every body, compiled again in process.
+[[test]]
+name = "debug_metadata"
+harness = false
+
 # One trial per part of the corruption sweep (`libtest-mimic`): as one test,
 # its processes ran one after another at the end of the suite.
 [[test]]

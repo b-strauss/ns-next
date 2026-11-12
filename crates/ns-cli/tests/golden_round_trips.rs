@@ -7,7 +7,10 @@
 //! time, and almost all of it under the stress modes. It doubles the
 //! goldens' cost, so it runs in a nextest profile of its own, for a commit
 //! that touches the image format or the instruction encoding and at the
-//! end of a batch: `cargo nextest run -p ns-cli --profile images`.
+//! end of a batch: `cargo nextest run -p ns-cli --profile images`. Beside
+//! each, the debugger's oracle over the loaded artifact: every body the
+//! image carries compiles again alike from the text it carries
+//! (`docs/design/debugger.md`, decision 14).
 
 use std::path::Path;
 
@@ -36,6 +39,13 @@ fn main() {
             trials.push(
                 Trial::test(format!("build_load::{lowering}::{name}"), move || {
                     an_artifact_runs_as_its_source_does(&path, lowering)
+                })
+                .with_ignored_flag(skipped),
+            );
+            let path = program.clone();
+            trials.push(
+                Trial::test(format!("debug_metadata::{lowering}::{name}"), move || {
+                    every_loaded_body_compiles_again_alike(&path, lowering)
                 })
                 .with_ignored_flag(skipped),
             );
@@ -134,6 +144,41 @@ fn an_artifact_runs_as_its_source_does(path: &Path, lowering: &str) -> Result<()
 {load_error}"
         )
         .into());
+    }
+    Ok(())
+}
+
+/// Every body of the program's modules, built under `lowering` and loaded
+/// from the artifact in process, compiles again alike from the text the
+/// artifact carries, and its metadata holds its invariants
+/// (`Interpreter::check_debug_metadata`): the loaded interpreter runs the
+/// optimized lowering, so a reference-lowered artifact's bodies pair under
+/// the reference lowering, which the check tries second. A program whose
+/// build fails has no artifact to check; `build_load::` holds that failure
+/// to `run`'s.
+fn every_loaded_body_compiles_again_alike(path: &Path, lowering: &str) -> Result<(), Failed> {
+    let directory = ScratchDirectory::new("golden-debug-metadata");
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let out = directory.join(&format!("{stem}.{lowering}.nsi"));
+    let (built, _, _) = ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        out.as_os_str(),
+        "--lowering".as_ref(),
+        lowering.as_ref(),
+    ]);
+    if !built {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&out).map_err(|error| format!("read the artifact: {error}"))?;
+    let mut image = ns_runtime::image::load(&bytes)?;
+    let count = image.interpreter.check_debug_metadata(false)?;
+    if count == 0 {
+        return Err("no body of the artifact was checked".into());
     }
     Ok(())
 }
