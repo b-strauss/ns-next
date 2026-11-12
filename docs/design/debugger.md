@@ -912,14 +912,14 @@ stage's tests, do not.
   request keeps the debugger's bits, a stress hold lowers nothing, and
   clearing the debugger's bits gives the limit back.
 - **The metadata at a stop** (`tests/debugger.rs`, each under both
-  lowerings but the image's): a frame named and located, the send it
-  waits on included; a frame's named variables; a block's view of its
-  method's variables; an outer variable of a creator that returned
-  without keeping its registers, not available; a block two deep reading
-  its method's variable two captured frames out, while the method runs
-  and after it returned; a returned creator's frame an image decoded,
-  read through the closure that reads it by reference; a factory's frame named
-  by its header's parameters; a superseded body its edit changed, shown
+  lowerings but the image without source's): a frame named and located,
+  the send it waits on included; a frame's named variables; a block's
+  view of its method's variables; an outer variable of a creator that
+  returned without keeping its registers, not available; a block two
+  deep reading its method's variable two captured frames out, while the
+  method runs and after it returned; a returned creator's frame an
+  image decoded, read through the closure that reads it by reference; a
+  factory's frame named by its header's parameters; a superseded body its edit changed, shown
   by number and without a location, its block's frame still named for
   its method; a superseded body an install into its declaration left
   alone, and its block's, named, located in the current text and showing
@@ -1428,10 +1428,10 @@ records no range.
 ### 14. The metadata is checked on three levels
 
 - Targeted tests at a stop, in `crates/ns-runtime/tests/debugger.rs`,
-  each under both lowerings but one image's: named variables; a block's
-  outer chain, copied, in a vector, by reference, two frames out, after
-  its creator returned, and from a creator's frame an image decoded; a
-  factory's frame; a superseded version an install into its declaration
+  each under both lowerings but the image without source's: named
+  variables; a block's outer chain, copied, in a vector, by reference,
+  two frames out, after its creator returned, and from a creator's
+  frame an image decoded; a factory's frame; a superseded version an install into its declaration
   left alone, and one the edit changed; and an image without its source.
   Unit tests in `debugger/metadata/tests.rs`: a body after an edit of
   another declaration (`an_install_moves_the_spans_of_an_unedited_body`)
