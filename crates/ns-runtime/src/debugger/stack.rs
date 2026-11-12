@@ -558,8 +558,9 @@ impl<'gc> Reader<'_, 'gc> {
         Some(self.heap.frame_local(target, register))
     }
 
-    /// The variable at `place`; `None` where it lives nowhere any more,
-    /// and for a vector slot whose vector the frame does not hold yet.
+    /// The variable at `place`; `None` where it lives nowhere any more:
+    /// its register, or its vector's holder, is not available. A holder
+    /// that holds no vector yet answers nil.
     fn place(&self, place: VariablePlace) -> Option<Value<'gc>> {
         match place {
             VariablePlace::Register(register) => self.own(register),
@@ -569,6 +570,13 @@ impl<'gc> Reader<'_, 'gc> {
                     VectorHolder::Register(register) => self.own(register),
                     VectorHolder::Outer { hops, register } => self.outer(hops, register),
                 }?;
+                // A frame that has not run its `MakeVector` yet -- stopped
+                // at its push -- holds nil where the vector goes: the
+                // variable is in scope from its start, nil until written
+                // (decision 13), never "not yet assigned".
+                if vector.is_nil() {
+                    return Some(Value::nil());
+                }
                 self.heap
                     .array_element(vector.as_object()?, usize::from(slot))
             }

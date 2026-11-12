@@ -1149,3 +1149,56 @@ fn an_image_without_source_shows_unnamed_frames() {
     assert_eq!(names(&variables), ["self", "argument 1", "argument 2"]);
     assert_eq!(value_of(&variables, "argument 1").label, "5");
 }
+
+/// A method temporary its block assigns, which the optimized lowering
+/// keeps in an indirection vector, read at a stop in a block nested in
+/// that block, which never names it.
+const VECTORED: &str = indoc! {"
+    class Vectored = Object new () (
+      public run = (
+        ^self outer: 5
+      )
+      outer: count = (
+        | total |
+        total:: count.
+        ^[:step |
+          total:: total + step.
+          [[true] whileTrue: []] value
+        ] value: 2
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A variable in an indirection vector shows its current value in
+    /// every frame of its chain: the method's, which holds the vector; the
+    /// block that assigns it, which was handed the vector; and the block
+    /// nested in it, which reads it through the vector its creator holds
+    /// (decision 10). The reference lowering reads the same variable by
+    /// reference, and shows the same names and values.
+    fn a_vector_variable_shows_its_current_value(lowering) {
+        let (method, blocks) = while_stopped_under(lowering, VECTORED, |remote| {
+            let frames = stack_trace(remote);
+            let blocks: Vec<Vec<Variable>> = frames
+                .iter()
+                .enumerate()
+                .filter(|(_, frame)| frame.name == "[] in Vectored>>outer:")
+                .map(|(frame, _)| variables(remote, Command::Variables { frame }))
+                .collect();
+            let (_, method) = frame_and_variables(remote, "Vectored>>outer:");
+            (method, blocks)
+        });
+        assert_eq!(names(&method), ["self", "count", "total"]);
+        assert_eq!(value_of(&method, "total").label, "7");
+        assert!(
+            blocks.len() >= 2,
+            "the assigning block and the one nested in it, not {}",
+            blocks.len()
+        );
+        for variables in &blocks {
+            assert_eq!(value_of(variables, "step").label, "2");
+            assert_eq!(value_of(variables, "count").label, "5");
+            assert_eq!(value_of(variables, "total").label, "7");
+        }
+    }
+}
