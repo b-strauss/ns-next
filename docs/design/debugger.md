@@ -939,9 +939,11 @@ stage's tests, do not.
   `golden_round_trips.rs` runs it over every golden's artifact `build`
   wrote under each lowering and `load` decoded, in the profile `images`,
   where the artifact's text pairs under the interpreter's lowering or the
-  other. Its own tests (`check.rs`) check a program's bodies and fail a
-  broken table, and `a_body_that_compiles_again_otherwise_fails_the_check`
-  fails an image's body whose text, patched, compiles otherwise.
+  other. Its own tests (`check.rs`, `a_program_s_bodies_are_checked`
+  and `a_broken_table_fails_the_check`) check a program's bodies and fail
+  a broken table, and `debugger/metadata/tests.rs`'s
+  `a_body_that_compiles_again_otherwise_fails_the_check` fails an
+  image's body whose text, patched, compiles otherwise.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),

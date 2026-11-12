@@ -28,8 +28,8 @@ breakpoints; and the breakpoint and step stress modes
 mechanisms", "Planned: the order of building it"). It stands on stage
 2's metadata, whose statement starts are the places a breakpoint and a
 step stop at, and adds to `compiles_alike` the comparison of a patched
-slot by its original ("Compiling the metadata again"). Stages 1, the
-debugging API at the safepoint, and 2, the metadata, are built
+slot by its original ("Compiling the metadata again"). Stage 1, the
+debugging API at the safepoint, and stage 2, the metadata, are built
 (2026-11-11 and 2026-11-12; "The debugging API at the safepoint",
 "Compiling the metadata again"). Stage 3 needs a plan of its own; the
 open questions it meets -- step filters for the shipped modules and how
@@ -1854,8 +1854,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   current text, kept per body only when it compiles again alike, which
   give a stopped frame its name, its place and its named variables
   ([debugger.md](design/debugger.md), "Compiling the metadata again").
-  The rest, in this order: breakpoints patched in place (stage 3, next) (a method with a fast path replaced by one
-  without it while patched), stepping by one-shot breakpoints, method
+  The rest, in this order: stage 3, next, breakpoints patched in place
+  (a method with a fast path replaced by one without it while patched), stepping by one-shot breakpoints, method
   breakpoints, exception breakpoints where the handler search invokes a
   handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
   about to send `defaultAction` for an uncaught one (a test-only
@@ -1957,8 +1957,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       variable test covers one block level, no `hops` of 2; and
       `tests.rs`'s assertion message names five bodies where it asserts
       at least four.
-    - *Code*: the `address` helper is written twice
-      (`debugger/metadata/again.rs`, `cache.rs`); the reference
+    - *Code*: the `address` helper is written three times
+      (`debugger/metadata/again.rs`, `cache.rs`, `check.rs`); the reference
       lowering's send entry tells a send was emitted by the code's
       length rather than by the `BodyTooLarge` check; the collected
       variable names may silently fall short of the layout's places,

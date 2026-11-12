@@ -469,8 +469,9 @@ hands back the frame's continuation (`Popped`), which the loop applies to
 the activation's value ("The VM" below). If the activation was reified,
 its frame object is **divorced**: its `program_counter` takes the stack
 frame's last stored one, the
-married field becomes nil, `uncontinuable` becomes true and `sender` becomes
-nil. Then the stack's top is set back to the top the frame was pushed at,
+married field becomes `true` when the divorce kept the frame's registers
+(below) and nil when it did not (`Heap::frame_registers_kept`),
+`uncontinuable` becomes true and `sender` becomes nil. Then the stack's top is set back to the top the frame was pushed at,
 its caller's window end or past it, the caller's registers above its slots
 its own again ("Representation" above).
 
