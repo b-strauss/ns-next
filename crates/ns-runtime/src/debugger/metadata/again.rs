@@ -15,6 +15,7 @@ use ns_syntax::{ast, Span};
 use super::{BodyMetadata, MetadataCollector, VariableEntry, VariablePlace};
 use crate::bytecode::{compiles_alike, CompiledCode};
 use crate::compiler::Lowering;
+use crate::heap::MixinId;
 use crate::interpreter::core_library::{
     resolved_shipped_module, shipped_module_text, KERNEL_MODULE, SHIPPED_MODULES,
 };
@@ -36,14 +37,16 @@ pub(crate) struct BodyOrigin {
 }
 
 /// The member of a mixin a body belongs to.
-#[expect(
-    dead_code,
-    reason = "the stop that names a frame's member is to come; only the factory is read yet"
-)]
 pub(crate) enum Member {
     /// A method, or a lazy slot's getter, of the mixin's side.
     Method(Symbol),
-    Initializer(InitializerBody),
+    Initializer(
+        #[expect(
+            dead_code,
+            reason = "a frame is named alike for every initializer body; a breakpoint's path is to name which"
+        )]
+        InitializerBody,
+    ),
     SuperclassClause,
     /// The primary factory, whose body is synthesized from its arity
     /// (`compiler::factory_body`), so that a frame of it may run a body no
@@ -108,17 +111,7 @@ pub(crate) fn compile_level(
     running: &Rc<Mixin>,
     lowering: Lowering,
 ) -> Option<LevelAgain> {
-    // A class side's declaration is its instance side's. A class side no
-    // metaclass applies yet has no id of its own, but its instance side
-    // has one.
-    let instance_id = if running.is_class_side() {
-        match mutator.heap.known_mixin_id(running) {
-            Some(id) => mutator.heap.enclosing_mixin_id(id)?,
-            None => mutator.heap.known_mixin_id(&running.enclosing_mixin()?)?,
-        }
-    } else {
-        mutator.heap.known_mixin_id(running)?
-    };
+    let instance_id = declaration_id(mutator, running)?;
     let (module_root, path) = mutator.path_from_module_root(instance_id);
     // Asked of the module's root, not of `running`: a class side
     // synthesized for a shipped declaration is not marked shipped.
@@ -178,6 +171,30 @@ pub(crate) fn compile_level(
         pairs: pairing.pairs,
         factory,
     })
+}
+
+/// The id of the declaration `running` is a version of, or of whose
+/// class side it is a version; `None` for a mixin no heap registered.
+fn declaration_id(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<MixinId> {
+    // A class side's declaration is its instance side's. A class side no
+    // metaclass applies yet has no id of its own, but its instance side
+    // has one.
+    if running.is_class_side() {
+        match mutator.heap.known_mixin_id(running) {
+            Some(id) => mutator.heap.enclosing_mixin_id(id),
+            None => mutator.heap.known_mixin_id(&running.enclosing_mixin()?),
+        }
+    } else {
+        mutator.heap.known_mixin_id(running)
+    }
+}
+
+/// The name of the root class of the module `running` is declared in, as
+/// a frame's location names its module; `None` for a mixin no heap
+/// registered.
+pub(crate) fn module_name(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<String> {
+    let (module_root, _) = mutator.path_from_module_root(declaration_id(mutator, running)?);
+    Some(mutator.heap.mixin(module_root)?.name.to_string())
 }
 
 /// The shipped resolution of the shipped module whose root is named

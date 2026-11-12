@@ -39,13 +39,6 @@ impl Cache {
     /// holds -- a host's `instantiate` builds its own -- takes the
     /// header's metadata when it is the factory body of the header's
     /// arity.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the stop that reads a frame's metadata is to come"
-        )
-    )]
     pub(crate) fn metadata(
         mutator: &mut Mutator<'_>,
         code: &Rc<CompiledCode>,

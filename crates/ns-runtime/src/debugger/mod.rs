@@ -16,8 +16,8 @@ mod stack;
 mod values;
 
 pub use remote::{
-    Command, DebugRemote, Event, FrameDescription, FrameKind, StopReason, ValueDescription,
-    ValueId, Variable,
+    Command, DebugRemote, Event, FrameDescription, FrameKind, FrameLocation, SendLocation,
+    StopReason, ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -145,10 +145,14 @@ impl StressReader {
             Event::Variables(variables) => {
                 if !self.reading_children {
                     self.pending
-                        .extend(variables.iter().map(|variable| Command::Children {
-                            value: variable.value.id,
-                            start: 0,
-                            count: StressReader::CHILDREN,
+                        // A variable that is not available has no value
+                        // to ask children of.
+                        .extend(variables.iter().filter_map(|variable| {
+                            Some(Command::Children {
+                                value: variable.value.as_ref()?.id,
+                                start: 0,
+                                count: StressReader::CHILDREN,
+                            })
                         }));
                 }
             }

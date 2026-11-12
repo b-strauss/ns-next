@@ -530,11 +530,13 @@ again (`a_dropped_remote_lets_the_program_finish`,
 
 ### Reading the stack at a stop
 
-**Partial:** a stop answers the run's frames and, for each, its receiver,
-its arguments and its registers below the first scratch register, by
-number. Names, lines, a frame's statement and the send it stands at, and
-scratch registers come with the metadata (stage 2; "Compiling the metadata
-again"); writing a frame is stage 5's ("Writing a frame").
+**Partial:** a stop answers the run's frames and, for each, its name,
+its receiver and, from its body's metadata ("Compiling the metadata
+again"), the statement and the send it stands at in its module's current
+text and its named variables over its whole lexical chain (decisions 10,
+12 and 13); a frame whose body has no metadata shows its arguments and its
+registers below the first scratch register, by number. Writing a frame is
+stage 5's ("Writing a frame").
 
 The run's frames (`stack::frames`) are walked from the top activation
 through each sender down to the run's floor
@@ -565,40 +567,78 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
 - `kind` -- what the activation runs (`FrameKind`, from its
   `ActivationKind`): `Method { selector }`, `Block`, `Initializer`,
   `SuperclassClause`, `Factory` or `TopLevel`;
+- `name` -- what it runs as a reader names it, after the declaration its
+  body belongs to: `Foo>>bar`, `Foo class>>bar`, `[] in Foo>>bar`,
+  `Foo initializer`, `Foo superclass clause`, `Foo class>>new:` for a
+  factory, `top level`; after its current class where no declaration
+  holds the body;
 - `program_counter` -- the program counter its frame stores: for a frame
   below the top the index of the send, or other instruction, it called
   from, which its callee's return reads again; for the top frame where the
   stretch left it;
 - `source` -- the span of its body's source (`CompiledCode::source`), the
-  whole body: the statement's span needs the stop locations;
+  whole body;
+- `location` -- with the body's metadata, where it stands
+  (`FrameLocation`): the name of its module's root class, the innermost
+  statement whose instructions hold its program counter -- an inlined
+  block's statement inside its loop or conditional, the body's `source`
+  for the return it ends with -- or a factory's class header pattern
+  (decision 12), and for a frame below the top the receiver and selector
+  spans of the send it waits on; every span in the module's current text
+  (decision 11). `None` without metadata (decision 5): a module without
+  text, an image's without its source among them, or a body its text no
+  longer compiles to, as a superseded version an edit changed;
 - `receiver` -- its receiver, described as every value is.
 
-A frame's variables (`stack::variables`) are `self`; `argument 1` up to
-`argument N`, the argument registers; and `register K` for each register
-past the arguments and the frame's header registers (`HEADER_REGISTERS`)
-up to the body's `local_count`, the first scratch register. A register the
-leftover analysis finds tainted before the frame's stored program counter
-(`CompiledCode::tainted_before`; `bytecode::leftovers`) is left out, as
-the collector's pre-pass nils it (`Heap::trace_stack`) and a suspension
-nils it in the frame object: such a word may be
-one a callee or a popped frame left, a stale handle, or a debug build's
-poison, whose read a debug build refuses. The analysis taints no register
-below `local_count` today, since a push fills them all; the check keeps
-the reader to it should that change. **Scratch registers are not shown in
-stage 1:** nothing says what a scratch register holds at a stop; with
-the variable table a frame's registers are shown by name over the range
-each is live in, and a scratch register only where the leftover analysis
-says it is not tainted.
+A frame's body is found by its declaration (`stack::origin_of`, a
+`BodyOrigin`): a method's in its current class's mixin, an initializer's
+in the mixin carrying the body (`Heap::initializer_mixin`), a superclass
+clause's in the nested declaration whose clause it is, a factory's in its
+class's declaration, and a block's in the member of its current class's
+level -- or of a nested declaration's clause -- whose body creates it,
+walked transitively through `created_blocks`. The mixin is the version
+the frame runs, possibly one an edit superseded; the metadata cache
+(`metadata::Cache`) compiles the level again on the first ask and keeps
+each body's tables, or none. The metadata is looked up before any handle
+is read off the frame.
+
+A frame's variables (`stack::variables`) are `self`, then, with the
+body's metadata, each variable of its table once -- the innermost of a
+name, the body's own coming first -- each read where it lives:
+
+- in a register of the frame itself, a parameter, a temporary or a value
+  it was handed;
+- in a register of the frame `hops` closures' captured frames out
+  (`Heap::activation_captured`, `Heap::frame_captured`): a block's outer
+  variable it did not capture, read while that frame's activation runs, is
+  suspended, or returned keeping its registers
+  (`Heap::frame_registers_kept`: a divorce of a frame marked by
+  `retain_registers` leaves `true` in its married word) -- or when the
+  closure that hopped to it reads its creator by reference, whose creation
+  marked it, which covers a frame an image decoded; otherwise the variable
+  lives nowhere any more and has no value, shown as not available
+  (decision 10);
+- in a slot of an indirection vector, read through the register that
+  holds it.
+
+Without metadata they are stage 1's: `argument 1` up to `argument N`, the
+argument registers, and `register K` for each register past the frame's
+header registers (`HEADER_REGISTERS`) up to the body's `local_count`, the
+first scratch register. A scratch register is never shown (decision 13).
+A register of the frame's own the leftover analysis finds tainted before
+the frame's stored program counter (`CompiledCode::tainted_before`;
+`bytecode::leftovers`) is not read -- a named one is not available, a
+numbered one left out -- as the collector's pre-pass nils it
+(`Heap::trace_stack`) and a suspension nils it in the frame object: such
+a word may be one a callee or a popped frame left, a stale handle, or a
+debug build's poison, whose read a debug build refuses; another frame's
+register is read only below its body's `local_count`, and while that frame
+runs only where the analysis at its own program counter calls it live.
+The analysis taints no register below `local_count` today, since a push
+fills them all; the check keeps the reader to it should that change.
 
 Reading changes nothing: no compiled mark is cleared, and every frame goes
 on as it would have, but the one the stop deoptimized, in baseline code.
-
-Planned on top of it: a frame shows its body's name (a block as "`[] in
-Foo bar`", from its home link), the source position of its statement and
-the send it stands at, and its named variables through the variable
-table at its stored `program_counter` -- a block's over its whole lexical
-chain (decision 10), never a scratch register, and a variable only over
-its scope's range (decision 13).
 
 ### Values the IDE holds
 
@@ -651,7 +691,7 @@ stack or the heap, a frame its optimized code's poll left deoptimized
 first. No debugger need be attached: the stop takes its commands from a
 `CommandSource`, the attached debugger's channels or the mode's reader
 (`debugger::StressReader`), which asks for the stack trace, the variables
-of every frame and the first eight children of every variable's value,
+of every frame and the first eight children of every value a variable has,
 then continues; a refusal is the stop misreading its own stack, and
 panics. While the mode is on it holds the stress bit
 (`hold_safepoints_for_stress`), so that every poll comes to the
