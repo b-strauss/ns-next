@@ -2658,11 +2658,12 @@ impl<'a> Lowerer<'a> {
 
     /// The variable table of the debugger's metadata: this body's own
     /// variables, `names` by resolver index, then each enclosing frame's,
-    /// outward (`docs/design/debugger.md`, decision 10). A variable this
-    /// body was handed -- its value, or the vector it lives in -- is read
-    /// from the register it was handed in; any other is read where its
-    /// declaring frame keeps it, through the captured frames between,
-    /// which is all a by-reference body ever does.
+    /// outward (`docs/design/debugger.md`, decision 10). A variable is read
+    /// from the nearest frame that was handed it -- its value, or the
+    /// vector it lives in -- this body's own registers first, then each
+    /// enclosing frame's outward, as `resolve_variable` reads through the
+    /// innermost converted frame; one nothing was handed is read where its
+    /// declaring frame keeps it. A by-reference body is handed nothing.
     fn collected_variables(&self, names: &[crate::Symbol]) -> Vec<VariableEntry> {
         let own = names
             .iter()
@@ -2694,18 +2695,31 @@ impl<'a> Lowerer<'a> {
                     .map(move |(index, name)| {
                         let index = super::local_index(index);
                         let entry = layout.captured_entry(index);
-                        let access = if self.layout.copied.contains(&entry) {
-                            let register = self.layout.register_holding(entry);
-                            match layout.own_location(index) {
-                                Location::Register(_) => Access::Register(register),
-                                Location::Vector { slot, .. } => Access::Vector {
-                                    vector: VectorAccess::Register(register),
-                                    slot,
-                                },
-                            }
-                        } else {
-                            access_through(hops, layout.own_location(index))
-                        };
+                        let location = layout.own_location(index);
+                        // The nearest frame that was handed the variable --
+                        // this one, or one between it and the declaring
+                        // frame -- keeps it after the declaring frame
+                        // returned, as long as that frame's registers live.
+                        let access = (0..hops)
+                            .find_map(|between| {
+                                let holder = if between == 0 {
+                                    &self.layout
+                                } else {
+                                    &self.layouts[self.layouts.len() - usize::from(between)]
+                                };
+                                holder.copied.contains(&entry).then(|| {
+                                    let register = holder.register_holding(entry);
+                                    let held = match location {
+                                        Location::Register(_) => Location::Register(register),
+                                        Location::Vector { slot, .. } => Location::Vector {
+                                            vector_register: register,
+                                            slot,
+                                        },
+                                    };
+                                    access_through(between, held)
+                                })
+                            })
+                            .unwrap_or_else(|| access_through(hops, location));
                         VariableEntry {
                             name: *name,
                             depth: hops,

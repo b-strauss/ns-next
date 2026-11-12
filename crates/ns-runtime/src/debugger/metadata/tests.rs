@@ -439,3 +439,199 @@ fn every_body_s_statement_ranges_are_statement_starts() {
         }
     }
 }
+
+#[test]
+fn a_variable_an_enclosing_block_was_handed_is_read_from_that_block() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: p = ( | u | ^[ u:: p. [ 3 ] ] )
+        ) : ()
+    "};
+    let (code, _, collector) = collected(source);
+    let outer_block = first_block(&code);
+    let Some(Instruction::MakeClosure { copied, .. }) = code
+        .instructions()
+        .into_iter()
+        .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+    else {
+        panic!("a block");
+    };
+    // The method keeps `p` in register 0, `u` past the header, and its
+    // vector after `u`; the outer block, which takes no parameter, holds
+    // what it was handed after the header's numbers.
+    let vector_register = HEADER_REGISTERS + 2;
+    let handed = |register: u16| {
+        let position = copied
+            .iter()
+            .position(|held| *held == register)
+            .expect("handed to the outer block");
+        HEADER_REGISTERS + u16::try_from(position).expect("small")
+    };
+    let inner_block = first_block(&outer_block);
+    let inner_metadata = collector
+        .take(&inner_block)
+        .expect("the inner block's metadata");
+    assert_eq!(
+        inner_metadata.variables.to_vec(),
+        vec![
+            variable(
+                "p",
+                2,
+                VariablePlace::Outer {
+                    hops: 1,
+                    register: handed(0)
+                }
+            ),
+            variable(
+                "u",
+                2,
+                VariablePlace::Vector {
+                    vector: VectorHolder::Outer {
+                        hops: 1,
+                        register: handed(vector_register)
+                    },
+                    slot: 0
+                }
+            ),
+        ]
+    );
+}
+
+/// `declaration` as a mixin with what its bodies are compiled from: its
+/// slots, factory, initializer expressions and declaration.
+fn mixin_of(declaration: &ns_syntax::ast::ClassDeclaration) -> crate::mixin::Mixin {
+    let argument_count = declaration
+        .factory
+        .as_ref()
+        .map_or(0, crate::interpreter::instantiate::pattern_parameter_count);
+    crate::mixin::Mixin {
+        slots: declaration
+            .instance_side
+            .slots()
+            .map(|slot| crate::mixin::MixinSlot::from_declaration(Rc::new(slot.clone())))
+            .collect(),
+        factory: Some(crate::mixin::Factory {
+            selector: Symbol::intern("factory"),
+            argument_count,
+        }),
+        has_body: true,
+        initializer_expressions: declaration.instance_side.initializer_expressions.clone(),
+        declaration: Some(Rc::new(declaration.clone())),
+        ..crate::mixin::Mixin::empty(Symbol::intern(&declaration.name.name))
+    }
+}
+
+#[test]
+fn an_initializer_s_prologue_slots_and_lazy_getter_are_collected() {
+    let source = indoc! {"
+        class Outer = Object new (
+        ) (
+          class Mixer = Object new () ()
+          class Other = Object new () ()
+          class Applied x: a = Object new <: Mixer new <: Other new (
+            |
+              s = a foo.
+            |
+          ) (
+            lazy t = 3 bar.
+          )
+          class Bare = (
+            |
+              u = 1.
+            |
+          ) ()
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = match crate::resolve(
+        module,
+        Rc::from(source),
+        crate::SourceOrigin::File(PathBuf::from("t.ns")),
+    ) {
+        Ok(resolved) => resolved,
+        Err(_) => panic!("does not resolve"),
+    };
+    let nested = |name: &str| {
+        resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .find(|declaration| declaration.name.name == name)
+            .expect("a nested class")
+    };
+    let collector = MetadataCollector::new();
+
+    let applied = nested("Applied");
+    let mut mixin = mixin_of(applied);
+    crate::compiler::compile_mixin_bodies(
+        &mut mixin,
+        &resolved.bindings,
+        Lowering::Optimized,
+        Some(&collector),
+    );
+    let full = mixin.initializer_code.as_ref().expect("a full initializer");
+    let metadata = collector.take(full).expect("the initializer's metadata");
+    assert_eq!(
+        statement_texts(&metadata, source),
+        vec![
+            "Mixer new <: Other new",
+            "Object new",
+            "Mixer new",
+            "Other new",
+            "s = a foo.",
+        ]
+    );
+    for (position, entry) in metadata.statements.iter().enumerate() {
+        assert_eq!(entry.instructions, statement_range(full, position));
+    }
+    assert_eq!(
+        metadata.variables.to_vec(),
+        vec![variable("a", 0, VariablePlace::Register(0))]
+    );
+    let clause = mixin
+        .superclass_clause_code
+        .as_ref()
+        .expect("a superclass clause body");
+    assert!(collector.take(clause).is_some());
+
+    let lazy = applied
+        .instance_side
+        .slots()
+        .find(|slot| slot.lazy)
+        .expect("a lazy slot");
+    let getter = crate::compiler::compile_lazy_slot_getter(
+        lazy.initializer.as_ref().expect("an initializer"),
+        1,
+        lazy.span,
+        &resolved.bindings,
+        Lowering::Optimized,
+        Some(&collector),
+    );
+    assert!(matches!(
+        getter.instruction(0),
+        Instruction::ReturnSlotIfFilled { .. }
+    ));
+    let getter_metadata = collector.take(&getter).expect("the getter's metadata");
+    assert_eq!(
+        statement_texts(&getter_metadata, source),
+        vec!["lazy t = 3 bar."]
+    );
+    assert_eq!(getter_metadata.statements[0].instructions.start, 1);
+    assert_eq!(
+        getter_metadata.statements[0].instructions,
+        statement_range(&getter, 0)
+    );
+
+    let mut bare = mixin_of(nested("Bare"));
+    crate::compiler::compile_mixin_bodies(
+        &mut bare,
+        &resolved.bindings,
+        Lowering::Optimized,
+        Some(&collector),
+    );
+    let full = bare.initializer_code.as_ref().expect("a full initializer");
+    let metadata = collector.take(full).expect("the initializer's metadata");
+    assert_eq!(statement_texts(&metadata, source), vec!["Bare", "u = 1."]);
+}
