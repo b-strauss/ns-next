@@ -240,6 +240,7 @@ impl MixinMethod {
                 &declaration,
                 bindings,
                 lowering,
+                None,
             )),
             fast_path: crate::compiler::primitive_method::recognize(&declaration, bindings, kernel),
             // Recognized against the module's root by `build_methods`, which

@@ -1502,6 +1502,21 @@ impl EncodedBody {
         self.slots.is_empty()
     }
 
+    /// The address of the body's instruction slots, which names the body
+    /// for as long as it lives: every body has at least one instruction, so
+    /// the allocation is its own, and moving the `CompiledCode` -- into the
+    /// `Rc` a `MakeClosure` or a mixin holds it by -- does not move it. A
+    /// clone has slots of its own, and so another identity. The debugger's
+    /// metadata collector keys a body's tables by it
+    /// (`debugger::metadata::MetadataCollector`).
+    pub(crate) fn identity(&self) -> usize {
+        debug_assert!(
+            !self.slots.is_empty(),
+            "internal: an empty body has no allocation of its own to name it"
+        );
+        self.slots.as_ptr().addr()
+    }
+
     pub fn slot(&self, index: usize) -> CompactInstruction {
         self.slots[index]
     }

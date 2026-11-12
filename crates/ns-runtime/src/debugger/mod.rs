@@ -10,6 +10,7 @@
 //! senders suspended into their frame objects -- and the values it hands
 //! out, held for the stop (`values.rs`).
 
+pub(crate) mod metadata;
 mod remote;
 mod stack;
 mod values;

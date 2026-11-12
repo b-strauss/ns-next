@@ -88,6 +88,7 @@ fn build_methods(
             declaration.span,
             bindings,
             lowering,
+            None,
         );
         let getter = MixinMethod::lazy_slot_getter(slot, Rc::new(code));
         let previous = methods.insert(getter.selector, MethodEntry::Compiled(Rc::new(getter)));
@@ -485,7 +486,7 @@ impl<'gc> Mutator<'gc> {
             enclosing: std::cell::OnceCell::new(),
             text,
         };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering, None);
         mixin
     }
 
@@ -526,7 +527,7 @@ impl<'gc> Mutator<'gc> {
             text,
             ..Mixin::empty(Symbol::CLASS_SIDE)
         };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering, None);
         Rc::new(mixin)
     }
 

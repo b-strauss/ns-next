@@ -18,6 +18,10 @@ use crate::bytecode::{
     BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
     Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
+use crate::debugger::metadata::{
+    BodyMetadata, MetadataCollector, SendEntry, StatementEntry, VariableEntry, VariablePlace,
+    VectorHolder,
+};
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
 
@@ -86,12 +90,35 @@ enum VectorAccess {
 
 /// What a nested `Lowerer` inherits from the one that creates it: the scope
 /// stack, and one entry per enclosing `Frame` scope (innermost last) of the
-/// two tables a write or a read through a frame hop consults.
+/// two tables a write or a read through a frame hop consults, and, while
+/// the debugger's metadata is collected, of the variable names a block's
+/// table lists for its enclosing scopes.
 #[derive(Default)]
 pub(crate) struct Enclosing {
     pub(crate) scopes: Vec<ScopeKind>,
     pub(crate) read_only_locals: Vec<Rc<[bool]>>,
     pub(crate) layouts: Vec<Rc<Layout>>,
+    /// Each enclosing frame's variable names by resolver index; empty when
+    /// no metadata is collected.
+    pub(crate) variable_names: Vec<Rc<[crate::Symbol]>>,
+}
+
+/// What a `Lowerer` that collects the debugger's metadata is handed: the
+/// collector its body's tables go to, and the names of the body's
+/// parameters, which its temporaries' names follow in its variable table
+/// (`docs/design/debugger.md`, decision 13).
+pub(crate) struct Collecting<'a> {
+    pub(crate) collector: &'a MetadataCollector,
+    pub(crate) parameters: Vec<crate::Symbol>,
+}
+
+/// The tables a collecting `Lowerer` builds as it lowers its body.
+struct Collected {
+    /// The body's own variable names by resolver index: its parameters,
+    /// then its temporaries.
+    names: Rc<[crate::Symbol]>,
+    statements: Vec<StatementEntry>,
+    sends: Vec<SendEntry>,
 }
 
 impl Layout {
@@ -201,6 +228,33 @@ impl Layout {
                     usize::from(self.argument_count) + usize::from(HEADER_REGISTERS) + position,
                 )
             }
+        }
+    }
+
+    /// Where a frame with this layout keeps the variable it declares
+    /// itself at `index`; a by-reference layout keeps every one in its own
+    /// register.
+    fn own_location(&self, index: u16) -> Location {
+        match self.places[usize::from(index)] {
+            Place::Register => Location::Register(self.local_register(index)),
+            Place::Vector(slot) => Location::Vector {
+                vector_register: self
+                    .vector_register
+                    .expect("internal: a vector variable in a body with no vector"),
+                slot,
+            },
+        }
+    }
+
+    /// What a block of this body is handed for its variable at `index`
+    /// when it is handed it: the value itself, or the vector it lives in.
+    fn captured_entry(&self, index: u16) -> Captured {
+        match self.places[usize::from(index)] {
+            Place::Register => Captured::Variable {
+                body: self.key,
+                index,
+            },
+            Place::Vector(_) => Captured::Vector { body: self.key },
         }
     }
 
@@ -366,14 +420,24 @@ pub(crate) struct Lowerer<'a> {
     /// register, since every closure nested in one reaches this frame by
     /// reference too.
     reachable_by_a_fallback_closure: Vec<bool>,
+    /// Where this body's debugger metadata goes, when it is collected
+    /// (`docs/design/debugger.md`, "Compiling the metadata again"). Every
+    /// table is collected on the side: no instruction depends on it.
+    collector: Option<&'a MetadataCollector>,
+    /// The tables collected so far; `Some` exactly when `collector` is.
+    collected: Option<Collected>,
+    /// Each enclosing frame's variable names, parallel to `layouts`;
+    /// empty when no metadata is collected.
+    enclosing_variable_names: Vec<Rc<[crate::Symbol]>>,
 }
 
 impl<'a> Lowerer<'a> {
-    /// The nine parameters are the body's identity (`kind`, `key`), its own
+    /// The ten parameters are the body's identity (`kind`, `key`), its own
     /// shape (`argument_count`, `temporaries`), the two analyses every body
     /// of the family shares (`bindings`, `captures`), what makes it a
     /// fallback closure (`by_reference`), what it inherits from its creator
-    /// (`enclosing`) and where its sends' numbering resumes.
+    /// (`enclosing`), where its sends' numbering resumes, and whether it
+    /// collects the debugger's metadata (`collecting`).
     #[expect(
         clippy::too_many_arguments,
         reason = "each parameter is a distinct part of a body's identity, shape or inheritance, documented above"
@@ -388,12 +452,36 @@ impl<'a> Lowerer<'a> {
         by_reference: bool,
         enclosing: Enclosing,
         first_call_site: u32,
+        collecting: Option<Collecting<'a>>,
     ) -> Self {
         let Enclosing {
             mut scopes,
             read_only_locals: enclosing_read_only_locals,
             layouts,
+            variable_names: enclosing_variable_names,
         } = enclosing;
+        let (collector, collected) = match collecting {
+            Some(Collecting {
+                collector,
+                parameters,
+            }) => {
+                let names = parameters
+                    .into_iter()
+                    .chain(
+                        temporaries
+                            .iter()
+                            .map(|temporary| crate::Symbol::intern(&temporary.name.name)),
+                    )
+                    .collect();
+                let collected = Collected {
+                    names,
+                    statements: Vec::new(),
+                    sends: Vec::new(),
+                };
+                (Some(collector), Some(collected))
+            }
+            None => (None, None),
+        };
         scopes.push(ScopeKind::Frame { key, by_reference });
         // Judged before the capture analysis is asked for the body: it
         // declares no body whose named locals do not fit, and the resolver's
@@ -491,6 +579,9 @@ impl<'a> Lowerer<'a> {
             read_only_locals: read_only_locals.into(),
             enclosing_read_only_locals,
             reachable_by_a_fallback_closure,
+            collector,
+            collected,
+            enclosing_variable_names,
         }
     }
 
@@ -562,11 +653,36 @@ impl<'a> Lowerer<'a> {
     fn lower_statement(&mut self, statement: &Statement, use_: ValueUse) {
         self.next_scratch = self.base;
         let start = self.code.len();
+        let opened = self.open_statement(statement.span);
         self.lower_statement_inner(statement, use_);
         let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
+        self.close_statement(opened);
+    }
+
+    /// Records a statement start of the debugger's metadata at the next
+    /// instruction, when it is collected, and answers its position for
+    /// `close_statement`. Opened before the statement is lowered, so that
+    /// a statement comes before the inlined statements within it.
+    fn open_statement(&mut self, span: Span) -> Option<usize> {
+        let start = self.here();
+        let collected = self.collected.as_mut()?;
+        collected.statements.push(StatementEntry {
+            instructions: start..start,
+            span,
+        });
+        Some(collected.statements.len() - 1)
+    }
+
+    /// Ends the statement start `open_statement` recorded at the next
+    /// instruction.
+    fn close_statement(&mut self, opened: Option<usize>) {
+        let end = self.here();
+        if let (Some(position), Some(collected)) = (opened, self.collected.as_mut()) {
+            collected.statements[position].instructions.end = end;
+        }
     }
 
     /// An initializer's clauses (`docs/design/object-model.md`,
@@ -591,15 +707,20 @@ impl<'a> Lowerer<'a> {
     /// One statement for the checks, one for the superclass and one for
     /// each applied level, each with its own scratch registers: nothing is
     /// live across them.
-    pub(crate) fn lower_instance_initialization_prologue(
-        &mut self,
-        superclass: Option<&ast::SuperclassClause>,
-        applied: &[ast::SuperclassClause],
-        has_body: bool,
-    ) {
+    ///
+    /// Each statement's span in the debugger's metadata is its clause's:
+    /// the checks' that of every `<:` clause, and the superclass's, where
+    /// the declaration writes no clause, the declaration's name.
+    pub(crate) fn lower_instance_initialization_prologue(&mut self, prologue: super::Prologue<'_>) {
         if self.too_large.is_some() {
             return;
         }
+        let super::Prologue {
+            superclass,
+            applied,
+            has_body,
+            declaration_name,
+        } = prologue;
         let own_level = usize::from(has_body);
         let superclass_steps = super::superclass_steps(applied.len(), own_level);
         // The level clause `position` (from 0) adds; below the superclass
@@ -611,8 +732,9 @@ impl<'a> Lowerer<'a> {
                     "internal: more `<:` clauses than CLAUSE_INDEX_LIMIT reached the compiler",
                 )
         };
-        if !applied.is_empty() {
+        if let (Some(first), Some(last)) = (applied.first(), applied.last()) {
             let start = self.code.len();
+            let opened = self.open_statement(first.span.merge(last.span));
             for (position, clause) in applied.iter().enumerate().rev() {
                 self.emit(Instruction::CheckAppliedClause {
                     steps: steps_of(position),
@@ -620,9 +742,11 @@ impl<'a> Lowerer<'a> {
                 });
             }
             self.record_statement(start);
+            self.close_statement(opened);
         }
         self.next_scratch = self.base;
         let start = self.code.len();
+        let opened = self.open_statement(superclass.map_or(declaration_name, |clause| clause.span));
         let (argument_base, argument_sources) =
             self.lower_arguments(&[], super::clause_arguments(superclass));
         let destination = self.allocate_scratch();
@@ -634,6 +758,7 @@ impl<'a> Lowerer<'a> {
             destination,
         });
         self.record_statement(start);
+        self.close_statement(opened);
         for (position, clause) in applied.iter().enumerate() {
             if self.too_large.is_some() {
                 // Nothing more is kept (`finish`): stop lowering.
@@ -641,6 +766,7 @@ impl<'a> Lowerer<'a> {
             }
             self.next_scratch = self.base;
             let start = self.code.len();
+            let opened = self.open_statement(clause.span);
             let (argument_base, argument_sources) =
                 self.lower_arguments(&[], super::clause_arguments(Some(clause)));
             let destination = self.allocate_scratch();
@@ -651,6 +777,7 @@ impl<'a> Lowerer<'a> {
                 destination,
             });
             self.record_statement(start);
+            self.close_statement(opened);
         }
     }
 
@@ -660,32 +787,44 @@ impl<'a> Lowerer<'a> {
     /// slot's position among the mixin's own slots (declaration order) -- the
     /// VM turns it into an absolute field index at run time via the executing
     /// activation's slot base (`Heap::activation_slot_base`).
-    pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
-        if self.too_large.is_some() {
-            return;
-        }
-        self.next_scratch = self.base;
-        let start = self.code.len();
-        let source = self.lower_expression_for(initializer, ValueUse::Read);
-        self.emit(Instruction::InitializeSlot { source, own_index });
-        self.record_statement(start);
-    }
-
-    /// A simultaneous slot's first write (§6.3.2): `block`, its initializer's
-    /// future block (`simultaneous::future_block`), made into a closure and
-    /// then a future, stored with `InitializeSlotProvisionally`, which skips
-    /// a value's slot check -- the clause's end stores the checked value
-    /// (`lower_simultaneous_slot_end`). One statement.
-    pub(crate) fn lower_simultaneous_slot_initializer(
+    /// `span` is the slot declaration's, the statement's in the debugger's
+    /// metadata.
+    pub(crate) fn lower_slot_initializer(
         &mut self,
-        block: &Expression,
+        initializer: &Expression,
         own_index: u32,
+        span: Span,
     ) {
         if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
         let start = self.code.len();
+        let opened = self.open_statement(span);
+        let source = self.lower_expression_for(initializer, ValueUse::Read);
+        self.emit(Instruction::InitializeSlot { source, own_index });
+        self.record_statement(start);
+        self.close_statement(opened);
+    }
+
+    /// A simultaneous slot's first write (§6.3.2): `block`, its initializer's
+    /// future block (`simultaneous::future_block`), made into a closure and
+    /// then a future, stored with `InitializeSlotProvisionally`, which skips
+    /// a value's slot check -- the clause's end stores the checked value
+    /// (`lower_simultaneous_slot_end`). One statement, whose span in the
+    /// debugger's metadata is the slot declaration's, `span`.
+    pub(crate) fn lower_simultaneous_slot_initializer(
+        &mut self,
+        block: &Expression,
+        own_index: u32,
+        span: Span,
+    ) {
+        if self.too_large.is_some() {
+            return;
+        }
+        self.next_scratch = self.base;
+        let start = self.code.len();
+        let opened = self.open_statement(span);
         let closure = self.lower_expression_for(block, ValueUse::Read);
         let future = self.allocate_scratch();
         self.emit(Instruction::MakeFuture {
@@ -697,6 +836,7 @@ impl<'a> Lowerer<'a> {
             own_index,
         });
         self.record_statement(start);
+        self.close_statement(opened);
     }
 
     /// A simultaneous slot's second write, at its clause's end (§6.3.2):
@@ -705,13 +845,15 @@ impl<'a> Lowerer<'a> {
     /// `ResolveFuture` runs user code -- the future's `resolve` and its
     /// block -- as a send does, so it counts as one for the value-register
     /// invariant; the only register live across it is this statement's own
-    /// scratch register, which no send can write. One statement.
-    pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
+    /// scratch register, which no send can write. One statement, whose
+    /// span in the debugger's metadata is the slot declaration's, `span`.
+    pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32, span: Span) {
         if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
         let start = self.code.len();
+        let opened = self.open_statement(span);
         let register = self.allocate_scratch();
         self.emit(Instruction::LoadOwnSlot {
             destination: register,
@@ -726,6 +868,7 @@ impl<'a> Lowerer<'a> {
             own_index,
         });
         self.record_statement(start);
+        self.close_statement(opened);
     }
 
     /// Records the statement that began at instruction `start` and ends
@@ -745,14 +888,21 @@ impl<'a> Lowerer<'a> {
     /// reads of the register, so it needs no protective copy. The
     /// activation's slot base is that of the application it was entered at
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
-    /// test precedes the one statement, as a prologue.
-    pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
+    /// test precedes the one statement, as a prologue. The statement's span
+    /// in the debugger's metadata is the slot declaration's, `span`.
+    pub(crate) fn lower_lazy_slot_getter(
+        &mut self,
+        initializer: &Expression,
+        own_index: u32,
+        span: Span,
+    ) {
         if self.too_large.is_some() {
             return;
         }
         self.next_scratch = self.base;
         self.emit(Instruction::ReturnSlotIfFilled { own_index });
         let start = self.code.len();
+        let opened = self.open_statement(span);
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
         self.emit(Instruction::Return { register: source });
@@ -760,6 +910,7 @@ impl<'a> Lowerer<'a> {
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
+        self.close_statement(opened);
     }
 
     /// Each local slot with an initializer, in declaration order, as one
@@ -790,6 +941,7 @@ impl<'a> Lowerer<'a> {
             };
             self.next_scratch = self.base;
             let start = self.code.len();
+            let opened = self.open_statement(temporary.span);
             let source = match simultaneous::future_block(temporary) {
                 Some(block) => {
                     let closure = self.lower_expression_for(&block, ValueUse::Read);
@@ -809,6 +961,7 @@ impl<'a> Lowerer<'a> {
                 self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             self.emit_store(access, source);
             self.record_statement(start);
+            self.close_statement(opened);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
             if self.too_large.is_some() {
@@ -820,6 +973,7 @@ impl<'a> Lowerer<'a> {
             }
             self.next_scratch = self.base;
             let start = self.code.len();
+            let opened = self.open_statement(temporary.span);
             let access =
                 self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             let read = self.emit_read(access, None);
@@ -838,6 +992,7 @@ impl<'a> Lowerer<'a> {
             self.check_writable(access);
             self.emit_store(access, resolved);
             self.record_statement(start);
+            self.close_statement(opened);
         }
     }
 
@@ -959,6 +1114,12 @@ impl<'a> Lowerer<'a> {
     /// `Lowerer` that inherits this one's whole scope stack, and emits
     /// `MakeClosure`. `captured_frame`/`home`/`bindings` are supplied by the
     /// VM at run time (`docs/design/execution.md`, "Activations").
+    ///
+    /// Never inlined: the nested `Lowerer` it holds would otherwise widen
+    /// `lower_expression_to`'s stack frame, one of the frames the compiler
+    /// recurses through along a chain of messages (`CLAUDE.md`, "A chain of
+    /// messages is walked link by link"), by its whole size at every link.
+    #[inline(never)]
     fn lower_block_literal(&mut self, block: &ast::BlockExpression, into: Option<u16>) -> u16 {
         let parameters: Vec<crate::Symbol> = block
             .parameters
@@ -976,6 +1137,14 @@ impl<'a> Lowerer<'a> {
         enclosing_read_only_locals.push(self.read_only_locals.clone());
         let mut layouts = self.layouts.clone();
         layouts.push(self.layout.clone());
+        let mut variable_names = self.enclosing_variable_names.clone();
+        if let Some(collected) = &self.collected {
+            variable_names.push(collected.names.clone());
+        }
+        let collecting = self.collector.map(|collector| Collecting {
+            collector,
+            parameters: parameters.clone(),
+        });
         let mut inner = Lowerer::new(
             CodeKind::Block,
             key,
@@ -988,8 +1157,10 @@ impl<'a> Lowerer<'a> {
                 scopes: self.scopes.clone(),
                 read_only_locals: enclosing_read_only_locals,
                 layouts,
+                variable_names,
             },
             self.next_call_site,
+            collecting,
         );
         inner.lower_local_initializers(&block.body.temporaries);
         inner.lower_body(&block.body.statements);
@@ -1555,6 +1726,7 @@ impl<'a> Lowerer<'a> {
                     argument_base,
                     argument_sources,
                     into,
+                    (None, std::slice::from_ref(&id.span)),
                 )
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
@@ -1565,12 +1737,15 @@ impl<'a> Lowerer<'a> {
             // `current_class` -- the class that declares the clause.
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
-                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
-                    selector: crate::Symbol::intern(&id.name),
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                let spans = (None, std::slice::from_ref(&id.span));
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendSuper {
+                        selector: crate::Symbol::intern(&id.name),
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
             // `MirrorSend` and `EnclosingObject` mark a send, never an
@@ -1707,7 +1882,14 @@ impl<'a> Lowerer<'a> {
             let clobbered = use_ == ValueUse::Read && self.a_send_can_write(value_register);
             self.materialize_into(value_register, clobbered, argument_base)
         };
-        self.emit_lexical_send(depth, setter, argument_base, vec![value_register], None);
+        self.emit_lexical_send(
+            depth,
+            setter,
+            argument_base,
+            vec![value_register],
+            None,
+            (None, std::slice::from_ref(&target.span)),
+        );
         value_register
     }
 
@@ -1725,16 +1907,42 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Emits a send whose value lands in `into`, or else in a fresh
-    /// scratch register.
+    /// scratch register. `spans` are its receiver's and its selector's in
+    /// the debugger's metadata (`record_send`).
     fn emit_send(
         &mut self,
         into: Option<u16>,
+        spans: SendSpans<'_>,
         build: impl FnOnce(u16, CallSite) -> Instruction,
     ) -> u16 {
         let destination = self.target_register(into);
         let call_site = self.take_call_site();
-        self.emit(build(destination, call_site));
+        let index = self.emit(build(destination, call_site));
+        self.record_send(index, Some(call_site), spans);
         destination
+    }
+
+    /// Records the send at instruction `index` in the debugger's metadata,
+    /// when it is collected and the send was emitted: `call_site` is
+    /// `None` for a `SendMirror`, and `spans` its receiver's -- `None`
+    /// where nothing in the source spells one -- and its selector's.
+    fn record_send(&mut self, index: usize, call_site: Option<CallSite>, spans: SendSpans<'_>) {
+        if index >= self.code.len() {
+            // Not emitted: the body is too large, and `finish` keeps none
+            // of it.
+            return;
+        }
+        let Some(collected) = self.collected.as_mut() else {
+            return;
+        };
+        let (receiver, selector) = spans;
+        collected.sends.push(SendEntry {
+            index: u32::try_from(index)
+                .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions"),
+            call_site,
+            receiver,
+            selector: selector.into(),
+        });
     }
 
     fn emit_lexical_send(
@@ -1744,33 +1952,42 @@ impl<'a> Lowerer<'a> {
         argument_base: u16,
         argument_sources: Vec<u16>,
         into: Option<u16>,
+        spans: SendSpans<'_>,
     ) -> u16 {
-        self.emit_send(into, |destination, call_site| Instruction::SendLexical {
-            depth,
-            selector,
-            argument_base,
-            argument_sources,
-            destination,
-            call_site,
+        self.emit_send(into, spans, |destination, call_site| {
+            Instruction::SendLexical {
+                depth,
+                selector,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            }
         })
     }
 
+    /// `receiver` is the receiver expression the send's value was lowered
+    /// from, whose span the debugger's metadata names.
     pub(crate) fn emit_ordinary_send_with_receiver(
         &mut self,
         receiver_register: u16,
+        receiver: &Expression,
         message: &ast::MessageSend,
         into: Option<u16>,
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
-        self.emit_send(into, |destination, call_site| Instruction::SendPublic {
-            selector,
-            receiver_register,
-            argument_base,
-            argument_sources,
-            destination,
-            call_site,
+        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        self.emit_send(into, spans, |destination, call_site| {
+            Instruction::SendPublic {
+                selector,
+                receiver_register,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            }
         })
     }
 
@@ -1779,9 +1996,15 @@ impl<'a> Lowerer<'a> {
     /// literals keep the by-reference model: such a closure can be kept and
     /// run long after this statement (`docs/design/execution.md`, "Fallback
     /// blocks").
-    fn lower_fallback_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
+    fn lower_fallback_send(
+        &mut self,
+        receiver_register: u16,
+        receiver: &Expression,
+        message: &ast::MessageSend,
+    ) -> u16 {
         let saved = std::mem::replace(&mut self.blocks_by_reference, true);
-        let result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
+        let result =
+            self.emit_ordinary_send_with_receiver(receiver_register, receiver, message, None);
         self.blocks_by_reference = saved;
         result
     }
@@ -1886,7 +2109,12 @@ impl<'a> Lowerer<'a> {
         // The receiver is read by the send instruction, so it has to
         // survive its own arguments' lowering.
         let receiver_register = self.lower_operand(&send.receiver, &send.message.arguments);
-        self.emit_ordinary_send_with_receiver(receiver_register, &send.message, into)
+        self.emit_ordinary_send_with_receiver(
+            receiver_register,
+            &send.receiver,
+            &send.message,
+            into,
+        )
     }
 
     /// The sends `is_ordinary_send` rejects: none has a receiver expression,
@@ -1894,6 +2122,10 @@ impl<'a> Lowerer<'a> {
     /// object `outer N m` would send to, loaded without running any code.
     fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
+        let spans = (
+            receiver_span(&send.receiver),
+            &send.message.selector_spans[..],
+        );
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -1907,7 +2139,14 @@ impl<'a> Lowerer<'a> {
                 let depth = *depth;
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_lexical_send(depth, selector, argument_base, argument_sources, into)
+                self.emit_lexical_send(
+                    depth,
+                    selector,
+                    argument_base,
+                    argument_sources,
+                    into,
+                    spans,
+                )
             }
             binding => {
                 debug_assert!(
@@ -1916,12 +2155,14 @@ impl<'a> Lowerer<'a> {
                 );
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_send(into, |destination, call_site| Instruction::SendSuper {
-                    selector,
-                    argument_base,
-                    argument_sources,
-                    destination,
-                    call_site,
+                self.emit_send(into, spans, |destination, call_site| {
+                    Instruction::SendSuper {
+                        selector,
+                        argument_base,
+                        argument_sources,
+                        destination,
+                        call_site,
+                    }
                 })
             }
         }
@@ -1939,10 +2180,19 @@ impl<'a> Lowerer<'a> {
                 .flat_map(|message| message.arguments.iter())
                 .any(|argument| self.writes_register(argument, receiver_register, 0));
         let receiver_register = self.materialize(receiver_register, clobbered);
-        let mut result =
-            self.emit_ordinary_send_with_receiver(receiver_register, &cascade.first, None);
+        let mut result = self.emit_ordinary_send_with_receiver(
+            receiver_register,
+            &cascade.receiver,
+            &cascade.first,
+            None,
+        );
         for message in &cascade.rest {
-            result = self.emit_ordinary_send_with_receiver(receiver_register, message, None);
+            result = self.emit_ordinary_send_with_receiver(
+                receiver_register,
+                &cascade.receiver,
+                message,
+                None,
+            );
         }
         result
     }
@@ -1988,7 +2238,12 @@ impl<'a> Lowerer<'a> {
             } else {
                 ValueUse::Discarded
             };
+            // A statement start of the debugger's metadata, though no
+            // `statement_program_counter` range: a step stops inside an
+            // inlined block too (`docs/design/debugger.md`, decision 4).
+            let opened = self.open_statement(statement.span);
             result = self.lower_statement_inner(statement, statement_use);
+            self.close_statement(opened);
         }
         self.scopes.pop();
         match result {
@@ -2095,7 +2350,7 @@ impl<'a> Lowerer<'a> {
                 Some(block) => lowerer.lower_inline_block_body(block, use_),
                 None => lowerer.emit_nil(),
             },
-            |lowerer| lowerer.lower_fallback_send(guard_register, &send.message),
+            |lowerer| lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message),
         );
         destination
     }
@@ -2160,7 +2415,7 @@ impl<'a> Lowerer<'a> {
         let fallback_label = self.here();
         self.patch_target(fallback_jump, fallback_label);
         let call_site = self.take_call_site();
-        self.emit(Instruction::SendPublic {
+        let index = self.emit(Instruction::SendPublic {
             selector: selector_of(&send.message),
             receiver_register: left_register,
             argument_base,
@@ -2168,6 +2423,14 @@ impl<'a> Lowerer<'a> {
             destination,
             call_site,
         });
+        self.record_send(
+            index,
+            Some(call_site),
+            (
+                receiver_span(&send.receiver),
+                &send.message.selector_spans[..],
+            ),
+        );
         let end_label = self.here();
         self.patch_target(after_fast_path_jump, end_label);
         destination
@@ -2217,6 +2480,14 @@ impl<'a> Lowerer<'a> {
             destination,
             failure: 0,
         });
+        self.record_send(
+            failure_jump,
+            None,
+            (
+                receiver_span(&send.receiver),
+                &send.message.selector_spans[..],
+            ),
+        );
         let after_send_jump = self.emit(Instruction::Jump { target: 0 });
         let failure_label = self.here();
         self.patch_target(failure_jump, failure_label);
@@ -2246,8 +2517,9 @@ impl<'a> Lowerer<'a> {
         let guard_register = self.lower_expression(&send.receiver);
         let destination = self.target_register(into);
         let evaluate = |lowerer: &mut Self| lowerer.lower_inline_block_body(block, use_);
-        let fallback =
-            |lowerer: &mut Self| lowerer.lower_fallback_send(guard_register, &send.message);
+        let fallback = |lowerer: &mut Self| {
+            lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message)
+        };
         if is_and {
             self.emit_guarded_branch(
                 guard_register,
@@ -2310,10 +2582,18 @@ impl<'a> Lowerer<'a> {
         destination
     }
 
-    pub(crate) fn finish(self, source: Span) -> CompiledCode {
+    /// Answers the body, and records its debugger metadata when it is
+    /// collected. A body past a limit has none: it raises before it does
+    /// anything else, so no step stops in it and it names no variable.
+    pub(crate) fn finish(mut self, source: Span) -> CompiledCode {
         if let Some(limit) = self.too_large {
             return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
+        let metadata = self.collected.take().map(|collected| BodyMetadata {
+            variables: self.collected_variables(&collected.names).into(),
+            statements: collected.statements.into(),
+            sends: collected.sends.into(),
+        });
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a
         // `here()` that `finish_body`'s terminator guarantees is a real
@@ -2358,7 +2638,7 @@ impl<'a> Lowerer<'a> {
                 self.max_register,
             );
         }
-        CompiledCode::from_builder(
+        let code = CompiledCode::from_builder(
             self.kind,
             self.code,
             self.argument_count,
@@ -2369,8 +2649,105 @@ impl<'a> Lowerer<'a> {
             self.base,
             self.statement_program_counter,
             source,
-        )
+        );
+        if let (Some(collector), Some(metadata)) = (self.collector, metadata) {
+            collector.record(&code, metadata);
+        }
+        code
     }
+
+    /// The variable table of the debugger's metadata: this body's own
+    /// variables, `names` by resolver index, then each enclosing frame's,
+    /// outward (`docs/design/debugger.md`, decision 10). A variable this
+    /// body was handed -- its value, or the vector it lives in -- is read
+    /// from the register it was handed in; any other is read where its
+    /// declaring frame keeps it, through the captured frames between,
+    /// which is all a by-reference body ever does.
+    fn collected_variables(&self, names: &[crate::Symbol]) -> Vec<VariableEntry> {
+        let own = names
+            .iter()
+            .enumerate()
+            .take(self.layout.places.len())
+            .map(|(index, name)| VariableEntry {
+                name: *name,
+                depth: 0,
+                place: variable_place(access_through(
+                    0,
+                    self.layout.own_location(super::local_index(index)),
+                )),
+            });
+        let enclosing = self
+            .layouts
+            .iter()
+            .zip(&self.enclosing_variable_names)
+            .rev()
+            .enumerate()
+            .flat_map(|(offset, (layout, names))| {
+                // One per enclosing frame, and the parser bounds the
+                // nesting far below `u16::MAX`, as `hops_above` says.
+                let hops = u16::try_from(offset + 1)
+                    .expect("internal: more block nesting than the parser admits");
+                names
+                    .iter()
+                    .enumerate()
+                    .take(layout.places.len())
+                    .map(move |(index, name)| {
+                        let index = super::local_index(index);
+                        let entry = layout.captured_entry(index);
+                        let access = if self.layout.copied.contains(&entry) {
+                            let register = self.layout.register_holding(entry);
+                            match layout.own_location(index) {
+                                Location::Register(_) => Access::Register(register),
+                                Location::Vector { slot, .. } => Access::Vector {
+                                    vector: VectorAccess::Register(register),
+                                    slot,
+                                },
+                            }
+                        } else {
+                            access_through(hops, layout.own_location(index))
+                        };
+                        VariableEntry {
+                            name: *name,
+                            depth: hops,
+                            place: variable_place(access),
+                        }
+                    })
+            });
+        own.chain(enclosing).collect()
+    }
+}
+
+/// How the debugger's metadata names the place a body reaches a variable
+/// at.
+fn variable_place(access: Access) -> VariablePlace {
+    match access {
+        Access::Register(register) => VariablePlace::Register(register),
+        Access::OuterRegister { hops, index } => VariablePlace::Outer {
+            hops,
+            register: index,
+        },
+        Access::Vector { vector, slot } => VariablePlace::Vector {
+            vector: match vector {
+                VectorAccess::Register(register) => VectorHolder::Register(register),
+                VectorAccess::Outer { hops, index } => VectorHolder::Outer {
+                    hops,
+                    register: index,
+                },
+            },
+            slot,
+        },
+    }
+}
+
+/// A send's receiver span -- `None` where nothing in the source spells
+/// one -- and its selector tokens' spans, as the debugger's metadata names
+/// them (`docs/design/debugger.md`, decision 15).
+type SendSpans<'text> = (Option<Span>, &'text [Span]);
+
+/// The span of a send's receiver, `None` for the implicit receiver the
+/// parser made up.
+fn receiver_span(receiver: &Expression) -> Option<Span> {
+    (!receiver.synthesized).then_some(receiver.span)
 }
 
 pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
@@ -2444,6 +2821,7 @@ mod tests {
             false,
             Enclosing::default(),
             0,
+            None,
         )
     }
 
@@ -3239,8 +3617,8 @@ mod tests {
             &[],
             &bindings,
         );
-        lowerer.lower_slot_initializer(initializers[0], 3);
-        lowerer.lower_slot_initializer(initializers[1], 4);
+        lowerer.lower_slot_initializer(initializers[0], 3, Span::new(0, 0));
+        lowerer.lower_slot_initializer(initializers[1], 4, Span::new(0, 0));
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
             panic!("expected one setter send: {:?}", code.instructions());
@@ -3287,7 +3665,7 @@ mod tests {
             &[],
             &bindings,
         );
-        lowerer.lower_slot_initializer(return_expression(&method), 4);
+        lowerer.lower_slot_initializer(return_expression(&method), 4, Span::new(0, 0));
         let code = lowerer.finish(method.span);
         assert!(
             !code
@@ -4133,7 +4511,7 @@ mod tests {
             &[],
             &bindings,
         );
-        lowerer.lower_slot_initializer(initializer, 4);
+        lowerer.lower_slot_initializer(initializer, 4, Span::new(0, 0));
         let code = lowerer.finish(method.span);
         // `6`, `7`, the inlined `*` with its guard and its fallback send,
         // then the field write: six instructions, all one statement.
@@ -4793,6 +5171,7 @@ mod tests {
             false,
             Enclosing::default(),
             0,
+            None,
         );
         let destination = lowerer.allocate_scratch();
         let limit = crate::bytecode::INSTRUCTION_LIMIT as usize;
