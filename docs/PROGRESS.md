@@ -7435,3 +7435,81 @@ test of the poll words' ordering" and "What stage 1 of the debugger
 moved, unmeasured"; the final review raised one more open question, an
 answer to the commands queued while no run executes
 ([debugger.md](design/debugger.md), "Open questions").
+
+## The debugger's stage 2: the metadata (2026-11-12)
+
+[debugger.md](design/debugger.md), "Compiling the metadata again",
+"Reading the stack at a stop", decisions 10 to 15;
+[compiler.md](design/compiler.md), "Safepoints and call-site identity";
+[frontend.md](design/frontend.md), "AST".
+
+Stage 2's questions were decided with the user on 2026-11-12 in six
+decisions: a block's frame shows its whole lexical chain, a body is
+found by its declaration and equal by its code with every span in its
+module's current text, a factory's frame takes its metadata from the
+class header, a frame shows named variables only, the metadata is
+checked on three levels, and a send's selector has spans in the syntax
+tree.
+
+A `MessageSend` keeps the span of each selector token
+(`selector_spans`). Both lowerers take an optional collector and record,
+for each body they finish, its statement starts -- an inlined block's,
+an initializer's, a slot's and a prologue entry's included -- its sends
+with their call site and the spans of their receiver and selector, and
+its named variables, each placed in a register of its frame, of an
+enclosing frame `hops` captured frames out, or in an indirection
+vector's slot; a block's variable it did not capture is read from the
+nearest frame of its chain that was handed it. Without a collector each
+lowering emits exactly the code it emitted before, so no golden, no
+shipped-code fingerprint and no image changed.
+
+The debugger finds a frame's body by its declaration and the version of
+the mixin it runs, compiles that declaration's level again from its
+module's current text through `Mutator::mixin_level` -- registering
+nothing and running nothing, a shipped module from the boot's own
+resolution -- under the interpreter's lowering and then the other, and
+pairs each running body with the body compiled again, keeping its
+tables only when the two compile alike (`bytecode::compiles_alike`), a
+block's only when its family's root does. A factory's frame takes its
+parameters and its place from the class header. The cache holds each
+body weakly, keeps a body that pairs with none as having none, and is
+cleared at every install. A stopped frame now shows its name, its
+module, the statement and, below the top, the send it stands at, and
+its named variables over its whole lexical chain -- a variable whose
+activation returned without keeping its registers as not available,
+which the frame object's married word, `true` for a divorce that kept
+them, tells apart from `nil`; a frame without metadata -- an image
+without source, a superseded body its edit changed -- keeps its name and
+shows its registers by number.
+
+The oracle, `Interpreter::check_debug_metadata`, compiles every body of
+every loaded declaration again, requires it alike and holds its tables
+to their invariants, read through the cache as a stop reads them: over
+every golden under each lowering from source in the default suite
+(`crates/ns-cli/tests/debug_metadata.rs`), over every golden's artifact
+through `build` and `load` in the `images` profile, and over the shipped
+modules once. It found no defect. The pause stress mode reads every
+frame's name, location and named variables at real stops. Nothing on the
+hot path changed, so the stage was not measured ("What stage 2
+moved").
+
+- `159dbebd` -- the plan
+  (`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`) and
+  the selector spans in the design.
+- `cd4f8b13` -- a message keeps its selector tokens' spans.
+- `3f99ffd5`, `c8a8c57a` -- the optimized lowering collects a body's
+  metadata, and a block's variable is read from the nearest frame handed
+  it.
+- `28a1d522` -- the reference lowering collects it.
+- `d23947ae` -- a declaration's level compiled again, paired and cached.
+- `7a841e20`, `e4d3fb1e` -- a stopped frame's name, place and named
+  variables, and a vector variable read before its vector is made.
+- `ac9050a4` -- the oracle over every golden, from source and from an
+  image, and over the shipped modules.
+- This commit -- the documents.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
+(stage 3, breakpoints and stepping, next, and what stage 2's reviews
+left) and "A valid method whose body is one long chain of messages
+aborts `ns-next run`", which the debugger's compilation of an image's
+text now reaches too.

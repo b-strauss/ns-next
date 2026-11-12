@@ -860,11 +860,21 @@ consumers — debugger, JIT deopt, image snapshot, mirrors — so it is emitted 
 the start rather than added when the first of them is built.
 
 An inlined block's statements are part of the enclosing statement's range;
-`statement_program_counter` records only the code body's own statements. The planned
+`statement_program_counter` records only the code body's own statements. The
 debugger does not extend it: its stop locations, inlined blocks' statements
-included, and its variable table are collected by the lowerers when it
-compiles a body again on demand ([debugger.md](debugger.md), decisions 4
-and 5, "Compiling the metadata again").
+included, its send entries and its variable table are collected by both
+lowerers when it compiles a body again on demand
+([debugger.md](debugger.md), decisions 4 and 5, "Compiling the metadata
+again"). Every compiler entry point takes an optional collector
+(`debugger::metadata::MetadataCollector`), into which each lowerer records
+a body's tables, keyed by the body, as it finishes it; with none, nothing
+is recorded and each lowering emits exactly the code it emits with one
+(`compiling_without_a_collector_emits_the_same_code` and its reference
+twin), so the collector changes no golden, no shipped-code fingerprint and
+no image. The debugger compiles with one only, and only a declaration's
+level, through `Mutator::mixin_level`, the function that builds a level
+when a module loads; what it compiles is compared with the running body
+(`bytecode::compiles_alike`) and never registered, installed or run.
 
 **A send's `CallSite` is its number within its code family**
 (`bytecode::CallSite { number: u32 }`). A family is one root body — a method,

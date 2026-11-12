@@ -15,25 +15,27 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 2, the metadata** (decided with the user on
-2026-11-11: the debugger goes on before road step 9 resumes): both
-lowerers collect every body's stop locations -- the statement starts,
-those of blocks and inlined blocks included, and every send with its
-`CallSite` and the span of its receiver and selector -- and its variable
-table -- each named variable's place and the instruction range it is
-live in -- when the debugger compiles the body's source again on
-demand, the result compared with the running body slot for slot and
-kept per body only when equal ([debugger.md](design/debugger.md),
-decisions 4 and 5, "Compiling the metadata again", "Planned: the order
-of building it"). Stage 1, the debugging API at the safepoint, is built
-(2026-11-11; "The debugging API at the safepoint"). Stage 2's questions
-were decided with the user on 2026-11-12 (decisions 10 to 15: a block's
-whole lexical chain, a body found by its declaration and equal by its
-code with spans in the current text, a factory's frame from the class
-header, named variables only, checks on three levels, and selector spans
-in the syntax tree); its plan is
-`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`, built on
-the branch `feature/debugger-metadata`.
+**The debugger's stage 3, breakpoints and stepping** (decided with the
+user on 2026-11-11: the debugger goes on before road step 9 resumes):
+a breakpoint replaces its slot of the body by a `Breakpoint` instruction
+and keeps the original beside the slots, the body's machine code and
+every optimized copy that inlined it freed; pending breakpoints take
+effect when their code is built; stepping by one-shot breakpoints at the
+statement starts and return points and a safepoint request held until
+the next push; run to cursor, method breakpoints and exception
+breakpoints; and the breakpoint and step stress modes
+([debugger.md](design/debugger.md), decisions 2 and 3, "Planned: the
+mechanisms", "Planned: the order of building it"). It stands on stage
+2's metadata, whose statement starts are the places a breakpoint and a
+step stop at, and adds to `compiles_alike` the comparison of a patched
+slot by its original ("Compiling the metadata again"). Stages 1, the
+debugging API at the safepoint, and 2, the metadata, are built
+(2026-11-11 and 2026-11-12; "The debugging API at the safepoint",
+"Compiling the metadata again"). Stage 3 needs a plan of its own; the
+open questions it meets -- step filters for the shipped modules and how
+a step behaves at their edge, stepping out of a frame that returns
+elsewhere -- are decided with the user before it is built
+([debugger.md](design/debugger.md), "Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1837,18 +1839,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   its root; a later module may nest one).
   [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**, at the level of IntelliJ's Java debugger, plus
-  edit-and-continue of running activations; its design is decided (nine
-  decisions, 2026-11-10). Its first stage is built (2026-11-11): the
+  edit-and-continue of running activations; its design is decided
+  (fifteen decisions, nine on 2026-11-10 and stage 2's six on
+  2026-11-12). Its first stage is built (2026-11-11): the
   debugging API at the run loop's safepoint, with atomic poll words a
   remote arms from another thread to pause the program, the commands
   served while it runs, the stop, which deoptimizes a frame stopped at a
   poll of optimized code in every JIT build, the stack and values read at
   it, continue and terminate, and the pause stress mode
   ([debugger.md](design/debugger.md), "The debugging API at the
-  safepoint"). The rest, in this order: the stop locations and variable
-  table, compiled again on demand and verified (stage 2, next), which
-  also give a stopped frame its names, lines and scratch registers;
-  breakpoints patched in place (a method with a fast path replaced by one
+  safepoint"). Its second stage is built (2026-11-12): the stop
+  locations, send entries and variable tables both lowerers collect when
+  the debugger compiles a declaration's level again from its module's
+  current text, kept per body only when it compiles again alike, which
+  give a stopped frame its name, its place and its named variables
+  ([debugger.md](design/debugger.md), "Compiling the metadata again").
+  The rest, in this order: breakpoints patched in place (stage 3, next) (a method with a fast path replaced by one
   without it while patched), stepping by one-shot breakpoints, method
   breakpoints, exception breakpoints where the handler search invokes a
   handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
@@ -1907,6 +1913,59 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       `fetch_or_and_fetch_and_change_bits_and_answer_the_previous_value`
       (`heap/machine_words.rs`) calls `MachineWords::fence` after joining
       the writer thread, whose join already orders its write.
+  - **What stage 2's reviews left** (2026-11-12), none of them a wrong
+    outcome:
+    - *Compiling an image's text again grows the interner*: the
+      metadata's compilation parses and resolves the module's text, which
+      interns every name in it, local variables' and those of
+      declarations the image's code never named among them; for an
+      image, whose text is untrusted input, that grows the thread-local
+      interner at a stop, against `Symbol::lookup`'s rule that no run
+      grows it ([memory.md](design/memory.md), "Weak references",
+      "Permanent and program-made"). The growth is bounded by the text
+      the image carries and the edits made to it, since a name is
+      interned once; a resolution that probes rather than interns, or an
+      interner of the debugger's compilation's own, would close it
+      ([debugger.md](design/debugger.md), "Compiling the metadata
+      again").
+    - *A level neither lowering pairs is compiled twice*: the cache
+      compiles a level again under the other lowering whenever the
+      first left one of its bodies unpaired, also when no lowering can
+      pair it -- a superseded version an edit changed, a body past the
+      compiler's limits -- once per level, since the result is cached
+      ([debugger.md](design/debugger.md), "Compiling the metadata
+      again", "Which lowering").
+    - *Each stop walks every method family per frame*:
+      `stack::origin_of` finds a block's member by walking the families
+      of its current class's level, every frame at every stop; the
+      pause stress mode's time is where it would show.
+    - *The oracle's gaps*: a golden that does not parse or resolve, and
+      one whose `build` fails, passes its `debug_metadata` trial without
+      being held to its recorded failure; a statement range's end, a
+      factory's send completeness (skipped by member), the factory of an
+      unapplied nested declaration without a class side, and a vector
+      slot's index (the tables record no vector's size) are not checked
+      (`debugger/metadata/check.rs`).
+    - *Tests*: none of a text that parses but does not resolve, of the
+      class-side branch of `compile_level` with a registered id, of the
+      decoded frame's `outer_reach` fallback when a variable is read
+      from a returned frame, nor of a vector variable read before its
+      `MakeVector` ran; `a_vector_variable_shows_its_current_value` does
+      not assert which `VectorHolder` it read through;
+      `a_frame_is_named_and_located` checks that the top frame waits on
+      no send only under the optimized lowering; the cross-lowering
+      variable test covers one block level, no `hops` of 2; and
+      `tests.rs`'s assertion message names five bodies where it asserts
+      at least four.
+    - *Code*: the `address` helper is written twice
+      (`debugger/metadata/again.rs`, `cache.rs`); the reference
+      lowering's send entry tells a send was emitted by the code's
+      length rather than by the `BodyTooLarge` check; the collected
+      variable names may silently fall short of the layout's places,
+      which a `debug_assert_eq!` would catch; a local initializer's
+      statement span includes its period, which no comment says; and
+      the selector-span tests sit at the end of `declaration.rs`'s
+      tests rather than beside the expression tests.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2737,7 +2796,13 @@ classes and a class from source with no predecessor are not edited
   that is one chain of 20,000 `+ 1` overflows the interpreter thread's 8 MiB
   and aborts the process (release; 10,000 compile and run), where the
   program should run. Walking the chain from `Send::receiver_chain`, as the
-  language server does, would close it. Until it is closed, the overflow at
+  language server does, would close it. The debugger reaches the same
+  recursion on a metadata miss: it compiles a module's text again, and an
+  image's text is untrusted input, so a crafted image whose text holds a
+  deep chain where its code holds none aborts the process at the first
+  stop in that declaration rather than answering no metadata
+  ([debugger.md](design/debugger.md), "Compiling the metadata again").
+  Until it is closed, the overflow at
   about 20,000 links sits below the instruction limit of 2^20, so that limit
   is not yet the real bound on a chain ([compiler.md](design/compiler.md),
   "Limits"). [frontend.md](design/frontend.md), "Recovery", rule 7;
