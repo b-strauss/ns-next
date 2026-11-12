@@ -966,6 +966,81 @@ impl PartialEq for CompiledCode {
     }
 }
 
+/// Whether `again`, a body compiled again, is the running body `running`
+/// (`docs/design/debugger.md`, decision 11): equal kind, counts,
+/// `local_count`, `family_size`, `statement_program_counter` and
+/// instructions (`Instruction::is_identical_to`), a `MakeClosure`'s block
+/// compared by this same function -- never by `==`, which compares
+/// `source` -- and `source`, `unwind_marker` and the caches ignored. A
+/// span is ignored so that a body an edit elsewhere in its module moved is
+/// still the body its text now compiles to; the unwind marker, because an
+/// image's body carries none (`CompiledCode::unwind_marker`), and where it
+/// is is decided by the instructions compared anyway.
+///
+/// Recursive along the blocks' nesting, no deeper than `again`'s, which
+/// the parser bounds: `again` is always compiled from parsed text.
+pub(crate) fn compiles_alike(running: &CompiledCode, again: &CompiledCode) -> bool {
+    // Destructured, so that a field added to `CompiledCode` must be
+    // decided here.
+    let CompiledCode {
+        kind,
+        body: _,
+        argument_count,
+        register_count,
+        statement_program_counter,
+        family_size,
+        copied_count,
+        local_count,
+        outer_reach,
+        addresses_own_slots,
+        unwind_marker: _,
+        source: _,
+        code_id_cache: _,
+        tainted_sets: _,
+        declaration_code: _,
+        jit: _,
+    } = running;
+    *kind == again.kind
+        && *argument_count == again.argument_count
+        && *register_count == again.register_count
+        && *statement_program_counter == again.statement_program_counter
+        && *family_size == again.family_size
+        && *copied_count == again.copied_count
+        && *local_count == again.local_count
+        && *outer_reach == again.outer_reach
+        && *addresses_own_slots == again.addresses_own_slots
+        && running.instruction_count() == again.instruction_count()
+        && (0..running.instruction_count())
+            .all(|index| instructions_alike(&running.instruction(index), &again.instruction(index)))
+}
+
+/// `compiles_alike` for one instruction: a `MakeClosure` by its fields and
+/// its block compiled alike, every other instruction identical.
+fn instructions_alike(running: &Instruction, again: &Instruction) -> bool {
+    match (running, again) {
+        (
+            Instruction::MakeClosure {
+                destination: running_destination,
+                parameters: running_parameters,
+                code: running_code,
+                copied: running_copied,
+            },
+            Instruction::MakeClosure {
+                destination: again_destination,
+                parameters: again_parameters,
+                code: again_code,
+                copied: again_copied,
+            },
+        ) => {
+            running_destination == again_destination
+                && running_parameters == again_parameters
+                && running_copied == again_copied
+                && compiles_alike(running_code, again_code)
+        }
+        _ => running.is_identical_to(again),
+    }
+}
+
 /// What makes an activation matter to the unwinder
 /// (`docs/design/core-library.md`, "Exceptions"): each variant
 /// names the registers of the kernel method's parameters and locals, in the

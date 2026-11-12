@@ -221,12 +221,14 @@ impl MixinMethod {
     /// The entry a parsed declaration becomes, compiled by `lowering` against
     /// the resolver's `bindings` for the module it belongs to. `kernel` is
     /// that module's `ResolvedModule.kernel`: only a kernel method may carry
-    /// a fast path.
+    /// a fast path. `collector`, when given, collects the debugger metadata
+    /// of the method and its blocks (`compiler::compile_method`).
     pub(crate) fn from_declaration(
         declaration: Rc<ast::MethodDeclaration>,
         bindings: &Rc<HashMap<Span, Binding>>,
         kernel: bool,
         lowering: crate::compiler::Lowering,
+        collector: Option<&crate::debugger::metadata::MetadataCollector>,
     ) -> MixinMethod {
         MixinMethod {
             selector: Symbol::intern(&crate::interpreter::instantiate::method_name(
@@ -240,7 +242,7 @@ impl MixinMethod {
                 &declaration,
                 bindings,
                 lowering,
-                None,
+                collector,
             )),
             fast_path: crate::compiler::primitive_method::recognize(&declaration, bindings, kernel),
             // Recognized against the module's root by `build_methods`, which

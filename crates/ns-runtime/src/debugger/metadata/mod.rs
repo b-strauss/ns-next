@@ -13,6 +13,11 @@ use ns_syntax::Span;
 use crate::bytecode::{CallSite, CompiledCode};
 use crate::Symbol;
 
+pub(crate) mod again;
+mod cache;
+
+pub(crate) use cache::Cache;
+
 /// The tables of one compiled body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BodyMetadata {
@@ -26,6 +31,12 @@ pub(crate) struct BodyMetadata {
     /// The body's own variables first (parameters, then temporaries, in
     /// resolver order), then each enclosing scope's, outward.
     pub(crate) variables: Box<[VariableEntry]>,
+    /// Where a factory's frame stands: its class header's factory message
+    /// pattern, or the class's name for a header that writes none, in the
+    /// module's current text (decision 12). A factory's body has no source
+    /// and no statement start, so this is its one position. `None` for
+    /// every body the lowerers compile.
+    pub(crate) factory_pattern: Option<Span>,
 }
 
 /// A place a line breakpoint or a step stops at: the instructions one
@@ -94,10 +105,6 @@ pub(crate) struct MetadataCollector {
 }
 
 impl MetadataCollector {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the recompilation that collects is to come")
-    )]
     pub(crate) fn new() -> MetadataCollector {
         MetadataCollector::default()
     }
@@ -112,10 +119,6 @@ impl MetadataCollector {
 
     /// Moves the entry of `from` to `onto`: a body cloned after it was
     /// compiled (the kernel's unwind marker).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the recompilation that clones a body is to come")
-    )]
     pub(crate) fn rekey(&self, from: &CompiledCode, onto: &CompiledCode) {
         let mut bodies = self.bodies.borrow_mut();
         if let Some(metadata) = bodies.remove(&from.body().identity()) {
@@ -125,10 +128,6 @@ impl MetadataCollector {
 
     /// The tables of `code`, taken out of the collector; `None` for a body
     /// this collection did not compile.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the stop that reads the tables is to come")
-    )]
     pub(crate) fn take(&self, code: &CompiledCode) -> Option<BodyMetadata> {
         self.bodies.borrow_mut().remove(&code.body().identity())
     }

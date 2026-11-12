@@ -1,14 +1,18 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use indoc::indoc;
 
+use super::again::{compile_level_again, BodyOrigin, Member, PairedBodies};
 use super::{
-    BodyMetadata, MetadataCollector, SendEntry, VariableEntry, VariablePlace, VectorHolder,
+    BodyMetadata, Cache, MetadataCollector, SendEntry, VariableEntry, VariablePlace, VectorHolder,
 };
-use crate::bytecode::{CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{compiles_alike, CompiledCode, Instruction, HEADER_REGISTERS};
 use crate::compiler::Lowering;
-use crate::Symbol;
+use crate::interpreter::Mutator;
+use crate::mixin::Mixin;
+use crate::{Interpreter, Root, Symbol};
 
 /// The module `source` resolved, and its root class's first instance-side
 /// method compiled under `lowering` with `collector`, if any.
@@ -923,4 +927,401 @@ fn compiling_the_reference_lowering_without_a_collector_emits_the_same_code() {
         compile(source, Lowering::Reference, None),
         compile(source, Lowering::Reference, Some(&collector))
     );
+}
+
+// Compiling a declaration's level again
+
+/// `source` resolved as the file `t.ns`.
+fn resolved(source: &str) -> crate::ResolvedModule {
+    let module = ns_syntax::parse(source).expect("parse");
+    match crate::resolve(
+        module,
+        Rc::from(source),
+        crate::SourceOrigin::File(PathBuf::from("t.ns")),
+    ) {
+        Ok(resolved) => resolved,
+        Err(_) => panic!("does not resolve"),
+    }
+}
+
+/// An interpreter of `lowering` with `source` loaded, and its root class.
+fn loaded_under(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved(source));
+    (interpreter, class)
+}
+
+/// The mixin the class object `class` applies.
+fn applied_mixin(mutator: &Mutator<'_>, class: &Root) -> Rc<Mixin> {
+    let class = mutator.fetch(class).as_object().expect("a class object");
+    Rc::clone(
+        &mutator
+            .heap()
+            .class_application(class)
+            .expect("a class object")
+            .mixin,
+    )
+}
+
+/// The declaration `name` nested in `mixin`, as the heap holds it.
+fn nested_mixin(mutator: &Mutator<'_>, mixin: &Rc<Mixin>, name: &str) -> Rc<Mixin> {
+    mutator
+        .heap()
+        .nested_mixins(mixin)
+        .into_iter()
+        .find(|nested| nested.name.as_str() == name)
+        .expect("the declaration is nested there")
+}
+
+/// Every body `mixin` carries, blocks included, by address.
+fn bodies_of(mixin: &Mixin) -> HashSet<usize> {
+    let mut bodies = HashSet::new();
+    crate::image::version_bodies(mixin, &mut bodies);
+    bodies
+}
+
+/// The paired bodies' addresses, each with whether it got tables.
+fn paired(pairs: &PairedBodies) -> HashMap<usize, bool> {
+    pairs
+        .iter()
+        .map(|(code, metadata)| (Rc::as_ptr(code) as usize, metadata.is_some()))
+        .collect()
+}
+
+/// The factory entry's body of the class side `class_side`.
+fn factory_code(class_side: &Mixin) -> Rc<CompiledCode> {
+    class_side
+        .methods
+        .values()
+        .find_map(|entry| match entry {
+            crate::mixin::MethodEntry::Factory(factory) => Some(Rc::clone(&factory.code)),
+            _ => None,
+        })
+        .expect("a factory entry")
+}
+
+/// The body of the method `selector` of `mixin`.
+fn method_code(mixin: &Mixin, selector: &str) -> Rc<CompiledCode> {
+    Rc::clone(
+        &mixin
+            .compiled_method(Symbol::intern(selector))
+            .expect("the method")
+            .code,
+    )
+}
+
+fn method_origin(mixin: &Rc<Mixin>, selector: &str) -> BodyOrigin {
+    BodyOrigin {
+        mixin: Rc::clone(mixin),
+        member: Member::Method(Symbol::intern(selector)),
+    }
+}
+
+crate::for_each_lowering! {
+    fn every_body_of_a_level_compiles_again_alike(lowering) {
+        let source = indoc! {"
+            class Outer = Object new (
+            ) (
+              class Mixer = Object new () ()
+              public class Applied x: a y: b = Object new <: Mixer new (
+                |
+                  s = a foo.
+                  t ::= b.
+                  u v = 3.
+                |
+                s bar.
+              ) (
+                lazy w = 3 bar.
+                public m: p = ( | q | q:: p. ^[:z | q + z + s ] )
+              ) : (
+                public make = ( ^self x: 1 y: [ 2 ] )
+              )
+            ) : ()
+        "};
+        let (mut interpreter, outer) = loaded_under(source, lowering);
+        interpreter.enter(|mutator| {
+            let outer_mixin = applied_mixin(mutator, &outer);
+            let applied = nested_mixin(mutator, &outer_mixin, "Applied");
+            let class_side = applied.class_side.clone().expect("a declared class side");
+            let mut expected = bodies_of(&applied);
+            expected.extend(bodies_of(&class_side));
+            expected.insert(Rc::as_ptr(&factory_code(&class_side)) as usize);
+            assert!(expected.len() >= 9, "{} bodies", expected.len());
+
+            let pairs = compile_level_again(mutator, &applied, lowering).expect("the level");
+            let paired_bodies = paired(&pairs);
+            for body in &expected {
+                assert_eq!(paired_bodies.get(body), Some(&true), "every body pairs with tables");
+            }
+            assert_eq!(paired_bodies.len(), expected.len(), "no body of another level");
+
+            // A class side is compiled again from its instance side's
+            // declaration, and pairs alone.
+            let pairs = compile_level_again(mutator, &class_side, lowering).expect("the level");
+            let paired_bodies = paired(&pairs);
+            let class_side_bodies = bodies_of(&class_side);
+            assert!(class_side_bodies
+                .iter()
+                .all(|body| paired_bodies.get(body) == Some(&true)));
+            assert_eq!(paired_bodies.len(), class_side_bodies.len() + 1, "and the factory");
+
+            // The factory takes the header's parameters and its pattern.
+            let factory = factory_code(&class_side);
+            let origin = BodyOrigin {
+                mixin: Rc::clone(&class_side),
+                member: Member::Factory,
+            };
+            let metadata = Cache::metadata(mutator, &factory, &origin).expect("the factory's");
+            assert_eq!(
+                metadata.variables.to_vec(),
+                vec![
+                    variable("a", 0, VariablePlace::Register(0)),
+                    variable("b", 0, VariablePlace::Register(1)),
+                ]
+            );
+            assert!(metadata.statements.is_empty());
+            assert!(metadata.sends.is_empty());
+            let pattern = metadata.factory_pattern.expect("where it stands");
+            assert_eq!(pattern.text(source), "x: a y: b");
+
+            // A factory body a host's `instantiate` builds, which no mixin
+            // holds, takes the header's too.
+            let built = Rc::new(crate::compiler::factory_body(2));
+            assert_eq!(Cache::metadata(mutator, &built, &origin), Some(metadata));
+        });
+    }
+}
+
+#[test]
+fn a_body_with_an_unwind_marker_compiles_again_alike() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        interpreter.enter(|mutator| {
+            let closure = mutator.builtin_class(crate::BuiltinClass::Closure);
+            let mixin = Rc::clone(
+                &mutator
+                    .heap()
+                    .class_application(closure)
+                    .expect("a class object")
+                    .mixin,
+            );
+            let ensure = method_code(&mixin, "ensure:");
+            assert!(ensure.unwind_marker.is_some());
+            let pairs = compile_level_again(mutator, &mixin, lowering).expect("the level");
+            let paired_bodies = paired(&pairs);
+            assert_eq!(
+                paired_bodies.get(&(Rc::as_ptr(&ensure) as usize)),
+                Some(&true)
+            );
+            for body in bodies_of(&mixin) {
+                assert_eq!(
+                    paired_bodies.get(&body),
+                    Some(&true),
+                    "every body of Closure pairs"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn compiles_alike_ignores_spans_but_not_instructions() {
+    let here = compile(
+        indoc! {"
+            class X = Object new (
+            ) (
+              m: p = ( ^[:b | p + b ] )
+            ) : ()
+        "},
+        Lowering::Optimized,
+        None,
+    );
+    let moved = compile(
+        indoc! {"
+            class X = Object new (
+            ) (
+              /// A comment that moves the method.
+              m: p = ( ^[:b | p + b ] )
+            ) : ()
+        "},
+        Lowering::Optimized,
+        None,
+    );
+    let other = compile(
+        indoc! {"
+            class X = Object new (
+            ) (
+              m: p = ( ^[:b | p - b ] )
+            ) : ()
+        "},
+        Lowering::Optimized,
+        None,
+    );
+    assert_ne!(here.source, moved.source);
+    assert_ne!(here, moved, "`==` compares the spans, the block's too");
+    assert!(compiles_alike(&here, &moved));
+    assert!(compiles_alike(&moved, &here));
+    assert!(
+        !compiles_alike(&here, &other),
+        "the block's instructions differ"
+    );
+    let mut marked = here.clone();
+    marked.unwind_marker = Some(crate::bytecode::UnwindMarker::Ensure {
+        block_register: 0,
+        complete_register: 1,
+    });
+    assert!(compiles_alike(&marked, &here));
+    let mut counted = here.clone();
+    counted.register_count += 1;
+    assert!(!compiles_alike(&counted, &here));
+}
+
+#[test]
+fn an_install_moves_the_spans_of_an_unedited_body() {
+    let source = indoc! {"
+        class Root = Object new (
+        ) (
+          public class A = () (
+            public a = ( ^1 )
+          )
+          public class B = () (
+            public m = ( ^2 )
+          )
+        ) : ()
+    "};
+    let (mut interpreter, root) = loaded_under(source, Lowering::Optimized);
+    let (before, after) = interpreter.enter(|mutator| {
+        let root_mixin = applied_mixin(mutator, &root);
+        let first = nested_mixin(mutator, &root_mixin, "A");
+        let second = nested_mixin(mutator, &root_mixin, "B");
+        let code = method_code(&second, "m");
+        let origin = method_origin(&second, "m");
+        let before = Cache::metadata(mutator, &code, &origin).expect("B>>m's metadata");
+        let first_id = mutator.heap().known_mixin_id(&first).expect("A's id");
+        let edit = crate::interpreter::edit::Edit {
+            header: None,
+            instance_side: vec![crate::interpreter::edit::MemberEdit::AddMethod(
+                "public longer = ( ^3 + 4 )".to_string(),
+            )],
+            class_side: Vec::new(),
+        };
+        if let Err(diagnostic) = mutator.install_edit(first_id, &edit) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        let root_id = mutator
+            .heap()
+            .known_mixin_id(&root_mixin)
+            .expect("Root's id");
+        let text = mutator
+            .heap()
+            .module_source(root_id)
+            .expect("the module's text");
+        let after = Cache::metadata(mutator, &code, &origin).expect("B>>m's metadata");
+        assert_eq!(after.statements[0].span.text(&text), "^2");
+        (before, after)
+    });
+    assert_eq!(before.statements[0].span.text(source), "^2");
+    assert!(
+        after.statements[0].span.start > before.statements[0].span.start,
+        "the statement stands where the lengthened text now has it"
+    );
+}
+
+/// A module whose nested class `Inner` holds a method with a block.
+const WITH_INNER: &str = indoc! {"
+    class Root = Object new (
+    ) (
+      public class Inner = () (
+        public m: x = ( ^[:y | x foo: y ] )
+      )
+    ) : ()
+"};
+
+/// `source`'s module written with its source by an interpreter of
+/// `lowering`.
+fn image_under(source: &str, lowering: Lowering) -> Vec<u8> {
+    let (mut interpreter, class) = loaded_under(source, lowering);
+    interpreter.enter(|mutator| {
+        let class = mutator.fetch(&class).as_object().expect("a class object");
+        let origin = crate::SourceOrigin::File(PathBuf::from("t.ns"));
+        let modules = [crate::image::ModuleSource {
+            class,
+            origin: &origin,
+            with_source: true,
+        }];
+        crate::image::snapshot(mutator, &modules, &[]).expect("snapshot")
+    })
+}
+
+fn loaded_image(bytes: &[u8]) -> crate::image::LoadedImage {
+    match crate::image::load(bytes) {
+        Ok(image) => image,
+        Err(message) => panic!("load: {message}"),
+    }
+}
+
+/// `bytes` with every `from` replaced by `into`, of the same length.
+fn patched(bytes: &[u8], from: &str, into: &str) -> Vec<u8> {
+    assert_eq!(from.len(), into.len());
+    let mut bytes = bytes.to_vec();
+    let mut found = 0;
+    let mut index = 0;
+    while index + from.len() <= bytes.len() {
+        if &bytes[index..index + from.len()] == from.as_bytes() {
+            bytes[index..index + from.len()].copy_from_slice(into.as_bytes());
+            found += 1;
+        }
+        index += 1;
+    }
+    assert!(found > 0, "the image holds {from}");
+    bytes
+}
+
+#[test]
+fn a_crafted_text_without_the_declaration_gives_no_metadata() {
+    let bytes = image_under(WITH_INNER, Lowering::Optimized);
+    // The text names another class, and then does not parse; the
+    // symbols, which name the mixins, are untouched.
+    for (from, into) in [("class Inner", "class Innex"), ("^[:y", "^[:)")] {
+        let mut image = loaded_image(&patched(&bytes, from, into));
+        let root = Rc::clone(&image.modules[0].declaration);
+        image.interpreter.enter(|mutator| {
+            let inner = nested_mixin(mutator, &root, "Inner");
+            assert!(compile_level_again(mutator, &inner, Lowering::Optimized).is_none());
+            let code = method_code(&inner, "m:");
+            let origin = method_origin(&inner, "m:");
+            assert!(Cache::metadata(mutator, &code, &origin).is_none());
+            // Cached as none.
+            assert!(Cache::metadata(mutator, &code, &origin).is_none());
+        });
+    }
+}
+
+#[test]
+fn a_reference_lowered_image_body_pairs_with_the_reference_lowering() {
+    let bytes = image_under(WITH_INNER, Lowering::Reference);
+    let mut image = loaded_image(&bytes);
+    let root = Rc::clone(&image.modules[0].declaration);
+    image.interpreter.enter(|mutator| {
+        assert!(mutator.lowering == Lowering::Optimized);
+        let inner = nested_mixin(mutator, &root, "Inner");
+        let code = method_code(&inner, "m:");
+        let block = first_block(&code);
+        // The optimized lowering compiles the method otherwise.
+        let optimized =
+            compile_level_again(mutator, &inner, Lowering::Optimized).expect("the level");
+        assert_eq!(
+            paired(&optimized).get(&(Rc::as_ptr(&code) as usize)),
+            Some(&false)
+        );
+        let origin = method_origin(&inner, "m:");
+        let metadata = Cache::metadata(mutator, &code, &origin).expect("the method's metadata");
+        assert!(metadata.sends.is_empty());
+        let block_metadata = Cache::metadata(mutator, &block, &origin).expect("the block's");
+        assert_eq!(block_metadata.sends.len(), 1);
+        assert_eq!(
+            block_metadata.sends[0].call_site,
+            Some(crate::bytecode::CallSite::UNCACHED)
+        );
+    });
 }

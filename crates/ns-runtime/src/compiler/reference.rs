@@ -1144,6 +1144,7 @@ impl<'a> Body<'a> {
             variables: self.collected_variables(&collected.names).into(),
             statements: collected.statements.into(),
             sends: collected.sends.into(),
+            factory_pattern: None,
         });
         if cfg!(debug_assertions) {
             let instructions = self.code.instructions();

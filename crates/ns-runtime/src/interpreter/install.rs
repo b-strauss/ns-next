@@ -96,6 +96,8 @@ impl<'gc> Mutator<'gc> {
             .filter(|id| *id != DispatchId::NONE)
             .collect();
         crate::jit::invalidate_applications(self, &rebuilt);
+        // Every span counts in the module's text, which the edit changed.
+        self.debug_metadata.clear();
         Ok(prepared.texts)
     }
 

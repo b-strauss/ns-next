@@ -287,7 +287,7 @@ impl<'gc> Mutator<'gc> {
 
     /// The id of the module root the mixin `id` is declared in, and the
     /// names of the declarations from below the root down to `id`'s.
-    fn path_from_module_root(&self, id: MixinId) -> (MixinId, Vec<Symbol>) {
+    pub(crate) fn path_from_module_root(&self, id: MixinId) -> (MixinId, Vec<Symbol>) {
         let mut path = Vec::new();
         let mut module_root = id;
         while let Some(enclosing) = self.heap.enclosing_mixin_id(module_root) {
@@ -404,7 +404,7 @@ fn line_of(text: &str, offset: u32) -> usize {
 
 /// The declaration `path` names from `root`: each name a nested class of
 /// the one before, `root` itself for an empty path.
-fn find_declaration<'module>(
+pub(crate) fn find_declaration<'module>(
     root: &'module ast::ClassDeclaration,
     path: &[Symbol],
 ) -> Option<&'module ast::ClassDeclaration> {
