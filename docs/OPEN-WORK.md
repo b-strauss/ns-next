@@ -32,10 +32,12 @@ slot by its original ("Compiling the metadata again"). Stage 1, the
 debugging API at the safepoint, and stage 2, the metadata, are built
 (2026-11-11 and 2026-11-12; "The debugging API at the safepoint",
 "Compiling the metadata again"). Stage 3 needs a plan of its own; the
-open questions it meets -- step filters for the shipped modules and how
-a step behaves at their edge, stepping out of a frame that returns
-elsewhere -- are decided with the user before it is built
-([debugger.md](design/debugger.md), "Open questions").
+two open questions it met are decided (2026-11-12): shipped code is
+filtered from steps, and program classes can be, a step that would stop
+in a filtered frame going on as a step into; and a step out of a frame
+that does not return to its caller's return point stops at the next
+place the program reaches ([debugger.md](design/debugger.md), decisions
+16 and 17).
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1864,13 +1866,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return; hot swap,
   edit-and-continue and `ActivationMirror`. It needs no yield path out of
-  `vm::run`. Still to decide, each before the stage that needs it: step
-  filters for the shipped modules and how a step behaves at their edge,
+  `vm::run`. Still to decide, each before the stage that needs it:
   watchpoints on slots, access control in evaluation, marking objects, a
   token for the socket, who listens, `ns-next load --debug`, evaluation at
   the depth limit, restart and force return beyond the plain case, restart
-  and the indirection vector, assigning a captured variable, stepping out
-  of a frame that returns elsewhere, the breakable places before a
+  and the indirection vector, assigning a captured variable, the breakable places before a
   session, terminating a program that reaches no safepoint, the memory
   view, folding shipped frames and attaching, and, for stage 4, whether
   a command queued while no run executes is answered: today it is

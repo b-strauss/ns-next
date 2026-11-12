@@ -112,7 +112,8 @@ what Newspeak's liveness requires beyond it.
   inline;
 - step filters: by default, step into does not stop in the shipped
   modules' code, so stepping into `coll do: [:each | …]` lands in the
-  block, not in `Array>>do:` (open, "Open questions").
+  block, not in `Array>>do:`, and the program's own classes can be added
+  to the filter (decision 16).
 
 **Inspecting**
 
@@ -1047,7 +1048,8 @@ Everything else stage 2 adds runs only at a stop.
 ## The decisions
 
 Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
-to 15, stage 2's, on 2026-11-12, one at a time, each after the
+to 15, stage 2's, on 2026-11-12, and decisions 16 and 17, stage 3's, on
+2026-11-12, one at a time, each after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
@@ -1472,6 +1474,86 @@ when the metadata is collected is rejected, as a second copy of which
 tokens make the selector; a span of the whole message instead of the
 selector's is rejected, since smart step into marks the selector.
 
+### 16. Shipped code is filtered from steps, and program classes can be
+
+A step never lands in a filtered frame: by default the shipped modules'
+bodies -- a body is shipped when its module's root is, as for its
+metadata ("Compiling the metadata again") -- and, beside them, the
+bodies of the program's class declarations a list the client sends
+names, IntelliJ's "Do not step into the classes"; the filter of the
+shipped modules can be switched off. A stop a step would make in a
+filtered frame -- a return point inside `Array>>do:` after a step over
+at a block's last statement, the first statement of a shipped method a
+step into pushes -- is not made: the step goes on as a step into, so
+that it stops at the next statement start of an unfiltered body, the
+block's next activation or the caller of `do:` once it returns, which
+the step floods with one-shot breakpoints, the first unfiltered frame
+below the stepping one. A filtered step into keeps its held request
+through the pushes of filtered bodies until an unfiltered one is
+pushed. The filter decides only where a step lands: a breakpoint the
+user set in a filtered body stops, and a step that starts in a filtered
+frame -- stopped there by a breakpoint, or with the filter off -- steps
+in it as in any other. The exception's first frame shown is likewise the
+first unfiltered one ("Exceptions").
+
+V8 does the same with blackboxing (`v8/src/debug/debug.cc`): a step at a
+return becomes a step out in step-into mode (`:1601-1612`), the step out
+floods the first frame below that is not blackboxed (`:1735-1741`), and
+every function entered that is not blackboxed is flooded
+(`PrepareStepIn`, `:1456-1470`); the JDWP agent skips a filtered callee
+of a step into by frame-pop and method-entry events
+(`jdk/src/jdk.jdwp.agent/share/native/libjdwp/stepControl.c:588-611`,
+`:476`). The specification allows it without requiring it: a debugger
+"need not step through" the sends a tuple literal is defined by (§5.1.7).
+Stepping without a filter, as Newspeak's simulator does (`stepInto:` is
+one bytecode, `primordialsoup/newspeak/Mirrors.ns:2411-2415`) and SOMns,
+which hides only primitives through Truffle's internal sources, is
+rejected: every step into `do:`, `inject:into:` or a tuple literal would
+stop in the kernel's frames, where evaluation, setting a variable, a
+restart and a forced return are refused anyway. Newspeak's `stepThrough:`,
+which stops at the next activation whose home is the stepping frame's
+home (`Mirrors.ns:2285-2293`, `:2431-2436`), solves only the block's end,
+not a step into `do:`, and is not needed beside the filter. The filter
+costs a filtered step into its held request through every push of a
+filtered body, each run interpreted, since the request makes compiled
+prologues refuse the push; V8's hook on every call and JDWP's
+method-entry events cost the same, and a step over or step out costs
+nothing.
+
+### 17. A step out stops at the next place the program reaches
+
+A step out, and a step over at a body's last statement, stops at the
+stepping frame's return point when its caller goes on there --
+`Continuation::Deliver`, and a superclass clause's
+`Continuation::NestedClass` whose class `after_clause` hands to the
+accessor's send. Every other way a frame returns goes on as a step into
+(with decision 16's filter) until the next statement start of the
+program, the frame the program goes on in flooded with one-shot
+breakpoints: an `ensure:` or `ifCurtailed:` block the unwinder ran
+(`Continuation::Unwind`) stops in the next such block or in the frame
+the unwind lands in; a future's `resolve` (`Continuation::Reexecute`)
+stops in its caller after the instruction run again, or in what that
+instruction pushes; a caller standing at an instruction that raised
+stops in the handler block that takes the error, which the search
+reports to the stepping state ("Exceptions"), or the program ends with
+the error (`Continuation::VmErrorSignalled`); and a frame that returns
+to a suspended sender (`Continuation::ReturnToSuspended`) stops in the
+sender, resumed. The pop is reported to the stepping state only in
+`apply_continuation`'s arms other than `Deliver`'s, which are out of
+line, so the return's hot path is unchanged.
+
+All three systems define a step out by where the program goes next,
+not by how the frame returned: Newspeak's `stepOut:` stops as soon as
+the sender is on top or no longer on the sender chain
+(`primordialsoup/newspeak/Mirrors.ns:2276-2283`, `:2417-2424`), the
+JDWP agent single-steps after the frame pop "until we reach the next
+safe place to stop" (`stepControl.c:340-347`), and V8 floods the frame
+below and stays in step-into mode (`v8/src/debug/debug.cc:1601-1612`),
+flooding the handler's frames on a throw (`PrepareStepOnThrow`,
+`:1488-1555`). Refusing a step out of such a frame is rejected, since the
+end of an `ensure:` block is a common place to step from; treating it as
+a resume loses the place the step was taken from.
+
 ## Planned: the mechanisms
 
 What building the decisions changes, found by checking them against the
@@ -1769,7 +1851,7 @@ first is the first frame below the exception's own machinery -- below
 `signal`, the instance side's and the class side's `signal:`, and
 `Object>>doesNotUnderstand:` for a `MessageNotUnderstood` -- which is the
 raising frame itself only for a VM error, whose `signal` is pushed right
-above it; with step filters ("Open questions") that is the first frame of
+above it; with step filters (decision 16) that is the first frame of
 program code. Going on lets `defaultAction` run, which ends the program
 for every exception whose class does not override it, as its
 `terminate…` leaf does today, resumable ones included; a `Halt` and a
@@ -1951,17 +2033,6 @@ Raised by the reviews of these decisions and of stage 1; each is to be
 decided with the user, one at a time, before the stage that needs it.
 The proposal is a proposal.
 
-- **Step filters.** Whether step into skips the shipped modules' code by
-  default, with a setting to step into it, and how a step behaves at its
-  edge: a step over at the last statement of a `do:` block would land at a
-  return point inside `Array>>do:`, and the next element's block
-  activation is no push from the stepping frame. Proposal: shipped code is
-  filtered by default; a stop that would fall in filtered code goes on as
-  a step into, which IntelliJ does for library frames, so the step lands
-  in the block's next activation or back in the caller; a filtered step
-  into keeps its request through the pushes of shipped code until a push
-  of program code. As IntelliJ skips `java.*` and V8 skips blackboxed code
-  (`IsBlackboxed` in `FloodWithOneShot`, `v8/src/debug/debug.cc:1364-1368`).
 - **Watchpoints on slots.** Whether a slot's reads and writes can be
   breakpoints. Own-slot accesses are inline instructions, and machine code
   stores with an inline barrier, so a watchpoint needs every body that
@@ -2007,17 +2078,6 @@ The proposal is a proposal.
   frame moved into a layout where the variable lives in a vector, through
   edit-and-continue, so that the assignment reaches every copy. Proposal:
   refused, as IntelliJ refuses a captured Java local.
-- **Stepping out of a frame that returns elsewhere.** Step out is defined
-  for a frame whose return delivers into its caller's instruction. Not yet
-  for a superclass clause (`NestedClass`, whose return creates the class),
-  an `ensure:` or `ifCurtailed:` block the unwinder runs (`Unwind`, whose
-  return carries the unwind on), a future's `resolve` (`Reexecute`), and a
-  caller standing at an instruction that raised (`vm::raise` stores the
-  `program_counter` of the raising instruction, which may be no send; a
-  send path raises too, and that caller goes on through
-  `VmErrorSignalled`). Proposal: each
-  stops at the next statement start the program reaches, the step going
-  on as a step into until one is reached.
 - **Breakable places before a session.** Whether `ns-next-analyzer`
   answers the breakable places and their variants to the plugin, through a
   request of the language server, before any session runs (proposed), or
