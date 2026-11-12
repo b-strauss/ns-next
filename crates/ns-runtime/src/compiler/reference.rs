@@ -277,6 +277,10 @@ struct Collected {
     names: Rc<[Symbol]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
+    /// Every block the body creates, so that a body past a limit, which
+    /// drops them, drops their tables too
+    /// (`MetadataCollector::forget_family`).
+    blocks: Vec<Rc<CompiledCode>>,
 }
 
 impl<'a> Body<'a> {
@@ -320,6 +324,7 @@ impl<'a> Body<'a> {
                     names,
                     statements: Vec::new(),
                     sends: Vec::new(),
+                    blocks: Vec::new(),
                 };
                 (Some(collector), Some(collected))
             }
@@ -1055,11 +1060,15 @@ impl<'a> Body<'a> {
         inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
         let parameters = super::parameters_of(parameters, &code);
+        let code = Rc::new(code);
+        if let Some(collected) = &mut self.collected {
+            collected.blocks.push(Rc::clone(&code));
+        }
         let destination = self.target_register(into);
         self.emit(Instruction::MakeClosure {
             destination,
             parameters: Rc::new(parameters),
-            code: Rc::new(code),
+            code,
             // The reference lowering is the by-reference oracle: it copies
             // nothing into a closure, ever.
             copied: Vec::new(),
@@ -1138,6 +1147,11 @@ impl<'a> Body<'a> {
     /// collected. A body past a limit has none (`Lowerer::finish`).
     fn finish(mut self, source: Span) -> CompiledCode {
         if let Some(limit) = self.too_large {
+            if let (Some(collector), Some(collected)) = (self.collector, self.collected.take()) {
+                for block in &collected.blocks {
+                    collector.forget_family(block);
+                }
+            }
             return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         let metadata = self.collected.take().map(|collected| BodyMetadata {

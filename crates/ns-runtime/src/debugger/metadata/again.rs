@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use ns_syntax::{ast, Span};
 
-use super::{BodyMetadata, MetadataCollector, VariableEntry, VariablePlace};
+use super::{address, BodyMetadata, MetadataCollector, VariableEntry, VariablePlace};
 use crate::bytecode::{compiles_alike, CompiledCode};
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
@@ -356,9 +356,4 @@ impl Pairing<'_> {
             .or_insert_with(|| self.collector.take(again).map(Rc::new))
             .clone()
     }
-}
-
-/// A body's address, which names it while it lives.
-fn address(code: &Rc<CompiledCode>) -> usize {
-    Rc::as_ptr(code).addr()
 }

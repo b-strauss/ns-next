@@ -721,7 +721,12 @@ outward, and, for a factory, the header's factory pattern
   declaration; a `SendMirror` has a send entry without a call site, a
   `ResolveFuture` and an initializer invocation none. A body past the
   compiler's limits, which raises `Literal::BodyTooLarge` first, records
-  no tables: it is not the source's body.
+  no tables: it is not the source's body. It drops the blocks it compiled
+  before it found itself too large, and their tables with them
+  (`MetadataCollector::forget_family`): the collector holds the tables
+  of no body but those the compilation still holds, since a body that
+  records none -- one past a limit -- allocated where a dropped one was
+  would otherwise be answered the dropped one's.
 - **What is compiled: the declaration's level.** A frame's body is named
   by a `BodyOrigin` (`stack::origin_of`, "Reading the stack at a stop"):
   the version of the mixin whose member holds the frame's body --
@@ -928,7 +933,9 @@ stage's tests, do not.
   by span and initializer statements; either lowering compiling without a
   collector emitting exactly the code it emits with one, so that no
   golden, no shipped-code fingerprint and no image changes; every body of
-  a level compiling again alike, an unwind marker's body included;
+  a level compiling again alike, an unwind marker's body included; a
+  body past a limit leaving no tables of the blocks it dropped, and no
+  such body of a level getting tables;
   `compiles_alike` ignoring spans but not instructions; an install
   moving the spans of a body it did not edit; a reference-lowered
   image's body paired under the reference lowering; and a crafted image

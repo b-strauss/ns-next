@@ -1959,15 +1959,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       variable test covers one block level, no `hops` of 2; and
       `tests.rs`'s assertion message names five bodies where it asserts
       at least four.
-    - *Code*: the `address` helper is written three times
-      (`debugger/metadata/again.rs`, `cache.rs`, `check.rs`); the reference
-      lowering's send entry tells a send was emitted by the code's
-      length rather than by the `BodyTooLarge` check; the collected
-      variable names may silently fall short of the layout's places,
-      which a `debug_assert_eq!` would catch; a local initializer's
-      statement span includes its period, which no comment says; and
-      the selector-span tests sit at the end of `declaration.rs`'s
-      tests rather than beside the expression tests.
+    - *Code*: the reference lowering's send entry tells a send was
+      emitted by the code's length rather than by the `BodyTooLarge`
+      check; a local initializer's statement span includes its period,
+      which no comment says; and the selector-span tests sit at the end
+      of `declaration.rs`'s tests rather than beside the expression
+      tests.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

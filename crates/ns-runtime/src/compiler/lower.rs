@@ -119,6 +119,10 @@ struct Collected {
     names: Rc<[crate::Symbol]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
+    /// Every block the body creates, so that a body past a limit, which
+    /// drops them, drops their tables too
+    /// (`MetadataCollector::forget_family`).
+    blocks: Vec<Rc<CompiledCode>>,
 }
 
 impl Layout {
@@ -477,6 +481,7 @@ impl<'a> Lowerer<'a> {
                     names,
                     statements: Vec::new(),
                     sends: Vec::new(),
+                    blocks: Vec::new(),
                 };
                 (Some(collector), Some(collected))
             }
@@ -1188,11 +1193,15 @@ impl<'a> Lowerer<'a> {
         };
         self.next_call_site = if too_large { first_call_site } else { after };
         let parameters = super::parameters_of(parameters, &code);
+        let code = Rc::new(code);
+        if let Some(collected) = &mut self.collected {
+            collected.blocks.push(Rc::clone(&code));
+        }
         let destination = self.target_register(into);
         self.emit(Instruction::MakeClosure {
             destination,
             parameters: Rc::new(parameters),
-            code: Rc::new(code),
+            code,
             copied,
         });
         destination
@@ -2587,6 +2596,11 @@ impl<'a> Lowerer<'a> {
     /// anything else, so no step stops in it and it names no variable.
     pub(crate) fn finish(mut self, source: Span) -> CompiledCode {
         if let Some(limit) = self.too_large {
+            if let (Some(collector), Some(collected)) = (self.collector, self.collected.take()) {
+                for block in &collected.blocks {
+                    collector.forget_family(block);
+                }
+            }
             return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         let metadata = self.collected.take().map(|collected| BodyMetadata {
@@ -2666,6 +2680,18 @@ impl<'a> Lowerer<'a> {
     /// innermost converted frame; one nothing was handed is read where its
     /// declaring frame keeps it. A by-reference body is handed nothing.
     fn collected_variables(&self, names: &[crate::Symbol]) -> Vec<VariableEntry> {
+        // A layout holds one place per local the resolver numbers, and the
+        // names are the same locals': a list that fell short would drop a
+        // variable from the table without a word. Only a layout past the
+        // register ceiling, which holds no place and no register base, is
+        // shorter -- an enclosing one, since a body past it records no
+        // tables.
+        debug_assert_eq!(names.len(), self.layout.places.len());
+        debug_assert!(self
+            .layouts
+            .iter()
+            .zip(&self.enclosing_variable_names)
+            .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len()));
         let own = names
             .iter()
             .enumerate()

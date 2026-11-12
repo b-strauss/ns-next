@@ -9,7 +9,7 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use super::again::{compile_level_again, BodyOrigin, Member};
-use super::{BodyMetadata, Cache, VariablePlace, VectorHolder};
+use super::{address, BodyMetadata, Cache, VariablePlace, VectorHolder};
 use crate::bytecode::{CompiledCode, Instruction, Literal};
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
@@ -424,11 +424,6 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
         (_, None) => {}
     }
     Ok(())
-}
-
-/// A body's address, which names it while it lives.
-fn address(code: &Rc<CompiledCode>) -> usize {
-    Rc::as_ptr(code).addr()
 }
 
 #[cfg(test)]

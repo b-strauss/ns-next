@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 
 use super::again::{compile_level_again, BodyOrigin, Member, PairedBodies};
 use super::{
@@ -382,6 +382,63 @@ fn a_cloned_body_s_tables_move_with_rekey() {
     collector.rekey(&code, &clone);
     assert!(collector.take(&code).is_none());
     assert!(collector.take(&clone).is_some());
+}
+
+/// A module whose two methods are past the compiler's argument limit,
+/// the first holding a block nested in a block, each of which compiles
+/// before the send that makes its creator too large.
+fn too_large_methods() -> String {
+    let arguments = "k: 1 ".repeat(256);
+    formatdoc! {"
+        class Over = Object new (
+        ) (
+          public first = ( | b | b:: [[3]]. ^self {arguments})
+          public second = ( ^self {arguments})
+        ) : ()
+    "}
+}
+
+#[test]
+fn a_too_large_body_leaves_no_tables_of_the_blocks_it_dropped() {
+    let source = too_large_methods();
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let collector = MetadataCollector::new();
+        let code = compile(&source, lowering, Some(&collector));
+        assert!(
+            matches!(
+                code.instruction(0),
+                Instruction::LoadLiteral {
+                    literal: crate::bytecode::Literal::BodyTooLarge(_),
+                    ..
+                }
+            ),
+            "{lowering:?}: the method is too large"
+        );
+        // The blocks were recorded as they were finished, and dropped
+        // with their creator: an entry left under their addresses would
+        // be answered for the next body allocated there.
+        assert!(collector.is_empty(), "{lowering:?}: tables were left");
+    }
+}
+
+crate::for_each_lowering! {
+    fn no_too_large_body_of_a_level_gets_tables(lowering) {
+        let source = too_large_methods();
+        let (mut interpreter, root) = loaded_under(&source, lowering);
+        interpreter.enter(|mutator| {
+            let mixin = applied_mixin(mutator, &root);
+            let pairs = compile_level_again(mutator, &mixin, lowering).expect("the level");
+            let paired_bodies = paired(&pairs);
+            for selector in ["first", "second"] {
+                let code = method_code(&mixin, selector);
+                assert_eq!(
+                    paired_bodies.get(&(Rc::as_ptr(&code) as usize)),
+                    Some(&false),
+                    "{selector} pairs, without tables"
+                );
+            }
+        });
+    }
 }
 
 /// The code `code` and every block it creates.

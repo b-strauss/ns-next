@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use super::again::{compile_level, BodyOrigin, Member, PairedBodies};
-use super::BodyMetadata;
+use super::{address, BodyMetadata};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::interpreter::Mutator;
@@ -112,9 +112,4 @@ impl Cache {
     fn forget_dead(&mut self) {
         self.bodies.retain(|_, entry| entry.code.strong_count() > 0);
     }
-}
-
-/// A body's address, which names it while it lives.
-fn address(code: &Rc<CompiledCode>) -> usize {
-    Rc::as_ptr(code).addr()
 }

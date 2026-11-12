@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use ns_syntax::Span;
 
@@ -118,6 +119,27 @@ impl MetadataCollector {
             .insert(code.body().identity(), metadata);
     }
 
+    /// Drops the tables of `block` and of every block it creates,
+    /// transitively: the blocks of a body past a compiler limit, which
+    /// were recorded as they were finished and are dropped with their
+    /// creator. An entry left under a dropped body's identity would be
+    /// answered for the next body allocated there that records none -- a
+    /// body past a limit -- so the collector holds the tables of no body
+    /// but those the compilation still holds. A worklist, not a recursion,
+    /// as every walk of a family is.
+    pub(crate) fn forget_family(&self, block: &Rc<CompiledCode>) {
+        let mut bodies = self.bodies.borrow_mut();
+        let mut pending = vec![Rc::clone(block)];
+        while let Some(body) = pending.pop() {
+            bodies.remove(&body.body().identity());
+            pending.extend(
+                body.body()
+                    .created_blocks()
+                    .map(|created| Rc::clone(created.code)),
+            );
+        }
+    }
+
     /// Moves the entry of `from` to `onto`: a body cloned after it was
     /// compiled (the kernel's unwind marker).
     pub(crate) fn rekey(&self, from: &CompiledCode, onto: &CompiledCode) {
@@ -132,6 +154,18 @@ impl MetadataCollector {
     pub(crate) fn take(&self, code: &CompiledCode) -> Option<BodyMetadata> {
         self.bodies.borrow_mut().remove(&code.body().identity())
     }
+
+    /// Whether the collector holds no body's tables.
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bodies.borrow().is_empty()
+    }
+}
+
+/// A body's address, which names it while it lives: what the pairing,
+/// the cache and the check key a running body by.
+fn address(code: &Rc<CompiledCode>) -> usize {
+    Rc::as_ptr(code).addr()
 }
 
 #[cfg(test)]
