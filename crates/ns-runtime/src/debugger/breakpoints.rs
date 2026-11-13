@@ -59,10 +59,11 @@ pub(crate) struct Breakpoints {
     /// The stop the last `Breakpoint` arm decided, which the safepoint it
     /// left for takes.
     pending_stop: Option<PendingStop>,
-    /// What the handler search's leaves recorded for the next poll's
+    /// What the handler search's rows recorded for the next poll's
     /// safepoint (`debugger::exceptions`), the request bit
-    /// (`DEBUGGER_STOP`) leading it there: a leaf runs in the middle of a
-    /// stretch, machine code's included, which no leaf leaves.
+    /// (`DEBUGGER_STOP`) leading it there: each runs in the middle of a
+    /// stretch -- the leaf in machine code's, which no leaf leaves -- where
+    /// nothing is flooded and nothing stops.
     pending_exception: Option<PendingException>,
     /// Whether the debugger terminated the run, whose unwind runs the
     /// pending `ensure:` blocks: an exception one of them raises stops
@@ -420,13 +421,13 @@ impl Breakpoints {
         &self.exceptions
     }
 
-    /// Records what the handler search's leaves decided, which the next
+    /// Records what the handler search's rows decided, which the next
     /// poll's safepoint takes.
     pub(crate) fn request_exception_stop(&mut self, pending: PendingException) {
         self.pending_exception = Some(pending);
     }
 
-    /// What the handler search's leaves decided, taken.
+    /// What the handler search's rows decided, taken.
     pub(crate) fn take_pending_exception(&mut self) -> Option<PendingException> {
         self.pending_exception.take()
     }

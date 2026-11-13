@@ -13,8 +13,9 @@
 //! there leaves for the safepoint, which stops. A step patches one-shot
 //! breakpoints of the same table and, for a step into, holds a request
 //! bit the safepoint stops at a push for (`stepping.rs`). An exception
-//! breakpoint is decided by the handler search's leaves, which record the
-//! stop and ask the next poll for it (`exceptions.rs`).
+//! breakpoint is decided by the handler search's mirror rows, a leaf and
+//! an exit, which record the stop and ask the next poll for it
+//! (`exceptions.rs`).
 
 pub(crate) mod breakpoints;
 pub(crate) mod exceptions;

@@ -1,14 +1,15 @@
 //! Exception breakpoints (`docs/design/debugger.md`, "Exceptions"). The
 //! handler search of `Kernel.ns`'s `Exception` reports its outcome
-//! through two mirror leaves: no handler, just before it sends
+//! through two mirror rows: no handler, just before it sends
 //! `defaultAction` (`unhandled`), a leaf machine code calls without
 //! exiting, and the handler it found, just before that runs (`caught`),
-//! reported by the exit that reads the handler for the search. Each only
-//! decides and records: it runs no Newspeak code and collects nothing, and
+//! reported by the exit that reads the handler for the search. Beyond the
+//! handler the exit answers, each only decides and records, and only with
+//! a debugger attached: it runs no Newspeak code and collects nothing, and
 //! the class an exception breakpoint names is matched by walking the
-//! exception's class chain by declaration. What it decides is recorded on the `Mutator` and
-//! asked of the next poll through the request bit (`DEBUGGER_STOP`), whose
-//! safepoint serves it (`serve`): reports a handler found to a step in
+//! exception's class chain by declaration. What it decides is recorded on
+//! the `Mutator` and asked of the next poll through the request bit
+//! (`DEBUGGER_STOP`), whose safepoint serves it (`serve`): reports a handler found to a step in
 //! progress and stops once the frame the search runs next --
 //! `defaultAction`, the handler block, the `resume:` that resumes a `Halt`
 //! -- stands at its first instruction. At the stop, the stack trace shows
@@ -52,7 +53,7 @@ impl Default for ExceptionBreakpoints {
     }
 }
 
-/// What the handler search's leaves recorded for the next poll's
+/// What the handler search's rows recorded for the next poll's
 /// safepoint (`serve`): the stop an exception breakpoint asks for, and,
 /// for a handler found, its `on:do:` activation, which the safepoint
 /// reports to a step in progress, and its handler, whose first
@@ -144,7 +145,7 @@ pub(crate) fn caught<'gc>(
     request(mutator, pending);
 }
 
-/// What the safepoint does with what the leaves recorded: a handler found
+/// What the safepoint does with what the rows recorded: a handler found
 /// is reported to a step in progress (`stepping::handler_found`), once,
 /// where flooding is allowed; then the stop, if any, is answered -- but a
 /// caught exception's waits, recorded again with its request bit, while
@@ -212,7 +213,7 @@ fn still_searching(mutator: &Mutator<'_>, handler: Option<&Root>) -> bool {
     receives && selector.as_str() == "cull:"
 }
 
-/// Drops what the leaves recorded that no poll served, and the request
+/// Drops what the rows recorded that no poll served, and the request
 /// bit with it, and ends a termination: the run ended.
 pub(crate) fn drop_pending(mutator: &mut Mutator<'_>) {
     mutator.breakpoints.take_pending_exception();
