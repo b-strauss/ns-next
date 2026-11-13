@@ -2896,6 +2896,34 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// A step into taken in a fallback block steps in the block's
+    /// creator: the receiver's `ifTrue:` the block returns to was on the
+    /// stack already and is no push, so the step goes on to the creator's
+    /// next statement.
+    fn a_step_into_from_a_fallback_block_goes_on_in_its_creator(lowering) {
+        let offset = line_start(FALLING, "count:: count + 10].");
+        let (after, answer) = stepped(
+            FALLING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Falling", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Falling");
+                step(remote, Command::StepInto);
+                let after = standing(remote, FALLING);
+                continue_stopped(remote);
+                after
+            },
+        );
+        assert_eq!(
+            after,
+            (String::from("Falling>>check:"), String::from("^count"))
+        );
+        assert_eq!(answer, 11);
+    }
+}
+
 /// A loop whose condition and body only primitives answer.
 const COUNTED: &str = indoc! {"
     class Counted = Object new () (
@@ -2911,54 +2939,173 @@ const COUNTED: &str = indoc! {"
     ) : ()
 "};
 
+/// The statements `command` stops at, one step after another, from the
+/// breakpoint at `COUNTED`'s `total:: 0.` until `^total`, and the run's
+/// answer.
+fn loop_stops(lowering: Lowering, command: Command) -> (Vec<String>, i64) {
+    let offset = line_start(COUNTED, "total:: 0.");
+    stepped(
+        COUNTED,
+        lowering,
+        "run",
+        |remote| set_breakpoints(remote, "Counted", vec![offset]),
+        move |remote| {
+            expect_first_stop(remote, "Counted");
+            let mut statements = Vec::new();
+            loop {
+                step(remote, command.clone());
+                let (_, statement) = standing(remote, COUNTED);
+                let done = statement == "^total";
+                statements.push(statement);
+                if done || statements.len() > 20 {
+                    break;
+                }
+            }
+            continue_stopped(remote);
+            statements
+        },
+    )
+}
+
+/// The statements a step over or a step into stops at in `COUNTED`'s
+/// loop, under either lowering: the loop's own statement, which starts
+/// before its condition's, then each of the condition's and the body's
+/// once a pass.
+const COUNTED_STOPS: [&str; 9] = [
+    "[index < 2] whileTrue: [
+      index:: index + 1.
+      total:: total + index]",
+    "index < 2",
+    "index:: index + 1",
+    "total:: total + index",
+    "index < 2",
+    "index:: index + 1",
+    "total:: total + index",
+    "index < 2",
+    "^total",
+];
+
 ns_runtime::for_each_lowering! {
     /// Steps over a loop stop at each statement of its condition and its
     /// body once per pass, the loop's inlined statements flooded, and
     /// leave it for the statement after it.
     fn a_step_over_a_loop_with_no_send_does_not_stop_inside_it_more_than_once_per_statement(lowering) {
-        let offset = line_start(COUNTED, "total:: 0.");
-        let (statements, answer) = stepped(
-            COUNTED,
-            lowering,
-            "run",
-            |remote| set_breakpoints(remote, "Counted", vec![offset]),
-            |remote| {
-                expect_first_stop(remote, "Counted");
-                let mut statements = Vec::new();
-                loop {
-                    step(remote, Command::StepOver);
-                    let (_, statement) = standing(remote, COUNTED);
-                    let done = statement == "^total";
-                    statements.push(statement);
-                    if done || statements.len() > 20 {
-                        break;
-                    }
-                }
-                continue_stopped(remote);
-                statements
-            },
-        );
-        // The loop's own statement starts where its condition's does but
-        // under the reference lowering, which makes the blocks first.
-        let statements: Vec<&str> = statements
-            .iter()
-            .map(String::as_str)
-            .skip_while(|statement| statement.starts_with("[index < 2] whileTrue:"))
-            .collect();
-        assert_eq!(
-            statements,
-            [
-                "index < 2",
-                "index:: index + 1",
-                "total:: total + index",
-                "index < 2",
-                "index:: index + 1",
-                "total:: total + index",
-                "index < 2",
-                "^total",
-            ]
-        );
+        let (statements, answer) = loop_stops(lowering, Command::StepOver);
+        assert_eq!(statements, COUNTED_STOPS);
         assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Steps into a loop with no send stop where steps over it stop: a
+    /// step into taken in the loop's body, which the reference lowering
+    /// runs as a block, steps in the method, and no frame between the two
+    /// is taken for a push.
+    fn a_step_into_a_loop_with_no_send_stops_where_a_step_over_does(lowering) {
+        let (statements, answer) = loop_stops(lowering, Command::StepInto);
+        assert_eq!(statements, COUNTED_STOPS);
+        assert_eq!(answer, 3);
+    }
+}
+
+/// A fallback block whose receiver's `ifTrue:` runs it, then loops for
+/// good inside an `ensure:` that runs the block again, so that a step
+/// into taken in the block is still pending when the program is
+/// terminated, and the termination's unwind runs the block's flooded
+/// statements.
+const PENDING: &str = indoc! {"
+    class Pending = Object new () (
+      public run = (
+        ^self check: Spinner new
+      )
+      check: condition = (
+        | x |
+        condition ifTrue: [
+          x:: 1].
+        ^x
+      )
+      public class Spinner = Object new () (
+        public ifTrue: block = (
+          | turns |
+          block value.
+          turns:: 0.
+          [[true] whileTrue: [turns:: turns + 1]] ensure: block.
+          ^nil
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A termination while a step into is pending ends the step: the
+    /// `ensure:` block the unwind runs, the stepping frame's flooded
+    /// fallback block, makes no stop, and the run ends terminated.
+    fn a_terminate_during_a_step_ends_the_step(lowering) {
+        let (mut interpreter, instance) = instance_of(PENDING, lowering);
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Pending", vec![line_start(PENDING, "x:: 1].")]);
+        let (events, result, _) = debugged_by(
+            remote,
+            |remote| {
+                expect_first_stop(remote, "Pending");
+                // Only the step's one-shots stand in the block from here.
+                set_breakpoints(remote, "Pending", Vec::new());
+                expect_breakpoints(remote, "Pending");
+                remote.send(Command::StepInto);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the confirmation of the step was expected, not {other:?}"),
+                }
+                // Long enough for the block to return into the loop.
+                thread::sleep(PAUSE_DELAY);
+                remote.send(Command::Terminate);
+                let mut events = Vec::new();
+                // A stop is continued, so that a wrong one fails the
+                // assertion rather than leaving the unwind stopped.
+                while let Some(event) = remote.next_event(Duration::from_millis(500)) {
+                    if let Event::Stopped { .. } = event {
+                        remote.send(Command::Continue);
+                    }
+                    events.push(event);
+                }
+                events
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_no_stop(&events);
+        assert_terminated(result);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over begun at a pause the run's first push stopped at, its
+    /// frame standing at its first statement start, which the flood
+    /// patches, stops at the next statement, not where it stands.
+    fn a_step_over_after_a_pause_at_a_push_stops_at_the_next_statement(lowering) {
+        let (mut interpreter, instance) = instance_of(STEPPING, lowering);
+        let remote = interpreter.attach_debugger();
+        remote.pause();
+        let ((before, after), result, _) = debugged_by(
+            remote,
+            |remote| {
+                expect_paused(remote);
+                let before = standing(remote, STEPPING);
+                step(remote, Command::StepOver);
+                let after = standing(remote, STEPPING);
+                continue_stopped(remote);
+                (before, after)
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(
+            before,
+            (String::from("Stepping>>compute"), String::from("a:: 3"))
+        );
+        assert_eq!(
+            after,
+            (String::from("Stepping>>compute"), String::from("a:: a + 4"))
+        );
+        assert_eq!(answered(&mut interpreter, result), 14);
     }
 }
 

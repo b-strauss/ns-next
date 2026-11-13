@@ -492,6 +492,10 @@ impl Interpreter {
     /// its eliminated blocks made, before the unwind pops it.
     fn terminate(&mut self) -> Served {
         self.clear_debugger_bits(DEBUGGER_PAUSE);
+        // A step in progress ends with the run: its request would lower
+        // the depth limit for the `ensure:` blocks the unwind runs, and
+        // stop in one of them after the termination.
+        self.enter(stepping::end);
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         Served::Terminate
     }

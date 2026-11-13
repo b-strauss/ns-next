@@ -17,7 +17,7 @@
 use std::rc::Rc;
 use std::sync::PoisonError;
 
-use super::breakpoints::{settle, OneShot};
+use super::breakpoints::{address, settle, OneShot, PastOnce};
 use super::metadata::{again::BodyOrigin, BodyMetadata, Cache};
 use super::stack;
 use crate::bytecode::{register_written, CompiledCode, Instruction};
@@ -66,11 +66,16 @@ impl Holder {
 /// first, and the step ends there.
 pub(crate) struct Stepping {
     action: StepAction,
-    /// The frame the step was taken in.
+    /// The frame the step steps in.
     frame: Holder,
-    /// Where it lies on the stack (`Heap::activation_position`), while it
-    /// runs: a frame above it is one it pushed.
-    position: Option<usize>,
+    /// The frames between the one the step was taken in and the stepping
+    /// frame, its creator, when the step was taken in a block the
+    /// compiler lowered inline: the receiver's `ifTrue:` that runs a
+    /// fallback block, with their positions while they run. They are on
+    /// the stack already, so none of them is a push of the step's; each
+    /// goes from the list once the top lies below it, so that a frame the
+    /// stepping frame pushes later at its offset is one.
+    between: Vec<(Holder, Option<usize>)>,
     /// Every body whose statement starts the step patched for the
     /// stepping frame: its own and its inlined blocks'.
     flooded: Vec<Rc<CompiledCode>>,
@@ -106,6 +111,18 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction) {
     };
     start(mutator, action, top, None);
     settle(mutator);
+    // The top frame fetches the slot it stands at again as it goes on,
+    // which the flood may just have patched -- a pause at a push leaves a
+    // callee at its first statement start, one at a backward jump at its
+    // loop's head: the step lets it past once, so that it stops at the
+    // next place, not where it stands.
+    let code = mutator.heap.activation_code(top);
+    let standing = PastOnce {
+        activation: top,
+        body: address(&code),
+        index: mutator.heap.activation_program_counter(top),
+    };
+    mutator.breakpoints.go_past_once(standing);
 }
 
 /// Ends the step, if one is in progress: every one-shot is removed, each
@@ -165,12 +182,17 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
 }
 
 /// The safepoint of a step into that holds its request: a frame on top
-/// other than the stepping frame and above it is a push -- not a program
-/// counter of 0, which a backward jump to the stepping body's first
-/// instruction, or a frame `retry` restarted, also shows -- unless it
-/// runs a block the step floods for the stepping frame, which stands for
-/// that frame's inline code; and the request goes. A stepping frame
-/// suspended into its frame lies below the top. The push stops at the
+/// that the stepping frame, or a block the step flooded for it, sent to
+/// -- its sender is one of them -- is a push, and the request goes; not a
+/// frame with a `program_counter` of 0, which a backward jump to the
+/// stepping body's first instruction, or a frame `retry` restarted, also
+/// shows, nor merely a frame above the stepping one: a step taken in a
+/// block the compiler lowered inline steps in the block's creator, and
+/// the frames between the two -- the receiver's `ifTrue:`, a
+/// `whileTrue:`'s -- and whatever they send to are not the step's. A
+/// flooded block itself stands for the stepping frame's inline code and
+/// is no push either, nor a frame between the one the step was taken in
+/// and the stepping frame, which was there already. The push stops at the
 /// pushed body's first statement start: here, where its frame stands at
 /// index 0, or at a one-shot at index 1 for a body whose first
 /// instruction makes its indirection vector (`MakeVector`, emitted before
@@ -184,22 +206,37 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     let Some(top) = mutator.heap.top_activation() else {
         return HeldStep::GoOn;
     };
-    let above = stepping
-        .position
-        .is_none_or(|position| mutator.heap.activation_position(top) > position);
-    if stepping.action != StepAction::Into || !above {
+    if stepping.action != StepAction::Into {
+        return HeldStep::GoOn;
+    }
+    let top_position = mutator.heap.activation_position(top);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping
+            .between
+            .retain(|(_, position)| position.is_none_or(|position| position <= top_position));
+    }
+    let Some(stepping) = &mutator.stepping else {
+        return HeldStep::GoOn;
+    };
+    let was_there = stepping
+        .between
+        .iter()
+        .any(|(held, _)| held.is(Holder::Running(top)));
+    if was_there || inline_code_of_step(mutator, top) {
+        return HeldStep::GoOn;
+    }
+    let heap = &mutator.heap;
+    let pushed = match heap.activation_suspended_sender(top) {
+        Some(sender) => suspended_key(mutator, sender)
+            .is_some_and(|key| stepping.frame.is(Holder::Suspended(key))),
+        None => heap.activation_sender(top).is_some_and(|sender| {
+            stepping.frame.is(Holder::Running(sender)) || inline_code_of_step(mutator, sender)
+        }),
+    };
+    if !pushed {
         return HeldStep::GoOn;
     }
     let code = mutator.heap.activation_code(top);
-    let holder = stepping.frame;
-    if stepping
-        .flooded
-        .iter()
-        .any(|flooded| Rc::ptr_eq(flooded, &code))
-        && takes(mutator, holder, top)
-    {
-        return HeldStep::GoOn;
-    }
     drop_request(mutator);
     let first = usize::from(
         code.instruction_count() > 1
@@ -225,6 +262,20 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     );
     settle(mutator);
     HeldStep::GoOn
+}
+
+/// Whether `activation` runs a block the step flooded for the stepping
+/// frame, which stands for that frame's inline code.
+fn inline_code_of_step(mutator: &Mutator<'_>, activation: ActivationReference) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return false;
+    };
+    let code = mutator.heap.activation_code(activation);
+    stepping
+        .flooded
+        .iter()
+        .any(|flooded| Rc::ptr_eq(flooded, &code))
+        && takes(mutator, stepping.frame, activation)
 }
 
 /// Whether a one-shot for `holder` is taken in `running`: in that
@@ -300,6 +351,7 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
     };
     let mut named = mutator.breakpoints.one_shot_holders();
     named.push(stepping.frame);
+    named.extend(stepping.between.iter().map(|(held, _)| *held));
     named.extend(stepping.return_point.map(|(caller, _)| caller));
     // Walked over the live activations, which alone may be read: a handle
     // the step holds is compared, never read through.
@@ -313,7 +365,7 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
         if named.iter().any(|held| held.is(Holder::Running(live))) {
             let frame = mutator.heap.reify(live);
             let key = hold(mutator, frame);
-            rename(mutator, Holder::Running(live), Holder::Suspended(key), None);
+            rename(mutator, Holder::Running(live), Holder::Suspended(key));
         }
         if suspended_sender {
             break;
@@ -336,13 +388,15 @@ pub(crate) fn resumed<'gc>(
     if let Some(stepping) = &mut mutator.stepping {
         stepping.suspended.retain(|(held, _)| *held != key);
     }
+    rename(mutator, Holder::Suspended(key), Holder::Running(activation));
     let position = mutator.heap.activation_position(activation);
-    rename(
-        mutator,
-        Holder::Suspended(key),
-        Holder::Running(activation),
-        Some(position),
-    );
+    if let Some(stepping) = &mut mutator.stepping {
+        for (held, held_position) in &mut stepping.between {
+            if held.is(Holder::Running(activation)) {
+                *held_position = Some(position);
+            }
+        }
+    }
 }
 
 /// The key the step holds the suspended `frame` by, if it does.
@@ -381,13 +435,17 @@ fn hold<'gc>(mutator: &mut Mutator<'gc>, frame: FrameReference<'gc>) -> u32 {
 }
 
 /// Every name `from` of the step's is `onto` from here on: the stepping
-/// frame's, at `position` when it runs, its return point's and its
-/// one-shots'.
-fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder, position: Option<usize>) {
+/// frame's, its return point's and its one-shots'.
+fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
     if let Some(stepping) = &mut mutator.stepping {
         if stepping.frame.is(from) {
             stepping.frame = onto;
-            stepping.position = position;
+        }
+        for (held, position) in &mut stepping.between {
+            if held.is(from) {
+                *held = onto;
+                *position = None;
+            }
         }
         if let Some((caller, index)) = stepping.return_point {
             if caller.is(from) {
@@ -411,7 +469,7 @@ fn start(
     mutator.stepping = Some(Box::new(Stepping {
         action,
         frame: Holder::Running(top),
-        position: None,
+        between: Vec::new(),
         flooded: Vec::new(),
         return_point: None,
         returned,
@@ -419,13 +477,10 @@ fn start(
         next_key: 0,
     }));
     let (frame, body) = stepping_frame(mutator, top);
-    let position = match frame {
-        Holder::Running(activation) => Some(mutator.heap.activation_position(activation)),
-        Holder::Suspended(_) => None,
-    };
+    let between = frames_between(mutator, top, frame);
     if let Some(stepping) = &mut mutator.stepping {
         stepping.frame = frame;
-        stepping.position = position;
+        stepping.between = between;
     }
     if action != StepAction::Out {
         flood(mutator, frame, body);
@@ -434,6 +489,42 @@ fn start(
     if action == StepAction::Into {
         hold_request(mutator);
     }
+}
+
+/// The frames from `top` down to the stepping frame `frame`, which
+/// `top` lies above, with their positions while they run: none when the
+/// step steps in `top` itself. Below a suspended sender the walk goes on
+/// over the suspended frames, each held by the step as the stepping frame
+/// may be.
+fn frames_between(
+    mutator: &mut Mutator<'_>,
+    top: ActivationReference,
+    frame: Holder,
+) -> Vec<(Holder, Option<usize>)> {
+    let mut between = Vec::new();
+    let mut next = Some(top);
+    let mut suspended = None;
+    while let Some(live) = next {
+        if frame.is(Holder::Running(live)) {
+            return between;
+        }
+        let heap = &mutator.heap;
+        between.push((Holder::Running(live), Some(heap.activation_position(live))));
+        if let Some(sender) = heap.activation_suspended_sender(live) {
+            suspended = Some(sender);
+            break;
+        }
+        next = heap.activation_sender(live);
+    }
+    while let Some(sender) = suspended {
+        let held = Holder::Suspended(hold(mutator, sender));
+        if frame.is(held) {
+            break;
+        }
+        between.push((held, None));
+        suspended = mutator.heap.frame_sender(sender);
+    }
+    between
 }
 
 /// A frame's body, which declaration it belongs to, and its metadata

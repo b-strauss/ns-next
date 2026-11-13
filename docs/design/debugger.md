@@ -598,7 +598,9 @@ collection, and clears the VM's request; the run loop goes on from the
 frame the stretch left, a frame the stop deoptimized in baseline code.
 
 `Terminate` -- at a stop, or drained while the program runs -- clears a
-pause still pending, which the end of the run makes moot, makes the frame
+pause still pending, which the end of the run makes moot, ends a step in
+progress, whose request would lower the depth limit for the `ensure:`
+blocks the unwind runs and whose one-shots would stop in them, makes the frame
 an optimized poll left go on in baseline code, so that the unwind pops
 interpreter frames, and makes `Interpreter::safepoint` answer
 `SafepointOutcome::Terminate` at once, the rest of the safepoint undone: a
@@ -1082,8 +1084,13 @@ stage's tests, do not.
   deeper one stopping in its caller; a step over a non-Boolean receiver's
   `ifTrue:` stopping in the fallback block and going on in its creator;
   a step over at a method's last statement stopping at the caller's
-  return point; and steps over a loop stopping at each of its statements
-  once per pass. Each also passes under every stress mode, the suspend
+  return point; steps over and steps into a loop stopping at each of
+  its statements once per pass; a step into taken in a fallback block
+  going on in its creator, past the receiver's `ifTrue:`; a `Terminate`
+  while a step into is pending ending the step, the `ensure:` block the
+  unwind runs making no stop; and a step over begun at a pause at a push
+  stopping at the callee's next statement, not where it stands. Each
+  also passes under every stress mode, the suspend
   stress mode's suspensions included.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
@@ -1923,7 +1930,12 @@ beside the line kind (`breakpoints::OneShot`), so that a slot holding
 both is restored only when the last goes, and every step's patches
 change through the table's `settle`: their bodies lose their machine
 code for the step and are compiled again once it ends, with every
-optimized copy that inlined them. The next stop ends the step
+optimized copy that inlined them. The top frame fetches the slot it
+stands at again as it goes on, which the flood may just have patched --
+a pause at a push leaves a callee at its first statement start, one at a
+backward jump at its loop's head -- so `begin` sets the past-once token
+for it ("Stopping at and going past a breakpoint"), and the step stops at
+the next place, not where it stands. The next stop ends the step
 (`stepping::end`), whatever made it -- the step's own one-shot, a
 breakpoint, a pause -- every one-shot removed; a stop at a slot only a
 one-shot stops at reports `StopReason::Step`, and one a line breakpoint
@@ -1987,12 +1999,18 @@ one-shot breakpoint ends the step, and machine code's loop-head poll
 exits at each. The bit is one of `LOWERS_DEPTH_LIMIT`, as the pause bit
 is ("The poll words as atomics"), so that a compiled prologue refuses
 the push and the interpreter's push takes the safepoint before the
-callee runs. The safepoint recognizes a push by a frame on top other
-than the stepping frame and above it -- not by a `program_counter` of 0,
-which a backward jump to the stepping body's first instruction, or a
-frame `retry` restarted, also shows -- unless the frame runs a block the
-step flooded for the stepping frame, which stands for that frame's
-inline code. The push drops the bit and stops at the new body's first
+callee runs. The safepoint recognizes a push by a frame on top whose
+sender is the stepping frame or a block the step flooded for it -- not by
+a `program_counter` of 0, which a backward jump to the stepping body's
+first instruction, or a frame `retry` restarted, also shows, nor by a
+frame merely above the stepping one: a step taken in an inlined block
+steps in the block's creator, and the frames between the two, the
+receiver's `ifTrue:` among them, and what they send to are not the
+step's. A frame that runs a flooded block stands for the stepping
+frame's inline code and is no push, nor is a frame that lay between the
+one the step was taken in and the stepping frame when the step began,
+which goes from that list once the top lies below it, so that a frame
+the stepping frame pushes later at its offset is a push. The push drops the bit and stops at the new body's first
 statement start: at once when its frame stands there, at index 0, and
 through a one-shot for the pushed frame at index 1 for a body -- a
 method's or a block's -- whose first instruction makes its indirection

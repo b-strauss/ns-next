@@ -302,15 +302,17 @@ impl Breakpoints {
         if !held {
             patch.kinds.push(kind);
         }
-        if code.is_patched(index) {
-            return;
-        }
-        if !code.has_patches() {
-            if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
+        // The fast path goes off with the first patch that names its
+        // method, whatever patched the body before: a one-shot names none.
+        if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
+            if !self.switched_off.contains_key(&address(code)) {
                 method.switch_fast_path(false);
                 self.fast_paths_switched = true;
                 self.switched_off.insert(address(code), Rc::clone(method));
             }
+        }
+        if code.is_patched(index) {
+            return;
         }
         code.patch(index);
         self.changed.push(Rc::clone(code));
