@@ -75,6 +75,18 @@ fn stress_suite_runs() -> Vec<(String, String)> {
     runs
 }
 
+/// The nextest arguments of the stress group's run named `mode`: the
+/// profile `stress` (`.config/nextest.toml`), and `debug_metadata` left
+/// out but under WIDE, since it runs no program and only WIDE changes what
+/// it compiles.
+fn stress_suite_arguments(mode: &str) -> Vec<&'static str> {
+    let mut arguments = vec!["nextest", "run", "--workspace", "--profile", "stress"];
+    if mode != "WIDE" {
+        arguments.extend(["-E", "not binary(debug_metadata)"]);
+    }
+    arguments
+}
+
 /// Where `ns-runtime`'s `build.rs` looks for the shipped modules' compiled
 /// mixins, relative to the repository root.
 const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
@@ -790,8 +802,7 @@ fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result
         let error_log = log
             .try_clone()
             .map_err(|error| format!("{}: {error}", log_path.display()))?;
-        let step =
-            Step::cargo("", &["nextest", "run", "--workspace"]).with_environment(variable, "1");
+        let step = Step::cargo("", &stress_suite_arguments(mode)).with_environment(variable, "1");
         let child = command_of(&step, root)
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log))
@@ -1144,6 +1155,21 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             runs.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names.len(), runs.len(), "every run has a log of its own");
+    }
+
+    #[test]
+    fn every_stress_run_uses_the_stress_profile_and_only_wide_checks_the_metadata() {
+        for (mode, _) in stress_suite_runs() {
+            let arguments = stress_suite_arguments(&mode);
+            assert!(
+                arguments
+                    .windows(2)
+                    .any(|pair| pair == ["--profile", "stress"]),
+                "{mode} runs the stress profile"
+            );
+            let checks_metadata = !arguments.contains(&"not binary(debug_metadata)");
+            assert_eq!(checks_metadata, mode == "WIDE", "{mode}");
+        }
     }
 
     #[test]

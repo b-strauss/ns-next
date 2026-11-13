@@ -57,3 +57,30 @@ default-filter = "test(/^golden_with_a_two_entry_global_cache::/)"
 
 [profile.hints]
 default-filter = "binary(hinted_goldens) and not test(/^hinted::[a-z]+::benchmarks\\//)"
+
+# The suite under a stress mode or without the JIT (`cargo xtask gates
+# stress`, which runs sixteen of them at once, so the gate's time is the
+# work of all of them, plus the tail of the slowest tests where a mode makes
+# a few of them run for minutes; `docs/OPEN-WORK.md`, "The stress gate's
+# time"). It leaves out the crates no stress mode reaches -- the switches
+# are read only by `ns-runtime`, which these crates do not run -- and
+# starts the tests that ended alone in a measured run (2026-11-13) first,
+# so that they overlap the rest. `cargo xtask gates stress` also leaves
+# `ns-cli`'s `debug_metadata`, which runs no program, to the WIDE run, the
+# one mode that changes what it compiles.
+[profile.stress]
+default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/)) and not (package(ns-syntax) | package(ns-memory) | package(ns-assembler) | package(xtask))"
+
+[[profile.stress.overrides]]
+filter = '''
+(binary(run_goldens) and test(/^golden::reference::runtime\//))
+| test(a_key_refused_for_good_does_not_starve_another_key)
+| test(a_long_chain_of_futures_)
+| test(a_pass_that_overruns_the_reserve_ends_the_run_with_the_passed_error)
+| test(the_depth_limit_)
+| test(a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack)
+| test(a_counting_loop_runs_in_machine_code)
+| test(a_sawtooth_of_recursions_does_not_thrash)
+| test(a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned)
+'''
+priority = 100

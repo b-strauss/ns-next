@@ -425,7 +425,7 @@ regression. Which gate runs when -- every commit, a commit touching a given
 part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
 place it is kept; the suite there is every crate's, ns-analyzer's included,
 whose `disasm` and `inspect` tests guard the compiler's output and the image
-format. The stress modes run the whole suite again, each with one of the
+format. The stress modes run the suite again, each with one of the
 runtime's own stress switches set, and the stress gate runs it once more
 with the JIT off, the one run in which the interpreter runs every body:
 
@@ -449,16 +449,21 @@ NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every bod
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
 # `cargo xtask gates stress` runs the sixteen suites at once, each into its own
-# log, `.temp/stress-NO_JIT.log` the last's
+# log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
+# (`.config/nextest.toml`): without the crates no switch reaches (`ns-syntax`,
+# `ns-memory`, `ns-assembler`, `xtask`), `ns-cli`'s `debug_metadata`, which
+# runs no program, only under WIDE, and the tests that ended a measured run
+# alone started first
 ```
 
 How long the end of a batch takes, each group run alone with `cargo xtask
 gates <group>`, its builds included, on the development machine on
 2026-10-29: `images` 14 s, `caches` 4 s, `benchmarks` 70 s,
 `release-checks` 49 s, `codegen` 61 s (about 6 s of it the shipped-code
-step its build needed), and on 2026-11-13 `stress` about 1,650 s --
-1,642 s the suite under the fifteen modes it runs and with the JIT off
-at once, and `run-corpus` plain and under each mode a few seconds more
+step its build needed), and on 2026-11-13 `stress` about 1,250 s --
+1,233 s the suite under the fifteen modes it runs and with the JIT off
+at once, in the profile `stress` (1,642 s before it, on the whole
+suite), and `run-corpus` plain and under each mode a few seconds more
 -- and on 2026-11-04, in Docker
 with a warm image and build directory, `linux` about two and a half
 minutes (the copy 4 s, the suite 47 s, the benchmark programs 86 s) and
