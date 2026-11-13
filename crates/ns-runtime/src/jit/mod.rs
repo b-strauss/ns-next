@@ -7631,16 +7631,18 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
-    if let MachineExit::Reexecute { program_counter } = exit {
-        if mutator
+    let at_a_breakpoint = match exit {
+        MachineExit::Reexecute { program_counter } => mutator
             .heap
             .activation_code(innermost)
-            .is_patched(program_counter as usize)
-        {
-            mutator.jit.statistics.breakpoint_exits += 1;
-        }
+            .is_patched(program_counter as usize),
+        _ => false,
+    };
+    if at_a_breakpoint {
+        mutator.jit.statistics.breakpoint_exits += 1;
     }
     let circumstances = ExitCircumstances {
+        at_a_breakpoint,
         real_request: mutator.heap.real_safepoint_requested(),
         forced,
         refused_for_an_uncompiled_callee: std::mem::take(
@@ -7753,13 +7755,15 @@ fn resumption_after_exit(
 }
 
 /// What beside an exit itself decides whether it counts against an exit
-/// budget (`exit_counts`): whether a real safepoint request stands,
-/// whether the deopt stress mode forced it, whether the miss leaf refused
-/// the call for a callee with no machine code yet, and whether the JIT
-/// stress mode installs every body whatever it exits at.
+/// budget (`exit_counts`): whether it stood at a slot a breakpoint
+/// patched, whether a real safepoint request stands, whether the deopt
+/// stress mode forced it, whether the miss leaf refused the call for a
+/// callee with no machine code yet, and whether the JIT stress mode
+/// installs every body whatever it exits at.
 #[cfg(ns_jit)]
 #[derive(Clone, Copy, Default)]
 struct ExitCircumstances {
+    at_a_breakpoint: bool,
     real_request: bool,
     forced: bool,
     refused_for_an_uncompiled_callee: bool,
@@ -7815,11 +7819,14 @@ fn exit_counts(exit: stubs::MachineExit, circumstances: ExitCircumstances) -> bo
             }
         );
     // The stress mode enters every body at every push, however often it
-    // leaves.
+    // leaves. An exit at a breakpoint's patch is the debugger's, not the
+    // code's: counted, a body stopped at often would be abandoned, and
+    // revived later, after the breakpoint is gone, for the user's stops.
     matches!(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
     ) && !circumstances.installed_whatever_it_exits_at
+        && !circumstances.at_a_breakpoint
         && !circumstances.forced
         && !refused_for_a_request
         && !refused_for_its_inlining
@@ -9570,8 +9577,9 @@ mod tests {
         /// safepoint request at the depth limit word -- the request lowered
         /// it, whatever the depth -- nor one refused for the inlined scopes
         /// of optimized code, nor a call refused for an uncompiled callee,
-        /// nor a forced exit, nor any exit under the JIT stress mode; and
-        /// never a poll, a trap or a budget's run-out.
+        /// nor a forced exit, nor an exit at a breakpoint's patch, nor any
+        /// exit under the JIT stress mode; and never a poll, a trap or a
+        /// budget's run-out.
         #[test]
         fn only_exits_that_say_something_of_the_code_count() {
             use crate::jit::stubs::MachineExit;
@@ -9619,6 +9627,11 @@ mod tests {
                 ..plain
             };
             assert!(!exit_counts(reexecute, stress));
+            let at_a_breakpoint = ExitCircumstances {
+                at_a_breakpoint: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, at_a_breakpoint));
             for exit in [
                 MachineExit::Safepoint { program_counter: 3 },
                 MachineExit::Trap {

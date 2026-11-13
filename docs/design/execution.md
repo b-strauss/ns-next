@@ -13825,7 +13825,9 @@ the baseline JIT's foundation moved" that of the first two.
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll, nor a call refused for a callee not compiled yet
-    that the zone has room for ("Exits, abandonment and the code zone")
+    that the zone has room for ("Exits, abandonment and the code zone"),
+    nor an exit at a slot a breakpoint patched, which is the debugger's
+    ([debugger.md](debugger.md), "Where the original lives")
     -- is **abandoned** (`jit::abandon`,
     `JitStatistics::abandoned_bodies`): it is settled abandoned
     (`FIRST_ABANDONED` to `LAST_ABANDONED`), so

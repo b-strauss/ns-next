@@ -2245,9 +2245,11 @@ the decoded view answers it (`EncodedBody::original`), and
 it hands an instruction to `lower`, and lowers a patched index as an
 exit (`Lowering::Exit`), which hands the frame to the interpreter at the
 slot, whose `Breakpoint` arm stops there; the exit counts in
-`JitStatistics::breakpoint_exits`, and against the body's exit budget as
-any exit at an instruction does, and a body whose patch it reaches
-before any transfer exits at once and is not installed. The optimizing
+`JitStatistics::breakpoint_exits` and against no exit budget
+(`jit::exit_counts`) -- it is the debugger's, not the code's, and
+counted it would abandon a body stopped at often, to be revived late
+after the breakpoint is gone -- and a body whose patch it reaches before
+any transfer exits at once and is not installed. The optimizing
 tier neither optimizes nor inlines a body with a patched slot: `optimize`
 puts a patched body's request off, re-arming its budget rather than
 recording a refusal, so that it is optimized once its breakpoints are

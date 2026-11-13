@@ -2005,13 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *A breakpoint's exits count toward abandonment*: an exit at a
-      patched slot counts against the body's exit budget as any exit
-      does, and `forget` keeps `abandonments`, so a body stopped at often
-      in machine code may be abandoned, and is revived later than it
-      would have been, after the breakpoint is gone
-      ([debugger.md](design/debugger.md), "Where the original lives";
-      [execution.md](design/execution.md), "When a body is compiled").
     - *A pending method exit is dropped at an exception stop*: a method
       breakpoint's exit an unwind reported, waiting for the step that
       stops where the program goes on, is dropped when an exception's

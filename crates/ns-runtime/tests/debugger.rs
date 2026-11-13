@@ -2300,7 +2300,7 @@ fn compiled(source: &str, lowering: Lowering) -> (Interpreter, Root, Root) {
 
 /// A loop whose every pass notes its index, a compiled send, and bumps
 /// the count, a statement of its own: `warm` runs it 2,000 times, `run`
-/// three times.
+/// three times, `long` a hundred times.
 const COMPILED_LOOP: &str = indoc! {"
     class CompiledLoop = Object new (
       | count ::= 0. |
@@ -2310,6 +2310,9 @@ const COMPILED_LOOP: &str = indoc! {"
       )
       public run = (
         ^self loop: 3
+      )
+      public long = (
+        ^self loop: 100
       )
       loop: turns = (
         1 to: turns do: [:index |
@@ -2359,6 +2362,44 @@ ns_runtime::for_each_lowering! {
             assert!(
                 after.breakpoint_exits > before.breakpoint_exits,
                 "machine code exited at the patched statement: {before:?} {after:?}"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint's exits are the debugger's, not the code's failing:
+    /// a compiled loop stopped at more passes than its body's exit
+    /// budget allows exits is never abandoned for them.
+    fn a_breakpoint_s_exits_do_not_abandon_the_body(lowering) {
+        const PASSES: i64 = 100;
+        let (mut interpreter, instance, _) = compiled(COMPILED_LOOP, lowering);
+        assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+        let before = interpreter.jit_statistics();
+        let offset = line_start(COMPILED_LOOP, "self bump].");
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "CompiledLoop", vec![offset]);
+        let ((), result, _) = debugged_by(
+            remote,
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "CompiledLoop"));
+                for _ in 0..PASSES {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+            },
+            || interpreter.send(&instance, Symbol::intern("long"), &[]),
+        );
+        assert_eq!(answered(&mut interpreter, result), 2000 + PASSES);
+        let after = interpreter.jit_statistics();
+        if runs_in_machine_code(lowering) {
+            assert_eq!(
+                after.abandoned_bodies, before.abandoned_bodies,
+                "no body was abandoned for the breakpoint's exits: {before:?} {after:?}"
+            );
+            assert!(
+                after.breakpoint_exits - before.breakpoint_exits >= 65,
+                "machine code exited at the patch more often than a body's exit budget allows: {before:?} {after:?}"
             );
         }
     }
