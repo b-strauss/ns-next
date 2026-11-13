@@ -2699,8 +2699,8 @@ does nothing and answers what its failure block would, false, and
 with one attached the caught row answers the handler all the same and
 records the catch beside it. A handler it cannot read -- the activation
 not running, or no `on:do:` marker's -- makes it record nothing and
-decline, so that its failure block answers nil. So an exception behaves as it
-does without the debugger; and
+decline, so that its failure block answers nil. So an exception behaves
+as it does without the debugger; and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
 stops nothing; nor does an exception an `ensure:` block of the
@@ -2752,16 +2752,26 @@ above it; with step filters (decision 16) that is the first frame below
 it they do not filter, the first frame of program code
 (`exceptions::first_shown`). The frames above it are marked
 `FrameDescription::hidden`, never dropped, so that a frame's index is
-the same at every stop, and a step taken at the stop steps from the frame
-shown first (decision 16; `stepping::begin`). Going on lets `defaultAction` run, which ends
-the program for every exception whose class does not override it, as its
+the same at every stop, and a step taken at the stop steps from the
+frame shown first (decision 16; `stepping::begin`). Going on lets
+`defaultAction` run, which ends the program for every exception whose class does not override it, as its
 `terminate…` leaf does without a debugger, resumable ones included; a
 `Halt` and a declined `MessageNotUnderstood` are handled as below.
 Whether a handler takes an exception is decided by Newspeak code
 (`handles:`), so "caught" is known only once the search found one: a
 caught-exception breakpoint, off by default, stops where the search
 invokes the handler it found (`invokeHandlerAt:disabling:`), before the
-handler runs, `caught: true`. A class filter -- `ClassName`s, as the step
+handler runs, `caught: true`. Execution stands in the handler, about to
+run it, so that stop shows the handler block on top first, the
+exception's machinery between it and the raising frame hidden -- the
+kernel's `cull:`, `invokeHandlerAt:disabling:`, `invokeNextHandler`,
+`signal`, `signal:` or `pass` -- and the frame `exceptions::first_shown`
+answers below the machinery shown next (`exceptions::hidden`); a step
+taken there steps in the handler block, as from any frame it stood in.
+Only an uncaught exception's and a `Halt`'s stop step from the frame
+below the machinery. A handler whose `cull:` a fast path answered pushed
+nothing, and its stop stands in the machinery frame the program goes on
+in, which stays shown on top. A class filter -- `ClassName`s, as the step
 filters name a declaration -- is decided in Rust by walking the
 exception's class chain by declaration, each level's applied mixin and
 body-less declaration as `Class>>handles:` reads them

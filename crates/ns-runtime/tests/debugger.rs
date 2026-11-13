@@ -5579,24 +5579,101 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the caught-exception breakpoint on, a caught exception stops
-    /// where the search is about to run the handler it found, the method
-    /// that signalled it shown first; going on runs the handler.
+    /// where the search is about to run the handler it found: the handler
+    /// block on top, at its first instruction, is shown first, the
+    /// exception's machinery between it and the method that signalled it
+    /// hidden, and that method shown next; going on runs the handler.
     fn a_caught_exception_stops_only_with_caught_on(lowering) {
-        let ((reason, shown), result) = raised(
+        let ((reason, frames), result) = raised(
             CATCHING,
             lowering,
             |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
             |remote| {
                 expect_exception_breakpoints_set(remote);
                 let reason = expect_stop(remote);
-                let shown = first_shown(&stack_trace(remote));
+                let frames = stack_trace(remote);
                 continue_stopped(remote);
-                (reason, shown)
+                (reason, frames)
             },
         );
         assert_eq!(reason, exception("Error", "boom", true));
-        assert_eq!(shown, "Catching>>boom");
+        let raising = frame_named(&frames, "Catching>>boom");
+        assert_eq!(frames[0].name, "[] in Catching>>run");
+        assert_eq!(frames[0].program_counter, 0);
+        assert!(!frames[0].hidden, "the handler block is shown");
+        assert!(raising > 1, "machinery lies between: {:?}", frame_names(&frames));
+        assert!(
+            frames[1..raising].iter().all(|frame| frame.hidden),
+            "the machinery is hidden: {frames:?}"
+        );
+        assert!(frames[raising..].iter().all(|frame| !frame.hidden));
         assert_eq!(result, Ok(7));
+    }
+}
+
+/// A handler block of two statements, which takes the `Error` a method
+/// signals inside the protected block of a statement followed by another.
+const HANDLING: &str = indoc! {"
+    class Handling = Object new () (
+      public run = (
+        | answer |
+        answer:: [self boom] on: Error do: [:error |
+          | partial |
+          partial:: 3.
+          partial + 4].
+        ^answer + 1
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+    ) : ()
+"};
+
+/// Takes the step `command` at the caught stop of `HANDLING` and answers
+/// the frame and statement it stops at, and the run's outcome.
+fn stepped_from_a_catch(
+    lowering: Lowering,
+    command: Command,
+) -> ((String, String), Result<i64, String>) {
+    raised(
+        HANDLING,
+        lowering,
+        |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
+        move |remote| {
+            expect_exception_breakpoints_set(remote);
+            assert_eq!(expect_stop(remote), exception("Error", "boom", true));
+            step(remote, command);
+            let stood = standing(remote, HANDLING);
+            continue_stopped(remote);
+            stood
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a caught exception's stop steps in the handler
+    /// block it stands in: it stops at the handler's second statement.
+    fn a_step_over_from_a_caught_exception_stops_in_the_handler(lowering) {
+        let (stood, result) = stepped_from_a_catch(lowering, Command::StepOver);
+        assert_eq!(
+            stood,
+            (String::from("[] in Handling>>run"), String::from("partial + 4"))
+        );
+        assert_eq!(result, Ok(8));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out at a caught exception's stop goes out of the handler
+    /// block to where the `on:do:` returns: the statement after it.
+    fn a_step_out_from_a_caught_exception_stops_after_the_on_do(lowering) {
+        let (stood, result) = stepped_from_a_catch(lowering, Command::StepOut);
+        assert_eq!(
+            stood,
+            (String::from("Handling>>run"), String::from("^answer + 1"))
+        );
+        assert_eq!(result, Ok(8));
     }
 }
 

@@ -241,8 +241,10 @@ pub enum StopReason {
     /// `defaultAction` handle -- `caught` false -- or one a handler takes,
     /// which going on runs -- `caught` true. `description` is its
     /// `messageText` as text, or its class's name when it has none, read
-    /// without running the program's code. The stack trace shows first the
-    /// frame below the exception's own machinery (`FrameDescription::hidden`).
+    /// without running the program's code. The stack trace hides the
+    /// exception's own machinery (`FrameDescription::hidden`): it shows
+    /// first the frame below it, or, for a caught one, the handler about
+    /// to run on top and then that frame.
     Exception {
         class_name: String,
         description: String,
@@ -303,8 +305,10 @@ pub struct FrameDescription {
     /// stop, every frame above the first one below the exception's own
     /// machinery -- `signal`, `signal:` on either side, `pass` and
     /// `Object>>doesNotUnderstand:` -- and, with step filters, above the
-    /// first frame they do not filter. Hidden frames stay in the trace, so
-    /// that a frame's index is the same at every stop.
+    /// first frame they do not filter; at a caught exception's, the handler
+    /// on top, where the program stands, is shown all the same. Hidden
+    /// frames stay in the trace, so that a frame's index is the same at
+    /// every stop.
     pub hidden: bool,
 }
 

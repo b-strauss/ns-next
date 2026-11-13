@@ -9,11 +9,13 @@
 //! the class an exception breakpoint names is matched by walking the
 //! exception's class chain by declaration. What it decides is recorded on
 //! the `Mutator` and asked of the next poll through the request bit
-//! (`DEBUGGER_STOP`), whose safepoint serves it (`serve`): reports a handler found to a step in
-//! progress and stops once the frame the search runs next --
-//! `defaultAction`, the handler block, the `resume:` that resumes a `Halt`
-//! -- stands at its first instruction. At the stop, the stack trace shows
-//! first the frame below the exception's own machinery (`first_shown`).
+//! (`DEBUGGER_STOP`), whose safepoint serves it (`serve`): reports a
+//! handler found to a step in progress and stops once the frame the
+//! search runs next -- `defaultAction`, the handler block, the `resume:`
+//! that resumes a `Halt` -- stands at its first instruction. At the stop,
+//! the stack trace hides the exception's own machinery (`hidden`): it
+//! shows first the frame below it (`first_shown`), or, at a caught
+//! exception's, the handler on top and then that frame.
 
 use std::rc::Rc;
 use std::sync::PoisonError;
@@ -338,6 +340,26 @@ pub(crate) fn first_shown(mutator: &Mutator<'_>, frames: &[StackFrame]) -> usize
         .position(|frame| !stepping::is_filtered(mutator, frame))
         .map_or(below, |offset| below + offset);
     unfiltered.min(frames.len().saturating_sub(1))
+}
+
+/// The frames an exception's stop hides: at an uncaught exception's and a
+/// `Halt`'s, every frame above the one `first_shown` answers; at a caught
+/// one's, which stands in the handler about to run -- where the program
+/// goes on -- the frames between that handler, on top and shown first,
+/// and the one `first_shown` answers below the machinery, which is shown
+/// next. A handler whose `cull:` a fast path answered pushed nothing, and
+/// the machinery frame the stop stands in instead stays shown.
+pub(crate) fn hidden(
+    mutator: &Mutator<'_>,
+    frames: &[StackFrame],
+    caught: bool,
+) -> std::ops::Range<usize> {
+    let first = first_shown(mutator, frames);
+    if caught {
+        first.min(1)..first
+    } else {
+        0..first
+    }
 }
 
 /// The selector of the kernel's method `frame` runs; `None` for a frame

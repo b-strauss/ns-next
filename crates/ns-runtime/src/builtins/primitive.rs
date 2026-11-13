@@ -3317,8 +3317,9 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
     )),
     // An exit: it answers the handler of the `on:do:` activation, its
-    // argument, which it reads off that activation, and so is no leaf. The search reads the handler
-    // through it, so that reporting the catch costs no send of its own.
+    // argument, which it reads off that activation, and so is no leaf.
+    // The search reads the handler through it, so that reporting the
+    // catch costs no send of its own.
     mirror(
         "exceptionCaught:at:ifFail:",
         "exceptionCaughtAt:",

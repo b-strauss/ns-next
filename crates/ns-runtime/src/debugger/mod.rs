@@ -780,8 +780,11 @@ impl Interpreter {
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
         let mut values = StopValues::starting_at(first_value_id);
-        // An exception's stop shows first the frame below its machinery.
+        // An exception's stop hides its machinery: an uncaught one's and a
+        // `Halt`'s show first the frame below it, a caught one's the
+        // handler about to run, the frame below the machinery next.
         let exceptional = matches!(reason, StopReason::Exception { .. } | StopReason::Halt);
+        let caught = matches!(reason, StopReason::Exception { caught: true, .. });
         let returned = returned.map(|returned| {
             self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
         });
@@ -818,11 +821,13 @@ impl Interpreter {
                         Command::StepInto => StepAction::Into,
                         _ => StepAction::Out,
                     };
-                    // An exception's stop steps from the frame it shows
-                    // first, as the user sees it, never in the machinery
-                    // above it the debugger chose to stop in.
+                    // An uncaught exception's and a `Halt`'s stop steps
+                    // from the frame it shows first, as the user sees it,
+                    // never in the machinery above it the debugger chose
+                    // to stop in; a caught one's steps in the handler it
+                    // stands in, which it shows first.
                     self.enter(|mutator| {
-                        let shown = exceptional.then(|| {
+                        let shown = (exceptional && !caught).then(|| {
                             let frames =
                                 frames.get_or_insert_with(|| stack::frames(mutator, floor));
                             let first = exceptions::first_shown(mutator, frames);
@@ -850,12 +855,12 @@ impl Interpreter {
                 Command::StackTrace => {
                     let descriptions = self.enter(|mutator| {
                         let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
-                        let first_shown = if exceptional {
-                            exceptions::first_shown(mutator, frames)
+                        let hidden = if exceptional {
+                            exceptions::hidden(mutator, frames, caught)
                         } else {
-                            0
+                            0..0
                         };
-                        stack::stack_trace(mutator, frames, first_shown, &mut values)
+                        stack::stack_trace(mutator, frames, hidden, &mut values)
                     });
                     self.answer(&mut source, Event::StackTrace(descriptions));
                 }

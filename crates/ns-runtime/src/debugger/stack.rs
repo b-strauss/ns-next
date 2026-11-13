@@ -217,11 +217,11 @@ pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> 
 }
 
 /// The descriptions of the run's `frames`, innermost first, every frame
-/// above the one at index `first_shown` hidden.
+/// whose index `hidden` holds hidden.
 pub(crate) fn stack_trace(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
-    first_shown: usize,
+    hidden: Range<usize>,
     values: &mut StopValues,
 ) -> Vec<FrameDescription> {
     let mut descriptions = Vec::with_capacity(frames.len());
@@ -249,7 +249,7 @@ pub(crate) fn stack_trace(
             source: code.source,
             location,
             receiver,
-            hidden: index < first_shown,
+            hidden: hidden.contains(&index),
         });
     }
     descriptions
