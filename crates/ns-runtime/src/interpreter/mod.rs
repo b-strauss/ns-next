@@ -729,6 +729,7 @@ impl Interpreter {
     /// no other shipped module booted. `bootstrap_on` goes on from here;
     /// a test stops here to see what the kernel phase alone built.
     pub(crate) fn with_kernel(lowering: Lowering, path: ShippedCodePath) -> Interpreter {
+        crate::reach::record(crate::reach::Reach::Runtime);
         // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(
             not(debug_assertions),

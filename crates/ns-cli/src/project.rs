@@ -263,6 +263,7 @@ fn same_path(first: &Path, second: &Path) -> bool {
 /// rewritten to the host's and the platform's own path parsing does the rest,
 /// which keeps drive letters, UNC and verbatim prefixes intact.
 pub(crate) fn resolve_written_path(project_directory: &Path, written: &str) -> PathBuf {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     let (foreign, native) = if cfg!(windows) {
         ("/", "\\")
     } else {

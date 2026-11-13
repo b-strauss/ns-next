@@ -384,6 +384,7 @@ fn register_bytes() -> u64 {
 /// convention's stack slot (`Abi::stack_slot_bytes`), as an address's
 /// addend.
 fn return_address_bytes() -> u64 {
+    crate::reach::record(crate::reach::Reach::Platform);
     u64::from(
         super::macro_assembler::Abi::host()
             .stack_slot_bytes()

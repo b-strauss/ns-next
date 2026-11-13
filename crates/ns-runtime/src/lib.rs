@@ -106,6 +106,10 @@ pub use jit::JitStatistics;
 #[doc(hidden)]
 pub use jit::LAST_VERSION;
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
+/// The record of what a test's process reaches (`ns_memory::reach`),
+/// re-exported so that the crates above the runtime record their own
+/// platform-dependent code without depending on the memory layer.
+pub use ns_memory::reach;
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;
 pub use types::*;

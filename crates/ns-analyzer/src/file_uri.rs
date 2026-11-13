@@ -27,6 +27,7 @@ const HOST_STYLE: PathStyle = if cfg!(windows) {
 /// URI that names none: another scheme, a query or fragment, a user or port,
 /// a path that is not UTF-8 once decoded, or one this host cannot address.
 pub fn file_path_of(uri: &Uri) -> Option<PathBuf> {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     path_text_of(uri, HOST_STYLE).map(PathBuf::from)
 }
 

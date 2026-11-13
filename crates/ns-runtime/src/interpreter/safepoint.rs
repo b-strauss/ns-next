@@ -330,6 +330,7 @@ pub(crate) fn stress_wide_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Compiler);
             std::env::var_os("NS_NEXT_STRESS_WIDE")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
