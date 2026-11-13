@@ -5,6 +5,7 @@
 //! (`docs/design/debugger.md`, decisions 7 and 9, "Commands while the
 //! program runs", "Reading the stack at a stop", "Values the IDE holds").
 
+use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1580,6 +1581,24 @@ fn debugged_in<T: Send + 'static>(
     (answer, result)
 }
 
+thread_local! {
+    /// On the agent's thread of `debugged_by`, set once the run it serves
+    /// ended: no event says so, and an agent that waits for the silence of
+    /// a while instead could take a slow run's pause for its end.
+    static RUN_FINISHED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Whether the run the agent's thread serves has ended; only an agent of
+/// `debugged_by` can ask.
+fn run_finished() -> bool {
+    RUN_FINISHED.with(|flag| {
+        flag.borrow()
+            .as_ref()
+            .expect("only an agent of `debugged_by` waits for its run's end")
+            .load(Ordering::SeqCst)
+    })
+}
+
 /// Runs what `run` runs while `agent` serves `remote` from another
 /// thread, and answers what `agent` answered, the run's result and the
 /// remote. The agent's thread goes on continuing every stop once `agent`
@@ -1595,6 +1614,7 @@ fn debugged_by<T: Send + 'static>(
     let thread = {
         let finished = Arc::clone(&finished);
         thread::spawn(move || {
+            RUN_FINISHED.with(|flag| *flag.borrow_mut() = Some(Arc::clone(&finished)));
             let answer = panic::catch_unwind(AssertUnwindSafe(|| agent(&remote)));
             if answer.is_err() {
                 remote.send(Command::Terminate);
@@ -3899,14 +3919,7 @@ ns_runtime::for_each_lowering! {
 /// again before its run ended, each stop continued.
 fn stops_after_continuing(remote: &DebugRemote) -> usize {
     continue_stopped(remote);
-    let mut stops = 0;
-    while let Some(event) = remote.next_event(Duration::from_millis(500)) {
-        if let Event::Stopped { .. } = event {
-            stops += 1;
-            remote.send(Command::Continue);
-        }
-    }
-    stops
+    stops_until_the_end(remote)
 }
 
 ns_runtime::for_each_lowering! {
@@ -4562,14 +4575,30 @@ fn top_statement(remote: &DebugRemote, source: &str) -> String {
 /// How many times the running program stops before its run ends, each
 /// stop continued.
 fn stops_until_the_end(remote: &DebugRemote) -> usize {
-    let mut stops = 0;
-    while let Some(event) = remote.next_event(Duration::from_millis(500)) {
-        if let Event::Stopped { .. } = event {
-            stops += 1;
-            remote.send(Command::Continue);
+    events_until_the_end(remote)
+        .iter()
+        .filter(|event| matches!(event, Event::Stopped { .. }))
+        .count()
+}
+
+/// Every event the running program reports until its run ends, each stop
+/// continued; read once more after the end, so that nothing the run sent
+/// last is missed.
+fn events_until_the_end(remote: &DebugRemote) -> Vec<Event> {
+    let mut events = Vec::new();
+    loop {
+        let ended = run_finished();
+        match remote.next_event(Duration::from_millis(10)) {
+            Some(event) => {
+                if let Event::Stopped { .. } = event {
+                    remote.send(Command::Continue);
+                }
+                events.push(event);
+            }
+            None if ended => return events,
+            None => {}
         }
     }
-    stops
 }
 
 ns_runtime::for_each_lowering! {
