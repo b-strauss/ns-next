@@ -885,6 +885,9 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `debugger::STEP_STRESS_BURST`, the steps of a burst.
+const STEP_STRESS_BURST: usize = 16;
+
 // The step stress mode: at the safepoints its schedule picks, the run
 // stops as for a debugger's pause and takes a burst of steps -- into,
 // over and out in turn, the shipped filter switched every third --
@@ -892,8 +895,9 @@ ns_runtime::for_each_lowering! {
 // (`docs/design/debugger.md`, "The step stress mode").
 
 /// How a run of `source`'s `run` ended under `lowering`, the JIT on or
-/// off, and how many of the step stress mode's steps stopped.
-fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (String, usize) {
+/// off, and how many of the step stress mode's steps stopped and how many
+/// it ended itself.
+fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (String, usize, usize) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -914,18 +918,35 @@ fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (Stri
         Err(HostSignal::Return) => "a non-local return escaped".to_string(),
         Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
     };
-    (outcome, interpreter.stress_steps())
+    (
+        outcome,
+        interpreter.stress_steps(),
+        interpreter.stress_steps_ended(),
+    )
 }
 
 ns_runtime::for_each_lowering! {
     fn the_step_stress_mode_keeps_outcomes(lowering) {
         for jit in [true, false] {
-            let (plain, plain_steps) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, false);
+            let (plain, plain_steps, plain_ended) =
+                run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, false);
             assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
-            assert_eq!(plain_steps, 0);
-            let (stepped, steps) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            assert_eq!((plain_steps, plain_ended), (0, 0));
+            let (stepped, steps, ended) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, true);
             assert_eq!(stepped, plain, "the JIT on: {jit}");
-            assert!(steps > 0, "the step stress mode never stepped, the JIT on: {jit}");
+            // Many whole bursts. The steps the mode ends itself are steps
+            // out of the shipped `to:do:` looping 200 times, stopped in
+            // with the shipped filter off, and of `run`, which returns to
+            // the host -- about one in five; the steps that stop are at
+            // least three times as many (measured: about 4.5 times).
+            assert!(
+                steps >= 10 * STEP_STRESS_BURST,
+                "the step stress mode's steps stopped {steps} times, the JIT on: {jit}"
+            );
+            assert!(
+                steps >= 3 * ended,
+                "{steps} steps stopped and {ended} were ended, the JIT on: {jit}"
+            );
         }
     }
 }
