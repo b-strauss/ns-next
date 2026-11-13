@@ -1705,28 +1705,25 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   level's own slots and a link) would keep it linear. Noted 2026-10-22.
   [object-model.md](design/object-model.md), "Instantiation".
 - **The stress gate's time** (noted with the user on 2026-11-01). The
-  stress step of `cargo xtask gates end-of-batch` takes about 1,233 s
-  with its sixteen suites at once in the nextest profile `stress`
-  (2026-11-13; 1,642 s on the whole suite the same day): INVALIDATE ends
-  after 989 s, most modes after 1,000 to 1,105 s, SCAVENGE after 1,143 s,
-  COLLECT, PAUSE and MOVES after 1,200 to 1,215 s. The suites share the
-  cores, so the gate is bound by the work of all of them. The profile
-  leaves out the crates no switch reaches, runs `debug_metadata` only
-  under WIDE and starts the tests that ended a run alone first (the
+  stress step of `cargo xtask gates end-of-batch` takes about 1,038 s
+  with its sixteen suites at once (2026-11-13, beside another build on
+  the machine; 1,233 s before the tests no switch reaches were left out,
+  1,642 s on the whole suite): OPTIMIZE ends after 802 s, most modes
+  after 830 to 960 s, COLLECT, PAUSE and MOVES after 1,005 to 1,033 s.
+  The suites share the cores, so the gate is bound by the work of all of
+  them. Each mode leaves out the 2,273 tests measured to reach no switch
+  (WIDE keeps the 344 of them that compile; `docs/design/README.md`,
+  "The tests a gate leaves out"), runs `debug_metadata` only under WIDE
+  and starts the tests that ended a run alone first (the
   slowest under the whole suite: `runtime/optimizer/inlined_block_returns_from_its_home`
   708 s under MOVES, `runtime/jit/closure_recursion_overflow` 500 s under
   PAUSE, `runtime/jit/counting_loop` 456 s under COLLECT). Of the work
   measured before it, `ns-runtime`'s library unit tests were 21%, many of
-  them compiling only. The dev profile already builds at `opt-level = 1`,
+  them compiling only; 791 of them reach no switch and are left out now.
+  The dev profile already builds at `opt-level = 1`,
   so a profile of `opt-level = 2` with debug assertions would gain less
   than an unoptimized build would suggest; unmeasured. The candidates
   left, none built:
-  - *Unit tests no mode reaches*: those of `ns-runtime`'s library tests
-    that create no interpreter could be left out of the stress suites but
-    WIDE's, which `bytecode.rs` and `bytecode/compact.rs` read; which
-    ones those are is not established, since many tests reach an
-    interpreter through a helper (the optimizing tier's tests snapshot
-    bodies a run left feedback in).
   - *`NS_NEXT_STRESS_COLLECT` is among the slowest modes* (about 555 s against
     350 to 415 s for the others, measured 2026-11-01; 675 s against 404
     to 549 s on 2026-11-06; on 2026-11-07, with INVALIDATE beside it,
