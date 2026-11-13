@@ -25,7 +25,8 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// command is served by the run it arrives during; one queued while no
 /// run executes, or still queued when a run ends, is dropped unanswered.
 /// A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
-/// `SetStepFilters` -- is served wherever commands are taken instead: at a safepoint while the program runs, at
+/// `SetStepFilters`, `SetExceptionBreakpoints` -- is served wherever
+/// commands are taken instead: at a safepoint while the program runs, at
 /// a stop, and when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -107,6 +108,23 @@ pub enum Command {
     /// declares it; an install sets each again on the method's new body.
     /// Answered by `Event::MethodBreakpoints`.
     SetMethodBreakpoints(Vec<MethodBreakpoint>),
+    /// Replaces the exception breakpoints (`docs/design/debugger.md`,
+    /// "Exceptions"). `uncaught` stops an exception no handler takes, where
+    /// the search, having found none, is about to send `defaultAction`;
+    /// `caught` stops one a handler takes, where the search is about to
+    /// run the handler; either only for an exception whose class is, or
+    /// inherits from, a class declaration `classes` names, or for every
+    /// exception when `classes` is empty. `halt` stops a `Halt` no handler
+    /// takes, which going on resumes with nil; with `halt` off, a `Halt` is
+    /// an exception as any other. Until the first, `uncaught` and `halt`
+    /// are on, `caught` is off and no class is named. Answered by
+    /// `Event::ExceptionBreakpointsSet`.
+    SetExceptionBreakpoints {
+        uncaught: bool,
+        caught: bool,
+        halt: bool,
+        classes: Vec<ClassName>,
+    },
 }
 
 /// A method a method breakpoint names: by its selector, the class
@@ -148,6 +166,7 @@ impl Command {
             Command::SetBreakpoints { .. } => "SetBreakpoints",
             Command::SetStepFilters { .. } => "SetStepFilters",
             Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
+            Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
         }
     }
 }
@@ -186,6 +205,9 @@ pub enum Event {
     /// `Command::SetMethodBreakpoints`, and sent unasked when a module's
     /// build or an install verifies one or no longer declares its method.
     MethodBreakpoints(Vec<MethodBreakpointState>),
+    /// The answer to `Command::SetExceptionBreakpoints`: the exception
+    /// breakpoints are in effect.
+    ExceptionBreakpointsSet,
 }
 
 /// Why the program stopped.
@@ -214,6 +236,21 @@ pub enum StopReason {
         id: BreakpointId,
         others: Vec<BreakpointId>,
     },
+    /// An exception breakpoint took an exception of the class named
+    /// `class_name`: one no handler takes, which going on lets
+    /// `defaultAction` handle -- `caught` false -- or one a handler takes,
+    /// which going on runs -- `caught` true. `description` is its
+    /// `messageText` as text, or its class's name when it has none, read
+    /// without running the program's code. The stack trace shows first the
+    /// frame below the exception's own machinery (`FrameDescription::hidden`).
+    Exception {
+        class_name: String,
+        description: String,
+        caught: bool,
+    },
+    /// A `Halt` no handler takes stopped under the `Halt` breakpoint; going
+    /// on resumes it with nil, which its `halt` answers.
+    Halt,
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.
@@ -262,6 +299,13 @@ pub struct FrameDescription {
     /// body its current text no longer compiles to (decision 5).
     pub location: Option<FrameLocation>,
     pub receiver: ValueDescription,
+    /// Whether a client shows the frame only on demand: at an exception's
+    /// stop, every frame above the first one below the exception's own
+    /// machinery -- `signal`, `signal:` on either side, `pass` and
+    /// `Object>>doesNotUnderstand:` -- and, with step filters, above the
+    /// first frame they do not filter. Hidden frames stay in the trace, so
+    /// that a frame's index is the same at every stop.
+    pub hidden: bool,
 }
 
 /// Where a frame stands, in the current text of its module.

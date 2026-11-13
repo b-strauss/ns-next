@@ -43,9 +43,14 @@
 > position resolved as a line breakpoint is, in any activation, once
 > (decision 3); and a method breakpoint stops at its method's entry and
 > before each of its returns, and reports an exit an unwind makes where
-> the program goes on ("Method breakpoints").
-> Everything else is planned: the rest of stage 3 -- exception
-> breakpoints -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
+> the program goes on ("Method breakpoints"); and exception breakpoints
+> stop an uncaught exception before its `defaultAction` runs, a caught one
+> before its handler runs, each filtered by class, and an uncaught `halt`,
+> which goes on resumed with nil, the stack trace marking the frames above
+> the first one below the exception's machinery hidden, and the handler
+> search reports the handler it found to a step in progress ("Exceptions").
+> Everything else is planned: the rest of stage 3 -- the breakpoint and
+> step stress modes -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
@@ -61,6 +66,9 @@
 > the arming lock `Arming`, the pause stress mode's `StressReader`;
 > `breakpoints.rs`: the breakpoint table, line breakpoints and the
 > one-shots; `stepping.rs`: the step in progress, `Stepping`;
+> `exceptions.rs`: the exception breakpoints, decided by the handler
+> search's two leaves (`builtins/activation.rs`), and the first frame an
+> exception's stop shows;
 > `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
 > cross to the agent's thread; `stack.rs`: the stack trace, a frame's
 > body found by its declaration (`origin_of`) and its variables;
@@ -75,7 +83,7 @@
 > cleared at an install (`interpreter/install.rs`), the selector spans
 > (`ns_syntax::ast::MessageSend::selector_spans`), the
 > request word's bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`,
-> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `DEBUGGER_STEP`, `LOWERS_DEPTH_LIMIT`,
+> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `DEBUGGER_STEP`, `DEBUGGER_STOP`, `LOWERS_DEPTH_LIMIT`,
 > `Heap::synchronize_depth_limit`, `Heap::clear_debugger_bits`),
 > `heap/machine_words.rs` (the machine words as atomics behind an `Arc`),
 > `interpreter/safepoint.rs` (`Interpreter::safepoint`, which serves the
@@ -260,9 +268,10 @@ debugging API at the safepoint". What it and the later stages build on:
 - **A signal searches its handler before anything unwinds** ("nothing is
   unwound until it decides", `Kernel.ns`, `signal`), and an unhandled
   exception reaches `defaultAction`, which ends the run through the VM
-  mirror's `terminate…` leaves; `defaultAction` is where the debugger will
-  plug in, and a test-only `Interpreter::resume_unhandled_exceptions`
-  (`#[doc(hidden)]`) stands in for it today
+  mirror's `terminate…` leaves; an attached debugger stops just before
+  `defaultAction` runs ("Exceptions"), and a test-only
+  `Interpreter::resume_unhandled_exceptions` (`#[doc(hidden)]`) resumes
+  the exception instead, as the debugger's "Create Method" will
   ([core-library.md](core-library.md), "Exceptions").
 - **`SourceOrigin`** has `File` and `Embedded` only (`types.rs`).
 - **A tuple literal** is lowered to one `MakeArray`, so it makes no
@@ -390,6 +399,18 @@ The commands (`debugger::Command`):
   side (`class_side`) and its `selector`; answered by
   `Event::MethodBreakpoints`, a configuration command served as
   `SetBreakpoints` is.
+- `SetExceptionBreakpoints { uncaught, caught, halt, classes }` --
+  replaces the exception breakpoints ("Exceptions"): `uncaught` stops an
+  exception no handler takes before its `defaultAction` runs, `caught`
+  one a handler takes before the handler runs, each only for an
+  exception whose class chain holds a class of a declaration `classes`
+  names -- `ClassName`s, as the step filters name a declaration -- or for
+  every exception when `classes` is empty; `halt` stops a `Halt` no
+  handler takes, which then goes on resumed with nil, and with `halt` off
+  a `Halt` is an exception as any other. Until the first, and at every
+  attachment, `uncaught` and `halt` are on, `caught` is off and no class
+  is named. Answered by `Event::ExceptionBreakpointsSet`; a
+  configuration command, served as `SetBreakpoints` is.
 
 The events (`debugger::Event`): `Stopped { reason, returned }`, the
 program stopped and serves commands until a `Continue` or a `Terminate`
@@ -397,7 +418,9 @@ program stopped and serves commands until a `Continue` or a `Terminate`
 breakpoints standing at the statement it stopped at,
 `StopReason::Step`, a step's or the run to cursor's arrival, or
 `StopReason::MethodEntry { id, others }` and `StopReason::MethodExit {
-id, others }`, a method breakpoint's ("Method breakpoints"); `returned`, at a step's stop, the
+id, others }`, a method breakpoint's ("Method breakpoints"), or
+`StopReason::Exception { class_name, description, caught }` and
+`StopReason::Halt`, an exception breakpoint's ("Exceptions"); `returned`, at a step's stop, the
 value the stepping frame's last call answered, described as the stop's
 first value, and `None` at every other stop ("The return value of the
 last call"); `StackTrace`; `Variables`, the
@@ -408,11 +431,12 @@ the order of their offsets, each a `BreakpointState` -- its
 `BreakpointId`, its offset and the span of the statement it stops at, or
 `None` while it is pending -- the answer to `SetBreakpoints`, and sent
 unasked when a pending one resolves or an install moves one;
-`StepFiltersSet`, the answer to `SetStepFilters`; and
+`StepFiltersSet`, the answer to `SetStepFilters`;
 `MethodBreakpoints`, each method breakpoint's `MethodBreakpointState` --
 its id and whether its method is declared (`verified`) -- in the order
 they were set, the answer to `SetMethodBreakpoints`, and sent unasked
-when a module's build or an install changes whether one is verified.
+when a module's build or an install changes whether one is verified;
+and `ExceptionBreakpointsSet`, the answer to `SetExceptionBreakpoints`.
 `Continue`, the three steps, `RunToPosition`, `StackTrace`, `Variables` and `Children` are
 served only at a stop; one that arrives while the program runs is refused
 with "the program is running", and one queued between runs is dropped. Every command a stop or a safepoint serves but
@@ -450,7 +474,13 @@ The request word (`MachineWord::SafepointRequested`) is a set of bits
 - `DEBUGGER_STEP` (bit 4) -- a step into's request, held until the next
   push ("Step into's held request"): the VM's own, set
   (`Heap::hold_step_request`) and cleared on its thread alone, under the
-  arming lock as the debugger's other bits are cleared.
+  arming lock as the debugger's other bits are cleared;
+- `DEBUGGER_STOP` (bit 5) -- an exception breakpoint's stop, which the
+  handler search's leaf recorded on the `Mutator` and asks of the next
+  poll ("Exceptions"): the VM's own, set (`Heap::request_debugger_stop`)
+  and cleared on its thread alone, under the arming lock, by the
+  safepoint that takes the stop, and dropped with the stop at a
+  termination and at the run's end (`exceptions::drop_pending`).
 
 Every write of the word, the VM's and the agent's, is a `SeqCst`
 read-modify-write -- a `fetch_or` to set a bit, a `fetch_and` to clear one,
@@ -459,12 +489,12 @@ AArch64, on the cold path only -- so that no writer erases another's bit.
 The poll compares the whole word with zero: every bit takes the safepoint.
 `Heap::real_safepoint_requested` masks it with `LOWERS_DEPTH_LIMIT`
 (`REAL_REQUEST | DEBUGGER_BITS`), every bit but the stress hold's, and
-`Heap::debugger_bits` with the debugger's three (`DEBUGGER_BITS`). The VM
+`Heap::debugger_bits` with the debugger's four (`DEBUGGER_BITS`). The VM
 clears its own bit and the hold once it served them
 (`Heap::clear_safepoint_request`), never the debugger's; only
 `Heap::clear_debugger_bits` clears those, once the VM served them, or
-once the push a step into waited for came or the step ended. The agent
-never clears a bit.
+once the push a step into waited for came or the step ended; an
+attachment and a detach clear all four. The agent never clears a bit.
 
 A compiled callee's prologue compares the depth count with the
 `DepthLimit` word alone, so a request that must stop compiled recursion
@@ -554,7 +584,9 @@ lock, then every queued command is taken without waiting (`try_recv`). A
 `Terminate` ends the run, and the commands queued after it are dropped
 but for a configuration command; a `SetBreakpoints` is served -- the
 breakpoints patched or restored, answered by `Event::Breakpoints` -- and
-so is a `SetStepFilters`, and the program runs on; any other command is refused, "the program is
+so is every other configuration command, `SetStepFilters`,
+`SetMethodBreakpoints` and `SetExceptionBreakpoints`, and the program
+runs on; any other command is refused, "the program is
 running". The agent queues
 a command before it sets the bit, and the VM clears the bit before it
 drains the queue, so that a
@@ -613,7 +645,8 @@ of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
 The stop then sends `Stopped { reason, returned }` -- a pause's, a
-breakpoint's with the ids standing at its slot, or a step's with the
+breakpoint's with the ids standing at its slot, an exception
+breakpoint's ("Exceptions"), or a step's with the
 value of the last call, the first value of the stop's table ("Values the
 IDE holds") -- and blocks on the
 command channel (`recv`), on the VM's thread, between two stretches: no
@@ -621,8 +654,8 @@ handle is live, and nothing pushes or pops until the program goes on. The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
-stack at a stop", "Values the IDE holds"), `SetBreakpoints` and
-`SetStepFilters` until a
+stack at a stop", "Values the IDE holds") and the configuration
+commands until a
 `Continue`, a step or a `Terminate`; a step begins there
 (`stepping::begin`), is answered by `Continued` and goes on as a
 `Continue` does. A command the stop serves was queued with its
@@ -661,10 +694,11 @@ error (`HostSignal::Error`; `terminate_runs_the_pending_ensure_blocks`,
 Dropping the remote detaches the debugger. The VM notices it where it next
 talks to the remote -- a command channel found disconnected while draining
 or while stopped, or an event that cannot be sent -- and
-`detach_debugger` makes no attachment current and clears both debugger
-bits under one hold of the arming lock, removes every breakpoint, each
+`detach_debugger` makes no attachment current and clears every debugger
+bit under one hold of the arming lock, removes every breakpoint, each
 slot given its original back, ends a step in progress and puts the step
-filters back to their default, then drops the debugger. A stopped
+filters and the exception breakpoints back to their default, then drops
+the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
 again (`a_dropped_remote_lets_the_program_finish`,
 `a_remote_dropped_while_stopped_lets_the_program_finish`).
@@ -729,7 +763,12 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
   (decision 11). `None` without metadata (decision 5): a module without
   text, an image's without its source among them, or a body its text no
   longer compiles to, as a superseded version an edit changed;
-- `receiver` -- its receiver, described as every value is.
+- `receiver` -- its receiver, described as every value is;
+- `hidden` -- whether a client shows it only on demand: at an exception's
+  stop, every frame above the first one below the exception's machinery
+  (`exceptions::first_shown`, "Exceptions"), false at every other stop.
+  A hidden frame stays in the trace, so that every index names the same
+  frame for `Variables`.
 
 A frame's body is found by its declaration (`stack::origin_of`, a
 `BodyOrigin`): a method's in its current class's mixin, an initializer's
@@ -1141,9 +1180,10 @@ stage's tests, do not.
   filter off stopping in each of the forcing's frames on the way; a
   step out of a superclass clause stopping at the accessor's return
   point; and a step out of a clause whose answer is refused as no class
-  stopping past the handler, not in the `signal`: past the shipped
-  `on:do:` too, at the caller's return point of the method that sent
-  it, and with the shipped filter off at the `on:do:`'s return point.
+  stopping not in the `signal` but, once the handler search reports the
+  handler it found, at the handler block's first statement, and with the
+  shipped filter off at the next statement of the kernel's block that
+  invokes the handler.
   Of the step filters (decision 16): a step into a `do:` over an array
   landing in its block; a step over at the block's last statement
   landing in its next activation, and after the last element at the
@@ -1163,10 +1203,32 @@ stage's tests, do not.
   initialized once: only the optimized lowering puts the instruction
   that meets it first in its statement, since the reference lowering
   begins every slot initializer's statement with a `Move`. A step over a
-  statement that raises, stopping in the handler block, is written and
-  ignored until the handler search reports to the stepping state. Each
+  statement that raises stops in the handler block a handler below
+  takes, the error signalled by a method it sends or raised by its own
+  instruction (a `^` whose home has returned), and a step over a
+  statement whose `on:do:` the stepping frame sends itself stops at its
+  next statement; a step out of the `signal` the VM pushed for an error,
+  which returns once the test hook resumed its default action, stops in
+  the `ensure:` block the run's end runs. Each
   also passes under every stress mode, the suspend
   stress mode's suspensions included.
+- **The exception breakpoints' tests** (`tests/debugger.rs`, each under
+  both lowerings with the JIT on): an uncaught error stopping before its
+  default action, the frames of the machinery hidden and the method that
+  signalled it shown first, with the shipped filter on and off, and
+  going on ending the run with its error; an error a shipped method
+  signals showing the program's frame first, and with the shipped filter
+  off the shipped method; a caught exception not stopping by default,
+  and with the caught-exception breakpoint on stopping before its
+  handler, which runs once the program goes on; a class filter taking an
+  exception whose class inherits from the class it names and no other;
+  an uncaught `halt` stopping and going on resumed with nil, and with
+  the `Halt` breakpoint off stopping as an uncaught exception and ending
+  the run; an uncaught `MessageNotUnderstood` showing the message's
+  sender first; an uncaught exception whose `defaultAction` pushes
+  nothing stopping at the next poll; and the golden that catches,
+  resumes and leaves uncaught a `Halt` running with a debugger attached
+  and every exception breakpoint off as it runs without one.
 - **Run to cursor's and the method breakpoints' tests**
   (`tests/debugger.rs`, each under both lowerings, with the JIT on but
   for the pending method breakpoint and the shared stop): run to cursor
@@ -1368,9 +1430,9 @@ is in included.
 into's held request", "The return value of the last call"), the frame
 left by a return to its caller's return point, and the reports of a
 frame left otherwise, by an unwind or a continuation other than
-`Deliver` (decision 17), the step filters (decision 16), and run to
-cursor; the handler search's report (decision 17, "Exceptions") and
-smart step into are planned.
+`Deliver` (decision 17), the handler search's report ("Exceptions"),
+the step filters (decision 16), and run to cursor; smart step into is
+planned.
 
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
@@ -1806,15 +1868,15 @@ nothing.
 
 ### 17. A step out stops at the next place the program reaches
 
-**Partial:** built for every way a frame leaves but the handler search's
-report: the unwinder's pops and the arms of
+**Built** for every way a frame leaves: the unwinder's pops and the arms of
 `Continuation::Unwind`, `NestedClass` (a step pushed in the clause's
 place, or an error), `VmErrorSignalled`, `Reexecute` and
 `ReturnToSuspended` report to the stepping state
 (`Mutator::pop_for_unwind`, `interpreter::breakpoint::frame_left`,
-`stepping::frame_left`), and the step goes on past the shipped frames
--- `ensure:`'s, `on:do:`'s, `resolve`'s -- by decision 16's filter; the
-handler search's report ("Exceptions") is planned. The unwinder's pops
+`stepping::frame_left`), and so does the handler search, once it found
+a handler (`stepping::handler_found`, "Exceptions"); the step goes on
+past the shipped frames -- `ensure:`'s, `on:do:`'s, `resolve`'s, the
+exception's machinery -- by decision 16's filter. The unwinder's pops
 and arrivals also report the exit of a method a method breakpoint names,
 which stops by the same kind of step ("Method breakpoints").
 
@@ -1853,8 +1915,9 @@ popped frame's continuation raises -- a superclass clause's answer
 refused as no class -- makes no frame the step goes on in yet: stepping
 into the `signal` pushed for it would stop in the exception's
 machinery, so the step waits, its frame `Holder::Left`, for the
-unwind its handler or its default action starts, whose first pop goes
-on, and, once built, the handler search's report. A step out of a
+handler search's report of the handler it found, which goes on into the
+handler block, or for the unwind its default action starts, whose first
+pop goes on. A step out of a
 superclass clause whose class is handed to the accessor's send, the
 `NestedClass` arm's value, reports nothing and stops at the accessor's
 return point.
@@ -2325,45 +2388,104 @@ what they reach through a shipped level.
 
 ### Exceptions
 
+**Built** (`debugger/exceptions.rs`; `Command::SetExceptionBreakpoints`;
+the leaves `exceptionUnhandled:ifFail:` and `exceptionCaught:at:ifFail:`,
+`builtins/activation.rs`), but for "Create Method" and the declined
+`MessageNotUnderstood`'s forced `nil`, which are planned with the forced
+return ("Restart frame and force return"). The handler search of
+`Kernel.ns` reports its outcome through two mirror leaves:
+`invokeNextHandler`, having found no handler, sends
+`exceptionUnhandled:ifFail:` just before `defaultAction`, and
+`invokeHandlerAt:disabling:` sends `exceptionCaught:at:ifFail:` just
+before `handler cull: self`; only the shipped modules reach the mirror
+([core-library.md](core-library.md), "The VM mirror is the whole Rust
+boundary"). With no debugger attached
+each does nothing and answers what its failure block would, so that an
+exception behaves as it does without the debugger; and
+`Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
+unhandled exception, is served first, so that an exception it resumes
+stops nothing. A leaf only decides and records: it runs no Newspeak code
+and collects nothing, and leaves no stretch, so the stop it decides is
+recorded on the `Mutator` (`Breakpoints::request_exception_stop`) and
+asked of the next poll through the request bit `DEBUGGER_STOP` ("The
+poll words as atomics"), which lowers the depth limit: the next push --
+`defaultAction`'s, the handler's `cull:`, or a `Halt`'s `resume:` -- is
+the interpreter's, and its safepoint stops before that frame runs an
+instruction (`serve_debugger`), whether the search ran interpreted or
+in machine code, whose mirror send exits to the interpreter. The stop
+ends a step in progress and serves a pause asked meanwhile, as every
+stop does; a termination and the run's end drop a stop no poll served
+(`exceptions::drop_pending`).
+
 A signal searches its handler before anything unwinds, so an uncaught
 exception stops with its whole stack, where the search, having found no
 handler, is about to send `defaultAction` (`invokeNextHandler`,
-`Kernel.ns`), before any subclass's override of it runs. The frame shown
+`Kernel.ns`), before any subclass's override of it runs:
+`StopReason::Exception { class_name, description, caught: false }`, the
+description the exception's `messageText` as text, or its class's name
+when it has none -- `Exception>>description`'s answer unless a class
+overrides it, which only running code could ask. The frame shown
 first is the first frame below the exception's own machinery -- below
-`signal`, the instance side's and the class side's `signal:`, and
+the kernel's `signal` or `pass` that runs the search, then the instance
+side's and the class side's `signal` and `signal:`, and
 `Object>>doesNotUnderstand:` for a `MessageNotUnderstood` -- which is the
 raising frame itself only for a VM error, whose `signal` is pushed right
-above it; with step filters (decision 16) that is the first frame of
-program code. Going on lets `defaultAction` run, which ends the program
-for every exception whose class does not override it, as its
-`terminate…` leaf does today, resumable ones included; a `Halt` and a
-declined `MessageNotUnderstood` are handled as below. Whether a handler
-takes an exception is decided by Newspeak code (`handles:`), so "caught"
-is known only once the search found one: a caught-exception breakpoint
-stops where the search invokes the handler it found
-(`invokeHandlerAt:disabling:`), before the handler runs. A class filter is
-decided in Rust by walking the exception's class chain, running no code.
-`halt` signals `Halt`, whose breakpoint is on by default under the
-debugger: it stops, and going on resumes the `Halt` with `nil`. An
-uncaught `MessageNotUnderstood` offers "Create Method": the method is
+above it; with step filters (decision 16) that is the first frame below
+it they do not filter, the first frame of program code
+(`exceptions::first_shown`). The frames above it are marked
+`FrameDescription::hidden`, never dropped, so that a frame's index is
+the same at every stop. Going on lets `defaultAction` run, which ends
+the program for every exception whose class does not override it, as its
+`terminate…` leaf does without a debugger, resumable ones included; a
+`Halt` and a declined `MessageNotUnderstood` are handled as below.
+Whether a handler takes an exception is decided by Newspeak code
+(`handles:`), so "caught" is known only once the search found one: a
+caught-exception breakpoint, off by default, stops where the search
+invokes the handler it found (`invokeHandlerAt:disabling:`), before the
+handler runs, `caught: true`. A class filter -- `ClassName`s, as the step
+filters name a declaration -- is decided in Rust by walking the
+exception's class chain by declaration, each level's applied mixin and
+body-less declaration as `Class>>handles:` reads them
+(`activation::inherits_any`), running no code; with no class named,
+every exception is taken. `halt` signals `Halt`, whose breakpoint is on
+by default under the debugger: an uncaught `Halt` stops
+(`StopReason::Halt`), and going on resumes it with `nil`, which `halt`
+answers -- the leaf answers true and `invokeNextHandler` sends
+`resume: nil` instead of `defaultAction`. With the `Halt` breakpoint
+off, a `Halt` is an exception as any other. An
+uncaught `MessageNotUnderstood` will offer "Create Method": the method is
 created public, since the send again is a public send, and the exception
 is resumed, sending the message again
 ([core-library.md](core-library.md), "Exceptions"). Declined, the
-failing send answers `nil`: the debugger forces
+failing send will answer `nil`: the debugger forces
 `Object>>doesNotUnderstand:`'s frame to return `nil` -- the one forced
 return in a shipped frame the refusal below allows. Resuming the
-exception instead, as `resume_unhandled_exceptions` does today, would
+exception instead, as `resume_unhandled_exceptions` does, would
 send the message again (`doesNotUnderstand:` sends it again once the
 exception reached its default handler, `Kernel.ns`), signal the same
-`MessageNotUnderstood` again, and stop again, without end.
+`MessageNotUnderstood` again, and stop again, without end. Until then,
+going on from it ends the run.
+
+A stop at the push of `defaultAction` needs a push: an override of
+`defaultAction` that a method's fast path answers without an activation
+-- a constant, a slot -- pushes nothing, and the program stops at the
+next poll instead, the return to `signal`, the override's answer
+already given; so does a caught exception whose handler is no block and
+answers `cull:` by a fast path. A leaf cannot leave its stretch, and a
+check after every mirror send would cost the run loop.
 
 A handler block runs on top of the stack before anything unwinds, so it is
 never flooded by a step over. As Java's step over stops in the `catch`
-that takes an exception thrown below, a step over whose exception a
-handler at or below the stepping frame takes stops at the handler block's
-first statement: the search's invocation of the handler
-(`invokeHandlerAt:disabling:`) is reported to the stepping state, as an
-unwind is.
+that takes an exception thrown below, a step over -- or a step out, or a
+step into -- whose exception a handler at or below the stepping frame
+takes stops at the handler block's first statement: the search's
+invocation of the handler is reported to the stepping state
+(`stepping::handler_found`), as an unwind is, and the step goes on as a
+step into from the frame on top, through the machinery the step filters
+pass. So does a step whose frame left already, waiting for where the
+error's handling takes the program (decision 17). A step whose frame
+lies below the handler's `on:do:` -- the frame sent that `on:do:`
+itself -- goes on as it was, past the handler, to its next statement.
 
 ### Restart frame and force return
 

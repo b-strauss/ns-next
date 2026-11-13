@@ -12,9 +12,12 @@
 //! slot its statement starts at (`breakpoints.rs`); the run loop's arm
 //! there leaves for the safepoint, which stops. A step patches one-shot
 //! breakpoints of the same table and, for a step into, holds a request
-//! bit the safepoint stops at a push for (`stepping.rs`).
+//! bit the safepoint stops at a push for (`stepping.rs`). An exception
+//! breakpoint is decided by the handler search's leaves, which record the
+//! stop and ask the next poll for it (`exceptions.rs`).
 
 pub(crate) mod breakpoints;
+pub(crate) mod exceptions;
 pub(crate) mod metadata;
 mod remote;
 mod stack;
@@ -30,11 +33,12 @@ pub use remote::{
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STEP};
+use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STEP, DEBUGGER_STOP};
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
 use crate::{Root, Symbol, Value};
 use breakpoints::Hits;
+use exceptions::ExceptionBreakpoints;
 use stepping::{HeldStep, StepAction, StepFilters};
 use values::StopValues;
 
@@ -174,7 +178,8 @@ impl StressReader {
             | Event::Continued
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
-            | Event::StepFiltersSet => {}
+            | Event::StepFiltersSet
+            | Event::ExceptionBreakpointsSet => {}
         }
     }
 }
@@ -234,21 +239,26 @@ impl Interpreter {
 
     /// Serves the debugger's bits at the run loop's safepoint, before
     /// anything else there: first the commands queued while the program
-    /// ran, then the stop a `Breakpoint` arm left for, then a pause; each
+    /// ran, then the stop an exception breakpoint asked for, then the stop
+    /// a `Breakpoint` arm left for, then a pause; each
     /// stop waits until the agent continues or terminates. A stop reports
     /// every breakpoint it is for, and a method's exit an unwind made
     /// since the step that reports it began (`stepping::method_left`),
     /// whatever made the stop (`Hits::reason`). A remote that is gone
     /// detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
-        let (bits, breakpoint) = self.enter(|mutator| {
+        let (bits, breakpoint, exception) = self.enter(|mutator| {
             (
                 mutator.heap.debugger_bits(),
                 mutator.breakpoints.take_pending_stop(),
+                mutator.breakpoints.take_pending_exception(),
             )
         });
         if bits == 0 && breakpoint.is_none() {
             return Served::GoOn;
+        }
+        if bits & DEBUGGER_STOP != 0 {
+            self.clear_debugger_bits(DEBUGGER_STOP);
         }
         if self.debugger.is_none() {
             // A remote that set a bit and was dropped before this
@@ -259,6 +269,18 @@ impl Interpreter {
         }
         if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
             return self.terminate();
+        }
+        if let (Some(reason), true) = (exception, self.debugger.is_some()) {
+            // The frame on top -- `defaultAction`, the handler's `cull:`,
+            // a `Halt`'s `resume:` -- was just pushed and has run nothing.
+            // The stop serves a pause asked meanwhile too, and ends a step,
+            // whose handler report may have led it here.
+            self.clear_debugger_bits(DEBUGGER_PAUSE);
+            self.enter(|mutator| {
+                stepping::take_exits(mutator);
+                stepping::end(mutator);
+            });
+            return self.stop(reason, None, floor, CommandSource::Remote);
         }
         if let Some(breakpoint) = breakpoint {
             // A stop only a step's one-shot made, in a frame the step
@@ -385,7 +407,8 @@ impl Interpreter {
                 }
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
-                | Command::SetStepFilters { .. }) => {
+                | Command::SetStepFilters { .. }
+                | Command::SetExceptionBreakpoints { .. }) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
@@ -423,6 +446,24 @@ impl Interpreter {
                 let event =
                     self.enter(|mutator| breakpoints::set_method_breakpoints(mutator, requested));
                 self.answer(source, event);
+            }
+            Command::SetExceptionBreakpoints {
+                uncaught,
+                caught,
+                halt,
+                classes,
+            } => {
+                self.enter(|mutator| {
+                    mutator
+                        .breakpoints
+                        .set_exception_breakpoints(ExceptionBreakpoints {
+                            uncaught,
+                            caught,
+                            halt,
+                            classes,
+                        });
+                });
+                self.answer(source, Event::ExceptionBreakpointsSet);
             }
             Command::Continue
             | Command::StepOver
@@ -465,6 +506,8 @@ impl Interpreter {
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
         let mut values = StopValues::starting_at(first_value_id);
+        // An exception's stop shows first the frame below its machinery.
+        let exceptional = matches!(reason, StopReason::Exception { .. } | StopReason::Halt);
         let returned = returned.map(|returned| {
             self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
         });
@@ -520,7 +563,12 @@ impl Interpreter {
                 Command::StackTrace => {
                     let descriptions = self.enter(|mutator| {
                         let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
-                        stack::stack_trace(mutator, frames, &mut values)
+                        let first_shown = if exceptional {
+                            exceptions::first_shown(mutator, frames)
+                        } else {
+                            0
+                        };
+                        stack::stack_trace(mutator, frames, first_shown, &mut values)
                     });
                     self.answer(&mut source, Event::StackTrace(descriptions));
                 }
@@ -543,7 +591,8 @@ impl Interpreter {
                 },
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
-                | Command::SetStepFilters { .. }) => {
+                | Command::SetStepFilters { .. }
+                | Command::SetExceptionBreakpoints { .. }) => {
                     self.configure(&mut source, command);
                 }
             }
@@ -560,7 +609,10 @@ impl Interpreter {
     /// a frame of optimized code its poll left goes on in baseline code,
     /// its eliminated blocks made, before the unwind pops it.
     fn terminate(&mut self) -> Served {
-        self.clear_debugger_bits(DEBUGGER_PAUSE);
+        // So is an exception's stop not served yet, whose frame the
+        // termination pops.
+        self.clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_STOP);
+        self.enter(|mutator| mutator.breakpoints.take_pending_exception());
         // A step in progress ends with the run: its request would lower
         // the depth limit for the `ensure:` blocks the unwind runs, and
         // stop in one of them after the termination.
@@ -627,7 +679,8 @@ impl Interpreter {
                 Ok(
                     command @ (Command::SetBreakpoints { .. }
                     | Command::SetMethodBreakpoints(_)
-                    | Command::SetStepFilters { .. }),
+                    | Command::SetStepFilters { .. }
+                    | Command::SetExceptionBreakpoints { .. }),
                 ) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }

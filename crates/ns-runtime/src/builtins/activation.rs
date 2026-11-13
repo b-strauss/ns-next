@@ -5,7 +5,9 @@
 //! activation, a restart of one, and the termination an unhandled
 //! exception ends in. The last three answer a signal, which the one
 //! unwinder carries out (`interpreter::unwind`); no leaf here unwinds
-//! anything itself.
+//! anything itself. Two more report the search's outcome to an attached
+//! debugger, whose exception breakpoints they decide
+//! (`debugger::exceptions`).
 
 use crate::interpreter::Arguments;
 use std::rc::Rc;
@@ -106,6 +108,27 @@ pub(crate) fn execute<'gc>(
         }
         ActivationPrimitive::Restart => {
             activation_leaf(mutator, SubjectLeaf::Restart, subject, arguments)
+        }
+        // The search found no handler: an attached debugger's exception
+        // breakpoints decide whether the next poll, `defaultAction`'s
+        // push, stops, and answer whether the stop resumes a `Halt`
+        // instead (`debugger::exceptions`). Nothing runs and nothing is
+        // decided here with no debugger attached.
+        ActivationPrimitive::ExceptionUnhandled => Some(Ok(Step::Value(Value::boolean(
+            crate::debugger::exceptions::unhandled(mutator, subject),
+        )))),
+        // The search found the handler of the `on:do:` activation the
+        // argument is: reported to a step in progress and to the
+        // caught-exception breakpoint, before the handler runs.
+        ActivationPrimitive::ExceptionCaught => {
+            let handler = arguments
+                .first(&mutator.heap)
+                .and_then(|value| value.as_object())
+                .and_then(|object| mutator.heap.object_frame(object))?;
+            if mutator.heap.frame_is_running(handler) {
+                crate::debugger::exceptions::caught(mutator, subject, handler);
+            }
+            Some(Ok(Step::Value(Value::nil())))
         }
     }
 }
@@ -332,11 +355,34 @@ fn inherits_mixin_of<'gc>(
     if !mutator.heap.is_class(class) {
         return None;
     }
+    let declaration = mutator.heap.class_declaration(class)?;
+    Some(inherits_declaration(mutator, subject, &declaration))
+}
+
+/// Whether `subject`'s class, or a superclass of it, is a class of
+/// `declaration`, any version of it, as `inherits_mixin_of` decides it.
+pub(crate) fn inherits_declaration<'gc>(
+    mutator: &Mutator<'gc>,
+    subject: Value<'gc>,
+    declaration: &Rc<crate::Mixin>,
+) -> bool {
     let heap = &mutator.heap;
-    let declaration = heap.class_declaration(class)?;
-    let id = heap.known_mixin_id(&declaration);
-    let is_declaration =
-        |candidate: &Rc<crate::Mixin>| heap.same_mixin(candidate, &declaration, id);
+    let id = heap.known_mixin_id(declaration);
+    inherits_any(mutator, subject, |candidate| {
+        heap.same_mixin(candidate, declaration, id)
+    })
+}
+
+/// Whether a level of `subject`'s class chain is a class of a declaration
+/// `is_declaration` accepts: the mixin its application applies and, for a
+/// body-less declaration's class object or a level a `<:` clause added
+/// for one, that declaration. Runs no code.
+pub(crate) fn inherits_any<'gc>(
+    mutator: &Mutator<'gc>,
+    subject: Value<'gc>,
+    is_declaration: impl Fn(&Rc<crate::Mixin>) -> bool,
+) -> bool {
+    let heap = &mutator.heap;
     let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
         let applied = heap
@@ -350,11 +396,11 @@ fn inherits_mixin_of<'gc>(
             .and_then(|named| heap.class_body_less_declaration(named))
             .is_some_and(&is_declaration);
         if applied || declared || named {
-            return Some(true);
+            return true;
         }
         current = heap.class_superclass(level);
     }
-    Some(false)
+    false
 }
 
 /// The termination an unhandled exception's `defaultAction` asks for: the

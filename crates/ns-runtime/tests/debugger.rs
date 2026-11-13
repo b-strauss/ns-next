@@ -3584,6 +3584,23 @@ const REFUSED: &str = indoc! {"
     ) : ()
 "};
 
+/// The name of the stopped top frame and the text of its statement, in
+/// `source` or, for a frame of the kernel, in `Kernel.ns`.
+fn standing_in_either(remote: &DebugRemote, source: &str) -> (String, String) {
+    let frames = stack_trace(remote);
+    let top = &frames[0];
+    let location = top
+        .location
+        .clone()
+        .unwrap_or_else(|| panic!("{} is located", top.name));
+    let text = if location.module == "Kernel" {
+        KERNEL
+    } else {
+        source
+    };
+    (top.name.clone(), location.statement.text(text).to_owned())
+}
+
 /// Where two steps out from the breakpoint in `REFUSED`'s `notAClass`
 /// stopped, the shipped filter as `shipped` says: the frame the first
 /// stopped in, the frame and statement the second stopped at, and the
@@ -3610,7 +3627,7 @@ fn stepped_out_of_a_refused_clause(
             step(remote, Command::StepOut);
             let clause = top_name(remote);
             step(remote, Command::StepOut);
-            let stood = standing(remote, REFUSED);
+            let stood = standing_in_either(remote, REFUSED);
             continue_stopped(remote);
             (clause, stood)
         },
@@ -3621,35 +3638,33 @@ fn stepped_out_of_a_refused_clause(
 ns_runtime::for_each_lowering! {
     /// A step out of a superclass clause whose answer is refused as no
     /// class goes on where the error's handling takes the program, not
-    /// into the `signal` the refusal raises: past the handler, whose
-    /// answer the shipped `on:do:` hands to `make`, which has no
-    /// statement left and returns, to its caller's return point.
+    /// into the `signal` the refusal raises: the step waits for the
+    /// handler search, which finds the handler in `make` and reports it,
+    /// and stops at the handler block's first statement, through the
+    /// shipped machinery the filter passes.
     fn a_step_out_of_a_superclass_clause_whose_class_is_refused_does_not_stop_in_its_signal(lowering) {
         let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, true);
         assert_eq!(clause, "Inner superclass clause");
         assert_eq!(
             stood,
-            (
-                String::from("Refused>>run"),
-                String::from("made:: Outer new make")
-            )
+            (String::from("[] in Outer>>make"), String::from("9"))
         );
         assert_eq!(answer, 9);
     }
 }
 
 ns_runtime::for_each_lowering! {
-    /// With the shipped filter off, the same step goes on from the
-    /// `on:do:` the unwind lands in, and stops at its return point in
-    /// `make`.
-    fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_at_the_on_do_s_return_point(lowering) {
+    /// With the shipped filter off, the same step goes on from the frame
+    /// the handler search reports from, the kernel's block that invokes
+    /// the handler, and stops at its next statement.
+    fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_in_the_handler_s_invocation(lowering) {
         let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, false);
         assert_eq!(clause, "Inner superclass clause");
         assert_eq!(
             stood,
             (
-                String::from("Outer>>make"),
-                String::from("^[Inner new] on: Error do: [:error | 9]")
+                String::from("[] in Exception>>invokeHandlerAt:disabling:"),
+                String::from("handler cull: self")
             )
         );
         assert_eq!(answer, 9);
@@ -3684,7 +3699,6 @@ ns_runtime::for_each_lowering! {
     /// A step over a statement that raises an error a handler at the
     /// stepping frame takes stops at the handler block's first statement:
     /// the handler runs above the raising frame, before anything unwinds.
-    #[ignore = "Task 8"]
     fn a_step_over_a_statement_that_raises_stops_in_the_handler_block(lowering) {
         let offset = line_start(HANDLED, "self fail.");
         let (stood, answer) = stepped(
@@ -5141,5 +5155,644 @@ ns_runtime::for_each_lowering! {
                 "the unchanged method breakpoint freed no code: {before:?} {after:?}"
             );
         }
+    }
+}
+
+/// Sends `run` to an instance of `source`'s module class under
+/// `lowering`, its JIT on, with a debugger attached: `run` is sent twice
+/// before, whatever it answers, so that the bodies it runs -- the kernel's
+/// handler search among them -- have machine code; `configure` sets the
+/// interpreter up and queues its commands before the run, and `agent`
+/// serves it from another thread. Answers what `agent` answered and the
+/// run's outcome: the small integer it answered, or its error's text.
+fn raised<T: Send + 'static>(
+    source: &str,
+    lowering: Lowering,
+    configure: impl FnOnce(&mut Interpreter, &DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, Result<i64, String>) {
+    let (mut interpreter, instance) = instance_of(source, lowering);
+    for _ in 0..2 {
+        // Warmed whether the run ends normally or with its error.
+        drop(run(&mut interpreter, &instance));
+    }
+    let remote = interpreter.attach_debugger();
+    configure(&mut interpreter, &remote);
+    let (answer, result, _) = debugged_by(remote, agent, || run(&mut interpreter, &instance));
+    let outcome = match result {
+        Ok(root) => Ok(small_integer(&mut interpreter, &root)),
+        Err(HostSignal::Error(error)) => Err(String::from(error.message.as_str())),
+        Err(HostSignal::Return) => panic!("a non-local return escaped"),
+    };
+    (answer, outcome)
+}
+
+/// Sets the exception breakpoints.
+fn set_exception_breakpoints(
+    remote: &DebugRemote,
+    uncaught: bool,
+    caught: bool,
+    halt: bool,
+    classes: Vec<ClassName>,
+) {
+    remote.send(Command::SetExceptionBreakpoints {
+        uncaught,
+        caught,
+        halt,
+        classes,
+    });
+}
+
+/// Waits for the answer to `SetExceptionBreakpoints`.
+fn expect_exception_breakpoints_set(remote: &DebugRemote) {
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::ExceptionBreakpointsSet) => {}
+        other => panic!("the exception breakpoints' answer was expected, not {other:?}"),
+    }
+}
+
+/// The stop an uncaught or a caught exception of `class_name` described
+/// as `description` makes.
+fn exception(class_name: &str, description: &str, caught: bool) -> StopReason {
+    StopReason::Exception {
+        class_name: String::from(class_name),
+        description: String::from(description),
+        caught,
+    }
+}
+
+/// The name of the first frame of `frames` not hidden, after asserting
+/// that the frames above it are all hidden and those below it none.
+fn first_shown(frames: &[FrameDescription]) -> String {
+    let shown = frames
+        .iter()
+        .position(|frame| !frame.hidden)
+        .unwrap_or_else(|| panic!("a frame is shown: {:?}", frame_names(frames)));
+    assert!(
+        frames[shown..].iter().all(|frame| !frame.hidden),
+        "only the frames above the first shown are hidden: {frames:?}"
+    );
+    frames[shown].name.clone()
+}
+
+/// The text of the error a run ended with.
+fn error_text(result: HostResult) -> String {
+    match result {
+        Err(HostSignal::Error(error)) => String::from(error.message.as_str()),
+        Err(HostSignal::Return) => panic!("a non-local return escaped"),
+        Ok(_) => panic!("the run was expected to end with an error"),
+    }
+}
+
+/// A method that signals an `Error` nothing handles.
+const RAISING: &str = indoc! {"
+    class Raising = Object new () (
+      public run = (
+        ^self boom
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An uncaught error stops where the handler search, having found no
+    /// handler, is about to send `defaultAction`, with the whole stack:
+    /// the frames of the exception's machinery are hidden and the method
+    /// that signalled it is shown first; going on runs `defaultAction`,
+    /// which ends the run as it ends without a debugger.
+    fn an_uncaught_error_stops_before_its_default_action(lowering) {
+        let ((reason, top, shown), result) = raised(
+            RAISING,
+            lowering,
+            |_, _| {},
+            |remote| {
+                let reason = expect_stop(remote);
+                let frames = stack_trace(remote);
+                continue_stopped(remote);
+                (reason, frames[0].name.clone(), first_shown(&frames))
+            },
+        );
+        assert_eq!(reason, exception("Error", "boom", false));
+        assert_eq!(top, "Exception>>defaultAction");
+        assert_eq!(shown, "Raising>>boom");
+        assert_eq!(result, Err(String::from("boom")));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, the first frame shown is still the
+    /// first below the machinery: the step filters only push it further
+    /// down, past the frames they filter.
+    fn without_the_shipped_filter_the_first_frame_shown_is_below_the_machinery(lowering) {
+        let (shown, result) = raised(
+            RAISING,
+            lowering,
+            |_, remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_stop(remote);
+                let shown = first_shown(&stack_trace(remote));
+                continue_stopped(remote);
+                shown
+            },
+        );
+        assert_eq!(shown, "Raising>>boom");
+        assert_eq!(result, Err(String::from("boom")));
+    }
+}
+
+/// An error a shipped method a program sent signals.
+const ABSTRACT: &str = indoc! {"
+    class Abstract = Object new () (
+      public run = (
+        ^self area
+      )
+      area = (
+        ^self subclassResponsibility
+      )
+    ) : ()
+"};
+
+/// The first frame an uncaught error signalled in `ABSTRACT` shows, the
+/// shipped filter as `shipped` says.
+fn shown_for_abstract(lowering: Lowering, shipped: bool) -> String {
+    let (shown, result) = raised(
+        ABSTRACT,
+        lowering,
+        |_, remote| {
+            remote.send(Command::SetStepFilters {
+                shipped,
+                classes: Vec::new(),
+            });
+        },
+        |remote| {
+            expect_step_filters_set(remote);
+            expect_stop(remote);
+            let shown = first_shown(&stack_trace(remote));
+            continue_stopped(remote);
+            shown
+        },
+    );
+    assert!(result.is_err(), "the error ends the run");
+    shown
+}
+
+ns_runtime::for_each_lowering! {
+    /// An error raised in a shipped method shows the program's frame that
+    /// sent it first, the step filters filtering the shipped one; with the
+    /// shipped filter off, the shipped method is shown first.
+    fn an_error_raised_in_shipped_code_shows_the_program_s_frame_first(lowering) {
+        assert_eq!(shown_for_abstract(lowering, true), "Abstract>>area");
+        assert_eq!(
+            shown_for_abstract(lowering, false),
+            "Object>>subclassResponsibility"
+        );
+    }
+}
+
+/// A handler that takes the `Error` a method signals.
+const CATCHING: &str = indoc! {"
+    class Catching = Object new () (
+      public run = (
+        ^[self boom] on: Error do: [:error | 7]
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A caught exception does not stop by default.
+    fn a_caught_exception_does_not_stop_by_default(lowering) {
+        let (mut interpreter, instance) = instance_of(CATCHING, lowering);
+        let remote = interpreter.attach_debugger();
+        let (events, result, _) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_no_stop(&events);
+        assert_eq!(answered(&mut interpreter, result), 7);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the caught-exception breakpoint on, a caught exception stops
+    /// where the search is about to run the handler it found, the method
+    /// that signalled it shown first; going on runs the handler.
+    fn a_caught_exception_stops_only_with_caught_on(lowering) {
+        let ((reason, shown), result) = raised(
+            CATCHING,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                let reason = expect_stop(remote);
+                let shown = first_shown(&stack_trace(remote));
+                continue_stopped(remote);
+                (reason, shown)
+            },
+        );
+        assert_eq!(reason, exception("Error", "boom", true));
+        assert_eq!(shown, "Catching>>boom");
+        assert_eq!(result, Ok(7));
+    }
+}
+
+/// Two caught exceptions: an `Error`, and one of a program class whose
+/// superclass is another program class.
+const CLASSED: &str = indoc! {"
+    class Classed = Object new () (
+      public run = (
+        | total |
+        total:: [Error new signal: 'plain'] on: Error do: [:error | 1].
+        total:: total + ([MoreSpecial new signal: 'more'] on: Error do: [:error | 10]).
+        ^total
+      )
+      class Special = Error () ()
+      class MoreSpecial = Special () ()
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A class an exception breakpoint names takes an exception whose
+    /// class inherits from it, matched by declaration along the class
+    /// chain, and no other: the plain `Error` runs on.
+    fn an_exception_class_filter_selects_by_class_chain(lowering) {
+        let special = ClassName {
+            module: String::from("Classed"),
+            path: vec![String::from("Special")],
+        };
+        let ((reason, after), result) = raised(
+            CLASSED,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, true, true, vec![special]),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                let reason = expect_stop(remote);
+                continue_stopped(remote);
+                (reason, remote.next_event(Duration::from_millis(500)))
+            },
+        );
+        assert_eq!(reason, exception("MoreSpecial", "more", true));
+        assert_eq!(after, None);
+        assert_eq!(result, Ok(11));
+    }
+}
+
+/// A `halt` whose answer the method goes on with.
+const HALTING: &str = indoc! {"
+    class Halting = Object new () (
+      public run = (
+        | answer |
+        answer:: self halt.
+        ^answer isNil ifTrue: [5] ifFalse: [6]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An uncaught `halt` stops under the `Halt` breakpoint, on by
+    /// default, the method that sent it shown first; going on resumes
+    /// the `Halt` with nil, which `halt` answers, and the run goes on.
+    fn halt_stops_and_continues_with_nil(lowering) {
+        let ((reason, shown), result) = raised(
+            HALTING,
+            lowering,
+            |_, _| {},
+            |remote| {
+                let reason = expect_stop(remote);
+                let shown = first_shown(&stack_trace(remote));
+                continue_stopped(remote);
+                (reason, shown)
+            },
+        );
+        assert_eq!(reason, StopReason::Halt);
+        assert_eq!(shown, "Halting>>run");
+        assert_eq!(result, Ok(5));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the `Halt` breakpoint off, an uncaught `Halt` is an uncaught
+    /// exception as any other: it stops as one while that breakpoint is
+    /// on, and, going on, ends the run as it does without a debugger.
+    fn with_the_halt_breakpoint_off_a_halt_is_an_uncaught_exception(lowering) {
+        let (reason, result) = raised(
+            HALTING,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, false, false, Vec::new()),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                let reason = expect_stop(remote);
+                continue_stopped(remote);
+                reason
+            },
+        );
+        assert_eq!(reason, exception("Halt", "Halt", false));
+        assert_eq!(result, Err(String::from("Halt")));
+    }
+}
+
+/// A message nothing understands.
+const MISSING: &str = indoc! {"
+    class Missing = Object new () (
+      public run = (
+        ^self ask
+      )
+      ask = (
+        ^3 frobnicate
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An uncaught `MessageNotUnderstood` shows first the sender of the
+    /// message, below the kernel's `doesNotUnderstand:` that signalled
+    /// it, the shipped filter off so that the machinery alone decides;
+    /// going on ends the run as it does without a debugger.
+    fn an_uncaught_message_not_understood_stops_below_does_not_understand(lowering) {
+        let ((reason, shown), result) = raised(
+            MISSING,
+            lowering,
+            |_, remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                let reason = expect_stop(remote);
+                let shown = first_shown(&stack_trace(remote));
+                continue_stopped(remote);
+                (reason, shown)
+            },
+        );
+        assert_eq!(
+            reason,
+            exception(
+                "MessageNotUnderstood",
+                "an object does not understand #frobnicate",
+                false
+            )
+        );
+        assert_eq!(shown, "Missing>>ask");
+        assert_eq!(
+            result,
+            Err(String::from("an object does not understand #frobnicate"))
+        );
+    }
+}
+
+/// The golden whose `Halt`s are caught and resumed, then one is not.
+const HALTS: &str = include_str!(
+    "../../../goldens/library/exception/halt_resumes_when_handled_and_ends_the_run_when_not.ns"
+);
+
+ns_runtime::for_each_lowering! {
+    /// With a debugger attached and every exception breakpoint off, a
+    /// golden that catches, resumes and leaves uncaught a `Halt` runs as
+    /// it does without one: no stop, and the run ends with the error its
+    /// record holds. Without a debugger every golden under
+    /// `goldens/library/exception/` keeps its record in the default suite.
+    fn without_a_debugger_exceptions_behave_as_before(lowering) {
+        let (mut interpreter, class) = load(HALTS, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let platform = interpreter.platform();
+        let arguments = interpreter.stash(ns_runtime::Value::nil());
+        let remote = interpreter.attach_debugger();
+        set_exception_breakpoints(&remote, false, false, false, Vec::new());
+        let (events, result, _) = events_during(remote, || {
+            interpreter.send(
+                &instance,
+                Symbol::intern("main:args:"),
+                &[platform, arguments],
+            )
+        });
+        assert_no_stop(&events);
+        assert_eq!(error_text(result), "Halt");
+    }
+}
+
+/// A block whose `^` cannot return, its home gone, sent in a protected
+/// block whose handler takes the `CannotReturn` the VM raises.
+const CANNOT_RETURNING: &str = indoc! {"
+    class Escaping = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        | block |
+        block:: self escaper.
+        [block value: 3] on: Error do: [:error |
+          count:: count + 5].
+        ^count
+      )
+      escaper = (
+        ^[:value |
+          count:: value.
+          ^value]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over a statement whose own instruction raises an error the
+    /// VM signals -- the `^` of a block whose home has returned, no send
+    /// -- that a handler below the stepping frame takes stops at the
+    /// handler block's first statement.
+    fn a_step_over_an_instruction_that_raises_stops_in_the_handler_block(lowering) {
+        let offset = line_start(CANNOT_RETURNING, "count:: value.");
+        let (stood, answer) = stepped(
+            CANNOT_RETURNING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Escaping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Escaping");
+                step(remote, Command::StepOver);
+                let before = standing(remote, CANNOT_RETURNING);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, CANNOT_RETURNING);
+                continue_stopped(remote);
+                (before, stood)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                (String::from("[] in Escaping>>escaper"), String::from("^value")),
+                (
+                    String::from("[] in Escaping>>run"),
+                    String::from("count:: count + 5")
+                )
+            )
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+/// `CANNOT_RETURNING`'s block, its `CannotReturn` handled by nothing, below an
+/// `ensure:` whose block the termination's unwind runs.
+const RESUMED: &str = indoc! {"
+    class Resumed = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        [self escaper value: 3] ensure: [
+          count:: count + 1].
+        ^count
+      )
+      escaper = (
+        ^[:value |
+          count:: value.
+          ^value]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of the `signal` the VM pushed for an error, which
+    /// returns once the test hook resumed its default action -- its
+    /// continuation ends the run (`Continuation::VmErrorSignalled`) --
+    /// goes on where the run's end takes the program: into the `ensure:`
+    /// block its termination runs. The uncaught-exception breakpoint does
+    /// not stop the exception the hook resumes.
+    fn a_step_out_of_a_vm_error_s_signal_stops_in_the_ensure_block_its_end_runs(lowering) {
+        let offset = line_start(RESUMED, "count:: value.");
+        let (stood, result) = raised(
+            RESUMED,
+            lowering,
+            |interpreter, remote| {
+                interpreter.resume_unhandled_exceptions(1);
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+                set_breakpoints(remote, "Resumed", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "Resumed");
+                step(remote, Command::StepOver);
+                step(remote, Command::StepInto);
+                let signal = top_name(remote);
+                step(remote, Command::StepOut);
+                let stood = standing(remote, RESUMED);
+                continue_stopped(remote);
+                (signal, stood)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Exception>>signal"),
+                (
+                    String::from("[] in Resumed>>run"),
+                    String::from("count:: count + 1")
+                )
+            )
+        );
+        assert_eq!(
+            result,
+            Err(String::from(
+                "cannotReturn: the enclosing method activation has already returned"
+            ))
+        );
+    }
+}
+
+/// A handler block in the method a step is taken in, whose `on:do:` the
+/// method sends.
+const HANDLING_HERE: &str = indoc! {"
+    class HandlingHere = Object new () (
+      public run = (
+        | total |
+        total:: [self boom] on: Error do: [:error | 7].
+        ^total + 1
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over a statement whose `on:do:` the stepping frame sends
+    /// itself goes on past the handler, which runs above that `on:do:`,
+    /// to the frame's next statement: the handler search reports only to
+    /// a step whose frame stands at or above the handler's `on:do:`.
+    fn a_step_over_a_statement_whose_handler_the_frame_sends_stops_at_its_next_statement(lowering) {
+        let offset = line_start(HANDLING_HERE, "total:: [self boom]");
+        let (stood, answer) = stepped(
+            HANDLING_HERE,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "HandlingHere", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "HandlingHere");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, HANDLING_HERE);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("HandlingHere>>run"),
+                String::from("^total + 1")
+            )
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+/// An exception class whose `defaultAction` a fast path answers, with no
+/// activation of its own.
+const QUIET: &str = indoc! {"
+    class Quiet = Object new () (
+      public run = (
+        ^self raise + 1
+      )
+      raise = (
+        ^Hushed new signal
+      )
+      class Hushed = Error () (
+        public defaultAction = (
+          ^41
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An uncaught exception whose `defaultAction` pushes nothing stops
+    /// all the same, at the next poll -- the return to `signal`, the
+    /// override's answer already given -- the method that signalled it
+    /// shown first; going on, the run answers as it does without a
+    /// debugger.
+    fn an_uncaught_exception_whose_default_action_pushes_nothing_stops_at_the_next_poll(lowering) {
+        let ((reason, shown), result) = raised(
+            QUIET,
+            lowering,
+            |_, _| {},
+            |remote| {
+                let reason = expect_stop(remote);
+                let shown = first_shown(&stack_trace(remote));
+                continue_stopped(remote);
+                (reason, shown)
+            },
+        );
+        assert_eq!(reason, exception("Hushed", "Hushed", false));
+        assert_eq!(shown, "Quiet>>raise");
+        assert_eq!(result, Ok(42));
     }
 }

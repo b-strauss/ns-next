@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use ns_syntax::Span;
 
+use super::exceptions::ExceptionBreakpoints;
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{
@@ -51,6 +52,14 @@ pub(crate) struct Breakpoints {
     /// The stop the last `Breakpoint` arm decided, which the safepoint it
     /// left for takes.
     pending_stop: Option<PendingStop>,
+    /// The stop an exception breakpoint asked for (`debugger::exceptions`),
+    /// which the next poll's safepoint takes, the request bit
+    /// (`DEBUGGER_STOP`) leading it there: an exception's leaf runs in
+    /// the middle of a stretch, which no leaf leaves.
+    pending_exception: Option<StopReason>,
+    /// The exception breakpoints the attached debugger set; the default
+    /// until it sets them.
+    exceptions: ExceptionBreakpoints,
     /// Where the unasked reports go: the attached debugger's event
     /// channel, cloned, so that a module built or an install inside a
     /// leaf reports what it resolved at once.
@@ -312,6 +321,33 @@ impl Breakpoints {
     /// The stop the last `Breakpoint` arm decided, taken.
     pub(crate) fn take_pending_stop(&mut self) -> Option<PendingStop> {
         self.pending_stop.take()
+    }
+
+    /// Whether a debugger is attached, for which the exception breakpoints
+    /// stop.
+    pub(crate) fn attached(&self) -> bool {
+        self.arming.is_some()
+    }
+
+    /// Replaces the exception breakpoints.
+    pub(crate) fn set_exception_breakpoints(&mut self, exceptions: ExceptionBreakpoints) {
+        self.exceptions = exceptions;
+    }
+
+    /// The exception breakpoints in effect.
+    pub(crate) fn exception_breakpoints(&self) -> &ExceptionBreakpoints {
+        &self.exceptions
+    }
+
+    /// Records the stop an exception breakpoint asked for, which the next
+    /// poll's safepoint takes.
+    pub(crate) fn request_exception_stop(&mut self, reason: StopReason) {
+        self.pending_exception = Some(reason);
+    }
+
+    /// The stop an exception breakpoint asked for, taken.
+    pub(crate) fn take_pending_exception(&mut self) -> Option<StopReason> {
+        self.pending_exception.take()
     }
 
     /// Records the stop a `Breakpoint` arm decided.
@@ -928,8 +964,9 @@ fn patch_method(
 }
 
 /// Removes every breakpoint, each slot given its original back, ends any
-/// step and puts the step filters back to their default: the debugger
-/// that set them is gone or replaced.
+/// step, drops a stop not served yet and puts the step filters and the
+/// exception breakpoints back to their default: the debugger that set
+/// them is gone or replaced.
 pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     super::stepping::end(mutator);
     let table = &mut mutator.breakpoints;
@@ -942,7 +979,9 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.reported_home = None;
     table.past_once = None;
     table.pending_stop = None;
+    table.pending_exception = None;
     table.step_filters = StepFilters::default();
+    table.exceptions = ExceptionBreakpoints::default();
     settle(mutator);
 }
 

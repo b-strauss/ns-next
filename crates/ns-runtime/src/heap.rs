@@ -453,9 +453,18 @@ pub(crate) const DEBUGGER_COMMANDS: u64 = 1 << 3;
 /// its own thread, under the arming lock (`debugger::stepping`).
 pub(crate) const DEBUGGER_STEP: u64 = 1 << 4;
 
+/// The bit of `MachineWord::SafepointRequested` an exception's leaf sets
+/// once it recorded the stop an exception breakpoint asks for
+/// (`debugger::exceptions`): the next poll -- the push of `defaultAction`,
+/// of the handler's `cull:` or of a `Halt`'s `resume:` -- takes the
+/// safepoint, which stops before that frame runs an instruction. Set and
+/// cleared by the VM alone, on its own thread, under the arming lock.
+pub(crate) const DEBUGGER_STOP: u64 = 1 << 5;
+
 /// Every bit of the debugger's: the agent's pause and commands, and the
-/// VM's own held step.
-pub(crate) const DEBUGGER_BITS: u64 = DEBUGGER_PAUSE | DEBUGGER_COMMANDS | DEBUGGER_STEP;
+/// VM's own held step and requested stop.
+pub(crate) const DEBUGGER_BITS: u64 =
+    DEBUGGER_PAUSE | DEBUGGER_COMMANDS | DEBUGGER_STEP | DEBUGGER_STOP;
 
 /// The request bits that lower `MachineWord::DepthLimit` to 0 while set,
 /// so that a compiled callee's one compare refuses its push for them too:
@@ -9858,8 +9867,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether a request that lowers the depth limit is pending -- the
-    /// VM's own, a collection's or a full code zone's, or the debugger's
-    /// pause or commands -- rather than only a stress mode's hold
+    /// VM's own, a collection's or a full code zone's, or one of the
+    /// debugger's bits -- rather than only a stress mode's hold
     /// (`STRESS_HOLD`), which the run loop takes at its next poll all the
     /// same.
     pub(crate) fn real_safepoint_requested(&self) -> bool {
@@ -9867,8 +9876,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The debugger's bits of the request word that are set: the pause
-    /// the agent asked for, the commands it queued and a step into's held
-    /// request (`Interpreter::serve_debugger`).
+    /// the agent asked for, the commands it queued, a step into's held
+    /// request and an exception's requested stop
+    /// (`Interpreter::serve_debugger`).
     pub(crate) fn debugger_bits(&self) -> u64 {
         self.machine_words.get(MachineWord::SafepointRequested) & DEBUGGER_BITS
     }
@@ -9902,6 +9912,16 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn hold_step_request(&mut self) {
         self.machine_words
             .fetch_or(MachineWord::SafepointRequested, DEBUGGER_STEP);
+        self.synchronize_depth_limit();
+    }
+
+    /// An exception breakpoint asks the next poll to stop
+    /// (`DEBUGGER_STOP`), which lowers the depth limit, so that the push
+    /// it waits for is the interpreter's, until the safepoint clears it
+    /// (`debugger::exceptions`).
+    pub(crate) fn request_debugger_stop(&mut self) {
+        self.machine_words
+            .fetch_or(MachineWord::SafepointRequested, DEBUGGER_STOP);
         self.synchronize_depth_limit();
     }
 

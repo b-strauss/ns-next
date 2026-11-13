@@ -261,6 +261,73 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
     settle(mutator);
 }
 
+/// The handler search found the handler of the `on:do:` activation
+/// `handler`, which is about to run on top of the stack, before anything
+/// unwinds ("Exceptions"): a step whose frame stands at or above
+/// `handler` -- the handler takes an exception raised in it or in what it
+/// called -- or whose frame, or its return point's caller, has left
+/// already, waiting for where the error's handling takes the program
+/// (decision 17), goes on as a step into from the frame on top, through
+/// the exception's machinery, which the filters pass, so that it stops at
+/// the handler block's first statement, as Java's step over stops in the
+/// `catch` that takes an exception thrown below. A step whose frame lies
+/// below `handler` -- the `on:do:` was sent above it -- goes on as it was.
+pub(crate) fn handler_found<'gc>(mutator: &mut Mutator<'gc>, handler: FrameReference<'gc>) {
+    let Some(stepping) = &mutator.stepping else {
+        return;
+    };
+    let left = stepping.frame.is(Holder::Left)
+        || stepping
+            .return_point
+            .is_some_and(|(caller, _)| caller.is(Holder::Left));
+    let Some(top) = mutator.heap.top_activation() else {
+        return;
+    };
+    if left || steps_at_or_above(mutator, top, handler) {
+        continue_as_step_into(mutator, top);
+    }
+}
+
+/// Whether the stepping frame is met walking from `top` down its senders,
+/// through the suspended ones, before `handler`'s frame is passed:
+/// `handler` itself counts as met.
+fn steps_at_or_above<'gc>(
+    mutator: &Mutator<'gc>,
+    top: ActivationReference,
+    handler: FrameReference<'gc>,
+) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return false;
+    };
+    let heap = &mutator.heap;
+    let handler_object = heap.frame_object(handler);
+    let mut place = Some(Place::Running(top));
+    while let Some(next) = place {
+        let (held, is_handler) = match next {
+            Place::Running(activation) => (
+                Some(Holder::Running(activation)),
+                heap.frame_activation(handler)
+                    .is_some_and(|running| running.names(activation)),
+            ),
+            Place::Suspended(frame) => (
+                suspended_key(mutator, frame).map(Holder::Suspended),
+                heap.frame_object(frame).same(handler_object),
+            ),
+        };
+        if held.is_some_and(|held| stepping.frame.is(held)) {
+            return true;
+        }
+        if is_handler {
+            return false;
+        }
+        place = match next {
+            Place::Running(activation) => sender_of(mutator, activation),
+            Place::Suspended(frame) => heap.frame_sender(frame).map(Place::Suspended),
+        };
+    }
+    false
+}
+
 /// The step's value of the last call and the exits it reports, taken with
 /// the step, which a step that replaces it carries on.
 fn carried(mutator: &mut Mutator<'_>) -> (Option<Root>, Vec<BreakpointId>) {

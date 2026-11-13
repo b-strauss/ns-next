@@ -270,7 +270,9 @@ impl Primitive {
                 | ActivationPrimitive::SetHandlerActive
                 | ActivationPrimitive::ReturnValue
                 | ActivationPrimitive::Restart
-                | ActivationPrimitive::Terminate,
+                | ActivationPrimitive::Terminate
+                | ActivationPrimitive::ExceptionUnhandled
+                | ActivationPrimitive::ExceptionCaught,
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
             Primitive::Module(
@@ -795,6 +797,14 @@ pub enum ActivationPrimitive {
     Restart,
     InheritsMixinOf,
     Terminate,
+    /// The handler search found no handler: an attached debugger's
+    /// exception breakpoints decide whether the next poll stops, and the
+    /// leaf answers whether that stop resumes a `Halt` with nil.
+    ExceptionUnhandled,
+    /// The handler search found an `on:do:` whose handler is about to
+    /// run: reported to a step in progress and to the caught-exception
+    /// breakpoint.
+    ExceptionCaught,
 }
 
 /// `Message>>sendTo:`'s leaf: the message sent to a receiver as an
@@ -3301,6 +3311,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "levelEnclosingObject",
         Primitive::Behavior(BehaviorPrimitive::LevelEnclosing),
     )),
+    // Unary: the exception is the row's subject. It decides and records
+    // an attached debugger's stop, which the next poll serves, and runs
+    // nothing (`debugger::exceptions`).
+    mirror(
+        "exceptionUnhandled:ifFail:",
+        "exceptionUnhandled",
+        Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
+    ),
+    // The exception is the subject and the handler's `on:do:` activation
+    // the argument, as `exceptionUnhandled:ifFail:` records.
+    mirror(
+        "exceptionCaught:at:ifFail:",
+        "exceptionCaughtAt:",
+        Primitive::Activation(ActivationPrimitive::ExceptionCaught),
+    ),
 ];
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);

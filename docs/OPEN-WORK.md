@@ -1856,12 +1856,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   current text, kept per body only when it compiles again alike, which
   give a stopped frame its name, its place and its named variables
   ([debugger.md](design/debugger.md), "Compiling the metadata again").
-  The rest, in this order: stage 3, next, breakpoints patched in place
-  (a method's fast path switched off while its body is patched), stepping by one-shot breakpoints, method
-  breakpoints, exception breakpoints where the handler search invokes a
-  handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
-  about to send `defaultAction` for an uncaught one (a test-only
-  `resume_unhandled_exceptions` hook stands in today); the DAP agent in
+  Its third stage is under way: breakpoints patched in place (a
+  method's fast path switched off while its body is patched), stepping
+  by one-shot breakpoints with the step filters, run to cursor, method
+  breakpoints, and exception breakpoints, which stop where the handler
+  search invokes a handler for a caught exception and where it is about
+  to send `defaultAction` for an uncaught one, are built. An uncaught
+  exception whose `defaultAction` override a fast path answers -- a
+  constant, a slot -- pushes nothing at that send, so it stops at the
+  next poll, the return to `signal`, after the override answered; a
+  handler that is no block and whose `cull:` a fast path answers
+  likewise stops after it ran ([debugger.md](design/debugger.md),
+  "Exceptions"). The rest, in this order: stage 3's breakpoint and step
+  stress modes; the DAP agent in
   `ns-cli` and the plugin's `XDebugProcess`; evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return; hot swap,

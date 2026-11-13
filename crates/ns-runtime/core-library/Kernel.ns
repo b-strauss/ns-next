@@ -541,11 +541,12 @@ class Kernel vmMirror: mirror = Value (
       ^notNilBlock cull: self.
     )
 
-    /// Signals a new `Halt`; unhandled, it ends the run.
+    /// Signals a new `Halt`; unhandled, it ends the run, unless an
+    /// attached debugger's `Halt` breakpoint stops it there, which goes on
+    /// resumed with nil.
     ///
-    /// Its `defaultAction` is the hook the debugger will replace.
-    ///
-    /// @answers the value a handler resumes the Halt with.
+    /// @answers the value a handler resumes the Halt with, or nil once
+    /// the debugger's stop goes on.
     /// @signals Halt a new one, without a `messageText`.
     public halt = (
       ^outer Kernel Halt new signal.
@@ -1063,11 +1064,12 @@ class Kernel vmMirror: mirror = Value (
     /// Never answers.
     ///
     /// No handler: the run ends through the leaf, once the pending
-    /// `ensure:` blocks have run. The one place the debugger will
-    /// replace. The leaf takes any selector, receiver and description
-    /// and declines only for a future, which the VM sees through before
-    /// any failure block could run, so the failure block never runs and
-    /// an unhandled exception cannot carry on.
+    /// `ensure:` blocks have run. An attached debugger stops at this
+    /// method's push and lets it run when the program goes on
+    /// (`invokeNextHandler`). The leaf takes any selector, receiver and
+    /// description and declines only for a future, which the VM sees
+    /// through before any failure block could run, so the failure block
+    /// never runs and an unhandled exception cannot carry on.
     ///
     /// @answers nothing; it never returns.
     public defaultAction = (
@@ -1109,7 +1111,8 @@ class Kernel vmMirror: mirror = Value (
     /// first enabled `on:do:` whose exception class `handles:` the
     /// exception, disabling every enabled `on:do:` passed on the way,
     /// the handler's included; with none, marks the default reached and
-    /// runs `defaultAction`.
+    /// runs `defaultAction` -- or, for a `Halt` an attached debugger's
+    /// `Halt` breakpoint stopped, resumes it with nil.
     ///
     /// Each step is one `activationNextHandler:`, which answers the next
     /// enabled `on:do:` activation outward and reifies no activation it
@@ -1130,7 +1133,8 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @answers what `defaultAction` answers when no `on:do:` handles the
     /// exception; nothing when one does, whose handler ends through
-    /// `invokeHandlerAt:disabling:`.
+    /// `invokeHandlerAt:disabling:`, nor for a `Halt` the debugger
+    /// resumed, whose `signal` answers nil.
     /// @see `invokeHandlerAt:disabling:`.
     private invokeNextHandler = (
       |
@@ -1159,6 +1163,12 @@ class Kernel vmMirror: mirror = Value (
       reachedDefault:: true.
       searching:: false.
       handlerActivation:: nil.
+      /// An attached debugger's exception breakpoints stop the program at
+      /// the push of `defaultAction`, before any override of it runs, with
+      /// the whole stack still there; with none attached the leaf does
+      /// nothing. A `Halt` its breakpoint stopped goes on resumed with
+      /// nil, as a debugger that let the user look goes on.
+      (vmMirror exceptionUnhandled: self ifFail: [false]) ifTrue: [^self resume: nil].
       ^self defaultAction.
     )
 
@@ -1231,6 +1241,12 @@ class Kernel vmMirror: mirror = Value (
       handlers do: [:each | vmMirror activation: each handlerActive: false ifFail: [nil]].
       result:: [
         searching:: false.
+        /// The handler is about to run on top of the stack, before
+        /// anything unwinds: an attached debugger's caught-exception
+        /// breakpoint stops at the push of `cull:`, and a step whose
+        /// exception this handler takes goes on into it; with none
+        /// attached the leaf does nothing.
+        vmMirror exceptionCaught: self at: activation ifFail: [nil].
         handler cull: self.
       ] ensure: [
         handlers do: [:each | vmMirror activation: each handlerActive: true ifFail: [nil]].

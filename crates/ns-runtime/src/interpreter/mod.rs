@@ -957,8 +957,10 @@ impl Interpreter {
                     mutator.set_depth_reserve(None);
                     mutator.breakpoints.drop_past_once();
                     // A step the run's end left goes with it: its frames
-                    // are gone.
+                    // are gone. So does an exception's stop no poll
+                    // served, and its request bit.
                     crate::debugger::stepping::end(mutator);
+                    crate::debugger::exceptions::drop_pending(mutator);
                 });
                 result
             }
@@ -1589,6 +1591,8 @@ impl Interpreter {
     /// what the debugger will do once it has let the user fix the cause
     /// (`docs/design/core-library.md`, "Exceptions"). A
     /// `MessageNotUnderstood` resumed this way sends its message again.
+    /// It is served before an attached debugger's exception breakpoints:
+    /// an exception it resumes stops nothing.
     #[doc(hidden)]
     pub fn resume_unhandled_exceptions(&mut self, count: usize) {
         self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
