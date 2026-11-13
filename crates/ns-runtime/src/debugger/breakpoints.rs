@@ -155,7 +155,7 @@ impl PatchKind {
 
     /// Whether this belongs to a step or a run to cursor, which the next
     /// stop ends.
-    fn is_a_step_s(self) -> bool {
+    fn ends_at_next_stop(self) -> bool {
         matches!(self, PatchKind::OneShot(_) | PatchKind::RunTo)
     }
 }
@@ -479,7 +479,7 @@ impl Breakpoints {
     /// breakpoint the debugger set holds given its original back: the
     /// step or the run to cursor ended.
     pub(crate) fn remove_one_shots(&mut self) {
-        self.remove_kinds(PatchKind::is_a_step_s, |_| false);
+        self.remove_kinds(PatchKind::ends_at_next_stop, |_| false);
     }
 
     /// Whether no line breakpoint, resolved or pending, and no method

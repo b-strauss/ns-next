@@ -234,9 +234,11 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         return u64::from(EXIT);
     }
     // A method a method breakpoint names reports its exit by an unwind,
-    // which only the interpreter's unwinder makes; its entry's patch keeps
-    // its body from being installed, so this holds by that alone, but the
-    // report must not rest on it.
+    // which only the interpreter's unwinder makes. Its entry's patch makes
+    // its body exit at once, but the JIT stress mode installs such a body
+    // all the same, and an on-stack replacement at a loop's head runs it
+    // as the stretch's entry frame, the home this walk would return from
+    // when its own block returns non-locally.
     if mutator.breakpoints.reports_exits_of(&caller.code) {
         mutator.jit.cut.reset();
         return u64::from(EXIT);

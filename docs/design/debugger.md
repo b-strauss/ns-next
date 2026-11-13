@@ -1184,13 +1184,23 @@ stage's tests, do not.
   reporting the entry with the line breakpoint among its others; and a
   method breakpoint on a lazy slot's getter an optimized copy inlined
   freeing the copy, every read of the filled slot stopping at the
-  getter's entry and exit. Beside them, under the JIT: a copy compiled
+  getter's entry and exit; a method breakpoint on a class-side method
+  stopping at its entry and at each return, the one in its inlined block
+  included; an install setting a method breakpoint again on the new
+  body; and, under the JIT stress mode, a method whose loop's on-stack
+  replacement runs it in machine code reporting the exit its own block's
+  non-local return makes. A step into whose push stops at a statement a
+  line breakpoint stands at reports the breakpoint. Beside them, under
+  the JIT: a copy compiled
   while a callee or a block it would inline is patched calling the
   callee and making the block's closure, so that every pass stops once
   the breakpoint stands at a statement a pass runs; sending the same
-  line breakpoints again freeing no machine code; and a line breakpoint
-  set into `True>>ifTrue:` while a step's one-shot already patched its
-  body still switching the fast path off.
+  line breakpoints, or the same method breakpoints, again freeing no
+  machine code; and a line breakpoint set into `True>>ifTrue:` while a
+  step's one-shot already patched its body still switching the fast
+  path off, the callee's loop sending `ifTrue:` with a block until the
+  breakpoint stops it, so that the stop does not depend on when the
+  breakpoint is served.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -2482,9 +2492,14 @@ and stops every activation of it at its entry and at each of its exits.
   (`AfterPast::ExitReported`, `Breakpoints::report_home`), held as its
   frame object, so that the unwind's arrival there does not report the
   exit again. The cut, which pops compiled frames without the unwinder,
-  answers its exit for a frame of such a method (`jit::cut::cut_frame`);
-  the entry's patch alone keeps the body from being installed, since it
-  exits at once, but the report does not rest on that.
+  answers its exit for a frame of such a method (`jit::cut::cut_frame`):
+  the entry's patch makes the body exit at once, but the JIT stress mode
+  installs such a body all the same, and an on-stack replacement at a
+  loop's head then runs it as the stretch's entry frame, the home the
+  cut would return from when its own block returns non-locally.
+  A pause served after an unwind left such a method, before the step
+  that reports the exit stopped, reports `MethodExit` rather than
+  `Pause`, as any stop does that serves a pause.
 - **A stop that is both** a method's entry or exit and a line
   breakpoint's statement, or two method breakpoints' of the same method,
   is reported once: `StopReason::MethodEntry { id, others }` before
