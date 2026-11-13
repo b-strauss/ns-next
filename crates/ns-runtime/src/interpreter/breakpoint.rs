@@ -7,6 +7,7 @@
 
 use crate::bytecode::CompactInstruction;
 use crate::debugger::breakpoints::{address, PastOnce, PendingStop};
+use crate::debugger::stepping;
 use crate::heap::ActivationReference;
 use crate::interpreter::Mutator;
 
@@ -20,7 +21,9 @@ pub(crate) enum BreakpointDecision {
 }
 
 /// The decision at slot `index` of the body `activation` runs, which a
-/// breakpoint patched. The token a resumed stop set lets the frame past
+/// line breakpoint or a step's one-shot patched: a stop for a line
+/// breakpoint, and for a one-shot that stops in this activation. The
+/// token a resumed stop set lets the frame past
 /// the slot it stopped at once; this arm consumes it when it names this
 /// slot, and drops it otherwise, since the activation it names may be
 /// popped from here on and its offset reused.
@@ -40,11 +43,26 @@ pub(crate) fn reached(
             return BreakpointDecision::Execute(code.original(index));
         }
     }
-    let ids = mutator.breakpoints.ids_at(body, index);
-    if ids.is_empty() {
-        // Every patched slot is in the table, which restores a slot as
-        // it forgets it.
-        debug_assert!(false, "internal: a patched slot no breakpoint holds");
+    let (ids, one_shots) = mutator.breakpoints.kinds_at(body, index);
+    // Every patched slot is in the table, which restores a slot as it
+    // forgets it.
+    debug_assert!(
+        !ids.is_empty() || !one_shots.is_empty(),
+        "internal: a patched slot no breakpoint holds"
+    );
+    // A step's one-shots count only in their own activation; a recording
+    // one goes on, having noted the value of the call before it.
+    let mut step_stops = false;
+    for one_shot in one_shots {
+        if !stepping::takes(mutator, one_shot.holder, activation) {
+            continue;
+        }
+        if one_shot.records {
+            stepping::record(mutator, activation, &code, index);
+        }
+        step_stops |= one_shot.stops;
+    }
+    if ids.is_empty() && !step_stops {
         return BreakpointDecision::Execute(code.original(index));
     }
     mutator.breakpoints.request_stop(PendingStop {

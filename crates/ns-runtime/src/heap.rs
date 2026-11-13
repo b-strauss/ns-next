@@ -363,6 +363,29 @@ impl ActivationReference {
         }
         self.offset == other.offset
     }
+
+    /// Whether this handle, held across pushes and pops, still names
+    /// `running`, a live activation: the same offset and, in a debug
+    /// build, the same generation, so that a handle whose activation has
+    /// returned names nothing rather than failing `same`'s check. A
+    /// release build compares the offsets alone, so a holder drops the
+    /// handle before its offset can be reused, as the debugger's stepping
+    /// state does: the step ends at the stop its frame's return reaches
+    /// first (`debugger::stepping`).
+    pub(crate) fn names(self, running: ActivationReference) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.origin, running.origin,
+                "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
+                self.origin, running.origin
+            );
+            if self.generation != running.generation {
+                return false;
+            }
+        }
+        self.offset == running.offset
+    }
 }
 
 /// Prints the frame's stack offset and nothing else, for the reason
@@ -423,10 +446,23 @@ pub(crate) const DEBUGGER_PAUSE: u64 = 1 << 2;
 /// clears it, before it drains the queue (`Heap::clear_debugger_bits`).
 pub(crate) const DEBUGGER_COMMANDS: u64 = 1 << 3;
 
+/// The bit of `MachineWord::SafepointRequested` a step into holds until
+/// the next push (`docs/design/debugger.md`, "Step into's held
+/// request"): every poll takes the safepoint, which stops at a frame
+/// pushed above the stepping one. Set and cleared by the VM alone, on
+/// its own thread, under the arming lock (`debugger::stepping`).
+pub(crate) const DEBUGGER_STEP: u64 = 1 << 4;
+
+/// Every bit of the debugger's: the agent's pause and commands, and the
+/// VM's own held step.
+pub(crate) const DEBUGGER_BITS: u64 = DEBUGGER_PAUSE | DEBUGGER_COMMANDS | DEBUGGER_STEP;
+
 /// The request bits that lower `MachineWord::DepthLimit` to 0 while set,
 /// so that a compiled callee's one compare refuses its push for them too:
-/// every bit but the stress hold's (`Heap::synchronize_depth_limit`).
-pub(crate) const LOWERS_DEPTH_LIMIT: u64 = REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS;
+/// every bit but the stress hold's (`Heap::synchronize_depth_limit`) --
+/// a step into's among them, so that the push it waits for is the
+/// interpreter's, which takes the safepoint before the callee runs.
+pub(crate) const LOWERS_DEPTH_LIMIT: u64 = REAL_REQUEST | DEBUGGER_BITS;
 
 /// `Value::immediate_index`'s for a `SmallInteger`, which machine code's
 /// guard and class idioms compute as it does.
@@ -9821,11 +9857,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The debugger's bits of the request word that are set: the pause
-    /// the agent asked for and the commands it queued
-    /// (`Interpreter::serve_debugger`).
+    /// the agent asked for, the commands it queued and a step into's held
+    /// request (`Interpreter::serve_debugger`).
     pub(crate) fn debugger_bits(&self) -> u64 {
-        self.machine_words.get(MachineWord::SafepointRequested)
-            & (DEBUGGER_PAUSE | DEBUGGER_COMMANDS)
+        self.machine_words.get(MachineWord::SafepointRequested) & DEBUGGER_BITS
     }
 
     /// The VM's request served, and a stress mode's hold with it
@@ -9843,15 +9878,20 @@ impl<'gc> Heap<'gc> {
     /// commands it is about to drain -- cleared before the queue is
     /// drained, so that a command queued meanwhile keeps its bit for the
     /// next safepoint (`docs/design/debugger.md`, "Commands while the
-    /// program runs").
+    /// program runs") -- or the step whose push came or which ended.
     pub(crate) fn clear_debugger_bits(&mut self, bits: u64) {
-        debug_assert_eq!(
-            bits & !(DEBUGGER_PAUSE | DEBUGGER_COMMANDS),
-            0,
-            "only the debugger's bits"
-        );
+        debug_assert_eq!(bits & !DEBUGGER_BITS, 0, "only the debugger's bits");
         self.machine_words
             .fetch_and(MachineWord::SafepointRequested, !bits);
+        self.synchronize_depth_limit();
+    }
+
+    /// A step into holds its request (`DEBUGGER_STEP`), which every poll
+    /// takes and which lowers the depth limit until the VM clears it
+    /// (`debugger::stepping`).
+    pub(crate) fn hold_step_request(&mut self) {
+        self.machine_words
+            .fetch_or(MachineWord::SafepointRequested, DEBUGGER_STEP);
         self.synchronize_depth_limit();
     }
 

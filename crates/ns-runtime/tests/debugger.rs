@@ -2461,3 +2461,529 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// Sends `selector` to an instance of `source`'s module class under
+/// `lowering`, its JIT on, with a debugger attached: the selector is sent
+/// twice before, so that the bodies it runs have machine code, which a
+/// step frees; `configure` queues its commands before the run, and
+/// `agent` serves it from another thread. Answers what `agent` answered
+/// and the run's answer.
+fn stepped<T: Send + 'static>(
+    source: &str,
+    lowering: Lowering,
+    selector: &'static str,
+    configure: impl FnOnce(&DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, i64) {
+    let (mut interpreter, instance) = instance_of(source, lowering);
+    for _ in 0..2 {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern(selector), &[]),
+            "warm",
+        );
+    }
+    let remote = interpreter.attach_debugger();
+    configure(&remote);
+    let (answer, result, _) = debugged_by(remote, agent, || {
+        interpreter.send(&instance, Symbol::intern(selector), &[])
+    });
+    let answered = answered(&mut interpreter, result);
+    (answer, answered)
+}
+
+/// Sends the step `command` to the stopped program and waits for its
+/// stop: the confirmation first, then the step's stop, whose returned
+/// value it answers.
+fn step(remote: &DebugRemote, command: Command) -> Option<ValueDescription> {
+    remote.send(command);
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Continued) => {}
+        other => panic!("the confirmation of the step was expected, not {other:?}"),
+    }
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Stopped {
+            reason: StopReason::Step,
+            returned,
+        }) => returned,
+        other => panic!("a stop of the step was expected, not {other:?}"),
+    }
+}
+
+/// Waits for the answer to `SetBreakpoints` for `module` and for the stop
+/// at its one breakpoint.
+fn expect_first_stop(remote: &DebugRemote, module: &str) {
+    let (id, _) = resolved(&expect_breakpoints(remote, module));
+    assert_eq!(expect_breakpoint_stop(remote), [id]);
+}
+
+/// The name of the stopped top frame and the text of its statement in
+/// `source`.
+fn standing(remote: &DebugRemote, source: &str) -> (String, String) {
+    let frames = stack_trace(remote);
+    let top = &frames[0];
+    let location = top
+        .location
+        .clone()
+        .unwrap_or_else(|| panic!("{} is located", top.name));
+    (top.name.clone(), location.statement.text(source).to_owned())
+}
+
+/// The label of the value of the variable named `name` in the stopped
+/// top frame.
+fn top_variable(remote: &DebugRemote, name: &str) -> String {
+    let variables = variables(remote, Command::Variables { frame: 0 });
+    value_of(&variables, name).label.clone()
+}
+
+/// A method whose first statement sends a method of three statements, one
+/// that answers that method's answer plus one, one whose first statement
+/// only a primitive answers, and one that sends a method whose block
+/// writes its temporary, which lives in an indirection vector.
+const STEPPING: &str = indoc! {"
+    class Stepping = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        | x |
+        x:: self compute.
+        count:: count + x.
+        ^count
+      )
+      public calling = (
+        ^self compute + 1
+      )
+      public arithmetic = (
+        | y |
+        y:: 3 + 4.
+        ^y * 2
+      )
+      public vectoring = (
+        ^self captured
+      )
+      compute = (
+        | a |
+        a:: 3.
+        a:: a + 4.
+        ^a * 2
+      )
+      captured = (
+        | b |
+        b:: 5.
+        [b:: b + 1] value.
+        ^b
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a statement that sends stops at the next statement
+    /// of the same frame, past every statement of the callee.
+    fn a_step_over_stops_at_the_next_statement(lowering) {
+        let offset = line_start(STEPPING, "x:: self compute.");
+        let (stood, _) = stepped(
+            STEPPING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Stepping>>run"), String::from("count:: count + x"))
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a statement that sends a method stops at the
+    /// callee's first statement, the callee on top of the stack.
+    fn a_step_into_stops_in_the_callee_s_first_statement(lowering) {
+        let offset = line_start(STEPPING, "x:: self compute.");
+        let ((stood, names), _) = stepped(
+            STEPPING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                assert_eq!(step(remote, Command::StepInto), None);
+                let stood = standing(remote, STEPPING);
+                let frames = stack_trace(remote);
+                let names: Vec<String> =
+                    frames.iter().map(|frame| frame.name.clone()).collect();
+                continue_stopped(remote);
+                (stood, names)
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Stepping>>compute"), String::from("a:: 3"))
+        );
+        assert_eq!(names, ["Stepping>>compute", "Stepping>>run"]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a statement whose send a primitive answers, which
+    /// pushes nothing, stops at the next statement.
+    fn a_step_into_a_primitive_answered_send_stops_at_the_next_statement(lowering) {
+        let offset = line_start(STEPPING, "y:: 3 + 4.");
+        let (stood, answer) = stepped(
+            STEPPING,
+            lowering,
+            "arithmetic",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                step(remote, Command::StepInto);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Stepping>>arithmetic"), String::from("^y * 2"))
+        );
+        assert_eq!(answer, 14);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out stops in the caller at the index after its send,
+    /// mid-statement, and reports what the callee answered.
+    fn a_step_out_stops_at_the_return_point(lowering) {
+        let offset = line_start(STEPPING, "a:: a + 4.");
+        let ((stood, returned), answer) = stepped(
+            STEPPING,
+            lowering,
+            "calling",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                let returned = step(remote, Command::StepOut);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                (stood, returned)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Stepping>>calling"),
+                String::from("^self compute + 1")
+            )
+        );
+        assert_eq!(returned.expect("the callee's answer").label, "14");
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over a statement that assigns a send's answer reports that
+    /// answer as the value of the last call.
+    fn a_step_over_reports_the_returned_value(lowering) {
+        let offset = line_start(STEPPING, "x:: self compute.");
+        let (returned, _) = stepped(
+            STEPPING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                let returned = step(remote, Command::StepOver);
+                continue_stopped(remote);
+                returned
+            },
+        );
+        let returned = returned.expect("compute's answer");
+        assert_eq!(returned.label, "14");
+        assert_eq!(returned.class_name, "Integer");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a method's last statement stops at its caller's
+    /// return point, and reports what the method answered.
+    fn a_step_over_at_the_last_statement_stops_in_the_caller(lowering) {
+        let offset = line_start(STEPPING, "^a * 2");
+        let ((stood, returned), answer) = stepped(
+            STEPPING,
+            lowering,
+            "calling",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                let returned = step(remote, Command::StepOver);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                (stood, returned)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Stepping>>calling"),
+                String::from("^self compute + 1")
+            )
+        );
+        assert_eq!(returned.expect("compute's answer").label, "14");
+        assert_eq!(answer, 15);
+    }
+}
+
+/// A factorial that keeps the recursive call's answer in a temporary,
+/// a statement of its own before the one that answers it.
+const RECURSIVE: &str = indoc! {"
+    class Recursive = Object new () (
+      public run = (
+        ^self factorial: 5
+      )
+      factorial: n = (
+        | result |
+        n <= 1 ifTrue: [^1].
+        result:: n * (self factorial: n - 1).
+        ^result
+      )
+    ) : ()
+"};
+
+/// How many frames of the stopped stack run `factorial:`.
+fn factorial_frames(remote: &DebugRemote) -> usize {
+    stack_trace(remote)
+        .iter()
+        .filter(|frame| frame.kind == method("factorial:"))
+        .count()
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over a recursive send stops in the activation it was taken
+    /// in, not in a deeper one of the same body, which runs past its
+    /// one-shots; a step out of an activation stopped at a breakpoint
+    /// stops in its caller.
+    fn a_step_over_a_recursive_call_stays_in_its_activation(lowering) {
+        let recursing = line_start(RECURSIVE, "result:: n * (self factorial: n - 1).");
+        let answering = line_start(RECURSIVE, "^result");
+        let (seen, answer) = stepped(
+            RECURSIVE,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Recursive", vec![recursing]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Recursive"));
+                for _ in 0..2 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                assert_eq!(factorial_frames(remote), 3);
+                // The breakpoint goes, so that only the step stops.
+                set_breakpoints(remote, "Recursive", Vec::new());
+                assert_eq!(expect_breakpoints(remote, "Recursive"), []);
+                step(remote, Command::StepOver);
+                let over = (
+                    standing(remote, RECURSIVE),
+                    factorial_frames(remote),
+                    top_variable(remote, "n"),
+                );
+                // Set where the frame stands, the breakpoint lets it past
+                // and stops in its caller, which a step out leaves for
+                // its own caller's return point.
+                set_breakpoints(remote, "Recursive", vec![answering]);
+                let (id, _) = resolved(&expect_breakpoints(remote, "Recursive"));
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let caller = (factorial_frames(remote), top_variable(remote, "n"));
+                let returned = step(remote, Command::StepOut);
+                let out = (
+                    standing(remote, RECURSIVE),
+                    factorial_frames(remote),
+                    top_variable(remote, "n"),
+                    returned.map(|returned| returned.label),
+                );
+                set_breakpoints(remote, "Recursive", Vec::new());
+                expect_breakpoints(remote, "Recursive");
+                continue_stopped(remote);
+                (over, caller, out)
+            },
+        );
+        let (over, caller, out) = seen;
+        let factorial = String::from("Recursive>>factorial:");
+        assert_eq!(
+            over,
+            ((factorial.clone(), String::from("^result")), 3, String::from("3"))
+        );
+        assert_eq!(caller, (2, String::from("4")));
+        assert_eq!(
+            out,
+            (
+                (
+                    factorial,
+                    String::from("result:: n * (self factorial: n - 1)")
+                ),
+                1,
+                String::from("5"),
+                Some(String::from("24")),
+            )
+        );
+        assert_eq!(answer, 120);
+    }
+}
+
+/// An `ifTrue:` sent to an object that answers it by running its
+/// argument, the fallback closure of the block the compiler inlines.
+const FALLING: &str = indoc! {"
+    class Falling = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        ^self check: Yes new
+      )
+      check: condition = (
+        count:: 1.
+        condition ifTrue: [
+          count:: count + 10].
+        ^count
+      )
+      public class Yes = Object new () (
+        public ifTrue: block = (
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over an `ifTrue:` sent to an object that is no Boolean stops
+    /// in its block, which runs as the fallback closure, as it stops in
+    /// the inline copy for a Boolean; a step over the block's last
+    /// statement goes on in the method that created it.
+    fn a_step_over_a_non_boolean_if_true_stops_in_its_fallback_block(lowering) {
+        let offset = line_start(FALLING, "condition ifTrue: [");
+        let ((inside, after), answer) = stepped(
+            FALLING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Falling", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Falling");
+                step(remote, Command::StepOver);
+                let inside = standing(remote, FALLING);
+                step(remote, Command::StepOver);
+                let after = standing(remote, FALLING);
+                continue_stopped(remote);
+                (inside, after)
+            },
+        );
+        assert_eq!(
+            inside,
+            (
+                String::from("[] in Falling>>check:"),
+                String::from("count:: count + 10")
+            )
+        );
+        assert_eq!(
+            after,
+            (String::from("Falling>>check:"), String::from("^count"))
+        );
+        assert_eq!(answer, 11);
+    }
+}
+
+/// A loop whose condition and body only primitives answer.
+const COUNTED: &str = indoc! {"
+    class Counted = Object new () (
+      public run = (
+        | index total |
+        index:: 0.
+        total:: 0.
+        [index < 2] whileTrue: [
+          index:: index + 1.
+          total:: total + index].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Steps over a loop stop at each statement of its condition and its
+    /// body once per pass, the loop's inlined statements flooded, and
+    /// leave it for the statement after it.
+    fn a_step_over_a_loop_with_no_send_does_not_stop_inside_it_more_than_once_per_statement(lowering) {
+        let offset = line_start(COUNTED, "total:: 0.");
+        let (statements, answer) = stepped(
+            COUNTED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Counted", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Counted");
+                let mut statements = Vec::new();
+                loop {
+                    step(remote, Command::StepOver);
+                    let (_, statement) = standing(remote, COUNTED);
+                    let done = statement == "^total";
+                    statements.push(statement);
+                    if done || statements.len() > 20 {
+                        break;
+                    }
+                }
+                continue_stopped(remote);
+                statements
+            },
+        );
+        // The loop's own statement starts where its condition's does but
+        // under the reference lowering, which makes the blocks first.
+        let statements: Vec<&str> = statements
+            .iter()
+            .map(String::as_str)
+            .skip_while(|statement| statement.starts_with("[index < 2] whileTrue:"))
+            .collect();
+        assert_eq!(
+            statements,
+            [
+                "index < 2",
+                "index:: index + 1",
+                "total:: total + index",
+                "index < 2",
+                "index:: index + 1",
+                "total:: total + index",
+                "index < 2",
+                "^total",
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into a method whose first instruction makes its indirection
+    /// vector, before any statement, stops at its first statement.
+    fn a_step_into_a_callee_with_an_indirection_vector_stops_at_its_first_statement(lowering) {
+        let offset = line_start(STEPPING, "^self captured");
+        let (stood, answer) = stepped(
+            STEPPING,
+            lowering,
+            "vectoring",
+            |remote| set_breakpoints(remote, "Stepping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Stepping");
+                step(remote, Command::StepInto);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Stepping>>captured"), String::from("b:: 5"))
+        );
+        assert_eq!(answer, 6);
+    }
+}

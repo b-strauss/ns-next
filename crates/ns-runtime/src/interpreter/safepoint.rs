@@ -201,6 +201,9 @@ impl Interpreter {
                     self.enter(crate::jit::deoptimize_stopped_at_poll);
                     rebuilt = self.enter(|mutator| {
                         let running = mutator.heap.top_activation();
+                        // A step follows the frames it names to where
+                        // they are resumed.
+                        crate::debugger::stepping::suspending(mutator, floor);
                         match mutator.heap.suspend_activations(floor) {
                             Some(top) => {
                                 mutator.resume_frame(top);

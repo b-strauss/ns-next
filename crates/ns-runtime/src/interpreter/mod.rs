@@ -598,8 +598,14 @@ pub struct Mutator<'gc> {
     /// build and an install, which run inside an entry, reach nothing
     /// else. It holds its patched bodies by `Rc` and no handle but its
     /// token's activation, which never outlives the arm that reads it,
-    /// so nothing traces it.
+    /// and its one-shots', which never outlive their step, so nothing
+    /// traces it.
     pub(crate) breakpoints: crate::debugger::breakpoints::Breakpoints,
+    /// The step in progress (`debugger::stepping`), until the next stop
+    /// ends it: activations of the run, which positions on the
+    /// activation stack name, and the value it recorded as a `Root`, so
+    /// that nothing traces it.
+    pub(crate) stepping: Option<Box<crate::debugger::stepping::Stepping>>,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -950,6 +956,9 @@ impl Interpreter {
                 self.enter(|mutator| {
                     mutator.set_depth_reserve(None);
                     mutator.breakpoints.drop_past_once();
+                    // A step the run's end left goes with it: its frames
+                    // are gone.
+                    crate::debugger::stepping::end(mutator);
                 });
                 result
             }
@@ -2300,7 +2309,12 @@ impl<'gc> Mutator<'gc> {
                 self.feedback_base_for(&code)
             }
         };
-        self.heap.resume_activation(frame, feedback_base)
+        let activation = self.heap.resume_activation(frame, feedback_base);
+        // A step that names the frame follows it to its new activation.
+        if self.stepping.is_some() {
+            crate::debugger::stepping::resumed(self, frame, activation);
+        }
+        activation
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the

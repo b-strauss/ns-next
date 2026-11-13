@@ -157,6 +157,32 @@ pub(crate) fn frames(mutator: &Mutator<'_>, floor: usize) -> Vec<StackFrame> {
     frames
 }
 
+/// `body_of` for a running activation: what a step floods
+/// (`stepping.rs`).
+pub(crate) fn running_body(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, &StackFrame::Running(activation))
+}
+
+/// `body_of` for an activation suspended into the frame object `frame`
+/// holds: what a step floods for a frame it waits to be resumed.
+pub(crate) fn suspended_body(
+    mutator: &mut Mutator<'_>,
+    frame: &Root,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, &StackFrame::Suspended(frame.clone()))
+}
+
 /// The body `frame` runs, which declaration it belongs to, and its
 /// metadata, compiled again on the first ask (`Cache::metadata`). The
 /// metadata is looked up before anything else is read off the frame, so

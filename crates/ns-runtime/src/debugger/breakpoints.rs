@@ -10,12 +10,15 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 use ns_syntax::Span;
 
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{BreakpointId, BreakpointState, Event};
+use super::stepping::Holder;
+use super::Attachments;
 use crate::bytecode::CompiledCode;
 use crate::heap::{ActivationReference, CodeId};
 use crate::interpreter::Mutator;
@@ -50,6 +53,14 @@ pub(crate) struct Breakpoints {
     /// table last settled its changes: the caches and the optimized
     /// copies recorded what it decided.
     fast_paths_switched: bool,
+    /// Each method whose fast path a patch of its body switched off, by
+    /// its body's address: the restore of the body's last patch, of
+    /// whichever kind, switches it back on.
+    switched_off: HashMap<usize, Rc<MixinMethod>>,
+    /// The attached debugger's arming lock, under which a step holds and
+    /// drops its request bit (`debugger::stepping`), as the agent arms
+    /// the poll under it; `None` while none is attached.
+    arming: Option<Arc<Mutex<Attachments>>>,
 }
 
 /// The line breakpoints of one module.
@@ -73,15 +84,37 @@ struct Patch {
     code: Rc<CompiledCode>,
     index: usize,
     kinds: Vec<PatchKind>,
-    /// The method whose body `code` is, when it has a fast path, which
-    /// stays off while any slot of the body is patched.
-    method: Option<Rc<MixinMethod>>,
 }
 
 /// Why a slot is patched.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum PatchKind {
+    /// A line breakpoint the debugger set.
     Line(BreakpointId),
+    /// A step's one-shot breakpoint (`debugger::stepping`).
+    OneShot(OneShot),
+}
+
+impl PatchKind {
+    /// Whether this is the line breakpoint `id`.
+    fn is_line(self, id: BreakpointId) -> bool {
+        matches!(self, PatchKind::Line(held) if held == id)
+    }
+}
+
+/// A step's one-shot breakpoint: taken only in the frame it is for, or
+/// in a block's whose creator that frame is (`stepping::takes`), and
+/// ignored in any other activation of its body -- a recursive call
+/// deeper on the stack, a block of the same home running in a callee.
+#[derive(Clone, Copy)]
+pub(crate) struct OneShot {
+    pub(crate) holder: Holder,
+    /// Whether taking it stops the program.
+    pub(crate) stops: bool,
+    /// Whether taking it records the value the instruction before its
+    /// slot answered, the value of the last call a step reports
+    /// (`stepping::record`).
+    pub(crate) records: bool,
 }
 
 /// The slot a stop that resumes goes past once: the activation standing
@@ -125,6 +158,17 @@ impl Breakpoints {
         self.events = events;
     }
 
+    /// The arming lock of the debugger attached from here on, or `None`
+    /// once none is.
+    pub(crate) fn arm_under(&mut self, arming: Option<Arc<Mutex<Attachments>>>) {
+        self.arming = arming;
+    }
+
+    /// The attached debugger's arming lock, if one is attached.
+    pub(crate) fn arming(&self) -> Option<Arc<Mutex<Attachments>>> {
+        self.arming.clone()
+    }
+
     /// The stop the last `Breakpoint` arm decided, taken.
     pub(crate) fn take_pending_stop(&mut self) -> Option<PendingStop> {
         self.pending_stop.take()
@@ -166,21 +210,66 @@ impl Breakpoints {
         }
     }
 
-    /// The ids of the breakpoints standing at slot `index` of the body at
-    /// `body`; empty for a slot no breakpoint patched.
-    pub(crate) fn ids_at(&self, body: usize, index: usize) -> Vec<BreakpointId> {
+    /// The ids of the line breakpoints and the one-shots standing at slot
+    /// `index` of the body at `body`; both empty for a slot nothing
+    /// patched.
+    pub(crate) fn kinds_at(&self, body: usize, index: usize) -> (Vec<BreakpointId>, Vec<OneShot>) {
+        let mut ids = Vec::new();
+        let mut one_shots = Vec::new();
+        if let Some(patch) = self.patches.get(&(body, index)) {
+            for kind in &patch.kinds {
+                match kind {
+                    PatchKind::Line(id) => ids.push(*id),
+                    PatchKind::OneShot(one_shot) => one_shots.push(*one_shot),
+                }
+            }
+        }
+        (ids, one_shots)
+    }
+
+    /// Patches slot `index` of `code` with `one_shot`; the table's
+    /// `settle` frees the body's machine code.
+    pub(crate) fn add_one_shot(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        index: usize,
+        one_shot: OneShot,
+    ) {
+        self.add(code, index, PatchKind::OneShot(one_shot), None);
+    }
+
+    /// The one-shots for `from` are for `onto` from here on: the frame
+    /// was suspended into its frame object, or resumed from it
+    /// (`stepping::suspending`, `stepping::resumed`).
+    pub(crate) fn rename_one_shots(&mut self, from: Holder, onto: Holder) {
+        for patch in self.patches.values_mut() {
+            for kind in &mut patch.kinds {
+                if let PatchKind::OneShot(one_shot) = kind {
+                    if one_shot.holder.is(from) {
+                        one_shot.holder = onto;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every frame a one-shot is for.
+    #[cfg(debug_assertions)]
+    pub(crate) fn one_shot_holders(&self) -> Vec<Holder> {
         self.patches
-            .get(&(body, index))
-            .map(|patch| {
-                patch
-                    .kinds
-                    .iter()
-                    .map(|kind| match kind {
-                        PatchKind::Line(id) => *id,
-                    })
-                    .collect()
+            .values()
+            .flat_map(|patch| patch.kinds.iter())
+            .filter_map(|kind| match kind {
+                PatchKind::OneShot(one_shot) => Some(one_shot.holder),
+                PatchKind::Line(_) => None,
             })
-            .unwrap_or_default()
+            .collect()
+    }
+
+    /// Removes every one-shot, each slot no line breakpoint holds given
+    /// its original back: the step ended.
+    pub(crate) fn remove_one_shots(&mut self) {
+        self.remove_kinds(|kind| matches!(kind, PatchKind::OneShot(_)), |_| false);
     }
 
     /// Whether any module has a breakpoint, resolved or pending.
@@ -205,9 +294,12 @@ impl Breakpoints {
                 code: Rc::clone(code),
                 index,
                 kinds: Vec::new(),
-                method: method.cloned(),
             });
-        if !patch.kinds.contains(&kind) {
+        let held = match kind {
+            PatchKind::Line(id) => patch.kinds.iter().any(|held| held.is_line(id)),
+            PatchKind::OneShot(_) => false,
+        };
+        if !held {
             patch.kinds.push(kind);
         }
         if code.is_patched(index) {
@@ -217,6 +309,7 @@ impl Breakpoints {
             if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
                 method.switch_fast_path(false);
                 self.fast_paths_switched = true;
+                self.switched_off.insert(address(code), Rc::clone(method));
             }
         }
         code.patch(index);
@@ -228,7 +321,7 @@ impl Breakpoints {
     fn restore(&mut self, patch: &Patch) {
         patch.code.restore(patch.index);
         if !patch.code.has_patches() {
-            if let Some(method) = &patch.method {
+            if let Some(method) = self.switched_off.remove(&address(&patch.code)) {
                 method.switch_fast_path(true);
                 self.fast_paths_switched = true;
             }
@@ -236,14 +329,25 @@ impl Breakpoints {
         self.changed.push(Rc::clone(&patch.code));
     }
 
-    /// Removes `kind` from every slot `keep` refuses; a slot whose last
-    /// kind goes gets its original back, and a token naming it goes with
-    /// it, so that a breakpoint set there again later stops.
-    fn remove_where(&mut self, kind: PatchKind, mut keep: impl FnMut(&Patch) -> bool) {
+    /// Removes the line breakpoint `id` from every slot `keep` refuses; a
+    /// slot whose last kind goes gets its original back, and a token
+    /// naming it goes with it, so that a breakpoint set there again later
+    /// stops.
+    fn remove_where(&mut self, id: BreakpointId, keep: impl FnMut(&Patch) -> bool) {
+        self.remove_kinds(|kind| kind.is_line(id), keep);
+    }
+
+    /// Removes every kind `removed` picks from every slot `keep` refuses,
+    /// as `remove_where` does.
+    fn remove_kinds(
+        &mut self,
+        removed: impl Fn(PatchKind) -> bool,
+        mut keep: impl FnMut(&Patch) -> bool,
+    ) {
         let mut emptied = Vec::new();
         for (key, patch) in &mut self.patches {
-            if patch.kinds.contains(&kind) && !keep(patch) {
-                patch.kinds.retain(|held| *held != kind);
+            if patch.kinds.iter().any(|kind| removed(*kind)) && !keep(patch) {
+                patch.kinds.retain(|kind| !removed(*kind));
                 if patch.kinds.is_empty() {
                     emptied.push(*key);
                 }
@@ -311,7 +415,7 @@ pub(crate) fn set_line_breakpoints(
                 .map(|line| line.id)
                 .collect();
             for id in old {
-                table.remove_where(PatchKind::Line(id), |_| false);
+                table.remove_where(id, |_| false);
             }
             position
         }
@@ -365,9 +469,10 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
     }
 }
 
-/// Removes every breakpoint, each slot given its original back: the
-/// debugger that set them is gone or replaced.
+/// Removes every breakpoint, each slot given its original back, and ends
+/// any step: the debugger that set them is gone or replaced.
 pub(crate) fn clear(mutator: &mut Mutator<'_>) {
+    super::stepping::end(mutator);
     let table = &mut mutator.breakpoints;
     let patches: Vec<Patch> = table.patches.drain().map(|(_, patch)| patch).collect();
     for patch in &patches {
@@ -388,7 +493,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
 /// a copy that inlined a quick method without naming its body among them
 /// (`docs/design/debugger.md`, "A breakpoint in a method with a fast
 /// path"). Setting a breakpoint is rare, so neither costs a send a check.
-fn settle(mutator: &mut Mutator<'_>) {
+pub(crate) fn settle(mutator: &mut Mutator<'_>) {
     let mut changed = std::mem::take(&mut mutator.breakpoints.changed);
     changed.sort_by_key(address);
     changed.dedup_by(|left, right| Rc::ptr_eq(left, right));
@@ -456,7 +561,7 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
         line.statement = *statement;
     }
     for (id, slots) in ids.into_iter().zip(&resolution.slots) {
-        table.remove_where(PatchKind::Line(id), |patch| {
+        table.remove_where(id, |patch| {
             !resolution.walked.contains(&address(&patch.code))
                 || slots
                     .iter()

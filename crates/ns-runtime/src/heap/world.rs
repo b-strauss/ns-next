@@ -149,6 +149,7 @@ impl World {
                 futures_made: false,
                 debug_metadata: crate::debugger::metadata::Cache::default(),
                 breakpoints: crate::debugger::breakpoints::Breakpoints::default(),
+                stepping: None,
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();

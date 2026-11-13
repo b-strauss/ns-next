@@ -28,11 +28,16 @@
 > patched slot as an exit and the optimizing tier leaves a patched body
 > alone, and a method's fast path is off while a breakpoint stands in its
 > body ("Where the original lives", "A breakpoint in a method with a fast
-> path"). Everything else is planned: the
-> rest of stage 3 -- stepping, run to
-> cursor, method and exception breakpoints -- the DAP agent and the
-> plugin, evaluation, hot swap and edit-and-continue ("Planned: the order
-> of building it"). The
+> path"); step over, step into and step out stop at the stepping frame's
+> next statement start, in a frame it pushes and at its caller's return
+> point, by one-shot breakpoints for the stepping frame and a request bit
+> a step into holds until the next push, and report the value of the last
+> call ("Step over in recursion and blocks", "Step into's held request",
+> "The return value of the last call"). Everything else is planned: the
+> rest of stage 3 -- the step filter, a step out of a frame an unwind
+> leaves, run to cursor, method and exception breakpoints -- the DAP
+> agent and the plugin, evaluation, hot swap and edit-and-continue
+> ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
 > and leaves the questions in "Open questions" to be decided. It builds on
@@ -45,6 +50,8 @@
 > **Code:** stages 1 and 2 are `crates/ns-runtime/src/debugger/` (`mod.rs`: the
 > VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
 > the arming lock `Arming`, the pause stress mode's `StressReader`;
+> `breakpoints.rs`: the breakpoint table, line breakpoints and the
+> one-shots; `stepping.rs`: the step in progress, `Stepping`;
 > `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
 > cross to the agent's thread; `stack.rs`: the stack trace, a frame's
 > body found by its declaration (`origin_of`) and its variables;
@@ -59,7 +66,7 @@
 > cleared at an install (`interpreter/install.rs`), the selector spans
 > (`ns_syntax::ast::MessageSend::selector_spans`), the
 > request word's bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`,
-> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `LOWERS_DEPTH_LIMIT`,
+> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `DEBUGGER_STEP`, `LOWERS_DEPTH_LIMIT`,
 > `Heap::synchronize_depth_limit`, `Heap::clear_debugger_bits`),
 > `heap/machine_words.rs` (the machine words as atomics behind an `Arc`),
 > `interpreter/safepoint.rs` (`Interpreter::safepoint`, which serves the
@@ -269,9 +276,10 @@ again"). It lives in `crates/ns-runtime/src/debugger/`
 and is reached through `Interpreter::attach_debugger`; its only clients
 today are the test suite (`crates/ns-runtime/tests/debugger.rs`) and the
 pause stress mode, since the DAP agent in `ns-cli` is stage 4's. A
-program stops for a pause and at a line breakpoint the interpreter
-reaches ("Stopping at and going past a breakpoint"); no step, evaluation
-or write of a frame exists yet, and a stop only reads.
+program stops for a pause, at a line breakpoint the interpreter
+reaches ("Stopping at and going past a breakpoint") and where a step
+arrives ("Step over in recursion and blocks"); no evaluation or write of
+a frame exists yet, and a stop only reads.
 
 ### The attachment and the remote
 
@@ -325,6 +333,12 @@ below).
 The commands (`debugger::Command`):
 
 - `Continue` -- the stopped program goes on; answered by `Continued`.
+- `StepOver`, `StepInto`, `StepOut` -- the stopped program goes on to the
+  top frame's next statement start, or the first statement start of a
+  frame it pushes, or its caller's return point (decision 3, "Step over
+  in recursion and blocks", "Step into's held request"); answered by
+  `Continued`, then by the step's `Stopped`, unless another stop comes
+  first, which ends the step and reports its own reason.
 - `Terminate` -- the run ends as an uncaught termination does
   ("Continuing and terminating" below); served whether the program is
   stopped or running, and answered by no event: the host's send answers
@@ -347,10 +361,12 @@ The commands (`debugger::Command`):
 
 The events (`debugger::Event`): `Stopped { reason, returned }`, the
 program stopped and serves commands until a `Continue` or a `Terminate`
--- `StopReason::Pause`, or `StopReason::Breakpoint { ids }`, the
-breakpoints standing at the statement it stopped at; `returned`, the
-value the last call returned, is `None` until step out builds it
-("The return value of the last call"); `StackTrace`; `Variables`, the
+-- `StopReason::Pause`, `StopReason::Breakpoint { ids }`, the
+breakpoints standing at the statement it stopped at, or
+`StopReason::Step`, a step's arrival; `returned`, at a step's stop, the
+value the stepping frame's last call answered, described as the stop's
+first value, and `None` at every other stop ("The return value of the
+last call"); `StackTrace`; `Variables`, the
 answer to both `Variables` and `Children`; `Refused { command, reason }`,
 the command `Command::name` names not served; `Continued`; and
 `Breakpoints { module, breakpoints }`, the module's line breakpoints in
@@ -358,9 +374,9 @@ the order of their offsets, each a `BreakpointState` -- its
 `BreakpointId`, its offset and the span of the statement it stops at, or
 `None` while it is pending -- the answer to `SetBreakpoints`, and sent
 unasked when a pending one resolves or an install moves one.
-`Continue`, `StackTrace`, `Variables` and `Children` are served only at a
-stop; one that arrives while the program runs is refused with "the
-program is running". Every command a stop or a safepoint serves but
+`Continue`, the three steps, `StackTrace`, `Variables` and `Children` are
+served only at a stop; one that arrives while the program runs is refused
+with "the program is running", and one queued between runs is dropped. Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
 agent therefore waits for `Stopped` before it sends a command only a stop
 serves: one sent right after `pause()` is refused or served depending on
@@ -391,7 +407,11 @@ The request word (`MachineWord::SafepointRequested`) is a set of bits
   (`Heap::set_safepoint_requested`, and `Heap::hold_safepoint_request`
   for the deopt stress mode);
 - `DEBUGGER_PAUSE` (bit 2) -- the agent's pause;
-- `DEBUGGER_COMMANDS` (bit 3) -- the agent queued a command.
+- `DEBUGGER_COMMANDS` (bit 3) -- the agent queued a command;
+- `DEBUGGER_STEP` (bit 4) -- a step into's request, held until the next
+  push ("Step into's held request"): the VM's own, set
+  (`Heap::hold_step_request`) and cleared on its thread alone, under the
+  arming lock as the debugger's other bits are cleared.
 
 Every write of the word, the VM's and the agent's, is a `SeqCst`
 read-modify-write -- a `fetch_or` to set a bit, a `fetch_and` to clear one,
@@ -399,12 +419,13 @@ a locked instruction on x64, an atomic or exclusive-pair sequence on
 AArch64, on the cold path only -- so that no writer erases another's bit.
 The poll compares the whole word with zero: every bit takes the safepoint.
 `Heap::real_safepoint_requested` masks it with `LOWERS_DEPTH_LIMIT`
-(`REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS`), every bit but the
-stress hold's, and `Heap::debugger_bits` with the debugger's two. The VM
+(`REAL_REQUEST | DEBUGGER_BITS`), every bit but the stress hold's, and
+`Heap::debugger_bits` with the debugger's three (`DEBUGGER_BITS`). The VM
 clears its own bit and the hold once it served them
 (`Heap::clear_safepoint_request`), never the debugger's; only
-`Heap::clear_debugger_bits` clears those, once the VM served them. The
-agent never clears a bit.
+`Heap::clear_debugger_bits` clears those, once the VM served them, or
+once the push a step into waited for came or the step ended. The agent
+never clears a bit.
 
 A compiled callee's prologue compares the depth count with the
 `DepthLimit` word alone, so a request that must stop compiled recursion
@@ -442,7 +463,10 @@ resynchronizes the limit, hold one lock per interpreter
 (`debugger::Arming`, an `Arc<Mutex<Attachments>>` the interpreter holds
 and every remote it ever handed out shares): the agent across its
 `fetch_or` and its store of 0, the VM across `Heap::clear_debugger_bits`,
-in `Interpreter::clear_debugger_bits` and `detach_debugger`. Without it,
+in `Interpreter::clear_debugger_bits` and `detach_debugger`, and across
+its setting and clearing of the step bit, which `debugger::stepping`
+does from inside an entry through the clone of the lock the breakpoint
+table holds while a debugger is attached (`Breakpoints::arming`). Without it,
 the VM could serve the bit and clear it between the agent's two writes;
 the agent's late store of 0 would then land after the VM's
 resynchronization, leaving the request word at 0 and `DepthLimit` at 0:
@@ -479,7 +503,9 @@ for ("Stopping at and going past a breakpoint"); with neither the
 safepoint goes on. Bits set with no debugger attached are cleared, since
 nobody is left to stop for. The commands are served first, then the
 breakpoint's stop, which serves a pause asked meanwhile too, then the
-pause.
+pause, then a step into's held request (`stepping::held_step`): a frame
+pushed above the stepping one stops there ("Step into's held request").
+Every stop ends a step in progress (`stepping::end`), whatever made it.
 
 ### Commands while the program runs
 
@@ -547,15 +573,19 @@ the stack is the interpreter's word for word before the agent reads it
 of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
-The stop then sends `Stopped { reason, returned: None }` -- a pause's, or
-a breakpoint's with the ids standing at its slot -- and blocks on the
+The stop then sends `Stopped { reason, returned }` -- a pause's, a
+breakpoint's with the ids standing at its slot, or a step's with the
+value of the last call, the first value of the stop's table ("Values the
+IDE holds") -- and blocks on the
 command channel (`recv`), on the VM's thread, between two stretches: no
 handle is live, and nothing pushes or pops until the program goes on. The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
 stack at a stop", "Values the IDE holds") and `SetBreakpoints` until a
-`Continue` or a `Terminate`. A command the stop serves was queued with its
+`Continue`, a step or a `Terminate`; a step begins there
+(`stepping::begin`), is answered by `Continued` and goes on as a
+`Continue` does. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
 clears it and finds the queue empty. A pause asked while stopped likewise
 stays set, and stops the program again at the next safepoint.
@@ -591,7 +621,8 @@ talks to the remote -- a command channel found disconnected while draining
 or while stopped, or an event that cannot be sent -- and
 `detach_debugger` makes no attachment current and clears both debugger
 bits under one hold of the arming lock, removes every breakpoint, each
-slot given its original back, then drops the debugger. A stopped
+slot given its original back, and ends a step in progress, then drops
+the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
 again (`a_dropped_remote_lets_the_program_finish`,
 `a_remote_dropped_while_stopped_lets_the_program_finish`).
@@ -1038,6 +1069,22 @@ stage's tests, do not.
   `debugged` queues an agent's configuration before the run and serves
   the run from another thread; `events_during` collects a run's events
   and continues any stop, for a run that must not stop.
+- **The steps' tests** (`tests/debugger.rs`, each under both lowerings
+  with the JIT on, the bodies run twice before so that they have machine
+  code, each starting from a line breakpoint): a step over stopping at
+  the frame's next statement; a step into stopping at the callee's first
+  statement, and at the first statement of a callee whose first
+  instruction makes its indirection vector; a step into a send a
+  primitive answers stopping at the next statement; a step out stopping
+  at the caller's return point mid-statement, reporting the callee's
+  answer; a step over reporting the value of the last call; a step over
+  a recursive send staying in its activation, then a step out of a
+  deeper one stopping in its caller; a step over a non-Boolean receiver's
+  `ifTrue:` stopping in the fallback block and going on in its creator;
+  a step over at a method's last statement stopping at the caller's
+  return point; and steps over a loop stopping at each of its statements
+  once per pass. Each also passes under every stress mode, the suspend
+  stress mode's suspensions included.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -1200,6 +1247,13 @@ is in included.
 
 ### 3. Stepping by one-shot breakpoints and the safepoint
 
+**Partial:** step over, step into and step out are built
+(`debugger/stepping.rs`; "Step over in recursion and blocks", "Step
+into's held request", "The return value of the last call"), the frame
+left by a return to its caller's return point; the unwinder's report of
+a frame an unwind leaves (decision 17), the step filter (decision 16),
+smart step into and run to cursor are planned.
+
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
   one at the stepping frame's **return point**: the index after the
@@ -1235,8 +1289,10 @@ call would run it interpreted.
 ### 4. Stop locations are statement starts; every send is recorded
 
 **Partial:** the tables are built (`debugger::metadata::BodyMetadata`,
-"Compiling the metadata again"), and a stopped frame's location reads
-them; the breakpoints and steps that stop at them are stage 3's.
+"Compiling the metadata again"), a stopped frame's location reads them,
+and line breakpoints and steps stop at their statement starts and
+return points; smart step into's targets and IntelliJ's stepping by
+line, the agent's, are planned.
 
 The metadata of a body lists:
 
@@ -1857,41 +1913,92 @@ the language server, which can compile a module, and to be verified by
 
 ### Step over in recursion and blocks
 
-A one-shot breakpoint carries the frame it is for, by its position on the
-activation stack: a `FrameReference` would reify the frame and send it
-through its body's twin and a divorce on return, while a position is
-reused only after a pop, which the return point's breakpoint or the
-unwinder reports first, ending the step. It is ignored in any other activation of the body -- a recursive call
-deeper on the stack, or a block of the same home body running in a callee
--- but taken in a fallback closure's activation whose creator is the
-stepping frame, so that a step over a non-Boolean receiver's `ifTrue:`
-stops in its fallback block as in the inline copy. V8 checks
-the frame count the same way ("We have to ignore recursive calls",
-`v8/src/debug/debug.cc:822-855`), and the JDWP agent compares `fromDepth`
-(`stepControl.c:523-697`). The flood covers the stepping body's own
-statement starts and those of the inlined blocks in it; a block the body
-creates is a body of its own and not flooded, so a step over a `do:` whose
-argument block contains a breakpoint stops only at that breakpoint, as
-IntelliJ's does.
+**Built** (`debugger/stepping.rs`). A step command at a stop begins the
+step (`stepping::begin`) in the top frame: a step over and a step into
+patch every statement start of the stepping frame's body with a one-shot
+breakpoint for that frame -- the flood -- and every step sets one at the
+frame's return point, the index after the instruction its caller stands
+at, for the caller. The one-shots are a kind of the breakpoint table's
+beside the line kind (`breakpoints::OneShot`), so that a slot holding
+both is restored only when the last goes, and every step's patches
+change through the table's `settle`: their bodies lose their machine
+code for the step and are compiled again once it ends, with every
+optimized copy that inlined them. The next stop ends the step
+(`stepping::end`), whatever made it -- the step's own one-shot, a
+breakpoint, a pause -- every one-shot removed; a stop at a slot only a
+one-shot stops at reports `StopReason::Step`, and one a line breakpoint
+holds too reports the breakpoint. Detaching, a replacing attachment and
+the end of the run end it as well.
+
+A one-shot carries the frame it is for (`stepping::Holder`), by its
+position on the activation stack: a `FrameReference` would reify the
+frame and send it through its body's twin and a divorce on return, while
+a position is reused only after a pop, which the return point's one-shot
+stops at first, ending the step; `ActivationReference::names` compares
+it, refusing in a debug build a handle whose activation returned. The
+`Breakpoint` arm (`interpreter::breakpoint::reached`) takes a one-shot
+only in that activation, or in a block's whose captured frames lead to
+it (`stepping::takes`) -- only the blocks the compiler lowered inline in
+the stepping body are flooded for it -- and ignores it in any other
+activation of the body: a recursive call deeper on the stack, or a block
+of the same home running in a callee. V8 checks the frame count the same
+way ("We have to ignore recursive calls", `v8/src/debug/debug.cc:822-855`),
+and the JDWP agent compares `fromDepth` (`stepControl.c:523-697`).
+
+The flood covers the stepping body's own statement starts and those of
+the inlined blocks in it, from its metadata, and the statement starts of
+each block literal the compiler lowered inline (`stepping::inlined_blocks`):
+under the optimized lowering, the fallback closure a receiver that is not
+a Boolean runs, recognized as a block literal whose `source` encloses
+one of the body's statements, its inline copy's; under the reference
+lowering, which inlines nothing, a block literal a `SendInlinable` takes
+as its receiver or an argument, the blocks the optimized lowering
+inlines; and so on into those blocks' own. So a step over a non-Boolean
+receiver's `ifTrue:` stops in its fallback block as in the inline copy,
+and a step under the reference lowering stops where it stops under the
+optimized one. A step taken in such a block steps in its creator, the
+frame whose inline code the block stands for (`stepping_frame`), so that
+a step over the block's last statement goes on at the creator's next
+statement start rather than in the receiver's `ifTrue:` or in a loop's
+`value` send; a creator that returned leaves the block a frame of its
+own. A block the body creates otherwise is a body of its own and not
+flooded, so a step over a `do:` whose argument block contains a
+breakpoint stops only at that breakpoint, as IntelliJ's does.
+
+The suspend stress mode suspends every activation of the run into its
+frame object and resumes them one by one at other positions; a frame
+suspended when the step begins, the stepping frame's caller or its
+creator, is the same. The step holds each such frame by its frame
+object (`Holder::Suspended`, `stepping::suspending`), and every handle it
+knew the frame by names the activation the frame is resumed as
+(`stepping::resumed`, called from `Mutator::resume_frame`), so that its
+one-shots, its return point and its push test follow the frame.
 
 ### Step into's held request
 
-The held request is taken at every poll until the next push, not only at
-pushes: a backward jump in the stepping frame, or a caller resumed, also
-reaches the safepoint, which goes on without stopping when nothing was
-pushed. A loop with no send, or a statement whose sends are all answered by
+**Built** (`stepping::held_step`). A step into is a step over that also
+holds the request bit `DEBUGGER_STEP` until the next push. The held
+request is taken at every poll until then, not only at pushes: a
+backward jump in the stepping frame, or a caller resumed, also reaches
+the safepoint, which goes on without stopping when nothing was pushed. A
+loop with no send, or a statement whose sends are all answered by
 primitives, so takes the safepoint at every iteration until a push or a
-one-shot breakpoint ends the step, and machine code's loop-head poll exits
-at each. The request lowers the depth limit -- a step bit of the
-debugger's in `LOWERS_DEPTH_LIMIT`, as the pause bit is ("The poll words
-as atomics") -- so that a compiled prologue refuses the push. The safepoint recognizes a push by
-a frame on top other than the stepping frame and above it -- not by a
-`program_counter` of 0, which a backward jump to the stepping body's first
-instruction, or a frame `retry` restarted, also shows -- and stops at the
-new body's first statement start, which is index 1, not 0, for a body --
-a method's or a block's -- whose first instruction makes its indirection
+one-shot breakpoint ends the step, and machine code's loop-head poll
+exits at each. The bit is one of `LOWERS_DEPTH_LIMIT`, as the pause bit
+is ("The poll words as atomics"), so that a compiled prologue refuses
+the push and the interpreter's push takes the safepoint before the
+callee runs. The safepoint recognizes a push by a frame on top other
+than the stepping frame and above it -- not by a `program_counter` of 0,
+which a backward jump to the stepping body's first instruction, or a
+frame `retry` restarted, also shows -- unless the frame runs a block the
+step flooded for the stepping frame, which stands for that frame's
+inline code. The push drops the bit and stops at the new body's first
+statement start: at once when its frame stands there, at index 0, and
+through a one-shot for the pushed frame at index 1 for a body -- a
+method's or a block's -- whose first instruction makes its indirection
 vector (`MakeVector`, emitted before the local initializers and outside
-every statement's range, `compiler/lower.rs`).
+every statement's range, `compiler/lower.rs`). A send answered by a
+primitive or a leaf pushes nothing, and the next one-shot stops.
 
 ### Writing a frame
 
@@ -2149,14 +2256,22 @@ created by the stepping frame, rather than a push from a call site.
 
 ### The return value of the last call
 
-IntelliJ shows the value the last call returned after a step over or a
-step out. It is the value in the destination register of the instruction
-before a return point -- written by `resume_caller` for a callee that
-returned, or by the send's own arm for a send a primitive answered. A step
-out stops at the return point and reads it there; a step over stops at the
-next statement start, past the return points of the stepping frame's
-sends, so during a step over the stepping state records the value at each
-of its sends' returns, the last one reported with the stop.
+**Built** (`stepping::record`). IntelliJ shows the value the last call
+returned after a step over or a step out. It is the value in the
+destination register of the instruction before a return point --
+written by `resume_caller` for a callee that returned, or by the send's
+own arm for a send a primitive answered. A step over stops at the next
+statement start, past the return points of the stepping frame's sends,
+so the flood also patches the index after each send of the flooded
+bodies with a recording one-shot, which never stops: it records that
+destination register as a `Root` on the stepping state and goes on. The
+return point's one-shot records too, so a step out, and a step over that
+leaves its frame, report the callee's answer. A destination the leftover
+analysis finds tainted before the one-shot's index -- reached by a jump
+that skipped the call -- is not read. The step's stop reports the last
+value recorded as `Stopped::returned`, the stop's first value; a stop in
+a frame a step into pushed, and every stop that is not a step's, report
+none.
 
 ### Launching, the start and the end
 

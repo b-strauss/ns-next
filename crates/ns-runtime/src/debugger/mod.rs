@@ -10,12 +10,15 @@
 //! senders suspended into their frame objects -- and the values it hands
 //! out, held for the stop (`values.rs`). A line breakpoint patches the
 //! slot its statement starts at (`breakpoints.rs`); the run loop's arm
-//! there leaves for the safepoint, which stops.
+//! there leaves for the safepoint, which stops. A step patches one-shot
+//! breakpoints of the same table and, for a step into, holds a request
+//! bit the safepoint stops at a push for (`stepping.rs`).
 
 pub(crate) mod breakpoints;
 pub(crate) mod metadata;
 mod remote;
 mod stack;
+pub(crate) mod stepping;
 mod values;
 
 pub use remote::{
@@ -26,10 +29,11 @@ pub use remote::{
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
+use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STEP};
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
-use crate::{Symbol, Value};
+use crate::{Root, Symbol, Value};
+use stepping::{HeldStep, StepAction};
 use values::StopValues;
 
 /// The message of the error a run the debugger terminated ends with.
@@ -197,18 +201,16 @@ impl Interpreter {
         guarded.last += 1;
         guarded.current = Some(guarded.last);
         let attachment = guarded.last;
-        self.enter(|mutator| {
-            mutator
-                .heap
-                .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
-        });
+        self.enter(|mutator| mutator.heap.clear_debugger_bits(DEBUGGER_BITS));
         drop(guarded);
-        // The earlier attachment's breakpoints go with it, as its pause
-        // does.
+        // The earlier attachment's breakpoints and step go with it, as its
+        // pause does.
         let reports = event_sender.clone();
+        let arming = Arc::clone(&attachments);
         self.enter(|mutator| {
             breakpoints::clear(mutator);
             mutator.breakpoints.report_to(Some(reports));
+            mutator.breakpoints.arm_under(Some(arming));
         });
         self.debugger = Some(Debugger {
             commands: command_receiver,
@@ -251,15 +253,24 @@ impl Interpreter {
         }
         if let Some(breakpoint) = breakpoint {
             if self.debugger.is_some() {
-                // The stop serves a pause asked meanwhile too.
+                // The stop serves a pause asked meanwhile too, and ends a
+                // step, whatever made it.
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
-                let served = self.stop(
-                    StopReason::Breakpoint {
-                        ids: breakpoint.ids,
-                    },
-                    floor,
-                    CommandSource::Remote,
-                );
+                let returned = self.enter(stepping::end);
+                // A slot only a step's one-shot stopped at is the step's
+                // stop, which reports the value of the last call; a line
+                // breakpoint there makes it the breakpoint's.
+                let (reason, returned) = if breakpoint.ids.is_empty() {
+                    (StopReason::Step, returned)
+                } else {
+                    (
+                        StopReason::Breakpoint {
+                            ids: breakpoint.ids,
+                        },
+                        None,
+                    )
+                };
+                let served = self.stop(reason, returned, floor, CommandSource::Remote);
                 // The frame fetches the patched slot again as it goes on:
                 // the breakpoint it stopped at lets it past once.
                 if served == Served::GoOn {
@@ -268,10 +279,31 @@ impl Interpreter {
                 return served;
             }
         }
-        let pause_requested = self.enter(|mutator| mutator.heap.debugger_bits()) & DEBUGGER_PAUSE;
-        if pause_requested != 0 && self.debugger.is_some() {
+        let bits = self.enter(|mutator| mutator.heap.debugger_bits());
+        if bits & DEBUGGER_PAUSE != 0 && self.debugger.is_some() {
             self.clear_debugger_bits(DEBUGGER_PAUSE);
-            return self.stop(StopReason::Pause, floor, CommandSource::Remote);
+            self.enter(stepping::end);
+            return self.stop(StopReason::Pause, None, floor, CommandSource::Remote);
+        }
+        if bits & DEBUGGER_STEP != 0 && matches!(self.enter(stepping::held_step), HeldStep::Stop) {
+            self.enter(stepping::end);
+            // The pushed frame stands at its first statement start, which
+            // it fetches as it goes on: a breakpoint there lets it past
+            // once.
+            let standing = self.enter(|mutator| {
+                let top = mutator.heap.top_activation()?;
+                let code = mutator.heap.activation_code(top);
+                Some(breakpoints::PastOnce {
+                    activation: top,
+                    body: breakpoints::address(&code),
+                    index: mutator.heap.activation_program_counter(top),
+                })
+            });
+            let served = self.stop(StopReason::Step, None, floor, CommandSource::Remote);
+            if let (Served::GoOn, Some(standing)) = (served, standing) {
+                self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
+            }
+            return served;
         }
         Served::GoOn
     }
@@ -282,6 +314,7 @@ impl Interpreter {
     pub(crate) fn stop_for_stress(&mut self, floor: usize) {
         let served = self.stop(
             StopReason::Pause,
+            None,
             floor,
             CommandSource::Reader(StressReader::default()),
         );
@@ -321,6 +354,9 @@ impl Interpreter {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
+                | Command::StepOver
+                | Command::StepInto
+                | Command::StepOut
                 | Command::StackTrace
                 | Command::Variables { .. }
                 | Command::Children { .. }) => {
@@ -340,6 +376,9 @@ impl Interpreter {
                 self.answer(source, event);
             }
             Command::Continue
+            | Command::StepOver
+            | Command::StepInto
+            | Command::StepOut
             | Command::Terminate
             | Command::StackTrace
             | Command::Variables { .. }
@@ -357,21 +396,27 @@ impl Interpreter {
     /// the interpreter's word for word (`docs/design/debugger.md`,
     /// "The stop"). The values the stop hands out are
     /// held in its table, `floor` the run's base (`stack.rs`), and go
-    /// with it when the program goes on.
-    fn stop(&mut self, reason: StopReason, floor: usize, mut source: CommandSource) -> Served {
+    /// with it when the program goes on; `returned`, the value of the
+    /// last call a step recorded, is the first of them. A step command
+    /// begins its step (`stepping::begin`) and goes on as `Continue`
+    /// does.
+    fn stop(
+        &mut self,
+        reason: StopReason,
+        returned: Option<Root>,
+        floor: usize,
+        mut source: CommandSource,
+    ) -> Served {
         self.enter(crate::jit::deoptimize_stopped_at_poll);
-        self.answer(
-            &mut source,
-            Event::Stopped {
-                reason,
-                returned: None,
-            },
-        );
         let first_value_id = self
             .debugger
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
         let mut values = StopValues::starting_at(first_value_id);
+        let returned = returned.map(|returned| {
+            self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
+        });
+        self.answer(&mut source, Event::Stopped { reason, returned });
         // The run's frames, walked at the first command that reads them:
         // nothing pushes or pops while the program is stopped.
         let mut frames = None;
@@ -393,6 +438,16 @@ impl Interpreter {
             };
             match command {
                 Command::Continue => {
+                    self.answer(&mut source, Event::Continued);
+                    break Served::GoOn;
+                }
+                command @ (Command::StepOver | Command::StepInto | Command::StepOut) => {
+                    let action = match command {
+                        Command::StepOver => StepAction::Over,
+                        Command::StepInto => StepAction::Into,
+                        _ => StepAction::Out,
+                    };
+                    self.enter(|mutator| stepping::begin(mutator, action));
                     self.answer(&mut source, Event::Continued);
                     break Served::GoOn;
                 }
@@ -501,6 +556,9 @@ impl Interpreter {
                 }
                 Ok(
                     Command::Continue
+                    | Command::StepOver
+                    | Command::StepInto
+                    | Command::StepOut
                     | Command::Terminate
                     | Command::StackTrace
                     | Command::Variables { .. }
@@ -524,17 +582,14 @@ impl Interpreter {
         let attachments = Arc::clone(&self.debugger_arming.attachments);
         let mut guarded = attachments.lock().unwrap_or_else(PoisonError::into_inner);
         guarded.current = None;
-        self.enter(|mutator| {
-            mutator
-                .heap
-                .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
-        });
+        self.enter(|mutator| mutator.heap.clear_debugger_bits(DEBUGGER_BITS));
         drop(guarded);
         // Nobody is left to stop for: every breakpoint goes, each slot
-        // given its original back.
+        // given its original back, and any step with them.
         self.enter(|mutator| {
             breakpoints::clear(mutator);
             mutator.breakpoints.report_to(None);
+            mutator.breakpoints.arm_under(None);
         });
         self.debugger = None;
     }

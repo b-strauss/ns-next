@@ -14,8 +14,9 @@ use super::Attachments;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
-/// What the agent asks of the VM. `Continue`, `StackTrace`, `Variables`
-/// and `Children` are served only while the program is stopped; one that
+/// What the agent asks of the VM. `Continue`, the steps, `StackTrace`,
+/// `Variables` and `Children` are served only while the program is
+/// stopped; one that
 /// arrives while it runs is refused (`Event::Refused`). `Terminate` is
 /// served either way. An agent waits for `Event::Stopped` before it sends
 /// a command only a stop serves: one sent right after
@@ -30,6 +31,23 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 pub enum Command {
     /// The stopped program goes on.
     Continue,
+    /// The stopped program goes on to the next statement start of the top
+    /// frame -- not of a recursive call of its body, which runs past --
+    /// or, once the frame returns, to the place its caller goes on at:
+    /// the index after the instruction the caller stands at, mid-statement.
+    /// Answered by `Event::Continued`, then `Event::Stopped` with
+    /// `StopReason::Step`, whose `returned` is the value the frame's last
+    /// call answered; any other stop before -- a breakpoint, a pause --
+    /// ends the step and reports its own reason.
+    StepOver,
+    /// As `StepOver`, or the first statement start of a frame the top
+    /// frame pushes meanwhile, the callee of a send no primitive or leaf
+    /// answered.
+    StepInto,
+    /// The stopped program goes on to the place the top frame's caller
+    /// goes on at once the frame returns, as `StepOver` does past its
+    /// last statement.
+    StepOut,
     /// The run ends as an uncaught termination does: every pending
     /// `ensure:` block runs, and the host's send answers the error
     /// "the debugger terminated the program".
@@ -62,6 +80,9 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Continue => "Continue",
+            Command::StepOver => "StepOver",
+            Command::StepInto => "StepInto",
+            Command::StepOut => "StepOut",
             Command::Terminate => "Terminate",
             Command::StackTrace => "StackTrace",
             Command::Variables { .. } => "Variables",
@@ -75,7 +96,9 @@ impl Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The program stopped at a safepoint, and serves commands until a
-    /// `Continue` or a `Terminate`. `returned` is `None`.
+    /// `Continue`, a step or a `Terminate`. `returned` is, at a step's
+    /// stop, the value the stepping frame's last call answered -- the
+    /// first value of the stop -- and `None` otherwise.
     Stopped {
         reason: StopReason,
         returned: Option<ValueDescription>,
@@ -106,6 +129,9 @@ pub enum StopReason {
     Pause,
     /// The program reached the statement the breakpoints `ids` stand at.
     Breakpoint { ids: Vec<BreakpointId> },
+    /// A step the agent asked for (`Command::StepOver`, `StepInto`,
+    /// `StepOut`) arrived.
+    Step,
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.
