@@ -2684,7 +2684,10 @@ fn finish<'gc>(
 
 /// What `finish` does once the frame is popped: `then`, the popped frame's
 /// continuation, applied to `value`, and `counted`, its flag, handed on to
-/// whatever the continuation pushes.
+/// whatever the continuation pushes. Every way on but `Deliver`'s, and a
+/// superclass clause's class delivered as a send's value, reports the
+/// popped frame to a step in progress (`breakpoint::frame_left`), which
+/// goes on from wherever the program does.
 #[inline(always)]
 fn apply_continuation<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -2713,21 +2716,29 @@ fn apply_continuation<'gc>(
         }
         // A future's `resolve` returned to an instruction that could not
         // take its value: the instruction runs again and finds it resolved.
-        Continuation::Reexecute => return reexecute(mutator, floor, handoff),
+        Continuation::Reexecute => {
+            breakpoint::frame_left(mutator, None);
+            return reexecute(mutator, floor, handoff);
+        }
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
-            // step.
+            // step. Only a superclass clause's class is a value here, handed
+            // to the accessor's send as a callee's value is.
             resumed @ Ok(Step::Value(value)) => {
                 std::mem::forget(resumed);
                 value
             }
             Ok(step) => {
+                breakpoint::frame_left(mutator, None);
                 return match mutator.push_continuation(step, counted) {
                     Ok(next) => handoff.switch_to(mutator, next, 0),
                     Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
             }
-            Err(signal) => return unwind(mutator, signal, floor, handoff),
+            Err(signal) => {
+                breakpoint::frame_left(mutator, Some(&signal));
+                return unwind(mutator, signal, floor, handoff);
+            }
         },
     };
     if mutator.heap.activation_stack_top() == floor {
@@ -2746,7 +2757,9 @@ fn apply_continuation<'gc>(
 /// applied as any popped one is, so that from here on everything proceeds
 /// as if the sender had been on the stack all along -- the caller a value
 /// is delivered to, the activation a continuation pushes above, the
-/// instruction `reexecute` runs again.
+/// instruction `reexecute` runs again. A step in progress forgets the
+/// popped frame before the sender is resumed, which may take its offset
+/// (`breakpoint::returning_to_suspended`).
 #[cold]
 #[inline(never)]
 fn return_to_suspended<'gc>(
@@ -2758,6 +2771,7 @@ fn return_to_suspended<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let ReturnToSuspended { sender, then } = suspended;
+    breakpoint::returning_to_suspended(mutator);
     mutator.resume_frame(sender);
     apply_continuation(mutator, then, counted, value, floor, handoff)
 }

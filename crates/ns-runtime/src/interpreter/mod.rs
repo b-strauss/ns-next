@@ -2977,9 +2977,16 @@ impl<'gc> Mutator<'gc> {
     /// first, as `vm::finish` resumes it for a return, so that the next top
     /// is the activation the unwind goes on with -- whose `ensure:` block it
     /// runs, or which it arrives at -- as if it had been on the stack all
-    /// along.
+    /// along. A step in progress learns of the pop, so that a step whose
+    /// frame the unwind pops goes on from the next top
+    /// (`stepping::frame_left`): told before a resumed sender can take the
+    /// popped frame's offset, and of the frame on top once it is there.
     pub(crate) fn pop_for_unwind(&mut self, top: ActivationReference) {
         let popped = self.heap.pop_activation(top);
+        let stepping = self.stepping.is_some();
+        if stepping {
+            crate::debugger::stepping::popped(self);
+        }
         match popped.then {
             Continuation::ReturnToSuspended(suspended) => {
                 let ReturnToSuspended { sender, then } = *suspended;
@@ -2989,6 +2996,10 @@ impl<'gc> Mutator<'gc> {
             then => self.abandon(then),
         }
         self.release_depth_reserve_if_ended();
+        if stepping {
+            let now_on_top = self.heap.top_activation();
+            crate::debugger::stepping::frame_left(self, now_on_top);
+        }
     }
 
     /// Pushes the activation a continuation decided (`resume`), in place of

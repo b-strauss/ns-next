@@ -41,11 +41,14 @@ pub(crate) enum StepAction {
 /// A frame the step names: a running activation, or one suspended into
 /// its frame object -- by the suspend stress mode, or a sender an image
 /// decoded -- by its key among the step's suspended frames, until it is
-/// resumed as an activation of its own (`resumed`).
+/// resumed as an activation of its own (`resumed`); or a frame popped
+/// otherwise than by a return to its caller, which no running activation
+/// is (`popped`).
 #[derive(Clone, Copy)]
 pub(crate) enum Holder {
     Running(ActivationReference),
     Suspended(u32),
+    Left,
 }
 
 impl Holder {
@@ -54,6 +57,7 @@ impl Holder {
         match (self, other) {
             (Holder::Running(held), Holder::Running(other)) => held.names(other),
             (Holder::Suspended(held), Holder::Suspended(other)) => held == other,
+            (Holder::Left, Holder::Left) => true,
             _ => false,
         }
     }
@@ -136,32 +140,57 @@ pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Root> {
     stepping.and_then(|stepping| stepping.returned)
 }
 
-/// A frame the step names left otherwise than by returning to its
-/// caller's return point -- an unwind popped it, or the frame it returns
-/// to goes on elsewhere: `activation`, about to go, and `now_on_top`, the
-/// frame the program goes on in. When it is the stepping frame or the
-/// caller its return point is in, the step goes on as a step into from
-/// `now_on_top`, so that it stops at the next statement start the
-/// program reaches (decision 17). A run that ends leaves nothing on top,
-/// and its end ends the step.
-#[expect(
-    dead_code,
-    reason = "the reports of a frame left by an unwind and by the continuations other than `Deliver` call it"
-)]
-pub(crate) fn frame_left(
-    mutator: &mut Mutator<'_>,
-    activation: ActivationReference,
-    now_on_top: Option<ActivationReference>,
-) {
+/// A frame was just popped otherwise than by a return to its caller's
+/// send (`Continuation::Deliver`), and nothing has been pushed or resumed
+/// since: every frame the step names that lies above the top of the
+/// stack is gone, and every name the step knew it by is `Holder::Left`
+/// from here on, which no activation is; a frame between the one the step
+/// was taken in and the stepping frame goes from that list. Done before
+/// anything takes its place on the stack, since an activation pushed or
+/// resumed there may take its offset, which is all a release build
+/// compares. The popped frame is found by its offset rather than handed
+/// in, so that the return path keeps no handle alive across its pop.
+pub(crate) fn popped(mutator: &mut Mutator<'_>) {
+    let Some(stepping) = &mut mutator.stepping else {
+        return;
+    };
+    let heap = &mutator.heap;
+    let gone = |holder: Holder| matches!(holder, Holder::Running(activation) if heap.activation_lies_above_the_top(activation));
+    if gone(stepping.frame) {
+        stepping.frame = Holder::Left;
+    }
+    if let Some((caller, index)) = stepping.return_point {
+        if gone(caller) {
+            stepping.return_point = Some((Holder::Left, index));
+        }
+    }
+    stepping.between.retain(|(held, _)| !gone(*held));
+    mutator.breakpoints.forget_one_shot_holders(gone);
+}
+
+/// A frame popped otherwise than by a return to its caller's send, and
+/// `now_on_top`, the frame the program goes on in (decision 17): the
+/// popped frame's names are forgotten first (`popped`). When it was the
+/// stepping frame, or the caller its return point is in, the step goes on
+/// as a step into from `now_on_top`, so that it stops at the next
+/// statement start the program reaches: in the frame an unwind goes on
+/// in, a block it runs there, the caller an instruction runs again in, or
+/// what that pushes. Any other frame the step named above the stepping
+/// one -- one the step was taken in, a pushed frame's one-shot -- is only
+/// forgotten. `now_on_top` is `None` when no frame goes on yet -- the run
+/// ends, whose end ends the step, or an error is about to be signalled,
+/// whose handler search, or the unwind it starts, says where the program
+/// goes on; the step's frame stays `Holder::Left` until then.
+pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
+    popped(mutator);
     let Some(stepping) = &mutator.stepping else {
         return;
     };
-    let left = Holder::Running(activation);
-    let named = stepping.frame.is(left)
+    let left = stepping.frame.is(Holder::Left)
         || stepping
             .return_point
-            .is_some_and(|(caller, _)| caller.is(left));
-    if let (true, Some(frame)) = (named, now_on_top) {
+            .is_some_and(|(caller, _)| caller.is(Holder::Left));
+    if let (true, Some(frame)) = (left, now_on_top) {
         continue_as_step_into(mutator, frame);
     }
 }
@@ -661,6 +690,15 @@ fn inlined_blocks(body: &CompiledCode, metadata: &BodyMetadata) -> Vec<Rc<Compil
         else {
             continue;
         };
+        // A simultaneous slot's computation is a closure of its own, which
+        // its future's `resolve` runs; its source is the slot's expression,
+        // the very span of the initializer's statement for the slot.
+        if matches!(
+            instructions.get(index + 1),
+            Some(Instruction::MakeFuture { closure, .. }) if closure == destination
+        ) {
+            continue;
+        }
         let source = code.source;
         let encloses = metadata
             .statements
@@ -730,6 +768,7 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
                 None => Err(sender),
             }
         }
+        Holder::Left => return,
     };
     let (caller, standing, code) = match sender {
         Ok(caller) => (

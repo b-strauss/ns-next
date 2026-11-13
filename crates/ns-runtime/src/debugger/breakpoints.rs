@@ -253,6 +253,21 @@ impl Breakpoints {
         }
     }
 
+    /// Every one-shot for a frame `gone` says was popped is for
+    /// `Holder::Left` from here on, which no activation is, so that an
+    /// activation pushed at the popped one's offset does not take it.
+    pub(crate) fn forget_one_shot_holders(&mut self, gone: impl Fn(Holder) -> bool) {
+        for patch in self.patches.values_mut() {
+            for kind in &mut patch.kinds {
+                if let PatchKind::OneShot(one_shot) = kind {
+                    if gone(one_shot.holder) {
+                        one_shot.holder = Holder::Left;
+                    }
+                }
+            }
+        }
+    }
+
     /// Every frame a one-shot is for.
     #[cfg(debug_assertions)]
     pub(crate) fn one_shot_holders(&self) -> Vec<Holder> {

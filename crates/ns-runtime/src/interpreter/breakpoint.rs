@@ -3,13 +3,16 @@
 //! breakpoint"): stop, leaving the stretch for the safepoint, which stops
 //! the program there, or go past, executing the slot's original through
 //! its ordinary arm. Out of line and cold: only a patched slot reaches it,
-//! and `vm.rs` holds no debugger logic.
+//! and `vm.rs` holds no debugger logic. So are the reports of a frame the
+//! run loop pops otherwise than by a return to its caller's send, which a
+//! step goes on from (`frame_left`; `docs/design/debugger.md`, decision
+//! 17).
 
 use crate::bytecode::CompactInstruction;
 use crate::debugger::breakpoints::{address, PastOnce, PendingStop};
 use crate::debugger::stepping;
 use crate::heap::ActivationReference;
-use crate::interpreter::Mutator;
+use crate::interpreter::{Mutator, Signal};
 
 /// What the `Breakpoint` arm goes on with.
 pub(crate) enum BreakpointDecision {
@@ -74,6 +77,47 @@ pub(crate) fn reached(
         ids,
     });
     BreakpointDecision::Stop
+}
+
+/// The run loop popped a frame and goes on otherwise than by handing its
+/// value to its caller's send: an unwind it carries on, a superclass
+/// clause whose continuation pushes another step, an instruction a
+/// future's `resolve` returns to that runs again, the `signal` it is
+/// about to raise. Nothing has been pushed or resumed since, so the
+/// popped frame is whatever lies above the top. With a step in progress
+/// the step learns of it (`stepping::frame_left`), and goes on as a step
+/// into from the frame now on top when it was the step's frame -- but for
+/// an error about to be signalled, whose handler search decides where the
+/// program goes on and reports it, as the unwind it starts does: stepping
+/// into `signal` would stop in the exception's machinery, not where the
+/// program goes on ("Exceptions"). Out of line and cold: only the
+/// continuations other than `Deliver` reach it, and their return path
+/// stays as it was.
+#[cold]
+#[inline(never)]
+pub(crate) fn frame_left<'gc>(mutator: &mut Mutator<'gc>, signal: Option<&Signal<'gc>>) {
+    if mutator.stepping.is_none() {
+        return;
+    }
+    let now_on_top = match signal {
+        Some(Signal::Error(_)) => None,
+        _ => mutator.heap.top_activation(),
+    };
+    stepping::frame_left(mutator, now_on_top);
+}
+
+/// The run loop popped a frame whose sender is suspended into its frame
+/// and about to be resumed onto the stack, where it may take the popped
+/// frame's offset: with a step in progress, the step forgets every name
+/// it knew the popped frame by first (`stepping::popped`), so that none
+/// names the resumed sender. Its continuation then decides, as any popped
+/// frame's (`frame_left`).
+#[cold]
+#[inline(never)]
+pub(crate) fn returning_to_suspended(mutator: &mut Mutator<'_>) {
+    if mutator.stepping.is_some() {
+        stepping::popped(mutator);
+    }
 }
 
 /// The caller `activation` runs its instruction at `index` again, which

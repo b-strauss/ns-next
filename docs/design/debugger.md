@@ -33,9 +33,11 @@
 > point, by one-shot breakpoints for the stepping frame and a request bit
 > a step into holds until the next push, and report the value of the last
 > call ("Step over in recursion and blocks", "Step into's held request",
-> "The return value of the last call"). Everything else is planned: the
-> rest of stage 3 -- the step filter, a step out of a frame an unwind
-> leaves, run to cursor, method and exception breakpoints -- the DAP
+> "The return value of the last call"); a step whose frame an unwind pops,
+> or whose frame returns otherwise than to its caller's send, goes on as a
+> step into from the frame the program goes on in (decision 17).
+> Everything else is planned: the rest of stage 3 -- the step filter, run
+> to cursor, method and exception breakpoints -- the DAP
 > agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
@@ -1089,7 +1091,24 @@ stage's tests, do not.
   going on in its creator, past the receiver's `ifTrue:`; a `Terminate`
   while a step into is pending ending the step, the `ensure:` block the
   unwind runs making no stop; and a step over begun at a pause at a push
-  stopping at the callee's next statement, not where it stands. Each
+  stopping at the callee's next statement, not where it stands. Of a
+  frame that leaves otherwise (decision 17): a step out of an `ensure:`
+  block a non-local return's unwind runs, and a step over a non-local
+  return out of a block a `do:` runs, each stopping at the home's
+  caller's return point with the home's answer; steps out of a future's
+  computation, through the forcing's frames, and out of its `resolve`,
+  stopping in the frame that met the future at its next statement once
+  the instruction ran again -- a send, whose answer is reported, and a
+  value's slot initializer, which no return point follows; a step out
+  of a superclass clause stopping at the accessor's return point; and a
+  step out of a clause whose answer is refused as no class stopping past
+  the handler, not in the `signal`. Beside them, a breakpoint at an
+  instruction that meets an unresolved future stopping once, its slot
+  initialized once: only the optimized lowering puts the instruction
+  that meets it first in its statement, since the reference lowering
+  begins every slot initializer's statement with a `Move`. A step over a
+  statement that raises, stopping in the handler block, is written and
+  ignored until the handler search reports to the stepping state. Each
   also passes under every stress mode, the suspend
   stress mode's suspensions included.
 - **The pause stress mode** (above).
@@ -1257,9 +1276,11 @@ is in included.
 **Partial:** step over, step into and step out are built
 (`debugger/stepping.rs`; "Step over in recursion and blocks", "Step
 into's held request", "The return value of the last call"), the frame
-left by a return to its caller's return point; the unwinder's report of
-a frame an unwind leaves (decision 17), the step filter (decision 16),
-smart step into and run to cursor are planned.
+left by a return to its caller's return point, and the reports of a
+frame left otherwise, by an unwind or a continuation other than
+`Deliver` (decision 17); the step filter (decision 16), the handler
+search's report (decision 17, "Exceptions"), smart step into and run to
+cursor are planned.
 
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
@@ -1267,10 +1288,14 @@ smart step into and run to cursor are planned.
   instruction its caller stands at -- a send, a `ResolveFuture`, an
   initializer invocation or a `SendMirror` -- never that slot itself, which
   `resume_caller` reads again. A frame left by an unwind -- an exception, a non-local
-  return -- is reported by the unwinder, which reads a word of the
-  debugger's as it pops; that costs only the cold unwind path.
+  return, a `retry` -- is reported by the unwinder as it pops it
+  (`Mutator::pop_for_unwind`), and a frame whose continuation is other
+  than `Deliver` by the run loop's arm for it (`breakpoint::frame_left`);
+  both are cold paths, and the return's own path is unchanged. The step
+  then goes on as a step into from the frame the program goes on in
+  (decision 17).
 - **Step out** is the return point's one-shot breakpoint and the
-  unwinder's report.
+  reports of a frame left otherwise.
 - **Step into** is a step over plus a safepoint request held until the next
   push, which the debugger's safepoint stops at, at the new body's first
   statement start. A send answered by a primitive or a leaf pushes
@@ -1658,6 +1683,16 @@ nothing.
 
 ### 17. A step out stops at the next place the program reaches
 
+**Partial:** built for every way a frame leaves but the handler search's
+report and the filter: the unwinder's pops and the arms of
+`Continuation::Unwind`, `NestedClass` (a step pushed in the clause's
+place, or an error), `VmErrorSignalled`, `Reexecute` and
+`ReturnToSuspended` report to the stepping state
+(`Mutator::pop_for_unwind`, `interpreter::breakpoint::frame_left`,
+`stepping::frame_left`); the handler search's report ("Exceptions") and
+decision 16's filter are planned, so that a step goes on into shipped
+frames -- `ensure:`'s, `resolve`'s -- as into any other.
+
 A step out, and a step over at a body's last statement, stops at the
 stepping frame's return point when its caller goes on there --
 `Continuation::Deliver`, and a superclass clause's
@@ -1674,9 +1709,30 @@ stops in the handler block that takes the error, which the search
 reports to the stepping state ("Exceptions"), or the program ends with
 the error (`Continuation::VmErrorSignalled`); and a frame that returns
 to a suspended sender (`Continuation::ReturnToSuspended`) stops in the
-sender, resumed. The pop is reported to the stepping state only in
-`apply_continuation`'s arms other than `Deliver`'s, which are out of
-line, so the return's hot path is unchanged.
+sender, resumed. The pop is reported to the stepping state only by the
+unwinder as it pops (`Mutator::pop_for_unwind`) and in
+`apply_continuation`'s arms other than `Deliver`'s, which call one cold
+function (`interpreter::breakpoint::frame_left`), so the return's hot
+path is unchanged: `finish` keeps no handle of the popped frame for
+them. The report finds the popped frame as the one whose offset lies
+above the stack's top (`Heap::activation_lies_above_the_top`), since
+nothing is pushed between the pop and the report, and every name the
+step knew it by becomes `Holder::Left`, which no activation is
+(`stepping::popped`) -- for a frame returning to a suspended sender
+before the sender is resumed, which may take its offset, all a release
+build compares (`breakpoint::returning_to_suspended`). When the step's
+frame, or the caller its return point is in, has left, the step goes on
+as a step into from the frame on top (`continue_as_step_into`); any
+other frame the step named above it is only forgotten. An error the
+popped frame's continuation raises -- a superclass clause's answer
+refused as no class -- makes no frame the step goes on in yet: stepping
+into the `signal` pushed for it would stop in the exception's
+machinery, so the step waits, its frame `Holder::Left`, for the
+unwind its handler or its default action starts, whose first pop goes
+on, and, once built, the handler search's report. A step out of a
+superclass clause whose class is handed to the accessor's send, the
+`NestedClass` arm's value, reports nothing and stops at the accessor's
+return point.
 
 All three systems define a step out by where the program goes next,
 not by how the frame returned: Newspeak's `stepOut:` stops as soon as
@@ -1965,7 +2021,10 @@ a Boolean runs, recognized as a block literal whose `source` encloses
 one of the body's statements, its inline copy's; under the reference
 lowering, which inlines nothing, a block literal a `SendInlinable` takes
 as its receiver or an argument, the blocks the optimized lowering
-inlines; and so on into those blocks' own. So a step over a non-Boolean
+inlines; and so on into those blocks' own. A simultaneous slot's
+computation, the closure a `MakeFuture` takes, is none of them, though
+its source is the very span of the initializer's statement for the slot:
+its future's `resolve` runs it, a frame of its own. So a step over a non-Boolean
 receiver's `ifTrue:` stops in its fallback block as in the inline copy,
 and a step under the reference lowering stops where it stops under the
 optimized one. A step taken in such a block steps in its creator, the

@@ -3134,3 +3134,468 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answer, 6);
     }
 }
+
+/// A non-local return out of an `ensure:` whose block notes it, and one
+/// out of a block a `do:` runs, each answered to a caller that keeps it
+/// in a temporary.
+const UNWINDING: &str = indoc! {"
+    class Unwinding = Object new (
+      | notes ::= 0. |
+    ) (
+      public ensuring = (
+        | x |
+        x:: self home.
+        ^x + notes
+      )
+      public finding = (
+        | y |
+        y:: self find.
+        ^y + 1
+      )
+      home = (
+        [^5] ensure: [
+          self note].
+        ^0
+      )
+      find = (
+        {1. 2. 3} do: [:each |
+          each = 2 ifTrue: [
+            ^each * 10]].
+        ^0
+      )
+      note = (
+        notes:: notes + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ensure:` block the unwind of a non-local return
+    /// runs, which returns to no caller's send, goes on as a step into
+    /// along the unwind and stops where the program goes on: at the
+    /// return point of the home's caller, which the return lands in.
+    fn a_step_out_of_an_ensure_block_run_by_an_unwind_stops_where_the_program_goes_on(lowering) {
+        let offset = line_start(UNWINDING, "self note].");
+        let ((inside, stood, returned), answer) = stepped(
+            UNWINDING,
+            lowering,
+            "ensuring",
+            |remote| set_breakpoints(remote, "Unwinding", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Unwinding");
+                let inside = standing(remote, UNWINDING);
+                let returned = step(remote, Command::StepOut);
+                let stood = standing(remote, UNWINDING);
+                continue_stopped(remote);
+                (inside, stood, returned)
+            },
+        );
+        assert_eq!(
+            inside,
+            (String::from("[] in Unwinding>>home"), String::from("self note"))
+        );
+        assert_eq!(
+            stood,
+            (String::from("Unwinding>>ensuring"), String::from("x:: self home"))
+        );
+        assert_eq!(returned.expect("the home's answer").label, "5");
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over a non-local return in a block a `do:` runs, the
+    /// stepping frame popped by the unwind, stops at the return point of
+    /// the home's caller.
+    fn a_step_over_a_non_local_return_stops_in_the_home_s_caller(lowering) {
+        let offset = line_start(UNWINDING, "^each * 10]].");
+        let ((stood, returned), answer) = stepped(
+            UNWINDING,
+            lowering,
+            "finding",
+            |remote| set_breakpoints(remote, "Unwinding", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Unwinding");
+                let returned = step(remote, Command::StepOver);
+                let stood = standing(remote, UNWINDING);
+                continue_stopped(remote);
+                (stood, returned)
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Unwinding>>finding"), String::from("y:: self find"))
+        );
+        assert_eq!(returned.expect("the home's answer").label, "20");
+        assert_eq!(answer, 21);
+    }
+}
+
+/// A simultaneous slot clause whose first slot hands its sibling's
+/// future to a method, whose primitive `+` meets it unresolved: the
+/// future's `resolve` is pushed, and once it returns the send runs again.
+const FORCING: &str = indoc! {"
+    class Forcing = Object new () (
+      public run = (
+        ^Probe new first
+      )
+      class Probe = Object new (
+        ||
+          public first = self add: second.
+          public second =
+            1 + 1.
+        ||
+      ) (
+        add: value = (
+          | sum |
+          sum:: 1 + value.
+          ^sum * 10
+        )
+      )
+    ) : ()
+"};
+
+/// The name of the stopped top frame.
+fn top_name(remote: &DebugRemote) -> String {
+    stack_trace(remote)[0].name.clone()
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a future's `resolve`, which returns to an instruction
+    /// that could not take its value, goes on as a step into from the
+    /// frame that met the future: the instruction runs again, its answer
+    /// recorded, and the step stops at the frame's next statement.
+    fn a_step_out_of_a_future_s_resolve_stops_in_its_caller(lowering) {
+        let offset = line_start(FORCING, "1 + 1.");
+        let ((names, stood, returned), answer) = stepped(
+            FORCING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Forcing", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Forcing");
+                let mut names = vec![top_name(remote)];
+                // Out of the future's block and the forcing's own frames
+                // until the frame that met the future is on top.
+                let mut returned = None;
+                while names.len() < 8 && names.last().is_none_or(|name| name != "Probe>>add:") {
+                    returned = step(remote, Command::StepOut);
+                    names.push(top_name(remote));
+                }
+                let stood = standing(remote, FORCING);
+                continue_stopped(remote);
+                (names, stood, returned)
+            },
+        );
+        assert_eq!(
+            names,
+            [
+                "[] in Probe initializer",
+                "[] in FutureImplementation>>resolve",
+                "Closure>>ifCurtailed:",
+                "FutureImplementation>>resolve",
+                "Probe>>add:",
+            ]
+        );
+        assert_eq!(
+            stood,
+            (String::from("Probe>>add:"), String::from("^sum * 10"))
+        );
+        assert_eq!(returned.expect("the + run again").label, "3");
+        assert_eq!(answer, 30);
+    }
+}
+
+/// A nested class whose superclass clause sends a method of its
+/// enclosing object, built afresh for each new `Outer`.
+const CLAUSED: &str = indoc! {"
+    class Claused = Object new () (
+      public run = (
+        ^Outer new make
+      )
+      class Base = Object new () (
+        public answer = (
+          ^7
+        )
+      )
+      class Outer = Object new () (
+        public make = (
+          | made |
+          made:: Inner new.
+          ^made answer
+        )
+        base = (
+          ^Base
+        )
+        class Inner =
+          self base new () ()
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a superclass clause, whose class the accessor's send
+    /// is handed (`Continuation::NestedClass`), stops at the accessor's
+    /// return point, as a step out of a method stops at its send's: the
+    /// breakpoint in the method the clause sends, a step out of it stops
+    /// in the clause.
+    fn a_step_out_of_a_superclass_clause_stops_at_the_accessor_s_return_point(lowering) {
+        let offset = line_start(CLAUSED, "^Base");
+        let ((clause, stood), answer) = stepped(
+            CLAUSED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Claused", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Claused");
+                step(remote, Command::StepOut);
+                let clause = top_name(remote);
+                step(remote, Command::StepOut);
+                let stood = standing(remote, CLAUSED);
+                continue_stopped(remote);
+                (clause, stood)
+            },
+        );
+        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(
+            stood,
+            (String::from("Outer>>make"), String::from("made:: Inner new"))
+        );
+        assert_eq!(answer, 7);
+    }
+}
+
+/// A nested class whose superclass clause answers no class, which a
+/// handler in the method that sends the accessor takes.
+const REFUSED: &str = indoc! {"
+    class Refused = Object new () (
+      public run = (
+        | made |
+        made:: Outer new make.
+        ^made
+      )
+      class Outer = Object new () (
+        public make = (
+          ^[Inner new] on: Error do: [:error | 9]
+        )
+        notAClass = (
+          ^3
+        )
+        class Inner =
+          self notAClass new () ()
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a superclass clause whose answer is refused as no
+    /// class goes on where the error's handling takes the program, not
+    /// into the `signal` the refusal raises: past the handler, whose
+    /// answer the `on:do:` hands to its sender, at that send's return
+    /// point.
+    fn a_step_out_of_a_superclass_clause_whose_class_is_refused_does_not_stop_in_its_signal(lowering) {
+        let offset = line_start(REFUSED, "^3");
+        let ((clause, stood), answer) = stepped(
+            REFUSED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Refused", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Refused");
+                step(remote, Command::StepOut);
+                let clause = top_name(remote);
+                step(remote, Command::StepOut);
+                let stood = standing(remote, REFUSED);
+                continue_stopped(remote);
+                (clause, stood)
+            },
+        );
+        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(
+            stood,
+            (
+                String::from("Outer>>make"),
+                String::from("^[Inner new] on: Error do: [:error | 9]")
+            )
+        );
+        assert_eq!(answer, 9);
+    }
+}
+
+/// A protected block whose first statement signals an `Error`, which the
+/// handler block takes.
+const HANDLED: &str = indoc! {"
+    class Handled = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        [
+          self fail.
+          count:: 1]
+            on: Error
+            do: [:error |
+              self recover].
+        ^count
+      )
+      fail = (
+        ^Error new signal: 'failed'
+      )
+      recover = (
+        count:: count + 5
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over a statement that raises an error a handler at the
+    /// stepping frame takes stops at the handler block's first statement:
+    /// the handler runs above the raising frame, before anything unwinds.
+    #[ignore = "Task 8"]
+    fn a_step_over_a_statement_that_raises_stops_in_the_handler_block(lowering) {
+        let offset = line_start(HANDLED, "self fail.");
+        let (stood, answer) = stepped(
+            HANDLED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Handled", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Handled");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, HANDLED);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("[] in Handled>>run"), String::from("self recover"))
+        );
+        assert_eq!(answer, 15);
+    }
+}
+
+/// A value class whose first slot's initializer is the first instruction
+/// of its statement and is handed a sibling's future, which it cannot
+/// store: the future is forced, and the instruction runs again.
+const REEXECUTED: &str = indoc! {"
+    class Reexecuted = Object <: Value () (
+      public run = (
+        ^Probe new pair first
+      )
+      class Pair first: firstValue second: secondValue = Value new (
+        |
+          public first = firstValue.
+          public second = secondValue.
+        |
+      ) ()
+      class Probe = Object new (
+        ||
+          public pair = Pair first: third second: 1.
+          public third = 3.
+        ||
+      ) ()
+    ) : ()
+"};
+
+/// `REEXECUTED` with the computation of the sibling the value's slot is
+/// handed on a line of its own.
+const PAIRED: &str = indoc! {"
+    class Paired = Object <: Value () (
+      public run = (
+        ^Probe new pair first
+      )
+      class Pair first: firstValue second: secondValue = Value new (
+        |
+          public first = firstValue.
+          public second = secondValue.
+        |
+      ) ()
+      class Probe = Object new (
+        ||
+          public pair = Pair first: third second: 1.
+          public third =
+            3.
+        ||
+      ) ()
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a future's `resolve` returning to an instruction that
+    /// is no call, which no return point follows -- a value's slot
+    /// initialized with the future -- stops in the frame that met it, at
+    /// its next statement, once the instruction ran again.
+    fn a_step_out_of_a_future_s_resolve_into_a_slot_initializer_stops_at_the_next_statement(lowering) {
+        let offset = line_start(PAIRED, "3.");
+        let ((names, stood), answer) = stepped(
+            PAIRED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Paired", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Paired");
+                let mut names = vec![top_name(remote)];
+                while names.len() < 8 && names.last().is_none_or(|name| name != "Pair initializer") {
+                    step(remote, Command::StepOut);
+                    names.push(top_name(remote));
+                }
+                let stood = standing(remote, PAIRED);
+                continue_stopped(remote);
+                (names, stood)
+            },
+        );
+        assert_eq!(
+            names,
+            [
+                "[] in Probe initializer",
+                "[] in FutureImplementation>>resolve",
+                "Closure>>ifCurtailed:",
+                "FutureImplementation>>resolve",
+                "Pair initializer",
+            ]
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Pair initializer"),
+                String::from("public second = secondValue.")
+            )
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+/// Continues the stopped program and answers how many times it stopped
+/// again before its run ended, each stop continued.
+fn stops_after_continuing(remote: &DebugRemote) -> usize {
+    continue_stopped(remote);
+    let mut stops = 0;
+    while let Some(event) = remote.next_event(Duration::from_millis(500)) {
+        if let Event::Stopped { .. } = event {
+            stops += 1;
+            remote.send(Command::Continue);
+        }
+    }
+    stops
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint at an instruction that meets an unresolved future
+    /// stops once: the instruction the future's `resolve` returns to runs
+    /// again past the breakpoint, and the slot is initialized once.
+    fn a_breakpoint_at_a_reexecuted_index_stops_once(lowering) {
+        let offset = line_start(REEXECUTED, "public first = firstValue.");
+        let (again, answer) = stepped(
+            REEXECUTED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Reexecuted", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Reexecuted");
+                stops_after_continuing(remote)
+            },
+        );
+        assert_eq!(again, 0);
+        assert_eq!(answer, 3);
+    }
+}

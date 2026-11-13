@@ -9552,6 +9552,16 @@ impl<'gc> Heap<'gc> {
         (innermost != NO_FRAME).then(|| self.activation_handle(innermost))
     }
 
+    /// Whether `activation` lies above the innermost live activation: it
+    /// was popped, and nothing pushed since has taken its offset. Offsets
+    /// grow with depth, as positions do, so the offsets are all it
+    /// compares, reading nothing of a frame that may be gone: a step holds
+    /// handles of activations an unwind pops (`debugger::stepping::popped`).
+    pub(crate) fn activation_lies_above_the_top(&self, activation: ActivationReference) -> bool {
+        let innermost = self.stack.innermost;
+        innermost == NO_FRAME || activation.offset > innermost
+    }
+
     /// Where `activation` lies on the stack: the word offset of its frame's
     /// start, its first argument, which grows with depth -- a callee on its
     /// sender's slots starts above the sender's header, any other above
