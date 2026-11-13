@@ -116,6 +116,12 @@ pub(crate) struct Breakpoints {
     /// stress mode patched since the mode was last switched on.
     #[cfg(debug_assertions)]
     stress_hits: usize,
+    /// How many times a step went on from a suspended frame, the first
+    /// unfiltered one below the frame the program goes on in
+    /// (`stepping::continue_as_step_into`). For tests, which a suspension
+    /// alone does not tell that the step took that path.
+    #[cfg(debug_assertions)]
+    steps_from_suspended: usize,
 }
 
 /// One method breakpoint.
@@ -1441,5 +1447,15 @@ impl Breakpoints {
     /// stress mode patched.
     pub(crate) fn stress_hits(&self) -> usize {
         self.stress_hits
+    }
+
+    /// A step went on from a suspended frame.
+    pub(crate) fn count_step_from_suspended(&mut self) {
+        self.steps_from_suspended += 1;
+    }
+
+    /// How many times a step went on from a suspended frame.
+    pub(crate) fn steps_from_suspended(&self) -> usize {
+        self.steps_from_suspended
     }
 }

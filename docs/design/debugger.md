@@ -1390,7 +1390,9 @@ the poll words' ordering, and every later stage's tests, do not.
   two steps deciding afresh; and, under the suspend stress mode, a step
   over at a block's last statement whose `do:`'s sender is suspended
   going on from that suspended frame, held as `Holder::Suspended`, to
-  the block's next activation. Of the unwinds a step follows: a step
+  the block's next activation, which a debug build's count of steps
+  going on from a suspended frame pins
+  (`Interpreter::steps_from_suspended_frames`). Of the unwinds a step follows: a step
   from a block whose non-local return unwinds fifty frames flooding only
   the home it stops in, and an exception's stop reporting a method
   breakpoint's pending exit beside the exception. Beside them, a breakpoint at an

@@ -372,6 +372,10 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
     let (returned, exits) = carried(mutator);
     mutator.breakpoints.remove_one_shots();
     let place = first_unfiltered(mutator, frame).unwrap_or(Place::Running(frame));
+    #[cfg(debug_assertions)]
+    if matches!(place, Place::Suspended(_)) {
+        mutator.breakpoints.count_step_from_suspended();
+    }
     start(mutator, StepAction::Into, place, place, returned);
     keep_exits(mutator, exits);
     settle(mutator);

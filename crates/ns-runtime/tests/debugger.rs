@@ -4113,6 +4113,7 @@ ns_runtime::for_each_lowering! {
 /// A `do:` over two thousand elements, whose block notes the 1,500th:
 /// long enough for the suspend stress mode to suspend `run` below the
 /// shipped `Array>>do:` before then.
+#[cfg(debug_assertions)]
 const SUSPENDING: &str = indoc! {"
     class Suspending = Object new (
       | count ::= 0. |
@@ -4138,6 +4139,7 @@ ns_runtime::for_each_lowering! {
     /// unfiltered frame below it -- `run`, suspended, which the step
     /// holds as such -- and stops in the block's next activation, which
     /// `do:` pushes for that frame, as it does with nothing suspended.
+    #[cfg(debug_assertions)]
     fn a_step_through_suspended_frames_stops_in_the_next_activation(lowering) {
         let (mut interpreter, instance) = instance_of(SUSPENDING, lowering);
         interpreter.set_stress_suspend(true);
@@ -4160,6 +4162,11 @@ ns_runtime::for_each_lowering! {
         assert!(
             interpreter.stress_suspensions() > 0,
             "the run's frames were suspended"
+        );
+        assert_eq!(
+            interpreter.steps_from_suspended_frames(),
+            1,
+            "the step went on from `run`, suspended"
         );
         assert_eq!(
             stood,

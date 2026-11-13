@@ -654,6 +654,13 @@ impl Interpreter {
         self.enter(|mutator| mutator.breakpoints.stress_hits())
     }
 
+    /// How many times a step went on as a step into from a suspended
+    /// frame, the first one below the frame the program goes on in that
+    /// the step filters do not filter. For tests.
+    pub fn steps_from_suspended_frames(&mut self) -> usize {
+        self.enter(|mutator| mutator.breakpoints.steps_from_suspended())
+    }
+
     /// How many times the pause stress mode has stopped the run since it
     /// was turned on; 0 while it is off.
     pub fn stress_pauses(&self) -> usize {
