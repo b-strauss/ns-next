@@ -749,10 +749,37 @@ fn counters_are_exact() -> bool {
         })
 }
 
+/// How many times `a_pause_stops_compiled_recursion` pauses again after a
+/// stop between two turns of `run`'s loop. Under the collect stress mode on
+/// a loaded machine a stop lands there about once in twenty, so that fifty
+/// in a row never happen by chance, while a pause that never reaches the
+/// recursion still fails.
+const PAUSES_UNTIL_IN_RECURSION: usize = 50;
+
+/// Whether a stop that stands at `trace` came between two turns of
+/// `RECURSING`'s `run` loop rather than in its recursion: in `run` itself,
+/// or at the first instruction of the `fib:` it sends, nothing below it.
+fn stopped_between_turns(trace: &[FrameDescription]) -> bool {
+    match trace {
+        [run] => run.kind == method("run"),
+        [fib, run] => {
+            fib.kind == method("fib:") && fib.program_counter == 0 && run.kind == method("run")
+        }
+        _ => false,
+    }
+}
+
 /// A pause stops a program that spends its time in compiled recursion, and
 /// the stack it reads has the recursion's frames. No optimization request
 /// asks for a safepoint, so the stop is the pause's own, taken at a poll of
 /// baseline machine code.
+///
+/// Under a stress mode, every turn of `run`'s loop takes the safepoint at
+/// its backward jump, and the stress mode's work there -- a full collection
+/// under the collect stress mode -- widens the stretch between the
+/// recursions, in which a pause stops `run` or its `fib: 24` at its first
+/// instruction. Such a stop is a pause's correct stop, but not the one this
+/// test is about, so the test continues it and pauses again.
 #[test]
 fn a_pause_stops_compiled_recursion() {
     let (kinds, before, after) = while_stopped_after(
@@ -760,7 +787,17 @@ fn a_pause_stops_compiled_recursion() {
         RECURSING,
         |interpreter, _| interpreter.set_optimization_budget(i64::MAX),
         |remote| {
-            stack_trace(remote)
+            let mut trace = stack_trace(remote);
+            for _ in 0..PAUSES_UNTIL_IN_RECURSION {
+                if !stopped_between_turns(&trace) {
+                    break;
+                }
+                continue_stopped(remote);
+                remote.pause();
+                expect_paused(remote);
+                trace = stack_trace(remote);
+            }
+            trace
                 .into_iter()
                 .map(|frame| frame.kind)
                 .collect::<Vec<FrameKind>>()
