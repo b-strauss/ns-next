@@ -403,7 +403,7 @@ impl Interpreter {
     /// whatever made the stop (`Hits::reason`). A remote that is gone
     /// detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
-        let (bits, breakpoint, exception) = self.enter(|mutator| {
+        let (bits, mut breakpoint, exception) = self.enter(|mutator| {
             (
                 mutator.heap.debugger_bits(),
                 mutator.breakpoints.take_pending_stop(),
@@ -433,8 +433,14 @@ impl Interpreter {
                 return Served::GoOn;
             }
         }
-        if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
-            return self.terminate();
+        if bits & DEBUGGER_COMMANDS != 0 {
+            if self.serve_queued_commands() == Served::Terminate {
+                return self.terminate();
+            }
+            // A `SetBreakpoints` just served may have removed a breakpoint
+            // the arm's stop is for, whose id the client no longer knows.
+            breakpoint = breakpoint
+                .and_then(|stop| self.enter(|mutator| stop.still_standing(&mutator.breakpoints)));
         }
         let exception = match (exception, self.debugger.is_some()) {
             (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),

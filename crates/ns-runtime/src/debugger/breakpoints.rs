@@ -254,11 +254,47 @@ pub(crate) enum AfterPast {
     ExitReported,
 }
 
-/// A stop a `Breakpoint` arm decided: where, and which breakpoints the
-/// debugger set stand there.
+/// A stop a `Breakpoint` arm decided: where, which breakpoints the
+/// debugger set stand there, and whether a step's one-shot stops there.
 pub(crate) struct PendingStop {
     pub(crate) slot: PastOnce,
     pub(crate) hits: Hits,
+    pub(crate) step_stops: bool,
+}
+
+impl PendingStop {
+    /// The stop as the table stands now, after the commands the safepoint
+    /// served before it: only the breakpoints still standing at its slot,
+    /// or no stop where none is left and no step's one-shot stops there
+    /// -- the frame fetches the slot again as it goes on, and what stands
+    /// there then decides afresh. A breakpoint set there meanwhile is not
+    /// added: the frame goes past the slot once after the stop, as after
+    /// any other.
+    pub(crate) fn still_standing(self, table: &Breakpoints) -> Option<PendingStop> {
+        let PendingStop {
+            slot,
+            hits,
+            step_stops,
+        } = self;
+        let standing = table.kinds_at(slot.body, slot.index);
+        let still = |ids: Vec<BreakpointId>, standing: &[BreakpointId]| -> Vec<BreakpointId> {
+            ids.into_iter().filter(|id| standing.contains(id)).collect()
+        };
+        let hits = Hits {
+            lines: still(hits.lines, &standing.lines),
+            entries: still(hits.entries, &standing.entries),
+            exits: still(hits.exits, &standing.exits),
+            run_to: hits.run_to && standing.run_to,
+        };
+        if hits.only_a_step() && !step_stops {
+            return None;
+        }
+        Some(PendingStop {
+            slot,
+            hits,
+            step_stops,
+        })
+    }
 }
 
 /// The breakpoints the debugger set that a stop is for.

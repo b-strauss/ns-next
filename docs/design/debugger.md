@@ -598,6 +598,13 @@ breakpoint's stop, which serves a pause asked meanwhile too, then the
 pause, then a step into's held request (`stepping::held_step`): a frame
 pushed above the stepping one stops there ("Step into's held request").
 Every stop ends a step in progress (`stepping::end`), whatever made it.
+The breakpoint's stop was decided by the arm, before the commands: once
+they are served it is decided again from the table
+(`PendingStop::still_standing`), so that it reports only the
+breakpoints still standing at its slot, and is not made when none is
+left and no step's one-shot stops there -- the frame fetches the slot
+again as it goes on, and what stands there decides afresh
+(`a_breakpoint_removed_before_its_stop_is_served_is_not_reported`).
 
 ### Commands while the program runs
 

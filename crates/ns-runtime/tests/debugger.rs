@@ -1743,6 +1743,49 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    /// A `SetBreakpoints` queued as the run goes on from one breakpoint,
+    /// and served at the safepoint the next one, which no poll comes
+    /// before, left for, removes that one before its stop is made: the
+    /// stop is decided afresh from the table, and no stop names a
+    /// breakpoint after the answer that removed it. The command is sent
+    /// right after the `Continue`, long before the run wakes and reaches
+    /// the second statement; should it ever arrive later, the stop it
+    /// would make comes before the answer, and the test still holds.
+    fn a_breakpoint_removed_before_its_stop_is_served_is_not_reported(lowering) {
+        let first = line_start(THREE_STATEMENTS, "count:: count + 1.");
+        let second = line_start(THREE_STATEMENTS, "count:: count + 10.");
+        let ((removed, events), answer) = stepped(
+            THREE_STATEMENTS,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Lines", vec![first, second]),
+            move |remote| {
+                let breakpoints = expect_breakpoints(remote, "Lines");
+                let ids: Vec<BreakpointId> = breakpoints.iter().map(|state| state.id).collect();
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                remote.send(Command::Continue);
+                set_breakpoints(remote, "Lines", vec![first]);
+                (ids[1], events_until_the_end(remote))
+            },
+        );
+        let answered = events
+            .iter()
+            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module == "Lines"))
+            .expect("the removal is answered");
+        let stale: Vec<&Event> = events[answered..]
+            .iter()
+            .filter(|event| {
+                matches!(event, Event::Stopped { reason: StopReason::Breakpoint { ids }, .. }
+                    if ids.contains(&removed))
+            })
+            .collect();
+        assert!(stale.is_empty(), "a stop names a removed breakpoint: {stale:?}");
+        // The third run of the instance, after the two that warmed it.
+        assert_eq!(answer, 133);
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// The run a breakpoint stopped answers what it answers undebugged.
     fn a_stopped_run_answers_its_unchanged_outcome(lowering) {
         let (mut interpreter, class) = interpreted(THREE_STATEMENTS, lowering);

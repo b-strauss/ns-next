@@ -100,6 +100,7 @@ pub(crate) fn reached(
             after,
         },
         hits,
+        step_stops,
     });
     BreakpointDecision::Stop
 }
@@ -137,6 +138,7 @@ fn gone_past(
                         exits,
                         ..Hits::default()
                     },
+                    step_stops: false,
                 });
                 return BreakpointDecision::Stop;
             }
