@@ -795,9 +795,12 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
   text, an image's without its source among them, or a body its text no
   longer compiles to, as a superseded version an edit changed;
 - `receiver` -- its receiver, described as every value is;
-- `hidden` -- whether a client shows it only on demand: at an exception's
-  stop, every frame above the first one below the exception's machinery
-  (`exceptions::first_shown`, "Exceptions"), false at every other stop.
+- `hidden` -- whether a client shows it only on demand: at an uncaught
+  exception's and a `Halt`'s stop, every frame above the first one below
+  the exception's machinery (`exceptions::first_shown`), and at a caught
+  exception's, every frame between the handler block on top, which is
+  shown, and that first one below the machinery (`exceptions::hidden`,
+  "Exceptions"); false at every other stop.
   A hidden frame stays in the trace, so that every index names the same
   frame for `Variables`.
 
@@ -2102,13 +2105,16 @@ user set in a filtered body stops, and a step that starts in a filtered
 frame -- stopped there by a breakpoint, or with the filter off -- steps
 in it as in any other. Whether it did is decided as the step begins: a
 `SetStepFilters` served while the step runs changes where it lands, not
-that. The exception's first frame shown is likewise the first unfiltered
-one ("Exceptions"), and the rule of a step that starts in a filtered
-frame does not reach the machinery frames an exception's stop hides
-above it, which the debugger chose, not the user: a step taken at that
-stop starts from the frame shown first, as if it had stopped there, the
-hidden frames ones it was taken above, so that neither they nor what
-they push are the step's.
+that. An uncaught exception's and a `Halt`'s stop likewise shows first
+the first unfiltered frame below the exception's machinery
+("Exceptions"), and the rule of a step that starts in a filtered frame
+does not reach the machinery frames such a stop hides above it, which
+the debugger chose, not the user: a step taken at that stop starts from
+the frame shown first, as if it had stopped there, the hidden frames
+ones it was taken above, so that neither they nor what they push are
+the step's. A caught exception's stop stands in the handler block about
+to run, which it shows first on top, and a step there is taken in the
+handler block as in any frame it stood in.
 
 V8 does the same with blackboxing (`v8/src/debug/debug.cc`): a step at a
 return becomes a step out in step-into mode (`:1601-1612`), the step out
@@ -2754,9 +2760,10 @@ it they do not filter, the first frame of program code
 `FrameDescription::hidden`, never dropped, so that a frame's index is
 the same at every stop, and a step taken at the stop steps from the
 frame shown first (decision 16; `stepping::begin`). Going on lets
-`defaultAction` run, which ends the program for every exception whose class does not override it, as its
-`terminate…` leaf does without a debugger, resumable ones included; a
-`Halt` and a declined `MessageNotUnderstood` are handled as below.
+`defaultAction` run, which ends the program for every exception whose
+class does not override it, as its `terminate…` leaf does without a
+debugger, resumable ones included; a `Halt` and a declined
+`MessageNotUnderstood` are handled as below.
 Whether a handler takes an exception is decided by Newspeak code
 (`handles:`), so "caught" is known only once the search found one: a
 caught-exception breakpoint, off by default, stops where the search
@@ -2771,7 +2778,12 @@ taken there steps in the handler block, as from any frame it stood in.
 Only an uncaught exception's and a `Halt`'s stop step from the frame
 below the machinery. A handler whose `cull:` a fast path answered pushed
 nothing, and its stop stands in the machinery frame the program goes on
-in, which stays shown on top. A class filter -- `ClassName`s, as the step
+in, which stays shown on top; a step taken there is taken in that kernel
+frame, which counts as a step started in a filtered frame, so it steps
+in it as in any other and can stop in the exception's machinery even
+with the shipped filter on, where it should go on as from the program
+frame below the machinery ([OPEN-WORK.md](../OPEN-WORK.md), the
+debugger's stage 3 reviews). A class filter -- `ClassName`s, as the step
 filters name a declaration -- is decided in Rust by walking the
 exception's class chain by declaration, each level's applied mixin and
 body-less declaration as `Class>>handles:` reads them
