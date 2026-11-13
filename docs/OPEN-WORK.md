@@ -35,7 +35,15 @@ its own, and the open questions it meets decided first, one at a time:
 a token for the socket, who listens, the breakable places before a
 session, terminating a program that reaches no safepoint, and whether a
 command queued between runs is answered ([debugger.md](design/debugger.md),
-"Open questions").
+"Open questions"). Once `--debug` exists, a run with a debugger attached
+and no breakpoint set is measured against one without: an attached
+debugger clones the `ExceptionBreakpoints` at every exception the
+handler search reports (`exceptions::caught`, `exceptions::unhandled`),
+beside what stage 3 measured without one. The agent tolerates a stop
+naming a breakpoint id it no longer knows: a `SetBreakpoints` that
+arrives after the safepoint drained the queue is answered after the
+stop it would have changed, which names the ids it removes, under new
+ids for the breakpoints it keeps.
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1985,9 +1993,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       keeps the result, but the first `SetBreakpoints` after an install
       pays it at a stop or a safepoint ([debugger.md](design/debugger.md),
       "A breakpoint names a source position").
-    - *Superseded bodies stay patched*: the old bodies an install
-      replaced keep a line breakpoint's patches, and their code ids are
-      named at every full collection, until the breakpoint is removed;
+    - *Superseded bodies stay patched, until the set is sent again*: the
+      old bodies an install replaced keep a line breakpoint's patches,
+      and their code ids are named at every full collection, until the
+      breakpoint is removed -- and a `SetBreakpoints` re-sending the
+      module's set, which an IDE sends at every change of it, removes
+      them from the old bodies and resolves the set against the current
+      ones only, so a frame still running an old body runs past it;
       `MethodBreakpointEntry::bodies` likewise only grows across
       installs, every body a method breakpoint was set on kept. A
       program that installs in a loop under a breakpoint grows both
@@ -2015,6 +2027,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       declaration path (`again::declaration_path`) at every poll of a
       held step into through shipped code; a cache by body would remove
       the allocation ([debugger.md](design/debugger.md), decision 16).
+    - *The value of the last call may be one no call answered*: a step's
+      recording one-shot at the index after a send also fires when a
+      jump reaches that index without running the send -- the false way
+      of `cond ifTrue: [self foo]`, whose join is the send's next index
+      -- and records the register the other way wrote, which the
+      leftover analysis finds untainted there, so the stop's `returned`
+      reports that value, `nil`, as the call's (`stepping::record`;
+      [debugger.md](design/debugger.md), "The return value of the last
+      call").
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

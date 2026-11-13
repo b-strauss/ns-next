@@ -456,17 +456,15 @@ How long the end of a batch takes, each group run alone with `cargo xtask
 gates <group>`, its builds included, on the development machine on
 2026-10-29: `images` 14 s, `caches` 4 s, `benchmarks` 70 s,
 `release-checks` 49 s, `codegen` 61 s (about 6 s of it the shipped-code
-step its build needed), and on 2026-11-07, when the gate ran twelve
-stress modes, before the pause stress mode was added, `stress` about
-965 s -- 957 s the suite under those twelve modes and with the JIT off
-at once, MOVES the longest at 954 s, 1 s `run-corpus` plain and about
-half a second under each mode; the fifteen modes it runs now are not
-yet timed -- and on
-2026-11-04, in Docker
+step its build needed), and on 2026-11-13 `stress` about 1,580 s --
+1,577 s the suite under the fifteen modes it runs and with the JIT off
+at once, and `run-corpus` plain and under each mode a few seconds more
+-- and on 2026-11-04, in Docker
 with a warm image and build directory, `linux` about two and a half
 minutes (the copy 4 s, the suite 47 s, the benchmark programs 86 s) and
 `aarch64` about 8.7 minutes (the suite under QEMU 521 s; 587 s on 2026-11-06,
-551 s on 2026-11-07), so `end-of-batch` about thirty-five minutes in all. A cold run builds the image
+551 s on 2026-11-07, 710 s on 2026-11-13), so `end-of-batch` about
+forty-five minutes in all. A cold run builds the image
 first, about ten minutes on 2026-11-04, nearly all of it the downloads
 from the snapshot service (QEMU's build itself 50 s), and compiles the
 workspace once per target.

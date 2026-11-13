@@ -2440,7 +2440,11 @@ yet. An install replaces bodies: the edited module's breakpoints are
 resolved again by their offsets against its current bodies, a patch on a
 current body a breakpoint no longer stands at is removed, a moved one is
 reported unasked, and frames still running the old bodies keep theirs,
-whose patches stay until the breakpoint is removed.
+whose patches stay until the breakpoint is removed -- or until the
+module's set is sent again, which an IDE does at every change of it: a
+`SetBreakpoints` removes the module's breakpoints everywhere, old bodies
+included, and resolves the new set, under new ids, against the current
+bodies only, so a frame still running an old body runs past them.
 
 An inlined control-flow block -- an `ifTrue:`'s, an `and:`'s, a
 `whileTrue:`'s -- is lowered twice: inline in its home, and as the
