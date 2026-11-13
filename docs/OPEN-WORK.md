@@ -2005,15 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *The value of the last call may be one no call answered*: a step's
-      recording one-shot at the index after a send also fires when a
-      jump reaches that index without running the send -- the false way
-      of `cond ifTrue: [self foo]`, whose join is the send's next index
-      -- and records the register the other way wrote, which the
-      leftover analysis finds untainted there, so the stop's `returned`
-      reports that value, `nil`, as the call's (`stepping::record`;
-      [debugger.md](design/debugger.md), "The return value of the last
-      call").
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

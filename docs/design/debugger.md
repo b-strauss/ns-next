@@ -3048,7 +3048,12 @@ destination register as a `Root` on the stepping state and goes on. The
 return point's one-shot records too, so a step out, and a step over that
 leaves its frame, report the callee's answer. A destination the leftover
 analysis finds tainted before the one-shot's index -- reached by a jump
-that skipped the call -- is not read. The step's stop reports the last
+that skipped the call -- is not read. No jump joins after a send with a
+value another way wrote: an inlined conditional's ways each end in a
+`Move` to its value register, so their join follows that `Move`, and the
+only send a jump joins after is an arithmetic or comparison send's
+fallback, whose inline fast path jumps past it with that same send's
+answer in its destination. The step's stop reports the last
 value recorded as `Stopped::returned`, the stop's first value; a stop in
 a frame a step into pushed, and every stop that is not a step's, report
 none.
