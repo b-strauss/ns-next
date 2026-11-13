@@ -12,18 +12,43 @@
 //! restored as a line breakpoint is, so that their bodies lose their
 //! machine code for the step; the next stop, whatever made it, ends the
 //! step. No check enters the run loop: what the step does not patch runs
-//! at full speed.
+//! at full speed. A step never lands in a frame the step filters filter
+//! -- by default the shipped modules' (decision 16): a stop it would make
+//! there goes on as a step into from the first unfiltered frame below,
+//! and a step into's request outlasts the pushes of filtered bodies.
 
 use std::rc::Rc;
 use std::sync::PoisonError;
 
 use super::breakpoints::{address, settle, OneShot, PastOnce};
-use super::metadata::{again::BodyOrigin, BodyMetadata, Cache};
-use super::stack;
+use super::metadata::again::{declaration_path, BodyOrigin};
+use super::metadata::{BodyMetadata, Cache};
+use super::remote::ClassName;
+use super::stack::{self, StackFrame};
 use crate::bytecode::{register_written, CompiledCode, Instruction};
 use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
 use crate::interpreter::Mutator;
 use crate::{Root, Value};
+
+/// The frames no step stops in (`docs/design/debugger.md`, decision 16):
+/// the shipped modules' bodies while `shipped` holds, and the bodies of
+/// each class declaration `classes` names and of the declarations nested
+/// in it. The default, until the agent sets them, filters the shipped
+/// modules and no class.
+#[derive(Clone)]
+pub(crate) struct StepFilters {
+    pub(crate) shipped: bool,
+    pub(crate) classes: Vec<ClassName>,
+}
+
+impl Default for StepFilters {
+    fn default() -> StepFilters {
+        StepFilters {
+            shipped: true,
+            classes: Vec::new(),
+        }
+    }
+}
 
 /// What the agent asked a step to do.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +119,17 @@ pub(crate) struct Stepping {
     suspended: Vec<(u32, Root)>,
     /// The key the next suspended frame takes.
     next_key: u32,
+    /// Whether the step was begun in a frame the step filters filter,
+    /// which it then steps in as in any other (`is_filtered`).
+    started_filtered: bool,
+}
+
+/// A frame of the run: an activation on the stack, or one suspended into
+/// its frame object.
+#[derive(Clone, Copy)]
+enum Place<'gc> {
+    Running(ActivationReference),
+    Suspended(FrameReference<'gc>),
 }
 
 /// What the safepoint goes on with while a step into holds its request.
@@ -113,7 +149,11 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction) {
     let Some(top) = mutator.heap.top_activation() else {
         return;
     };
-    start(mutator, action, top, None);
+    let started_filtered = is_filtered(mutator, &StackFrame::Running(top));
+    start(mutator, action, Place::Running(top), None);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.started_filtered = started_filtered;
+    }
     settle(mutator);
     // The top frame fetches the slot it stands at again as it goes on,
     // which the flood may just have patched -- a pause at a push leaves a
@@ -196,18 +236,108 @@ pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<Activatio
 }
 
 /// Goes on with the step as a step into from `frame`, the frame the
-/// program goes on in: its one-shots so far removed, `frame` flooded and
-/// its return point set, and the request bit held, so that the step stops
-/// at the next statement start of `frame` or of a frame pushed above it.
-/// The value recorded so far is kept.
+/// program goes on in, or from the first frame below it the step filters
+/// do not filter (decision 16): its one-shots so far removed, that frame
+/// flooded and its return point set, and the request bit held, so that
+/// the step stops at the next statement start of that frame or of an
+/// unfiltered frame it pushes, itself or through filtered ones -- a
+/// block's next activation by the shipped `do:` above it. With no
+/// unfiltered frame below, the step goes on from `frame`, and every stop
+/// it would make in a filtered one goes on again. The value recorded so
+/// far is kept.
 pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: ActivationReference) {
     let returned = mutator
         .stepping
         .take()
         .and_then(|stepping| stepping.returned);
     mutator.breakpoints.remove_one_shots();
-    start(mutator, StepAction::Into, frame, returned);
+    let place = first_unfiltered(mutator, frame).unwrap_or(Place::Running(frame));
+    start(mutator, StepAction::Into, place, returned);
     settle(mutator);
+}
+
+/// The step's own one-shot stopped `activation`, the top frame, where no
+/// line breakpoint stands: answers whether the step goes on instead,
+/// because the step filters filter the frame (decision 16) -- a return
+/// point inside the shipped `Array>>do:` after a step over at a block's
+/// last statement, a statement of a filtered body an unwind goes on in
+/// -- as a step into from the first unfiltered frame below
+/// (`continue_as_step_into`). A frame the step was begun in, stopped
+/// there by a breakpoint or with the filter off, is stepped in as any
+/// other, and so is a block the compiler lowered inline in it.
+pub(crate) fn went_on_past_filtered(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return false;
+    };
+    let (frame, started_filtered) = (stepping.frame, stepping.started_filtered);
+    if started_filtered && takes(mutator, frame, activation) {
+        return false;
+    }
+    if !is_filtered(mutator, &StackFrame::Running(activation)) {
+        return false;
+    }
+    continue_as_step_into(mutator, activation);
+    true
+}
+
+/// Whether the step filters filter `frame` (decision 16): its body is a
+/// member, or a block of a member, of a declaration of a shipped module
+/// -- its module's root is shipped, as for its metadata -- while the
+/// shipped filter is on, or of a declaration a filtered class name names
+/// or one nested in it. A frame of no declaration -- the top level -- is
+/// never filtered. Decided from the frame, not its body alone, which
+/// names no mixin: the declaration is the one the frame's current class
+/// or its initializer's level says (`stack::origin`).
+pub(crate) fn is_filtered(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
+    let filters = mutator.breakpoints.step_filters();
+    if !filters.shipped && filters.classes.is_empty() {
+        return false;
+    }
+    let Some(origin) = stack::origin(&mutator.heap, frame) else {
+        return false;
+    };
+    let Some((root, path)) = declaration_path(mutator, &origin.mixin) else {
+        return false;
+    };
+    (filters.shipped && root.shipped)
+        || filters.classes.iter().any(|class| {
+            class.module == root.name.as_str()
+                && class.path.len() <= path.len()
+                && class
+                    .path
+                    .iter()
+                    .zip(&path)
+                    .all(|(filtered, declared)| filtered == declared.as_str())
+        })
+}
+
+/// The first frame from `from` down its senders, through the suspended
+/// ones, that the step filters do not filter; `None` when every one is.
+fn first_unfiltered<'gc>(mutator: &Mutator<'gc>, from: ActivationReference) -> Option<Place<'gc>> {
+    let heap = &mutator.heap;
+    let mut next = Some(from);
+    let mut suspended = None;
+    while let Some(live) = next {
+        if !is_filtered(mutator, &StackFrame::Running(live)) {
+            return Some(Place::Running(live));
+        }
+        if let Some(sender) = heap.activation_suspended_sender(live) {
+            suspended = Some(sender);
+            break;
+        }
+        next = heap.activation_sender(live);
+    }
+    while let Some(frame) = suspended {
+        let root = heap.stash(Value::object(heap.frame_object(frame)));
+        if !is_filtered(mutator, &StackFrame::Suspended(root)) {
+            return Some(Place::Suspended(frame));
+        }
+        suspended = heap.frame_sender(frame);
+    }
+    None
 }
 
 /// The safepoint of a step into that holds its request: a frame on top
@@ -254,15 +384,9 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     if was_there || inline_code_of_step(mutator, top) {
         return HeldStep::GoOn;
     }
-    let heap = &mutator.heap;
-    let pushed = match heap.activation_suspended_sender(top) {
-        Some(sender) => suspended_key(mutator, sender)
-            .is_some_and(|key| stepping.frame.is(Holder::Suspended(key))),
-        None => heap.activation_sender(top).is_some_and(|sender| {
-            stepping.frame.is(Holder::Running(sender)) || inline_code_of_step(mutator, sender)
-        }),
-    };
-    if !pushed {
+    // A filtered body keeps the request: the step goes on through it to
+    // the next unfiltered body it pushes, itself or through others.
+    if is_filtered(mutator, &StackFrame::Running(top)) || !sent_by_step(mutator, top) {
         return HeldStep::GoOn;
     }
     let code = mutator.heap.activation_code(top);
@@ -291,6 +415,69 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     );
     settle(mutator);
     HeldStep::GoOn
+}
+
+/// Whether the step's frame, or a block the step flooded for it, sent to
+/// `top`: its sender is one of them, or a frame the step filters filter
+/// whose sender is, and so on down -- the shipped `do:` the stepping
+/// frame sent, which runs a block of the program. A frame between the
+/// one the step was taken in and the stepping frame, and an unfiltered
+/// frame, end the walk: what they send is not the step's.
+fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return false;
+    };
+    let heap = &mutator.heap;
+    let between = |held: Holder| stepping.between.iter().any(|(other, _)| other.is(held));
+    let Some(mut sender) = sender_of(mutator, top) else {
+        return false;
+    };
+    loop {
+        sender = match sender {
+            Place::Running(activation) => {
+                let held = Holder::Running(activation);
+                if stepping.frame.is(held) || inline_code_of_step(mutator, activation) {
+                    return true;
+                }
+                if between(held) || !is_filtered(mutator, &StackFrame::Running(activation)) {
+                    return false;
+                }
+                match sender_of(mutator, activation) {
+                    Some(sender) => sender,
+                    None => return false,
+                }
+            }
+            Place::Suspended(frame) => {
+                if let Some(key) = suspended_key(mutator, frame) {
+                    let held = Holder::Suspended(key);
+                    if stepping.frame.is(held) {
+                        return true;
+                    }
+                    if between(held) {
+                        return false;
+                    }
+                }
+                let root = heap.stash(Value::object(heap.frame_object(frame)));
+                if !is_filtered(mutator, &StackFrame::Suspended(root)) {
+                    return false;
+                }
+                match heap.frame_sender(frame) {
+                    Some(sender) => Place::Suspended(sender),
+                    None => return false,
+                }
+            }
+        };
+    }
+}
+
+/// The frame `activation` returns to: its sender on the stack, or the
+/// one suspended into its frame object.
+fn sender_of<'gc>(mutator: &Mutator<'gc>, activation: ActivationReference) -> Option<Place<'gc>> {
+    let heap = &mutator.heap;
+    match heap.activation_suspended_sender(activation) {
+        Some(frame) => Some(Place::Suspended(frame)),
+        None => heap.activation_sender(activation).map(Place::Running),
+    }
 }
 
 /// Whether `activation` runs a block the step flooded for the stepping
@@ -489,21 +676,24 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
 /// recorded so far: in the frame `stepping_frame` finds, flooded unless
 /// the step goes out, its return point set, and the request held for a
 /// step into. The caller settles the table.
-fn start(
-    mutator: &mut Mutator<'_>,
+fn start<'gc>(
+    mutator: &mut Mutator<'gc>,
     action: StepAction,
-    top: ActivationReference,
+    top: Place<'gc>,
     returned: Option<Root>,
 ) {
     mutator.stepping = Some(Box::new(Stepping {
         action,
-        frame: Holder::Running(top),
+        // Named by `stepping_frame`, which may hold `top` as a suspended
+        // frame first.
+        frame: Holder::Left,
         between: Vec::new(),
         flooded: Vec::new(),
         return_point: None,
         returned,
         suspended: Vec::new(),
         next_key: 0,
+        started_filtered: false,
     }));
     let (frame, body) = stepping_frame(mutator, top);
     let between = frames_between(mutator, top, frame);
@@ -525,14 +715,16 @@ fn start(
 /// step steps in `top` itself. Below a suspended sender the walk goes on
 /// over the suspended frames, each held by the step as the stepping frame
 /// may be.
-fn frames_between(
-    mutator: &mut Mutator<'_>,
-    top: ActivationReference,
+fn frames_between<'gc>(
+    mutator: &mut Mutator<'gc>,
+    top: Place<'gc>,
     frame: Holder,
 ) -> Vec<(Holder, Option<usize>)> {
     let mut between = Vec::new();
-    let mut next = Some(top);
-    let mut suspended = None;
+    let (mut next, mut suspended) = match top {
+        Place::Running(top) => (Some(top), None),
+        Place::Suspended(top) => (None, Some(top)),
+    };
     while let Some(live) = next {
         if frame.is(Holder::Running(live)) {
             return between;
@@ -571,10 +763,28 @@ type FrameBody = (
 /// on as it would in the inline copy: over the block's end to its
 /// creator's next statement start, out of the creator. A creator that
 /// returned leaves the block a frame of its own.
-fn stepping_frame(mutator: &mut Mutator<'_>, top: ActivationReference) -> (Holder, FrameBody) {
-    let mut frame = Holder::Running(top);
-    let mut body = stack::running_body(mutator, top);
-    let mut captured = mutator.heap.activation_captured(top);
+fn stepping_frame<'gc>(mutator: &mut Mutator<'gc>, top: Place<'gc>) -> (Holder, FrameBody) {
+    let (mut frame, mut body, mut captured) = match top {
+        Place::Running(top) => {
+            let captured = mutator.heap.activation_captured(top);
+            (
+                Holder::Running(top),
+                stack::running_body(mutator, top),
+                captured,
+            )
+        }
+        Place::Suspended(top) => {
+            let heap = &mutator.heap;
+            let root = heap.stash(Value::object(heap.frame_object(top)));
+            let captured = heap.frame_captured(top);
+            let key = hold(mutator, top);
+            (
+                Holder::Suspended(key),
+                stack::suspended_body(mutator, &root),
+                captured,
+            )
+        }
+    };
     while let Some(creator_frame) = captured {
         let heap = &mutator.heap;
         let (creator, creator_body) = match heap.frame_activation(creator_frame) {

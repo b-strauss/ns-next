@@ -24,8 +24,8 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// safepoint drains the queue before the stop or the stop serves it. A
 /// command is served by the run it arrives during; one queued while no
 /// run executes, or still queued when a run ends, is dropped unanswered.
-/// A configuration command -- `SetBreakpoints` -- is served wherever
-/// commands are taken instead: at a safepoint while the program runs, at
+/// A configuration command -- `SetBreakpoints`, `SetStepFilters` -- is
+/// served wherever commands are taken instead: at a safepoint while the program runs, at
 /// a stop, and when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -73,6 +73,31 @@ pub enum Command {
     /// copy in its home and its fallback closure alike. Answered by
     /// `Event::Breakpoints`.
     SetBreakpoints { module: String, offsets: Vec<u32> },
+    /// Replaces the step filters: the frames no step stops in
+    /// (`docs/design/debugger.md`, decision 16). `shipped` filters every
+    /// body of the shipped modules, and `classes` the bodies of each class
+    /// declaration it names and of every declaration nested in one. A
+    /// step that would stop in a filtered frame goes on as a step into
+    /// until it stops in an unfiltered one; a breakpoint in filtered code
+    /// stops all the same, and a step begun in a filtered frame steps in
+    /// that frame. Until the first, the shipped modules are filtered and
+    /// no class is. Answered by `Event::StepFiltersSet`.
+    SetStepFilters {
+        shipped: bool,
+        classes: Vec<ClassName>,
+    },
+}
+
+/// A class declaration of a module, as a step filter names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassName {
+    /// The name of the module's root class, as `FrameLocation::module`
+    /// names it.
+    pub module: String,
+    /// The names of the declarations from the module's root down to the
+    /// class, the root's own excluded: empty for the root itself, `["A",
+    /// "B"]` for `B` nested in `A`.
+    pub path: Vec<String>,
 }
 
 impl Command {
@@ -88,6 +113,7 @@ impl Command {
             Command::Variables { .. } => "Variables",
             Command::Children { .. } => "Children",
             Command::SetBreakpoints { .. } => "SetBreakpoints",
+            Command::SetStepFilters { .. } => "SetStepFilters",
         }
     }
 }
@@ -120,6 +146,8 @@ pub enum Event {
         module: String,
         breakpoints: Vec<BreakpointState>,
     },
+    /// The answer to `Command::SetStepFilters`: the filters are in effect.
+    StepFiltersSet,
 }
 
 /// Why the program stopped.

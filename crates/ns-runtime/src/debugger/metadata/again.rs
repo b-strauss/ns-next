@@ -187,8 +187,20 @@ fn declaration_id(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<MixinId>
 /// a frame's location names its module; `None` for a mixin no heap
 /// registered.
 pub(crate) fn module_name(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<String> {
-    let (module_root, _) = mutator.path_from_module_root(declaration_id(mutator, running)?);
-    Some(mutator.heap.mixin(module_root)?.name.to_string())
+    let (root, _) = declaration_path(mutator, running)?;
+    Some(root.name.to_string())
+}
+
+/// The root class of the module `running` is declared in, and the names
+/// of the declarations from that root down to `running`'s, the root's
+/// own excluded -- empty for the root itself; a class side's is its
+/// instance side's. `None` for a mixin no heap registered.
+pub(crate) fn declaration_path(
+    mutator: &Mutator<'_>,
+    running: &Rc<Mixin>,
+) -> Option<(Rc<Mixin>, Vec<Symbol>)> {
+    let (module_root, path) = mutator.path_from_module_root(declaration_id(mutator, running)?);
+    Some((mutator.heap.mixin(module_root)?, path))
 }
 
 /// The shipped resolution of the shipped module whose root is named

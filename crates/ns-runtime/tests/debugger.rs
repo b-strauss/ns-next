@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
-use ns_runtime::debugger::{BreakpointId, BreakpointState};
+use ns_runtime::debugger::{BreakpointId, BreakpointState, ClassName};
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
@@ -3260,35 +3260,97 @@ fn top_name(remote: &DebugRemote) -> String {
     stack_trace(remote)[0].name.clone()
 }
 
+/// Waits for the answer to `SetStepFilters`.
+fn expect_step_filters_set(remote: &DebugRemote) {
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::StepFiltersSet) => {}
+        other => panic!("the answer to SetStepFilters was expected, not {other:?}"),
+    }
+}
+
+/// What `stepped_out_of_a_future` found: the name of each frame a stop
+/// stood in, the last stop's frame and statement, the value it reported,
+/// and the run's answer.
+struct SteppedOut {
+    names: Vec<String>,
+    stood: (String, String),
+    returned: Option<ValueDescription>,
+    answer: i64,
+}
+
+/// Steps out from the breakpoint at `line` in a future's block of
+/// `source`, module `module`, until `until` is on top, the shipped filter
+/// as `shipped` says.
+fn stepped_out_of_a_future(
+    source: &'static str,
+    module: &'static str,
+    line: &str,
+    until: &'static str,
+    lowering: Lowering,
+    shipped: bool,
+) -> SteppedOut {
+    let offset = line_start(source, line);
+    let ((names, stood, returned), answer) = stepped(
+        source,
+        lowering,
+        "run",
+        |remote| {
+            remote.send(Command::SetStepFilters {
+                shipped,
+                classes: Vec::new(),
+            });
+            set_breakpoints(remote, module, vec![offset]);
+        },
+        move |remote| {
+            expect_step_filters_set(remote);
+            expect_first_stop(remote, module);
+            let mut names = vec![top_name(remote)];
+            // Out of the future's block and the forcing's own frames
+            // until the frame that met the future is on top.
+            let mut returned = None;
+            while names.len() < 8 && names.last().is_none_or(|name| name != until) {
+                returned = step(remote, Command::StepOut);
+                names.push(top_name(remote));
+            }
+            let stood = standing(remote, source);
+            continue_stopped(remote);
+            (names, stood, returned)
+        },
+    );
+    SteppedOut {
+        names,
+        stood,
+        returned,
+        answer,
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A step out of a future's `resolve`, which returns to an instruction
     /// that could not take its value, goes on as a step into from the
     /// frame that met the future: the instruction runs again, its answer
-    /// recorded, and the step stops at the frame's next statement.
+    /// recorded, and the step stops at the frame's next statement. The
+    /// forcing's own frames are shipped, so the step out of the future's
+    /// block lands there at once.
     fn a_step_out_of_a_future_s_resolve_stops_in_its_caller(lowering) {
-        let offset = line_start(FORCING, "1 + 1.");
-        let ((names, stood, returned), answer) = stepped(
-            FORCING,
-            lowering,
-            "run",
-            |remote| set_breakpoints(remote, "Forcing", vec![offset]),
-            |remote| {
-                expect_first_stop(remote, "Forcing");
-                let mut names = vec![top_name(remote)];
-                // Out of the future's block and the forcing's own frames
-                // until the frame that met the future is on top.
-                let mut returned = None;
-                while names.len() < 8 && names.last().is_none_or(|name| name != "Probe>>add:") {
-                    returned = step(remote, Command::StepOut);
-                    names.push(top_name(remote));
-                }
-                let stood = standing(remote, FORCING);
-                continue_stopped(remote);
-                (names, stood, returned)
-            },
-        );
+        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, true);
+        assert_eq!(out.names, ["[] in Probe initializer", "Probe>>add:"]);
         assert_eq!(
-            names,
+            out.stood,
+            (String::from("Probe>>add:"), String::from("^sum * 10"))
+        );
+        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.answer, 30);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, the same step out stops in each of
+    /// the forcing's frames on its way to the frame that met the future.
+    fn with_the_shipped_filter_off_a_step_out_of_a_future_s_resolve_stops_in_its_frames(lowering) {
+        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, false);
+        assert_eq!(
+            out.names,
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
@@ -3298,11 +3360,11 @@ ns_runtime::for_each_lowering! {
             ]
         );
         assert_eq!(
-            stood,
+            out.stood,
             (String::from("Probe>>add:"), String::from("^sum * 10"))
         );
-        assert_eq!(returned.expect("the + run again").label, "3");
-        assert_eq!(answer, 30);
+        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.answer, 30);
     }
 }
 
@@ -3387,29 +3449,66 @@ const REFUSED: &str = indoc! {"
     ) : ()
 "};
 
+/// Where two steps out from the breakpoint in `REFUSED`'s `notAClass`
+/// stopped, the shipped filter as `shipped` says: the frame the first
+/// stopped in, the frame and statement the second stopped at, and the
+/// run's answer.
+fn stepped_out_of_a_refused_clause(
+    lowering: Lowering,
+    shipped: bool,
+) -> (String, (String, String), i64) {
+    let offset = line_start(REFUSED, "^3");
+    let ((clause, stood), answer) = stepped(
+        REFUSED,
+        lowering,
+        "run",
+        |remote| {
+            remote.send(Command::SetStepFilters {
+                shipped,
+                classes: Vec::new(),
+            });
+            set_breakpoints(remote, "Refused", vec![offset]);
+        },
+        |remote| {
+            expect_step_filters_set(remote);
+            expect_first_stop(remote, "Refused");
+            step(remote, Command::StepOut);
+            let clause = top_name(remote);
+            step(remote, Command::StepOut);
+            let stood = standing(remote, REFUSED);
+            continue_stopped(remote);
+            (clause, stood)
+        },
+    );
+    (clause, stood, answer)
+}
+
 ns_runtime::for_each_lowering! {
     /// A step out of a superclass clause whose answer is refused as no
     /// class goes on where the error's handling takes the program, not
     /// into the `signal` the refusal raises: past the handler, whose
-    /// answer the `on:do:` hands to its sender, at that send's return
-    /// point.
+    /// answer the shipped `on:do:` hands to `make`, which has no
+    /// statement left and returns, to its caller's return point.
     fn a_step_out_of_a_superclass_clause_whose_class_is_refused_does_not_stop_in_its_signal(lowering) {
-        let offset = line_start(REFUSED, "^3");
-        let ((clause, stood), answer) = stepped(
-            REFUSED,
-            lowering,
-            "run",
-            |remote| set_breakpoints(remote, "Refused", vec![offset]),
-            |remote| {
-                expect_first_stop(remote, "Refused");
-                step(remote, Command::StepOut);
-                let clause = top_name(remote);
-                step(remote, Command::StepOut);
-                let stood = standing(remote, REFUSED);
-                continue_stopped(remote);
-                (clause, stood)
-            },
+        let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, true);
+        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(
+            stood,
+            (
+                String::from("Refused>>run"),
+                String::from("made:: Outer new make")
+            )
         );
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, the same step goes on from the
+    /// `on:do:` the unwind lands in, and stops at its return point in
+    /// `make`.
+    fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_at_the_on_do_s_return_point(lowering) {
+        let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, false);
         assert_eq!(clause, "Inner superclass clause");
         assert_eq!(
             stood,
@@ -3526,26 +3625,26 @@ ns_runtime::for_each_lowering! {
     /// initialized with the future -- stops in the frame that met it, at
     /// its next statement, once the instruction ran again.
     fn a_step_out_of_a_future_s_resolve_into_a_slot_initializer_stops_at_the_next_statement(lowering) {
-        let offset = line_start(PAIRED, "3.");
-        let ((names, stood), answer) = stepped(
-            PAIRED,
-            lowering,
-            "run",
-            |remote| set_breakpoints(remote, "Paired", vec![offset]),
-            |remote| {
-                expect_first_stop(remote, "Paired");
-                let mut names = vec![top_name(remote)];
-                while names.len() < 8 && names.last().is_none_or(|name| name != "Pair initializer") {
-                    step(remote, Command::StepOut);
-                    names.push(top_name(remote));
-                }
-                let stood = standing(remote, PAIRED);
-                continue_stopped(remote);
-                (names, stood)
-            },
-        );
+        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, true);
+        assert_eq!(out.names, ["[] in Probe initializer", "Pair initializer"]);
         assert_eq!(
-            names,
+            out.stood,
+            (
+                String::from("Pair initializer"),
+                String::from("public second = secondValue.")
+            )
+        );
+        assert_eq!(out.answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, the same step out stops in each of
+    /// the forcing's frames first.
+    fn with_the_shipped_filter_off_a_step_out_into_a_slot_initializer_stops_in_the_forcing_s_frames(lowering) {
+        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, false);
+        assert_eq!(
+            out.names,
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
@@ -3555,13 +3654,13 @@ ns_runtime::for_each_lowering! {
             ]
         );
         assert_eq!(
-            stood,
+            out.stood,
             (
                 String::from("Pair initializer"),
                 String::from("public second = secondValue.")
             )
         );
-        assert_eq!(answer, 3);
+        assert_eq!(out.answer, 3);
     }
 }
 
@@ -3597,5 +3696,340 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(again, 0);
         assert_eq!(answer, 3);
+    }
+}
+
+/// A method whose `do:` over an array sends a method of the program from
+/// its block, and a statement after the `do:`.
+const COLLECTING: &str = indoc! {"
+    class Collecting = Object new (
+      | total ::= 0. |
+    ) (
+      public run = (
+        {1. 2. 3} do: [:each |
+          self note: each].
+        ^total
+      )
+      note: value = (
+        total:: total + value
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step into a `do:` over an array lands in the block it runs, not
+    /// in the shipped `Array>>do:`, which the step goes through.
+    fn a_step_into_a_collection_s_do_lands_in_the_block(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let ((stood, each), answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                step(remote, Command::StepInto);
+                let stood = standing(remote, COLLECTING);
+                let each = top_variable(remote, "each");
+                continue_stopped(remote);
+                (stood, each)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("[] in Collecting>>run"),
+                String::from("self note: each")
+            )
+        );
+        assert_eq!(each, "1");
+        assert_eq!(answer, 18);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of a block a `do:` runs lands in
+    /// the block's next activation, not at its return point inside the
+    /// shipped `Array>>do:`.
+    fn a_step_over_at_the_block_s_last_statement_lands_in_its_next_activation(lowering) {
+        let offset = line_start(COLLECTING, "self note: each].");
+        let ((stood, each), answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                // Only the step stops from here.
+                set_breakpoints(remote, "Collecting", Vec::new());
+                expect_breakpoints(remote, "Collecting");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, COLLECTING);
+                let each = top_variable(remote, "each");
+                continue_stopped(remote);
+                (stood, each)
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("[] in Collecting>>run"),
+                String::from("self note: each")
+            )
+        );
+        assert_eq!(each, "2");
+        assert_eq!(answer, 18);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of the block's last activation
+    /// lands in the method that sent `do:`, at the statement after it.
+    fn a_step_over_after_the_last_element_lands_in_the_caller(lowering) {
+        let offset = line_start(COLLECTING, "self note: each].");
+        let (stood, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Collecting"));
+                for _ in 0..2 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                assert_eq!(top_variable(remote, "each"), "3");
+                set_breakpoints(remote, "Collecting", Vec::new());
+                expect_breakpoints(remote, "Collecting");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, COLLECTING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("Collecting>>run"), String::from("^total"))
+        );
+        assert_eq!(answer, 18);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, a step into the `do:` stops in the
+    /// shipped code it runs.
+    fn with_the_shipped_filter_off_a_step_into_lands_in_do(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let (module, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+                set_breakpoints(remote, "Collecting", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "Collecting");
+                step(remote, Command::StepInto);
+                let top = stack_trace(remote).remove(0);
+                continue_stopped(remote);
+                top.location.map(|location| location.module)
+            },
+        );
+        assert_eq!(module.as_deref(), Some("Kernel"));
+        assert_eq!(answer, 18);
+    }
+}
+
+/// A method that hands a block of its own to a nested class of the
+/// program, which runs it.
+const HELPING: &str = indoc! {"
+    class Helping = Object new (
+      | total ::= 0. |
+    ) (
+      public run = (
+        Helper new run: [
+          self note: 4].
+        ^total
+      )
+      note: value = (
+        total:: total + value
+      )
+      class Helper = Object new () (
+        public run: action = (
+          ^action value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A program class the filter names is stepped through as shipped
+    /// code is: a step into the send to `Helper` lands in the caller's
+    /// block that `Helper` runs.
+    fn a_filtered_program_class_is_stepped_over(lowering) {
+        let offset = line_start(HELPING, "Helper new run: [");
+        let (stood, answer) = stepped(
+            HELPING,
+            lowering,
+            "run",
+            |remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: String::from("Helping"),
+                        path: vec![String::from("Helper")],
+                    }],
+                });
+                set_breakpoints(remote, "Helping", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "Helping");
+                step(remote, Command::StepInto);
+                let stood = standing(remote, HELPING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("[] in Helping>>run"), String::from("self note: 4"))
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Without the filter naming it, the same step into stops in
+    /// `Helper`'s code.
+    fn an_unfiltered_program_class_is_stepped_into(lowering) {
+        let offset = line_start(HELPING, "Helper new run: [");
+        let (names, answer) = stepped(
+            HELPING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Helping", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Helping");
+                step(remote, Command::StepInto);
+                let names: Vec<String> = stack_trace(remote)
+                    .into_iter()
+                    .map(|frame| frame.name)
+                    .collect();
+                continue_stopped(remote);
+                names
+            },
+        );
+        assert!(
+            names[0].starts_with("Helper"),
+            "the step stops in Helper's code, not in {names:?}"
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint the user set in filtered code stops, and a step
+    /// begun there steps in it as in any other frame.
+    fn a_breakpoint_in_filtered_code_still_stops_and_steps_there(lowering) {
+        let offset = line_start(
+            KERNEL,
+            "        action value: (self at: index).\n        index:: index + 1.",
+        );
+        let ((first, stood), answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Kernel");
+                let first = standing(remote, KERNEL);
+                set_breakpoints(remote, "Kernel", Vec::new());
+                expect_breakpoints(remote, "Kernel");
+                step(remote, Command::StepOver);
+                let stood = standing(remote, KERNEL);
+                continue_stopped(remote);
+                (first, stood)
+            },
+        );
+        // The reference lowering runs the loop's body as a block.
+        let frame = match lowering {
+            Lowering::Optimized => "Array>>do:",
+            Lowering::Reference => "[] in Array>>do:",
+        };
+        assert_eq!(
+            first,
+            (
+                String::from(frame),
+                String::from("action value: (self at: index)")
+            )
+        );
+        assert_eq!(
+            stood,
+            (String::from(frame), String::from("index:: index + 1"))
+        );
+        assert_eq!(answer, 18);
+    }
+}
+
+/// A method whose first statement sends `ifTrue:` with a literal block,
+/// which the optimized lowering inlines and the reference lowering sends
+/// to the shipped `True>>ifTrue:` and `False>>ifTrue:`.
+const BRANCHING: &str = indoc! {"
+    class Branching = Object new () (
+      public run = (
+        ^(self check: 1) + (self check: 5)
+      )
+      check: number = (
+        number <= 1 ifTrue: [
+          ^1].
+        ^number * 2
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a send of `ifTrue:` with a literal block makes the
+    /// same stops under both lowerings: in the block for a true
+    /// condition, at the next statement for a false one, never in the
+    /// shipped `ifTrue:` the reference lowering sends.
+    fn a_step_into_an_inlinable_send_stops_alike_under_both_lowerings(lowering) {
+        let offset = line_start(BRANCHING, "number <= 1 ifTrue: [");
+        let (stops, answer) = stepped(
+            BRANCHING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Branching", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Branching"));
+                let mut stops = Vec::new();
+                for _ in 0..2 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    step(remote, Command::StepInto);
+                    let top = stack_trace(remote).remove(0);
+                    let location = top.location.expect("the stop is located");
+                    stops.push((
+                        location.module,
+                        location.statement.text(BRANCHING).to_owned(),
+                    ));
+                    continue_stopped(remote);
+                }
+                stops
+            },
+        );
+        assert_eq!(
+            stops,
+            [
+                (String::from("Branching"), String::from("^1")),
+                (String::from("Branching"), String::from("^number * 2")),
+            ]
+        );
+        assert_eq!(answer, 11);
     }
 }

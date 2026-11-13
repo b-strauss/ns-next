@@ -35,8 +35,12 @@
 > call ("Step over in recursion and blocks", "Step into's held request",
 > "The return value of the last call"); a step whose frame an unwind pops,
 > or whose frame returns otherwise than to its caller's send, goes on as a
-> step into from the frame the program goes on in (decision 17).
-> Everything else is planned: the rest of stage 3 -- the step filter, run
+> step into from the frame the program goes on in (decision 17); and no
+> step lands in a frame the step filters filter, by default the shipped
+> modules' -- a stop it would make there goes on as a step into from the
+> first unfiltered frame below, and a step into's request outlasts the
+> pushes of filtered bodies (decision 16).
+> Everything else is planned: the rest of stage 3 -- run
 > to cursor, method and exception breakpoints -- the DAP
 > agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
@@ -130,10 +134,10 @@ what Newspeak's liveness requires beyond it.
 - step over, step into, step out, smart step into (choose which send on the
   line to step into), run to cursor, and the time a step took, shown
   inline;
-- step filters: by default, step into does not stop in the shipped
-  modules' code, so stepping into `coll do: [:each | …]` lands in the
-  block, not in `Array>>do:`, and the program's own classes can be added
-  to the filter (decision 16).
+- step filters: by default, no step stops in the shipped modules' code,
+  so stepping into `coll do: [:each | …]` lands in the block, not in
+  `Array>>do:`, and the program's own classes can be added to the filter
+  (decision 16).
 
 **Inspecting**
 
@@ -310,8 +314,8 @@ The remote has three operations:
   the next safepoint serves it while the program runs, or the stop serves
   it while the program is stopped. A command queued while no run
   executes, or still queued when a run ends, is dropped unanswered, but
-  a configuration command -- `SetBreakpoints` -- which the start or the
-  end of a run serves ("Commands while the program runs"). A remote
+  a configuration command -- `SetBreakpoints`, `SetStepFilters` -- which
+  the start or the end of a run serves ("Commands while the program runs"). A remote
   whose VM is gone queues it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
@@ -360,6 +364,16 @@ The commands (`debugger::Command`):
   answered by `Event::Breakpoints`. A configuration command: served
   wherever commands are taken, at a stop, at a safepoint while the
   program runs, and at the start and the end of a run.
+- `SetStepFilters { shipped, classes }` -- replaces the step filters
+  (decision 16): `shipped` filters the shipped modules' bodies, and each
+  `ClassName { module, path }` of `classes` the bodies of the class
+  declaration it names and of every declaration nested in it, `module`
+  the module's root class's name and `path` the names of the
+  declarations from that root down, the root's own excluded, so that
+  an empty path names the whole module. Until the first, the shipped
+  modules are filtered and no class is, and every attachment begins
+  with that default. Answered by `Event::StepFiltersSet`; a
+  configuration command, served as `SetBreakpoints` is.
 
 The events (`debugger::Event`): `Stopped { reason, returned }`, the
 program stopped and serves commands until a `Continue` or a `Terminate`
@@ -375,7 +389,8 @@ the command `Command::name` names not served; `Continued`; and
 the order of their offsets, each a `BreakpointState` -- its
 `BreakpointId`, its offset and the span of the statement it stops at, or
 `None` while it is pending -- the answer to `SetBreakpoints`, and sent
-unasked when a pending one resolves or an install moves one.
+unasked when a pending one resolves or an install moves one; and
+`StepFiltersSet`, the answer to `SetStepFilters`.
 `Continue`, the three steps, `StackTrace`, `Variables` and `Children` are
 served only at a stop; one that arrives while the program runs is refused
 with "the program is running", and one queued between runs is dropped. Every command a stop or a safepoint serves but
@@ -517,7 +532,7 @@ lock, then every queued command is taken without waiting (`try_recv`). A
 `Terminate` ends the run, and the commands queued after it are dropped
 but for a configuration command; a `SetBreakpoints` is served -- the
 breakpoints patched or restored, answered by `Event::Breakpoints` -- and
-the program runs on; any other command is refused, "the program is
+so is a `SetStepFilters`, and the program runs on; any other command is refused, "the program is
 running". The agent queues
 a command before it sets the bit, and the VM clears the bit before it
 drains the queue, so that a
@@ -584,7 +599,8 @@ handle is live, and nothing pushes or pops until the program goes on. The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
-stack at a stop", "Values the IDE holds") and `SetBreakpoints` until a
+stack at a stop", "Values the IDE holds"), `SetBreakpoints` and
+`SetStepFilters` until a
 `Continue`, a step or a `Terminate`; a step begins there
 (`stepping::begin`), is answered by `Continued` and goes on as a
 `Continue` does. A command the stop serves was queued with its
@@ -625,8 +641,8 @@ talks to the remote -- a command channel found disconnected while draining
 or while stopped, or an event that cannot be sent -- and
 `detach_debugger` makes no attachment current and clears both debugger
 bits under one hold of the arming lock, removes every breakpoint, each
-slot given its original back, and ends a step in progress, then drops
-the debugger. A stopped
+slot given its original back, ends a step in progress and puts the step
+filters back to their default, then drops the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
 again (`a_dropped_remote_lets_the_program_finish`,
 `a_remote_dropped_while_stopped_lets_the_program_finish`).
@@ -1095,14 +1111,27 @@ stage's tests, do not.
   frame that leaves otherwise (decision 17): a step out of an `ensure:`
   block a non-local return's unwind runs, and a step over a non-local
   return out of a block a `do:` runs, each stopping at the home's
-  caller's return point with the home's answer; steps out of a future's
-  computation, through the forcing's frames, and out of its `resolve`,
-  stopping in the frame that met the future at its next statement once
-  the instruction ran again -- a send, whose answer is reported, and a
-  value's slot initializer, which no return point follows; a step out
-  of a superclass clause stopping at the accessor's return point; and a
-  step out of a clause whose answer is refused as no class stopping past
-  the handler, not in the `signal`. Beside them, a breakpoint at an
+  caller's return point with the home's answer; a step out of a
+  future's computation stopping in the frame that met the future at its
+  next statement once the instruction ran again, past the forcing's
+  shipped frames -- a send, whose answer is reported, and a value's slot
+  initializer, which no return point follows -- and with the shipped
+  filter off stopping in each of the forcing's frames on the way; a
+  step out of a superclass clause stopping at the accessor's return
+  point; and a step out of a clause whose answer is refused as no class
+  stopping past the handler, not in the `signal`: past the shipped
+  `on:do:` too, at the caller's return point of the method that sent
+  it, and with the shipped filter off at the `on:do:`'s return point.
+  Of the step filters (decision 16): a step into a `do:` over an array
+  landing in its block; a step over at the block's last statement
+  landing in its next activation, and after the last element at the
+  statement after the `do:`; with the shipped filter off, a step into
+  the `do:` stopping in `Kernel`; a filtered program class stepped
+  through to the caller's block it runs, and the same class unfiltered
+  stepped into; a breakpoint in `Array>>do:` stopping, and a step over
+  begun there stopping at its next statement; and a step into a send of
+  `ifTrue:` with a literal block making the same stops under both
+  lowerings. Beside them, a breakpoint at an
   instruction that meets an unresolved future stopping once, its slot
   initialized once: only the optimized lowering puts the instruction
   that meets it first in its statement, since the reference lowering
@@ -1278,7 +1307,7 @@ is in included.
 into's held request", "The return value of the last call"), the frame
 left by a return to its caller's return point, and the reports of a
 frame left otherwise, by an unwind or a continuation other than
-`Deliver` (decision 17); the step filter (decision 16), the handler
+`Deliver` (decision 17), and the step filters (decision 16); the handler
 search's report (decision 17, "Exceptions"), smart step into and run to
 cursor are planned.
 
@@ -1637,6 +1666,29 @@ selector's is rejected, since smart step into marks the selector.
 
 ### 16. Shipped code is filtered from steps, and program classes can be
 
+**Built** (`debugger/stepping.rs`: `is_filtered`, `went_on_past_filtered`,
+`continue_as_step_into`, `held_step`; `Command::SetStepFilters`). A
+frame is filtered when its body is a member of a declaration, or a block
+of one, whose module's root is shipped while the shipped filter is on,
+or whose path from its module's root begins with that of a `ClassName`
+the client sent (`again::declaration_path`); the declaration is the one
+the frame's metadata is looked up by (`stack::origin`), a class side's
+its instance side's, and a frame of no declaration, the top level, is
+never filtered. A stop the step's own one-shot makes, where no line
+breakpoint stands, is decided at the safepoint (`serve_debugger`): in a
+filtered frame the step was not begun in, nor in a block lowered inline
+in that one, it is not made, and the step goes on as a step into from
+the first unfiltered frame below (`went_on_past_filtered`), the frame
+past its slot once; every other way a step goes on as a step into -- a
+frame an unwind or a continuation other than `Deliver` left (decision
+17) -- likewise starts from the first unfiltered frame at or below the
+one the program goes on in, through suspended senders. A step into's
+held request counts as its push an unfiltered frame whose sender is the
+stepping frame, a block the step flooded for it, or a filtered frame
+whose sender is one in turn, and so on down; a filtered frame on top
+keeps the request. The filters live in the breakpoint table and go back
+to their default with its other contents at an attachment and a detach.
+
 A step never lands in a filtered frame: by default the shipped modules'
 bodies -- a body is shipped when its module's root is, as for its
 metadata ("Compiling the metadata again") -- and, beside them, the
@@ -1684,14 +1736,14 @@ nothing.
 ### 17. A step out stops at the next place the program reaches
 
 **Partial:** built for every way a frame leaves but the handler search's
-report and the filter: the unwinder's pops and the arms of
+report: the unwinder's pops and the arms of
 `Continuation::Unwind`, `NestedClass` (a step pushed in the clause's
 place, or an error), `VmErrorSignalled`, `Reexecute` and
 `ReturnToSuspended` report to the stepping state
 (`Mutator::pop_for_unwind`, `interpreter::breakpoint::frame_left`,
-`stepping::frame_left`); the handler search's report ("Exceptions") and
-decision 16's filter are planned, so that a step goes on into shipped
-frames -- `ensure:`'s, `resolve`'s -- as into any other.
+`stepping::frame_left`), and the step goes on past the shipped frames
+-- `ensure:`'s, `on:do:`'s, `resolve`'s -- by decision 16's filter; the
+handler search's report ("Exceptions") is planned.
 
 A step out, and a step over at a body's last statement, stops at the
 stepping frame's return point when its caller goes on there --

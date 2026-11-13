@@ -17,7 +17,7 @@ use ns_syntax::Span;
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{BreakpointId, BreakpointState, Event};
-use super::stepping::Holder;
+use super::stepping::{Holder, StepFilters};
 use super::Attachments;
 use crate::bytecode::CompiledCode;
 use crate::heap::{ActivationReference, CodeId};
@@ -61,6 +61,9 @@ pub(crate) struct Breakpoints {
     /// drops its request bit (`debugger::stepping`), as the agent arms
     /// the poll under it; `None` while none is attached.
     arming: Option<Arc<Mutex<Attachments>>>,
+    /// The frames no step stops in (`stepping::is_filtered`), which the
+    /// attached debugger set; the default until it sets them.
+    step_filters: StepFilters,
 }
 
 /// The line breakpoints of one module.
@@ -167,6 +170,16 @@ impl Breakpoints {
     /// The attached debugger's arming lock, if one is attached.
     pub(crate) fn arming(&self) -> Option<Arc<Mutex<Attachments>>> {
         self.arming.clone()
+    }
+
+    /// Replaces the step filters.
+    pub(crate) fn set_step_filters(&mut self, filters: StepFilters) {
+        self.step_filters = filters;
+    }
+
+    /// The step filters in effect.
+    pub(crate) fn step_filters(&self) -> &StepFilters {
+        &self.step_filters
     }
 
     /// The stop the last `Breakpoint` arm decided, taken.
@@ -486,8 +499,9 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
     }
 }
 
-/// Removes every breakpoint, each slot given its original back, and ends
-/// any step: the debugger that set them is gone or replaced.
+/// Removes every breakpoint, each slot given its original back, ends any
+/// step and puts the step filters back to their default: the debugger
+/// that set them is gone or replaced.
 pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     super::stepping::end(mutator);
     let table = &mut mutator.breakpoints;
@@ -498,6 +512,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.modules.clear();
     table.past_once = None;
     table.pending_stop = None;
+    table.step_filters = StepFilters::default();
     settle(mutator);
 }
 

@@ -46,8 +46,8 @@ pub use compiler::Lowering;
 // The debugger's `FrameKind` stays in `debugger`: the crate root's is the
 // activation kind of `types`.
 pub use debugger::{
-    BreakpointId, BreakpointState, Command, DebugRemote, Event, FrameDescription, FrameLocation,
-    SendLocation, StopReason, ValueDescription, ValueId, Variable,
+    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
+    FrameLocation, SendLocation, StopReason, ValueDescription, ValueId, Variable,
 };
 
 /// Test helper: turns one test body into a module holding an `optimized` and

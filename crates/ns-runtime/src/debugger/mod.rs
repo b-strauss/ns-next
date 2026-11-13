@@ -22,8 +22,8 @@ pub(crate) mod stepping;
 mod values;
 
 pub use remote::{
-    BreakpointId, BreakpointState, Command, DebugRemote, Event, FrameDescription, FrameKind,
-    FrameLocation, SendLocation, StopReason, ValueDescription, ValueId, Variable,
+    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
+    FrameKind, FrameLocation, SendLocation, StopReason, ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -33,7 +33,7 @@ use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STE
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
 use crate::{Root, Symbol, Value};
-use stepping::{HeldStep, StepAction};
+use stepping::{HeldStep, StepAction, StepFilters};
 use values::StopValues;
 
 /// The message of the error a run the debugger terminated ends with.
@@ -168,7 +168,10 @@ impl StressReader {
             Event::Refused { command, reason } => {
                 panic!("internal: the pause stress mode's {command} was refused: {reason}")
             }
-            Event::Stopped { .. } | Event::Continued | Event::Breakpoints { .. } => {}
+            Event::Stopped { .. }
+            | Event::Continued
+            | Event::Breakpoints { .. }
+            | Event::StepFiltersSet => {}
         }
     }
 }
@@ -252,7 +255,18 @@ impl Interpreter {
             return self.terminate();
         }
         if let Some(breakpoint) = breakpoint {
-            if self.debugger.is_some() {
+            // A stop only a step's one-shot made, in a frame the step
+            // filters filter, is not made: the step goes on from the first
+            // unfiltered frame below, and the frame fetches the slot it
+            // stands at again, past it once.
+            let filtered = self.debugger.is_some()
+                && breakpoint.ids.is_empty()
+                && self.enter(|mutator| {
+                    stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
+                });
+            if filtered {
+                self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
+            } else if self.debugger.is_some() {
                 // The stop serves a pause asked meanwhile too, and ends a
                 // step, whatever made it.
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
@@ -350,7 +364,7 @@ impl Interpreter {
                     self.serve_between_runs();
                     return Served::Terminate;
                 }
-                command @ Command::SetBreakpoints { .. } => {
+                command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. }) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
@@ -374,6 +388,14 @@ impl Interpreter {
                 let event = self
                     .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, offsets));
                 self.answer(source, event);
+            }
+            Command::SetStepFilters { shipped, classes } => {
+                self.enter(|mutator| {
+                    mutator
+                        .breakpoints
+                        .set_step_filters(StepFilters { shipped, classes });
+                });
+                self.answer(source, Event::StepFiltersSet);
             }
             Command::Continue
             | Command::StepOver
@@ -476,7 +498,9 @@ impl Interpreter {
                     Some(children) => self.answer(&mut source, Event::Variables(children)),
                     None => self.refuse(&mut source, &command, NO_SUCH_VALUE),
                 },
-                command @ Command::SetBreakpoints { .. } => self.configure(&mut source, command),
+                command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. }) => {
+                    self.configure(&mut source, command);
+                }
             }
         };
         // The next stop's ids begin past this one's, so that none of
@@ -555,7 +579,7 @@ impl Interpreter {
                 return;
             };
             match debugger.commands.try_recv() {
-                Ok(command @ Command::SetBreakpoints { .. }) => {
+                Ok(command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. })) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 Ok(

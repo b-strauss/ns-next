@@ -208,6 +208,14 @@ fn body_of<'gc>(
     (code, origin, metadata)
 }
 
+/// Which declaration's member `frame` runs (`origin_of`), read without
+/// its metadata: what a step filter decides by (`stepping::is_filtered`).
+pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> {
+    let frame = frame.read(heap);
+    let code = frame.code(heap);
+    origin_of(heap, frame, &code)
+}
+
 /// The descriptions of the run's `frames`, innermost first.
 pub(crate) fn stack_trace(
     mutator: &mut Mutator<'_>,
