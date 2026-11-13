@@ -2572,6 +2572,37 @@ method foo: (args 1, registers 4)
         );
     }
 
+    /// Every slot patched, in an order other than the slots', answers its
+    /// own original, and every one restored in yet another gives the body
+    /// back: the originals stay sorted by slot through both.
+    #[test]
+    fn every_slot_patched_in_any_order_keeps_its_original() {
+        let (code, _) = method_with_a_send();
+        let count = code.instruction_count();
+        let slots: Vec<CompactInstruction> = (0..count).map(|index| code.slot(index)).collect();
+        let interleaved = |index: usize| (index * 7 + 3) % count;
+        let order: Vec<usize> = if count % 7 == 0 {
+            (0..count).rev().collect()
+        } else {
+            (0..count).map(interleaved).collect()
+        };
+        for &index in &order {
+            code.patch(index);
+        }
+        for (index, slot) in slots.iter().enumerate() {
+            assert!(code.is_patched(index));
+            assert_eq!(code.original(index), *slot);
+        }
+        let odd = order.iter().skip(1).step_by(2);
+        for &index in odd.chain(order.iter().step_by(2).rev()) {
+            code.restore(index);
+        }
+        for (index, slot) in slots.iter().enumerate() {
+            assert_eq!(code.slot(index), *slot);
+        }
+        assert!(!code.has_patches());
+    }
+
     #[test]
     fn a_patched_body_compiles_alike_its_unpatched_twin() {
         let (code, send) = method_with_a_send();

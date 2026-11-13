@@ -521,11 +521,12 @@ pub struct EncodedBody {
     /// breakpoint can replace one in a body every frame, mixin and closure
     /// shares (`patch`); written nowhere else once the body is finished.
     slots: Box<[Cell<CompactInstruction>]>,
-    /// The instruction each patched slot held, by slot index, in the order
-    /// the slots were patched. A boxed slice, not a `Vec` or a map: a body
-    /// never patched -- nearly every one -- pays three words and no
-    /// allocation for it, and a body holds a handful of breakpoints at
-    /// most, which a patch or a restore rebuilds the slice for.
+    /// The instruction each patched slot held, sorted by slot index, so
+    /// that a lookup is a binary search however many slots a step's flood
+    /// or the breakpoint stress mode patched. A boxed slice, not a `Vec`
+    /// or a map: a body never patched -- nearly every one -- pays three
+    /// words and no allocation for it; a patch or a restore rebuilds the
+    /// slice, which only a debugger does.
     originals: RefCell<Box<[(usize, CompactInstruction)]>>,
     constants: Box<[Immediate]>,
     literals: Box<[Literal]>,
@@ -1587,11 +1588,11 @@ impl EncodedBody {
     #[cold]
     #[inline(never)]
     fn patched_original(&self, index: usize) -> CompactInstruction {
-        self.originals
-            .borrow()
-            .iter()
-            .find_map(|(patched, original)| (*patched == index).then_some(*original))
-            .expect("internal: a patched slot keeps its original")
+        let originals = self.originals.borrow();
+        let position = originals
+            .binary_search_by_key(&index, |(patched, _)| *patched)
+            .expect("internal: a patched slot keeps its original");
+        originals[position].1
     }
 
     /// Replaces slot `index` by `Breakpoint`, keeping the instruction it
@@ -1604,7 +1605,8 @@ impl EncodedBody {
         }
         let mut originals = self.originals.borrow_mut();
         let mut patched = std::mem::take(&mut *originals).into_vec();
-        patched.push((index, original));
+        let position = patched.partition_point(|(patched, _)| *patched < index);
+        patched.insert(position, (index, original));
         *originals = patched.into_boxed_slice();
         slot.set(CompactInstruction::Breakpoint);
     }
