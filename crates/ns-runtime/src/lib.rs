@@ -46,7 +46,8 @@ pub use compiler::Lowering;
 // The debugger's `FrameKind` stays in `debugger`: the crate root's is the
 // activation kind of `types`.
 pub use debugger::{
-    Command, DebugRemote, Event, FrameDescription, FrameLocation, SendLocation, StopReason,
+    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
+    FrameLocation, MethodBreakpoint, MethodBreakpointState, SendLocation, StopReason,
     ValueDescription, ValueId, Variable,
 };
 

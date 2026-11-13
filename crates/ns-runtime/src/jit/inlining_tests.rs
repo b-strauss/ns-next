@@ -373,6 +373,15 @@ fn run_recording_after(
     // would vacate it at the runs' safepoints.
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     let class = interpreter.load_module(&resolved);
@@ -557,6 +566,10 @@ fn the_exit_writes_the_current_class_of_a_scope_without_a_frame_node() {
     let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     let class = interpreter.load_module(&resolved);
@@ -931,6 +944,10 @@ fn a_push_enters_no_copy_whose_inlined_scopes_pass_the_stack_s_end() {
     let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     let class = interpreter.load_module(&resolved);
@@ -1040,6 +1057,15 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
     let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     interpreter.set_optimize_stress(true);
@@ -1217,6 +1243,10 @@ fn a_setter_arm_stores_through_the_barrier() {
     // stress mode would vacate it at the run's safepoints.
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     interpreter.set_optimize_stress(true);
@@ -1608,6 +1638,10 @@ fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
     let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // A body the breakpoint stress mode patched is neither optimized
+    // nor inlined, and its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     let class = interpreter.load_module(&resolved);
@@ -1827,6 +1861,10 @@ mod polls {
         // would vacate it at the runs' safepoints.
         #[cfg(debug_assertions)]
         interpreter.set_stress_caches(false);
+        // A body the breakpoint stress mode patched is neither optimized
+        // nor inlined, and its baseline code exits at every statement.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
         interpreter.set_jit_enabled(true);
         interpreter.set_jit_stress(true);
         interpreter.set_optimize_stress(true);

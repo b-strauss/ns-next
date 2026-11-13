@@ -653,7 +653,7 @@ mod tests {
 
     /// A builtin's method is an entry of its own method table:
     /// `Integer`'s `+` is a kernel primitive method (`Kernel.ns`), found as
-    /// a `Lookup::Method` whose `MixinMethod.fast_path` names the mirror
+    /// a `Lookup::Method` whose `MixinMethod.fast_path()` names the mirror
     /// row.
     #[test]
     fn a_builtins_own_primitive_is_found_at_its_own_level() {
@@ -663,7 +663,7 @@ mod tests {
             match lookup_public(&mutator.heap, integer, Symbol::intern("+")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.fast_path,
+                        method.fast_path(),
                         mirror_primitive_named("integer:add:ifFail:").map(MethodFastPath::Mirror)
                     );
                     assert!(level.same(integer), "found above Integer's own level")
@@ -676,7 +676,7 @@ mod tests {
     /// `Closure` has no `==`; the ordinary walk reaches `Object`'s, since
     /// `Closure`'s superclass is `Object` -- no hand-restored inheritance.
     /// `Object`'s `==` is a kernel primitive method (`Kernel.ns`), found as a
-    /// `Lookup::Method` whose `MixinMethod.fast_path` names the mirror row.
+    /// `Lookup::Method` whose `MixinMethod.fast_path()` names the mirror row.
     #[test]
     fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -686,7 +686,7 @@ mod tests {
             match lookup_public(&mutator.heap, block, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.fast_path,
+                        method.fast_path(),
                         mirror_primitive_named("object:identicalTo:ifFail:")
                             .map(MethodFastPath::Mirror)
                     );
@@ -709,7 +709,7 @@ mod tests {
             let value = mutator.builtin_class(BuiltinClass::Value);
             match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
-                    assert_eq!(method.fast_path, None);
+                    assert_eq!(method.fast_path(), None);
                     assert!(level.same(value))
                 }
                 _ => panic!("`3 == 3` must find Value's `==`"),
@@ -729,7 +729,7 @@ mod tests {
             match lookup_public(&mutator.heap, string, Symbol::intern("=")) {
                 Lookup::Method(method, level) => {
                     assert_eq!(
-                        method.fast_path,
+                        method.fast_path(),
                         mirror_primitive_named("string:equals:ifFail:").map(MethodFastPath::Mirror)
                     );
                     assert!(level.same(string), "found at String's own level")
@@ -756,11 +756,11 @@ mod tests {
             ));
             let expected = None;
             match lookup_protected(&mutator.heap, integer, selector) {
-                Lookup::Method(method, _) => assert_eq!(method.fast_path, expected),
+                Lookup::Method(method, _) => assert_eq!(method.fast_path(), expected),
                 _ => panic!("lookupProtected must find Object's doesNotUnderstand:"),
             }
             match lookup_defined_for(&mutator.heap, integer, selector) {
-                Lookup::Method(method, _) => assert_eq!(method.fast_path, expected),
+                Lookup::Method(method, _) => assert_eq!(method.fast_path(), expected),
                 _ => panic!("the \"defined for\" walk must find Object's doesNotUnderstand:"),
             }
         });

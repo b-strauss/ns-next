@@ -266,11 +266,12 @@ impl Primitive {
                 | ActivationPrimitive::MethodName
                 | ActivationPrimitive::NextHandler
                 | ActivationPrimitive::HandlerClass
-                | ActivationPrimitive::HandlerBlock
                 | ActivationPrimitive::SetHandlerActive
                 | ActivationPrimitive::ReturnValue
                 | ActivationPrimitive::Restart
-                | ActivationPrimitive::Terminate,
+                | ActivationPrimitive::Terminate
+                | ActivationPrimitive::ExceptionUnhandled
+                | ActivationPrimitive::ExceptionCaught,
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
             Primitive::Module(
@@ -789,12 +790,20 @@ pub enum ActivationPrimitive {
     /// reifying none it passes.
     NextHandler,
     HandlerClass,
-    HandlerBlock,
     SetHandlerActive,
     ReturnValue,
     Restart,
     InheritsMixinOf,
     Terminate,
+    /// The handler search found no handler: an attached debugger's
+    /// exception breakpoints decide whether the next poll stops, and the
+    /// leaf answers whether that stop resumes a `Halt` with nil.
+    ExceptionUnhandled,
+    /// The handler search found an `on:do:` whose handler is about to
+    /// run: the row answers that handler, the block the marker's register
+    /// holds, and the catch is reported to a step in progress and to the
+    /// caught-exception breakpoint.
+    ExceptionCaught,
 }
 
 /// `Message>>sendTo:`'s leaf: the message sent to a receiver as an
@@ -1771,11 +1780,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "activationHandlerClass:ifFail:",
         "handlerClass",
         Primitive::Activation(ActivationPrimitive::HandlerClass),
-    ),
-    mirror(
-        "activationHandlerBlock:ifFail:",
-        "handlerBlock",
-        Primitive::Activation(ActivationPrimitive::HandlerBlock),
     ),
     mirror(
         "activation:handlerActive:ifFail:",
@@ -3301,6 +3305,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         "levelEnclosingObject",
         Primitive::Behavior(BehaviorPrimitive::LevelEnclosing),
     )),
+    // Leaf: unary, the exception the row's subject. With no debugger
+    // attached it answers false at once; with one, it reads the
+    // exception's class chain and slot, records the stop for the next
+    // poll and sets the request bit under the arming lock -- no Newspeak
+    // code, no collection, no other activation read, no push
+    // (`debugger::exceptions`), so a program pays no exit for it.
+    leaf(mirror(
+        "exceptionUnhandled:ifFail:",
+        "exceptionUnhandled",
+        Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
+    )),
+    // An exit: it answers the handler of the `on:do:` activation, its
+    // argument, which it reads off that activation, and so is no leaf.
+    // The search reads the handler through it, so that reporting the
+    // catch costs no send of its own.
+    mirror(
+        "exceptionCaught:at:ifFail:",
+        "exceptionCaughtAt:",
+        Primitive::Activation(ActivationPrimitive::ExceptionCaught),
+    ),
 ];
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);

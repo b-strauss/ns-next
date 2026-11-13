@@ -252,6 +252,13 @@ impl Walk<'_> {
         let block_registers = block_registers(body, &instructions);
         for instruction in &instructions {
             if let Instruction::MakeClosure { code: block, .. } = instruction {
+                // A block a breakpoint patched is neither inlined nor
+                // eliminated: its closure is made and runs the block's
+                // own code, which exits at the patch for the interpreter
+                // to stop there.
+                if block.has_patches() {
+                    continue;
+                }
                 let block_id = heap.code_id(block);
                 if self.walked.insert(block_id) {
                     // A block's sends are sites of its home's family.
@@ -332,7 +339,7 @@ impl Walk<'_> {
                 feedback_base,
                 level,
                 ..
-            } => match method.fast_path {
+            } => match method.fast_path() {
                 Some(fast_path) => CalleeFacts::FastPath(fast_path),
                 None => self.method(method, *feedback_base, *level, send_site, heap),
             },
@@ -369,6 +376,11 @@ impl Walk<'_> {
         heap: &mut Heap,
     ) -> CalleeFacts {
         let code = &method.code;
+        // A callee a breakpoint patched is called, never inlined: its own
+        // code exits at the patch for the interpreter to stop there.
+        if code.has_patches() {
+            return CalleeFacts::Other;
+        }
         let code_id = heap.code_id_of_method(method);
         let snapshot = match self.tree.callees.get(&code_id) {
             Some(snapshot) => snapshot.clone(),
@@ -452,7 +464,7 @@ fn block_registers(body: &CompiledCode, instructions: &[Instruction]) -> HashSet
 fn cached_weight(caches: &InlineCaches, snapshot: &Snapshot) -> u32 {
     let cheap = |entry: &CacheEntry| match &entry.target {
         Target::Method { method, chain, .. } => {
-            method.fast_path.is_some() && !does_not_understand(*chain)
+            method.fast_path().is_some() && !does_not_understand(*chain)
         }
         Target::Slot { chain, .. } => !does_not_understand(*chain),
         _ => false,
@@ -551,6 +563,10 @@ mod tests {
         // would vacate it at the run's safepoints.
         #[cfg(debug_assertions)]
         interpreter.set_stress_caches(false);
+        // A body the breakpoint stress mode patched is neither optimized
+        // nor inlined, and its baseline code exits at every statement.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         expect_ok(

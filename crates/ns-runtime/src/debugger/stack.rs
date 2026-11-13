@@ -157,6 +157,32 @@ pub(crate) fn frames(mutator: &Mutator<'_>, floor: usize) -> Vec<StackFrame> {
     frames
 }
 
+/// `body_of` for a running activation: what a step floods
+/// (`stepping.rs`).
+pub(crate) fn running_body(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, &StackFrame::Running(activation))
+}
+
+/// `body_of` for an activation suspended into the frame object `frame`
+/// holds: what a step floods for a frame it waits to be resumed.
+pub(crate) fn suspended_body(
+    mutator: &mut Mutator<'_>,
+    frame: &Root,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, &StackFrame::Suspended(frame.clone()))
+}
+
 /// The body `frame` runs, which declaration it belongs to, and its
 /// metadata, compiled again on the first ask (`Cache::metadata`). The
 /// metadata is looked up before anything else is read off the frame, so
@@ -182,10 +208,30 @@ fn body_of<'gc>(
     (code, origin, metadata)
 }
 
-/// The descriptions of the run's `frames`, innermost first.
+/// Which declaration's member `frame` runs (`origin_of`), read without
+/// its metadata: what a step filter decides by (`stepping::is_filtered`).
+pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> {
+    let frame = frame.read(heap);
+    let code = frame.code(heap);
+    origin_of(heap, frame, &code)
+}
+
+/// Whether `frame` is a block's activation.
+pub(crate) fn is_block(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Closure(_))
+}
+
+/// The body `frame` runs.
+pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
+    frame.read(heap).code(heap)
+}
+
+/// The descriptions of the run's `frames`, innermost first, every frame
+/// whose index `hidden` holds hidden.
 pub(crate) fn stack_trace(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
+    hidden: Range<usize>,
     values: &mut StopValues,
 ) -> Vec<FrameDescription> {
     let mut descriptions = Vec::with_capacity(frames.len());
@@ -213,6 +259,7 @@ pub(crate) fn stack_trace(
             source: code.source,
             location,
             receiver,
+            hidden: hidden.contains(&index),
         });
     }
     descriptions

@@ -32,6 +32,16 @@ fn load_spending_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     // On whatever the environment says: these pin the JIT, and the stress
     // gate runs the suite once with `NS_NEXT_NO_JIT=1`.
     interpreter.set_jit_enabled(true);
+    // Off whatever the environment says, for the same reason: a body the
+    // breakpoint stress mode patched is neither optimized nor inlined, and
+    // its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }
@@ -103,6 +113,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         resumed_entries: after.resumed_entries - before.resumed_entries,
         materialized_frames: after.materialized_frames - before.materialized_frames,
         send_exits: after.send_exits - before.send_exits,
+        breakpoint_exits: after.breakpoint_exits - before.breakpoint_exits,
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,
@@ -3476,7 +3487,9 @@ fn the_zone_stress_mode_is_on() -> bool {
 /// leaves machine code (`a_stress_mode_polls_out`): the exit stress
 /// mode, whose polls exit unconditionally, and every mode that holds the
 /// safepoint request, which a poll takes
-/// (`Interpreter::hold_safepoints_for_stress`).
+/// (`Interpreter::hold_safepoints_for_stress`), but the breakpoint and the
+/// step stress modes, which `load_spending_with` switches off, so that
+/// they hold nothing here.
 const MODES_THAT_POLL_OUT: [&str; 8] = [
     "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "PAUSE",
 ];
@@ -5594,6 +5607,10 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
             "ephemeronFinalizer:ifFail:",
             "ephemeron:finalizer:ifFail:",
         ],
+    ),
+    (
+        "with no debugger attached answers at once; with one, reads the exception's class chain and messageText slot, records the stop on the Mutator and sets the request bit under the arming lock, runs no code, collects nothing, reads no other activation and pushes nothing",
+        &["exceptionUnhandled:ifFail:"],
     ),
 ];
 

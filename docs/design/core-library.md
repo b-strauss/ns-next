@@ -21,7 +21,12 @@
 > `StringBuilder` and the views"), and its weak references, `WeakArray`,
 > `Ephemeron` and `WeakMap` ("Weak references"). `Closure`'s `whileTrue:`
 > and `whileFalse:` and `Array>>do:` are Newspeak loops, for the JIT tiers
-> to see through ("Real bodies for control flow and `do:`").
+> to see through ("Real bodies for control flow and `do:`"). The
+> handler search reports to an attached debugger through two mirror
+> rows, `exceptionUnhandled:ifFail:` just before `defaultAction` and
+> `exceptionCaught:at:ifFail:` as it reads the handler it found, which
+> decide its exception breakpoints and change nothing without one
+> ([debugger.md](debugger.md), "Exceptions").
 > Every member of `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`,
 > `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
 > `TypedArraysFactory.ns` and `MirrorsFactory.ns` -- public, protected and
@@ -50,6 +55,8 @@
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions',
+> `builtins/activation.rs`'s two report rows deciding through
+> `crates/ns-runtime/src/debugger/exceptions.rs`,
 > `builtins/module.rs` `moduleInstanceNamed:`, `shippedModuleClassNamed:`
 > and `recordShippedModule:`, `builtins/future.rs` the pull
 > future's forcing, `builtins/bytes.rs` `ByteArray`'s and the UTF-8
@@ -3509,7 +3516,7 @@ an error is the VM's business.
 - `Halt` under `Exception`, resumable, signalled by `Object>>halt`, as in
   Squeak rather than SOMns's `vmMirror halt: self` breakpoint primitive: a
   halt and an unhandled error reach the debugger through the same place,
-  `defaultAction` on an intact stack.
+  the search's report just before `defaultAction`, on an intact stack.
 - `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
   `CannotInstantiate` under `Error`, each carrying what it was signalled
   for in a public slot of its own -- `argument`, `result`, `receiver` and
@@ -3677,10 +3684,31 @@ program signalled, `#signal` and the exception. `MessageNotUnderstood`
 overrides both with its message's selector and its receiver, and falls
 back to `Exception`'s when its `message` is nil — one a program signals
 itself (`goldens/library/exception/a_message_not_understood_a_program_signals_ends_the_run`).
-`defaultAction` is the one place the debugger will replace; until then a
-test stands in for it with `Interpreter::resume_unhandled_exceptions`, a
-`#[doc(hidden)]` hook under which the leaf answers nil instead of
-terminating, as a debugger that resumed the exception would.
+An attached debugger stops the program just before `defaultAction` runs
+and lets it run when the program goes on: `invokeNextHandler`, having
+found no handler, sends the mirror's `exceptionUnhandled:ifFail:` first,
+whose leaf decides whether the debugger's exception breakpoints take
+the exception and records the stop for the next poll, the push of
+`defaultAction` ([debugger.md](debugger.md), "Exceptions"). It answers
+true only for a `Halt` the debugger's `Halt` breakpoint stopped, which
+`invokeNextHandler` then resumes with nil instead, so that `halt`
+answers nil once the program goes on -- so that, under that default
+breakpoint, a `Halt` subclass's `defaultAction` override is skipped, and
+one whose `isResumable` answers false makes the `resume:` signal "cannot
+resume a non-resumable exception"; with no debugger attached it does
+nothing and answers false. Likewise `invokeHandlerAt:disabling:` reads
+the handler it found, just before it runs it, through
+`exceptionCaught:at:ifFail:`, which answers the `on:do:` activation's
+handler and reports the catch to the caught-exception breakpoint and a
+step in progress, which goes on into the handler block; the report
+costs no send of its own. Neither row runs Newspeak code, so the
+search pushes no activation it did not push before, and the outcome of
+every program without a debugger is unchanged. A test resumes an
+unhandled exception with `Interpreter::resume_unhandled_exceptions`, a
+`#[doc(hidden)]` hook under which the `terminate…` leaf answers nil
+instead of terminating, as a debugger that resumed the exception would;
+the hook is served before the debugger's breakpoints, so an exception it
+resumes stops nothing.
 
 **`doesNotUnderstand:` and creating the missing method.**
 `Object>>doesNotUnderstand: message` is Squeak's: it builds a
@@ -3690,9 +3718,9 @@ resumed it (`reachedDefaultHandler`) re-sends the message with
 `message sendTo: self`; otherwise it answers the resumption value. A
 unary selector that begins with `isKindOf` never gets that far: the method
 answers `false` before it makes the exception. The
-default handler today ends the program; the live system replaces that one
-place with "open the debugger and wait", where creating the method and
-proceeding re-sends the message into it — the user's requirement for a live
+default handler ends the program; under an attached debugger the program
+stops before it runs, and the debugger's planned "Create Method" creates
+the method and resumes the exception, which re-sends the message into it — the user's requirement for a live
 system, and why `MessageNotUnderstood` is resumable although it is an
 `Error`. The re-send is a *public* send, as `sendTo:` always is, so a method
 the debugger creates as protected or private would not be reached by it and
@@ -3712,8 +3740,9 @@ with an argument that is no `Message` fails inside the handler, on
   and a frame's class, as `Top`'s is everywhere but a frame's class. An
   activation reads another frame's temporaries and unwinds stacks, so it is
   a capability, and Newspeak hands those out only through mirrors, which the
-  reflection step builds on it. The eleven leaves (`builtins/activation.rs`,
-  rows of `MIRROR`): `currentActivation` — the activation of the kernel
+  reflection step builds on it. The twelve rows of `MIRROR` they take
+  (`builtins/activation.rs`), leaves but for the exit
+  `exceptionCaughtAt:`: `currentActivation` — the activation of the kernel
   method making the mirror send, reified, answered as its frame object, so
   two calls for one activation answer the same object and the coming
   `ActivationMirror` has an identity by frame already; an activation's
@@ -3727,13 +3756,20 @@ with an argument that is no `Message` fails inside the handler, on
   block, an initializer or a clause -- for `Object>>subclassResponsibility`;
   `nextHandler`, the next activation outward whose code carries the
   `on:do:` marker and whose handler is active, reifying none it passes,
-  or nil past the bottom or for a returned activation; the two the
-  marker's registers answer, `handlerClass` and `handlerBlock`, and
-  `handlerActive:`, which writes the flag;
+  or nil past the bottom or for a returned activation; `handlerClass`,
+  which the marker's register answers, and `handlerActive:`, which writes
+  the flag;
   `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
-  already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
-  `terminate…` for `defaultAction`. `Message>>sendTo:`'s row is
+  already returned"); `inheritsMixinOf:` for `Class>>handles:`;
+  `terminate…` for `defaultAction`; and `exceptionUnhandled` and
+  `exceptionCaughtAt:` (`exceptionUnhandled:ifFail:` and
+  `exceptionCaught:at:ifFail:`), the search's reports to an attached
+  debugger, which decide and record its exception breakpoints' stop -- the
+  first a leaf machine code calls without exiting, which does nothing
+  without one, the second an exit, which answers the handler the
+  marker's register holds, debugger or not, the search's one read of it
+  ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
   `message:sendTo:ifFail:` (`builtins/message.rs`);
   `Object>>doesNotUnderstand:` forwards to no row: it is Newspeak that
   signals a `MessageNotUnderstood`. The tracer follows the frame reference,

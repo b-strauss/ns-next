@@ -225,7 +225,8 @@ impl Decoder<'_> {
                     argument_count,
                     declaration: None,
                     code,
-                    fast_path,
+                    fast_path: std::cell::Cell::new(fast_path),
+                    recognized_fast_path: fast_path,
                     class_accessor,
                 }))
             }

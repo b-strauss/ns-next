@@ -602,7 +602,7 @@ mod tests {
                 let method = probe_method(&mut interpreter, &probe, selector);
                 assert!(
                     matches!(
-                        method.fast_path,
+                        method.fast_path(),
                         Some(crate::mixin::MethodFastPath::Mirror(_))
                     ),
                     "{lowering:?}: {selector} is a primitive method"
@@ -610,7 +610,7 @@ mod tests {
             }
             let inline = probe_method(&mut interpreter, &probe, "sizeOf:");
             assert!(
-                inline.fast_path.is_none(),
+                inline.fast_path().is_none(),
                 "{lowering:?}: sizeOf: forwards a parameter as the subject, not self"
             );
             let same = expect_ok(
@@ -692,7 +692,7 @@ mod tests {
             for selector in ["same:", "size"] {
                 let method = probe_method(&mut interpreter, &probe, selector);
                 assert!(
-                    method.fast_path.is_none(),
+                    method.fast_path().is_none(),
                     "{lowering:?}: {selector} outside the kernel"
                 );
             }

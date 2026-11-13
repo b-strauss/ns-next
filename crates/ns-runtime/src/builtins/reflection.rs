@@ -1873,8 +1873,18 @@ mod tests {
             }
             // A stress mode that frees or recompiles code at its own
             // safepoints may leave the forward nothing to free.
-            let freeing_stress = ["MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "EXIT", "ZONE"]
-                .iter()
+            let freeing_stress = [
+                "MOVES",
+                "CACHES",
+                "COLLECT",
+                "SCAVENGE",
+                "SUSPEND",
+                "EXIT",
+                "ZONE",
+                "BREAKPOINTS",
+                "STEP",
+            ]
+            .iter()
                 .any(|mode| {
                     std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
                         .is_some_and(|value| !value.is_empty() && value != "0")

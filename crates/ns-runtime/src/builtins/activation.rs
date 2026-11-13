@@ -5,7 +5,9 @@
 //! activation, a restart of one, and the termination an unhandled
 //! exception ends in. The last three answer a signal, which the one
 //! unwinder carries out (`interpreter::unwind`); no leaf here unwinds
-//! anything itself.
+//! anything itself. Two more report the search's outcome to an attached
+//! debugger, whose exception breakpoints they decide
+//! (`debugger::exceptions`).
 
 use crate::interpreter::Arguments;
 use std::rc::Rc;
@@ -95,9 +97,6 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::HandlerClass => {
             activation_leaf(mutator, SubjectLeaf::HandlerClass, subject, arguments)
         }
-        ActivationPrimitive::HandlerBlock => {
-            activation_leaf(mutator, SubjectLeaf::HandlerBlock, subject, arguments)
-        }
         ActivationPrimitive::SetHandlerActive => {
             activation_leaf(mutator, SubjectLeaf::SetHandlerActive, subject, arguments)
         }
@@ -106,6 +105,27 @@ pub(crate) fn execute<'gc>(
         }
         ActivationPrimitive::Restart => {
             activation_leaf(mutator, SubjectLeaf::Restart, subject, arguments)
+        }
+        // The search found no handler: an attached debugger's exception
+        // breakpoints decide whether the next poll, `defaultAction`'s
+        // push, stops, and answer whether the stop resumes a `Halt`
+        // instead (`debugger::exceptions`). Nothing runs and nothing is
+        // decided here with no debugger attached.
+        ActivationPrimitive::ExceptionUnhandled => Some(Ok(Step::Value(Value::boolean(
+            crate::debugger::exceptions::unhandled(mutator, subject),
+        )))),
+        // The search found the `on:do:` activation the argument is, and
+        // is about to run its handler, which this answers, read off the
+        // marker's register as `handlerClass` reads its class: the catch
+        // is recorded for a step in progress and the caught-exception
+        // breakpoint first, the activation and the handler held for the
+        // safepoint, which reads them.
+        ActivationPrimitive::ExceptionCaught => {
+            let activation = arguments.first(&mutator.heap)?;
+            let frame = mutator.heap.object_frame(activation.as_object()?)?;
+            let handler = handler_block(mutator, frame)?;
+            crate::debugger::exceptions::caught(mutator, subject, activation, handler);
+            Some(Ok(Step::Value(handler)))
         }
     }
 }
@@ -119,7 +139,6 @@ enum SubjectLeaf {
     MethodName,
     NextHandler,
     HandlerClass,
-    HandlerBlock,
     SetHandlerActive,
     ReturnValue,
     Restart,
@@ -169,13 +188,6 @@ fn activation_leaf<'gc>(
             let (class_register, _, _) = handler_registers(mutator, frame)?;
             mutator.heap.frame_local(frame, class_register)
         }
-        SubjectLeaf::HandlerBlock => {
-            if !running {
-                return None;
-            }
-            let (_, block_register, _) = handler_registers(mutator, frame)?;
-            mutator.heap.frame_local(frame, block_register)
-        }
         SubjectLeaf::SetHandlerActive => {
             if !running {
                 return None;
@@ -216,6 +228,16 @@ fn activation_leaf<'gc>(
         }
     };
     Some(Ok(Step::Value(answer)))
+}
+
+/// The handler block of the `on:do:` activation `frame` names; `None` for
+/// a returned activation or one that runs no `on:do:`.
+fn handler_block<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Option<Value<'gc>> {
+    if !mutator.heap.frame_is_running(frame) {
+        return None;
+    }
+    let (_, block_register, _) = handler_registers(mutator, frame)?;
+    Some(mutator.heap.frame_local(frame, block_register))
 }
 
 /// The object for `activation`: its frame object, reified on the first
@@ -332,11 +354,34 @@ fn inherits_mixin_of<'gc>(
     if !mutator.heap.is_class(class) {
         return None;
     }
+    let declaration = mutator.heap.class_declaration(class)?;
+    Some(inherits_declaration(mutator, subject, &declaration))
+}
+
+/// Whether `subject`'s class, or a superclass of it, is a class of
+/// `declaration`, any version of it, as `inherits_mixin_of` decides it.
+pub(crate) fn inherits_declaration<'gc>(
+    mutator: &Mutator<'gc>,
+    subject: Value<'gc>,
+    declaration: &Rc<crate::Mixin>,
+) -> bool {
     let heap = &mutator.heap;
-    let declaration = heap.class_declaration(class)?;
-    let id = heap.known_mixin_id(&declaration);
-    let is_declaration =
-        |candidate: &Rc<crate::Mixin>| heap.same_mixin(candidate, &declaration, id);
+    let id = heap.known_mixin_id(declaration);
+    inherits_any(mutator, subject, |candidate| {
+        heap.same_mixin(candidate, declaration, id)
+    })
+}
+
+/// Whether a level of `subject`'s class chain is a class of a declaration
+/// `is_declaration` accepts: the mixin its application applies and, for a
+/// body-less declaration's class object or a level a `<:` clause added
+/// for one, that declaration. Runs no code.
+pub(crate) fn inherits_any<'gc>(
+    mutator: &Mutator<'gc>,
+    subject: Value<'gc>,
+    is_declaration: impl Fn(&Rc<crate::Mixin>) -> bool,
+) -> bool {
+    let heap = &mutator.heap;
     let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
         let applied = heap
@@ -350,11 +395,11 @@ fn inherits_mixin_of<'gc>(
             .and_then(|named| heap.class_body_less_declaration(named))
             .is_some_and(&is_declaration);
         if applied || declared || named {
-            return Some(true);
+            return true;
         }
         current = heap.class_superclass(level);
     }
-    Some(false)
+    false
 }
 
 /// The termination an unhandled exception's `defaultAction` asks for: the

@@ -122,8 +122,22 @@ Rust 1.98.0, edition 2021, seven crates:
   the module's current text through either lowerer's collector, keeps
   per body only when the body compiled again is alike
   (`bytecode::compiles_alike`), caches weakly and clears at every
-  install; `debugger.md`, "The debugging API at the safepoint",
-  "Compiling the metadata again"), the core library
+  install; and breakpoints and stepping: a breakpoint patches its slot
+  of the body in place, the original kept beside the slots for every
+  reader but the run loop's fetch, whose `Breakpoint` arm asks
+  `interpreter/breakpoint.rs` and stops at the safepoint, the patched
+  body's machine code freed and its method's fast path switched off
+  while it stands (`debugger/breakpoints.rs`: line, pending, run to
+  cursor and method breakpoints, keyed by body); steps are one-shot
+  breakpoints and a request bit held until the next push, a frame left
+  otherwise reported by the unwinder and the run loop's cold arms, the
+  shipped modules filtered (`debugger/stepping.rs`); exception
+  breakpoints are decided by two mirror rows the kernel's handler
+  search sends, a leaf and the exit that reads the handler it found
+  (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
+  at the safepoint", "Compiling the metadata again", "Where the
+  original lives", "Step over in recursion and blocks", "Exceptions"),
+  the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
   `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose
@@ -537,8 +551,12 @@ holds no handle. Anything the key does not cover is read afresh on every
 send — today a primitive's payload check, in `act`, and the class object's
 builtin field (`Heap::class_builtin`), which the factory body's
 `AllocateInstance` reads on every instantiation; a method's `MethodFastPath`
-is read off the entry's method, which is immutable, on every hit, by the
-interpreter's `act` and machine code's stub alike. Add such a read and its per-send re-check goes with
+is read off the entry's method on every hit, by the interpreter's `act`
+and machine code's stub alike -- a method whose fast path only the
+debugger changes, switching it off while a breakpoint stands in the body,
+and invalidating every cache and every optimized copy when it does
+(`MixinMethod::switch_fast_path`; `debugger.md`, "A breakpoint in a
+method with a fast path"). Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
@@ -586,7 +604,14 @@ answers the exit -- so that the interpreter's one unwinder carries the
 return -- for a body that is no block's, a block that is the entry
 frame, a home not running, suspended or below the entry frame, an
 unwind marker's activation between, a return address into a stub
-before the home, and a home that catches no return.
+before the home, a home that catches no return, and a frame of a
+method a method breakpoint names, whose exit only the unwinder reports.
+A slot a breakpoint patched lowers as an exit, whatever its instruction,
+so that the interpreter's `Breakpoint` arm stops there; patching or
+restoring a slot frees the body's machine code and every optimized copy
+that inlined it first (`jit::free_for_patch`), and the optimizing tier
+neither optimizes nor inlines a patched body (`debugger.md`, "Where the
+original lives").
 A new instruction is one arm of `jit::baseline::lower` plus the
 macro-assembler idioms it lacks, never a second dispatch, and optimized
 code (`jit/optimizing/emit.rs`) emits every instruction it does not
@@ -714,7 +739,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java and Python counterparts; needs a JDK (`JAVA_HOME` or `PATH`) and a `python` on `PATH`; profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the thirteen stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the fifteen stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java and Python counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK and Python), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
 | `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |

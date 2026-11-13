@@ -315,7 +315,12 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let mixin = self.compile_root_mixin(resolved);
-        self.root_class_of_mixin(&mixin)
+        let class = self.root_class_of_mixin(&mixin);
+        // A breakpoint set before the module was loaded resolves now.
+        if !self.has_no_breakpoints() {
+            crate::debugger::breakpoints::module_built(self, mixin.name.as_str());
+        }
+        class
     }
 
     /// The root class of a finished root mixin, however the mixin came to

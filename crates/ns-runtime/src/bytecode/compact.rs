@@ -7,6 +7,7 @@
 //! every tool reads a body back through `EncodedBody::instruction`, an
 //! exact inverse.
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
@@ -310,6 +311,12 @@ pub enum CompactInstruction {
     Wide {
         index: u32,
     },
+    /// A breakpoint set at this slot (`EncodedBody::patch`), the
+    /// instruction it replaced kept beside the slots. Only the run loop's
+    /// fetch reads it: it is never emitted, never decoded and has no wire
+    /// tag, and every other reader asks for the original
+    /// (`docs/design/debugger.md`, "Where the original lives").
+    Breakpoint,
 }
 
 // The point of the encoding: a slot the loop copies into registers whole.
@@ -508,9 +515,19 @@ impl SuperclassSite {
 /// `PartialEq`: two encodings of one body differ (one built by
 /// `CodeBuilder::always_wide`, say), and `CompiledCode` compares what a body
 /// means.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct EncodedBody {
-    slots: Box<[CompactInstruction]>,
+    /// The instructions the run loop fetches. A `Cell` each, so that a
+    /// breakpoint can replace one in a body every frame, mixin and closure
+    /// shares (`patch`); written nowhere else once the body is finished.
+    slots: Box<[Cell<CompactInstruction>]>,
+    /// The instruction each patched slot held, sorted by slot index, so
+    /// that a lookup is a binary search however many slots a step's flood
+    /// or the breakpoint stress mode patched. A boxed slice, not a `Vec`
+    /// or a map: a body never patched -- nearly every one -- pays three
+    /// words and no allocation for it; a patch or a restore rebuilds the
+    /// slice, which only a debugger does.
+    originals: RefCell<Box<[(usize, CompactInstruction)]>>,
     constants: Box<[Immediate]>,
     literals: Box<[Literal]>,
     send_sites: Box<[SendSite]>,
@@ -519,6 +536,41 @@ pub struct EncodedBody {
     superclass_sites: Box<[SuperclassSite]>,
     register_lists: Box<[Box<[u16]>]>,
     wide: Box<[Instruction]>,
+}
+
+/// A copy is another body, in which no breakpoint was set: its slots are
+/// the originals.
+impl Clone for EncodedBody {
+    fn clone(&self) -> EncodedBody {
+        // Destructured, so that a field added to `EncodedBody` must be
+        // decided here.
+        let EncodedBody {
+            slots,
+            originals: _,
+            constants,
+            literals,
+            send_sites,
+            blocks,
+            mirror_sites,
+            superclass_sites,
+            register_lists,
+            wide,
+        } = self;
+        EncodedBody {
+            slots: (0..slots.len())
+                .map(|index| Cell::new(self.original(index)))
+                .collect(),
+            originals: RefCell::default(),
+            constants: constants.clone(),
+            literals: literals.clone(),
+            send_sites: send_sites.clone(),
+            blocks: blocks.clone(),
+            mirror_sites: mirror_sites.clone(),
+            superclass_sites: superclass_sites.clone(),
+            register_lists: register_lists.clone(),
+            wide: wide.clone(),
+        }
+    }
 }
 
 /// A send call site or a block, as `EncodedBody::for_each_emitted_mut`
@@ -1480,7 +1532,8 @@ impl CodeBuilder {
 
     pub fn finish(self) -> EncodedBody {
         EncodedBody {
-            slots: self.slots.into_boxed_slice(),
+            slots: self.slots.into_iter().map(Cell::new).collect(),
+            originals: RefCell::default(),
             constants: self.constants.into_boxed_slice(),
             literals: self.literals.into_boxed_slice(),
             send_sites: self.send_sites.into_boxed_slice(),
@@ -1517,8 +1570,69 @@ impl EncodedBody {
         self.slots.as_ptr().addr()
     }
 
+    /// The slot the run loop fetches: `Breakpoint` where one is set. Every
+    /// other reader asks for `original`.
     pub fn slot(&self, index: usize) -> CompactInstruction {
-        self.slots[index]
+        self.slots[index].get()
+    }
+
+    /// The instruction slot `index` holds without its breakpoint: what was
+    /// emitted there, the slot itself when it is not patched.
+    pub(crate) fn original(&self, index: usize) -> CompactInstruction {
+        match self.slots[index].get() {
+            CompactInstruction::Breakpoint => self.patched_original(index),
+            slot => slot,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn patched_original(&self, index: usize) -> CompactInstruction {
+        let originals = self.originals.borrow();
+        let position = originals
+            .binary_search_by_key(&index, |(patched, _)| *patched)
+            .expect("internal: a patched slot keeps its original");
+        originals[position].1
+    }
+
+    /// Replaces slot `index` by `Breakpoint`, keeping the instruction it
+    /// held; a slot already patched keeps its first original.
+    pub(crate) fn patch(&self, index: usize) {
+        let slot = &self.slots[index];
+        let original = slot.get();
+        if matches!(original, CompactInstruction::Breakpoint) {
+            return;
+        }
+        let mut originals = self.originals.borrow_mut();
+        let mut patched = std::mem::take(&mut *originals).into_vec();
+        let position = patched.partition_point(|(patched, _)| *patched < index);
+        patched.insert(position, (index, original));
+        *originals = patched.into_boxed_slice();
+        slot.set(CompactInstruction::Breakpoint);
+    }
+
+    /// Gives slot `index` back its original; an unpatched slot stays as it
+    /// is.
+    pub(crate) fn restore(&self, index: usize) {
+        if !self.is_patched(index) {
+            return;
+        }
+        let original = self.patched_original(index);
+        let mut originals = self.originals.borrow_mut();
+        let mut patched = std::mem::take(&mut *originals).into_vec();
+        patched.retain(|(patched, _)| *patched != index);
+        *originals = patched.into_boxed_slice();
+        self.slots[index].set(original);
+    }
+
+    /// Whether a breakpoint replaces slot `index`.
+    pub(crate) fn is_patched(&self, index: usize) -> bool {
+        matches!(self.slots[index].get(), CompactInstruction::Breakpoint)
+    }
+
+    /// Whether a breakpoint replaces any slot.
+    pub(crate) fn has_patches(&self) -> bool {
+        !self.originals.borrow().is_empty()
     }
 
     /// The word a `LoadConstant` names.
@@ -1590,7 +1704,7 @@ impl EncodedBody {
                 registers.arguments().len(),
             ))
         };
-        let (kind, site, receiver, argument_base, argument_count) = match self.slots[index] {
+        let (kind, site, receiver, argument_base, argument_count) = match self.original(index) {
             CompactInstruction::SendPublic0 {
                 receiver,
                 argument_base,
@@ -1665,7 +1779,7 @@ impl EncodedBody {
     /// Whether slot `index` holds a send of any kind, in either form, read
     /// without decoding it.
     pub(crate) fn is_send(&self, index: usize) -> bool {
-        match self.slots[index] {
+        match self.original(index) {
             CompactInstruction::SendPublic0 { .. }
             | CompactInstruction::SendPublic1 { .. }
             | CompactInstruction::SendPublic2 { .. }
@@ -1703,13 +1817,15 @@ impl EncodedBody {
 
     /// The instruction emitted into slot `index`, exactly as it was emitted.
     pub fn instruction(&self, index: usize) -> Instruction {
-        self.tables().decode(self.slots[index])
+        self.tables().decode(self.original(index))
     }
 
     /// Every instruction of the body, exactly as it was emitted.
     pub fn instructions(&self) -> Vec<Instruction> {
         let tables = self.tables();
-        self.slots.iter().map(|slot| tables.decode(*slot)).collect()
+        (0..self.slots.len())
+            .map(|index| tables.decode(self.original(index)))
+            .collect()
     }
 
     /// Visits every send's call site and every block, in the order their
@@ -1720,7 +1836,7 @@ impl EncodedBody {
         mut visit: impl FnMut(Emitted<'_>) -> Result<(), E>,
     ) -> Result<(), E> {
         for index in 0..self.slots.len() {
-            match emitted_entry(self.slots[index]) {
+            match emitted_entry(self.original(index)) {
                 EmittedEntry::SendSite(site) => {
                     visit(Emitted::CallSite(&mut self.send_sites[site].call_site))?;
                 }
@@ -1745,32 +1861,30 @@ impl EncodedBody {
     /// emitted, whatever form each took -- what the image decoder's checks
     /// on blocks read, without decoding a slot.
     pub(crate) fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> + '_ {
-        self.slots
-            .iter()
-            .filter_map(move |slot| match emitted_entry(*slot) {
-                EmittedEntry::Block(block) => {
-                    let site = &self.blocks[block];
-                    Some(CreatedBlock {
-                        code: &site.code,
-                        parameters: &site.parameters,
-                        copied: &site.copied,
-                    })
-                }
-                EmittedEntry::Wide(wide) => match &self.wide[wide] {
-                    Instruction::MakeClosure {
-                        parameters,
-                        code,
-                        copied,
-                        ..
-                    } => Some(CreatedBlock {
-                        code,
-                        parameters,
-                        copied,
-                    }),
-                    _ => None,
-                },
-                EmittedEntry::SendSite(_) | EmittedEntry::Nothing => None,
-            })
+        (0..self.slots.len()).filter_map(move |index| match emitted_entry(self.original(index)) {
+            EmittedEntry::Block(block) => {
+                let site = &self.blocks[block];
+                Some(CreatedBlock {
+                    code: &site.code,
+                    parameters: &site.parameters,
+                    copied: &site.copied,
+                })
+            }
+            EmittedEntry::Wide(wide) => match &self.wide[wide] {
+                Instruction::MakeClosure {
+                    parameters,
+                    code,
+                    copied,
+                    ..
+                } => Some(CreatedBlock {
+                    code,
+                    parameters,
+                    copied,
+                }),
+                _ => None,
+            },
+            EmittedEntry::SendSite(_) | EmittedEntry::Nothing => None,
+        })
     }
 
     /// `bytecode::family_size_of` over the body, read off its tables
@@ -1877,6 +1991,13 @@ fn emitted_entry(slot: CompactInstruction) -> EmittedEntry {
         | CompactInstruction::CheckAppliedClause { .. }
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. } => EmittedEntry::Nothing,
+        CompactInstruction::Breakpoint => {
+            debug_assert!(
+                false,
+                "internal: a reader of the originals was handed a breakpoint"
+            );
+            EmittedEntry::Nothing
+        }
     }
 }
 
@@ -1952,6 +2073,13 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. }
         | CompactInstruction::Wide { .. } => 0,
+        CompactInstruction::Breakpoint => {
+            debug_assert!(
+                false,
+                "internal: a reader of the originals was handed a breakpoint"
+            );
+            0
+        }
     }
 }
 
@@ -2026,6 +2154,13 @@ fn narrow_addresses_own_slots(slot: CompactInstruction) -> bool {
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. }
         | CompactInstruction::Wide { .. } => false,
+        CompactInstruction::Breakpoint => {
+            debug_assert!(
+                false,
+                "internal: a reader of the originals was handed a breakpoint"
+            );
+            false
+        }
     }
 }
 
@@ -2555,6 +2690,9 @@ impl Tables<'_> {
                 destination: register(destination),
             },
             CompactInstruction::Wide { index } => self.wide[index as usize].clone(),
+            CompactInstruction::Breakpoint => {
+                unreachable!("internal: a breakpoint is never decoded; the decoded view answers the original")
+            }
         }
     }
 

@@ -785,3 +785,172 @@ ns_runtime::for_each_lowering! {
         assert!(pauses > 0, "the pause stress mode never stopped");
     }
 }
+
+// The breakpoint stress mode: every statement start of every body found
+// running at a safepoint patched with a breakpoint that never stops, each hit gone past
+// through the run loop's arm (`docs/design/debugger.md`, "The breakpoint
+// stress mode").
+
+/// A loop whose blocks a callee runs, a non-local return out of a `do:`,
+/// an exception its handler returns from and a recursion, each run often
+/// enough to be compiled, so that the patched statement starts stand in
+/// inlined blocks, closures, handlers and unwound frames, in machine code
+/// and out of it.
+const BREAKPOINTED_PROGRAM: &str = indoc! {"
+    class Breakpointed = Object new (
+    ) (
+      class Counter = Object new (
+        | public total ::= 0. |
+      ) (
+        public add: amount = (
+          total:: total + amount
+        )
+      ) : ()
+      firstAbove: limit in: items = (
+        items do: [:each | each > limit ifTrue: [^each]].
+        ^0
+      )
+      guarded: index = (
+        ^[
+          index \\\\ 3 = 0 ifTrue: [Error new signal: 'three'].
+          index
+        ]
+          on: Error
+          do: [:error | error return: 100]
+      )
+      depth: count = (
+        count = 0 ifTrue: [^0].
+        ^1 + (self depth: count - 1)
+      )
+      public run = (
+        | counter items |
+        counter:: Counter new.
+        items:: {3. 9. 27. 81}.
+        1 to: 200 do: [:index |
+          counter add: (self firstAbove: index \\\\ 50 in: items).
+          counter add: (self guarded: index)].
+        counter add: (self depth: 100).
+        ^counter total
+      )
+    ) : ()
+"};
+
+/// How a run of `source`'s `run` ended under `lowering`, the JIT on or
+/// off, and how many breakpoints the breakpoint stress mode went past.
+fn run_breakpointed(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    breakpoints: bool,
+) -> (String, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_stress_breakpoints(breakpoints);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (outcome, interpreter.stress_breakpoint_hits())
+}
+
+ns_runtime::for_each_lowering! {
+    fn the_breakpoint_stress_mode_keeps_outcomes(lowering) {
+        for jit in [true, false] {
+            let (plain, plain_hits) = run_breakpointed(BREAKPOINTED_PROGRAM, lowering, jit, false);
+            assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
+            assert_eq!(plain_hits, 0);
+            let (breakpointed, hits) =
+                run_breakpointed(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            assert_eq!(breakpointed, plain, "the JIT on: {jit}");
+            // Each of the loop's 200 passes goes past its own two
+            // statements and the one of each of its two `add:`s at least.
+            assert!(
+                hits >= 800,
+                "the breakpoint stress mode went past {hits} breakpoints, the JIT on: {jit}"
+            );
+        }
+    }
+}
+
+// The step stress mode: at the safepoints its schedule picks, the run
+// stops as for a debugger's pause and takes a burst of steps -- into,
+// over and out in turn, the shipped filter switched every third --
+// reading the stack and its values at every stop
+// (`docs/design/debugger.md`, "The step stress mode").
+
+/// How a run of `source`'s `run` ended under `lowering`, the JIT on or
+/// off, and how many of the step stress mode's steps stopped and how many
+/// it ended itself.
+fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (String, usize, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_stress_step(step);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (
+        outcome,
+        interpreter.stress_steps(),
+        interpreter.stress_steps_ended(),
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    fn the_step_stress_mode_keeps_outcomes(lowering) {
+        for jit in [true, false] {
+            let (plain, plain_steps, plain_ended) =
+                run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, false);
+            assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
+            assert_eq!((plain_steps, plain_ended), (0, 0));
+            let (stepped, steps, ended) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            assert_eq!(stepped, plain, "the JIT on: {jit}");
+            // Many whole bursts. The steps the mode ends itself are steps
+            // out of the shipped `to:do:` looping 200 times, stopped in
+            // with the shipped filter off, and of `run`, which returns to
+            // the host. The test runs under every mode of the `stress`
+            // gate: measured under each of the fifteen and with the JIT
+            // off, the steps that stopped were at least 178 and at least
+            // 6.4 times those ended (the scavenge stress mode's optimized
+            // run with the JIT, the lowest of both), since the grace's
+            // floor of safepoints keeps it from shrinking with a heap
+            // the collect and scavenge stress modes keep small. The
+            // bounds lie more than a third below both.
+            let burst = Interpreter::stress_step_burst();
+            assert!(
+                steps >= 6 * burst,
+                "the step stress mode's steps stopped {steps} times, the JIT on: {jit}"
+            );
+            assert!(
+                steps >= 4 * ended,
+                "{steps} steps stopped and {ended} were ended, the JIT on: {jit}"
+            );
+        }
+    }
+}

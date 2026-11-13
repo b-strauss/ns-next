@@ -4,6 +4,7 @@
 //! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
+pub(crate) mod breakpoint;
 pub(crate) mod core_library;
 pub(crate) mod edit;
 pub mod future;
@@ -592,6 +593,19 @@ pub struct Mutator<'gc> {
     /// stress mode, which runs with no debugger attached, reads through it
     /// too. Holds no handle, so nothing traces it.
     pub(crate) debug_metadata: crate::debugger::metadata::Cache,
+    /// The attached debugger's breakpoints (`debugger::breakpoints`): on
+    /// the mutator, since the run loop's `Breakpoint` arm, a module's
+    /// build and an install, which run inside an entry, reach nothing
+    /// else. It holds its patched bodies by `Rc` and no handle but its
+    /// token's activation, which never outlives the arm that reads it,
+    /// and its one-shots', which never outlive their step, so nothing
+    /// traces it.
+    pub(crate) breakpoints: crate::debugger::breakpoints::Breakpoints,
+    /// The step in progress (`debugger::stepping`), until the next stop
+    /// ends it: activations of the run, which positions on the
+    /// activation stack name, and the value it recorded as a `Root`, so
+    /// that nothing traces it.
+    pub(crate) stepping: Option<Box<crate::debugger::stepping::Stepping>>,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -656,6 +670,22 @@ pub struct Interpreter {
     /// since a stop reads the whole run's stack. Debug builds only.
     #[cfg(debug_assertions)]
     stress_pause: Option<safepoint::StressSchedule>,
+    /// Whether the breakpoint stress mode is on
+    /// (`NS_NEXT_STRESS_BREAKPOINTS`, or `set_stress_breakpoints`): at
+    /// every safepoint, every statement start of each running body not
+    /// patched yet is patched with a breakpoint that never stops
+    /// (`debugger::breakpoints::patch_running_for_stress`). Not paced: a
+    /// body is resolved once, and the walk stops at the first resolved
+    /// before. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_breakpoints: bool,
+    /// The step stress mode's state, when it is on
+    /// (`NS_NEXT_STRESS_STEP`, or `set_stress_step`): at the safepoints
+    /// its schedule picks, the run stopped and a burst of steps taken from
+    /// there, the stack read at every stop (`debugger::StepStress`).
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_step: Option<crate::debugger::StepStress>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -724,6 +754,10 @@ impl Interpreter {
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
+            #[cfg(debug_assertions)]
+            stress_breakpoints: safepoint::stress_breakpoints_from_env(),
+            #[cfg(debug_assertions)]
+            stress_step: crate::debugger::StepStress::from_env(),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
             debugger: None,
@@ -925,18 +959,29 @@ impl Interpreter {
         let result = match start {
             HostStart::Finished(result) => result,
             HostStart::Run(activation) => {
-                // A debugger's command is served by the run it arrives
-                // during: one queued between runs, or left by the run
-                // before, ends none (`Interpreter::drop_queued_commands`).
-                self.drop_queued_commands();
+                // A debugger's command that acts on a run is served by the
+                // run it arrives during: one queued between runs, or left
+                // by the run before, ends none; a configuration command
+                // is served here (`Interpreter::serve_between_runs`).
+                self.serve_between_runs();
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
-                self.drop_queued_commands();
+                self.serve_between_runs();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
-                // to the next check to find so.
-                self.enter(|mutator| mutator.set_depth_reserve(None));
+                // to the next check to find so. So is the activation a
+                // breakpoint's token names, whose slot a termination left
+                // unexecuted.
+                self.enter(|mutator| {
+                    mutator.set_depth_reserve(None);
+                    mutator.breakpoints.drop_past_once();
+                    // A step the run's end left goes with it: its frames
+                    // are gone. So does an exception's stop no poll
+                    // served, and its request bit.
+                    crate::debugger::stepping::end(mutator);
+                    crate::debugger::exceptions::drop_pending(mutator);
+                });
                 result
             }
         };
@@ -1566,6 +1611,8 @@ impl Interpreter {
     /// what the debugger will do once it has let the user fix the cause
     /// (`docs/design/core-library.md`, "Exceptions"). A
     /// `MessageNotUnderstood` resumed this way sends its message again.
+    /// It is served before an attached debugger's exception breakpoints:
+    /// an exception it resumes stops nothing.
     #[doc(hidden)]
     pub fn resume_unhandled_exceptions(&mut self, count: usize) {
         self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
@@ -2286,7 +2333,12 @@ impl<'gc> Mutator<'gc> {
                 self.feedback_base_for(&code)
             }
         };
-        self.heap.resume_activation(frame, feedback_base)
+        let activation = self.heap.resume_activation(frame, feedback_base);
+        // A step that names the frame follows it to its new activation.
+        if self.stepping.is_some() {
+            crate::debugger::stepping::resumed(self, frame, activation);
+        }
+        activation
     }
 
     /// Pushes the activation `step` describes. `send_arguments` are the
@@ -2949,9 +3001,25 @@ impl<'gc> Mutator<'gc> {
     /// first, as `vm::finish` resumes it for a return, so that the next top
     /// is the activation the unwind goes on with -- whose `ensure:` block it
     /// runs, or which it arrives at -- as if it had been on the stack all
-    /// along.
+    /// along. A step in progress learns of the pop (`stepping::popped`),
+    /// told before a resumed sender can take the popped frame's offset;
+    /// where a step whose frame the unwind popped goes on is decided once
+    /// the unwind stops popping (`breakpoint::unwind_stopped`), so that no
+    /// frame it passes is flooded.
     pub(crate) fn pop_for_unwind(&mut self, top: ActivationReference) {
+        self.pop_for_unwind_as::<true>(top);
+    }
+
+    /// `pop_for_unwind`, a step in progress told of the pop only when
+    /// `FOLLOWED`: an unwind that began with no step in progress and no
+    /// method breakpoint set, which nothing it pops can start, leaves the
+    /// test out of every pop (`unwind::unwind`).
+    pub(crate) fn pop_for_unwind_as<const FOLLOWED: bool>(&mut self, top: ActivationReference) {
         let popped = self.heap.pop_activation(top);
+        let stepping = FOLLOWED && self.stepping.is_some();
+        if stepping {
+            crate::debugger::stepping::popped(self);
+        }
         match popped.then {
             Continuation::ReturnToSuspended(suspended) => {
                 let ReturnToSuspended { sender, then } = *suspended;

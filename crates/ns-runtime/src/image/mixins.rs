@@ -1026,7 +1026,8 @@ pub fn build(
                         // kernel is compiled from `Kernel.ns` at bootstrap.
                         // A lazy slot's getter needs none either: its body
                         // answers the filled slot (`ReturnSlotIfFilled`).
-                        fast_path: None,
+                        fast_path: std::cell::Cell::new(None),
+                        recognized_fast_path: None,
                         // A class accessor is recognized in shipped source alone.
                         class_accessor: None,
                     })),

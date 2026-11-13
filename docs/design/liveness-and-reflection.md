@@ -29,10 +29,12 @@
 > that edits and installs in a loop keeps its tables at a bounded size,
 > road step 5b2c ("What the id has to carry").
 > **Planned:** actors; the debugger and edit-and-continue are
-> [debugger.md](debugger.md)'s, whose first stage, the debugging API at
-> the safepoint -- pausing a running program from another thread,
-> reading its stack and values, continuing and terminating it -- is
-> built.
+> [debugger.md](debugger.md)'s, whose first three stages are built: the
+> debugging API at the safepoint -- pausing a running program from
+> another thread, reading its stack and values, continuing and
+> terminating it --, the metadata that names and places a stopped frame
+> and its variables, and breakpoints and stepping -- line, method and
+> exception breakpoints, step over, into and out, run to cursor.
 > What else is built is the groundwork every part of it depends on —
 > reified activations and the kernel-private activation objects the
 > exceptions are built on ([core-library.md](core-library.md),
@@ -51,8 +53,9 @@
 > (`mixin.rs`'s `DeclarationText`), the edit and the install
 > (`interpreter/edit.rs`, `interpreter/install.rs`), the image's
 > `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`), and the
-> debugger's first stage, which reads a stopped run's activations and
-> values (`crates/ns-runtime/src/debugger/`, its tests
+> debugger, which reads a stopped run's activations and values and
+> patches breakpoints into the bodies it runs
+> (`crates/ns-runtime/src/debugger/`, its tests
 > `crates/ns-runtime/tests/debugger.rs`; [debugger.md](debugger.md)).
 
 This is the constraints document. It binds every milestone even though it

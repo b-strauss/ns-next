@@ -2352,10 +2352,13 @@ one nothing reaches is dropped, since nothing can compare it any more.
    in it (`Heap::running_bodies`, `drop_superseded`), because such a
    version is what admits that code into an image of its module
    (`image::extra_bodies`).
-4. **Codes.** Every code id no marked closure or frame and no running
-   activation names is freed with its `code_ids` entry
-   (`Heap::free_unnamed_codes`), and the heap's code-table epoch is
-   renewed, so no body's cached id names a freed row
+4. **Codes.** Every code id no marked closure or frame, no running
+   activation, no live optimized copy that inlined its body
+   (`jit::inlined_code_ids`) and no breakpoint that patched its body
+   (`Breakpoints::patched_code_ids`; [debugger.md](debugger.md),
+   "Breakpoints by body, and reclaimed code ids") names is freed with
+   its `code_ids` entry (`Heap::free_unnamed_codes`), and the heap's
+   code-table epoch is renewed, so no body's cached id names a freed row
    ([memory.md](memory.md), "A closure's code id without the map"). A
    running activation names its body by id in its stack frame's code word,
    a number no marking follows, so `Heap::stack_roots` lists them (`StackRoots::codes`);

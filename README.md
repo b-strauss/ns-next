@@ -35,9 +35,15 @@ Not built yet, and the limits worth knowing before trying it on real code:
   collections, streams and mirrors that do not exist yet. The fourteen Are We Fast
   Yet benchmarks and Primordial Soup's Ton80 Richards and DeltaBlue run under
   their harness in `benchmarks/are-we-fast-yet/newspeak/`.
-- **No actors, no reflection API, no debugger.** An eventual send runs
-  synchronously and answers its value rather than a promise, a pattern literal
-  evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.
+- **No actors.** An eventual send runs synchronously and answers its value
+  rather than a promise, a pattern literal evaluates to **nil**, and
+  Typed-Newspeak annotations parse and are discarded. Mirrors read a program
+  and a MirrorBuilder edits and installs it (`platform mirrors`).
+- **No debugger in the IDE yet.** The debugging API in `ns-runtime` pauses a
+  run, reads its stack and values, and sets line, method and exception
+  breakpoints and steps, but only the test suite drives it: the Debug Adapter
+  Protocol agent and the JetBrains plugin's debugger come next
+  (`docs/design/debugger.md`).
 
 `docs/design/` describes how the system works and how much of each aspect exists;
 `docs/PROGRESS.md` is the milestone chronology beside it, and `docs/OPEN-WORK.md`
@@ -131,8 +137,9 @@ cargo xtask gates benchmarks
 cargo xtask gates release-checks
 # the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-# the suite under the thirteen stress modes (MOVES, CACHES, COLLECT, SCAVENGE,
-# WIDE, SUSPEND, JIT, EXIT, ZONE, OPTIMIZE, DEOPT, INVALIDATE and PAUSE) and
+# the suite under the fifteen stress modes (MOVES, CACHES, COLLECT, SCAVENGE,
+# WIDE, SUSPEND, JIT, EXIT, ZONE, OPTIMIZE, DEOPT, INVALIDATE, PAUSE,
+# BREAKPOINTS and STEP) and
 # once without the JIT, each into .temp/stress-<MODE>.log (NO_JIT for the
 # last), then run-corpus plain and under each mode
 cargo xtask gates stress

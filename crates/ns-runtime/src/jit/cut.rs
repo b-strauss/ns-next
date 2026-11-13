@@ -233,6 +233,17 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         mutator.jit.cut.reset();
         return u64::from(EXIT);
     }
+    // A method a method breakpoint names reports its exit by an unwind,
+    // which only the interpreter's unwinder makes. Its entry's patch makes
+    // its body exit at once, but the JIT stress mode installs such a body
+    // all the same, and an on-stack replacement at a loop's head runs it
+    // as the stretch's entry frame, the home this walk would return from
+    // when its own block returns non-locally.
+    if mutator.breakpoints.reports_exits_of(&caller.code) {
+        mutator.jit.cut.reset();
+        mutator.jit.cut_declined_for_a_method_exit = true;
+        return u64::from(EXIT);
+    }
     let Some(slots) = call_slots(&caller.code, program_counter) else {
         unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };

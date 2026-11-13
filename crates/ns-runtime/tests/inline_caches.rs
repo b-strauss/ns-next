@@ -25,6 +25,11 @@ fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     // it.
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    // And the families a slide moves or frees are those of bodies that
+    // died: the breakpoint stress mode's patches keep every body they
+    // patched alive, and its family with it, for as long as the mode is on.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }

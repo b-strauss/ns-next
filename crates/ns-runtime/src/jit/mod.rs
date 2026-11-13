@@ -213,6 +213,11 @@ pub struct JitStatistics {
     /// stub's decline -- and an exit at a send instruction, which runs it
     /// again.
     pub send_exits: u64,
+    /// Exits of machine code at an instruction a breakpoint patched,
+    /// which the baseline lowers as an exit so that the interpreter's
+    /// `Breakpoint` arm stops there (`docs/design/debugger.md`, "Where
+    /// the original lives"): of `exits`.
+    pub breakpoint_exits: u64,
     /// Bodies the JIT abandoned once their machine code had handed their
     /// frames to the interpreter too often (`EXIT_BUDGET`): neither entered
     /// nor called by any cell until their exits decay
@@ -1641,6 +1646,12 @@ pub(crate) struct JitState {
     /// says nothing of the caller's code (`resumption_after_exit`).
     /// Cleared with `walked` before every entry.
     pub(crate) refused_for_an_uncompiled_callee: bool,
+    /// Whether the cut declined the last non-local return because a
+    /// frame it would pop runs a method a method breakpoint names
+    /// (`cut::cut_frame`): the debugger's exit, not the code's, which
+    /// counts against no budget (`resumption_after_exit`). Cleared with
+    /// `walked` before every entry.
+    pub(crate) cut_declined_for_a_method_exit: bool,
     /// The block every entry hands machine code (`stubs::BlockWord`), kept
     /// from one entry to the next: an entry writes only the words that
     /// name its frame and its code, the others when `block_stale` says
@@ -2027,6 +2038,7 @@ impl JitState {
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
+            cut_declined_for_a_method_exit: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -3108,6 +3120,7 @@ impl JitState {
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
+            cut_declined_for_a_method_exit: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -3984,7 +3997,7 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
         {
             None
         }
-        Stubbed::Method { method, .. } => match method.fast_path {
+        Stubbed::Method { method, .. } => match method.fast_path() {
             Some(MethodFastPath::Constant(constant)) => Some(address(match constant {
                 QuickConstant::Nil => zone.accessors.nil,
                 QuickConstant::True => zone.accessors.true_constant,
@@ -4125,7 +4138,7 @@ pub(crate) fn runs_in_machine_code(
     matches!(
         chain,
         Chain::Public | Chain::Protected | Chain::Private | Chain::Super
-    ) && method.fast_path.is_none()
+    ) && method.fast_path().is_none()
         && method.argument_count == usize::from(method.code.argument_count)
 }
 
@@ -6054,6 +6067,14 @@ fn optimize(
     if done {
         return;
     }
+    // A body a breakpoint patched stays in its baseline code, which exits
+    // at the patch for the interpreter to stop there: optimized code would
+    // run past it. Put off rather than refused, so that the body is
+    // optimized once the breakpoint is gone.
+    if code.has_patches() {
+        defer_optimization(mutator, code, key);
+        return;
+    }
     debug_assert!(
         entered.upgrade().is_none_or(|application| {
             key.is_some_and(|key| key.entered == application.dispatch_ids.instances)
@@ -7171,6 +7192,7 @@ fn enter_machine_code(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.cut_declined_for_a_method_exit = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -7383,6 +7405,7 @@ fn call_through(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.cut_declined_for_a_method_exit = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -7618,7 +7641,20 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
+    let at_a_breakpoint = match exit {
+        MachineExit::Reexecute { program_counter } => mutator
+            .heap
+            .activation_code(innermost)
+            .is_patched(program_counter as usize),
+        _ => false,
+    };
+    if at_a_breakpoint {
+        mutator.jit.statistics.breakpoint_exits += 1;
+    }
+    let for_the_debugger =
+        at_a_breakpoint || std::mem::take(&mut mutator.jit.cut_declined_for_a_method_exit);
     let circumstances = ExitCircumstances {
+        for_the_debugger,
         real_request: mutator.heap.real_safepoint_requested(),
         forced,
         refused_for_an_uncompiled_callee: std::mem::take(
@@ -7731,13 +7767,16 @@ fn resumption_after_exit(
 }
 
 /// What beside an exit itself decides whether it counts against an exit
-/// budget (`exit_counts`): whether a real safepoint request stands,
-/// whether the deopt stress mode forced it, whether the miss leaf refused
-/// the call for a callee with no machine code yet, and whether the JIT
-/// stress mode installs every body whatever it exits at.
+/// budget (`exit_counts`): whether the debugger made it -- at a slot a
+/// breakpoint patched, or a non-local return the cut declined for a
+/// method breakpoint's exit -- whether a real safepoint request stands, whether the deopt
+/// stress mode forced it, whether the miss leaf refused the call for a
+/// callee with no machine code yet, and whether the JIT stress mode
+/// installs every body whatever it exits at.
 #[cfg(ns_jit)]
 #[derive(Clone, Copy, Default)]
 struct ExitCircumstances {
+    for_the_debugger: bool,
     real_request: bool,
     forced: bool,
     refused_for_an_uncompiled_callee: bool,
@@ -7793,11 +7832,15 @@ fn exit_counts(exit: stubs::MachineExit, circumstances: ExitCircumstances) -> bo
             }
         );
     // The stress mode enters every body at every push, however often it
-    // leaves.
+    // leaves. An exit at a breakpoint's patch, or at a non-local return the
+    // cut declined for a method breakpoint, is the debugger's, not the
+    // code's: counted, a body stopped at often would be abandoned, and
+    // revived later, after the breakpoint is gone, for the user's stops.
     matches!(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
     ) && !circumstances.installed_whatever_it_exits_at
+        && !circumstances.for_the_debugger
         && !circumstances.forced
         && !refused_for_a_request
         && !refused_for_its_inlining
@@ -8666,6 +8709,67 @@ fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         .refresh_cells_entering_any(&entries, &mutator.jit);
 }
 
+/// Frees what machine code `code` runs in, since a breakpoint patched or
+/// restored one of its slots (`docs/design/debugger.md`, "Breakpoints by
+/// body, and reclaimed code ids"): its baseline code, its twin and its
+/// optimized copies, as an abandonment frees them (`abandon`), and every
+/// optimized copy of another body that inlined it, found by its code id
+/// among the copies' dependencies (`CopyDependencies::code_ids`), as an
+/// invalidation frees them. Code compiled before the change runs the
+/// slot as it was: past a breakpoint set since, or into an exit at one
+/// removed since. The body counts its entries afresh, whatever it was --
+/// compiled, abandoned or exiting at once -- unless it was refused for a
+/// reason no patch changes, so that it is compiled again with the slots
+/// as they are now, its patches lowered as exits (`baseline::compile`),
+/// and is never left interpreted for good by a breakpoint. Every cell
+/// that named the code freed is written afresh from its entry, and every
+/// cell at all when the body was abandoned or exiting at once, since a
+/// cell that refused its calls then refuses them no more. Only between
+/// entries -- at the run loop's safepoint, between runs, or in the
+/// interpreter's own instruction -- where no return address into the
+/// zone exists, as every free.
+#[cfg(ns_jit)]
+pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let mut entries = mutator.jit.free_entered_code(code);
+    let state = code.jit.state.get();
+    // A cell names the stub that refuses the call of a body abandoned or
+    // exiting at once, which a revival writes afresh everywhere
+    // (`after_compile_trigger`).
+    let refused_by_cells = code.jit.is_abandoned() || state == EXITS_AT_ONCE;
+    if state != REFUSED {
+        code.jit.forget();
+    }
+    mutator.heap.forget_machine_entry(code);
+    if let Some(code_id) = mutator.heap.minted_code_id(code) {
+        let dependent = mutator
+            .jit
+            .copies_depending(|dependencies| dependencies.code_ids.contains(&code_id));
+        invalidate_dependent_copies(mutator, dependent, &mut entries);
+    }
+    // An inlined lazy slot's getter reads the slot without naming the
+    // getter's code id (`AlwaysInlined::LazyGetter`), and so would answer
+    // a filled slot past a breakpoint at the getter's first instruction:
+    // a method breakpoint's entry and exit, which stand there. Every copy
+    // goes, since none names the getter; a copy compiled while the patch
+    // stands calls the getter (`tree::Walk::method`).
+    let lazy_getter = code.instruction_count() > 0
+        && matches!(
+            code.instruction(0),
+            crate::bytecode::Instruction::ReturnSlotIfFilled { .. }
+        );
+    refresh_cells_entering(mutator, entries);
+    if lazy_getter {
+        invalidate_all_optimized(mutator);
+    }
+    if refused_by_cells {
+        mutator.caches.refresh_all_cells(&mutator.jit);
+    }
+}
+
+/// Without a JIT no machine code runs a patched slot.
+#[cfg(not(ns_jit))]
+pub(crate) fn free_for_patch(_mutator: &mut Mutator<'_>, _code: &Rc<CompiledCode>) {}
+
 #[cfg(not(ns_jit))]
 fn run_machine_code(
     _mutator: &mut Mutator<'_>,
@@ -8986,6 +9090,10 @@ mod tests {
         /// the counts are the test's own.
         fn pinning_the_budget() -> Interpreter {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint stress mode patched is neither optimized
+            // nor inlined, and its baseline code exits at every statement.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_breakpoints(false);
             interpreter.set_jit_enabled(true);
             interpreter.set_optimize_stress(false);
             interpreter.enter(|mutator| {
@@ -9483,8 +9591,9 @@ mod tests {
         /// safepoint request at the depth limit word -- the request lowered
         /// it, whatever the depth -- nor one refused for the inlined scopes
         /// of optimized code, nor a call refused for an uncompiled callee,
-        /// nor a forced exit, nor any exit under the JIT stress mode; and
-        /// never a poll, a trap or a budget's run-out.
+        /// nor a forced exit, nor an exit the debugger made, nor any
+        /// exit under the JIT stress mode; and never a poll, a trap or a
+        /// budget's run-out.
         #[test]
         fn only_exits_that_say_something_of_the_code_count() {
             use crate::jit::stubs::MachineExit;
@@ -9532,6 +9641,11 @@ mod tests {
                 ..plain
             };
             assert!(!exit_counts(reexecute, stress));
+            let for_the_debugger = ExitCircumstances {
+                for_the_debugger: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, for_the_debugger));
             for exit in [
                 MachineExit::Safepoint { program_counter: 3 },
                 MachineExit::Trap {
@@ -10142,6 +10256,15 @@ mod tests {
             )
             .expect("resolve");
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint stress mode patched is neither optimized
+            // nor inlined, and its baseline code exits at every statement.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_breakpoints(false);
+            // The step stress mode is off for the same reason: a body a step's
+            // one-shot breakpoints patched loses its machine code and every
+            // copy that inlined it.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_step(false);
             interpreter.set_jit_enabled(true);
             interpreter.set_jit_stress(true);
             interpreter.set_optimize_stress(true);
@@ -10250,6 +10373,15 @@ mod tests {
             )
             .expect("resolve");
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint stress mode patched is neither optimized
+            // nor inlined, and its baseline code exits at every statement.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_breakpoints(false);
+            // The step stress mode is off for the same reason: a body a step's
+            // one-shot breakpoints patched loses its machine code and every
+            // copy that inlined it.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_step(false);
             interpreter.set_jit_enabled(true);
             interpreter.set_jit_stress(true);
             interpreter.set_optimize_stress(true);
@@ -10368,6 +10500,10 @@ mod tests {
             )
             .expect("resolve");
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint stress mode patched is neither optimized
+            // nor inlined, and its baseline code exits at every statement.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_breakpoints(false);
             interpreter.set_jit_enabled(true);
             interpreter.set_jit_stress(true);
             interpreter.set_optimize_stress(true);
@@ -10831,6 +10967,15 @@ mod tests {
             )
             .expect("resolve");
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint stress mode patched is neither optimized
+            // nor inlined, and its baseline code exits at every statement.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_breakpoints(false);
+            // The step stress mode is off for the same reason: a body a step's
+            // one-shot breakpoints patched loses its machine code and every
+            // copy that inlined it.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_step(false);
             interpreter.set_jit_enabled(jit);
             let class = interpreter.load_module(&resolved);
             let subject = match interpreter.instantiate(&class, &[]) {

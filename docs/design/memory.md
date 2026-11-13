@@ -96,7 +96,8 @@
 > (`crates/ns-runtime/src/debugger/`), `Interpreter::tenure_now`,
 > `Interpreter::collect_now` and the switches of the memory-facing stress
 > modes: moves, caches, collection, scavenges, every instruction wide,
-> suspensions, the code zone's compaction and the debugger's pause; the
+> suspensions, the code zone's compaction, the debugger's pause, its
+> breakpoints and its steps; the
 > JIT's, the exits', the optimizer's and the deoptimizations' are in
 > `jit/mod.rs`, which also
 > reads the zone's to force the JIT on),
@@ -517,9 +518,13 @@ did. The request word is a set of bits, each set by a `fetch_or` and
 cleared by a `fetch_and` so that no writer erases another's: the VM's own
 request (`REAL_REQUEST`, which a collection's, a scavenge's and a full
 code zone's trigger set through `Heap::request_safepoint`), a stress
-mode's hold (`STRESS_HOLD`), and the debugger's pause and commands
+mode's hold (`STRESS_HOLD`), the debugger's pause and commands
 (`DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`; [debugger.md](debugger.md), "The
-poll words as atomics"). The poll takes the safepoint for any of them;
+poll words as atomics"), and the two the VM sets for the debugger on its
+own thread, a step into's request held until the next push and a stop an
+exception breakpoint recorded for the next poll (`DEBUGGER_STEP`,
+`DEBUGGER_STOP`; [debugger.md](debugger.md), "Step into's held request",
+"Exceptions"). The poll takes the safepoint for any of them;
 every bit but the hold's lowers the depth limit machine code's prologues
 compare with to 0 while it stands (`LOWERS_DEPTH_LIMIT`,
 `Heap::synchronize_depth_limit`; [execution.md](execution.md), "Polls and
@@ -1984,8 +1989,10 @@ so machine code reads only committed memory: an id past the lowered
 machine entry rows reads as no machine entry, and the interpreter calls
 the block. The code table's length counts every body with machine code,
 not only the bodies an activation runs: a full collection frees the id
-of a body nothing runs, and the budget words' pointing that follows
-mints one again for each body whose code lives
+of a body nothing runs -- a body a live optimized copy inlined or a
+breakpoint patched counts as run ([debugger.md](debugger.md),
+"Breakpoints by body, and reclaimed code ids") -- and the budget words'
+pointing that follows mints one again for each body whose code lives
 (`jit::point_budget_words_after_collection`), so that a compiled body
 keeps a code id, and its rows in the three tables, for as long as its
 code lives. The stack shrinks between entries, when no frame machine
@@ -2332,7 +2339,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are thirteen stress modes, each a gate of its own at the end of a batch,
+There are fifteen stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2344,7 +2351,15 @@ optimized code ([execution.md](execution.md), "The code zone"),
 `NS_NEXT_STRESS_PAUSE`, which stops the run as a debugger's pause does,
 reads its whole stack and every value one level deep and continues
 ([debugger.md](debugger.md), "The pause stress mode"),
-each of these seven keeping the safepoint flag set while it is on,
+`NS_NEXT_STRESS_BREAKPOINTS`, which patches every statement start of
+every body it finds running at a safepoint with a breakpoint that never stops, each gone past
+through the run loop's arm ([debugger.md](debugger.md), "The breakpoint
+stress mode"),
+`NS_NEXT_STRESS_STEP`, which stops the run as a pause does at the
+safepoints its schedule picks and takes a burst of steps into, over and
+out from there, reading the stack at every stop
+([debugger.md](debugger.md), "The step stress mode"),
+each of these nine keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
@@ -3016,7 +3031,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name thirteen stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name fifteen stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

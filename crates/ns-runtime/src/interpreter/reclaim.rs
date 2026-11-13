@@ -41,6 +41,11 @@ impl Mutator<'_> {
         // And a live copy of optimized code names every body it inlined,
         // which no activation may run (`jit::inlined_code_ids`).
         gathered.running_codes(&crate::jit::inlined_code_ids(self));
+        // And a breakpoint's patched body, which the table holds by the
+        // body itself: its id stays the one it was patched under, which
+        // machine code and the optimized copies that inlined it know it
+        // by, for as long as the patch stands.
+        gathered.running_codes(&self.breakpoints.patched_code_ids(self));
         // Step 1: applications. Live: what a marked class object names,
         // what an activation was entered at, the application whose guard
         // an activation recorded -- a receiver forwarded under it must
@@ -270,6 +275,16 @@ mod tests {
 
     fn load_with(lowering: Lowering, source: &str) -> (Interpreter, Root) {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
+        // What a collection reclaims is what these pin: the breakpoint
+        // stress mode's patches keep every body they patched, and its code
+        // id, for as long as the mode is on.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
+        // The step stress mode is off for the same reason: a step's one-shot
+        // breakpoints keep the bodies they patch, and their code ids, while the
+        // step lasts.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_step(false);
         let class = load_into(&mut interpreter, source);
         (interpreter, class)
     }

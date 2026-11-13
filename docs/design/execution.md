@@ -35,9 +35,10 @@
 > compiling does so in a zone of fixed size ("Stage 4: closures, non-local
 > return, allocation and the barrier", "The code zone"). The optimizing
 > JIT is designed in ten stages ("Planned: the optimizing JIT") and its
-> first two are built, the foundation ("The optimizing tier's
-> foundation") and speculation ("Speculation"): a body whose budget, spent by its baseline code,
-> runs out is snapshotted and compiled at the next safepoint into an SSA
+> first three are built, the foundation ("The optimizing tier's
+> foundation"), speculation ("Speculation") and inlining ("Inlining"):
+> a body whose budget, spent by its baseline code, runs out is
+> snapshotted and compiled at the next safepoint into an SSA
 > graph, its values kept in machine registers by a linear scan between
 > interrupt points and written back into the frame before each, every
 > instruction it does not lower as register arithmetic emitted by the
@@ -49,7 +50,16 @@
 > slots at fixed offsets; a site the feedback says never ran traps,
 > and a copy that keeps failing is compiled again ever more rarely,
 > past its last version without traps; an edit, a bulk forward and a
-> reclaimed id free the copies they make stale.
+> reclaimed id free the copies they make stale. A cached send inlines
+> its callees in a type-case, each inlined scope laid out where the
+> interpreter would push its activation, and a copy is freed when
+> anything it inlined changes ("Inlining"). A debugger's breakpoint
+> patches its body's slots in place: the patch frees the body's machine
+> code and every copy that inlined it, the baseline lowers a patched
+> slot as an exit to the interpreter's `Breakpoint` arm, and the
+> optimizing tier neither optimizes nor inlines a patched body
+> ("Invalidation", "Planned: the baseline JIT";
+> [debugger.md](debugger.md), "Where the original lives").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -83,7 +93,11 @@
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
 > the code zone's compaction and freeing in `jit/zone.rs`; the
 > optimizing compiler in `jit/optimizing/`, and its request, install,
-> entries, copies, traps, retirement and invalidation in `jit/mod.rs`),
+> entries, copies, traps, retirement and invalidation in `jit/mod.rs`,
+> where `jit::free_for_patch` frees what a breakpoint's patch makes
+> stale), the run loop's `Breakpoint` arm in `vm.rs` and its decision in
+> `interpreter/breakpoint.rs`, the patchable slots in
+> `bytecode/compact.rs` (`EncodedBody::patch`, `restore`, `original`),
 > `heap/machine_words.rs` (the machine words, atomics behind an `Arc`,
 > the safepoint request among them, which an attached debugger's remote
 > arms from its own thread; `crates/ns-runtime/src/debugger/` serves it at
@@ -982,9 +996,10 @@ there.
 
 The debugger does not force `program_counter` at every instruction: a
 stop leaves its stretch for the safepoint, which stores the stopped
-frame's, and a pause's stop is built so ([debugger.md](debugger.md), "9. A
-stop waits at the run loop's safepoint", "The stop"); a breakpoint's and a
-step's stop, planned, will do the same.
+frame's, as a pause's, a breakpoint's, a step's and an exception's stop
+all do ([debugger.md](debugger.md), "9. A stop waits at the run loop's
+safepoint", "The stop"): the `Breakpoint` arm leaves its stretch for the
+safepoint with the frame standing at the patched slot.
 
 ## Unwinding
 
@@ -12132,7 +12147,10 @@ and outer-local sites are, by `JitState::write_budget_word` beside
 `JitState::write_body_words`. A body whose compile the zone has no
 room for, or which is known not to fit an exhausted zone, has its
 budget armed afresh (`defer_optimization`), so that it is requested
-again once it has run as long.
+again once it has run as long. A body a breakpoint patched is put off
+the same way, never refused, so that it stays in its baseline code,
+which exits at the patch, and is optimized once its breakpoints are gone
+([debugger.md](debugger.md), "Where the original lives").
 
 ### The snapshot
 
@@ -12317,7 +12335,11 @@ the exits (`JitSlot::decay_exits`); a version never decays. An exit of
 baseline code abandons the body as before, its optimized code with it,
 and raises no version.
 **An exit that says nothing of the code counts against neither
-budget**: the deopt stress mode's forced exits, and a push a callee's
+budget**: the deopt stress mode's forced exits; the debugger's exits --
+one at a slot a breakpoint patched, and a non-local return the cut
+declined because a frame it would pop runs a method a method breakpoint
+names (`JitState::cut_declined_for_a_method_exit`) -- which say nothing
+of the code and, counted, would abandon a body stopped at often; and a push a callee's
 prologue refused at the depth limit word while a real safepoint request
 stands -- the request lowered the word to 0, and it is often the
 optimization request of a callee whose budget just ran out, so that,
@@ -12647,7 +12669,7 @@ budget and its wait was spent by whichever pair's frames
 
 ### Invalidation
 
-Three events make copies stale, and each frees exactly those, counted
+Four events make copies stale, and each frees exactly those, counted
 in `JitStatistics::invalidated_copies`:
 
 - **An install** (`installEdit:`) frees every copy whose key names an
@@ -12664,11 +12686,19 @@ in `JitStatistics::invalidated_copies`:
   that the id minted again for an application of another layout meets
   neither the copy nor the old row's refusal, version, level or
   application word.
+- **A breakpoint set or removed** frees, with the patched body's own
+  machine code, every copy whose dependencies name the body's code id
+  (`jit::free_for_patch`), and every copy once it switches a method's
+  fast path, which a copy inlined without naming the method's body
+  (`invalidate_all_optimized`; [debugger.md](debugger.md), "A breakpoint
+  in a method with a fast path").
 
 The copies are **freed at once**, their cells, dispatching rows and
 machine entry rows written afresh: an install and a forward are mirror
-leaves machine code exits for (`MachineCall::Exit`), and a collection
-runs at a safepoint, so no return address into the zone exists and
+leaves machine code exits for (`MachineCall::Exit`), a collection
+runs at a safepoint, and a breakpoint is set or removed at a safepoint,
+between runs, or as an interpreted module build or install resolves it
+again, so no return address into the zone exists and
 every frame goes on in its baseline code. No frame is converted, nor
 needs to be, even one that stands for several inlined activations: the
 exit the install or the forward ran after wrote them as activations,
@@ -12782,7 +12812,13 @@ its candidates (`compiler/js-inlining-heuristic.cc:225-395`), a site
 never executed excluded. What is observed is never inlined: a body
 with an unwind marker -- `on:do:`, `ensure:`, `ifCurtailed:` -- and
 every kernel method whose activation a leaf reads or marks, a mirror
-send of the `Activation` rows ("Observers" above). Nor is a callee
+send of the `Activation` rows ("Observers" above). Nor is a body a
+breakpoint patched, whose own code exits at the patch for the
+interpreter to stop there: the walk answers `CalleeFacts::Other` for
+such a method callee, which the copy calls, and leaves such a block
+literal unsnapshotted, so that its closure is made and runs the block's
+own code ([debugger.md](debugger.md), "Where the original lives"). Nor
+is a callee
 whose scope would create a block the plan does not eliminate, on a way
 that ran (`Planner::creates_a_block`): optimized code creates a block
 only in its outermost scope until stage 4, and a `MakeClosure` in an
@@ -13793,7 +13829,10 @@ the baseline JIT's foundation moved" that of the first two.
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll, nor a call refused for a callee not compiled yet
-    that the zone has room for ("Exits, abandonment and the code zone")
+    that the zone has room for ("Exits, abandonment and the code zone"),
+    nor an exit the debugger made -- at a slot a breakpoint patched, or a
+    non-local return the cut declined for a method breakpoint
+    ([debugger.md](debugger.md), "Where the original lives")
     -- is **abandoned** (`jit::abandon`,
     `JitStatistics::abandoned_bodies`): it is settled abandoned
     (`FIRST_ABANDONED` to `LAST_ABANDONED`), so
@@ -14534,6 +14573,15 @@ three lowerings:
    already is ("Between the tiers" above), and comes back to machine code
    at its next back edge. Always correct, so every instruction has a
    lowering from the day it is added.
+
+A slot a breakpoint patched takes the third, whatever its instruction:
+`baseline::compile` asks `CompiledCode::is_patched` before it hands the
+instruction to `lower`, which reads the original, so that the
+interpreter's `Breakpoint` arm stops there
+(`JitStatistics::breakpoint_exits`). A patch, and the restore of one,
+frees the body's machine code first, so no code compiled before the
+change runs the slot ([debugger.md](debugger.md), "Where the original
+lives", "Breakpoints by body, and reclaimed code ids").
 
 So a new instruction adds one arm and,
 for a template, the idioms it lacks to the macro assembler; nothing below
@@ -15296,15 +15344,19 @@ push and, at it, the safepoint. The request word
 (`MachineWord::SafepointRequested`) is a set of bits (`heap.rs`): the
 VM's own request (`REAL_REQUEST`, bit 0: a collection's, a scavenge's, a
 full code zone's, `Heap::request_safepoint`), a stress mode's hold
-(`STRESS_HOLD`, bit 1), and an attached debugger's pause and commands
+(`STRESS_HOLD`, bit 1), an attached debugger's pause and commands
 (`DEBUGGER_PAUSE`, bit 2, and `DEBUGGER_COMMANDS`, bit 3), which its
 agent sets from its own thread ([debugger.md](debugger.md), "The poll
-words as atomics"). Each bit is set by a `SeqCst` `fetch_or` and cleared
+words as atomics"), and the debugger's two bits the VM sets on its own
+thread: a step into's request held until the next push
+(`DEBUGGER_STEP`, bit 4) and a stop an exception breakpoint's leaf
+recorded for the next poll (`DEBUGGER_STOP`, bit 5) ([debugger.md](debugger.md),
+"Step into's held request", "Exceptions"). Each bit is set by a `SeqCst` `fetch_or` and cleared
 by a `fetch_and`, so that no writer erases another's: the VM clears its
 own bit and the hold once it served them (`Heap::clear_safepoint_request`),
 the debugger's only once it served those (`Heap::clear_debugger_bits`),
 and the agent clears none. `LOWERS_DEPTH_LIMIT` is every bit but the
-hold's (`REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS`), and a "real"
+hold's (`REAL_REQUEST | DEBUGGER_BITS`, the debugger's four), and a "real"
 request (`Heap::real_safepoint_requested`) is one of its bits. Every
 write of the request word, and of the depth limit, is followed by
 `Heap::synchronize_depth_limit`, which writes the limit word -- 0 exactly
@@ -15610,7 +15662,10 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   `on:do:`, the `ifCurtailed:` a future's `resolve` evaluates its
   computation inside -- a return address into a stub, and the stretch's
   entry frame reached first end the walk with nothing changed, and so
-  does a home that catches no return, an initializer's. The home found,
+  does a home that catches no return, an initializer's, and a caller
+  running a method a method breakpoint names, whose exit by the unwind
+  only the interpreter's unwinder reports ([debugger.md](debugger.md),
+  "Method breakpoints"). The home found,
   every frame above it and the home itself are popped as their returns
   pop them: a reified frame is divorced with the program counter it
   stopped at -- the `NonLocalReturn`'s for the block, its send's for

@@ -13,6 +13,7 @@
 //! scheduling steps, not Rust calling back into Newspeak. An activation with
 //! no marker costs one test.
 
+use super::breakpoint;
 use super::Arguments;
 use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
@@ -234,6 +235,7 @@ pub(crate) fn unwind_signal<'gc>(
                     .expect("internal: a stack deeper than the floor has a top");
                 mutator.pop_for_unwind(top);
             }
+            breakpoint::unwind_stopped(mutator);
             return UnwindOutcome::Exit(Err(error));
         }
     };
@@ -265,13 +267,37 @@ pub(crate) fn unwind_signal<'gc>(
 ///
 /// Every activation it pops hands its continuation to `Mutator::abandon`,
 /// which undoes what a continuation that will now never run had begun.
+///
+/// Whether the debugger hears of the pops is decided once, before the
+/// first: only a step in progress or a method breakpoint wants them
+/// (`breakpoint::follows_unwinds`), and nothing the pops do starts either
+/// unless one of them already is, so an unwind with neither pays one test
+/// rather than several for every frame it pops. A followed unwind tells
+/// the step where it stops popping, once (`breakpoint::unwind_stopped`):
+/// only that frame is flooded, never one it passes.
 pub(crate) fn unwind<'gc>(
+    mutator: &mut Mutator<'gc>,
+    pending: PendingUnwind<'gc>,
+    floor: usize,
+) -> UnwindOutcome<'gc> {
+    if breakpoint::follows_unwinds(mutator) {
+        unwind_from::<true>(mutator, pending, floor)
+    } else {
+        unwind_from::<false>(mutator, pending, floor)
+    }
+}
+
+/// `unwind`, the debugger's reports made only when `FOLLOWED`.
+fn unwind_from<'gc, const FOLLOWED: bool>(
     mutator: &mut Mutator<'gc>,
     pending: PendingUnwind<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     loop {
         if mutator.heap.activation_stack_top() <= floor {
+            if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
+            }
             return UnwindOutcome::Exit(Err(exit_signal(pending)));
         }
         let top = mutator
@@ -287,15 +313,50 @@ pub(crate) fn unwind<'gc>(
                     && mutator.catches_return(target)
             });
         if arrived {
+            // A method a return's unwind arrives at returns without a
+            // return instruction of its own, whose exit a method
+            // breakpoint reports (`breakpoint::returning_by_unwind`).
+            if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
+                if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
+                    breakpoint::returning_by_unwind(mutator, top, frame);
+                }
+            }
             return arrive(mutator, top, pending.action);
         }
         if let Some(block) = block_to_run(mutator, top) {
+            if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
+            }
             return UnwindOutcome::RunBlock {
                 block,
                 then: Box::new(pending),
             };
         }
-        mutator.pop_for_unwind(top);
+        if FOLLOWED {
+            pop_followed(mutator, top, &pending.action);
+        } else {
+            mutator.pop_for_unwind_as::<false>(top);
+        }
+    }
+}
+
+/// Pops `top` for an unwind the debugger follows. A method the unwind
+/// pops is left without a return, whose exit a method breakpoint reports;
+/// a termination, which ends the run, reports none.
+fn pop_followed<'gc>(
+    mutator: &mut Mutator<'gc>,
+    top: ActivationReference,
+    action: &UnwindAction<'gc>,
+) {
+    let exits = if matches!(action, UnwindAction::Terminate(_)) {
+        Vec::new()
+    } else {
+        breakpoint::leaving_by_unwind(mutator, top)
+    };
+    mutator.pop_for_unwind(top);
+    if !exits.is_empty() {
+        breakpoint::left_by_unwind(mutator, exits);
     }
 }
 

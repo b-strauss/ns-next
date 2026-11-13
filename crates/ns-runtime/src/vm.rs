@@ -17,6 +17,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
+use crate::interpreter::breakpoint::{self, BreakpointDecision};
 use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
@@ -675,7 +676,20 @@ fn run_stretch<'gc>(
                     let public = 'public: {
                         let super_send = 'super_send: {
                             let inlinable = 'inlinable: {
-                                match code.slot(program_counter) {
+                                // A slot a breakpoint patched hands its
+                                // original back to this match, which runs it
+                                // through its ordinary arm; every other arm
+                                // leaves the loop, so it costs no other
+                                // instruction a compare.
+                                let mut slot = code.slot(program_counter);
+                                // The match keeps the indentation it had
+                                // outside this loop: rustfmt gives up on
+                                // a block this deep and leaves it as it
+                                // is, and re-indenting it by hand would
+                                // make every later diff of an arm a diff
+                                // of the whole match.
+                                loop {
+                                    match slot {
                                     CompactInstruction::LoadNil { destination } => {
                                         mutator.heap.set_register(
                                             register_base,
@@ -1207,21 +1221,32 @@ fn run_stretch<'gc>(
                                         }
                                     }
                                     // §6.3.2's simultaneous slot clauses: one arm and one call,
-                                    // out of line (`simultaneous_clause_instruction`).
-                                    slot @ (CompactInstruction::MakeFuture { .. }
+                                    // out of line (`simultaneous_clause_instruction`). A
+                                    // breakpoint's slot shares the arm: an arm of its own,
+                                    // one more target of the match's jump table, grew the
+                                    // loop's code in every other arm past the `codegen`
+                                    // gate's budget, where sharing this one costs nothing.
+                                    out_of_line @ (CompactInstruction::MakeFuture { .. }
                                     | CompactInstruction::ResolveFuture { .. }
                                     | CompactInstruction::LoadOwnSlot { .. }
                                     | CompactInstruction::InitializeSlotProvisionally {
                                         ..
-                                    }) => {
-                                        break 'decided simultaneous_clause_instruction(
+                                    }
+                                    | CompactInstruction::Breakpoint) => {
+                                        match simultaneous_clause_instruction(
                                             mutator,
                                             activation,
                                             program_counter,
-                                            slot,
+                                            out_of_line,
                                             floor,
                                             &mut handoff,
-                                        )
+                                        ) {
+                                            OutOfLine::Transfer(transfer) => {
+                                                break 'decided transfer
+                                            }
+                                            OutOfLine::Execute(original) => slot = original,
+                                            OutOfLine::Stop => break 'run Leave::Safepoint,
+                                        }
                                     }
                                     // The instructions of a compiled `new`: each
                                     // one call, out of line; what each decides is
@@ -1509,6 +1534,7 @@ fn run_stretch<'gc>(
                                         WideOutcome::Jump(target) => jump_to!(target),
                                         WideOutcome::Transfer(transfer) => break 'decided transfer,
                                     },
+                                }
                                 }
                             };
                             break 'decided send_path!(inlinable, Inlinable);
@@ -2658,7 +2684,10 @@ fn finish<'gc>(
 
 /// What `finish` does once the frame is popped: `then`, the popped frame's
 /// continuation, applied to `value`, and `counted`, its flag, handed on to
-/// whatever the continuation pushes.
+/// whatever the continuation pushes. Every way on but `Deliver`'s, and a
+/// superclass clause's class delivered as a send's value, reports the
+/// popped frame to a step in progress (`breakpoint::frame_left`), which
+/// goes on from wherever the program does.
 #[inline(always)]
 fn apply_continuation<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -2687,21 +2716,29 @@ fn apply_continuation<'gc>(
         }
         // A future's `resolve` returned to an instruction that could not
         // take its value: the instruction runs again and finds it resolved.
-        Continuation::Reexecute => return reexecute(mutator, floor, handoff),
+        Continuation::Reexecute => {
+            breakpoint::frame_left(mutator, None);
+            return reexecute(mutator, floor, handoff);
+        }
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
-            // step.
+            // step. Only a superclass clause's class is a value here, handed
+            // to the accessor's send as a callee's value is.
             resumed @ Ok(Step::Value(value)) => {
                 std::mem::forget(resumed);
                 value
             }
             Ok(step) => {
+                breakpoint::frame_left(mutator, None);
                 return match mutator.push_continuation(step, counted) {
                     Ok(next) => handoff.switch_to(mutator, next, 0),
                     Err(signal) => unwind(mutator, signal, floor, handoff),
                 };
             }
-            Err(signal) => return unwind(mutator, signal, floor, handoff),
+            Err(signal) => {
+                breakpoint::frame_left(mutator, Some(&signal));
+                return unwind(mutator, signal, floor, handoff);
+            }
         },
     };
     if mutator.heap.activation_stack_top() == floor {
@@ -2720,7 +2757,9 @@ fn apply_continuation<'gc>(
 /// applied as any popped one is, so that from here on everything proceeds
 /// as if the sender had been on the stack all along -- the caller a value
 /// is delivered to, the activation a continuation pushes above, the
-/// instruction `reexecute` runs again.
+/// instruction `reexecute` runs again. A step in progress forgets the
+/// popped frame before the sender is resumed, which may take its offset
+/// (`breakpoint::returning_to_suspended`).
 #[cold]
 #[inline(never)]
 fn return_to_suspended<'gc>(
@@ -2732,6 +2771,7 @@ fn return_to_suspended<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let ReturnToSuspended { sender, then } = suspended;
+    breakpoint::returning_to_suspended(mutator);
     mutator.resume_frame(sender);
     apply_continuation(mutator, then, counted, value, floor, handoff)
 }
@@ -2881,7 +2921,9 @@ fn machine_code_switch<'gc>(
 /// running it once. A host's send has no instruction to run again; a
 /// future it passes in straight to a leaf ends the run. Only the
 /// interpreter forces a future this way, so the caller runs the
-/// instruction again interpreted, as it met the future.
+/// instruction again interpreted, as it met the future. A breakpoint at
+/// the instruction lets it past again, since it went past it once
+/// (`interpreter::breakpoint::reexecuting`).
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
@@ -2892,6 +2934,7 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
     let program_counter = mutator.heap.activation_program_counter(caller);
+    breakpoint::reexecuting(mutator, caller, program_counter);
     handoff.switch_to(mutator, caller, program_counter)
 }
 
@@ -3087,7 +3130,10 @@ fn initialize_slot_refused<'gc>(
 
 /// The four instructions only a simultaneous slot clause emits, in their
 /// narrow form; the slot, one word, carries their operands. Their wide
-/// forms call the same functions from `run_wide`.
+/// forms call the same functions from `run_wide`. And a slot a breakpoint
+/// patched, whose decision is `interpreter::breakpoint`'s: it shares the
+/// run loop's arm and this call so that it costs the loop no arm of its
+/// own.
 #[inline(never)]
 fn simultaneous_clause_instruction<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -3096,8 +3142,8 @@ fn simultaneous_clause_instruction<'gc>(
     slot: CompactInstruction,
     floor: usize,
     handoff: &mut Handoff,
-) -> Transfer {
-    match slot {
+) -> OutOfLine {
+    let transfer = match slot {
         // A crafted image can put anything in `closure`'s register (an
         // image must never panic, `CLAUDE.md`, "An image is untrusted
         // input"), so an operand that is not a closure is an ordinary error,
@@ -3151,8 +3197,27 @@ fn simultaneous_clause_instruction<'gc>(
                 handoff,
             )
         }
+        CompactInstruction::Breakpoint => {
+            return match breakpoint::reached(mutator, activation, program_counter) {
+                BreakpointDecision::Execute(original) => OutOfLine::Execute(original),
+                BreakpointDecision::Stop => OutOfLine::Stop,
+            }
+        }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
-    }
+    };
+    OutOfLine::Transfer(transfer)
+}
+
+/// What `simultaneous_clause_instruction` answers the run loop.
+enum OutOfLine {
+    /// Where control goes after a simultaneous clause's instruction.
+    Transfer(Transfer),
+    /// A breakpoint's slot goes past: its original, which the loop runs
+    /// through its ordinary arm.
+    Execute(CompactInstruction),
+    /// A breakpoint's slot stops: the loop leaves for the safepoint, the
+    /// frame standing at the slot.
+    Stop,
 }
 
 /// `MakeFuture`: a new unresolved future of the closure in `closure`.
@@ -3383,7 +3448,18 @@ fn unwind<'gc>(
 /// The register a send writes its value to: where a callee's value goes when
 /// the loop resumes the caller.
 fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
-    match code.slot(program_counter) {
+    send_destination_in(code, code.slot(program_counter), program_counter)
+}
+
+/// The register the send in `slot`, at `program_counter`, writes its value
+/// to.
+#[inline(always)]
+fn send_destination_in(
+    code: &CompiledCode,
+    slot: CompactInstruction,
+    program_counter: usize,
+) -> u16 {
+    match slot {
         CompactInstruction::SendPublic0 { destination, .. }
         | CompactInstruction::SendPublic1 { destination, .. }
         | CompactInstruction::SendPublic2 { destination, .. }
@@ -3425,6 +3501,26 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
                 "internal: a caller resumed at an instruction that is not a send: {other:?}"
             ),
         },
+        other => destination_behind(code, other, program_counter),
+    }
+}
+
+/// The destination of a send a caller resumes at whose slot holds no send:
+/// a breakpoint replaced it, and the destination is the original's. Taken
+/// in the match's fallback arm, out of line, so that the breakpoint adds no
+/// arm to the match a resumption runs: one more arm turned its bit test
+/// into a jump table.
+#[cold]
+#[inline(never)]
+fn destination_behind(
+    code: &CompiledCode,
+    slot: CompactInstruction,
+    program_counter: usize,
+) -> u16 {
+    match slot {
+        CompactInstruction::Breakpoint => {
+            send_destination_in(code, code.original(program_counter), program_counter)
+        }
         other => unreachable!(
             "internal: a caller resumed at an instruction that is not a send: {other:?}"
         ),
@@ -3465,4 +3561,40 @@ fn make_value<'gc>(
             return Err(body_too_large_error_named(named, receiver, *limit));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::{CallSite, CodeKind};
+    use ns_syntax::Span;
+
+    /// A caller resumed at a send a breakpoint replaced writes the value
+    /// where the send would have: the destination is the original's.
+    #[test]
+    fn a_caller_resumed_at_a_patched_send_takes_the_original_s_destination() {
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::SendPublic {
+                    selector: Symbol::intern("value"),
+                    receiver_register: 0,
+                    argument_base: 20,
+                    argument_sources: vec![],
+                    destination: 17,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return { register: 17 },
+            ],
+            1,
+            40,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(send_destination(&code, 0), 17);
+        code.patch(0);
+        assert_eq!(code.slot(0), CompactInstruction::Breakpoint);
+        assert_eq!(send_destination(&code, 0), 17);
+    }
 }
