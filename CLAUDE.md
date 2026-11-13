@@ -122,8 +122,21 @@ Rust 1.98.0, edition 2021, seven crates:
   the module's current text through either lowerer's collector, keeps
   per body only when the body compiled again is alike
   (`bytecode::compiles_alike`), caches weakly and clears at every
-  install; `debugger.md`, "The debugging API at the safepoint",
-  "Compiling the metadata again"), the core library
+  install; and breakpoints and stepping: a breakpoint patches its slot
+  of the body in place, the original kept beside the slots for every
+  reader but the run loop's fetch, whose `Breakpoint` arm asks
+  `interpreter/breakpoint.rs` and stops at the safepoint, the patched
+  body's machine code freed and its method's fast path switched off
+  while it stands (`debugger/breakpoints.rs`: line, pending, run to
+  cursor and method breakpoints, keyed by body); steps are one-shot
+  breakpoints and a request bit held until the next push, a frame left
+  otherwise reported by the unwinder and the run loop's cold arms, the
+  shipped modules filtered (`debugger/stepping.rs`); exception
+  breakpoints are decided by two leaves the kernel's handler search
+  sends (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
+  at the safepoint", "Compiling the metadata again", "Where the
+  original lives", "Step over in recursion and blocks", "Exceptions"),
+  the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
   `TypedArraysFactory.ns` and `MirrorsFactory.ns` (the mirrors, whose

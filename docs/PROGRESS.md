@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in fifteen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md) |
+| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md) |
 
 ## Notes
 
@@ -7526,7 +7526,96 @@ without the JIT -- `linux` and `aarch64`.
   decoded creator and a floor under the oracle.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
-(stage 3, breakpoints and stepping, next, and what stage 2's reviews
-left) and "A valid method whose body is one long chain of messages
-aborts `ns-next run`", which the debugger's compilation of an image's
-text now reaches too.
+(what stage 2's reviews left) and "A valid method whose body is one
+long chain of messages aborts `ns-next run`", which the debugger's
+compilation of an image's text now reaches too.
+
+## The debugger's stage 3: breakpoints and stepping (2026-11-13)
+
+[debugger.md](design/debugger.md), decisions 2, 3, 16 and 17, "Where the
+original lives" to "Step into's held request", "Exceptions", "Method
+breakpoints", "The return value of the last call", "The breakpoint
+stress mode", "The step stress mode", "What stage 3 moved";
+[execution.md](design/execution.md), "The optimizing tier's
+foundation", "Inlining".
+
+Stage 3's two open questions were decided with the user on 2026-11-12:
+the shipped modules' code is filtered from steps, and program classes
+can be, a stop a step would make in a filtered frame going on as a step
+into (decision 16); and a step out of a frame that does not return to
+its caller's return point stops at the next place the program reaches
+(decision 17).
+
+A body's slots are `Cell`s, written only by `CompiledCode::patch` and
+`restore`, the original kept beside them, which the decoded view answers
+to every reader but the run loop's fetch. The run loop's `Breakpoint`
+arm shares the out-of-line arm of the simultaneous slot clauses, asks
+`interpreter::breakpoint::reached` whether to stop, and either leaves
+its stretch for the safepoint, where the debugger stops, or runs the
+original through its ordinary arm. A line breakpoint, sent as a
+module's name and an offset into its text, resolves through stage 2's
+metadata to its statement's slots in every body of the module, an
+inlined block's fallback closure included, pending until the module is
+built and set again on the bodies an install replaces. A patch frees the
+body's machine code and every optimized copy that inlined it; the
+baseline lowers a patched slot as an exit, the optimizing tier neither
+optimizes nor inlines a patched body, and a method's fast path is off
+while a breakpoint stands in its body.
+
+Step over, into and out patch one-shot breakpoints for the stepping frame
+-- its statement starts and those of the blocks lowered inline in it,
+and its caller's return point -- and a step into holds a request bit
+until the next push; the step reports the value of the last call. A
+step whose frame an unwind pops, or whose frame returns otherwise than
+to its caller's send, goes on as a step into from the frame the program
+goes on in, reported by the unwinder and the run loop's cold arms, and
+the handler search reports the handler it found. No step lands in a
+filtered frame. Run to cursor stops once at a position resolved as a
+line breakpoint is; a method breakpoint stops at its method's entry and
+before each of its returns, and reports an exit an unwind makes where
+the program goes on; exception breakpoints, decided by two mirror leaves
+the kernel's handler search sends, stop an uncaught exception before its
+`defaultAction` runs and a caught one before its handler runs, filtered
+by class, and an uncaught `halt`, which goes on resumed with nil. The
+breakpoint stress mode patches every statement start of every running
+body with a breakpoint that never stops, and the step stress mode takes
+bursts of steps from the stops its schedule picks, reading the stack at
+every one; both hold every golden's outcome. Compiling never changed: no
+golden, no shipped-code fingerprint and no image.
+
+Measured against its base on `master` with no debugger attached, the
+geometric mean over the twenty-three sources is +0.47%, the `Cell`
+slots, the shared arm and the fast path's `Cell` costing nothing
+measurable; `bench_signal.ns` is +2.3% slower, separated, most of it the
+tests the unwinder makes for every frame it pops ("What stage 3 moved").
+
+The commit gates passed on every commit (`commit`, and `codegen`
+and `images` where their files changed).
+
+- `91b13682` -- the plan
+  (`docs/superpowers/plans/2026-11-12-2359-debugger-stage-3.md`).
+- `377ceb29` -- a body's slots can be patched, the original kept beside
+  them.
+- `9afa17ae` -- line breakpoints stop the interpreter at statement
+  starts.
+- `1c5664f1` -- a breakpoint frees machine code and switches off a fast
+  path.
+- `e8d5416a`, `76ae6c8c` -- step over, into and out by one-shot
+  breakpoints.
+- `868f8480` -- a step whose frame leaves otherwise stops at the next
+  place the program reaches.
+- `4986e761` -- steps skip the shipped modules and filtered classes.
+- `a8ada841`, `4b44fe80`, `b4a3e450` -- run to cursor and method
+  breakpoints.
+- `337a278b`, `7fa370eb`, `d7de289f` -- exception breakpoints, `halt`
+  and the caught handler, the leaves run in machine code.
+- `5b82e52f`, `a8dd48ac`, `85888d49` -- the breakpoint stress mode.
+- `ea555e38`, `5ff4b113`, `c5bb2d09`, `69cf9aad` -- the step stress
+  mode.
+- `851284b1` -- a pause that lands between a loop's turns under a stress
+  mode paused again in its test.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 4,
+the DAP agent and the plugin's `XDebugProcess`) and "The debugger" (the
+unwinder's debugger tests, what stage 3's reviews left, hit counts,
+temporary breakpoints and "Create Method").

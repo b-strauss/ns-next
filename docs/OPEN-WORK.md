@@ -15,29 +15,29 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 3, breakpoints and stepping** (decided with the
-user on 2026-11-11: the debugger goes on before road step 9 resumes):
-a breakpoint replaces its slot of the body by a `Breakpoint` instruction
-and keeps the original beside the slots, the body's machine code and
-every optimized copy that inlined it freed; pending breakpoints take
-effect when their code is built; stepping by one-shot breakpoints at the
-statement starts and return points and a safepoint request held until
-the next push; run to cursor, method breakpoints and exception
-breakpoints; and the breakpoint and step stress modes
-([debugger.md](design/debugger.md), decisions 2 and 3, "Planned: the
-mechanisms", "Planned: the order of building it"). It stands on stage
-2's metadata, whose statement starts are the places a breakpoint and a
-step stop at, and adds to `compiles_alike` the comparison of a patched
-slot by its original ("Compiling the metadata again"). Stage 1, the
-debugging API at the safepoint, and stage 2, the metadata, are built
-(2026-11-11 and 2026-11-12; "The debugging API at the safepoint",
-"Compiling the metadata again"). Stage 3 needs a plan of its own; the
-two open questions it met are decided (2026-11-12): shipped code is
-filtered from steps, and program classes can be, a step that would stop
-in a filtered frame going on as a step into; and a step out of a frame
-that does not return to its caller's return point stops at the next
-place the program reaches ([debugger.md](design/debugger.md), decisions
-16 and 17).
+**The debugger's stage 4, the DAP agent in `ns-cli` and the plugin's
+`XDebugProcess`** (decided with the user on 2026-11-11: the debugger
+goes on before road step 9 resumes): `ns-next run --debug` binds a
+localhost socket and speaks the Debug Adapter Protocol over the
+debugging API -- `setBreakpoints` as line offsets into a module's
+text, `setFunctionBreakpoints`, `setExceptionBreakpoints`, the steps
+and their filters, run to cursor, `pause`, `stackTrace`, `scopes`,
+paged `variables`, `source` for the embedded modules, `terminate`,
+`disconnect` and the `stopped` and `exited` events -- and the plugin
+implements IntelliJ's debugger over a DAP client of its own, from the
+existing run configurations; from here the debugger is usable in the
+IDE ([debugger.md](design/debugger.md), decision 6, "Launching, the
+start and the end", "Planned: the JetBrains plugin", "Planned: the
+order of building it"). Stages 1 to 3 are built (2026-11-11 to
+2026-11-13; "The debugging API at the safepoint", "Compiling the
+metadata again", decisions 2, 3, 16 and 17). Stage 4 needs a plan of
+its own, and the open questions it meets decided first, one at a time:
+a token for the socket, who listens, the breakable places before a
+session, terminating a program that reaches no safepoint, and whether a
+command queued between runs is answered ([debugger.md](design/debugger.md),
+"Open questions"). Before it, the slowdown stage 3's measurement found
+in the unwinder ("The unwinder's debugger tests cost every unwind",
+below) is fixed.
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1842,8 +1842,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**, at the level of IntelliJ's Java debugger, plus
   edit-and-continue of running activations; its design is decided
-  (fifteen decisions, nine on 2026-11-10 and stage 2's six on
-  2026-11-12). Its first stage is built (2026-11-11): the
+  (seventeen decisions, nine on 2026-11-10, stage 2's six and stage 3's
+  two on 2026-11-12). Its first stage is built (2026-11-11): the
   debugging API at the run loop's safepoint, with atomic poll words a
   remote arms from another thread to pause the program, the commands
   served while it runs, the stop, which deoptimizes a frame stopped at a
@@ -1856,23 +1856,31 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   current text, kept per body only when it compiles again alike, which
   give a stopped frame its name, its place and its named variables
   ([debugger.md](design/debugger.md), "Compiling the metadata again").
-  Its third stage is under way: breakpoints patched in place (a
+  Its third stage is built (2026-11-13): breakpoints patched in place (a
   method's fast path switched off while its body is patched), stepping
   by one-shot breakpoints with the step filters, run to cursor, method
-  breakpoints, and exception breakpoints, which stop where the handler
+  breakpoints, exception breakpoints, which stop where the handler
   search invokes a handler for a caught exception and where it is about
-  to send `defaultAction` for an uncaught one, are built. An uncaught
+  to send `defaultAction` for an uncaught one, and the breakpoint and
+  step stress modes ([debugger.md](design/debugger.md), "What stage 3
+  moved" for its cost). An uncaught
   exception whose `defaultAction` override a fast path answers -- a
   constant, a slot -- pushes nothing at that send, so it stops at the
   next poll, the return to `signal`, after the override answered; a
   handler that is no block and whose `cull:` a fast path answers
   likewise stops after it ran ([debugger.md](design/debugger.md),
-  "Exceptions"). The rest, in this order: stage 3's breakpoint and step
-  stress modes; the DAP agent in
-  `ns-cli` and the plugin's `XDebugProcess`; evaluation as a block in the
+  "Exceptions"). The rest, in this order: the DAP agent in
+  `ns-cli` and the plugin's `XDebugProcess` ("Next" above); evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return; hot swap,
-  edit-and-continue and `ActivationMirror`. It needs no yield path out of
+  edit-and-continue and `ActivationMirror`. Hit counts and temporary
+  breakpoints are in no stage yet: the agent of stage 4 could count hits
+  and remove a temporary breakpoint at its first stop, or the VM with
+  stage 5's conditions; to be decided with stage 4. "Create Method" for
+  an uncaught `MessageNotUnderstood`, and the forced `nil` from
+  `Object>>doesNotUnderstand:` when it is declined, need stage 5's
+  forced return and stage 6's install; until then going on from such a
+  stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It needs no yield path out of
   `vm::run`. Still to decide, each before the stage that needs it:
   watchpoints on slots, access control in evaluation, marking objects, a
   token for the socket, who listens, `ns-next load --debug`, evaluation at
@@ -1969,6 +1977,60 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       which no comment says; and the selector-span tests sit at the end
       of `declaration.rs`'s tests rather than beside the expression
       tests.
+  - **The unwinder's debugger tests cost every unwind** (2026-11-13,
+    measured): `bench_signal.ns`, whose every iteration catches an
+    exception fifty frames deep and unwinds them by `return:`, runs
+    +2.3% slower than before stage 3 (separated, all three builds) with
+    no debugger attached. Two probe builds put about two thirds of it on
+    the tests the unwinder makes for every frame it pops --
+    `breakpoint::leaving_by_unwind` before the pop and
+    `returning_by_unwind` at the arrival (whether a method breakpoint is
+    set), and `Mutator::pop_for_unwind`'s two tests whether a step is in
+    progress -- and about a sixth on the `exceptionCaught:at:handler:ifFail:`
+    send `invokeHandlerAt:disabling:` makes before every handler. One
+    test per unwind rather than per frame, of a flag that says whether
+    a debugger asks for anything of an unwind, would remove the first
+    ([debugger.md](design/debugger.md), "What stage 3 moved").
+  - **What stage 3's reviews left** (2026-11-13), none of them a wrong
+    outcome:
+    - *Setting breakpoints on a large module is unmeasured*:
+      `SetBreakpoints` resolves its offsets against every level of the
+      module, compiling each again for its metadata
+      (`metadata::Cache::level`), so a breakpoint in the kernel or
+      another large module compiles all of it once per install; the cache
+      keeps the result, but the first `SetBreakpoints` after an install
+      pays it at a stop or a safepoint ([debugger.md](design/debugger.md),
+      "A breakpoint names a source position").
+    - *Superseded bodies stay patched*: the old bodies an install
+      replaced keep a line breakpoint's patches, and their code ids are
+      named at every full collection, until the breakpoint is removed;
+      `MethodBreakpointEntry::bodies` likewise only grows across
+      installs, every body a method breakpoint was set on kept. A
+      program that installs in a loop under a breakpoint grows both
+      ([debugger.md](design/debugger.md), "A breakpoint names a source
+      position", "Method breakpoints").
+    - *A breakpoint's exits count toward abandonment*: an exit at a
+      patched slot counts against the body's exit budget as any exit
+      does, and `forget` keeps `abandonments`, so a body stopped at often
+      in machine code may be abandoned, and is revived later than it
+      would have been, after the breakpoint is gone
+      ([debugger.md](design/debugger.md), "Where the original lives";
+      [execution.md](design/execution.md), "When a body is compiled").
+    - *A pending method exit is dropped at an exception stop*: a method
+      breakpoint's exit an unwind reported, waiting for the step that
+      stops where the program goes on, is dropped when an exception's
+      stop is served first (`take_exits`), so that exit is not reported
+      ([debugger.md](design/debugger.md), "Method breakpoints").
+    - *An unwind while stepping floods every frame it passes*:
+      `pop_for_unwind` reports every frame it pops to the step, which
+      floods each intermediate frame it goes on in -- 100,000 floods for
+      an unwind from the depth limit -- where flooding only the frame
+      the unwind stops in would do ([debugger.md](design/debugger.md),
+      decision 17).
+    - *The step filter allocates at every poll*: `is_filtered` builds a
+      declaration path (`again::declaration_path`) at every poll of a
+      held step into through shipped code; a cache by body would remove
+      the allocation ([debugger.md](design/debugger.md), decision 16).
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

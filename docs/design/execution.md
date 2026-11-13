@@ -982,9 +982,10 @@ there.
 
 The debugger does not force `program_counter` at every instruction: a
 stop leaves its stretch for the safepoint, which stores the stopped
-frame's, and a pause's stop is built so ([debugger.md](debugger.md), "9. A
-stop waits at the run loop's safepoint", "The stop"); a breakpoint's and a
-step's stop, planned, will do the same.
+frame's, as a pause's, a breakpoint's, a step's and an exception's stop
+all do ([debugger.md](debugger.md), "9. A stop waits at the run loop's
+safepoint", "The stop"): the `Breakpoint` arm leaves its stretch for the
+safepoint with the frame standing at the patched slot.
 
 ## Unwinding
 
@@ -15322,15 +15323,19 @@ push and, at it, the safepoint. The request word
 (`MachineWord::SafepointRequested`) is a set of bits (`heap.rs`): the
 VM's own request (`REAL_REQUEST`, bit 0: a collection's, a scavenge's, a
 full code zone's, `Heap::request_safepoint`), a stress mode's hold
-(`STRESS_HOLD`, bit 1), and an attached debugger's pause and commands
+(`STRESS_HOLD`, bit 1), an attached debugger's pause and commands
 (`DEBUGGER_PAUSE`, bit 2, and `DEBUGGER_COMMANDS`, bit 3), which its
 agent sets from its own thread ([debugger.md](debugger.md), "The poll
-words as atomics"). Each bit is set by a `SeqCst` `fetch_or` and cleared
+words as atomics"), and the debugger's two bits the VM sets on its own
+thread: a step into's request held until the next push
+(`DEBUGGER_STEP`, bit 4) and a stop an exception breakpoint's leaf
+recorded for the next poll (`DEBUGGER_STOP`, bit 5) ([debugger.md](debugger.md),
+"Step into's held request", "Exceptions"). Each bit is set by a `SeqCst` `fetch_or` and cleared
 by a `fetch_and`, so that no writer erases another's: the VM clears its
 own bit and the hold once it served them (`Heap::clear_safepoint_request`),
 the debugger's only once it served those (`Heap::clear_debugger_bits`),
 and the agent clears none. `LOWERS_DEPTH_LIMIT` is every bit but the
-hold's (`REAL_REQUEST | DEBUGGER_PAUSE | DEBUGGER_COMMANDS`), and a "real"
+hold's (`REAL_REQUEST | DEBUGGER_BITS`, the debugger's four), and a "real"
 request (`Heap::real_safepoint_requested`) is one of its bits. Every
 write of the request word, and of the depth limit, is followed by
 `Heap::synchronize_depth_limit`, which writes the limit word -- 0 exactly
