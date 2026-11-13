@@ -1646,6 +1646,12 @@ pub(crate) struct JitState {
     /// says nothing of the caller's code (`resumption_after_exit`).
     /// Cleared with `walked` before every entry.
     pub(crate) refused_for_an_uncompiled_callee: bool,
+    /// Whether the cut declined the last non-local return because a
+    /// frame it would pop runs a method a method breakpoint names
+    /// (`cut::cut_frame`): the debugger's exit, not the code's, which
+    /// counts against no budget (`resumption_after_exit`). Cleared with
+    /// `walked` before every entry.
+    pub(crate) cut_declined_for_a_method_exit: bool,
     /// The block every entry hands machine code (`stubs::BlockWord`), kept
     /// from one entry to the next: an entry writes only the words that
     /// name its frame and its code, the others when `block_stale` says
@@ -2032,6 +2038,7 @@ impl JitState {
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
+            cut_declined_for_a_method_exit: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -3113,6 +3120,7 @@ impl JitState {
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
+            cut_declined_for_a_method_exit: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -7184,6 +7192,7 @@ fn enter_machine_code(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.cut_declined_for_a_method_exit = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -7396,6 +7405,7 @@ fn call_through(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.cut_declined_for_a_method_exit = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -7641,8 +7651,10 @@ fn resumption_after_exit(
     if at_a_breakpoint {
         mutator.jit.statistics.breakpoint_exits += 1;
     }
+    let for_the_debugger =
+        at_a_breakpoint || std::mem::take(&mut mutator.jit.cut_declined_for_a_method_exit);
     let circumstances = ExitCircumstances {
-        at_a_breakpoint,
+        for_the_debugger,
         real_request: mutator.heap.real_safepoint_requested(),
         forced,
         refused_for_an_uncompiled_callee: std::mem::take(
@@ -7755,15 +7767,16 @@ fn resumption_after_exit(
 }
 
 /// What beside an exit itself decides whether it counts against an exit
-/// budget (`exit_counts`): whether it stood at a slot a breakpoint
-/// patched, whether a real safepoint request stands, whether the deopt
+/// budget (`exit_counts`): whether the debugger made it -- at a slot a
+/// breakpoint patched, or a non-local return the cut declined for a
+/// method breakpoint's exit -- whether a real safepoint request stands, whether the deopt
 /// stress mode forced it, whether the miss leaf refused the call for a
 /// callee with no machine code yet, and whether the JIT stress mode
 /// installs every body whatever it exits at.
 #[cfg(ns_jit)]
 #[derive(Clone, Copy, Default)]
 struct ExitCircumstances {
-    at_a_breakpoint: bool,
+    for_the_debugger: bool,
     real_request: bool,
     forced: bool,
     refused_for_an_uncompiled_callee: bool,
@@ -7819,14 +7832,15 @@ fn exit_counts(exit: stubs::MachineExit, circumstances: ExitCircumstances) -> bo
             }
         );
     // The stress mode enters every body at every push, however often it
-    // leaves. An exit at a breakpoint's patch is the debugger's, not the
+    // leaves. An exit at a breakpoint's patch, or at a non-local return the
+    // cut declined for a method breakpoint, is the debugger's, not the
     // code's: counted, a body stopped at often would be abandoned, and
     // revived later, after the breakpoint is gone, for the user's stops.
     matches!(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
     ) && !circumstances.installed_whatever_it_exits_at
-        && !circumstances.at_a_breakpoint
+        && !circumstances.for_the_debugger
         && !circumstances.forced
         && !refused_for_a_request
         && !refused_for_its_inlining
@@ -9577,7 +9591,7 @@ mod tests {
         /// safepoint request at the depth limit word -- the request lowered
         /// it, whatever the depth -- nor one refused for the inlined scopes
         /// of optimized code, nor a call refused for an uncompiled callee,
-        /// nor a forced exit, nor an exit at a breakpoint's patch, nor any
+        /// nor a forced exit, nor an exit the debugger made, nor any
         /// exit under the JIT stress mode; and never a poll, a trap or a
         /// budget's run-out.
         #[test]
@@ -9627,11 +9641,11 @@ mod tests {
                 ..plain
             };
             assert!(!exit_counts(reexecute, stress));
-            let at_a_breakpoint = ExitCircumstances {
-                at_a_breakpoint: true,
+            let for_the_debugger = ExitCircumstances {
+                for_the_debugger: true,
                 ..plain
             };
-            assert!(!exit_counts(reexecute, at_a_breakpoint));
+            assert!(!exit_counts(reexecute, for_the_debugger));
             for exit in [
                 MachineExit::Safepoint { program_counter: 3 },
                 MachineExit::Trap {

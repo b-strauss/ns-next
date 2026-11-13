@@ -12335,7 +12335,11 @@ the exits (`JitSlot::decay_exits`); a version never decays. An exit of
 baseline code abandons the body as before, its optimized code with it,
 and raises no version.
 **An exit that says nothing of the code counts against neither
-budget**: the deopt stress mode's forced exits, and a push a callee's
+budget**: the deopt stress mode's forced exits; the debugger's exits --
+one at a slot a breakpoint patched, and a non-local return the cut
+declined because a frame it would pop runs a method a method breakpoint
+names (`JitState::cut_declined_for_a_method_exit`) -- which say nothing
+of the code and, counted, would abandon a body stopped at often; and a push a callee's
 prologue refused at the depth limit word while a real safepoint request
 stands -- the request lowered the word to 0, and it is often the
 optimization request of a callee whose budget just ran out, so that,
@@ -13826,7 +13830,8 @@ the baseline JIT's foundation moved" that of the first two.
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll, nor a call refused for a callee not compiled yet
     that the zone has room for ("Exits, abandonment and the code zone"),
-    nor an exit at a slot a breakpoint patched, which is the debugger's
+    nor an exit the debugger made -- at a slot a breakpoint patched, or a
+    non-local return the cut declined for a method breakpoint
     ([debugger.md](debugger.md), "Where the original lives")
     -- is **abandoned** (`jit::abandon`,
     `JitStatistics::abandoned_bodies`): it is settled abandoned

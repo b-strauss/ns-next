@@ -241,6 +241,7 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     // when its own block returns non-locally.
     if mutator.breakpoints.reports_exits_of(&caller.code) {
         mutator.jit.cut.reset();
+        mutator.jit.cut_declined_for_a_method_exit = true;
         return u64::from(EXIT);
     }
     let Some(slots) = call_slots(&caller.code, program_counter) else {
