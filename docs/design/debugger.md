@@ -1386,7 +1386,14 @@ the poll words' ordering, and every later stage's tests, do not.
   caller `inject:into:` is filtered too landing at the next statement of
   the first unfiltered frame, reporting `inject:into:`'s answer; and a
   step into a send whose callee pushes a chain of filtered frames
-  landing in the program's block at its end. Beside them, a breakpoint at an
+  landing in the program's block at its end; a filter changed between
+  two steps deciding afresh; and, under the suspend stress mode, a step
+  over at a block's last statement whose `do:`'s sender is suspended
+  going on from that suspended frame, held as `Holder::Suspended`, to
+  the block's next activation. Of the unwinds a step follows: a step
+  from a block whose non-local return unwinds fifty frames flooding only
+  the home it stops in, and an exception's stop reporting a method
+  breakpoint's pending exit beside the exception. Beside them, a breakpoint at an
   instruction that meets an unresolved future stopping once, its slot
   initialized once: only the optimized lowering puts the instruction
   that meets it first in its statement, since the reference lowering

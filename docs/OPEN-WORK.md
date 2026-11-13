@@ -2023,11 +2023,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       reports that value, `nil`, as the call's (`stepping::record`;
       [debugger.md](design/debugger.md), "The return value of the last
       call").
-    - *Tests*: a step through suspended frames -- the suspended branch
-      of `stepping::first_unfiltered` and of the step's holders
-      (`Holder::Suspended`), which a sender an image decoded also takes --
-      is reached only by the suspend stress mode, which no test of
-      `tests/debugger.rs` switches on for a step.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

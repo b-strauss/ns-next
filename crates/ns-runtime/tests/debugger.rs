@@ -4110,6 +4110,67 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A `do:` over two thousand elements, whose block notes the 1,500th:
+/// long enough for the suspend stress mode to suspend `run` below the
+/// shipped `Array>>do:` before then.
+const SUSPENDING: &str = indoc! {"
+    class Suspending = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        (Array new: 2000) do: [:each |
+          count:: count + 1.
+          count = 1500 ifTrue: [
+            self mark]].
+        ^count
+      )
+      mark = (
+        ^nil
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the suspend stress mode `run`, the sender of the shipped
+    /// `do:`, is suspended into its frame while the block runs: a step
+    /// over at the block's last statement stops at the return point in
+    /// the filtered `do:`, goes on as a step into from the first
+    /// unfiltered frame below it -- `run`, suspended, which the step
+    /// holds as such -- and stops in the block's next activation, which
+    /// `do:` pushes for that frame, as it does with nothing suspended.
+    fn a_step_through_suspended_frames_stops_in_the_next_activation(lowering) {
+        let (mut interpreter, instance) = instance_of(SUSPENDING, lowering);
+        interpreter.set_stress_suspend(true);
+        let offset = line_start(SUSPENDING, "self mark]].");
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Suspending", vec![offset]);
+        let (stood, result, _) = debugged_by(
+            remote,
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Suspending"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, SUSPENDING);
+                continue_stopped(remote);
+                stood
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 2000);
+        assert!(
+            interpreter.stress_suspensions() > 0,
+            "the run's frames were suspended"
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("[] in Suspending>>run"),
+                String::from("count:: count + 1")
+            )
+        );
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A step over at the last statement of the block's last activation
     /// lands in the method that sent `do:`, at the statement after it.
