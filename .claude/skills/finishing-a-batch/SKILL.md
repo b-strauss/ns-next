@@ -44,8 +44,11 @@ Create a todo for each item.
    often sitting out ever more rounds -- before it installs
    what was requested since, and PAUSE stops the run as a debugger's pause
    does at the safepoints its schedule picks, reads its whole stack and every
-   value one level deep, and continues; beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the fourteen suites at once,
+   value one level deep, and continues, and BREAKPOINTS patches every
+   statement start of the bodies it finds running at its safepoints with a
+   breakpoint that never stops, each gone past through the run loop's arm;
+   beside them the suite runs once with
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the fifteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,
