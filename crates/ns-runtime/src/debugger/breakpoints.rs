@@ -954,11 +954,12 @@ pub(crate) fn run_to(
 }
 
 /// Sets every method breakpoint -- of the module named `module`, or every
-/// one for `None` -- on its method's current body, if the module declares
-/// the method: its entry, its returns and the non-local returns of the
-/// blocks the compiler lowered inline in it. One whose method is gone
-/// keeps its patches on the bodies it patched, which frames may still
-/// run, and is no longer verified.
+/// one for `None` -- on its method's current body in every built module of
+/// that name that declares the method, as a line breakpoint resolves in
+/// each (`module_bodies`): its entry, its returns and the non-local
+/// returns of the blocks the compiler lowered inline in it. One whose
+/// method is gone keeps its patches on the bodies it patched, which
+/// frames may still run, and is no longer verified.
 fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&str>) {
     for position in 0..mutator.breakpoints.methods.len() {
         let entry = &mutator.breakpoints.methods[position];
@@ -967,25 +968,26 @@ fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&str>) {
         }
         let request = entry.method.clone();
         let id = entry.id;
-        let found = find_method(mutator, &request);
-        mutator.breakpoints.methods[position].verified = found.is_some();
-        let Some((mixin, method)) = found else {
-            continue;
-        };
-        patch_method(mutator, id, &mixin, &method);
-        let bodies = &mut mutator.breakpoints.methods[position].bodies;
-        if !bodies.iter().any(|body| Rc::ptr_eq(body, &method.code)) {
-            bodies.push(Rc::clone(&method.code));
+        let found = find_methods(mutator, &request);
+        mutator.breakpoints.methods[position].verified = !found.is_empty();
+        for (mixin, method) in found {
+            patch_method(mutator, id, &mixin, &method);
+            let bodies = &mut mutator.breakpoints.methods[position].bodies;
+            if !bodies.iter().any(|body| Rc::ptr_eq(body, &method.code)) {
+                bodies.push(Rc::clone(&method.code));
+            }
         }
     }
 }
 
-/// The method `request` names, with the instance side of the level that
-/// declares it, if a module of that name is built and declares it.
-fn find_method(
+/// The method `request` names in every built module of its module's name
+/// that declares it, each with the instance side of the level that
+/// declares it.
+fn find_methods(
     mutator: &Mutator<'_>,
     request: &MethodBreakpoint,
-) -> Option<(Rc<Mixin>, Rc<MixinMethod>)> {
+) -> Vec<(Rc<Mixin>, Rc<MixinMethod>)> {
+    let mut found = Vec::new();
     for id in mutator.heap.mixin_ids() {
         let Some(mixin) = mutator.heap.mixin(id) else {
             continue;
@@ -1007,17 +1009,20 @@ fn find_method(
             continue;
         }
         let side = if request.class_side {
-            mixin.class_side.clone()?
+            mixin.class_side.clone()
         } else {
-            Rc::clone(&mixin)
+            Some(Rc::clone(&mixin))
         };
-        let method = side
-            .compiled_methods()
-            .find(|method| method.selector.as_str() == request.selector)
-            .cloned()?;
-        return Some((mixin, method));
+        let method = side.and_then(|side| {
+            side.compiled_methods()
+                .find(|method| method.selector.as_str() == request.selector)
+                .cloned()
+        });
+        if let Some(method) = method {
+            found.push((mixin, method));
+        }
     }
-    None
+    found
 }
 
 /// Patches `method`'s body, a member of the level of `mixin`, for the

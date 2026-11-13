@@ -2957,10 +2957,13 @@ and stops every activation of it at its entry and at each of its exits.
   whose class declares no such method, is not verified
   (`MethodBreakpointState::verified`) and is set when a module's build
   or an install declares the method (`breakpoints::module_built`),
-  reported unasked by `Event::MethodBreakpoints`; an install sets it on
-  the method's new body, and the body it replaced keeps its patches for
-  the frames still running it. A method with a fast path loses it while
-  the breakpoint is set ("A breakpoint in a method with a fast path").
+  reported unasked by `Event::MethodBreakpoints`. It is set on the
+  method in every built module of its module's name, as a line
+  breakpoint resolves in each (`breakpoints::find_methods`); an install
+  sets it on the method's new body, and the body it replaced keeps its
+  patches for the frames still running it. A method with a fast path
+  loses it while the breakpoint is set ("A breakpoint in a method with a
+  fast path").
 
 ### Smart step into a block
 

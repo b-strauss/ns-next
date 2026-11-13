@@ -4602,6 +4602,47 @@ fn only_method_breakpoint(states: &[MethodBreakpointState], verified: bool) -> B
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint stands in every built module of its module's
+    /// name, as a line breakpoint does: a run of an instance of either
+    /// module stops at the method's entry and at its exit.
+    fn a_method_breakpoint_stands_in_every_module_of_its_name(lowering) {
+        let module = ns_syntax::parse(THREE_STATEMENTS).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            THREE_STATEMENTS.into(),
+            ns_runtime::SourceOrigin::File("test.ns".into()),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let classes = [
+            interpreter.load_module(&resolved),
+            interpreter.load_module(&resolved),
+        ];
+        let instances = classes.map(|class| expect_ok(interpreter.instantiate(&class, &[]), "instantiate"));
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, vec![method_breakpoint("Lines", &[], false, "run")]);
+        let mut stops = Vec::new();
+        let mut remote = Some(remote);
+        for (index, instance) in instances.iter().enumerate() {
+            let (count, result, back) = debugged_by(
+                remote.take().expect("the remote"),
+                move |remote| {
+                    if index == 0 {
+                        only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                    }
+                    stops_until_the_end(remote)
+                },
+                || run(&mut interpreter, instance),
+            );
+            expect_ok(result, "run");
+            stops.push(count);
+            remote = Some(back);
+        }
+        assert_eq!(stops, [2, 2]);
+    }
+}
+
 /// Waits for a stop and answers its reason.
 fn expect_stop(remote: &DebugRemote) -> StopReason {
     match remote.next_event(EVENT_TIMEOUT) {
