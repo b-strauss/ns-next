@@ -55,7 +55,8 @@ impl Reach {
 }
 
 /// Records that the running process reached `reach`: a marker written the
-/// first time a process records each kind, in a debug build run with
+/// first time a process records each kind -- none after `runtime`, which
+/// decides alone -- in a debug build run with
 /// `NS_NEXT_RECORD_REACH` set; nothing otherwise. After the first, a call
 /// is one relaxed load, so it may stand where a body is compiled or memory
 /// committed, though not on the run loop's path.
@@ -78,6 +79,13 @@ mod markers {
     static RECORDED: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
 
     pub(super) fn record(reach: Reach) {
+        // A test that reaches the runtime runs in every gate whatever else
+        // it reaches, so after `runtime` no other marker is written: one
+        // file for most tests rather than three, which keeps the record's
+        // cost to the commit gate small.
+        if reach != Reach::Runtime && RECORDED[Reach::Runtime as usize].load(Ordering::Relaxed) {
+            return;
+        }
         let recorded = &RECORDED[reach as usize];
         if recorded.load(Ordering::Relaxed) || recorded.swap(true, Ordering::Relaxed) {
             return;

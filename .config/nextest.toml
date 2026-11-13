@@ -49,6 +49,12 @@ default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(
 [profile.benchmarks-verify]
 default-filter = "binary(run_benchmarks) | (binary(hinted_goldens) and test(/^hinted::[a-z]+::benchmarks\\//))"
 
+# The benchmark programs of `benchmarks-verify` without their Java and
+# Python counterparts, which run no part of ns-next: what the `linux` group
+# runs, where only what differs by platform is checked again.
+[profile.benchmarks-newspeak]
+default-filter = "(binary(run_benchmarks) and not test(/^(flags::)?(java|python)(-timed)?::/)) | (binary(hinted_goldens) and test(/^hinted::[a-z]+::benchmarks\\//))"
+
 [profile.images]
 default-filter = "binary(golden_round_trips)"
 
@@ -62,14 +68,20 @@ default-filter = "binary(hinted_goldens) and not test(/^hinted::[a-z]+::benchmar
 # stress`, which runs sixteen of them at once, so the gate's time is the
 # work of all of them, plus the tail of the slowest tests where a mode makes
 # a few of them run for minutes; `docs/OPEN-WORK.md`, "The stress gate's
-# time"). It leaves out the crates no stress mode reaches -- the switches
-# are read only by `ns-runtime`, which these crates do not run -- and
-# starts the tests that ended alone in a measured run (2026-11-13) first,
-# so that they overlap the rest. `cargo xtask gates stress` also leaves
-# `ns-cli`'s `debug_metadata`, which runs no program, to the WIDE run, the
-# one mode that changes what it compiles.
+# time"). It leaves out `ns-memory`, the platform layer, which reads no
+# switch, and starts the tests that ended alone in a measured run
+# (2026-11-13) first, so that they overlap the rest. The gate runs it
+# through the profiles `cargo xtask nextest-config` appends to this file in
+# `target/xtask/nextest.toml` (`xtask/src/unreached.rs`): every mode but
+# WIDE without the tests `xtask/unreached-tests.txt` lists, measured to
+# make no interpreter and read no runtime switch, and WIDE, which changes
+# what the compiler builds, without those of them that compile nothing;
+# every mode but WIDE also without `ns-cli`'s `debug_metadata`, which boots
+# an interpreter but runs no program. The Docker groups run the profile `platform` it generates from `default`
+# the same way, without the listed tests that reach no platform-dependent
+# code.
 [profile.stress]
-default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/)) and not (package(ns-syntax) | package(ns-memory) | package(ns-assembler) | package(xtask))"
+default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/)) and not package(ns-memory)"
 
 [[profile.stress.overrides]]
 filter = '''
