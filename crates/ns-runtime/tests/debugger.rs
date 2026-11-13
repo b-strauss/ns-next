@@ -6595,6 +6595,55 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A caught error whose handler is no block but an object whose `cull:`
+/// is a slot's setter, which answers without pushing a frame.
+const SLOT_HANDLED: &str = indoc! {"
+    class SlotHandled = Object new () (
+      public run = (
+        | result |
+        result:: [self raise] on: Error do: Handler new.
+        ^7
+      )
+      raise = (
+        ^Error signal: 'slot'
+      )
+      public class Handler = Object new (
+        | public cull ::= nil. |
+      ) ()
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A caught exception's stop whose handler pushed no frame -- its
+    /// `cull:` a slot's setter -- stands in the kernel's machinery, which
+    /// it hides, showing first the program frame below it, as an uncaught
+    /// one's does; a step over taken there steps from that frame, never
+    /// in the machinery, and stops where the program goes on in it.
+    fn a_step_from_a_caught_stop_whose_handler_pushed_nothing_steps_from_the_program(lowering) {
+        let ((shown, stood), result) = raised(
+            SLOT_HANDLED,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                assert_eq!(expect_stop(remote), exception("Error", "slot", true));
+                let frames = stack_trace(remote);
+                let shown = first_shown(&frames);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, SLOT_HANDLED);
+                continue_stopped(remote);
+                (shown, stood)
+            },
+        );
+        assert_eq!(shown, "SlotHandled>>raise");
+        assert_eq!(
+            stood,
+            (String::from("SlotHandled>>run"), String::from("^7"))
+        );
+        assert_eq!(result, Ok(7));
+    }
+}
+
 /// A block's `^` whose home has returned, which nothing handles: the VM
 /// raises the `CannotReturn` at the block's own instruction.
 const STRANDED: &str = indoc! {"

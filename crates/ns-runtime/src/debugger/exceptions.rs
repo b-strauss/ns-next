@@ -24,11 +24,12 @@ use super::metadata::again::{declaration_path, Member};
 use super::remote::{ClassName, StopReason};
 use super::stack::{self, StackFrame};
 use super::stepping;
+use crate::builtins::object_class::identical;
 use crate::heap::DEBUGGER_STOP;
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;
-use crate::types::BuiltinClass;
+use crate::types::{ActivationKind, BuiltinClass};
 use crate::{Root, Symbol, Value};
 
 /// The exception breakpoints (`Command::SetExceptionBreakpoints`): an
@@ -153,8 +154,15 @@ pub(crate) fn caught<'gc>(
 /// caught exception's waits, recorded again with its request bit, while
 /// the frame on top is the kernel's `cull:` sent to the handler, so that it
 /// stops in the handler block at its first instruction, or at the first
-/// frame of a handler that is no block.
-pub(crate) fn serve(mutator: &mut Mutator<'_>, pending: PendingException) -> Option<StopReason> {
+/// frame of a handler that is no block. Answers the stop and whether it
+/// stands in a frame the handler pushed (`in_handler`): a handler whose
+/// `cull:` pushes no frame -- a slot's setter, a fast path -- leaves the
+/// stop in the kernel's machinery, which it then hides and steps below
+/// as an uncaught exception's stop does.
+pub(crate) fn serve(
+    mutator: &mut Mutator<'_>,
+    pending: PendingException,
+) -> Option<(StopReason, bool)> {
     let PendingException {
         reason,
         activation,
@@ -181,7 +189,28 @@ pub(crate) fn serve(mutator: &mut Mutator<'_>, pending: PendingException) -> Opt
         request(mutator, waiting);
         return None;
     }
-    Some(reason)
+    let in_handler = handler
+        .as_ref()
+        .is_some_and(|handler| in_handler(mutator, handler));
+    Some((reason, in_handler))
+}
+
+/// Whether the frame on top is one the handler pushed: the handler
+/// block's activation, or a method -- its `cull:`, or the
+/// `doesNotUnderstand:` a handler that does not understand `cull:` makes
+/// -- sent to the handler.
+fn in_handler(mutator: &Mutator<'_>, handler: &Root) -> bool {
+    let heap = &mutator.heap;
+    let Some(top) = heap.top_activation() else {
+        return false;
+    };
+    let handler = heap.fetch(handler);
+    match heap.activation_kind(top) {
+        ActivationKind::Closure(closure) => handler
+            .as_object()
+            .is_some_and(|handler| handler.same(closure)),
+        _ => identical(heap, heap.activation_receiver(top), handler),
+    }
 }
 
 /// Whether the frame on top is still the search's, short of what the stop

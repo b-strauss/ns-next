@@ -2128,7 +2128,9 @@ the frame shown first, as if it had stopped there, the hidden frames
 ones it was taken above, so that neither they nor what they push are
 the step's. A caught exception's stop stands in the handler block about
 to run, which it shows first on top, and a step there is taken in the
-handler block as in any frame it stood in.
+handler block as in any frame it stood in; one whose handler pushed no
+frame stands in the machinery, and is shown and stepped from below it
+as an uncaught exception's is ("Exceptions").
 
 V8 does the same with blackboxing (`v8/src/debug/debug.cc`): a step at a
 return becomes a step out in step-into mode (`:1601-1612`), the step out
@@ -2802,14 +2804,17 @@ kernel's `cull:`, `invokeHandlerAt:disabling:`, `invokeNextHandler`,
 answers below the machinery shown next (`exceptions::hidden`); a step
 taken there steps in the handler block, as from any frame it stood in.
 Only an uncaught exception's and a `Halt`'s stop step from the frame
-below the machinery. A handler whose `cull:` a fast path answered pushed
-nothing, and its stop stands in the machinery frame the program goes on
-in, which stays shown on top; a step taken there is taken in that kernel
-frame, which counts as a step started in a filtered frame, so it steps
-in it as in any other and can stop in the exception's machinery even
-with the shipped filter on, where it should go on as from the program
-frame below the machinery ([OPEN-WORK.md](../OPEN-WORK.md), the
-debugger's stage 3 reviews). A class filter -- `ClassName`s, as the step
+below the machinery -- and a caught one's whose handler pushes no frame:
+a handler whose `cull:` is a slot's setter, or a method a fast path
+answers, runs without an activation, so that its stop, made at the next
+poll, stands in the kernel's machinery frame the program goes on in.
+That stop hides the machinery as an uncaught one's does, showing first
+the frame below it, and a step taken there steps from that frame
+(`exceptions::serve` answers whether the frame on top is one the handler
+pushed: the handler block's activation, or a method sent to the
+handler). A handler that does not understand `cull:` pushes
+`Object>>doesNotUnderstand:` sent to it, a real call it made, which the
+stop shows on top and a step steps in as in any kernel code. A class filter -- `ClassName`s, as the step
 filters name a declaration -- is decided in Rust by walking the
 exception's class chain by declaration, each level's applied mixin and
 body-less declaration as `Class>>handles:` reads them
@@ -2842,8 +2847,8 @@ A stop at the push of `defaultAction` needs a push: an override of
 `defaultAction` that a method's fast path answers without an activation
 -- a constant, a slot -- pushes nothing, and the program stops at the
 next poll instead, the return to `signal`, the override's answer
-already given; so does a caught exception whose handler is no block and
-answers `cull:` by a fast path. A leaf cannot leave its stretch, and a
+already given; so does a caught exception whose handler's `cull:`
+pushes no frame -- a slot's setter, a fast path. A leaf cannot leave its stretch, and a
 check after every mirror send would cost the run loop.
 
 A handler block runs on top of the stack before anything unwinds, so it is

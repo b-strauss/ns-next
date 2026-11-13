@@ -447,7 +447,7 @@ impl Interpreter {
             (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),
             _ => None,
         };
-        if let Some(mut reason) = exception {
+        if let Some((mut reason, in_handler)) = exception {
             // Where the frame on top stands is debugger.md's "Exceptions":
             // the first instruction of what the search runs next, unless a
             // fast path answered it without a push. The stop serves a
@@ -465,7 +465,7 @@ impl Interpreter {
             if let StopReason::Exception { exits, .. } | StopReason::Halt { exits } = &mut reason {
                 exits.extend(unwound);
             }
-            return self.stop(reason, None, floor, CommandSource::Remote);
+            return self.stop_standing(reason, None, floor, CommandSource::Remote, in_handler);
         }
         if let Some(breakpoint) = breakpoint {
             // A stop only a step's one-shot made, in a frame the step
@@ -779,7 +779,22 @@ impl Interpreter {
         reason: StopReason,
         returned: Option<Root>,
         floor: usize,
+        source: CommandSource,
+    ) -> Served {
+        self.stop_standing(reason, returned, floor, source, true)
+    }
+
+    /// `stop`, `in_handler` whether a caught exception's stop stands in a
+    /// frame its handler pushed (`exceptions::serve`): one that does not
+    /// stands in the kernel's machinery, which it hides, and steps from
+    /// the frame below it, as an uncaught exception's stop does.
+    fn stop_standing(
+        &mut self,
+        reason: StopReason,
+        returned: Option<Root>,
+        floor: usize,
         mut source: CommandSource,
+        in_handler: bool,
     ) -> Served {
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         let first_value_id = self
@@ -789,12 +804,14 @@ impl Interpreter {
         let mut values = StopValues::starting_at(first_value_id);
         // An exception's stop hides its machinery: an uncaught one's and a
         // `Halt`'s show first the frame below it, a caught one's the
-        // handler about to run, the frame below the machinery next.
+        // handler about to run, the frame below the machinery next -- but
+        // for a handler that pushed no frame, whose stop stands in the
+        // machinery and so shows it as an uncaught one's does.
         let exceptional = matches!(
             reason,
             StopReason::Exception { .. } | StopReason::Halt { .. }
         );
-        let caught = matches!(reason, StopReason::Exception { caught: true, .. });
+        let caught = in_handler && matches!(reason, StopReason::Exception { caught: true, .. });
         let returned = returned.map(|returned| {
             self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
         });

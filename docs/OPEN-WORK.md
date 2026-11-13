@@ -2005,15 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *A step from a caught stop a fast path left in the machinery stops
-      in it*: a caught exception whose handler is no block and whose
-      `cull:` a fast path answers pushes nothing, so its stop stands in
-      the kernel's machinery frame on top, shown; a step taken there is
-      taken in that frame, which counts as started in a filtered frame,
-      so it steps in it and can stop in the exception's machinery even
-      with the shipped filter on. It should go on as a step from the
-      program frame below the machinery ([debugger.md](design/debugger.md),
-      "Exceptions", decision 16).
     - *The value of the last call may be one no call answered*: a step's
       recording one-shot at the index after a send also fires when a
       jump reaches that index without running the send -- the false way
