@@ -266,7 +266,6 @@ impl Primitive {
                 | ActivationPrimitive::MethodName
                 | ActivationPrimitive::NextHandler
                 | ActivationPrimitive::HandlerClass
-                | ActivationPrimitive::HandlerBlock
                 | ActivationPrimitive::SetHandlerActive
                 | ActivationPrimitive::ReturnValue
                 | ActivationPrimitive::Restart
@@ -791,7 +790,6 @@ pub enum ActivationPrimitive {
     /// reifying none it passes.
     NextHandler,
     HandlerClass,
-    HandlerBlock,
     SetHandlerActive,
     ReturnValue,
     Restart,
@@ -802,9 +800,9 @@ pub enum ActivationPrimitive {
     /// leaf answers whether that stop resumes a `Halt` with nil.
     ExceptionUnhandled,
     /// The handler search found an `on:do:` whose handler is about to
-    /// run: the leaf answers that handler, as `HandlerBlock` does, and the
-    /// catch is reported to a step in progress and to the caught-exception
-    /// breakpoint.
+    /// run: the row answers that handler, the block the marker's register
+    /// holds, and the catch is reported to a step in progress and to the
+    /// caught-exception breakpoint.
     ExceptionCaught,
 }
 
@@ -1782,11 +1780,6 @@ pub const MIRROR: &[MirrorEntry] = &[
         "activationHandlerClass:ifFail:",
         "handlerClass",
         Primitive::Activation(ActivationPrimitive::HandlerClass),
-    ),
-    mirror(
-        "activationHandlerBlock:ifFail:",
-        "handlerBlock",
-        Primitive::Activation(ActivationPrimitive::HandlerBlock),
     ),
     mirror(
         "activation:handlerActive:ifFail:",
@@ -3323,9 +3316,8 @@ pub const MIRROR: &[MirrorEntry] = &[
         "exceptionUnhandled",
         Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
     )),
-    // An exit, as `activationHandlerBlock:ifFail:` is: it answers the
-    // handler of the `on:do:` activation, its argument, which it reads off
-    // that activation, and so is no leaf. The search reads the handler
+    // An exit: it answers the handler of the `on:do:` activation, its
+    // argument, which it reads off that activation, and so is no leaf. The search reads the handler
     // through it, so that reporting the catch costs no send of its own.
     mirror(
         "exceptionCaught:at:ifFail:",

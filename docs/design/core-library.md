@@ -3733,8 +3733,9 @@ with an argument that is no `Message` fails inside the handler, on
   and a frame's class, as `Top`'s is everywhere but a frame's class. An
   activation reads another frame's temporaries and unwinds stacks, so it is
   a capability, and Newspeak hands those out only through mirrors, which the
-  reflection step builds on it. The thirteen leaves (`builtins/activation.rs`,
-  rows of `MIRROR`): `currentActivation` — the activation of the kernel
+  reflection step builds on it. The twelve rows of `MIRROR` they take
+  (`builtins/activation.rs`), leaves but for the exit
+  `exceptionCaughtAt:`: `currentActivation` — the activation of the kernel
   method making the mirror send, reified, answered as its frame object, so
   two calls for one activation answer the same object and the coming
   `ActivationMirror` has an identity by frame already; an activation's
@@ -3748,19 +3749,20 @@ with an argument that is no `Message` fails inside the handler, on
   block, an initializer or a clause -- for `Object>>subclassResponsibility`;
   `nextHandler`, the next activation outward whose code carries the
   `on:do:` marker and whose handler is active, reifying none it passes,
-  or nil past the bottom or for a returned activation; the two the
-  marker's registers answer, `handlerClass` and `handlerBlock`, and
-  `handlerActive:`, which writes the flag;
+  or nil past the bottom or for a returned activation; `handlerClass`,
+  which the marker's register answers, and `handlerActive:`, which writes
+  the flag;
   `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`;
   `terminate…` for `defaultAction`; and `exceptionUnhandled` and
   `exceptionCaughtAt:` (`exceptionUnhandled:ifFail:` and
   `exceptionCaught:at:ifFail:`), the search's reports to an attached
-  debugger, which decide and record its exception breakpoints' stop and
-  do nothing else without one -- the first a leaf machine code calls
-  without exiting, the second answering the handler as `handlerBlock`
-  does, an exit as it is ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
+  debugger, which decide and record its exception breakpoints' stop -- the
+  first a leaf machine code calls without exiting, which does nothing
+  without one, the second an exit, which answers the handler the
+  marker's register holds, debugger or not, the search's one read of it
+  ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
   `message:sendTo:ifFail:` (`builtins/message.rs`);
   `Object>>doesNotUnderstand:` forwards to no row: it is Newspeak that
   signals a `MessageNotUnderstood`. The tracer follows the frame reference,

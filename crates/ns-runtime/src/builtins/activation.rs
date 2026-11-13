@@ -97,9 +97,6 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::HandlerClass => {
             activation_leaf(mutator, SubjectLeaf::HandlerClass, subject, arguments)
         }
-        ActivationPrimitive::HandlerBlock => {
-            activation_leaf(mutator, SubjectLeaf::HandlerBlock, subject, arguments)
-        }
         ActivationPrimitive::SetHandlerActive => {
             activation_leaf(mutator, SubjectLeaf::SetHandlerActive, subject, arguments)
         }
@@ -118,11 +115,11 @@ pub(crate) fn execute<'gc>(
             crate::debugger::exceptions::unhandled(mutator, subject),
         )))),
         // The search found the `on:do:` activation the argument is, and
-        // is about to run its handler, which this answers as
-        // `activationHandlerBlock:ifFail:` does: the catch is recorded for
-        // a step in progress and the caught-exception breakpoint first,
-        // the activation and the handler held for the safepoint, which
-        // reads them.
+        // is about to run its handler, which this answers, read off the
+        // marker's register as `handlerClass` reads its class: the catch
+        // is recorded for a step in progress and the caught-exception
+        // breakpoint first, the activation and the handler held for the
+        // safepoint, which reads them.
         ActivationPrimitive::ExceptionCaught => {
             let activation = arguments.first(&mutator.heap)?;
             let frame = mutator.heap.object_frame(activation.as_object()?)?;
@@ -142,7 +139,6 @@ enum SubjectLeaf {
     MethodName,
     NextHandler,
     HandlerClass,
-    HandlerBlock,
     SetHandlerActive,
     ReturnValue,
     Restart,
@@ -192,7 +188,6 @@ fn activation_leaf<'gc>(
             let (class_register, _, _) = handler_registers(mutator, frame)?;
             mutator.heap.frame_local(frame, class_register)
         }
-        SubjectLeaf::HandlerBlock => handler_block(mutator, frame)?,
         SubjectLeaf::SetHandlerActive => {
             if !running {
                 return None;

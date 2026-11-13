@@ -2686,7 +2686,7 @@ return ("Restart frame and force return"). The handler search of
 `exceptionUnhandled:ifFail:` just before `defaultAction`, and
 `invokeHandlerAt:disabling:` reads the handler it is about to send
 `cull: self` through `exceptionCaught:at:ifFail:`, which answers the
-`on:do:` activation's handler as `activationHandlerBlock:ifFail:` does;
+`on:do:` activation's handler, the block its marker's register holds;
 only the shipped modules reach the mirror
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). With no debugger attached `exceptionUnhandled:ifFail:`
@@ -2695,8 +2695,7 @@ does nothing and answers what its failure block would, false, and
 with one attached the caught row answers the handler all the same and
 records the catch beside it. A handler it cannot read -- the activation
 not running, or no `on:do:` marker's -- makes it record nothing and
-decline, so that its failure block answers nil, as
-`activationHandlerBlock:ifFail:` did. So an exception behaves as it
+decline, so that its failure block answers nil. So an exception behaves as it
 does without the debugger; and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
