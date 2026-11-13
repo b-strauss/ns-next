@@ -1243,8 +1243,8 @@ class Kernel vmMirror: mirror = Value (
         /// the stack, before anything unwinds: an attached debugger's
         /// caught-exception breakpoint stops at the handler's first
         /// instruction, and a step whose exception this handler takes
-        /// goes on into it; with none attached the leaf only answers the
-        /// handler. Reading it through the leaf that reports the catch
+        /// goes on into it; with none attached the row only answers the
+        /// handler. Reading it through the exit row that reports the catch
         /// spares the search a send for the report.
         (vmMirror exceptionCaught: self at: activation ifFail: [nil]) cull: self.
       ] ensure: [
