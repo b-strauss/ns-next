@@ -117,15 +117,18 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::ExceptionUnhandled => Some(Ok(Step::Value(Value::boolean(
             crate::debugger::exceptions::unhandled(mutator, subject),
         )))),
-        // The search found the handler, the second argument, of the
-        // `on:do:` activation the first is: recorded for a step in
-        // progress and the caught-exception breakpoint, before the handler
-        // runs. Neither argument is read here: the safepoint reads them.
+        // The search found the `on:do:` activation the argument is, and
+        // is about to run its handler, which this answers as
+        // `activationHandlerBlock:ifFail:` does: the catch is recorded for
+        // a step in progress and the caught-exception breakpoint first,
+        // the activation and the handler held for the safepoint, which
+        // reads them.
         ActivationPrimitive::ExceptionCaught => {
             let activation = arguments.first(&mutator.heap)?;
-            let handler = arguments.try_get(&mutator.heap, 1)?;
+            let frame = mutator.heap.object_frame(activation.as_object()?)?;
+            let handler = handler_block(mutator, frame)?;
             crate::debugger::exceptions::caught(mutator, subject, activation, handler);
-            Some(Ok(Step::Value(Value::nil())))
+            Some(Ok(Step::Value(handler)))
         }
     }
 }
@@ -189,13 +192,7 @@ fn activation_leaf<'gc>(
             let (class_register, _, _) = handler_registers(mutator, frame)?;
             mutator.heap.frame_local(frame, class_register)
         }
-        SubjectLeaf::HandlerBlock => {
-            if !running {
-                return None;
-            }
-            let (_, block_register, _) = handler_registers(mutator, frame)?;
-            mutator.heap.frame_local(frame, block_register)
-        }
+        SubjectLeaf::HandlerBlock => handler_block(mutator, frame)?,
         SubjectLeaf::SetHandlerActive => {
             if !running {
                 return None;
@@ -236,6 +233,16 @@ fn activation_leaf<'gc>(
         }
     };
     Some(Ok(Step::Value(answer)))
+}
+
+/// The handler block of the `on:do:` activation `frame` names; `None` for
+/// a returned activation or one that runs no `on:do:`.
+fn handler_block<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Option<Value<'gc>> {
+    if !mutator.heap.frame_is_running(frame) {
+        return None;
+    }
+    let (_, block_register, _) = handler_registers(mutator, frame)?;
+    Some(mutator.heap.frame_local(frame, block_register))
 }
 
 /// The object for `activation`: its frame object, reified on the first

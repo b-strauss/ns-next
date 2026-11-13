@@ -802,7 +802,8 @@ pub enum ActivationPrimitive {
     /// leaf answers whether that stop resumes a `Halt` with nil.
     ExceptionUnhandled,
     /// The handler search found an `on:do:` whose handler is about to
-    /// run: reported to a step in progress and to the caught-exception
+    /// run: the leaf answers that handler, as `HandlerBlock` does, and the
+    /// catch is reported to a step in progress and to the caught-exception
     /// breakpoint.
     ExceptionCaught,
 }
@@ -3322,14 +3323,15 @@ pub const MIRROR: &[MirrorEntry] = &[
         "exceptionUnhandled",
         Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
     )),
-    // Leaf: the exception the subject, the handler's `on:do:` activation
-    // and the handler the arguments, held as roots for the safepoint, which
-    // reads them; otherwise as `exceptionUnhandled:ifFail:`.
-    leaf(mirror(
-        "exceptionCaught:at:handler:ifFail:",
-        "exceptionCaughtAt:handler:",
+    // An exit, as `activationHandlerBlock:ifFail:` is: it answers the
+    // handler of the `on:do:` activation, its argument, which it reads off
+    // that activation, and so is no leaf. The search reads the handler
+    // through it, so that reporting the catch costs no send of its own.
+    mirror(
+        "exceptionCaught:at:ifFail:",
+        "exceptionCaughtAt:",
         Primitive::Activation(ActivationPrimitive::ExceptionCaught),
-    )),
+    ),
 ];
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);

@@ -1,12 +1,12 @@
 //! Exception breakpoints (`docs/design/debugger.md`, "Exceptions"). The
 //! handler search of `Kernel.ns`'s `Exception` reports its outcome
 //! through two mirror leaves: no handler, just before it sends
-//! `defaultAction` (`unhandled`), and the handler it found, just before
-//! that runs (`caught`). Each is a leaf machine code calls without
-//! exiting, and only decides and records: it runs no Newspeak code,
-//! collects nothing and reads no other activation, and the class an
-//! exception breakpoint names is matched by walking the exception's class
-//! chain by declaration. What it decides is recorded on the `Mutator` and
+//! `defaultAction` (`unhandled`), a leaf machine code calls without
+//! exiting, and the handler it found, just before that runs (`caught`),
+//! reported by the exit that reads the handler for the search. Each only
+//! decides and records: it runs no Newspeak code and collects nothing, and
+//! the class an exception breakpoint names is matched by walking the
+//! exception's class chain by declaration. What it decides is recorded on the `Mutator` and
 //! asked of the next poll through the request bit (`DEBUGGER_STOP`), whose
 //! safepoint serves it (`serve`): reports a handler found to a step in
 //! progress and stops once the frame the search runs next --
@@ -116,9 +116,10 @@ pub(crate) fn unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Value<'gc>) 
 /// attached, what the safepoint does with it is recorded for the next
 /// poll -- a step in progress hears of it there, and the stop the
 /// caught-exception breakpoint asks for waits there for the handler's
-/// first instruction (`serve`). A leaf machine code calls, as
-/// `unhandled` is: flooding a step's frame, which frees machine code, and
-/// reading the `on:do:` activation wait for the safepoint.
+/// first instruction (`serve`). Run by the mirror send that reads the
+/// handler (`exceptionCaught:at:ifFail:`), which machine code exits for:
+/// flooding a step's frame, which frees machine code, and reading the
+/// `on:do:` activation's frame still wait for the safepoint.
 pub(crate) fn caught<'gc>(
     mutator: &mut Mutator<'gc>,
     exception: Value<'gc>,

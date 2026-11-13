@@ -224,10 +224,18 @@ fn exit_is_taken(
     }
 }
 
+/// Whether the debugger hears of the frames an unwind pops: only a step in
+/// progress and a method breakpoint do. The unwinder asks once, as it
+/// starts or carries on; a pop's report can start a step only when one of
+/// them already holds, so the answer stands for the whole unwind.
+pub(crate) fn follows_unwinds(mutator: &Mutator<'_>) -> bool {
+    mutator.stepping.is_some() || mutator.breakpoints.has_method_breakpoints()
+}
+
 /// The unwinder is about to pop `top`, for an unwind other than a
-/// termination: the method breakpoints whose method it is a body of,
-/// whose exit the pop is (`left_by_unwind`). Empty while no method
-/// breakpoint is set, the one check the unwinder makes per pop.
+/// termination the debugger follows (`follows_unwinds`): the method
+/// breakpoints whose method it is a body of, whose exit the pop is
+/// (`left_by_unwind`). Empty while no method breakpoint is set.
 pub(crate) fn leaving_by_unwind(
     mutator: &Mutator<'_>,
     top: ActivationReference,

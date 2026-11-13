@@ -3006,8 +3006,16 @@ impl<'gc> Mutator<'gc> {
     /// (`stepping::frame_left`): told before a resumed sender can take the
     /// popped frame's offset, and of the frame on top once it is there.
     pub(crate) fn pop_for_unwind(&mut self, top: ActivationReference) {
+        self.pop_for_unwind_as::<true>(top);
+    }
+
+    /// `pop_for_unwind`, a step in progress told of the pop only when
+    /// `FOLLOWED`: an unwind that began with no step in progress and no
+    /// method breakpoint set, which nothing it pops can start, leaves the
+    /// test out of every pop (`unwind::unwind`).
+    pub(crate) fn pop_for_unwind_as<const FOLLOWED: bool>(&mut self, top: ActivationReference) {
         let popped = self.heap.pop_activation(top);
-        let stepping = self.stepping.is_some();
+        let stepping = FOLLOWED && self.stepping.is_some();
         if stepping {
             crate::debugger::stepping::popped(self);
         }
