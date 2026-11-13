@@ -1706,13 +1706,31 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [object-model.md](design/object-model.md), "Instantiation".
 - **The stress gate's time** (noted with the user on 2026-11-01, to be
   taken up in a session of its own). The stress step of `cargo xtask
-  gates end-of-batch` takes about 965 s (2026-11-07; 690 s with one
-  mode fewer on 2026-11-06), when its thirteen suites ran at once; the
-  sixteen it runs now do too, so both the slowest mode and the CPU work
-  of all of them count. Measure first:
-  the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
-  test's time, from which the slowest tests per mode and each crate's
-  share follow. The candidates, none measured yet:
+  gates end-of-batch` takes about 1,580 s with its sixteen suites at
+  once (2026-11-13): WIDE ends after 1,011 s, most modes after 1,080 to
+  1,100 s, ZONE and STEP after 1,210 to 1,265 s, SCAVENGE, COLLECT and
+  PAUSE after 1,400 to 1,490 s, MOVES after 1,577 s. The suites share the
+  cores, so the gate is bound by the work of all of them (about 262,000
+  test-seconds under that contention), and the four slowest modes add a
+  tail of single reference-lowering tests:
+  `runtime/optimizer/inlined_block_returns_from_its_home` 708 s under
+  MOVES and 406 s under SCAVENGE, `runtime/jit/closure_recursion_overflow`
+  500 s under PAUSE, `runtime/jit/counting_loop` 456 s under COLLECT,
+  `a_key_refused_for_good_does_not_starve_another_key` 274 to 371 s under
+  COLLECT, SCAVENGE and MOVES. Of the work, `ns-cli` is 50%
+  (`run_goldens` 36%, `debug_metadata` 12%, which runs no program),
+  `ns-runtime` 44.5% (its library's unit tests 21%, many of them
+  compiling only), `ns-syntax` 4.2%, `ns-memory` 1.1%. The dev profile
+  already builds at `opt-level = 1`, so a profile of `opt-level = 2` with
+  debug assertions would gain less than an unoptimized build would
+  suggest; unmeasured. The candidates, none built yet:
+  - *Starting the tail first*: the tests named above started first
+    (a nextest priority, if the installed nextest has one), so that they
+    overlap the rest instead of ending alone.
+  - *Tests no mode reaches*: `debug_metadata` runs no program (only WIDE
+    may change what it compiles), and many of `ns-runtime`'s unit tests
+    only compile; leaving them out of the stress suites, by a nextest
+    filter, cuts the work by their share, about 15 to 25%.
   - *`NS_NEXT_STRESS_COLLECT` is among the slowest modes* (about 555 s against
     350 to 415 s for the others, measured 2026-11-01; 675 s against 404
     to 549 s on 2026-11-06; on 2026-11-07, with INVALIDATE beside it,
@@ -1729,7 +1747,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     benchmarks), so it is mainly a gain for the gate.
   - *Crates no stress mode reaches*: the stress suites run the whole
     workspace, `ns-syntax`, the formatter, `ns-analyzer`,
-    `ns-assembler` and `xtask` included, ten times over, though the modes
+    `ns-assembler` and `xtask` included, sixteen times over, though the modes
     act only on the runtime; restricting them would cut the gate's CPU
     work by those crates' share. A gain for the gate only.
   - *The cell verification under `NS_NEXT_STRESS_SCAVENGE`*, paced by the
