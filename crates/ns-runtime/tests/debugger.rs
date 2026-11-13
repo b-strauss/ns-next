@@ -1784,6 +1784,48 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    /// The breakpoint stress mode's patch and a line breakpoint stand at
+    /// the same slot, whichever came first: the line breakpoint stops at
+    /// every pass, the stress patch never does, and once the line
+    /// breakpoint is removed the slot, still the stress mode's, stops no
+    /// more.
+    fn a_stress_patch_beside_a_line_breakpoint_never_stops(lowering) {
+        let (mut interpreter, class) = interpreted(LOOPING, lowering);
+        interpreter.set_stress_breakpoints(true);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        // The stress mode patches the loop's statements first.
+        let result = run(&mut interpreter, &instance);
+        assert_eq!(answered(&mut interpreter, result), 63);
+        let before = interpreter.stress_breakpoint_hits();
+        assert!(before > 0, "the stress mode patched the loop");
+        let offset = line_start(LOOPING, "passes:: passes + 1.");
+        let (stops, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Looping", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Looping"));
+                for _ in 0..3 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+                3
+            },
+        );
+        assert_eq!(stops, 3);
+        assert_eq!(answered(&mut interpreter, result), 126);
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Looping", Vec::new());
+        let (events, result, _remote) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_no_stop(&events);
+        assert!(reports_no_breakpoint(&events, "Looping"));
+        assert_eq!(answered(&mut interpreter, result), 189);
+        assert!(interpreter.stress_breakpoint_hits() > before);
+    }
+}
+
 /// An `ifTrue:` sent once to a Boolean, whose block the compiler inlines,
 /// and once to an object that answers it by running its argument, the
 /// block's fallback closure.
@@ -2024,6 +2066,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A full collection keeps a patched body's code id, though no
     /// running activation names it; the breakpoint removed after it gives

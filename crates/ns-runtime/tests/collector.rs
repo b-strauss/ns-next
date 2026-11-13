@@ -600,6 +600,10 @@ fn churn_method_edits(interpreter: &mut Interpreter, class: &Root, count: i64) {
 /// tables' sizes after a collection that follows it.
 fn churn_with_floors(floor: usize, edits: i64) -> (u64, ns_runtime::TableSizes) {
     let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    // What the collections reclaim is what this pins: the breakpoint
+    // stress mode's patches keep every body they patched, and its code
+    // id, for as long as the mode is on.
+    interpreter.set_stress_breakpoints(false);
     interpreter.set_table_floors(ns_runtime::TableFloors::all(floor));
     churn_method_edits(&mut interpreter, &class, edits);
     let table_collections = interpreter.collector_statistics().table_collections;

@@ -670,6 +670,15 @@ pub struct Interpreter {
     /// since a stop reads the whole run's stack. Debug builds only.
     #[cfg(debug_assertions)]
     stress_pause: Option<safepoint::StressSchedule>,
+    /// Whether the breakpoint stress mode is on
+    /// (`NS_NEXT_STRESS_BREAKPOINTS`, or `set_stress_breakpoints`): at
+    /// every safepoint, every statement start of each running body not
+    /// patched yet is patched with a breakpoint that never stops
+    /// (`debugger::breakpoints::patch_running_for_stress`). Not paced: a
+    /// body is resolved once, and the walk stops at the first resolved
+    /// before. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_breakpoints: bool,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -738,6 +747,8 @@ impl Interpreter {
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
+            #[cfg(debug_assertions)]
+            stress_breakpoints: safepoint::stress_breakpoints_from_env(),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
             debugger: None,

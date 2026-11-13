@@ -7389,9 +7389,9 @@ debugger terminated the program"; a dropped remote detaches the
 debugger and lets the program finish. The pause stress mode
 (`NS_NEXT_STRESS_PAUSE`) stops every program at the safepoints its
 schedule picks and reads its whole stack, every frame's variables and
-every value one level deep, so that the stress gate, thirteen modes now,
-shows reading a stopped stack never changes an outcome nor reads a dead
-register. `crates/ns-runtime/tests/debugger.rs` holds the API to its
+every value one level deep, so that the stress gate shows reading a
+stopped stack never changes an outcome nor reads a dead register.
+`crates/ns-runtime/tests/debugger.rs` holds the API to its
 behaviour, the machine-code pauses to the machine code they name. No
 golden's outcome changed.
 

@@ -275,6 +275,11 @@ mod tests {
 
     fn load_with(lowering: Lowering, source: &str) -> (Interpreter, Root) {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
+        // What a collection reclaims is what these pin: the breakpoint
+        // stress mode's patches keep every body they patched, and its code
+        // id, for as long as the mode is on.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
         let class = load_into(&mut interpreter, source);
         (interpreter, class)
     }

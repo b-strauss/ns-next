@@ -31,7 +31,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the suite under the thirteen stress modes and without the JIT, then run-corpus plain and under each mode
+  stress               the suite under the fourteen stress modes and without the JIT, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
@@ -41,7 +41,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
-const STRESS_MODES: [&str; 13] = [
+const STRESS_MODES: [&str; 14] = [
     "MOVES",
     "CACHES",
     "COLLECT",
@@ -55,6 +55,7 @@ const STRESS_MODES: [&str; 13] = [
     "DEOPT",
     "INVALIDATE",
     "PAUSE",
+    "BREAKPOINTS",
 ];
 
 /// The suite run beside the stress modes with the JIT off: every other
@@ -1116,8 +1117,8 @@ mod tests {
     }
 
     #[test]
-    fn the_stress_group_runs_thirteen_modes() {
-        assert_eq!(STRESS_MODES.len(), 13);
+    fn the_stress_group_runs_fourteen_modes() {
+        assert_eq!(STRESS_MODES.len(), 14);
         for mode in [
             "JIT",
             "EXIT",
@@ -1126,6 +1127,7 @@ mod tests {
             "DEOPT",
             "INVALIDATE",
             "PAUSE",
+            "BREAKPOINTS",
         ] {
             assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
         }

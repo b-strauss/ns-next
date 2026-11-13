@@ -4,9 +4,11 @@
 //! breakpoints"): each line breakpoint by its module and offset, each
 //! method breakpoint by its method, the run to cursor, the slots they
 //! patched, keyed by their body and index, the token that lets a resumed
-//! stop go past its breakpoint once, and the stop a `Breakpoint` arm
-//! asked for. On the `Mutator`, since the run loop's arm, a module's build
-//! and an install, which run inside an entry, reach nothing else.
+//! stop go past its breakpoint once, the stop a `Breakpoint` arm asked
+//! for, and, in a debug build, the breakpoint stress mode's patches ("The
+//! breakpoint stress mode"). On the `Mutator`, since the run loop's arm,
+//! a module's build and an install, which run inside an entry, reach
+//! nothing else.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -28,6 +30,11 @@ use crate::heap::{ActivationReference, CodeId, FrameReference, Heap};
 use crate::interpreter::Mutator;
 use crate::mixin::{Mixin, MixinMethod};
 use crate::Root;
+
+/// The size of the breakpoint stress mode's table of resolved bodies from
+/// which each doubling forgets the dead ones.
+#[cfg(debug_assertions)]
+const STRESSED_FLOOR: usize = 1024;
 
 /// Why a run to cursor is refused at a module not built.
 const NOT_BUILT: &str = "no module of that name is built";
@@ -77,8 +84,9 @@ pub(crate) struct Breakpoints {
     /// copies recorded what it decided.
     fast_paths_switched: bool,
     /// Each method whose fast path a patch of its body switched off, by
-    /// its body's address: the restore of the body's last patch, of
-    /// whichever kind, switches it back on.
+    /// its body's address: the removal of the body's last patch, of
+    /// whichever kind but the breakpoint stress mode's, switches it back
+    /// on (`switch_fast_paths_back`).
     switched_off: HashMap<usize, Rc<MixinMethod>>,
     /// The attached debugger's arming lock, under which a step holds and
     /// drops its request bit (`debugger::stepping`), as the agent arms
@@ -93,6 +101,17 @@ pub(crate) struct Breakpoints {
     /// non-local return already reported, so that the unwind's arrival
     /// there does not report it again (`returned_home_reported`).
     reported_home: Option<Root>,
+    /// Every body the breakpoint stress mode patched, or found nothing to
+    /// patch in, by its address: each is resolved once. Held weakly, as
+    /// the metadata cache holds a body: the allocation stays, so that no
+    /// other body takes its address, but a body nothing patched is not
+    /// kept alive.
+    #[cfg(debug_assertions)]
+    stressed: HashMap<usize, std::rc::Weak<CompiledCode>>,
+    /// How many times a `Breakpoint` arm went past a slot the breakpoint
+    /// stress mode patched since the mode was last switched on.
+    #[cfg(debug_assertions)]
+    stress_hits: usize,
 }
 
 /// One method breakpoint.
@@ -143,6 +162,10 @@ enum PatchKind {
     OneShot(OneShot),
     /// The run to cursor's target, taken in any activation.
     RunTo,
+    /// The breakpoint stress mode's, which never stops
+    /// (`patch_running_for_stress`).
+    #[cfg(debug_assertions)]
+    Stress,
 }
 
 impl PatchKind {
@@ -162,6 +185,8 @@ impl PatchKind {
             | (PatchKind::Entry(held), PatchKind::Entry(id))
             | (PatchKind::Exit(held), PatchKind::Exit(id)) => held == id,
             (PatchKind::RunTo, PatchKind::RunTo) => true,
+            #[cfg(debug_assertions)]
+            (PatchKind::Stress, PatchKind::Stress) => true,
             _ => false,
         }
     }
@@ -170,6 +195,20 @@ impl PatchKind {
     /// stop ends.
     fn ends_at_next_stop(self) -> bool {
         matches!(self, PatchKind::OneShot(_) | PatchKind::RunTo)
+    }
+
+    /// Whether this is the breakpoint stress mode's, which outlives every
+    /// debugger.
+    fn is_stress(self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            matches!(self, PatchKind::Stress)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = self;
+            false
+        }
     }
 }
 
@@ -277,6 +316,8 @@ pub(crate) struct Standing {
     pub(crate) exits: Vec<BreakpointId>,
     pub(crate) one_shots: Vec<OneShot>,
     pub(crate) run_to: bool,
+    /// Whether the breakpoint stress mode patched the slot.
+    pub(crate) stress: bool,
 }
 
 /// What resolving a module's breakpoints against its bodies found.
@@ -416,6 +457,8 @@ impl Breakpoints {
                     PatchKind::Exit(id) => standing.exits.push(*id),
                     PatchKind::OneShot(one_shot) => standing.one_shots.push(*one_shot),
                     PatchKind::RunTo => standing.run_to = true,
+                    #[cfg(debug_assertions)]
+                    PatchKind::Stress => standing.stress = true,
                 }
             }
         }
@@ -521,7 +564,8 @@ impl Breakpoints {
                 PatchKind::Line(_)
                 | PatchKind::Entry(_)
                 | PatchKind::Exit(_)
-                | PatchKind::RunTo => None,
+                | PatchKind::RunTo
+                | PatchKind::Stress => None,
             })
             .collect()
     }
@@ -577,17 +621,38 @@ impl Breakpoints {
         self.changed.push(Rc::clone(code));
     }
 
-    /// Gives `patch`'s slot its original back, and the fast path of its
-    /// body's method once no slot of the body is patched.
+    /// Gives `patch`'s slot its original back.
     fn restore(&mut self, patch: &Patch) {
         patch.code.restore(patch.index);
-        if !patch.code.has_patches() {
-            if let Some(method) = self.switched_off.remove(&address(&patch.code)) {
+        self.changed.push(Rc::clone(&patch.code));
+    }
+
+    /// Switches the fast path of each method a patch switched off back on
+    /// once no breakpoint but the breakpoint stress mode's stands in its
+    /// body: the mode's patches never stop, so they keep no send from the
+    /// fast path, and they stay for as long as the mode is on.
+    fn switch_fast_paths_back(&mut self) {
+        if self.switched_off.is_empty() {
+            return;
+        }
+        let patches = &self.patches;
+        let freed: Vec<usize> = self
+            .switched_off
+            .keys()
+            .copied()
+            .filter(|body| {
+                !patches.values().any(|patch| {
+                    address(&patch.code) == *body
+                        && patch.kinds.iter().any(|kind| !kind.is_stress())
+                })
+            })
+            .collect();
+        for body in freed {
+            if let Some(method) = self.switched_off.remove(&body) {
                 method.switch_fast_path(true);
                 self.fast_paths_switched = true;
             }
         }
-        self.changed.push(Rc::clone(&patch.code));
     }
 
     /// Removes every kind `removed` picks from every slot `keep` refuses;
@@ -615,7 +680,8 @@ impl Breakpoints {
         }
     }
 
-    /// Gives every slot no kind holds any more its original back.
+    /// Gives every slot no kind holds any more its original back, and every
+    /// method no breakpoint stands in any more its fast path.
     fn sweep(&mut self) {
         let emptied: Vec<(usize, usize)> = self
             .patches
@@ -634,6 +700,7 @@ impl Breakpoints {
                 }
             }
         }
+        self.switch_fast_paths_back();
     }
 
     /// Every patched body's code id: a full collection keeps them, as it
@@ -978,17 +1045,16 @@ fn patch_method(
     }
 }
 
-/// Removes every breakpoint, each slot given its original back, ends any
-/// step, drops a stop not served yet and puts the step filters and the
-/// exception breakpoints back to their default: the debugger that set
-/// them is gone or replaced.
+/// Removes every breakpoint, each slot no breakpoint stress patch holds
+/// given its original back, ends any step, drops a stop not served yet
+/// and puts the step filters and the exception breakpoints back to their
+/// default: the debugger that set them is gone or replaced.
 pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     super::stepping::end(mutator);
     let table = &mut mutator.breakpoints;
-    let patches: Vec<Patch> = table.patches.drain().map(|(_, patch)| patch).collect();
-    for patch in &patches {
-        table.restore(patch);
-    }
+    // The breakpoint stress mode's patches stay: they are the mode's, not
+    // the debugger's, and the mode resolves each body once.
+    table.remove_kinds(|kind| !kind.is_stress(), |_| false);
     table.modules.clear();
     table.methods.clear();
     table.reported_home = None;
@@ -1223,5 +1289,93 @@ impl Mutator<'_> {
     /// their walk then.
     pub(crate) fn has_no_breakpoints(&self) -> bool {
         self.breakpoints.is_empty()
+    }
+}
+
+/// The breakpoint stress mode's side of the safepoint
+/// (`Interpreter::set_stress_breakpoints`): every running activation's
+/// body the mode has not resolved yet, from the top down to the first
+/// whose body it has, gets every statement start its metadata names
+/// patched with a breakpoint that never stops, and the machine code of
+/// every body patched is freed (`settle`), so that every statement start
+/// of every body that runs is a `Breakpoint` slot, interpreted or lowered
+/// as an exit. The mode holds every poll's request, so each push comes
+/// here with its frame on top, and the walk stops at the first body
+/// resolved before, which keeps a deep recursion's safepoints from
+/// walking its whole stack. A body without metadata -- an image's
+/// without source -- is resolved to no slot.
+#[cfg(debug_assertions)]
+pub(crate) fn patch_running_for_stress(mutator: &mut Mutator<'_>) {
+    let mut next = mutator.heap.top_activation();
+    while let Some(activation) = next {
+        let code = mutator.heap.activation_code(activation);
+        if mutator.breakpoints.stressed.contains_key(&address(&code)) {
+            break;
+        }
+        let (code, _, metadata) = super::stack::running_body(mutator, activation);
+        let starts: Vec<usize> = metadata
+            .iter()
+            .flat_map(|metadata| metadata.statements.iter())
+            .filter_map(|entry| {
+                let index = usize::try_from(entry.instructions.start).ok()?;
+                (!entry.instructions.is_empty() && index < code.instruction_count())
+                    .then_some(index)
+            })
+            .collect();
+        for index in &starts {
+            mutator
+                .breakpoints
+                .add(&code, *index, PatchKind::Stress, None);
+        }
+        if !starts.is_empty() {
+            mutator.heap.code_id(&code);
+        }
+        let stressed = &mut mutator.breakpoints.stressed;
+        // A dead body's entry only reserves its allocation: the dead are
+        // forgotten whenever the table reaches a power of two past the
+        // floor, so that it grows with the bodies alive, not with every
+        // body that ever ran.
+        if stressed.len() >= STRESSED_FLOOR && stressed.len().is_power_of_two() {
+            stressed.retain(|_, body| body.strong_count() > 0);
+        }
+        stressed.insert(address(&code), Rc::downgrade(&code));
+        // A sender suspended into its frame object is resolved once it is
+        // resumed, at the safepoint its frame next reaches on top.
+        if mutator
+            .heap
+            .activation_suspended_sender(activation)
+            .is_some()
+        {
+            break;
+        }
+        next = mutator.heap.activation_sender(activation);
+    }
+    settle(mutator);
+}
+
+/// The breakpoint stress mode is switched off: every slot only its
+/// patches held gets its original back, the bodies it resolved are
+/// forgotten and its count of hits starts again.
+#[cfg(debug_assertions)]
+pub(crate) fn end_stress(mutator: &mut Mutator<'_>) {
+    let table = &mut mutator.breakpoints;
+    table.remove_kinds(PatchKind::is_stress, |_| false);
+    table.stressed.clear();
+    table.stress_hits = 0;
+    settle(mutator);
+}
+
+#[cfg(debug_assertions)]
+impl Breakpoints {
+    /// A `Breakpoint` arm reached a slot the breakpoint stress mode
+    /// patched.
+    pub(crate) fn count_stress_hit(&mut self) {
+        self.stress_hits += 1;
+    }
+
+    /// How many times a `Breakpoint` arm reached a slot the breakpoint
+    /// stress mode patched.
+    pub(crate) fn stress_hits(&self) -> usize {
+        self.stress_hits
     }
 }

@@ -32,6 +32,11 @@ fn load_spending_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     // On whatever the environment says: these pin the JIT, and the stress
     // gate runs the suite once with `NS_NEXT_NO_JIT=1`.
     interpreter.set_jit_enabled(true);
+    // Off whatever the environment says, for the same reason: a body the
+    // breakpoint stress mode patched is neither optimized nor inlined, and
+    // its baseline code exits at every statement.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_breakpoints(false);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }

@@ -505,6 +505,7 @@ fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) ->
         "INVALIDATE",
         "WIDE",
         "PAUSE",
+        "BREAKPOINTS",
     ] {
         command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
     }
@@ -712,6 +713,7 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_DEOPT")
         .env_remove("NS_NEXT_STRESS_INVALIDATE")
         .env_remove("NS_NEXT_STRESS_PAUSE")
+        .env_remove("NS_NEXT_STRESS_BREAKPOINTS")
         .output()
         .unwrap();
     assert_eq!(

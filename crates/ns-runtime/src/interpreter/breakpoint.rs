@@ -35,7 +35,8 @@ pub(crate) enum BreakpointDecision {
 /// patched: a stop for a line breakpoint, a method's entry, a method's
 /// exit the slot really is -- a lazy slot's getter's first instruction
 /// once the slot is filled, a non-local return whose home still runs --
-/// the run to cursor, and a one-shot that stops in this activation. The
+/// the run to cursor, and a one-shot that stops in this activation; the
+/// breakpoint stress mode's patch only counts its hit. The
 /// token a resumed stop set lets the frame past the slot it stopped at
 /// once; this arm consumes it when it names this slot, and drops it
 /// otherwise, since the activation it names may be popped from here on
@@ -65,9 +66,16 @@ pub(crate) fn reached(
             || !standing.entries.is_empty()
             || !standing.exits.is_empty()
             || !standing.one_shots.is_empty()
-            || standing.run_to,
+            || standing.run_to
+            || standing.stress,
         "internal: a patched slot no breakpoint holds"
     );
+    // The breakpoint stress mode's patch never stops: it counts, and the
+    // slot is gone past as any other that does not stop.
+    #[cfg(debug_assertions)]
+    if standing.stress {
+        mutator.breakpoints.count_stress_hit();
+    }
     // A step's one-shots count only in their own activation; a recording
     // one goes on, having noted the value of the call before it.
     let mut step_stops = false;

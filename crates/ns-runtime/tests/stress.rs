@@ -785,3 +785,102 @@ ns_runtime::for_each_lowering! {
         assert!(pauses > 0, "the pause stress mode never stopped");
     }
 }
+
+// The breakpoint stress mode: every statement start of every body that
+// runs patched with a breakpoint that never stops, each hit gone past
+// through the run loop's arm (`docs/design/debugger.md`, "The breakpoint
+// stress mode").
+
+/// A loop whose blocks a callee runs, a non-local return out of a `do:`,
+/// an exception its handler returns from and a recursion, each run often
+/// enough to be compiled, so that the patched statement starts stand in
+/// inlined blocks, closures, handlers and unwound frames, in machine code
+/// and out of it.
+const BREAKPOINTED_PROGRAM: &str = indoc! {"
+    class Breakpointed = Object new (
+    ) (
+      class Counter = Object new (
+        | public total ::= 0. |
+      ) (
+        public add: amount = (
+          total:: total + amount
+        )
+      ) : ()
+      firstAbove: limit in: items = (
+        items do: [:each | each > limit ifTrue: [^each]].
+        ^0
+      )
+      guarded: index = (
+        ^[
+          index \\\\ 3 = 0 ifTrue: [Error new signal: 'three'].
+          index
+        ]
+          on: Error
+          do: [:error | error return: 100]
+      )
+      depth: count = (
+        count = 0 ifTrue: [^0].
+        ^1 + (self depth: count - 1)
+      )
+      public run = (
+        | counter items |
+        counter:: Counter new.
+        items:: {3. 9. 27. 81}.
+        1 to: 200 do: [:index |
+          counter add: (self firstAbove: index \\\\ 50 in: items).
+          counter add: (self guarded: index)].
+        counter add: (self depth: 100).
+        ^counter total
+      )
+    ) : ()
+"};
+
+/// How a run of `source`'s `run` ended under `lowering`, the JIT on or
+/// off, and how many breakpoints the breakpoint stress mode went past.
+fn run_breakpointed(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    breakpoints: bool,
+) -> (String, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_stress_breakpoints(breakpoints);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (outcome, interpreter.stress_breakpoint_hits())
+}
+
+ns_runtime::for_each_lowering! {
+    fn the_breakpoint_stress_mode_keeps_outcomes(lowering) {
+        for jit in [true, false] {
+            let (plain, plain_hits) = run_breakpointed(BREAKPOINTED_PROGRAM, lowering, jit, false);
+            assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
+            assert_eq!(plain_hits, 0);
+            let (breakpointed, hits) =
+                run_breakpointed(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            assert_eq!(breakpointed, plain, "the JIT on: {jit}");
+            // Each of the loop's 200 passes goes past its own two
+            // statements and the one of each of its two `add:`s at least.
+            assert!(
+                hits >= 800,
+                "the breakpoint stress mode went past {hits} breakpoints, the JIT on: {jit}"
+            );
+        }
+    }
+}

@@ -48,9 +48,12 @@
 > before its handler runs, each filtered by class, and an uncaught `halt`,
 > which goes on resumed with nil, the stack trace marking the frames above
 > the first one below the exception's machinery hidden, and the handler
-> search reports the handler it found to a step in progress ("Exceptions").
-> Everything else is planned: the rest of stage 3 -- the breakpoint and
-> step stress modes -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
+> search reports the handler it found to a step in progress ("Exceptions");
+> and the breakpoint stress mode patches every statement start of every
+> body that runs with a breakpoint that never stops ("The breakpoint
+> stress mode").
+> Everything else is planned: the rest of stage 3 -- the step stress
+> mode -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
@@ -64,8 +67,8 @@
 > **Code:** stages 1 and 2 are `crates/ns-runtime/src/debugger/` (`mod.rs`: the
 > VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
 > the arming lock `Arming`, the pause stress mode's `StressReader`;
-> `breakpoints.rs`: the breakpoint table, line breakpoints and the
-> one-shots; `stepping.rs`: the step in progress, `Stepping`;
+> `breakpoints.rs`: the breakpoint table, line breakpoints, the
+> one-shots and the breakpoint stress mode's patches; `stepping.rs`: the step in progress, `Stepping`;
 > `exceptions.rs`: the exception breakpoints, decided by the handler
 > search's two leaves (`builtins/activation.rs`), and the first frame an
 > exception's stop shows;
@@ -696,7 +699,8 @@ talks to the remote -- a command channel found disconnected while draining
 or while stopped, or an event that cannot be sent -- and
 `detach_debugger` makes no attachment current and clears every debugger
 bit under one hold of the arming lock, removes every breakpoint, each
-slot given its original back, ends a step in progress and puts the step
+slot given its original back but one the breakpoint stress mode patched
+too, which keeps that patch ("The breakpoint stress mode"), ends a step in progress and puts the step
 filters and the exception breakpoints back to their default, then drops
 the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
@@ -1016,7 +1020,7 @@ every evaluation does.
 ### The pause stress mode
 
 The pause stress mode (`NS_NEXT_STRESS_PAUSE`, debug builds, one of the
-`stress` gate's thirteen modes; `Interpreter::set_stress_pause` for a
+`stress` gate's fourteen modes; `Interpreter::set_stress_pause` for a
 test, `Interpreter::stress_pauses` the count of its stops) stops the run
 at the safepoints its schedule picks -- paced by the traced size as the
 collect and suspend modes are (`StressSchedule`,
@@ -1042,10 +1046,58 @@ variable table that named a dead register included;
 `the_pause_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a program
 to its outcome under both lowerings with the mode on and off.
 
+### The breakpoint stress mode
+
+The breakpoint stress mode (`NS_NEXT_STRESS_BREAKPOINTS`, debug builds,
+one of the `stress` gate's fourteen modes;
+`Interpreter::set_stress_breakpoints` for a test,
+`Interpreter::stress_breakpoint_hits` the count of the patches gone past
+since it was switched on) runs every program through the `Breakpoint`
+arm at every statement. No debugger need be attached. At every
+safepoint, right after the pause stress mode's,
+`breakpoints::patch_running_for_stress` walks the running activations
+from the top and patches every statement start of each body it has not
+resolved yet -- the first instruction of every statement its metadata
+names, an inlined block's included -- with a breakpoint of its own kind
+(`PatchKind::Stress`), which never stops: the arm counts the hit and
+executes the original through its ordinary arm, as for a slot nothing
+stops at. While the mode is on it holds the stress bit
+(`hold_safepoints_for_stress`), so every push comes to the safepoint
+with its frame on top, and the walk stops at the first body it resolved
+before, which keeps a deep recursion's safepoints from walking its
+whole stack. A body without metadata -- an image's without source -- is
+resolved to no slot. The patches change through `settle`, so a patched
+body loses its machine code and is compiled again with an exit at every
+statement start, and is never optimized nor inlined; under the JIT the
+mode thus runs every exit at a patch and every abandonment it leads to.
+
+The mode's patches are its own, not a debugger's: an attachment, a
+detach and `clear` leave them, a line breakpoint and a stress patch at
+the same slot stand side by side -- the line breakpoint stops, the
+stress patch never does -- and a method's fast path comes back once the
+last breakpoint but the mode's leaves its body. Like a debugger's, the
+patches keep their bodies and their code ids for as long as the mode is
+on; switched off (`breakpoints::end_stress`), every slot only the mode
+held gets its original back. The table of resolved bodies holds each
+weakly, as the metadata cache does, so that no other body takes a
+resolved one's address and a dead one is forgotten.
+
+Every golden and the corpus run under it, under both lowerings, with the
+JIT and with `NS_NEXT_NO_JIT=1`, so that a patched slot at every
+statement start, each executed through the arm, is shown never to change
+a program's outcome: no instruction is read past the fetch of its slot.
+`the_breakpoint_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a
+program of a loop, blocks, a non-local return out of a `do:`, an
+exception handler and a recursion to its outcome under both lowerings,
+the JIT on and off, the mode on and off. The tests that pin what machine
+code, the optimizing tier or a collection's reclamation does switch the
+mode off, as they switch off the cache stress mode, since a patched body
+is never optimized and the patches keep every body they patched.
+
 ### Testing and gates
 
-**Partial:** stage 1's and stage 2's tests and the pause stress mode
-exist; the model test of the poll words' ordering, and every later
+**Partial:** stage 1's and stage 2's tests, the pause stress mode and
+the breakpoint stress mode exist; the model test of the poll words' ordering, and every later
 stage's tests, do not.
 
 - **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
@@ -1136,8 +1188,11 @@ stage's tests, do not.
   closure; a breakpoint set while the program runs; a pending breakpoint
   resolved when its module loads, and one in `TranscriptFactory`
   resolved when the program first asks for it; an install setting the
-  breakpoint again on the new body; and a patched body keeping its code
-  id across a full collection. With the JIT on, under both lowerings: a
+  breakpoint again on the new body; a patched body keeping its code
+  id across a full collection; and a line breakpoint at a slot the
+  breakpoint stress mode patched stopping at every pass, the stress
+  patch at none, the slot still the mode's once the breakpoint is
+  removed (debug builds). With the JIT on, under both lowerings: a
   breakpoint in a loop that runs in machine code freeing the code and
   stopping at every pass, each pass running its statement once, the
   exit at the patch taken; a breakpoint in a callee an optimized copy
@@ -1282,11 +1337,11 @@ stage's tests, do not.
   not exist; it needs `loom` as a dev-dependency, to be justified when it
   is built ([OPEN-WORK.md](../OPEN-WORK.md), "A model test of the poll
   words' ordering").
-- Planned: **a breakpoint stress mode** patches every statement start of
-  every body a program runs, goes on at each, and holds every golden's
-  outcome under both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`;
-  a **step stress mode** steps into everything; both join the `stress`
-  gate.
+- **The breakpoint stress mode** (above) patches every statement start
+  of every body a program runs, goes on at each, and holds every
+  golden's outcome under both lowerings, with the JIT and with
+  `NS_NEXT_NO_JIT=1`. Planned: a **step stress mode** steps into
+  everything, and joins the `stress` gate.
 - Planned: **debugger goldens**, a `.ns` with a script of commands and the
   stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
@@ -2029,7 +2084,9 @@ by the first patch that names the method -- a line breakpoint's, a
 method breakpoint's or the run to cursor's; a step's one-shot names
 none, so that a body a step patched first loses its fast path all the
 same when a breakpoint is set into it -- and put back from
-`recognized_fast_path` by the restore of the body's last patch --
+`recognized_fast_path` once the last patch of the body goes, but for
+the breakpoint stress mode's, which never stops and so keeps no send
+from the fast path ("The breakpoint stress mode") --
 after which the table's `settle`
 (`debugger/breakpoints.rs`) vacates the inline caches and their machine
 cells (`InlineCaches::invalidate`) and frees every optimized copy, since

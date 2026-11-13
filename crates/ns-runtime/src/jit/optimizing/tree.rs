@@ -563,6 +563,10 @@ mod tests {
         // would vacate it at the run's safepoints.
         #[cfg(debug_assertions)]
         interpreter.set_stress_caches(false);
+        // A body the breakpoint stress mode patched is neither optimized
+        // nor inlined, and its baseline code exits at every statement.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         expect_ok(
