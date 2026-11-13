@@ -93,7 +93,7 @@ pub(crate) fn unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Value<'gc>) 
         request(
             mutator,
             PendingException {
-                reason: Some(StopReason::Halt),
+                reason: Some(StopReason::Halt { exits: Vec::new() }),
                 activation: None,
                 handler: None,
             },
@@ -303,6 +303,7 @@ fn reason<'gc>(mutator: &Mutator<'gc>, exception: Value<'gc>, caught: bool) -> S
         class_name,
         description,
         caught,
+        exits: Vec::new(),
     }
 }
 

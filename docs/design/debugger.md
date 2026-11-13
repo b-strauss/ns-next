@@ -442,8 +442,10 @@ breakpoints standing at the statement it stopped at,
 `StopReason::Step`, a step's or the run to cursor's arrival, or
 `StopReason::MethodEntry { id, others }` and `StopReason::MethodExit {
 id, others }`, a method breakpoint's ("Method breakpoints"), or
-`StopReason::Exception { class_name, description, caught }` and
-`StopReason::Halt`, an exception breakpoint's ("Exceptions"); `returned`, at a step's stop, the
+`StopReason::Exception { class_name, description, caught, exits }` and
+`StopReason::Halt { exits }`, an exception breakpoint's, `exits` the
+method breakpoints whose exit by an unwind it reports
+("Exceptions", "Method breakpoints"); `returned`, at a step's stop, the
 value the stepping frame's last call answered, described as the stop's
 first value, and `None` at every other stop ("The return value of the
 last call"); `StackTrace`; `Variables`, the
@@ -2748,7 +2750,7 @@ A signal searches its handler before anything unwinds, so an uncaught
 exception stops with its whole stack, where the search, having found no
 handler, is about to send `defaultAction` (`invokeNextHandler`,
 `Kernel.ns`), before any subclass's override of it runs:
-`StopReason::Exception { class_name, description, caught: false }`, the
+`StopReason::Exception { class_name, description, caught: false, exits }`, the
 description the exception's `messageText` as text, or its class's name
 when it has none -- `Exception>>description`'s answer unless a class
 overrides it, which only running code could ask. The frame shown
@@ -2793,7 +2795,7 @@ body-less declaration as `Class>>handles:` reads them
 (`activation::inherits_any`), running no code; with no class named,
 every exception is taken. `halt` signals `Halt`, whose breakpoint is on
 by default under the debugger: an uncaught `Halt` stops
-(`StopReason::Halt`), and going on resumes it with `nil`, which `halt`
+(`StopReason::Halt { exits }`), and going on resumes it with `nil`, which `halt`
 answers -- the leaf answers true and `invokeNextHandler` sends
 `resume: nil` instead of `defaultAction`. A `Halt` subclass therefore
 behaves otherwise under that default breakpoint than without a
@@ -2958,7 +2960,11 @@ and stops every activation of it at its entry and at each of its exits.
   a step into from the frame now on top, or a step out from the method's
   frame the unwind arrives at, which stops at its caller's return point.
   That step replaces any step in progress, carrying its value of the
-  last call, and its stop reports the exit. A stop at an exit at a
+  last call, and its stop reports the exit; so does an exception's stop
+  served before it, the place the program reached first, in its
+  `exits` beside the exception (`StopReason::Exception`,
+  `StopReason::Halt`), whose reason stays the exception's, where a
+  pause's gives way to `MethodExit`. A stop at an exit at a
   non-local return records the home it returns to
   (`AfterPast::ExitReported`, `Breakpoints::report_home`), held as its
   frame object, so that the unwind's arrival there does not report the

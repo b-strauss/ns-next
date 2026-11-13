@@ -401,7 +401,8 @@ pub(crate) enum Leaving {
 /// which replaces any step in progress, its value of the last call kept
 /// -- a step into from the frame now on top for a popped frame, a step out
 /// from the method's frame for one that returns -- and whose stop reports
-/// the exits (`take_exits`).
+/// the exits (`take_exits`), or an exception's stop served first, beside
+/// its exception.
 pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, leaving: Leaving) {
     match leaving {
         Leaving::Popped => {

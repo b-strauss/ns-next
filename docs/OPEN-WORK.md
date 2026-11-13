@@ -2005,11 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *A pending method exit is dropped at an exception stop*: a method
-      breakpoint's exit an unwind reported, waiting for the step that
-      stops where the program goes on, is dropped when an exception's
-      stop is served first (`take_exits`), so that exit is not reported
-      ([debugger.md](design/debugger.md), "Method breakpoints").
     - *An unwind while stepping floods every frame it passes*:
       `pop_for_unwind` reports every frame it pops to the step, which
       floods each intermediate frame it goes on in -- 100,000 floods for

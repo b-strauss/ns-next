@@ -447,17 +447,24 @@ impl Interpreter {
             (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),
             _ => None,
         };
-        if let Some(reason) = exception {
+        if let Some(mut reason) = exception {
             // Where the frame on top stands is debugger.md's "Exceptions":
             // the first instruction of what the search runs next, unless a
             // fast path answered it without a push. The stop serves a
             // pause asked meanwhile too, and ends a step, whose handler
-            // report may have led it here.
+            // report may have led it here -- and the step that waited to
+            // report a method's exit by an unwind, which this stop, the
+            // next place the program reached, reports beside the
+            // exception, so that the exit is not lost.
             self.clear_debugger_bits(DEBUGGER_PAUSE);
-            self.enter(|mutator| {
-                stepping::take_exits(mutator);
+            let unwound = self.enter(|mutator| {
+                let unwound = stepping::take_exits(mutator);
                 stepping::end(mutator);
+                unwound
             });
+            if let StopReason::Exception { exits, .. } | StopReason::Halt { exits } = &mut reason {
+                exits.extend(unwound);
+            }
             return self.stop(reason, None, floor, CommandSource::Remote);
         }
         if let Some(breakpoint) = breakpoint {
@@ -783,7 +790,10 @@ impl Interpreter {
         // An exception's stop hides its machinery: an uncaught one's and a
         // `Halt`'s show first the frame below it, a caught one's the
         // handler about to run, the frame below the machinery next.
-        let exceptional = matches!(reason, StopReason::Exception { .. } | StopReason::Halt);
+        let exceptional = matches!(
+            reason,
+            StopReason::Exception { .. } | StopReason::Halt { .. }
+        );
         let caught = matches!(reason, StopReason::Exception { caught: true, .. });
         let returned = returned.map(|returned| {
             self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))

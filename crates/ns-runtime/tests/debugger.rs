@@ -5454,6 +5454,7 @@ fn exception(class_name: &str, description: &str, caught: bool) -> StopReason {
         class_name: String::from(class_name),
         description: String::from(description),
         caught,
+        exits: Vec::new(),
     }
 }
 
@@ -5542,6 +5543,65 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(shown, "Raising>>boom");
         assert_eq!(result, Err(String::from("boom")));
+    }
+}
+
+/// A method left by the unwind of a handled error, after which the
+/// statement the program goes on in raises an error nothing handles
+/// before it reaches another statement or a return point.
+const LEFT_THEN_RAISING: &str = indoc! {"
+    class LeftThenRaising = Object new () (
+      public run = (
+        ^([self each: [:value | Error signal: 'inner']] on: Error do: [:error | error return: 7])
+          bogus
+      )
+      each: action = (
+        action value: 2.
+        ^nil
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint's exit by an unwind, waiting for the next
+    /// place the program reaches, is reported by an exception's stop
+    /// served first, beside the exception, rather than dropped.
+    fn an_exception_stop_reports_a_pending_method_exit(lowering) {
+        let ((id, reasons), result) = raised(
+            LEFT_THEN_RAISING,
+            lowering,
+            |_, remote| {
+                set_method_breakpoints(
+                    remote,
+                    vec![method_breakpoint("LeftThenRaising", &[], false, "each:")],
+                );
+            },
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let mut reasons = Vec::new();
+                for _ in 0..2 {
+                    reasons.push(expect_stop(remote));
+                    continue_stopped(remote);
+                }
+                (id, reasons)
+            },
+        );
+        assert_eq!(
+            reasons,
+            [
+                StopReason::MethodEntry {
+                    id,
+                    others: Vec::new()
+                },
+                StopReason::Exception {
+                    class_name: String::from("MessageNotUnderstood"),
+                    description: String::from("an object does not understand #bogus"),
+                    caught: false,
+                    exits: vec![id],
+                },
+            ]
+        );
+        assert!(result.is_err());
     }
 }
 
@@ -5786,7 +5846,7 @@ ns_runtime::for_each_lowering! {
                 (reason, shown)
             },
         );
-        assert_eq!(reason, StopReason::Halt);
+        assert_eq!(reason, StopReason::Halt { exits: Vec::new() });
         assert_eq!(shown, "Halting>>run");
         assert_eq!(result, Ok(5));
     }
@@ -5824,7 +5884,7 @@ fn stepped_from_halt(
         lowering,
         |_, _| {},
         move |remote| {
-            assert_eq!(expect_stop(remote), StopReason::Halt);
+            assert_eq!(expect_stop(remote), StopReason::Halt { exits: Vec::new() });
             step(remote, command);
             let stood = standing(remote, HALTING_BETWEEN);
             continue_stopped(remote);

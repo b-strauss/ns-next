@@ -244,15 +244,20 @@ pub enum StopReason {
     /// without running the program's code. The stack trace hides the
     /// exception's own machinery (`FrameDescription::hidden`): it shows
     /// first the frame below it, or, for a caught one, the handler about
-    /// to run on top and then that frame.
+    /// to run on top and then that frame. `exits` are the method
+    /// breakpoints whose method an unwind left since the last stop, whose
+    /// exit waited for the next place the program reaches -- this stop's,
+    /// made before any other -- and which it reports too.
     Exception {
         class_name: String,
         description: String,
         caught: bool,
+        exits: Vec<BreakpointId>,
     },
     /// A `Halt` no handler takes stopped under the `Halt` breakpoint; going
-    /// on resumes it with nil, which its `halt` answers.
-    Halt,
+    /// on resumes it with nil, which its `halt` answers. `exits` as for
+    /// `Exception`.
+    Halt { exits: Vec<BreakpointId> },
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.
