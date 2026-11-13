@@ -248,16 +248,25 @@ impl StepReader {
 #[cfg(debug_assertions)]
 pub(crate) const STEP_STRESS_BURST: usize = 16;
 
+/// How many times the step stress mode's schedule may fall due while a
+/// step is in progress before the mode ends the step itself. A step that
+/// legitimately outlasts it is a step out of a long loop -- a shipped
+/// `to:do:` stopped in with the shipped filter off -- or of the run's
+/// first frame, which returns to the host; four periods let most steps
+/// over a call stop, while a long one costs the mode few bursts.
+#[cfg(debug_assertions)]
+const STEP_STRESS_GRACE: usize = 4;
+
 /// The step stress mode's state (`NS_NEXT_STRESS_STEP`, or
 /// `Interpreter::set_stress_step`): its schedule, the burst under way and
 /// the rotation of its steps.
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StepStress {
-    /// Picks the safepoints a burst begins at, paced as the pause stress
-    /// mode is; a step in progress is given one whole period more before
-    /// the next due ends it (`Interpreter::step_for_stress`).
-    pub(crate) schedule: crate::interpreter::safepoint::StressSchedule,
+    /// Picks the safepoints a burst begins at, paced by the traced size
+    /// as the pause stress mode is, the stack counted once more for each
+    /// step of a burst (`Interpreter::step_for_stress`).
+    schedule: crate::interpreter::safepoint::StressSchedule,
     /// The steps the burst under way has still to take.
     left: usize,
     /// The steps begun since the mode was switched on, which picks the
@@ -265,9 +274,12 @@ pub(crate) struct StepStress {
     begun: usize,
     /// The steps that stopped since the mode was switched on.
     pub(crate) stopped: usize,
-    /// Whether the schedule fell due while the step in progress ran,
-    /// which the next due ends.
-    overdue: bool,
+    /// The steps the mode ended itself since it was switched on, still in
+    /// progress when the schedule fell due `STEP_STRESS_GRACE` times more.
+    pub(crate) ended: usize,
+    /// How many times the schedule fell due while the step in progress
+    /// ran; at `STEP_STRESS_GRACE` the mode ends it.
+    overdue: usize,
 }
 
 #[cfg(debug_assertions)]
@@ -285,7 +297,7 @@ impl StepStress {
     /// shipped filter switched at every third, so that each action steps
     /// with the filter on and off.
     fn reader(&mut self, stepped: bool) -> StepReader {
-        self.overdue = false;
+        self.overdue = 0;
         if stepped {
             self.stopped += 1;
         } else {
@@ -390,12 +402,22 @@ impl Interpreter {
         if bits & DEBUGGER_STOP != 0 {
             self.clear_debugger_bits(DEBUGGER_STOP);
         }
-        if !self.has_agent() {
+        if self.debugger.is_none() {
             // A remote that set a bit and was dropped before this
             // safepoint, whose debugger a former one detached: nobody is
-            // left to stop for.
-            self.clear_debugger_bits(bits);
-            return Served::GoOn;
+            // left to stop for -- but for the step stress mode's steps,
+            // whose held request stays.
+            let stale = if self.has_agent() {
+                bits & !DEBUGGER_STEP
+            } else {
+                bits
+            };
+            if stale != 0 {
+                self.clear_debugger_bits(stale);
+            }
+            if !self.has_agent() {
+                return Served::GoOn;
+            }
         }
         if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
             return self.terminate();
@@ -518,31 +540,57 @@ impl Interpreter {
 
     /// The step stress mode at a safepoint: when its schedule says a
     /// burst is due, the program stops as a pause does, with the mode's
-    /// reader as the agent, which begins the burst's first step. A step
-    /// still in progress -- a step out of the run's first frame, which
-    /// returns to the host, or a step over a long call -- is given one
-    /// whole period of the schedule more, then ended as a debugger's pause
-    /// ends it, so that no step keeps the mode from its next burst. The
-    /// mode stands aside while a debugger is attached, so that it never
-    /// steps in the debugger's place.
+    /// reader as the agent, which begins the burst's first step. The
+    /// schedule is fed the traced size with the stack counted once more
+    /// for each step of a burst, since every stop of a burst reads the
+    /// whole stack: a deep stack's bursts come as much rarer as they cost
+    /// more, and a shallow program's are paced as the pause stress mode's
+    /// stops. A step still in progress -- a step out of the run's first
+    /// frame, which returns to the host, or a step over a long call -- is
+    /// given `STEP_STRESS_GRACE` periods of the schedule more, then ended
+    /// as a debugger's pause ends it, so that no step keeps the mode from its
+    /// next burst; its frame must still be there then, or it left without
+    /// the step learning of it, which a debug build refuses. The mode
+    /// stands aside while a debugger is attached, so that it never steps
+    /// in the debugger's place.
     #[cfg(debug_assertions)]
     pub(crate) fn step_for_stress(&mut self, floor: usize, traced_size: usize) {
         if self.debugger.is_some() {
             return;
         }
-        let stepping = self.enter(|mutator| mutator.stepping.is_some());
+        let (stepping, about_to_stop, stack_words) = self.enter(|mutator| {
+            (
+                mutator.stepping.is_some(),
+                stepping::at_return_point(mutator),
+                mutator.heap.activation_stack_top(),
+            )
+        });
         let Some(stress) = &mut self.stress_step else {
             return;
         };
-        if !stress.schedule.due(traced_size) {
+        let paced_size = traced_size.saturating_add(STEP_STRESS_BURST.saturating_mul(stack_words));
+        if !stress.schedule.due(paced_size) {
             return;
         }
-        if stepping && !stress.overdue {
-            stress.overdue = true;
+        // A step whose frame has just returned stops at its caller's next
+        // fetch: it is left to make that stop, its grace still running.
+        if stepping && (stress.overdue < STEP_STRESS_GRACE || about_to_stop) {
+            stress.overdue += 1;
             return;
+        }
+        if stepping {
+            stress.ended += 1;
         }
         let source = CommandSource::Stepper(stress.reader(false));
         self.enter(|mutator| {
+            // A step ended here only outlasted its grace: its frame is
+            // still there. One that left -- popped, its pop reported to
+            // nobody -- is a step that could never stop, which ending it
+            // would hide.
+            debug_assert!(
+                stepping::frame_still_there(mutator),
+                "internal: the step stress mode ended a step whose frame left unreported"
+            );
             stepping::take_exits(mutator);
             stepping::end(mutator);
         });

@@ -1117,9 +1117,11 @@ is never optimized and the patches keep every body they patched.
 
 The step stress mode (`NS_NEXT_STRESS_STEP`, debug builds, one of the
 `stress` gate's fifteen modes; `Interpreter::set_stress_step` for a
-test, `Interpreter::stress_steps` the count of its steps that stopped)
+test, `Interpreter::stress_steps` the count of its steps that stopped,
+`Interpreter::stress_steps_ended` the count of those it ended itself)
 stops the run at the safepoints its schedule picks -- the pause stress
-mode's `StressSchedule`, paced by the traced size -- as a pause does,
+mode's `StressSchedule`, paced by the traced size with the stack counted
+once more for each step of a burst -- as a pause does,
 and from each such stop takes a burst of sixteen steps
 (`debugger::STEP_STRESS_BURST`): a step into, a step over and a step out
 in turn, the shipped filter switched on before every sixth step and off
@@ -1141,14 +1143,38 @@ Stepping every instruction of a program to its end would make the
 `stress` gate's run far too slow; a burst steps into a callee's first
 statements, over its sends and out of it, through blocks, unwinds,
 handlers and the shipped frames the filter passes, while the schedule
-spreads the bursts over the whole run. The schedule counts every
-safepoint, a step in progress included, and a burst is due only once no
-step is in progress: a step that outlasts a whole period of the schedule
--- a step out of the run's first frame, which returns to the host and
-stops nowhere, or a step over a long call -- is ended at the next due,
-as a debugger's pause ends a step, so that no step keeps the mode from
-its next burst. The run's end ends a step in progress, as it does a
-debugger's. Every golden and the corpus run under it, under both
+spreads the bursts over the whole run. Every stop of a burst reads the
+whole stack, so a burst costs seventeen readings of it where the pause
+stress mode's stop costs one: the schedule is fed the traced size plus
+sixteen times the stack's words, which leaves a shallow program's
+bursts paced as the pause stress mode's stops and makes a deep stack's
+as much rarer as they cost more. The schedule counts every safepoint, a
+step in progress included, and a burst is due only once no step is in
+progress: a step still in progress when the schedule has fallen due
+four times more (`STEP_STRESS_GRACE`) -- a step out of the run's first
+frame, which returns to the host and stops nowhere, or out of a shipped
+`to:do:` looping long, stopped in with the shipped filter off -- is
+ended there, as a debugger's pause ends a step, so that no step keeps
+the mode from its next burst; one whose frame has just returned to its
+caller, which stands at the step's return point it fetches next, is
+left to stop there. The run's end ends a step in progress, as it does a
+debugger's.
+
+Ending a step that way would also hide a step that can never stop
+because a frame left without the step learning of it -- a pop no
+unwinder report and no continuation's arm made, the defect decision 17's
+reports exist to prevent -- so a debug build asserts, as the mode ends a
+step, that the step knows where its frame is: a running activation of
+the stack, a frame suspended into its object, a frame that just returned
+to its caller standing at the return point, or a frame whose pop was
+reported, `Holder::Left` -- a step waits so for the handler search's
+report of an error the popped frame's continuation raised, while the
+exception's machinery runs (decision 17) -- (`stepping::frame_still_there`);
+a running name no live activation answers to, a pop no report reached,
+fails it. The steps it ends
+are counted apart from those that stopped, and
+`the_step_stress_mode_keeps_outcomes` requires both many whole bursts
+and the steps that stopped to be at least three times those ended. Every golden and the corpus run under it, under both
 lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`, so that the
 steps' one-shot breakpoints, their held request, the reports of a frame
 left otherwise than by a return and the filters are shown never to
@@ -1158,7 +1184,7 @@ read a register the leftover analysis calls dead;
 program of a loop, blocks, a non-local return out of a `do:`, an
 exception handler and a recursion to its outcome under both lowerings,
 the JIT on and off, the mode on and off, and requires that its steps
-stopped.
+stopped, as above.
 
 ### Testing and gates
 

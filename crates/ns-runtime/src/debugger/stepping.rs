@@ -384,6 +384,55 @@ pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, lea
     keep_exits(mutator, ids);
 }
 
+/// Whether the step in progress knows where its frame is: a running
+/// activation of the stack, a frame suspended into its object, which the
+/// step holds, a frame that returned to its caller, which stands on top at
+/// the step's return point it has yet to fetch (`at_return_point`), or a
+/// frame whose pop was reported, `Holder::Left`. A frame popped otherwise
+/// than by a return to its caller is renamed `Left` as the pop is
+/// reported, and the step goes on from the frame the program goes on in
+/// at once -- but for an error the popped frame's continuation raised,
+/// for whose handler search's report, or the unwind its default action
+/// starts, the step waits, `Left`, while the exception's machinery runs.
+/// A running name no live activation answers to is a pop no report ever
+/// reached: the step could never stop. For the step stress mode's check
+/// as it ends a step itself.
+#[cfg(debug_assertions)]
+pub(crate) fn frame_still_there(mutator: &Mutator<'_>) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return true;
+    };
+    match stepping.frame {
+        Holder::Running(held) => {
+            let mut next = mutator.heap.top_activation();
+            while let Some(live) = next {
+                if held.names(live) {
+                    return true;
+                }
+                next = mutator.heap.activation_sender(live);
+            }
+            at_return_point(mutator)
+        }
+        Holder::Suspended(_) | Holder::Left => true,
+    }
+}
+
+/// Whether the step's frame has returned to its caller, which stands on
+/// top at the step's return point, the slot it fetches next: a return is
+/// a safepoint, so the step stops at the very next fetch.
+#[cfg(debug_assertions)]
+pub(crate) fn at_return_point(mutator: &Mutator<'_>) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return false;
+    };
+    let Some((Holder::Running(caller), index)) = stepping.return_point else {
+        return false;
+    };
+    mutator.heap.top_activation().is_some_and(|top| {
+        caller.names(top) && mutator.heap.activation_program_counter(top) == index
+    })
+}
+
 /// The method breakpoints whose exit by an unwind the step in progress
 /// reports, taken: its stop is the method's exit.
 pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {

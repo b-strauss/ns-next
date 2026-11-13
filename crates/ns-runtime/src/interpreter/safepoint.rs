@@ -633,6 +633,13 @@ impl Interpreter {
         self.stress_step.as_ref().map_or(0, |stress| stress.stopped)
     }
 
+    /// How many of the step stress mode's steps it ended itself, still in
+    /// progress several periods of its schedule after a burst fell due,
+    /// since it was switched on; 0 while it is off.
+    pub fn stress_steps_ended(&self) -> usize {
+        self.stress_step.as_ref().map_or(0, |stress| stress.ended)
+    }
+
     /// How many times a `Breakpoint` arm went past a slot the breakpoint
     /// stress mode patched since the mode was switched on; 0 while it is
     /// off.

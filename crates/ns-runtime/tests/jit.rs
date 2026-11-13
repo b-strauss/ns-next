@@ -3487,7 +3487,9 @@ fn the_zone_stress_mode_is_on() -> bool {
 /// leaves machine code (`a_stress_mode_polls_out`): the exit stress
 /// mode, whose polls exit unconditionally, and every mode that holds the
 /// safepoint request, which a poll takes
-/// (`Interpreter::hold_safepoints_for_stress`).
+/// (`Interpreter::hold_safepoints_for_stress`), but the breakpoint and the
+/// step stress modes, which `load_spending_with` switches off, so that
+/// they hold nothing here.
 const MODES_THAT_POLL_OUT: [&str; 8] = [
     "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "PAUSE",
 ];
