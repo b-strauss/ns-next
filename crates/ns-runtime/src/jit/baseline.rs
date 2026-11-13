@@ -1264,10 +1264,19 @@ pub(crate) fn compile(
         body.macro_assembler.assembler().bind(start);
         body.program_counter = program_counter;
         body.macro_assembler.set_program_counter(program_counter);
-        let instruction = code.instruction(program_counter as usize);
-        // What every lowering ends with, not a second dispatch on the
-        // instruction: the instruction was decided by `lower`'s arm.
-        let lowering = lower(&instruction, &mut body);
+        // A slot a breakpoint patched hands its frame to the interpreter,
+        // whose `Breakpoint` arm stops there: its template would run the
+        // original past the breakpoint. Lowered as an exit before `lower`
+        // sees it, since `instruction` answers the original.
+        let lowering = if code.is_patched(program_counter as usize) {
+            Lowering::Exit
+        } else {
+            let instruction = code.instruction(program_counter as usize);
+            // What every lowering ends with, not a second dispatch on
+            // the instruction: the instruction was decided by `lower`'s
+            // arm.
+            lower(&instruction, &mut body)
+        };
         exits.push(lowering == Lowering::Exit);
         transfers.push(lowering == Lowering::Transfer);
         body.finish_lowering(lowering);

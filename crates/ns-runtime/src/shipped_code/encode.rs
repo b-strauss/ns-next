@@ -276,7 +276,9 @@ impl Out {
                     // Read only by the compiler.
                     declaration: _,
                     code,
-                    fast_path,
+                    // The program's, not a breakpoint's switch.
+                    fast_path: _,
+                    recognized_fast_path,
                     class_accessor,
                 } = &**method;
                 self.u8(0);
@@ -284,7 +286,7 @@ impl Out {
                 self.access(*access);
                 self.length(*argument_count);
                 self.code(code);
-                self.option(fast_path.as_ref(), |out, fast_path| {
+                self.option(recognized_fast_path.as_ref(), |out, fast_path| {
                     out.fast_path(*fast_path);
                 });
                 self.option(class_accessor.as_ref(), |out, accessor| {

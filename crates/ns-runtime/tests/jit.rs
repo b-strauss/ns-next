@@ -103,6 +103,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         resumed_entries: after.resumed_entries - before.resumed_entries,
         materialized_frames: after.materialized_frames - before.materialized_frames,
         send_exits: after.send_exits - before.send_exits,
+        breakpoint_exits: after.breakpoint_exits - before.breakpoint_exits,
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,

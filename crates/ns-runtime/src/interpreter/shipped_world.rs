@@ -919,7 +919,8 @@ mod tests {
             let mut handed_out: HashSet<String> = HashSet::new();
             for entry in object_mixin.methods.values() {
                 if let MethodEntry::Compiled(method) = entry {
-                    if let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) = method.fast_path
+                    if let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) =
+                        method.recognized_fast_path()
                     {
                         handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
                     }

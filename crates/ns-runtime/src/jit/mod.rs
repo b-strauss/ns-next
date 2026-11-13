@@ -213,6 +213,11 @@ pub struct JitStatistics {
     /// stub's decline -- and an exit at a send instruction, which runs it
     /// again.
     pub send_exits: u64,
+    /// Exits of machine code at an instruction a breakpoint patched,
+    /// which the baseline lowers as an exit so that the interpreter's
+    /// `Breakpoint` arm stops there (`docs/design/debugger.md`, "Where
+    /// the original lives"): of `exits`.
+    pub breakpoint_exits: u64,
     /// Bodies the JIT abandoned once their machine code had handed their
     /// frames to the interpreter too often (`EXIT_BUDGET`): neither entered
     /// nor called by any cell until their exits decay
@@ -3984,7 +3989,7 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
         {
             None
         }
-        Stubbed::Method { method, .. } => match method.fast_path {
+        Stubbed::Method { method, .. } => match method.fast_path() {
             Some(MethodFastPath::Constant(constant)) => Some(address(match constant {
                 QuickConstant::Nil => zone.accessors.nil,
                 QuickConstant::True => zone.accessors.true_constant,
@@ -4125,7 +4130,7 @@ pub(crate) fn runs_in_machine_code(
     matches!(
         chain,
         Chain::Public | Chain::Protected | Chain::Private | Chain::Super
-    ) && method.fast_path.is_none()
+    ) && method.fast_path().is_none()
         && method.argument_count == usize::from(method.code.argument_count)
 }
 
@@ -6054,6 +6059,14 @@ fn optimize(
     if done {
         return;
     }
+    // A body a breakpoint patched stays in its baseline code, which exits
+    // at the patch for the interpreter to stop there: optimized code would
+    // run past it. Put off rather than refused, so that the body is
+    // optimized once the breakpoint is gone.
+    if code.has_patches() {
+        defer_optimization(mutator, code, key);
+        return;
+    }
     debug_assert!(
         entered.upgrade().is_none_or(|application| {
             key.is_some_and(|key| key.entered == application.dispatch_ids.instances)
@@ -7618,6 +7631,15 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
+    if let MachineExit::Reexecute { program_counter } = exit {
+        if mutator
+            .heap
+            .activation_code(innermost)
+            .is_patched(program_counter as usize)
+        {
+            mutator.jit.statistics.breakpoint_exits += 1;
+        }
+    }
     let circumstances = ExitCircumstances {
         real_request: mutator.heap.real_safepoint_requested(),
         forced,
@@ -8665,6 +8687,64 @@ fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         .caches
         .refresh_cells_entering_any(&entries, &mutator.jit);
 }
+
+/// Frees what machine code `code` runs in, since a breakpoint patched or
+/// restored one of its slots (`docs/design/debugger.md`, "Breakpoints by
+/// body, and reclaimed code ids"): its baseline code, its twin and its
+/// optimized copies, as an abandonment frees them (`abandon`), and every
+/// optimized copy of another body that inlined it, found by its code id
+/// among the copies' dependencies (`CopyDependencies::code_ids`), as an
+/// invalidation frees them. Code compiled before the change runs the
+/// slot as it was: past a breakpoint set since, or into an exit at one
+/// removed since. The body counts its entries afresh, whatever it was --
+/// compiled, abandoned or exiting at once -- unless it was refused for a
+/// reason no patch changes, so that it is compiled again with the slots
+/// as they are now, its patches lowered as exits (`baseline::compile`),
+/// and is never left interpreted for good by a breakpoint. Every cell
+/// that named the code freed is written afresh from its entry, and every
+/// cell at all when the body was abandoned or exiting at once, since a
+/// cell that refused its calls then refuses them no more. Only between
+/// entries -- at the run loop's safepoint, between runs, or in the
+/// interpreter's own instruction -- where no return address into the
+/// zone exists, as every free.
+#[cfg(ns_jit)]
+pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let mut entries = mutator.jit.free_entered_code(code);
+    let state = code.jit.state.get();
+    // A cell names the stub that refuses the call of a body abandoned or
+    // exiting at once, which a revival writes afresh everywhere
+    // (`after_compile_trigger`).
+    let refused_by_cells = code.jit.is_abandoned() || state == EXITS_AT_ONCE;
+    if state != REFUSED {
+        code.jit.forget();
+    }
+    mutator.heap.forget_machine_entry(code);
+    if let Some(code_id) = mutator.heap.minted_code_id(code) {
+        let dependent = mutator
+            .jit
+            .copies_depending(|dependencies| dependencies.code_ids.contains(&code_id));
+        invalidate_dependent_copies(mutator, dependent, &mut entries);
+    }
+    // An inlined lazy slot's getter reads the slot without naming the
+    // getter's code id (`AlwaysInlined::LazyGetter`), and so would answer
+    // a filled slot past a breakpoint at the getter's first instruction.
+    let lazy_getter = code.instruction_count() > 0
+        && matches!(
+            code.instruction(0),
+            crate::bytecode::Instruction::ReturnSlotIfFilled { .. }
+        );
+    refresh_cells_entering(mutator, entries);
+    if lazy_getter {
+        invalidate_all_optimized(mutator);
+    }
+    if refused_by_cells {
+        mutator.caches.refresh_all_cells(&mutator.jit);
+    }
+}
+
+/// Without a JIT no machine code runs a patched slot.
+#[cfg(not(ns_jit))]
+pub(crate) fn free_for_patch(_mutator: &mut Mutator<'_>, _code: &Rc<CompiledCode>) {}
 
 #[cfg(not(ns_jit))]
 fn run_machine_code(

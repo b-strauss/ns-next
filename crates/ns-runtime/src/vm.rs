@@ -682,6 +682,12 @@ fn run_stretch<'gc>(
                                 // leaves the loop, so it costs no other
                                 // instruction a compare.
                                 let mut slot = code.slot(program_counter);
+                                // The match keeps the indentation it had
+                                // outside this loop: rustfmt gives up on
+                                // a block this deep and leaves it as it
+                                // is, and re-indenting it by hand would
+                                // make every later diff of an arm a diff
+                                // of the whole match.
                                 loop {
                                     match slot {
                                     CompactInstruction::LoadNil { destination } => {

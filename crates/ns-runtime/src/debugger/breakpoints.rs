@@ -19,6 +19,7 @@ use super::remote::{BreakpointId, BreakpointState, Event};
 use crate::bytecode::CompiledCode;
 use crate::heap::{ActivationReference, CodeId};
 use crate::interpreter::Mutator;
+use crate::mixin::MixinMethod;
 
 /// Every breakpoint the attached debugger set, and what the run loop
 /// needs of them.
@@ -41,6 +42,14 @@ pub(crate) struct Breakpoints {
     /// channel, cloned, so that a module built or an install inside a
     /// leaf reports what it resolved at once.
     events: Option<Sender<Event>>,
+    /// Every body a slot of which was patched or restored since the table
+    /// last settled its changes (`settle`): machine code compiled before
+    /// runs the slot as it was.
+    changed: Vec<Rc<CompiledCode>>,
+    /// Whether a method's fast path was switched off or on since the
+    /// table last settled its changes: the caches and the optimized
+    /// copies recorded what it decided.
+    fast_paths_switched: bool,
 }
 
 /// The line breakpoints of one module.
@@ -64,6 +73,9 @@ struct Patch {
     code: Rc<CompiledCode>,
     index: usize,
     kinds: Vec<PatchKind>,
+    /// The method whose body `code` is, when it has a fast path, which
+    /// stays off while any slot of the body is patched.
+    method: Option<Rc<MixinMethod>>,
 }
 
 /// Why a slot is patched.
@@ -101,6 +113,9 @@ struct Resolution {
     /// The address of every body walked, whether or not it has metadata:
     /// a body walked is one of the module's current bodies.
     walked: HashSet<usize>,
+    /// Every method of the module with a fast path, by its body's
+    /// address.
+    fast_path_methods: HashMap<usize, Rc<MixinMethod>>,
 }
 
 impl Breakpoints {
@@ -173,8 +188,16 @@ impl Breakpoints {
         self.modules.is_empty()
     }
 
-    /// Patches slot `index` of `code` for `kind`.
-    fn add(&mut self, code: &Rc<CompiledCode>, index: usize, kind: PatchKind) {
+    /// Patches slot `index` of `code` for `kind`; `method`, when given,
+    /// is the method with a fast path whose body `code` is, which the
+    /// body's first patch switches off.
+    fn add(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        index: usize,
+        kind: PatchKind,
+        method: Option<&Rc<MixinMethod>>,
+    ) {
         let patch = self
             .patches
             .entry((address(code), index))
@@ -182,11 +205,35 @@ impl Breakpoints {
                 code: Rc::clone(code),
                 index,
                 kinds: Vec::new(),
+                method: method.cloned(),
             });
         if !patch.kinds.contains(&kind) {
             patch.kinds.push(kind);
         }
+        if code.is_patched(index) {
+            return;
+        }
+        if !code.has_patches() {
+            if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
+                method.switch_fast_path(false);
+                self.fast_paths_switched = true;
+            }
+        }
         code.patch(index);
+        self.changed.push(Rc::clone(code));
+    }
+
+    /// Gives `patch`'s slot its original back, and the fast path of its
+    /// body's method once no slot of the body is patched.
+    fn restore(&mut self, patch: &Patch) {
+        patch.code.restore(patch.index);
+        if !patch.code.has_patches() {
+            if let Some(method) = &patch.method {
+                method.switch_fast_path(true);
+                self.fast_paths_switched = true;
+            }
+        }
+        self.changed.push(Rc::clone(&patch.code));
     }
 
     /// Removes `kind` from every slot `keep` refuses; a slot whose last
@@ -204,7 +251,7 @@ impl Breakpoints {
         }
         for key in emptied {
             if let Some(patch) = self.patches.remove(&key) {
-                patch.code.restore(patch.index);
+                self.restore(&patch);
                 if self
                     .past_once
                     .is_some_and(|past| (past.body, past.index) == key)
@@ -294,6 +341,7 @@ pub(crate) fn set_line_breakpoints(
         // A module without breakpoints holds no entry.
         mutator.breakpoints.modules.remove(position);
     }
+    settle(mutator);
     Event::Breakpoints {
         module,
         breakpoints,
@@ -313,6 +361,7 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
         .position(|held| held.name == name)
     {
         resolve_and_report(mutator, position);
+        settle(mutator);
     }
 }
 
@@ -320,13 +369,36 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
 /// debugger that set them is gone or replaced.
 pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     let table = &mut mutator.breakpoints;
-    for patch in table.patches.values() {
-        patch.code.restore(patch.index);
+    let patches: Vec<Patch> = table.patches.drain().map(|(_, patch)| patch).collect();
+    for patch in &patches {
+        table.restore(patch);
     }
-    table.patches.clear();
     table.modules.clear();
     table.past_once = None;
     table.pending_stop = None;
+    settle(mutator);
+}
+
+/// Settles what the table changed since it last did: the machine code of
+/// every body a slot of which it patched or restored is freed, with every
+/// optimized copy that inlined the body (`jit::free_for_patch`), so that
+/// the body is compiled again with its patches lowered as exits; and once
+/// a method's fast path was switched, every cache is vacated and every
+/// optimized copy freed, since each recorded what the fast path decided,
+/// a copy that inlined a quick method without naming its body among them
+/// (`docs/design/debugger.md`, "A breakpoint in a method with a fast
+/// path"). Setting a breakpoint is rare, so neither costs a send a check.
+fn settle(mutator: &mut Mutator<'_>) {
+    let mut changed = std::mem::take(&mut mutator.breakpoints.changed);
+    changed.sort_by_key(address);
+    changed.dedup_by(|left, right| Rc::ptr_eq(left, right));
+    for code in &changed {
+        crate::jit::free_for_patch(mutator, code);
+    }
+    if std::mem::take(&mut mutator.breakpoints.fast_paths_switched) {
+        mutator.caches.invalidate();
+        crate::jit::invalidate_all_optimized(mutator);
+    }
 }
 
 /// `resolve_module`, reporting the module's breakpoints when a statement
@@ -391,7 +463,8 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
                     .any(|(code, index)| Rc::ptr_eq(code, &patch.code) && *index == patch.index)
         });
         for (code, index) in slots {
-            table.add(code, *index, PatchKind::Line(id));
+            let method = resolution.fast_path_methods.get(&address(code));
+            table.add(code, *index, PatchKind::Line(id), method);
             // A full collection keeps a patched body's id
             // (`Breakpoints::patched_code_ids`); one without an id yet is
             // given one, as a running body is.
@@ -405,7 +478,7 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
 /// or after it, and the slot of every body with a statement of that span.
 /// `None` while no module of that name is built.
 fn resolve(mutator: &mut Mutator<'_>, name: &str, offsets: &[u32]) -> Option<Resolution> {
-    let bodies = module_bodies(mutator, name)?;
+    let (bodies, fast_path_methods) = module_bodies(mutator, name)?;
     let walked = bodies.iter().map(|(code, _)| address(code)).collect();
     let statements: Vec<Option<Span>> = offsets
         .iter()
@@ -419,13 +492,19 @@ fn resolve(mutator: &mut Mutator<'_>, name: &str, offsets: &[u32]) -> Option<Res
         statements,
         slots,
         walked,
+        fast_path_methods,
     })
 }
 
 /// Every current body of the module whose root class is named `name` --
 /// every level's members, both sides, and every block they create -- with
-/// its metadata, compiled again; `None` while no such module is built.
-fn module_bodies(mutator: &mut Mutator<'_>, name: &str) -> Option<PairedBodies> {
+/// its metadata, compiled again, and every method of the module with a
+/// fast path, by its body's address; `None` while no such module is
+/// built.
+fn module_bodies(
+    mutator: &mut Mutator<'_>,
+    name: &str,
+) -> Option<(PairedBodies, HashMap<usize, Rc<MixinMethod>>)> {
     let ids = mutator.heap.mixin_ids();
     let roots: Vec<_> = ids
         .iter()
@@ -442,6 +521,7 @@ fn module_bodies(mutator: &mut Mutator<'_>, name: &str) -> Option<PairedBodies> 
         return None;
     }
     let mut bodies = Vec::new();
+    let mut fast_path_methods = HashMap::new();
     for id in ids {
         let Some(mixin) = mutator.heap.mixin(id) else {
             continue;
@@ -452,10 +532,16 @@ fn module_bodies(mutator: &mut Mutator<'_>, name: &str) -> Option<PairedBodies> 
         }
         let (module_root, _) = mutator.path_from_module_root(id);
         if roots.contains(&module_root) {
+            let sides = std::iter::once(&mixin).chain(mixin.class_side.as_ref());
+            for method in sides.flat_map(|side| side.compiled_methods()) {
+                if method.recognized_fast_path().is_some() {
+                    fast_path_methods.insert(address(&method.code), Rc::clone(method));
+                }
+            }
             bodies.extend(Cache::level(mutator, &mixin));
         }
     }
-    Some(bodies)
+    Some((bodies, fast_path_methods))
 }
 
 /// The span of the first statement with instructions that starts at or

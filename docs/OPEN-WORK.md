@@ -1857,7 +1857,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   give a stopped frame its name, its place and its named variables
   ([debugger.md](design/debugger.md), "Compiling the metadata again").
   The rest, in this order: stage 3, next, breakpoints patched in place
-  (a method with a fast path replaced by one without it while patched), stepping by one-shot breakpoints, method
+  (a method's fast path switched off while its body is patched), stepping by one-shot breakpoints, method
   breakpoints, exception breakpoints where the handler search invokes a
   handler (`invokeHandlerAt:disabling:`) for a caught one and where it is
   about to send `defaultAction` for an uncaught one (a test-only

@@ -3597,7 +3597,8 @@ fn frame_method<'gc>(
             // finds it, since a decoded frame is never entered again.
             declaration: None,
             code: Rc::clone(code),
-            fast_path: None,
+            fast_path: std::cell::Cell::new(None),
+            recognized_fast_path: None,
             class_accessor: None,
         }),
     }

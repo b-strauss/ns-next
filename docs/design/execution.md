@@ -12132,7 +12132,10 @@ and outer-local sites are, by `JitState::write_budget_word` beside
 `JitState::write_body_words`. A body whose compile the zone has no
 room for, or which is known not to fit an exhausted zone, has its
 budget armed afresh (`defer_optimization`), so that it is requested
-again once it has run as long.
+again once it has run as long. A body a breakpoint patched is put off
+the same way, never refused, so that it stays in its baseline code,
+which exits at the patch, and is optimized once its breakpoints are gone
+([debugger.md](debugger.md), "Where the original lives").
 
 ### The snapshot
 
@@ -12647,7 +12650,7 @@ budget and its wait was spent by whichever pair's frames
 
 ### Invalidation
 
-Three events make copies stale, and each frees exactly those, counted
+Four events make copies stale, and each frees exactly those, counted
 in `JitStatistics::invalidated_copies`:
 
 - **An install** (`installEdit:`) frees every copy whose key names an
@@ -12664,11 +12667,19 @@ in `JitStatistics::invalidated_copies`:
   that the id minted again for an application of another layout meets
   neither the copy nor the old row's refusal, version, level or
   application word.
+- **A breakpoint set or removed** frees, with the patched body's own
+  machine code, every copy whose dependencies name the body's code id
+  (`jit::free_for_patch`), and every copy once it switches a method's
+  fast path, which a copy inlined without naming the method's body
+  (`invalidate_all_optimized`; [debugger.md](debugger.md), "A breakpoint
+  in a method with a fast path").
 
 The copies are **freed at once**, their cells, dispatching rows and
 machine entry rows written afresh: an install and a forward are mirror
-leaves machine code exits for (`MachineCall::Exit`), and a collection
-runs at a safepoint, so no return address into the zone exists and
+leaves machine code exits for (`MachineCall::Exit`), a collection
+runs at a safepoint, and a breakpoint is set or removed at a safepoint,
+between runs, or as an interpreted module build or install resolves it
+again, so no return address into the zone exists and
 every frame goes on in its baseline code. No frame is converted, nor
 needs to be, even one that stands for several inlined activations: the
 exit the install or the forward ran after wrote them as activations,
@@ -12782,7 +12793,13 @@ its candidates (`compiler/js-inlining-heuristic.cc:225-395`), a site
 never executed excluded. What is observed is never inlined: a body
 with an unwind marker -- `on:do:`, `ensure:`, `ifCurtailed:` -- and
 every kernel method whose activation a leaf reads or marks, a mirror
-send of the `Activation` rows ("Observers" above). Nor is a callee
+send of the `Activation` rows ("Observers" above). Nor is a body a
+breakpoint patched, whose own code exits at the patch for the
+interpreter to stop there: the walk answers `CalleeFacts::Other` for
+such a method callee, which the copy calls, and leaves such a block
+literal unsnapshotted, so that its closure is made and runs the block's
+own code ([debugger.md](debugger.md), "Where the original lives"). Nor
+is a callee
 whose scope would create a block the plan does not eliminate, on a way
 that ran (`Planner::creates_a_block`): optimized code creates a block
 only in its outermost scope until stage 4, and a `MakeClosure` in an
@@ -14534,6 +14551,15 @@ three lowerings:
    already is ("Between the tiers" above), and comes back to machine code
    at its next back edge. Always correct, so every instruction has a
    lowering from the day it is added.
+
+A slot a breakpoint patched takes the third, whatever its instruction:
+`baseline::compile` asks `CompiledCode::is_patched` before it hands the
+instruction to `lower`, which reads the original, so that the
+interpreter's `Breakpoint` arm stops there
+(`JitStatistics::breakpoint_exits`). A patch, and the restore of one,
+frees the body's machine code first, so no code compiled before the
+change runs the slot ([debugger.md](debugger.md), "Where the original
+lives", "Breakpoints by body, and reclaimed code ids").
 
 So a new instruction adds one arm and,
 for a template, the idioms it lacks to the macro assembler; nothing below

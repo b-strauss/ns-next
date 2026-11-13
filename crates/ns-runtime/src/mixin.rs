@@ -132,13 +132,24 @@ pub struct MixinMethod {
     /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
     /// new `MixinMethod`.
     pub code: Rc<CompiledCode>,
-    /// What a send of this method does without an activation, when it is a
-    /// kernel method `compiler::primitive_method` recognized: `act` reads it
-    /// on every send. `None` for every other method, a lazy slot's getter
-    /// included (its `ReturnSlotIfFilled` answers a filled slot inside the
-    /// activation), and for every method decoded from an image, which never
-    /// carries a kernel method.
-    pub fast_path: Option<MethodFastPath>,
+    /// What a send of this method does without an activation
+    /// (`MixinMethod::fast_path`): the recognized fast path, or `None`
+    /// while a breakpoint stands in the body, which the send must then
+    /// activate to stop at (`docs/design/debugger.md`, "A breakpoint in a
+    /// method with a fast path"). A `Cell` rather than a replaced method,
+    /// so that a shipped mixin, which is never replaced, can be debugged;
+    /// written only through `switch_fast_path`.
+    pub(crate) fast_path: Cell<Option<MethodFastPath>>,
+    /// The fast path `compiler::primitive_method` recognized, when the
+    /// method is a kernel method it recognized: what `fast_path` holds
+    /// while no breakpoint stands in the body, and what the shipped
+    /// code's encoder and the shipped world read, since a breakpoint is
+    /// the debugger's and never part of the program. `None` for every
+    /// other method, a lazy slot's getter included (its
+    /// `ReturnSlotIfFilled` answers a filled slot inside the activation),
+    /// and for every method decoded from an image, which never carries a
+    /// kernel method.
+    pub(crate) recognized_fast_path: Option<MethodFastPath>,
     /// The nested class of its module's root this method answers, when it is
     /// a pure class accessor `compiler::primitive_method` recognized in
     /// shipped core-library source other than the kernel: a unary method
@@ -230,6 +241,8 @@ impl MixinMethod {
         lowering: crate::compiler::Lowering,
         collector: Option<&crate::debugger::metadata::MetadataCollector>,
     ) -> MixinMethod {
+        let fast_path =
+            crate::compiler::primitive_method::recognize(&declaration, bindings, kernel);
         MixinMethod {
             selector: Symbol::intern(&crate::interpreter::instantiate::method_name(
                 &declaration.pattern,
@@ -244,7 +257,8 @@ impl MixinMethod {
                 lowering,
                 collector,
             )),
-            fast_path: crate::compiler::primitive_method::recognize(&declaration, bindings, kernel),
+            fast_path: Cell::new(fast_path),
+            recognized_fast_path: fast_path,
             // Recognized against the module's root by `build_methods`, which
             // alone knows it.
             class_accessor: None,
@@ -263,9 +277,39 @@ impl MixinMethod {
             argument_count: 0,
             declaration: None,
             code,
-            fast_path: None,
+            fast_path: Cell::new(None),
+            recognized_fast_path: None,
             class_accessor: None,
         }
+    }
+
+    /// What a send of this method does without an activation, read off
+    /// the method by `act`, machine code's stubs and the optimizing tier
+    /// on every send: the recognized fast path, or `None` while a
+    /// breakpoint stands in the body.
+    #[inline(always)]
+    pub fn fast_path(&self) -> Option<MethodFastPath> {
+        self.fast_path.get()
+    }
+
+    /// The fast path `compiler::primitive_method` recognized, whether or
+    /// not a breakpoint has switched it off: what the program is, which
+    /// the shipped code's encoder and the shipped world read.
+    pub fn recognized_fast_path(&self) -> Option<MethodFastPath> {
+        self.recognized_fast_path
+    }
+
+    /// Switches the method's fast path off -- its sends activate the body,
+    /// so that a breakpoint in it stops -- or back on to the recognized
+    /// one. The debugger's alone (`debugger::breakpoints`), which then
+    /// vacates every cache and frees every optimized copy, since both
+    /// recorded what the fast path decided.
+    pub(crate) fn switch_fast_path(&self, switched_on: bool) {
+        self.fast_path.set(if switched_on {
+            self.recognized_fast_path
+        } else {
+            None
+        });
     }
 }
 

@@ -537,8 +537,12 @@ holds no handle. Anything the key does not cover is read afresh on every
 send — today a primitive's payload check, in `act`, and the class object's
 builtin field (`Heap::class_builtin`), which the factory body's
 `AllocateInstance` reads on every instantiation; a method's `MethodFastPath`
-is read off the entry's method, which is immutable, on every hit, by the
-interpreter's `act` and machine code's stub alike. Add such a read and its per-send re-check goes with
+is read off the entry's method on every hit, by the interpreter's `act`
+and machine code's stub alike -- a method whose fast path only the
+debugger changes, switching it off while a breakpoint stands in the body,
+and invalidating every cache and every optimized copy when it does
+(`MixinMethod::switch_fast_path`; `debugger.md`, "A breakpoint in a
+method with a fast path"). Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
@@ -587,6 +591,12 @@ return -- for a body that is no block's, a block that is the entry
 frame, a home not running, suspended or below the entry frame, an
 unwind marker's activation between, a return address into a stub
 before the home, and a home that catches no return.
+A slot a breakpoint patched lowers as an exit, whatever its instruction,
+so that the interpreter's `Breakpoint` arm stops there; patching or
+restoring a slot frees the body's machine code and every optimized copy
+that inlined it first (`jit::free_for_patch`), and the optimizing tier
+neither optimizes nor inlines a patched body (`debugger.md`, "Where the
+original lives").
 A new instruction is one arm of `jit::baseline::lower` plus the
 macro-assembler idioms it lacks, never a second dispatch, and optimized
 code (`jit/optimizing/emit.rs`) emits every instruction it does not

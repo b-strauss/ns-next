@@ -1629,13 +1629,6 @@ impl EncodedBody {
     }
 
     /// Whether a breakpoint replaces any slot.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn has_patches(&self) -> bool {
         !self.originals.borrow().is_empty()
     }

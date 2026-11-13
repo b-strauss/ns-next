@@ -771,16 +771,14 @@ fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mi
 /// `mixin` with method `selector`'s body replaced by `code`.
 fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) -> Mixin {
     let selector = Symbol::intern(selector);
-    let method = mixin
+    let mut method = (**mixin
         .compiled_method(selector)
-        .expect("the mixin declares the method")
-        .clone();
+        .expect("the mixin declares the method"))
+    .clone();
+    method.code = code;
     mixin.methods.insert(
         selector,
-        ns_runtime::mixin::MethodEntry::Compiled(Rc::new(ns_runtime::mixin::MixinMethod {
-            code,
-            ..(*method).clone()
-        })),
+        ns_runtime::mixin::MethodEntry::Compiled(Rc::new(method)),
     );
     mixin
 }
@@ -11181,7 +11179,7 @@ fn a_decoded_lazy_slot_keeps_its_getter() {
         .compiled_method(Symbol::intern("later"))
         .expect("the getter is a compiled method");
     assert_eq!(getter.argument_count, 0);
-    assert_eq!(getter.fast_path, None);
+    assert_eq!(getter.fast_path(), None);
 }
 
 /// Two lazy slots of one name would share the one getter the row carries

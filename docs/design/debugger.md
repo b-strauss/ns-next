@@ -23,8 +23,13 @@
 > text, pending until its module is built and set again on the bodies an
 > install replaces, patches its statement's slots in place and stops the
 > interpreter there ("Stopping at and going past a breakpoint", "A
-> breakpoint names a source position"). Everything else is planned: the
-> rest of stage 3 -- breakpoints in machine code, stepping, run to
+> breakpoint names a source position"); a patch frees the body's machine
+> code and every optimized copy that inlined it, the baseline lowers a
+> patched slot as an exit and the optimizing tier leaves a patched body
+> alone, and a method's fast path is off while a breakpoint stands in its
+> body ("Where the original lives", "A breakpoint in a method with a fast
+> path"). Everything else is planned: the
+> rest of stage 3 -- stepping, run to
 > cursor, method and exception breakpoints -- the DAP agent and the
 > plugin, evaluation, hot swap and edit-and-continue ("Planned: the order
 > of building it"). The
@@ -1020,8 +1025,19 @@ stage's tests, do not.
   resolved when its module loads, and one in `TranscriptFactory`
   resolved when the program first asks for it; an install setting the
   breakpoint again on the new body; and a patched body keeping its code
-  id across a full collection. The helper `debugged` queues an agent's
-  configuration before the run and serves the run from another thread.
+  id across a full collection. With the JIT on, under both lowerings: a
+  breakpoint in a loop that runs in machine code freeing the code and
+  stopping at every pass, each pass running its statement once, the
+  exit at the patch taken; a breakpoint in a callee an optimized copy
+  inlined freeing the copy; a breakpoint in `True>>ifTrue:`, a method
+  with a fast path, stopping a send that machine code's cell answered
+  without activating the method before, and removed at the stop putting
+  the fast path back; and a body compiled again once its breakpoint is
+  removed. Where the JIT's counters are exact, under the optimized
+  lowering, they assert the machine code these build. The helper
+  `debugged` queues an agent's configuration before the run and serves
+  the run from another thread; `events_during` collects a run's events
+  and continues any stop, for a run that must not stop.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -1149,9 +1165,7 @@ Newspeak can still be built later, on the same mirrors.
 
 ### 2. A breakpoint patches the body in place
 
-**Partial:** the patching and the interpreter's stop are built; the
-JIT's side -- a patch freeing machine code, the baseline's exit at a
-patched index and the optimizing tier's refusal -- is planned.
+**Built.**
 
 A breakpoint replaces its slot of `EncodedBody::slots` by an
 instruction `Breakpoint`, and keeps the original beside the slots, on the
@@ -1159,10 +1173,10 @@ body ("Where the original lives" below). The interpreter stops at it and,
 going on, executes the original. The slots are interior-mutable
 (`Cell<CompactInstruction>`), written only through one narrow API
 (`CompiledCode::patch`, `restore`); the run loop's fetch copies a slot
-out as it did before. Planned: setting a breakpoint frees the body's
-machine code and every optimized copy that inlined it; the baseline
-lowers a patched index as an exit, so every other body keeps running in
-machine code.
+out as it did before. Setting or removing a breakpoint frees the body's
+machine code and every optimized copy that inlined it
+(`jit::free_for_patch`); the baseline lowers a patched index as an
+exit, so every other body keeps running in machine code.
 
 - `Breakpoint` has no wire tag: the image encoder and `cargo xtask
   shipped-code` read the decoded view, which answers the original.
@@ -1627,10 +1641,6 @@ what of it is built.
 
 ### Where the original lives
 
-**Partial:** the original and every reader's view of it are built; the
-baseline's exit at a patched index and the optimizing tier's refusal are
-planned.
-
 The run loop is not the only reader of a slot: `send_destination`
 (`vm.rs`), two leaves in `jit/leaves.rs`, and the decoded view
 (`CompiledCode::instruction`, `instructions`) read it, and the decoded view
@@ -1641,9 +1651,20 @@ original of a patched slot is kept on the body, beside `EncodedBody::slots`,
 and every reader but two sees the original without reaching the debugger:
 the decoded view answers it (`EncodedBody::original`), and
 `send_destination` reads it. Only the run loop's fetch sees `Breakpoint`.
-Planned: `jit::baseline::lower` asks `CompiledCode::is_patched(index)`
-and lowers a patched index as an exit, and the optimizing tier refuses to
-optimize or inline a body with a patched slot. `Breakpoint` is a compact
+`jit::baseline::compile` asks `CompiledCode::is_patched(index)` before
+it hands an instruction to `lower`, and lowers a patched index as an
+exit (`Lowering::Exit`), which hands the frame to the interpreter at the
+slot, whose `Breakpoint` arm stops there; the exit counts in
+`JitStatistics::breakpoint_exits`, and against the body's exit budget as
+any exit at an instruction does, and a body whose patch it reaches
+before any transfer exits at once and is not installed. The optimizing
+tier neither optimizes nor inlines a body with a patched slot: `optimize`
+puts a patched body's request off, re-arming its budget rather than
+recording a refusal, so that it is optimized once its breakpoints are
+gone; the snapshot tree's walk answers `CalleeFacts::Other` for a patched
+method callee, which the copy then calls, and neither inlines nor
+eliminates a patched block, whose closure is made and runs the block's
+own code. `Breakpoint` is a compact
 form only, never an
 `Instruction`: `bytecode.rs`'s exhaustive matches over `Instruction`
 (`registers_read`, `register_written`, `outer_reach_of`, …) never see it,
@@ -1665,9 +1686,11 @@ Two run on a patched body at run time and see `Breakpoint`:
 `factory_registers`, which then sees no factory body, so the run loop runs
 it as an ordinary body; and the exit statistics' `is_send`, which runs at
 the exit's own index (`MachineExit::Reexecute`) and so does not count the
-patched index's exit as a send's -- a statistic only. Each of them is to
-be checked again when the patching is built, and a new reader of `slots`
-has to decide which view it wants.
+patched index's exit as a send's -- a statistic only, which
+`JitStatistics::breakpoint_exits` counts instead. `is_patched`, which the
+baseline's compile and that statistic ask, reads the slot for the
+`Breakpoint` itself. A new reader of `slots` has to decide which view it
+wants.
 
 ### A breakpoint in a method with a fast path
 
@@ -1686,15 +1709,21 @@ breakpoint or a method breakpoint the user sets in, for example,
 step lands (decision 16) -- would never stop.
 
 The fast path is therefore switched off on the method for as long as a
-breakpoint is set in its body: `MixinMethod::fast_path` is a
-`Cell<Option<MethodFastPath>>`, written only by the debugger -- cleared by
-the first breakpoint, put back by the removal of the last -- which then
-invalidates the inline caches and their machine cells
-(`Interpreter::invalidate_caches`) and frees every optimized copy, since a
-copy that inlined a quick method records no code id of it
-(`jit::invalidate_all_optimized`); setting a breakpoint is rare. Reading
-it costs every hit what reading the field cost, one load, and no check is
-added. Replacing the method in its mixin's method table, Squeak's way of
+breakpoint is set in its body: the field `MixinMethod::fast_path` is a
+`Cell<Option<MethodFastPath>>`, read through `MixinMethod::fast_path()`
+and written only by the debugger through `switch_fast_path` -- cleared
+by the body's first patch, put back from `recognized_fast_path` by the
+restore of its last -- after which the table's `settle`
+(`debugger/breakpoints.rs`) vacates the inline caches and their machine
+cells (`InlineCaches::invalidate`) and frees every optimized copy, since
+a copy that inlined a quick method records no code id of it
+(`jit::invalidate_all_optimized`); setting a breakpoint is rare. The
+table finds the method by its body's address among the methods of the
+module it resolves against, and keeps it with the patch. Reading the
+fast path costs every hit what reading the field cost, one load, and no
+check is added. What the program is -- the shipped code's encoder and
+the shipped world -- reads `recognized_fast_path`, which a breakpoint
+never changes. Replacing the method in its mixin's method table, Squeak's way of
 recompiling a method with a `break`, is rejected: a shipped mixin is
 never replaced (`Heap::replace_mixin` refuses one), and everything that
 finds a shipped mixin by its declaration or its address -- the shipped
@@ -1768,10 +1797,21 @@ every breakpoint standing there; restoring the last of an index restores
 the slot. A full collection treats every patched body's code id as named
 (`Breakpoints::patched_code_ids`, beside `jit::inlined_code_ids` in
 `Mutator::reclaim_ids`), as it does `CopyDependencies::code_ids`; a body
-without an id yet is given one when it is patched. Planned: the
-invalidation a patch needs is new: keyed by code id over every copy's
-`CopyDependencies::code_ids`, it frees every copy that inlined the patched
-body, beside the body's own machine code.
+without an id yet is given one when it is patched. Every body a slot of
+which the table patched or restored has its machine code freed once the
+command is served (`jit::free_for_patch`, called by `settle`): its
+baseline code, its twin and its optimized copies, as an abandonment frees
+them, and, keyed by its code id over every copy's
+`CopyDependencies::code_ids`, every copy that inlined it, as an
+invalidation frees them -- code compiled before the change runs the slot
+as it was, past a breakpoint set since or into an exit at one removed
+since. An inlined lazy slot's getter names no code id
+(`AlwaysInlined::LazyGetter`), so a patch of one frees every copy. The
+body then counts its entries afresh, whatever its state was -- compiled,
+abandoned, or exiting at once at its patch -- unless it was refused for a
+reason no patch changes, so that a breakpoint never leaves it interpreted
+for good: it is compiled again with its patches as they are now, and,
+once the last is removed, without exits.
 
 ### A breakpoint names a source position
 

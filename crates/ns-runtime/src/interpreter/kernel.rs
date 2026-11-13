@@ -1853,7 +1853,7 @@ mod tests {
                         DATA_VIEWS.contains(&class_name) && selector != "isKindOfDataView";
                     if data_view_member || NOT_FORWARDERS.contains(&(class_name, selector)) {
                         assert!(
-                            method.fast_path.is_none(),
+                            method.fast_path().is_none(),
                             "{class_name}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
                         );
                         continue;
@@ -1863,7 +1863,7 @@ mod tests {
                         .find(|(owner, name, _)| owned_by(*owner) && *name == selector)
                     {
                         assert_eq!(
-                            method.fast_path,
+                            method.fast_path(),
                             Some(*expected),
                             "{class_name}>>{selector} is not the quick method it should be"
                         );
@@ -1874,7 +1874,7 @@ mod tests {
                         .find(|(owner, name, _)| *owner == class_name && *name == selector)
                     {
                         assert_eq!(
-                            method.fast_path,
+                            method.fast_path(),
                             Some(*expected),
                             "{class_name}>>{selector} is not the quick method it should be"
                         );
@@ -1891,14 +1891,14 @@ mod tests {
                     {
                         assert!(
                             matches!(
-                                method.fast_path,
+                                method.fast_path(),
                                 Some(crate::mixin::MethodFastPath::BuiltinClass(_))
                             ),
                             "Object>>{selector} is not recognized as a class accessor"
                         );
                         continue;
                     }
-                    let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path else {
+                    let Some(crate::mixin::MethodFastPath::Mirror(row)) = method.fast_path() else {
                         panic!("{class_name}>>{selector} is not recognized as a primitive method");
                     };
                     let reported = REPORTED_UNDER_ANOTHER_SELECTOR
@@ -2009,7 +2009,7 @@ mod tests {
                     .compiled_method(crate::Symbol::intern(selector))
                     .unwrap_or_else(|| panic!("no method {selector}"))
                     .clone();
-                method.fast_path
+                method.fast_path()
             };
             assert_eq!(fast_path(&collections, "List"), None, "Collections>>List");
             assert_eq!(
@@ -2090,7 +2090,7 @@ mod tests {
                     let selector = method.selector.as_str();
                     if *name == "TypedArray" && selector == "isKindOfTypedArray" {
                         assert_eq!(
-                            method.fast_path,
+                            method.fast_path(),
                             Some(MethodFastPath::Constant(QuickConstant::True)),
                             "TypedArray>>isKindOfTypedArray is not the quick method it should be"
                         );
@@ -2101,7 +2101,7 @@ mod tests {
                         "{name}>>{selector} is no member the test knows; list it"
                     );
                     assert!(
-                        method.fast_path.is_none(),
+                        method.fast_path().is_none(),
                         "{name}>>{selector} reaches a leaf after all; take it off the members"
                     );
                 }
@@ -2134,7 +2134,7 @@ mod tests {
             let row = crate::builtins::primitive::mirror_primitive_named("arrayClass:new:ifFail:")
                 .expect("the row exists");
             assert_eq!(
-                method.fast_path,
+                method.fast_path(),
                 Some(crate::mixin::MethodFastPath::Mirror(row))
             );
         });
@@ -2164,7 +2164,7 @@ mod tests {
                 crate::builtins::primitive::mirror_primitive_named("byteArrayClass:new:ifFail:")
                     .expect("the row exists");
             assert_eq!(
-                method.fast_path,
+                method.fast_path(),
                 Some(crate::mixin::MethodFastPath::Mirror(row))
             );
         });
@@ -2205,7 +2205,7 @@ mod tests {
                 }),
                 "Collections>>List"
             );
-            assert_eq!(method.fast_path, None, "Collections>>List");
+            assert_eq!(method.fast_path(), None, "Collections>>List");
             assert!(
                 facet_application
                     .mixin
@@ -2442,7 +2442,7 @@ mod tests {
                     .compiled_method(selector)
                     .unwrap_or_else(|| panic!("Object declares no accessor {kind:?}"));
                 assert_eq!(
-                    method.fast_path,
+                    method.fast_path(),
                     Some(crate::mixin::MethodFastPath::BuiltinClass(kind)),
                     "{kind:?}"
                 );

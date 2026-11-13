@@ -15519,7 +15519,8 @@ mod tests {
             argument_count: 1,
             declaration: None,
             code: shaped_code(1, first_above_header(1) + 2),
-            fast_path: None,
+            fast_path: std::cell::Cell::new(None),
+            recognized_fast_path: None,
             class_accessor: None,
         });
         let method_activation = heap

@@ -269,7 +269,7 @@ ns_runtime::for_each_lowering! {
         let getter = mixin
             .compiled_method(Symbol::intern("later"))
             .unwrap_or_else(|| panic!("the lazy slot's getter is a compiled method"));
-        assert_eq!(getter.fast_path, None);
+        assert_eq!(getter.fast_path(), None);
         assert_eq!(
             getter.code.instructions().first(),
             Some(&Instruction::ReturnSlotIfFilled { own_index: 1 })

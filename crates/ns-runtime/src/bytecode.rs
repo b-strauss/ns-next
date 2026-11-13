@@ -895,13 +895,6 @@ impl CompiledCode {
 
     /// Whether a breakpoint is set anywhere in this body, its blocks' own
     /// bodies not included.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn has_patches(&self) -> bool {
         self.body.has_patches()
     }

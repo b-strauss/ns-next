@@ -2048,12 +2048,416 @@ ns_runtime::for_each_lowering! {
         let after = interpreter.jit_code_id(&class, MethodSide::Instance, bump);
         assert_eq!(after, before, "the patched body keeps its code id");
         set_breakpoints(&remote, "Bumping", Vec::new());
-        let (left, result, _) = debugged_by(
+        let (events, result, _) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_no_stop(&events);
+        assert!(reports_no_breakpoint(&events, "Bumping"), "{events:?}");
+        assert_eq!(answered(&mut interpreter, result), 2);
+    }
+}
+
+/// Runs what `run` runs while another thread collects every event
+/// `remote` reports, and answers them, the run's result and the remote.
+/// A stop is continued, so that a test that expects none fails at its
+/// assertion rather than leaving the run stopped.
+fn events_during(
+    remote: DebugRemote,
+    run: impl FnOnce() -> HostResult,
+) -> (Vec<Event>, HostResult, DebugRemote) {
+    let finished = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let finished = Arc::clone(&finished);
+        thread::spawn(move || {
+            let mut events = Vec::new();
+            loop {
+                let done = finished.load(Ordering::SeqCst);
+                match remote.next_event(Duration::from_millis(10)) {
+                    Some(event) => {
+                        if let Event::Stopped { .. } = event {
+                            remote.send(Command::Continue);
+                        }
+                        events.push(event);
+                    }
+                    // Read once more after the run ended, so that nothing
+                    // it sent last is missed.
+                    None if done => break,
+                    None => {}
+                }
+            }
+            (events, remote)
+        })
+    };
+    let result = run();
+    finished.store(true, Ordering::SeqCst);
+    let (events, remote) = thread.join().expect("the collecting thread");
+    (events, result, remote)
+}
+
+/// Asserts that no event of `events` is a stop.
+fn assert_no_stop(events: &[Event]) {
+    let stops: Vec<&Event> = events
+        .iter()
+        .filter(|event| matches!(event, Event::Stopped { .. }))
+        .collect();
+    assert!(
+        stops.is_empty(),
+        "the run was expected not to stop: {stops:?}"
+    );
+}
+
+/// Whether `events` hold the answer that `module` has no breakpoint.
+fn reports_no_breakpoint(events: &[Event], module: &str) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            Event::Breakpoints { module: reported, breakpoints }
+                if reported == module && breakpoints.is_empty()
+        )
+    })
+}
+
+/// The small integer the unary `selector` sent to `instance` answers.
+fn send_answered(interpreter: &mut Interpreter, instance: &Root, selector: &str) -> i64 {
+    let result = interpreter.send(instance, Symbol::intern(selector), &[]);
+    answered(interpreter, result)
+}
+
+/// `loop:` with `turns` sent to `instance`.
+fn send_loop(interpreter: &mut Interpreter, instance: &Root, turns: i64) -> HostResult {
+    let turns = interpreter.stash(ns_runtime::Value::small_integer(turns));
+    interpreter.send(instance, Symbol::intern("loop:"), &[turns])
+}
+
+/// The small integer `loop:` with `turns` sent to `instance` answers.
+fn loop_answered(interpreter: &mut Interpreter, instance: &Root, turns: i64) -> i64 {
+    let result = send_loop(interpreter, instance, turns);
+    answered(interpreter, result)
+}
+
+/// Whether these tests' bodies run in machine code under `lowering`, so
+/// that the JIT's counters say what they assert: the reference lowering
+/// sends uncached, and machine code leaves every send of it to the
+/// interpreter, so that a body that sends is never installed.
+fn runs_in_machine_code(lowering: Lowering) -> bool {
+    lowering == Lowering::Optimized && counters_are_exact()
+}
+
+/// An interpreter compiling with `lowering`, its JIT on, with `source`
+/// loaded, an instance of its module class, and the class: every body
+/// stays in baseline machine code, its optimization budget parked, and a
+/// loop is compiled at its first interpreted backward jump.
+fn compiled(source: &str, lowering: Lowering) -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load(source, lowering);
+    interpreter.set_optimization_budget(i64::MAX);
+    interpreter.set_jit_compile_at_back_jump(1);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    (interpreter, instance, class)
+}
+
+/// A loop whose every pass notes its index, a compiled send, and bumps
+/// the count, a statement of its own: `warm` runs it 2,000 times, `run`
+/// three times.
+const COMPILED_LOOP: &str = indoc! {"
+    class CompiledLoop = Object new (
+      | count ::= 0. |
+    ) (
+      public warm = (
+        ^self loop: 2000
+      )
+      public run = (
+        ^self loop: 3
+      )
+      loop: turns = (
+        1 to: turns do: [:index |
+          self note: index.
+          self bump].
+        ^count
+      )
+      note: index = (
+        ^index
+      )
+      bump = (
+        count:: count + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a loop that runs in machine code frees the code
+    /// and stops at every pass, and each pass sends `bump` once: the body
+    /// compiled again exits at the patched statement, which the
+    /// interpreter stops at and then executes.
+    fn a_breakpoint_in_compiled_loop_stops_every_iteration_and_sends_once(lowering) {
+        let (mut interpreter, instance, _) = compiled(COMPILED_LOOP, lowering);
+        assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+        let before = interpreter.jit_statistics();
+        let offset = line_start(COMPILED_LOOP, "self bump].");
+        let ((), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "CompiledLoop", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "CompiledLoop"));
+                for _ in 0..3 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 2003, "one bump a pass");
+        let after = interpreter.jit_statistics();
+        if runs_in_machine_code(lowering) {
+            assert!(before.compiled_bodies > 0, "the loop ran in machine code: {before:?}");
+            assert!(
+                after.freed_bodies > before.freed_bodies,
+                "the patch freed the loop's code: {before:?} {after:?}"
+            );
+            assert!(
+                after.breakpoint_exits > before.breakpoint_exits,
+                "machine code exited at the patched statement: {before:?} {after:?}"
+            );
+        }
+    }
+}
+
+/// `loop:` sums `Helper>>helper:` over its passes, a callee its optimized
+/// copy inlines; `noop` does nothing.
+const INLINING: &str = indoc! {"
+    class Inlining = Object new () (
+      class Helper = Object new () (
+        public helper: value = (
+          | doubled |
+          doubled:: value * 2.
+          ^doubled + 1
+        )
+      )
+      public noop = (
+        ^0
+      )
+      public loop: turns = (
+        |
+          receiver = Helper new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < turns] whileTrue: [
+          sum:: sum + (receiver helper: index).
+          index:: index + 1].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a callee an optimized copy inlined frees the copy
+    /// and stops at every call; no copy compiled while it stands inlines
+    /// the callee.
+    fn a_breakpoint_in_an_inlined_callee_frees_the_copy(lowering) {
+        let (mut interpreter, class) = load(INLINING, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_optimize_stress(true);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(loop_answered(&mut interpreter, &instance, 100), 10000);
+        }
+        let selector = Symbol::intern("loop:");
+        let pinned = lowering == Lowering::Optimized && counters_are_exact();
+        if pinned {
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, selector),
+                1,
+                "`loop:` runs as a copy"
+            );
+            assert!(
+                interpreter.jit_inlined_bodies(&class, MethodSide::Instance, selector) >= 1,
+                "`loop:`'s copy inlines `helper:`"
+            );
+        }
+        let before = interpreter.jit_statistics();
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Inlining", vec![line_start(INLINING, "^doubled + 1")]);
+        // A run serves the command as it starts.
+        assert_eq!(send_answered(&mut interpreter, &instance, "noop"), 0);
+        let (id, _) = resolved(&expect_breakpoints(&remote, "Inlining"));
+        if pinned {
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, selector),
+                0,
+                "the patch freed `loop:`'s copy"
+            );
+            let after = interpreter.jit_statistics();
+            assert!(
+                after.invalidated_copies > before.invalidated_copies,
+                "{before:?} {after:?}"
+            );
+        }
+        let ((), result, _) = debugged_by(
             remote,
-            |remote| expect_breakpoints(remote, "Bumping"),
+            move |remote| {
+                for _ in 0..3 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+            },
+            || send_loop(&mut interpreter, &instance, 3),
+        );
+        assert_eq!(answered(&mut interpreter, result), 9);
+        if pinned {
+            assert_eq!(
+                interpreter.jit_inlined_bodies(&class, MethodSide::Instance, selector),
+                0,
+                "no copy inlines the patched callee"
+            );
+        }
+    }
+}
+
+/// The shipped kernel's source, whose module is `Kernel`.
+const KERNEL: &str = include_str!("../core-library/Kernel.ns");
+
+/// `check:with:` sends `ifTrue:` to `true` with a block held in a
+/// variable, which no lowering inlines, so that the send reaches
+/// `True>>ifTrue:`, a method with a fast path.
+const QUICK: &str = indoc! {"
+    class Quick = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        | action |
+        action:: [count:: count + 1].
+        self check: true with: action.
+        ^count
+      )
+      check: condition with: action = (
+        ^condition ifTrue: action
+      )
+    ) : ()
+"};
+
+/// The fast path `True>>ifTrue:` has now.
+fn if_true_fast_path(interpreter: &mut Interpreter) -> Option<ns_runtime::mixin::MethodFastPath> {
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(ns_runtime::Value::boolean(true));
+        let mixin = mutator
+            .heap()
+            .class_application(class)
+            .expect("True has an application")
+            .mixin
+            .clone();
+        mixin
+            .compiled_method(Symbol::intern("ifTrue:"))
+            .expect("True declares ifTrue:")
+            .fast_path()
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a shipped method with a fast path stops: the fast
+    /// path is off while it stands, so that the send activates the
+    /// method. Removed at the stop, it puts the fast path back, the run
+    /// goes on to its unchanged outcome, and the next run does not stop.
+    fn a_breakpoint_in_a_quick_shipped_method_stops(lowering) {
+        let (mut interpreter, class) = load(QUICK, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let quick = Some(ns_runtime::mixin::MethodFastPath::ValueOfParameter(0));
+        assert_eq!(if_true_fast_path(&mut interpreter), quick);
+        // Run often enough that `check:with:` is compiled, its cell naming
+        // the stub that runs the block without activating `ifTrue:`.
+        for count in 1..=5 {
+            assert_eq!(send_answered(&mut interpreter, &instance, "run"), count);
+        }
+        let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Kernel", vec![offset]);
+        let ((statement, frames), result, remote) = debugged_by(
+            remote,
+            |remote| {
+                let (id, statement) = resolved(&expect_breakpoints(remote, "Kernel"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let frames: Vec<FrameKind> = stack_trace(remote)
+                    .into_iter()
+                    .take(2)
+                    .map(|frame| frame.kind)
+                    .collect();
+                set_breakpoints(remote, "Kernel", Vec::new());
+                assert_eq!(expect_breakpoints(remote, "Kernel"), []);
+                continue_stopped(remote);
+                (statement, frames)
+            },
             || run(&mut interpreter, &instance),
         );
-        assert_eq!(left, []);
-        assert_eq!(answered(&mut interpreter, result), 2);
+        assert_eq!(statement.text(KERNEL), "^trueBlock value");
+        assert_eq!(frames, [method("ifTrue:"), method("check:with:")]);
+        assert_eq!(answered(&mut interpreter, result), 6);
+        assert_eq!(if_true_fast_path(&mut interpreter), quick);
+        let (events, result, _) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_no_stop(&events);
+        assert_eq!(answered(&mut interpreter, result), 7);
+    }
+}
+
+/// `loop:` sends `bump` once a pass, whose one statement a breakpoint
+/// stands at: `warm` runs 2,000 passes, `run` three.
+const BUMPED: &str = indoc! {"
+    class Bumped = Object new (
+      | count ::= 0. |
+    ) (
+      public warm = (
+        ^self loop: 2000
+      )
+      public run = (
+        ^self loop: 3
+      )
+      loop: turns = (
+        1 to: turns do: [:index |
+          self bump].
+        ^count
+      )
+      bump = (
+        count:: count + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A body a breakpoint patched is compiled again once the breakpoint
+    /// is removed: neither the exit at the patch nor the code freed for it
+    /// leaves the body interpreted for good.
+    fn a_removed_breakpoint_lets_the_body_compile_again(lowering) {
+        let (mut interpreter, instance, class) = compiled(BUMPED, lowering);
+        let bump = Symbol::intern("bump");
+        assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+        if runs_in_machine_code(lowering) {
+            assert!(
+                interpreter.jit_body_offset(&class, MethodSide::Instance, bump).is_some(),
+                "`bump` is compiled"
+            );
+        }
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Bumped", vec![line_start(BUMPED, "count:: count + 1")]);
+        let ((), result, remote) = debugged_by(
+            remote,
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Bumped"));
+                for _ in 0..3 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 2003);
+        set_breakpoints(&remote, "Bumped", Vec::new());
+        let (events, result, _) = events_during(remote, || {
+            interpreter.send(&instance, Symbol::intern("warm"), &[])
+        });
+        assert_no_stop(&events);
+        assert!(reports_no_breakpoint(&events, "Bumped"), "{events:?}");
+        assert_eq!(answered(&mut interpreter, result), 4003);
+        if runs_in_machine_code(lowering) {
+            assert!(
+                interpreter.jit_body_offset(&class, MethodSide::Instance, bump).is_some(),
+                "`bump` is compiled again"
+            );
+        }
     }
 }

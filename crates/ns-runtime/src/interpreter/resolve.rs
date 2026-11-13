@@ -381,7 +381,7 @@ impl<'gc> Mutator<'gc> {
                     // Read off the method on every send, hit or miss: the
                     // cache records `Target::Method` and never decides what
                     // the method does.
-                    match method.fast_path {
+                    match method.fast_path() {
                         Some(MethodFastPath::BuiltinClass(kind)) => {
                             return Ok(Step::Value(Value::object(self.builtin_class(kind))));
                         }
@@ -585,20 +585,22 @@ impl<'gc> Mutator<'gc> {
         };
         let leaf_safe = |row| mirror_entry(row).machine_call.is_leaf_safe();
         match &resolved {
-            Resolved::Method { method, chain, .. } if !handler(*chain) => match method.fast_path {
-                Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => {
-                    return crate::interpreter::mirror::execute_method_for_machine_code(
-                        self, row, receiver, selector, arguments,
-                    );
+            Resolved::Method { method, chain, .. } if !handler(*chain) => {
+                match method.fast_path() {
+                    Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => {
+                        return crate::interpreter::mirror::execute_method_for_machine_code(
+                            self, row, receiver, selector, arguments,
+                        );
+                    }
+                    Some(
+                        MethodFastPath::Constant(_)
+                        | MethodFastPath::Receiver
+                        | MethodFastPath::Parameter(_)
+                        | MethodFastPath::BuiltinClass(_),
+                    ) => {}
+                    _ => return None,
                 }
-                Some(
-                    MethodFastPath::Constant(_)
-                    | MethodFastPath::Receiver
-                    | MethodFastPath::Parameter(_)
-                    | MethodFastPath::BuiltinClass(_),
-                ) => {}
-                _ => return None,
-            },
+            }
             Resolved::Slot { chain, .. } if !handler(*chain) => {}
             Resolved::Primitive {
                 primitive: Primitive::Mirror(row),
@@ -854,7 +856,7 @@ mod tests {
                 panic!("a bare `String` must resolve to Object's accessor");
             };
             assert_eq!(
-                method.fast_path,
+                method.fast_path(),
                 Some(MethodFastPath::BuiltinClass(BuiltinClass::String))
             );
             let string = mutator.builtin_class(BuiltinClass::String);
@@ -924,14 +926,14 @@ mod tests {
             ));
             // `Integer`'s `+` is a kernel primitive method (`Kernel.ns`),
             // found as a `Resolved::Method` whose
-            // `MixinMethod.fast_path` names the mirror row.
+            // `MixinMethod.fast_path()` names the mirror row.
             match mutator.resolve_public(Value::small_integer(3), Symbol::intern("+")) {
                 Resolved::Method {
                     method,
                     chain: Chain::Public,
                     ..
                 } => assert_eq!(
-                    method.fast_path,
+                    method.fast_path(),
                     mirror_primitive_named("integer:add:ifFail:").map(MethodFastPath::Mirror)
                 ),
                 _ => panic!("`3 + 4` must resolve to Integer's `+`"),
@@ -943,7 +945,7 @@ mod tests {
                     method,
                     chain: Chain::DoesNotUnderstand,
                     ..
-                } => assert_eq!(method.fast_path, None),
+                } => assert_eq!(method.fast_path(), None),
                 _ => panic!("an unhandled selector must resolve to Object's doesNotUnderstand:"),
             }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");

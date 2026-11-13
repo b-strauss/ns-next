@@ -348,7 +348,7 @@ mod tests {
         let mut mirror_sends = 0;
         let mut fast_paths = 0;
         for method in object.compiled_methods() {
-            fast_paths += usize::from(method.fast_path.is_some());
+            fast_paths += usize::from(method.recognized_fast_path().is_some());
             mirror_sends += method
                 .code
                 .instructions()
