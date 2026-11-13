@@ -23,7 +23,7 @@ use super::metadata::Cache;
 use super::remote::{
     BreakpointId, BreakpointState, Event, MethodBreakpoint, MethodBreakpointState, StopReason,
 };
-use super::stepping::{inlined_blocks, Holder, StepFilters};
+use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
 use super::Attachments;
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::{ActivationReference, CodeId, FrameReference, Heap};
@@ -96,6 +96,9 @@ pub(crate) struct Breakpoints {
     /// The frames no step stops in (`stepping::is_filtered`), which the
     /// attached debugger set; the default until it sets them.
     step_filters: StepFilters,
+    /// What the step filters decided for each body they were asked of,
+    /// forgotten whenever they change and at every install.
+    filter_decisions: FilterDecisions,
     /// Every method breakpoint, in the order the debugger set them.
     methods: Vec<MethodBreakpointEntry>,
     /// The frame object of the home whose method's exit a stop at a
@@ -393,11 +396,23 @@ impl Breakpoints {
     /// Replaces the step filters.
     pub(crate) fn set_step_filters(&mut self, filters: StepFilters) {
         self.step_filters = filters;
+        self.filter_decisions.forget();
     }
 
     /// The step filters in effect.
     pub(crate) fn step_filters(&self) -> &StepFilters {
         &self.step_filters
+    }
+
+    /// What the step filters decided for each body so far.
+    pub(crate) fn filter_decisions(&self) -> &FilterDecisions {
+        &self.filter_decisions
+    }
+
+    /// Forgets what the step filters decided: an install may move a body
+    /// to another declaration's version.
+    pub(crate) fn forget_filter_decisions(&mut self) {
+        self.filter_decisions.forget();
     }
 
     /// The stop the last `Breakpoint` arm decided, taken.
@@ -1105,6 +1120,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.pending_exception = None;
     table.terminating = false;
     table.step_filters = StepFilters::default();
+    table.filter_decisions.forget();
     table.exceptions = ExceptionBreakpoints::default();
     settle(mutator);
 }

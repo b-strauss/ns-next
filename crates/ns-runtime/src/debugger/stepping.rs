@@ -20,7 +20,9 @@
 //! by a step of the same kind (`method_left`), whose stop reports the
 //! method's exit where the program goes on.
 
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 use std::sync::PoisonError;
 
 use super::breakpoints::{address, settle, AfterPast, OneShot, PastOnce};
@@ -50,6 +52,42 @@ impl Default for StepFilters {
             shipped: true,
             classes: Vec::new(),
         }
+    }
+}
+
+/// What the step filters decided for each body they were asked of
+/// (`is_filtered`), keyed by the body's address: a step into through
+/// shipped code asks at every poll, and deciding afresh builds the body's
+/// declaration path each time. A body belongs to one declaration's
+/// version, so the decision is the body's; forgotten whenever the filters
+/// change and at every install, as the metadata cache is. The body is
+/// held weakly, as there, so that no other body takes its address while
+/// its entry lives; a dead entry is forgotten at the next miss.
+#[derive(Default)]
+pub(crate) struct FilterDecisions {
+    bodies: RefCell<HashMap<usize, (Weak<CompiledCode>, bool)>>,
+}
+
+impl FilterDecisions {
+    /// The decision for `code`, if one was made.
+    fn get(&self, code: &Rc<CompiledCode>) -> Option<bool> {
+        self.bodies
+            .borrow()
+            .get(&address(code))
+            .map(|(_, filtered)| *filtered)
+    }
+
+    /// Records `filtered` for `code`, forgetting the entries of dead
+    /// bodies first.
+    fn record(&self, code: &Rc<CompiledCode>, filtered: bool) {
+        let mut bodies = self.bodies.borrow_mut();
+        bodies.retain(|_, (body, _)| body.strong_count() > 0);
+        bodies.insert(address(code), (Rc::downgrade(code), filtered));
+    }
+
+    /// Forgets every decision.
+    pub(crate) fn forget(&self) {
+        self.bodies.borrow_mut().clear();
     }
 }
 
@@ -590,12 +628,26 @@ pub(crate) fn went_on_past_filtered(
 /// or one nested in it. A frame of no declaration -- the top level -- is
 /// never filtered. Decided from the frame, not its body alone, which
 /// names no mixin: the declaration is the one the frame's current class
-/// or its initializer's level says (`stack::origin`).
+/// or its initializer's level says (`stack::origin`) -- the version that
+/// holds the frame's body, so that the decision is the body's, and kept
+/// by it (`FilterDecisions`).
 pub(crate) fn is_filtered(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
     let filters = mutator.breakpoints.step_filters();
     if !filters.shipped && filters.classes.is_empty() {
         return false;
     }
+    let code = stack::code(&mutator.heap, frame);
+    let decisions = mutator.breakpoints.filter_decisions();
+    if let Some(filtered) = decisions.get(&code) {
+        return filtered;
+    }
+    let filtered = decide_filtered(mutator, frame, filters);
+    decisions.record(&code, filtered);
+    filtered
+}
+
+/// `is_filtered`, decided afresh.
+fn decide_filtered(mutator: &Mutator<'_>, frame: &StackFrame, filters: &StepFilters) -> bool {
     let Some(origin) = stack::origin(&mutator.heap, frame) else {
         return false;
     };

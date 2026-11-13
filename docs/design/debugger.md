@@ -2073,7 +2073,12 @@ or whose path from its module's root begins with that of a `ClassName`
 the client sent (`again::declaration_path`); the declaration is the one
 the frame's metadata is looked up by (`stack::origin`), a class side's
 its instance side's, and a frame of no declaration, the top level, is
-never filtered. A stop the step's own one-shot makes, where no line
+never filtered. The decision is the body's, since the declaration is
+the version holding the frame's body, and is kept by body
+(`stepping::FilterDecisions`, held weakly as the metadata cache holds
+its bodies), so that a step into through shipped code, which asks at
+every poll, builds no declaration path after the first; it is forgotten
+when the filters change and at every install, as the metadata is. A stop the step's own one-shot makes, where no line
 breakpoint stands, is decided at the safepoint (`serve_debugger`): in a
 filtered frame the step was not begun in, nor in a block lowered inline
 in that one, it is not made, and the step goes on as a step into from

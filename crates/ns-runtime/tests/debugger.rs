@@ -4262,6 +4262,78 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `HELPING`'s send twice over.
+const HELPING_TWICE: &str = indoc! {"
+    class HelpingTwice = Object new (
+      | total ::= 0. |
+    ) (
+      public run = (
+        Helper new run: [
+          self note: 4].
+        Helper new run: [
+          self note: 5].
+        ^total
+      )
+      note: value = (
+        total:: total + value
+      )
+      class Helper = Object new () (
+        public run: action = (
+          ^action value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The step filters' decisions, kept by body, are forgotten when the
+    /// filters change: a step into lands in the block past the filtered
+    /// `Helper`, and once the filter is dropped a step over from the
+    /// block's end stops in `Helper`'s code, its return point.
+    fn a_changed_step_filter_decides_afresh(lowering) {
+        let offset = line_start(HELPING_TWICE, "Helper new run: [");
+        let ((first, second), answer) = stepped(
+            HELPING_TWICE,
+            lowering,
+            "run",
+            |remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: String::from("HelpingTwice"),
+                        path: vec![String::from("Helper")],
+                    }],
+                });
+                set_breakpoints(remote, "HelpingTwice", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "HelpingTwice");
+                step(remote, Command::StepInto);
+                let first = standing(remote, HELPING_TWICE);
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: Vec::new(),
+                });
+                expect_step_filters_set(remote);
+                step(remote, Command::StepOver);
+                let second = top_name(remote);
+                continue_stopped(remote);
+                (first, second)
+            },
+        );
+        assert_eq!(
+            first,
+            (String::from("[] in HelpingTwice>>run"), String::from("self note: 4"))
+        );
+        assert!(
+            second.starts_with("Helper"),
+            "the step stops in Helper's code, not in {second}"
+        );
+        assert_eq!(answer, 27, "the warming runs added to the total");
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A breakpoint the user set in filtered code stops, and a step
     /// begun there steps in it as in any other frame.

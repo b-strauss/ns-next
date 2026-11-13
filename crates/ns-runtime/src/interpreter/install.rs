@@ -98,6 +98,7 @@ impl<'gc> Mutator<'gc> {
         crate::jit::invalidate_applications(self, &rebuilt);
         // Every span counts in the module's text, which the edit changed.
         self.debug_metadata.clear();
+        self.breakpoints.forget_filter_decisions();
         // The edited class's breakpoints stand on bodies the install
         // replaced: each is set again by its offset on the new ones.
         if !self.has_no_breakpoints() {

@@ -216,6 +216,11 @@ pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> 
     origin_of(heap, frame, &code)
 }
 
+/// The body `frame` runs.
+pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
+    frame.read(heap).code(heap)
+}
+
 /// The descriptions of the run's `frames`, innermost first, every frame
 /// whose index `hidden` holds hidden.
 pub(crate) fn stack_trace(

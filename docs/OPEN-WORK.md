@@ -2005,10 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *The step filter allocates at every poll*: `is_filtered` builds a
-      declaration path (`again::declaration_path`) at every poll of a
-      held step into through shipped code; a cache by body would remove
-      the allocation ([debugger.md](design/debugger.md), decision 16).
     - *A step from a caught stop a fast path left in the machinery stops
       in it*: a caught exception whose handler is no block and whose
       `cull:` a fast path answers pushes nothing, so its stop stands in
