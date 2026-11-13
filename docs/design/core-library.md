@@ -3685,9 +3685,12 @@ the exception and records the stop for the next poll, the push of
 `defaultAction` ([debugger.md](debugger.md), "Exceptions"). It answers
 true only for a `Halt` the debugger's `Halt` breakpoint stopped, which
 `invokeNextHandler` then resumes with nil instead, so that `halt`
-answers nil once the program goes on; with no debugger attached it does
+answers nil once the program goes on -- so that, under that default
+breakpoint, a `Halt` subclass's `defaultAction` override is skipped, and
+one whose `isResumable` answers false makes the `resume:` signal "cannot
+resume a non-resumable exception"; with no debugger attached it does
 nothing and answers false. Likewise `invokeHandlerAt:disabling:` sends
-`exceptionCaught:at:ifFail:` just before it runs the handler it found,
+`exceptionCaught:at:handler:ifFail:` just before it runs the handler it found,
 for the caught-exception breakpoint and a step in progress, which goes
 on into the handler block. Neither leaf runs Newspeak code, so the
 search pushes no activation it did not push before, and the outcome of
@@ -3750,7 +3753,9 @@ with an argument that is no `Message` fails inside the handler, on
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`;
   `terminate…` for `defaultAction`; and `exceptionUnhandled` and
-  `exceptionCaught:`, the search's reports to an attached debugger, which
+  `exceptionCaughtAt:handler:` (`exceptionUnhandled:ifFail:` and
+  `exceptionCaught:at:handler:ifFail:`), the search's reports to an
+  attached debugger, leaves machine code calls without exiting, which
   decide and record its exception breakpoints' stop and do nothing
   without one ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
   `message:sendTo:ifFail:` (`builtins/message.rs`);

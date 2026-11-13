@@ -1182,8 +1182,8 @@ stage's tests, do not.
   point; and a step out of a clause whose answer is refused as no class
   stopping not in the `signal` but, once the handler search reports the
   handler it found, at the handler block's first statement, and with the
-  shipped filter off at the next statement of the kernel's block that
-  invokes the handler.
+  shipped filter off at the first statement of the kernel's `cull:` that
+  runs the handler.
   Of the step filters (decision 16): a step into a `do:` over an array
   landing in its block; a step over at the block's last statement
   landing in its next activation, and after the last element at the
@@ -1220,7 +1220,13 @@ stage's tests, do not.
   signals showing the program's frame first, and with the shipped filter
   off the shipped method; a caught exception not stopping by default,
   and with the caught-exception breakpoint on stopping before its
-  handler, which runs once the program goes on; a class filter taking an
+  handler, which runs once the program goes on, the frame on top the
+  handler block's at its first instruction; under the JIT stress mode,
+  the search in machine code, an uncaught exception stopping at
+  `defaultAction`'s first instruction and a caught one at the handler
+  block's; an uncaught error the VM raises showing the raising frame
+  first, with the shipped filter on and off; the `ensure:` blocks a
+  termination runs stopping at no exception they raise; a class filter taking an
   exception whose class inherits from the class it names and no other;
   an uncaught `halt` stopping and going on resumed with nil, and with
   the `Halt` breakpoint off stopping as an uncaught exception and ending
@@ -2396,23 +2402,35 @@ return ("Restart frame and force return"). The handler search of
 `Kernel.ns` reports its outcome through two mirror leaves:
 `invokeNextHandler`, having found no handler, sends
 `exceptionUnhandled:ifFail:` just before `defaultAction`, and
-`invokeHandlerAt:disabling:` sends `exceptionCaught:at:ifFail:` just
-before `handler cull: self`; only the shipped modules reach the mirror
+`invokeHandlerAt:disabling:` sends `exceptionCaught:at:handler:ifFail:`
+just before `handler cull: self`; only the shipped modules reach the mirror
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). With no debugger attached
 each does nothing and answers what its failure block would, so that an
 exception behaves as it does without the debugger; and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
-stops nothing. A leaf only decides and records: it runs no Newspeak code
-and collects nothing, and leaves no stretch, so the stop it decides is
-recorded on the `Mutator` (`Breakpoints::request_exception_stop`) and
-asked of the next poll through the request bit `DEBUGGER_STOP` ("The
-poll words as atomics"), which lowers the depth limit: the next push --
-`defaultAction`'s, the handler's `cull:`, or a `Halt`'s `resume:` -- is
-the interpreter's, and its safepoint stops before that frame runs an
-instruction (`serve_debugger`), whether the search ran interpreted or
-in machine code, whose mirror send exits to the interpreter. The stop
+stops nothing; nor does an exception an `ensure:` block of the
+debugger's termination raises, from the `Terminate` to the run's end,
+as the termination ends a step. Both rows are leaves machine code calls
+without exiting (`MachineCall::Leaf`), so that a program without a
+debugger pays no exit for a caught exception: a leaf only decides and
+records -- it reads the exception and its class chain, holds the
+`on:do:` activation and the handler as `Root`s unread, and sets a bit --
+runs no Newspeak code, collects nothing, reads no other activation and
+leaves no stretch. What it decides is recorded on the `Mutator`
+(`Breakpoints::request_exception_stop`) and asked of the next poll
+through the request bit `DEBUGGER_STOP` ("The poll words as atomics"),
+which lowers the depth limit, so that the next push is the
+interpreter's, or machine code's call of it refused, and its safepoint
+serves it (`exceptions::serve`): there, where flooding is allowed, the
+handler found is reported to a step in progress; and the stop waits,
+recorded again, while the frame on top is still the search's -- the
+caller of a refused compiled call stands at the send, before the push
+-- so that an uncaught exception stops at `defaultAction`'s first
+instruction, a `Halt` at `resume:`'s, and a caught one past the
+kernel's `cull:`, at the handler block's first instruction, before it
+ran, or at the first frame of a handler that is no block. The stop
 ends a step in progress and serves a pause asked meanwhile, as every
 stop does; a termination and the run's end drop a stop no poll served
 (`exceptions::drop_pending`).
@@ -2451,7 +2469,12 @@ every exception is taken. `halt` signals `Halt`, whose breakpoint is on
 by default under the debugger: an uncaught `Halt` stops
 (`StopReason::Halt`), and going on resumes it with `nil`, which `halt`
 answers -- the leaf answers true and `invokeNextHandler` sends
-`resume: nil` instead of `defaultAction`. With the `Halt` breakpoint
+`resume: nil` instead of `defaultAction`. A `Halt` subclass therefore
+behaves otherwise under that default breakpoint than without a
+debugger: its `defaultAction` override is skipped, the `Halt` resumed
+with nil instead, and one whose `isResumable` answers false makes that
+`resume:` signal the kernel's "cannot resume a non-resumable exception"
+`Error`, which, uncaught, stops in turn. With the `Halt` breakpoint
 off, a `Halt` is an exception as any other. An
 uncaught `MessageNotUnderstood` will offer "Create Method": the method is
 created public, since the send again is a public send, and the exception
