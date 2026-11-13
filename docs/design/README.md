@@ -450,7 +450,8 @@ NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every bod
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
 # `cargo xtask gates stress` runs the sixteen suites at once, each into its own
 # log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
-# (`.config/nextest.toml`) without `ns-memory`, the tests that ended a measured
+# (`.config/nextest.toml`) without `ns-syntax`, `ns-assembler` and
+# `ns-memory`, which cannot reach the runtime, the tests that ended a measured
 # run alone started first, narrowed by a profile generated from it: every mode
 # but WIDE without the tests no switch reaches and `ns-cli`'s
 # `debug_metadata`, which boots an interpreter but runs no program, WIDE
@@ -467,11 +468,11 @@ step its build needed), and on 2026-11-13 `stress` about 1,050 s --
 at once, without the tests no switch reaches (1,233 s with them, 1,642 s
 on the whole suite), beside another build on the machine, and
 `run-corpus` plain and under each mode a few seconds more -- and on
-2026-11-04, in Docker with a warm image and build directory, `linux`
-about two and a half minutes (the copy 4 s, the suite 47 s, the
-benchmark programs 86 s, all of them before the tests and benchmark
-programs that reach nothing platform-dependent were left out) and on
-2026-11-13 `aarch64` about 8 minutes (the suite step 441 s, its build
+2026-11-13, in Docker with a warm image, `linux` about three and a half
+minutes (the copy 7 s, the suite step 80 s with its build, nextest's run
+29 s against 52 s for the whole suite, the doctests 1 s, the Newspeak
+benchmark programs 83 s, which the slowest Newspeak benchmarks bound as
+before) and `aarch64` about 8 minutes (the suite step 441 s, its build
 included, nextest's run under QEMU 377 s; the whole suite's 662 s the
 same day), so `end-of-batch` about forty minutes in all. A cold run builds the image
 first, about ten minutes on 2026-11-04, nearly all of it the downloads
@@ -489,8 +490,10 @@ counterparts, which run nothing of ns-next's), and `aarch64` the suite
 cross-compiled for `aarch64-unknown-linux-gnu` and run through the image's
 own pinned `qemu-aarch64` as the target's runner, the only run of
 AArch64's machine code -- both suites without the tests that reach no
-platform-dependent code (below) and `linux` without the doctests, which
-reach none; what the host needs is `CLAUDE.md`'s, "Working in this
+platform-dependent code (below), and `linux` the doctests besides, since
+those of `Interpreter::enter` boot an interpreter and reserve memory
+(`aarch64` runs none: `cargo test --doc` would build them for the host);
+what the host needs is `CLAUDE.md`'s, "Working in this
 repository", and [execution.md](execution.md), "Tests", has the image and
 why its QEMU is the one it is.
 
@@ -515,13 +518,22 @@ through the memory layer (a reservation, the page size, the code zone, the
 native stack) or reaches the other code that differs by platform: the
 JIT's register roles (`Roles::of`, which every machine code built takes,
 mostly the host convention's), whether the build has a JIT, the cut's
-return address size, a project file's path separators
-(`ns-cli`'s `project.rs`), a URI's path style (`ns-analyzer`'s
-`file_uri.rs`) and the processor check (`ns-tooling`'s `processor.rs`).
+return address size, a project's paths (`ns-cli`'s `project.rs`:
+`locate_program`, `same_path`, `resolve_written_path`), the start of a
+binary through the target's runner (`target_runner.rs`'s
+`command_through`), the order a directory lists its files in
+(`ns-tooling`'s `collect_ns_files`), the formatter's replacing rename
+(`ns-analyzer`'s `fmt.rs`), a URI's path style (`file_uri.rs`) and the
+processor check (`ns-tooling`'s `processor.rs`). That the readers stay
+wired is held by `crates/ns-runtime/tests/reach_wiring.rs`: every string
+naming a switch in a crate's sources stands in a reader that records or
+is called only from `with_kernel`, after its record, and an
+`Interpreter` is built nowhere else.
 Each is one relaxed load after the first, where a body is compiled or
 memory reserved, never on the run loop's path, and nothing in a release
-build; after `runtime`, which decides alone, a process writes no further
-marker, so that most tests leave one file and the record costs the
+build; a marker is written under a temporary name and renamed into
+place, so that a killed process leaves none half-written; after
+`runtime`, which decides alone, a process writes no further marker, so that most tests leave one file and the record costs the
 `commit` group's suite no measurable time.
 
 `cargo xtask unreached-tests` runs the default profile's suite with the
@@ -537,7 +549,20 @@ not reach the compiler) and `platform` (`default` without the listed tests
 that reach no platform-dependent code, for `linux` and `aarch64`, which
 write it in the container). The `commit` group runs its suite with the
 record on and fails, naming them, when a listed test now reaches more than
-the list says; a test the list does not name, a new one, runs everywhere.
+the list says or did not run (a renamed or removed test's entry), and
+when a golden trial of a program that runs to status 0 recorded no
+`runtime` -- the sentinel that the record still sees the child `ns-next`;
+it names, without failing, the tests that reach nothing but are not
+listed. A test the list does not name, a new one, runs everywhere.
+
+The list is measured on the development machine, Windows on x64, and the
+check runs there too. A test that exists only on another platform
+(`#[cfg(unix)]`, say) is in no list and runs everywhere, but a test whose
+reach differs by platform -- one that makes an interpreter or reaches
+platform-dependent code only on Linux or AArch64 -- is judged by its
+reach on Windows, and the Docker groups leave it out if that reach was
+none. The platform sites above are named, not proven complete: code that
+differs by platform only inside the standard library is not marked.
 `debug_metadata` is left out of every mode but WIDE besides: it boots an
 interpreter, so the record keeps it, but runs no program, only the boot
 every other test runs.
