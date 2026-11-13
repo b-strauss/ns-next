@@ -14,9 +14,9 @@ use super::Attachments;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
-/// What the agent asks of the VM. `Continue`, the steps, `StackTrace`,
-/// `Variables` and `Children` are served only while the program is
-/// stopped; one that
+/// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
+/// `StackTrace`, `Variables` and `Children` are served only while the
+/// program is stopped; one that
 /// arrives while it runs is refused (`Event::Refused`). `Terminate` is
 /// served either way. An agent waits for `Event::Stopped` before it sends
 /// a command only a stop serves: one sent right after
@@ -24,8 +24,8 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// safepoint drains the queue before the stop or the stop serves it. A
 /// command is served by the run it arrives during; one queued while no
 /// run executes, or still queued when a run ends, is dropped unanswered.
-/// A configuration command -- `SetBreakpoints`, `SetStepFilters` -- is
-/// served wherever commands are taken instead: at a safepoint while the program runs, at
+/// A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
+/// `SetStepFilters` -- is served wherever commands are taken instead: at a safepoint while the program runs, at
 /// a stop, and when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -48,6 +48,15 @@ pub enum Command {
     /// goes on at once the frame returns, as `StepOver` does past its
     /// last statement.
     StepOut,
+    /// The stopped program goes on to the statement `offset` names in the
+    /// module `module` names, resolved as a line breakpoint is
+    /// (`SetBreakpoints`) and taken in any activation, or to the next
+    /// stop of any other reason before it: either ends it. Answered by
+    /// `Event::Continued`, then `Event::Stopped` with `StopReason::Step`,
+    /// or, for a position that resolves to no statement -- its module not
+    /// built, no statement at or after the offset -- by `Event::Refused`,
+    /// the program still stopped.
+    RunToPosition { module: String, offset: u32 },
     /// The run ends as an uncaught termination does: every pending
     /// `ensure:` block runs, and the host's send answers the error
     /// "the debugger terminated the program".
@@ -86,6 +95,29 @@ pub enum Command {
         shipped: bool,
         classes: Vec<ClassName>,
     },
+    /// Replaces every method breakpoint by these. Each stops every
+    /// activation of its method at the method's entry -- its first
+    /// statement start -- and at each of its exits: before each of its
+    /// returns -- the body's own, and the non-local returns of the blocks
+    /// the compiler lowered inline in it, so that both lowerings stop
+    /// there alike -- and, for a method left otherwise, by an unwind or
+    /// by the non-local return of another block of its own, at the next
+    /// place the program reaches. A method of a module not built yet, or one its class does
+    /// not declare, is not verified until a module's build or an install
+    /// declares it; an install sets each again on the method's new body.
+    /// Answered by `Event::MethodBreakpoints`.
+    SetMethodBreakpoints(Vec<MethodBreakpoint>),
+}
+
+/// A method a method breakpoint names: by its selector, the class
+/// declaration that declares it, and its side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodBreakpoint {
+    /// The class declaration, as a step filter names it.
+    pub class: ClassName,
+    /// Whether the method is the class side's.
+    pub class_side: bool,
+    pub selector: String,
 }
 
 /// A class declaration of a module, as a step filter names it.
@@ -108,12 +140,14 @@ impl Command {
             Command::StepOver => "StepOver",
             Command::StepInto => "StepInto",
             Command::StepOut => "StepOut",
+            Command::RunToPosition { .. } => "RunToPosition",
             Command::Terminate => "Terminate",
             Command::StackTrace => "StackTrace",
             Command::Variables { .. } => "Variables",
             Command::Children { .. } => "Children",
             Command::SetBreakpoints { .. } => "SetBreakpoints",
             Command::SetStepFilters { .. } => "SetStepFilters",
+            Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
         }
     }
 }
@@ -148,6 +182,10 @@ pub enum Event {
     },
     /// The answer to `Command::SetStepFilters`: the filters are in effect.
     StepFiltersSet,
+    /// The method breakpoints, in the order they were set: the answer to
+    /// `Command::SetMethodBreakpoints`, and sent unasked when a module's
+    /// build or an install verifies one or no longer declares its method.
+    MethodBreakpoints(Vec<MethodBreakpointState>),
 }
 
 /// Why the program stopped.
@@ -158,8 +196,24 @@ pub enum StopReason {
     /// The program reached the statement the breakpoints `ids` stand at.
     Breakpoint { ids: Vec<BreakpointId> },
     /// A step the agent asked for (`Command::StepOver`, `StepInto`,
-    /// `StepOut`) arrived.
+    /// `StepOut`, `RunToPosition`) arrived.
     Step,
+    /// The program entered the method of the method breakpoint `id`, and
+    /// stands at its first statement start; `others` are the other
+    /// breakpoints standing there -- line breakpoints, and method
+    /// breakpoints of the same method -- which this stop is for too.
+    MethodEntry {
+        id: BreakpointId,
+        others: Vec<BreakpointId>,
+    },
+    /// The program leaves the method of the method breakpoint `id`: it
+    /// stands at one of the method's returns, or, for a method an unwind
+    /// left, at the next place the program reaches. `others` as for
+    /// `MethodEntry`.
+    MethodExit {
+        id: BreakpointId,
+        others: Vec<BreakpointId>,
+    },
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.
@@ -176,6 +230,15 @@ pub struct BreakpointState {
     /// while it is pending: its module is not built, or no statement
     /// starts at or after its offset.
     pub statement: Option<ns_syntax::Span>,
+}
+
+/// Where a method breakpoint stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodBreakpointState {
+    pub id: BreakpointId,
+    /// Whether its method is declared: `false` while its module is not
+    /// built, or its class declares no such method.
+    pub verified: bool,
 }
 
 /// A value a stop handed out, by its index in the stop's table; it names

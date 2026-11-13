@@ -233,6 +233,14 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         mutator.jit.cut.reset();
         return u64::from(EXIT);
     }
+    // A method a method breakpoint names reports its exit by an unwind,
+    // which only the interpreter's unwinder makes; its entry's patch keeps
+    // its body from being installed, so this holds by that alone, but the
+    // report must not rest on it.
+    if mutator.breakpoints.reports_exits_of(&caller.code) {
+        mutator.jit.cut.reset();
+        return u64::from(EXIT);
+    }
     let Some(slots) = call_slots(&caller.code, program_counter) else {
         unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };

@@ -8727,7 +8727,10 @@ pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>)
     }
     // An inlined lazy slot's getter reads the slot without naming the
     // getter's code id (`AlwaysInlined::LazyGetter`), and so would answer
-    // a filled slot past a breakpoint at the getter's first instruction.
+    // a filled slot past a breakpoint at the getter's first instruction:
+    // a method breakpoint's entry and exit, which stand there. Every copy
+    // goes, since none names the getter; a copy compiled while the patch
+    // stands calls the getter (`tree::Walk::method`).
     let lazy_getter = code.instruction_count() > 0
         && matches!(
             code.instruction(0),

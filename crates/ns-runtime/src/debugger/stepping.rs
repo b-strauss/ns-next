@@ -15,15 +15,18 @@
 //! at full speed. A step never lands in a frame the step filters filter
 //! -- by default the shipped modules' (decision 16): a stop it would make
 //! there goes on as a step into from the first unfiltered frame below,
-//! and a step into's request outlasts the pushes of filtered bodies.
+//! and a step into's request outlasts the pushes of filtered bodies. A
+//! method an unwind leaves while a method breakpoint names it is reported
+//! by a step of the same kind (`method_left`), whose stop reports the
+//! method's exit where the program goes on.
 
 use std::rc::Rc;
 use std::sync::PoisonError;
 
-use super::breakpoints::{address, settle, OneShot, PastOnce};
+use super::breakpoints::{address, settle, AfterPast, OneShot, PastOnce};
 use super::metadata::again::{declaration_path, BodyOrigin};
 use super::metadata::{BodyMetadata, Cache};
-use super::remote::ClassName;
+use super::remote::{BreakpointId, ClassName};
 use super::stack::{self, StackFrame};
 use crate::bytecode::{register_written, CompiledCode, Instruction};
 use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
@@ -122,6 +125,9 @@ pub(crate) struct Stepping {
     /// Whether the step was begun in a frame the step filters filter,
     /// which it then steps in as in any other (`is_filtered`).
     started_filtered: bool,
+    /// The method breakpoints whose method an unwind left since the step
+    /// began (`method_left`), which its stop reports as the method's exit.
+    exits: Vec<BreakpointId>,
 }
 
 /// A frame of the run: an activation on the stack, or one suspended into
@@ -165,6 +171,7 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction) {
         activation: top,
         body: address(&code),
         index: mutator.heap.activation_program_counter(top),
+        after: AfterPast::Nothing,
     };
     mutator.breakpoints.go_past_once(standing);
 }
@@ -246,14 +253,78 @@ pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<Activatio
 /// it would make in a filtered one goes on again. The value recorded so
 /// far is kept.
 pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: ActivationReference) {
-    let returned = mutator
-        .stepping
-        .take()
-        .and_then(|stepping| stepping.returned);
+    let (returned, exits) = carried(mutator);
     mutator.breakpoints.remove_one_shots();
     let place = first_unfiltered(mutator, frame).unwrap_or(Place::Running(frame));
     start(mutator, StepAction::Into, place, returned);
+    keep_exits(mutator, exits);
     settle(mutator);
+}
+
+/// The step's value of the last call and the exits it reports, taken with
+/// the step, which a step that replaces it carries on.
+fn carried(mutator: &mut Mutator<'_>) -> (Option<Root>, Vec<BreakpointId>) {
+    mutator
+        .stepping
+        .take()
+        .map_or((None, Vec::new()), |stepping| {
+            (stepping.returned, stepping.exits)
+        })
+}
+
+/// The step in progress reports `exits` too.
+fn keep_exits(mutator: &mut Mutator<'_>, exits: Vec<BreakpointId>) {
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.exits.extend(exits);
+    }
+}
+
+/// How an unwind leaves a method a method breakpoint names.
+pub(crate) enum Leaving {
+    /// The unwind popped its frame, and the program goes on in the frame
+    /// now on top, if any.
+    Popped,
+    /// The unwind arrived at it, the home of a non-local return or the
+    /// target of another, and it returns to its caller from `home`, the
+    /// top frame.
+    Returning(ActivationReference),
+}
+
+/// An unwind left a method of the method breakpoints `ids`, which it
+/// passed no return of (`docs/design/debugger.md`, "Method breakpoints"):
+/// the exit is reported at the next place the program reaches, by a step
+/// of the same kind as a step whose frame an unwind pops (decision 17),
+/// which replaces any step in progress, its value of the last call kept
+/// -- a step into from the frame now on top for a popped frame, a step out
+/// from the method's frame for one that returns -- and whose stop reports
+/// the exits (`take_exits`).
+pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, leaving: Leaving) {
+    match leaving {
+        Leaving::Popped => {
+            let Some(now_on_top) = mutator.heap.top_activation() else {
+                return;
+            };
+            continue_as_step_into(mutator, now_on_top);
+        }
+        Leaving::Returning(home) => {
+            let (returned, exits) = carried(mutator);
+            mutator.breakpoints.remove_one_shots();
+            start(mutator, StepAction::Out, Place::Running(home), returned);
+            keep_exits(mutator, exits);
+            settle(mutator);
+        }
+    }
+    keep_exits(mutator, ids);
+}
+
+/// The method breakpoints whose exit by an unwind the step in progress
+/// reports, taken: its stop is the method's exit.
+pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
+    mutator
+        .stepping
+        .as_mut()
+        .map(|stepping| std::mem::take(&mut stepping.exits))
+        .unwrap_or_default()
 }
 
 /// The step's own one-shot stopped `activation`, the top frame, where no
@@ -694,6 +765,7 @@ fn start<'gc>(
         suspended: Vec::new(),
         next_key: 0,
         started_filtered: false,
+        exits: Vec::new(),
     }));
     let (frame, body) = stepping_frame(mutator, top);
     let between = frames_between(mutator, top, frame);
@@ -890,7 +962,10 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody) {
 /// under the reference lowering, which inlines nothing, a block literal
 /// a `SendInlinable` takes as its receiver or an argument before its
 /// register is written again: the blocks the optimized lowering inlines.
-fn inlined_blocks(body: &CompiledCode, metadata: &BodyMetadata) -> Vec<Rc<CompiledCode>> {
+pub(crate) fn inlined_blocks(
+    body: &CompiledCode,
+    metadata: &BodyMetadata,
+) -> Vec<Rc<CompiledCode>> {
     let instructions = body.instructions();
     let mut blocks = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {

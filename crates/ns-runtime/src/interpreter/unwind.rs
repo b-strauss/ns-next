@@ -13,6 +13,7 @@
 //! scheduling steps, not Rust calling back into Newspeak. An activation with
 //! no marker costs one test.
 
+use super::breakpoint;
 use super::Arguments;
 use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
@@ -287,6 +288,12 @@ pub(crate) fn unwind<'gc>(
                     && mutator.catches_return(target)
             });
         if arrived {
+            // A method a return's unwind arrives at returns without a
+            // return instruction of its own, whose exit a method
+            // breakpoint reports (`breakpoint::returning_by_unwind`).
+            if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
+                breakpoint::returning_by_unwind(mutator, top, frame);
+            }
             return arrive(mutator, top, pending.action);
         }
         if let Some(block) = block_to_run(mutator, top) {
@@ -295,7 +302,18 @@ pub(crate) fn unwind<'gc>(
                 then: Box::new(pending),
             };
         }
+        // A method the unwind pops is left without a return, whose exit a
+        // method breakpoint reports; a termination, which ends the run,
+        // reports none.
+        let exits = if matches!(pending.action, UnwindAction::Terminate(_)) {
+            Vec::new()
+        } else {
+            breakpoint::leaving_by_unwind(mutator, top)
+        };
         mutator.pop_for_unwind(top);
+        if !exits.is_empty() {
+            breakpoint::left_by_unwind(mutator, exits);
+        }
     }
 }
 

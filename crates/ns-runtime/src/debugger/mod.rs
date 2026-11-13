@@ -23,7 +23,8 @@ mod values;
 
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
-    FrameKind, FrameLocation, SendLocation, StopReason, ValueDescription, ValueId, Variable,
+    FrameKind, FrameLocation, MethodBreakpoint, MethodBreakpointState, SendLocation, StopReason,
+    ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -33,6 +34,7 @@ use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STE
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
 use crate::{Root, Symbol, Value};
+use breakpoints::Hits;
 use stepping::{HeldStep, StepAction, StepFilters};
 use values::StopValues;
 
@@ -171,6 +173,7 @@ impl StressReader {
             Event::Stopped { .. }
             | Event::Continued
             | Event::Breakpoints { .. }
+            | Event::MethodBreakpoints(_)
             | Event::StepFiltersSet => {}
         }
     }
@@ -232,8 +235,11 @@ impl Interpreter {
     /// Serves the debugger's bits at the run loop's safepoint, before
     /// anything else there: first the commands queued while the program
     /// ran, then the stop a `Breakpoint` arm left for, then a pause; each
-    /// stop waits until the agent continues or terminates. A remote that
-    /// is gone detaches the debugger, and the program runs on.
+    /// stop waits until the agent continues or terminates. A stop reports
+    /// every breakpoint it is for, and a method's exit an unwind made
+    /// since the step that reports it began (`stepping::method_left`),
+    /// whatever made the stop (`Hits::reason`). A remote that is gone
+    /// detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
         let (bits, breakpoint) = self.enter(|mutator| {
             (
@@ -260,7 +266,7 @@ impl Interpreter {
             // unfiltered frame below, and the frame fetches the slot it
             // stands at again, past it once.
             let filtered = self.debugger.is_some()
-                && breakpoint.ids.is_empty()
+                && breakpoint.hits.only_a_step()
                 && self.enter(|mutator| {
                     stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
                 });
@@ -270,20 +276,18 @@ impl Interpreter {
                 // The stop serves a pause asked meanwhile too, and ends a
                 // step, whatever made it.
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
-                let returned = self.enter(stepping::end);
-                // A slot only a step's one-shot stopped at is the step's
-                // stop, which reports the value of the last call; a line
-                // breakpoint there makes it the breakpoint's.
-                let (reason, returned) = if breakpoint.ids.is_empty() {
-                    (StopReason::Step, returned)
-                } else {
-                    (
-                        StopReason::Breakpoint {
-                            ids: breakpoint.ids,
-                        },
-                        None,
-                    )
-                };
+                let (reason, returned) = self.enter(|mutator| {
+                    let unwound = stepping::take_exits(mutator);
+                    let returned = stepping::end(mutator);
+                    // A slot only a step's one-shot or the run to cursor
+                    // stopped at is the step's stop, which reports the
+                    // value of the last call; a breakpoint the debugger
+                    // set there makes it the breakpoint's.
+                    match breakpoint.hits.reason(unwound) {
+                        Some(reason) => (reason, None),
+                        None => (StopReason::Step, returned),
+                    }
+                });
                 let served = self.stop(reason, returned, floor, CommandSource::Remote);
                 // The frame fetches the patched slot again as it goes on:
                 // the breakpoint it stopped at lets it past once.
@@ -296,24 +300,39 @@ impl Interpreter {
         let bits = self.enter(|mutator| mutator.heap.debugger_bits());
         if bits & DEBUGGER_PAUSE != 0 && self.debugger.is_some() {
             self.clear_debugger_bits(DEBUGGER_PAUSE);
-            self.enter(stepping::end);
-            return self.stop(StopReason::Pause, None, floor, CommandSource::Remote);
+            // A method's exit an unwind made before the pause is reported
+            // by the stop that serves it.
+            let unwound = self.enter(|mutator| {
+                let unwound = stepping::take_exits(mutator);
+                stepping::end(mutator);
+                unwound
+            });
+            let reason = Hits::default().reason(unwound).unwrap_or(StopReason::Pause);
+            return self.stop(reason, None, floor, CommandSource::Remote);
         }
         if bits & DEBUGGER_STEP != 0 && matches!(self.enter(stepping::held_step), HeldStep::Stop) {
-            self.enter(stepping::end);
             // The pushed frame stands at its first statement start, which
-            // it fetches as it goes on: a breakpoint there lets it past
-            // once.
-            let standing = self.enter(|mutator| {
-                let top = mutator.heap.top_activation()?;
-                let code = mutator.heap.activation_code(top);
-                Some(breakpoints::PastOnce {
-                    activation: top,
-                    body: breakpoints::address(&code),
-                    index: mutator.heap.activation_program_counter(top),
+            // it fetches as it goes on: a breakpoint there makes the stop
+            // the breakpoint's -- a method breakpoint's entry -- and lets
+            // it past once.
+            let (reason, standing) = self
+                .enter(|mutator| {
+                    let unwound = stepping::take_exits(mutator);
+                    stepping::end(mutator);
+                    let top = mutator.heap.top_activation()?;
+                    let (hits, after) = crate::interpreter::breakpoint::standing_hits(mutator, top);
+                    let code = mutator.heap.activation_code(top);
+                    let standing = breakpoints::PastOnce {
+                        activation: top,
+                        body: breakpoints::address(&code),
+                        index: mutator.heap.activation_program_counter(top),
+                        after,
+                    };
+                    Some((hits.reason(unwound), standing))
                 })
-            });
-            let served = self.stop(StopReason::Step, None, floor, CommandSource::Remote);
+                .map_or((None, None), |(reason, standing)| (reason, Some(standing)));
+            let reason = reason.unwrap_or(StopReason::Step);
+            let served = self.stop(reason, None, floor, CommandSource::Remote);
             if let (Served::GoOn, Some(standing)) = (served, standing) {
                 self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
             }
@@ -364,13 +383,16 @@ impl Interpreter {
                     self.serve_between_runs();
                     return Served::Terminate;
                 }
-                command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. }) => {
+                command @ (Command::SetBreakpoints { .. }
+                | Command::SetMethodBreakpoints(_)
+                | Command::SetStepFilters { .. }) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
                 | Command::StepOver
                 | Command::StepInto
                 | Command::StepOut
+                | Command::RunToPosition { .. }
                 | Command::StackTrace
                 | Command::Variables { .. }
                 | Command::Children { .. }) => {
@@ -397,10 +419,16 @@ impl Interpreter {
                 });
                 self.answer(source, Event::StepFiltersSet);
             }
+            Command::SetMethodBreakpoints(requested) => {
+                let event =
+                    self.enter(|mutator| breakpoints::set_method_breakpoints(mutator, requested));
+                self.answer(source, event);
+            }
             Command::Continue
             | Command::StepOver
             | Command::StepInto
             | Command::StepOut
+            | Command::RunToPosition { .. }
             | Command::Terminate
             | Command::StackTrace
             | Command::Variables { .. }
@@ -420,8 +448,10 @@ impl Interpreter {
     /// held in its table, `floor` the run's base (`stack.rs`), and go
     /// with it when the program goes on; `returned`, the value of the
     /// last call a step recorded, is the first of them. A step command
-    /// begins its step (`stepping::begin`) and goes on as `Continue`
-    /// does.
+    /// begins its step (`stepping::begin`), and a run to cursor sets its
+    /// target (`breakpoints::run_to`), each going on as `Continue` does;
+    /// a run to cursor whose position resolves to no statement is
+    /// refused, the program still stopped.
     fn stop(
         &mut self,
         reason: StopReason,
@@ -473,6 +503,19 @@ impl Interpreter {
                     self.answer(&mut source, Event::Continued);
                     break Served::GoOn;
                 }
+                Command::RunToPosition { module, offset } => {
+                    match self.enter(|mutator| breakpoints::run_to(mutator, &module, offset)) {
+                        Ok(()) => {
+                            self.answer(&mut source, Event::Continued);
+                            break Served::GoOn;
+                        }
+                        Err(reason) => self.refuse(
+                            &mut source,
+                            &Command::RunToPosition { module, offset },
+                            reason,
+                        ),
+                    }
+                }
                 Command::Terminate => break self.terminate(),
                 Command::StackTrace => {
                     let descriptions = self.enter(|mutator| {
@@ -498,7 +541,9 @@ impl Interpreter {
                     Some(children) => self.answer(&mut source, Event::Variables(children)),
                     None => self.refuse(&mut source, &command, NO_SUCH_VALUE),
                 },
-                command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. }) => {
+                command @ (Command::SetBreakpoints { .. }
+                | Command::SetMethodBreakpoints(_)
+                | Command::SetStepFilters { .. }) => {
                     self.configure(&mut source, command);
                 }
             }
@@ -579,7 +624,11 @@ impl Interpreter {
                 return;
             };
             match debugger.commands.try_recv() {
-                Ok(command @ (Command::SetBreakpoints { .. } | Command::SetStepFilters { .. })) => {
+                Ok(
+                    command @ (Command::SetBreakpoints { .. }
+                    | Command::SetMethodBreakpoints(_)
+                    | Command::SetStepFilters { .. }),
+                ) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 Ok(
@@ -587,6 +636,7 @@ impl Interpreter {
                     | Command::StepOver
                     | Command::StepInto
                     | Command::StepOut
+                    | Command::RunToPosition { .. }
                     | Command::Terminate
                     | Command::StackTrace
                     | Command::Variables { .. }

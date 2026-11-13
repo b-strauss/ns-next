@@ -1,11 +1,12 @@
 //! The breakpoint table (`docs/design/debugger.md`, decision 2, "Stopping
 //! at and going past a breakpoint", "Breakpoints by body, and reclaimed
-//! code ids", "A breakpoint names a source position"): each line
-//! breakpoint by its module and offset, the slots it patched, keyed by
-//! their body and index, the token that lets a resumed stop go past its
-//! breakpoint once, and the stop a `Breakpoint` arm asked for. On the
-//! `Mutator`, since the run loop's arm, a module's build and an install,
-//! which run inside an entry, reach nothing else.
+//! code ids", "A breakpoint names a source position", "Method
+//! breakpoints"): each line breakpoint by its module and offset, each
+//! method breakpoint by its method, the run to cursor, the slots they
+//! patched, keyed by their body and index, the token that lets a resumed
+//! stop go past its breakpoint once, and the stop a `Breakpoint` arm
+//! asked for. On the `Mutator`, since the run loop's arm, a module's build
+//! and an install, which run inside an entry, reach nothing else.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -16,13 +17,22 @@ use ns_syntax::Span;
 
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
-use super::remote::{BreakpointId, BreakpointState, Event};
-use super::stepping::{Holder, StepFilters};
+use super::remote::{
+    BreakpointId, BreakpointState, Event, MethodBreakpoint, MethodBreakpointState, StopReason,
+};
+use super::stepping::{inlined_blocks, Holder, StepFilters};
 use super::Attachments;
-use crate::bytecode::CompiledCode;
-use crate::heap::{ActivationReference, CodeId};
+use crate::bytecode::{CompiledCode, Instruction};
+use crate::heap::{ActivationReference, CodeId, FrameReference, Heap};
 use crate::interpreter::Mutator;
-use crate::mixin::MixinMethod;
+use crate::mixin::{Mixin, MixinMethod};
+use crate::Root;
+
+/// Why a run to cursor is refused at a module not built.
+const NOT_BUILT: &str = "no module of that name is built";
+
+/// Why a run to cursor is refused at a position no statement follows.
+const NO_STATEMENT: &str = "no statement starts at or after that position";
 
 /// Every breakpoint the attached debugger set, and what the run loop
 /// needs of them.
@@ -64,6 +74,23 @@ pub(crate) struct Breakpoints {
     /// The frames no step stops in (`stepping::is_filtered`), which the
     /// attached debugger set; the default until it sets them.
     step_filters: StepFilters,
+    /// Every method breakpoint, in the order the debugger set them.
+    methods: Vec<MethodBreakpointEntry>,
+    /// The frame object of the home whose method's exit a stop at a
+    /// non-local return already reported, so that the unwind's arrival
+    /// there does not report it again (`returned_home_reported`).
+    reported_home: Option<Root>,
+}
+
+/// One method breakpoint.
+struct MethodBreakpointEntry {
+    id: BreakpointId,
+    method: MethodBreakpoint,
+    /// Every body of the method it patched: the current one, and those an
+    /// install replaced, whose frames may still run them.
+    bodies: Vec<Rc<CompiledCode>>,
+    /// Whether the method is declared now.
+    verified: bool,
 }
 
 /// The line breakpoints of one module.
@@ -94,14 +121,42 @@ struct Patch {
 enum PatchKind {
     /// A line breakpoint the debugger set.
     Line(BreakpointId),
+    /// The first statement start of the method of a method breakpoint.
+    Entry(BreakpointId),
+    /// A return of the method of a method breakpoint: one of its body's,
+    /// or a non-local return of a block the compiler lowered inline in it.
+    Exit(BreakpointId),
     /// A step's one-shot breakpoint (`debugger::stepping`).
     OneShot(OneShot),
+    /// The run to cursor's target, taken in any activation.
+    RunTo,
 }
 
 impl PatchKind {
-    /// Whether this is the line breakpoint `id`.
-    fn is_line(self, id: BreakpointId) -> bool {
-        matches!(self, PatchKind::Line(held) if held == id)
+    /// Whether this stands for the breakpoint `id` the debugger set.
+    fn is_breakpoint(self, id: BreakpointId) -> bool {
+        matches!(
+            self,
+            PatchKind::Line(held) | PatchKind::Entry(held) | PatchKind::Exit(held) if held == id
+        )
+    }
+
+    /// Whether this is the same breakpoint as `other`: a slot holds each
+    /// once, and a step's one-shots as many as the step sets.
+    fn is_same(self, other: PatchKind) -> bool {
+        match (self, other) {
+            (PatchKind::Line(held), PatchKind::Line(id))
+            | (PatchKind::Entry(held), PatchKind::Entry(id))
+            | (PatchKind::Exit(held), PatchKind::Exit(id)) => held == id,
+            (PatchKind::RunTo, PatchKind::RunTo) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether this belongs to a step or a run to cursor, which the next
+    /// stop ends.
+    fn is_a_step_s(self) -> bool {
+        matches!(self, PatchKind::OneShot(_) | PatchKind::RunTo)
     }
 }
 
@@ -121,22 +176,94 @@ pub(crate) struct OneShot {
 }
 
 /// The slot a stop that resumes goes past once: the activation standing
-/// at it, its body's address and its index. The next `Breakpoint` arm the
-/// loop executes consumes it when it names that arm's slot and drops it
-/// otherwise -- the activation's offset is reused after its pop, so it
-/// is never kept past that arm.
+/// at it, its body's address and its index, and what going past it still
+/// owes. The next `Breakpoint` arm the loop executes consumes it when it
+/// names that arm's slot and drops it otherwise -- the activation's offset
+/// is reused after its pop, so it is never kept past that arm.
 #[derive(Clone, Copy)]
 pub(crate) struct PastOnce {
     pub(crate) activation: ActivationReference,
     pub(crate) body: usize,
     pub(crate) index: usize,
+    pub(crate) after: AfterPast,
 }
 
-/// A stop a `Breakpoint` arm decided: where, and which breakpoints stand
-/// there.
+/// What going past a slot once still owes the stop made there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterPast {
+    /// Nothing.
+    Nothing,
+    /// The stop was a method's entry at a slot that is also one of its
+    /// returns -- a body of one instruction, a lazy slot's getter -- whose
+    /// exit is reported by a stop of its own before the slot runs.
+    ExitDue,
+    /// The stop reported a method's exit at a non-local return, so that
+    /// the unwind's arrival at the method does not report it again.
+    ExitReported,
+}
+
+/// A stop a `Breakpoint` arm decided: where, and which breakpoints the
+/// debugger set stand there.
 pub(crate) struct PendingStop {
     pub(crate) slot: PastOnce,
-    pub(crate) ids: Vec<BreakpointId>,
+    pub(crate) hits: Hits,
+}
+
+/// The breakpoints the debugger set that a stop is for.
+#[derive(Default)]
+pub(crate) struct Hits {
+    pub(crate) lines: Vec<BreakpointId>,
+    /// The method breakpoints whose method the frame enters.
+    pub(crate) entries: Vec<BreakpointId>,
+    /// The method breakpoints whose method the frame leaves here.
+    pub(crate) exits: Vec<BreakpointId>,
+    /// Whether the run to cursor's target stands there.
+    pub(crate) run_to: bool,
+}
+
+impl Hits {
+    /// Whether no breakpoint the debugger set and no run to cursor made
+    /// the stop: only a step's one-shot did, or nothing.
+    pub(crate) fn only_a_step(&self) -> bool {
+        self.lines.is_empty() && self.entries.is_empty() && self.exits.is_empty() && !self.run_to
+    }
+
+    /// The reason of the stop, with `unwound` the method breakpoints whose
+    /// method an unwind left since the last stop (`stepping::method_left`);
+    /// `None` for a step's or a run to cursor's own. A method's entry is
+    /// reported first, then its exit, then a line breakpoint, and the
+    /// others the stop is for go with it: one stop is reported once, for
+    /// every breakpoint it is for.
+    pub(crate) fn reason(self, unwound: Vec<BreakpointId>) -> Option<StopReason> {
+        let Hits {
+            lines,
+            entries,
+            exits,
+            ..
+        } = self;
+        let entered = !entries.is_empty();
+        let mut all: Vec<BreakpointId> = entries.into_iter().chain(exits).chain(unwound).collect();
+        if all.is_empty() {
+            return (!lines.is_empty()).then_some(StopReason::Breakpoint { ids: lines });
+        }
+        all.extend(lines);
+        let id = all.remove(0);
+        Some(if entered {
+            StopReason::MethodEntry { id, others: all }
+        } else {
+            StopReason::MethodExit { id, others: all }
+        })
+    }
+}
+
+/// What stands at a patched slot.
+#[derive(Default)]
+pub(crate) struct Standing {
+    pub(crate) lines: Vec<BreakpointId>,
+    pub(crate) entries: Vec<BreakpointId>,
+    pub(crate) exits: Vec<BreakpointId>,
+    pub(crate) one_shots: Vec<OneShot>,
+    pub(crate) run_to: bool,
 }
 
 /// What resolving a module's breakpoints against its bodies found.
@@ -207,9 +334,12 @@ impl Breakpoints {
         self.past_once.take()
     }
 
-    /// Drops the token: a run ended, which may leave its slot unexecuted.
+    /// Drops the token and the reported home: a run ended, which may
+    /// leave the token's slot unexecuted and the home's unwind not
+    /// arrived.
     pub(crate) fn drop_past_once(&mut self) {
         self.past_once = None;
+        self.reported_home = None;
     }
 
     /// The token's activation moved from `from` to `onto`: the suspend
@@ -223,21 +353,69 @@ impl Breakpoints {
         }
     }
 
-    /// The ids of the line breakpoints and the one-shots standing at slot
-    /// `index` of the body at `body`; both empty for a slot nothing
-    /// patched.
-    pub(crate) fn kinds_at(&self, body: usize, index: usize) -> (Vec<BreakpointId>, Vec<OneShot>) {
-        let mut ids = Vec::new();
-        let mut one_shots = Vec::new();
+    /// Everything standing at slot `index` of the body at `body`; nothing
+    /// for a slot nothing patched.
+    pub(crate) fn kinds_at(&self, body: usize, index: usize) -> Standing {
+        let mut standing = Standing::default();
         if let Some(patch) = self.patches.get(&(body, index)) {
             for kind in &patch.kinds {
                 match kind {
-                    PatchKind::Line(id) => ids.push(*id),
-                    PatchKind::OneShot(one_shot) => one_shots.push(*one_shot),
+                    PatchKind::Line(id) => standing.lines.push(*id),
+                    PatchKind::Entry(id) => standing.entries.push(*id),
+                    PatchKind::Exit(id) => standing.exits.push(*id),
+                    PatchKind::OneShot(one_shot) => standing.one_shots.push(*one_shot),
+                    PatchKind::RunTo => standing.run_to = true,
                 }
             }
         }
-        (ids, one_shots)
+        standing
+    }
+
+    /// Whether any method breakpoint is set: the unwinder reports a
+    /// method's exit only then.
+    pub(crate) fn has_method_breakpoints(&self) -> bool {
+        !self.methods.is_empty()
+    }
+
+    /// The method breakpoints whose method `code` is a body of.
+    pub(crate) fn exits_of(&self, code: &Rc<CompiledCode>) -> Vec<BreakpointId> {
+        self.methods
+            .iter()
+            .filter(|entry| entry.bodies.iter().any(|body| Rc::ptr_eq(body, code)))
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// Whether `code` is the body of a method a method breakpoint names:
+    /// the cut, which pops compiled frames without the unwinder, leaves a
+    /// frame of it to the unwinder, which reports its exit.
+    pub(crate) fn reports_exits_of(&self, code: &Rc<CompiledCode>) -> bool {
+        self.has_method_breakpoints() && !self.exits_of(code).is_empty()
+    }
+
+    /// Records `home`, a frame object, as the home whose method's exit a
+    /// stop at a non-local return reported.
+    pub(crate) fn report_home(&mut self, home: Root) {
+        self.reported_home = Some(home);
+    }
+
+    /// Whether the home `frame` is the one whose method's exit a stop at
+    /// a non-local return reported, forgetting it if so: the unwind's
+    /// arrival there reports nothing again.
+    pub(crate) fn returned_home_reported<'gc>(
+        &mut self,
+        heap: &Heap<'gc>,
+        frame: FrameReference<'gc>,
+    ) -> bool {
+        let reported = self.reported_home.as_ref().is_some_and(|root| {
+            heap.fetch(root)
+                .as_object()
+                .is_some_and(|object| object.same(heap.frame_object(frame)))
+        });
+        if reported {
+            self.reported_home = None;
+        }
+        reported
     }
 
     /// Patches slot `index` of `code` with `one_shot`; the table's
@@ -289,25 +467,32 @@ impl Breakpoints {
             .flat_map(|patch| patch.kinds.iter())
             .filter_map(|kind| match kind {
                 PatchKind::OneShot(one_shot) => Some(one_shot.holder),
-                PatchKind::Line(_) => None,
+                PatchKind::Line(_)
+                | PatchKind::Entry(_)
+                | PatchKind::Exit(_)
+                | PatchKind::RunTo => None,
             })
             .collect()
     }
 
-    /// Removes every one-shot, each slot no line breakpoint holds given
-    /// its original back: the step ended.
+    /// Removes every one-shot and the run to cursor, each slot no
+    /// breakpoint the debugger set holds given its original back: the
+    /// step or the run to cursor ended.
     pub(crate) fn remove_one_shots(&mut self) {
-        self.remove_kinds(|kind| matches!(kind, PatchKind::OneShot(_)), |_| false);
+        self.remove_kinds(PatchKind::is_a_step_s, |_| false);
     }
 
-    /// Whether any module has a breakpoint, resolved or pending.
+    /// Whether no line breakpoint, resolved or pending, and no method
+    /// breakpoint is set.
     fn is_empty(&self) -> bool {
-        self.modules.is_empty()
+        self.modules.is_empty() && self.methods.is_empty()
     }
 
-    /// Patches slot `index` of `code` for `kind`; `method`, when given,
-    /// is the method with a fast path whose body `code` is, which the
-    /// body's first patch switches off.
+    /// Patches slot `index` of `code` for `kind`, which a slot holds once;
+    /// `method`, when given, is the method whose body `code` is, whose
+    /// fast path, if it has one, the first patch that names the method
+    /// switches off -- whatever patched the body before, since a step's
+    /// one-shot names none.
     fn add(
         &mut self,
         code: &Rc<CompiledCode>,
@@ -323,15 +508,10 @@ impl Breakpoints {
                 index,
                 kinds: Vec::new(),
             });
-        let held = match kind {
-            PatchKind::Line(id) => patch.kinds.iter().any(|held| held.is_line(id)),
-            PatchKind::OneShot(_) => false,
-        };
+        let held = patch.kinds.iter().any(|held| held.is_same(kind));
         if !held {
             patch.kinds.push(kind);
         }
-        // The fast path goes off with the first patch that names its
-        // method, whatever patched the body before: a one-shot names none.
         if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
             if !self.switched_off.contains_key(&address(code)) {
                 method.switch_fast_path(false);
@@ -359,30 +539,39 @@ impl Breakpoints {
         self.changed.push(Rc::clone(&patch.code));
     }
 
-    /// Removes the line breakpoint `id` from every slot `keep` refuses; a
-    /// slot whose last kind goes gets its original back, and a token
+    /// Removes every kind `removed` picks from every slot `keep` refuses;
+    /// a slot whose last kind goes gets its original back, and a token
     /// naming it goes with it, so that a breakpoint set there again later
     /// stops.
-    fn remove_where(&mut self, id: BreakpointId, keep: impl FnMut(&Patch) -> bool) {
-        self.remove_kinds(|kind| kind.is_line(id), keep);
-    }
-
-    /// Removes every kind `removed` picks from every slot `keep` refuses,
-    /// as `remove_where` does.
     fn remove_kinds(
         &mut self,
         removed: impl Fn(PatchKind) -> bool,
-        mut keep: impl FnMut(&Patch) -> bool,
+        keep: impl FnMut(&Patch) -> bool,
     ) {
-        let mut emptied = Vec::new();
-        for (key, patch) in &mut self.patches {
+        self.strip(removed, keep);
+        self.sweep();
+    }
+
+    /// Takes every kind `removed` picks off every slot `keep` refuses, but
+    /// leaves a slot whose last kind went patched until the next `sweep`:
+    /// a breakpoint set again at the same slot in between keeps the slot
+    /// as it is, and its body its machine code and its fast path's state.
+    fn strip(&mut self, removed: impl Fn(PatchKind) -> bool, mut keep: impl FnMut(&Patch) -> bool) {
+        for patch in self.patches.values_mut() {
             if patch.kinds.iter().any(|kind| removed(*kind)) && !keep(patch) {
                 patch.kinds.retain(|kind| !removed(*kind));
-                if patch.kinds.is_empty() {
-                    emptied.push(*key);
-                }
             }
         }
+    }
+
+    /// Gives every slot no kind holds any more its original back.
+    fn sweep(&mut self) {
+        let emptied: Vec<(usize, usize)> = self
+            .patches
+            .iter()
+            .filter(|(_, patch)| patch.kinds.is_empty())
+            .map(|(key, _)| *key)
+            .collect();
         for key in emptied {
             if let Some(patch) = self.patches.remove(&key) {
                 self.restore(&patch);
@@ -414,6 +603,24 @@ impl Breakpoints {
         }
     }
 
+    /// The states of the method breakpoints, in the order they were set.
+    fn method_states(&self) -> Vec<MethodBreakpointState> {
+        self.methods
+            .iter()
+            .map(|entry| MethodBreakpointState {
+                id: entry.id,
+                verified: entry.verified,
+            })
+            .collect()
+    }
+
+    /// The number the next breakpoint takes, taken.
+    fn take_id(&mut self) -> BreakpointId {
+        let id = BreakpointId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        id
+    }
+
     /// The states of the breakpoints of the module at `position`.
     fn states(&self, position: usize) -> Vec<BreakpointState> {
         self.modules[position]
@@ -430,7 +637,10 @@ impl Breakpoints {
 
 /// Replaces every line breakpoint of `module` by one at each of
 /// `offsets`, resolved against the module's bodies if it is built, and
-/// answers their states (`Command::SetBreakpoints`).
+/// answers their states (`Command::SetBreakpoints`). Only the slots the
+/// two sets do not share change: a slot the old set and the new both
+/// patch stays patched, so that sending the same set again frees no
+/// machine code and switches no fast path.
 pub(crate) fn set_line_breakpoints(
     mutator: &mut Mutator<'_>,
     module: String,
@@ -445,7 +655,7 @@ pub(crate) fn set_line_breakpoints(
                 .map(|line| line.id)
                 .collect();
             for id in old {
-                table.remove_where(id, |_| false);
+                table.strip(|kind| kind.is_breakpoint(id), |_| false);
             }
             position
         }
@@ -459,10 +669,8 @@ pub(crate) fn set_line_breakpoints(
     };
     let mut lines = Vec::with_capacity(offsets.len());
     for offset in offsets {
-        let id = BreakpointId(table.next_id);
-        table.next_id = table.next_id.wrapping_add(1);
         lines.push(LineBreakpoint {
-            id,
+            id: table.take_id(),
             offset,
             statement: None,
         });
@@ -470,6 +678,7 @@ pub(crate) fn set_line_breakpoints(
     let empty = lines.is_empty();
     table.modules[position].lines = lines;
     resolve_module(mutator, position);
+    mutator.breakpoints.sweep();
     let breakpoints = mutator.breakpoints.states(position);
     if empty {
         // A module without breakpoints holds no entry.
@@ -483,10 +692,10 @@ pub(crate) fn set_line_breakpoints(
 }
 
 /// The module whose root class is named `name` was built, or its bodies
-/// replaced by an install: its breakpoints are resolved against its
-/// current bodies, and a change reported unasked. A slot of a body no
-/// longer current keeps its patch, so that a frame still running it stops
-/// there.
+/// replaced by an install: its line and method breakpoints are resolved
+/// against its current bodies, and a change reported unasked. A slot of a
+/// body no longer current keeps its patch, so that a frame still running
+/// it stops there.
 pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
     if let Some(position) = mutator
         .breakpoints
@@ -495,7 +704,226 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
         .position(|held| held.name == name)
     {
         resolve_and_report(mutator, position);
-        settle(mutator);
+    }
+    if mutator
+        .breakpoints
+        .methods
+        .iter()
+        .any(|entry| entry.method.class.module == name)
+    {
+        let before: Vec<bool> = mutator
+            .breakpoints
+            .methods
+            .iter()
+            .map(|entry| entry.verified)
+            .collect();
+        resolve_methods(mutator, Some(name));
+        let table = &mutator.breakpoints;
+        if table
+            .methods
+            .iter()
+            .zip(&before)
+            .any(|(entry, verified)| entry.verified != *verified)
+        {
+            table.report(Event::MethodBreakpoints(table.method_states()));
+        }
+    }
+    settle(mutator);
+}
+
+/// Replaces every method breakpoint by one for each of `requested`, each
+/// set on its method if its module declares it, and answers their states
+/// (`Command::SetMethodBreakpoints`). As for line breakpoints, only the
+/// slots the two sets do not share change.
+pub(crate) fn set_method_breakpoints(
+    mutator: &mut Mutator<'_>,
+    requested: Vec<MethodBreakpoint>,
+) -> Event {
+    let table = &mut mutator.breakpoints;
+    let old: Vec<BreakpointId> = table.methods.iter().map(|entry| entry.id).collect();
+    for id in old {
+        table.strip(|kind| kind.is_breakpoint(id), |_| false);
+    }
+    let methods = requested
+        .into_iter()
+        .map(|method| MethodBreakpointEntry {
+            id: table.take_id(),
+            method,
+            bodies: Vec::new(),
+            verified: false,
+        })
+        .collect();
+    table.methods = methods;
+    resolve_methods(mutator, None);
+    mutator.breakpoints.sweep();
+    settle(mutator);
+    Event::MethodBreakpoints(mutator.breakpoints.method_states())
+}
+
+/// Sets the run to cursor's target: the statement `offset` names in the
+/// module `module` names, resolved as a line breakpoint is, every slot of
+/// it patched for any activation; the top frame goes past the slot it
+/// stands at once, as a step's does, so that a target where it stands
+/// stops at the next pass. The reason it is refused, its module not built
+/// or no statement at or after the offset, otherwise.
+pub(crate) fn run_to(
+    mutator: &mut Mutator<'_>,
+    module: &str,
+    offset: u32,
+) -> Result<(), &'static str> {
+    let Some(resolution) = resolve(mutator, module, &[offset]) else {
+        return Err(NOT_BUILT);
+    };
+    let slots = match (resolution.statements.first(), resolution.slots.first()) {
+        (Some(Some(_)), Some(slots)) if !slots.is_empty() => slots,
+        _ => return Err(NO_STATEMENT),
+    };
+    for (code, index) in slots {
+        let method = resolution.fast_path_methods.get(&address(code));
+        mutator
+            .breakpoints
+            .add(code, *index, PatchKind::RunTo, method);
+        mutator.heap.code_id(code);
+    }
+    settle(mutator);
+    if let Some(top) = mutator.heap.top_activation() {
+        let code = mutator.heap.activation_code(top);
+        let standing = PastOnce {
+            activation: top,
+            body: address(&code),
+            index: mutator.heap.activation_program_counter(top),
+            after: AfterPast::Nothing,
+        };
+        mutator.breakpoints.go_past_once(standing);
+    }
+    Ok(())
+}
+
+/// Sets every method breakpoint -- of the module named `module`, or every
+/// one for `None` -- on its method's current body, if the module declares
+/// the method: its entry, its returns and the non-local returns of the
+/// blocks the compiler lowered inline in it. One whose method is gone
+/// keeps its patches on the bodies it patched, which frames may still
+/// run, and is no longer verified.
+fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&str>) {
+    for position in 0..mutator.breakpoints.methods.len() {
+        let entry = &mutator.breakpoints.methods[position];
+        if module.is_some_and(|module| entry.method.class.module != module) {
+            continue;
+        }
+        let request = entry.method.clone();
+        let id = entry.id;
+        let found = find_method(mutator, &request);
+        mutator.breakpoints.methods[position].verified = found.is_some();
+        let Some((mixin, method)) = found else {
+            continue;
+        };
+        patch_method(mutator, id, &mixin, &method);
+        let bodies = &mut mutator.breakpoints.methods[position].bodies;
+        if !bodies.iter().any(|body| Rc::ptr_eq(body, &method.code)) {
+            bodies.push(Rc::clone(&method.code));
+        }
+    }
+}
+
+/// The method `request` names, with the instance side of the level that
+/// declares it, if a module of that name is built and declares it.
+fn find_method(
+    mutator: &Mutator<'_>,
+    request: &MethodBreakpoint,
+) -> Option<(Rc<Mixin>, Rc<MixinMethod>)> {
+    for id in mutator.heap.mixin_ids() {
+        let Some(mixin) = mutator.heap.mixin(id) else {
+            continue;
+        };
+        if mixin.is_class_side() {
+            continue;
+        }
+        let (root, path) = mutator.path_from_module_root(id);
+        let named = mutator
+            .heap
+            .mixin(root)
+            .is_some_and(|root| root.name.as_str() == request.class.module)
+            && path.len() == request.class.path.len()
+            && path
+                .iter()
+                .zip(&request.class.path)
+                .all(|(declared, named)| declared.as_str() == named);
+        if !named {
+            continue;
+        }
+        let side = if request.class_side {
+            mixin.class_side.clone()?
+        } else {
+            Rc::clone(&mixin)
+        };
+        let method = side
+            .compiled_methods()
+            .find(|method| method.selector.as_str() == request.selector)
+            .cloned()?;
+        return Some((mixin, method));
+    }
+    None
+}
+
+/// Patches `method`'s body, a member of the level of `mixin`, for the
+/// method breakpoint `id`: its first statement start -- index 1 when its
+/// first instruction makes its indirection vector, which runs before
+/// every statement -- and each of its returns, the body's own and the
+/// non-local returns of every block the compiler lowered inline in it, a
+/// fallback closure or a block the reference lowering sends, so that both
+/// lowerings stop at the same returns.
+fn patch_method(
+    mutator: &mut Mutator<'_>,
+    id: BreakpointId,
+    mixin: &Rc<Mixin>,
+    method: &Rc<MixinMethod>,
+) {
+    let code = &method.code;
+    let count = code.instruction_count();
+    let entry =
+        usize::from(count > 1 && matches!(code.instruction(0), Instruction::MakeVector { .. }));
+    let table = &mut mutator.breakpoints;
+    table.add(code, entry, PatchKind::Entry(id), Some(method));
+    for (index, instruction) in code.instructions().iter().enumerate() {
+        if matches!(
+            instruction,
+            Instruction::Return { .. }
+                | Instruction::ImplicitReturn { .. }
+                | Instruction::ReturnSlotIfFilled { .. }
+        ) {
+            table.add(code, index, PatchKind::Exit(id), Some(method));
+        }
+    }
+    mutator.heap.code_id(code);
+    let level = Cache::level(mutator, mixin);
+    let metadata_of = |body: &Rc<CompiledCode>| {
+        level
+            .iter()
+            .find(|(held, _)| Rc::ptr_eq(held, body))
+            .and_then(|(_, metadata)| metadata.clone())
+    };
+    let mut pending: Vec<Rc<CompiledCode>> = vec![Rc::clone(code)];
+    let mut walked: Vec<Rc<CompiledCode>> = Vec::new();
+    while let Some(body) = pending.pop() {
+        if walked.iter().any(|held| Rc::ptr_eq(held, &body)) {
+            continue;
+        }
+        walked.push(Rc::clone(&body));
+        let Some(metadata) = metadata_of(&body) else {
+            continue;
+        };
+        for block in inlined_blocks(&body, &metadata) {
+            for (index, instruction) in block.instructions().iter().enumerate() {
+                if matches!(instruction, Instruction::NonLocalReturn { .. }) {
+                    mutator
+                        .breakpoints
+                        .add(&block, index, PatchKind::Exit(id), None);
+                    mutator.heap.code_id(&block);
+                }
+            }
+            pending.push(block);
+        }
     }
 }
 
@@ -510,6 +938,8 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
         table.restore(patch);
     }
     table.modules.clear();
+    table.methods.clear();
+    table.reported_home = None;
     table.past_once = None;
     table.pending_stop = None;
     table.step_filters = StepFilters::default();
@@ -593,12 +1023,15 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
         line.statement = *statement;
     }
     for (id, slots) in ids.into_iter().zip(&resolution.slots) {
-        table.remove_where(id, |patch| {
-            !resolution.walked.contains(&address(&patch.code))
-                || slots
-                    .iter()
-                    .any(|(code, index)| Rc::ptr_eq(code, &patch.code) && *index == patch.index)
-        });
+        table.strip(
+            |kind| kind.is_breakpoint(id),
+            |patch| {
+                !resolution.walked.contains(&address(&patch.code))
+                    || slots
+                        .iter()
+                        .any(|(code, index)| Rc::ptr_eq(code, &patch.code) && *index == patch.index)
+            },
+        );
         for (code, index) in slots {
             let method = resolution.fast_path_methods.get(&address(code));
             table.add(code, *index, PatchKind::Line(id), method);
@@ -608,6 +1041,7 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
             mutator.heap.code_id(code);
         }
     }
+    table.sweep();
 }
 
 /// Resolves `offsets` against every current body of the module whose

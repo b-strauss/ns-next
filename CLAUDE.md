@@ -590,7 +590,8 @@ answers the exit -- so that the interpreter's one unwinder carries the
 return -- for a body that is no block's, a block that is the entry
 frame, a home not running, suspended or below the entry frame, an
 unwind marker's activation between, a return address into a stub
-before the home, and a home that catches no return.
+before the home, a home that catches no return, and a frame of a
+method a method breakpoint names, whose exit only the unwinder reports.
 A slot a breakpoint patched lowers as an exit, whatever its instruction,
 so that the interpreter's `Breakpoint` arm stops there; patching or
 restoring a slot frees the body's machine code and every optimized copy

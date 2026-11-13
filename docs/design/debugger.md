@@ -39,10 +39,13 @@
 > step lands in a frame the step filters filter, by default the shipped
 > modules' -- a stop it would make there goes on as a step into from the
 > first unfiltered frame below, and a step into's request outlasts the
-> pushes of filtered bodies (decision 16).
-> Everything else is planned: the rest of stage 3 -- run
-> to cursor, method and exception breakpoints -- the DAP
-> agent and the plugin, evaluation, hot swap and edit-and-continue
+> pushes of filtered bodies (decision 16); run to cursor stops at a
+> position resolved as a line breakpoint is, in any activation, once
+> (decision 3); and a method breakpoint stops at its method's entry and
+> before each of its returns, and reports an exit an unwind makes where
+> the program goes on ("Method breakpoints").
+> Everything else is planned: the rest of stage 3 -- exception
+> breakpoints -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
@@ -345,6 +348,13 @@ The commands (`debugger::Command`):
   in recursion and blocks", "Step into's held request"); answered by
   `Continued`, then by the step's `Stopped`, unless another stop comes
   first, which ends the step and reports its own reason.
+- `RunToPosition { module, offset }` -- the stopped program goes on to
+  the statement the offset resolves to, as a line breakpoint's does, in
+  any activation (decision 3); answered by `Continued`, then by
+  `Stopped` with `StopReason::Step`, unless another stop comes first,
+  which ends the run to cursor as it ends a step; refused, the program
+  still stopped, with "no module of that name is built" or "no statement
+  starts at or after that position".
 - `Terminate` -- the run ends as an uncaught termination does
   ("Continuing and terminating" below); served whether the program is
   stopped or running, and answered by no event: the host's send answers
@@ -374,12 +384,20 @@ The commands (`debugger::Command`):
   modules are filtered and no class is, and every attachment begins
   with that default. Answered by `Event::StepFiltersSet`; a
   configuration command, served as `SetBreakpoints` is.
+- `SetMethodBreakpoints(Vec<MethodBreakpoint>)` -- replaces every method
+  breakpoint ("Method breakpoints"), each naming a method by its
+  `class`, a `ClassName` as the step filters name a declaration, its
+  side (`class_side`) and its `selector`; answered by
+  `Event::MethodBreakpoints`, a configuration command served as
+  `SetBreakpoints` is.
 
 The events (`debugger::Event`): `Stopped { reason, returned }`, the
 program stopped and serves commands until a `Continue` or a `Terminate`
 -- `StopReason::Pause`, `StopReason::Breakpoint { ids }`, the
-breakpoints standing at the statement it stopped at, or
-`StopReason::Step`, a step's arrival; `returned`, at a step's stop, the
+breakpoints standing at the statement it stopped at,
+`StopReason::Step`, a step's or the run to cursor's arrival, or
+`StopReason::MethodEntry { id, others }` and `StopReason::MethodExit {
+id, others }`, a method breakpoint's ("Method breakpoints"); `returned`, at a step's stop, the
 value the stepping frame's last call answered, described as the stop's
 first value, and `None` at every other stop ("The return value of the
 last call"); `StackTrace`; `Variables`, the
@@ -389,9 +407,13 @@ the command `Command::name` names not served; `Continued`; and
 the order of their offsets, each a `BreakpointState` -- its
 `BreakpointId`, its offset and the span of the statement it stops at, or
 `None` while it is pending -- the answer to `SetBreakpoints`, and sent
-unasked when a pending one resolves or an install moves one; and
-`StepFiltersSet`, the answer to `SetStepFilters`.
-`Continue`, the three steps, `StackTrace`, `Variables` and `Children` are
+unasked when a pending one resolves or an install moves one;
+`StepFiltersSet`, the answer to `SetStepFilters`; and
+`MethodBreakpoints`, each method breakpoint's `MethodBreakpointState` --
+its id and whether its method is declared (`verified`) -- in the order
+they were set, the answer to `SetMethodBreakpoints`, and sent unasked
+when a module's build or an install changes whether one is verified.
+`Continue`, the three steps, `RunToPosition`, `StackTrace`, `Variables` and `Children` are
 served only at a stop; one that arrives while the program runs is refused
 with "the program is running", and one queued between runs is dropped. Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
@@ -1131,7 +1153,12 @@ stage's tests, do not.
   stepped into; a breakpoint in `Array>>do:` stopping, and a step over
   begun there stopping at its next statement; and a step into a send of
   `ifTrue:` with a literal block making the same stops under both
-  lowerings. Beside them, a breakpoint at an
+  lowerings; a step out of `Array>>do:`, stopped at a breakpoint there,
+  landing at its return point in the unfiltered caller, and one whose
+  caller `inject:into:` is filtered too landing at the next statement of
+  the first unfiltered frame, reporting `inject:into:`'s answer; and a
+  step into a send whose callee pushes a chain of filtered frames
+  landing in the program's block at its end. Beside them, a breakpoint at an
   instruction that meets an unresolved future stopping once, its slot
   initialized once: only the optimized lowering puts the instruction
   that meets it first in its statement, since the reference lowering
@@ -1140,6 +1167,30 @@ stage's tests, do not.
   ignored until the handler search reports to the stepping state. Each
   also passes under every stress mode, the suspend
   stress mode's suspensions included.
+- **Run to cursor's and the method breakpoints' tests**
+  (`tests/debugger.rs`, each under both lowerings, with the JIT on but
+  for the pending method breakpoint and the shared stop): run to cursor
+  stopping at a later statement as a step's stop, once; run to cursor
+  refused, with its reason, for a position past every statement and a
+  module not built; a method breakpoint stopping at its method's entry
+  and at each return it takes, the method's own and one in an inlined
+  block, and nowhere else; an exit by the unwind of a non-local return
+  through the method, and the exit of a home its own block returns
+  from, each stopping at the next place the program reaches; a method
+  breakpoint on `True>>ifTrue:`, a method with a fast path, stopping at
+  its entry, removed putting the fast path back; a pending method
+  breakpoint verified when its module loads, then stopping at entry and
+  exit; a stop that is a method's entry and a line breakpoint's
+  reporting the entry with the line breakpoint among its others; and a
+  method breakpoint on a lazy slot's getter an optimized copy inlined
+  freeing the copy, every read of the filled slot stopping at the
+  getter's entry and exit. Beside them, under the JIT: a copy compiled
+  while a callee or a block it would inline is patched calling the
+  callee and making the block's closure, so that every pass stops once
+  the breakpoint stands at a statement a pass runs; sending the same
+  line breakpoints again freeing no machine code; and a line breakpoint
+  set into `True>>ifTrue:` while a step's one-shot already patched its
+  body still switching the fast path off.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -1307,9 +1358,9 @@ is in included.
 into's held request", "The return value of the last call"), the frame
 left by a return to its caller's return point, and the reports of a
 frame left otherwise, by an unwind or a continuation other than
-`Deliver` (decision 17), and the step filters (decision 16); the handler
-search's report (decision 17, "Exceptions"), smart step into and run to
-cursor are planned.
+`Deliver` (decision 17), the step filters (decision 16), and run to
+cursor; the handler search's report (decision 17, "Exceptions") and
+smart step into are planned.
 
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
@@ -1331,7 +1382,17 @@ cursor are planned.
   nothing, and the next one-shot breakpoint stops.
 - **Smart step into** is a step into whose safepoint stops only at a push
   from the chosen `CallSite`.
-- **Run to cursor** is a one-shot breakpoint at the target.
+- **Run to cursor** (`Command::RunToPosition`) is a one-shot breakpoint
+  at the target, resolved as a line breakpoint is
+  (`breakpoints::run_to`) and taken in any activation, since the cursor
+  names a place, not a frame: a kind of the breakpoint table's
+  (`PatchKind::RunTo`) that the next stop removes with a step's
+  one-shots, whatever made it, its own included. Its stop is reported as
+  a step's (`StopReason::Step`), as IntelliJ and the DAP report it; a
+  breakpoint the debugger set at the target makes the stop the
+  breakpoint's. The frame the command is given in goes past the slot it
+  stands at once, as a step's frame does, so that a target where it
+  stands stops at the next pass.
 
 No check enters the run loop. What a step over or step out calls runs at
 full speed, in machine code, but for the bodies the step patched, which
@@ -1743,7 +1804,9 @@ place, or an error), `VmErrorSignalled`, `Reexecute` and
 (`Mutator::pop_for_unwind`, `interpreter::breakpoint::frame_left`,
 `stepping::frame_left`), and the step goes on past the shipped frames
 -- `ensure:`'s, `on:do:`'s, `resolve`'s -- by decision 16's filter; the
-handler search's report ("Exceptions") is planned.
+handler search's report ("Exceptions") is planned. The unwinder's pops
+and arrivals also report the exit of a method a method breakpoint names,
+which stops by the same kind of step ("Method breakpoints").
 
 A step out, and a step over at a body's last statement, stops at the
 stepping frame's return point when its caller goes on there --
@@ -1883,8 +1946,12 @@ The fast path is therefore switched off on the method for as long as a
 breakpoint is set in its body: the field `MixinMethod::fast_path` is a
 `Cell<Option<MethodFastPath>>`, read through `MixinMethod::fast_path()`
 and written only by the debugger through `switch_fast_path` -- cleared
-by the body's first patch, put back from `recognized_fast_path` by the
-restore of its last -- after which the table's `settle`
+by the first patch that names the method -- a line breakpoint's, a
+method breakpoint's or the run to cursor's; a step's one-shot names
+none, so that a body a step patched first loses its fast path all the
+same when a breakpoint is set into it -- and put back from
+`recognized_fast_path` by the restore of the body's last patch --
+after which the table's `settle`
 (`debugger/breakpoints.rs`) vacates the inline caches and their machine
 cells (`InlineCaches::invalidate`) and frees every optimized copy, since
 a copy that inlined a quick method records no code id of it
@@ -1977,7 +2044,9 @@ them, and, keyed by its code id over every copy's
 invalidation frees them -- code compiled before the change runs the slot
 as it was, past a breakpoint set since or into an exit at one removed
 since. An inlined lazy slot's getter names no code id
-(`AlwaysInlined::LazyGetter`), so a patch of one frees every copy. The
+(`AlwaysInlined::LazyGetter`), so a patch of one frees every copy: a
+method breakpoint's entry and exit stand at the getter's first
+instruction, which a copy's inlined read of the filled slot stands for. The
 body then counts its entries afresh, whatever its state was -- compiled,
 abandoned, or exiting at once at its patch -- unless it was refused for a
 reason no patch changes, so that a breakpoint never leaves it interpreted
@@ -2016,8 +2085,16 @@ An inlined control-flow block -- an `ifTrue:`'s, an `and:`'s, a
 `whileTrue:`'s -- is lowered twice: inline in its home, and as the
 fallback closure a receiver that is not a Boolean runs
 ([execution.md](execution.md), "Fallback blocks"). A line breakpoint
-patches both copies, as a flood and a method breakpoint will, or a
+patches both copies, as a flood and a method breakpoint do, or a
 non-Boolean receiver runs past the breakpoint.
+
+`SetBreakpoints` changes only the slots the module's old breakpoints
+and its new ones do not share: the old ones' patches are taken off
+without restoring a slot (`Breakpoints::strip`), the new ones set, and
+only then is every slot no breakpoint holds any more given its original
+back (`Breakpoints::sweep`), so that an agent sending the same set again,
+as an IDE does at every change, frees no machine code and switches no
+fast path. `SetMethodBreakpoints` does the same.
 
 The plugin needs the breakable places before any session runs, since
 IntelliJ asks `canPutAt` and the variants while breakpoints are set before
@@ -2367,13 +2444,65 @@ unwind is.
 
 ### Method breakpoints
 
-A method breakpoint patches the body's first statement start (for a
-body whose first instruction makes its indirection vector, index 1) and
-every return instruction of the body; a non-local return or an unwind out
-of the method is reported by the unwinder, as for a step. The method is
-named by its selector and its class declaration, and set again on the new
-body after an install. A method with a fast path loses it while the
-breakpoint is set ("A breakpoint in a method with a fast path").
+**Built** (`Command::SetMethodBreakpoints`, `debugger::breakpoints`). A
+method breakpoint names its method by its class declaration -- a
+`ClassName`, as a step filter names one -- its side and its selector,
+and stops every activation of it at its entry and at each of its exits.
+
+- **The entry** is the body's first statement start, index 0, or 1 for
+  a body whose first instruction makes its indirection vector, which
+  runs before every statement (`PatchKind::Entry`). A step into stops a
+  push at the same place without running its slot, and reports the
+  entry there too (`breakpoint::standing_hits`).
+- **The exits** are the body's own returns -- `Return`, `ImplicitReturn`
+  and a lazy slot's getter's `ReturnSlotIfFilled` -- and the
+  `NonLocalReturn`s of the blocks the compiler lowered inline in it,
+  found as a flood finds them (`stepping::inlined_blocks`): its fallback
+  closures, and under the reference lowering the blocks a
+  `SendInlinable` takes, so that both lowerings stop before the same
+  `^` (`PatchKind::Exit`). The stop stands before the return, the method's
+  frame or its block's still on the stack. An exit is one only where the
+  slot leaves the method (`breakpoint::exit_is_taken`): a lazy getter's
+  first instruction once its slot is filled, a non-local return while
+  its home runs.
+- **An exit by an unwind** -- an exception's, a `retry`'s, a non-local
+  return of a block of another method passing through it, or a return
+  that arrives at it as a home without a patched return, from a block
+  it passed on or through `return:` -- is reported by the unwinder,
+  which pops the frame (`breakpoint::leaving_by_unwind`, read before the
+  pop, `left_by_unwind` after it) or arrives at it
+  (`breakpoint::returning_by_unwind`); a termination reports none. The
+  exit stops where the program goes on, by a step of the same kind as a
+  step whose frame an unwind pops (decision 17, `stepping::method_left`):
+  a step into from the frame now on top, or a step out from the method's
+  frame the unwind arrives at, which stops at its caller's return point.
+  That step replaces any step in progress, carrying its value of the
+  last call, and its stop reports the exit. A stop at an exit at a
+  non-local return records the home it returns to
+  (`AfterPast::ExitReported`, `Breakpoints::report_home`), held as its
+  frame object, so that the unwind's arrival there does not report the
+  exit again. The cut, which pops compiled frames without the unwinder,
+  answers its exit for a frame of such a method (`jit::cut::cut_frame`);
+  the entry's patch alone keeps the body from being installed, since it
+  exits at once, but the report does not rest on that.
+- **A stop that is both** a method's entry or exit and a line
+  breakpoint's statement, or two method breakpoints' of the same method,
+  is reported once: `StopReason::MethodEntry { id, others }` before
+  `MethodExit`, before `Breakpoint { ids }`, `id` the first and `others`
+  every other breakpoint the stop is for, the line breakpoints'
+  included (`Hits::reason`); DAP's `stopped` event names them all in its
+  `hitBreakpointIds`. A body whose entry is also one of its returns -- a
+  body of one instruction, a lazy getter -- stops at the entry and,
+  going past it, again for the exit before the slot runs
+  (`AfterPast::ExitDue`).
+- **Resolution**: a method breakpoint whose module is not built, or
+  whose class declares no such method, is not verified
+  (`MethodBreakpointState::verified`) and is set when a module's build
+  or an install declares the method (`breakpoints::module_built`),
+  reported unasked by `Event::MethodBreakpoints`; an install sets it on
+  the method's new body, and the body it replaced keeps its patches for
+  the frames still running it. A method with a fast path loses it while
+  the breakpoint is set ("A breakpoint in a method with a fast path").
 
 ### Smart step into a block
 

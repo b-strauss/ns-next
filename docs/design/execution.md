@@ -15636,7 +15636,10 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   `on:do:`, the `ifCurtailed:` a future's `resolve` evaluates its
   computation inside -- a return address into a stub, and the stretch's
   entry frame reached first end the walk with nothing changed, and so
-  does a home that catches no return, an initializer's. The home found,
+  does a home that catches no return, an initializer's, and a caller
+  running a method a method breakpoint names, whose exit by the unwind
+  only the interpreter's unwinder reports ([debugger.md](debugger.md),
+  "Method breakpoints"). The home found,
   every frame above it and the home itself are popped as their returns
   pop them: a reified frame is divorced with the program counter it
   stopped at -- the `NonLocalReturn`'s for the block, its send's for
