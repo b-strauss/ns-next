@@ -3689,10 +3689,12 @@ answers nil once the program goes on -- so that, under that default
 breakpoint, a `Halt` subclass's `defaultAction` override is skipped, and
 one whose `isResumable` answers false makes the `resume:` signal "cannot
 resume a non-resumable exception"; with no debugger attached it does
-nothing and answers false. Likewise `invokeHandlerAt:disabling:` sends
-`exceptionCaught:at:handler:ifFail:` just before it runs the handler it found,
-for the caught-exception breakpoint and a step in progress, which goes
-on into the handler block. Neither leaf runs Newspeak code, so the
+nothing and answers false. Likewise `invokeHandlerAt:disabling:` reads
+the handler it found, just before it runs it, through
+`exceptionCaught:at:ifFail:`, which answers the `on:do:` activation's
+handler and reports the catch to the caught-exception breakpoint and a
+step in progress, which goes on into the handler block; the report
+costs no send of its own. Neither leaf runs Newspeak code, so the
 search pushes no activation it did not push before, and the outcome of
 every program without a debugger is unchanged. A test resumes an
 unhandled exception with `Interpreter::resume_unhandled_exceptions`, a
@@ -3753,11 +3755,12 @@ with an argument that is no `Message` fails inside the handler, on
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`;
   `terminate…` for `defaultAction`; and `exceptionUnhandled` and
-  `exceptionCaughtAt:handler:` (`exceptionUnhandled:ifFail:` and
-  `exceptionCaught:at:handler:ifFail:`), the search's reports to an
-  attached debugger, leaves machine code calls without exiting, which
-  decide and record its exception breakpoints' stop and do nothing
-  without one ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
+  `exceptionCaughtAt:` (`exceptionUnhandled:ifFail:` and
+  `exceptionCaught:at:ifFail:`), the search's reports to an attached
+  debugger, which decide and record its exception breakpoints' stop and
+  do nothing else without one -- the first a leaf machine code calls
+  without exiting, the second answering the handler as `handlerBlock`
+  does, an exit as it is ([debugger.md](debugger.md), "Exceptions"). `Message>>sendTo:`'s row is
   `message:sendTo:ifFail:` (`builtins/message.rs`);
   `Object>>doesNotUnderstand:` forwards to no row: it is Newspeak that
   signals a `MessageNotUnderstood`. The tracer follows the frame reference,

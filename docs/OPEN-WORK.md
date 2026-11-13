@@ -35,9 +35,7 @@ its own, and the open questions it meets decided first, one at a time:
 a token for the socket, who listens, the breakable places before a
 session, terminating a program that reaches no safepoint, and whether a
 command queued between runs is answered ([debugger.md](design/debugger.md),
-"Open questions"). Before it, the slowdown stage 3's measurement found
-in the unwinder ("The unwinder's debugger tests cost every unwind",
-below) is fixed.
+"Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1977,20 +1975,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       which no comment says; and the selector-span tests sit at the end
       of `declaration.rs`'s tests rather than beside the expression
       tests.
-  - **The unwinder's debugger tests cost every unwind** (2026-11-13,
-    measured): `bench_signal.ns`, whose every iteration catches an
-    exception fifty frames deep and unwinds them by `return:`, runs
-    +2.3% slower than before stage 3 (separated, all three builds) with
-    no debugger attached. Two probe builds put about two thirds of it on
-    the tests the unwinder makes for every frame it pops --
-    `breakpoint::leaving_by_unwind` before the pop and
-    `returning_by_unwind` at the arrival (whether a method breakpoint is
-    set), and `Mutator::pop_for_unwind`'s two tests whether a step is in
-    progress -- and about a sixth on the `exceptionCaught:at:handler:ifFail:`
-    send `invokeHandlerAt:disabling:` makes before every handler. One
-    test per unwind rather than per frame, of a flag that says whether
-    a debugger asks for anything of an unwind, would remove the first
-    ([debugger.md](design/debugger.md), "What stage 3 moved").
   - **What stage 3's reviews left** (2026-11-13), none of them a wrong
     outcome:
     - *Setting breakpoints on a large module is unmeasured*:

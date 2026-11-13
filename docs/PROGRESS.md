@@ -7574,7 +7574,8 @@ filtered frame. Run to cursor stops once at a position resolved as a
 line breakpoint is; a method breakpoint stops at its method's entry and
 before each of its returns, and reports an exit an unwind makes where
 the program goes on; exception breakpoints, decided by two mirror leaves
-the kernel's handler search sends, stop an uncaught exception before its
+of the kernel's handler search -- the second the exit that reads the
+handler it found -- stop an uncaught exception before its
 `defaultAction` runs and a caught one before its handler runs, filtered
 by class, and an uncaught `halt`, which goes on resumed with nil. The
 breakpoint stress mode patches every statement start of every running
@@ -7584,10 +7585,14 @@ every one; both hold every golden's outcome. Compiling never changed: no
 golden, no shipped-code fingerprint and no image.
 
 Measured against its base on `master` with no debugger attached, the
-geometric mean over the twenty-three sources is +0.47%, the `Cell`
-slots, the shared arm and the fast path's `Cell` costing nothing
-measurable; `bench_signal.ns` is +2.3% slower, separated, most of it the
-tests the unwinder makes for every frame it pops ("What stage 3 moved").
+geometric mean over the twenty-three sources is +0.36%, nothing
+separated, the `Cell` slots, the shared arm and the fast path's `Cell`
+costing nothing measurable; `bench_signal.ns`, which unwinds fifty
+frames for each caught exception, is +0.3% at forty iterations, not
+separated, since the unwinder asks once per unwind whether the debugger
+follows it rather than testing at every frame it pops, which measured
++2.3%, separated, and the report of a caught exception rides on the
+read of its handler ("What stage 3 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen`
 and `images` where their files changed).
@@ -7614,8 +7619,10 @@ and `images` where their files changed).
   mode.
 - `851284b1` -- a pause that lands between a loop's turns under a stress
   mode paused again in its test.
+- `6bb4ecf0` -- the unwinder tests once per unwind whether the debugger
+  follows it, and a catch is reported through the read of its handler.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 4,
-the DAP agent and the plugin's `XDebugProcess`) and "The debugger" (the
-unwinder's debugger tests, what stage 3's reviews left, hit counts,
-temporary breakpoints and "Create Method").
+the DAP agent and the plugin's `XDebugProcess`) and "The debugger" (what
+stage 3's reviews left, hit counts, temporary breakpoints and "Create
+Method").

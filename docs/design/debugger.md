@@ -1475,7 +1475,9 @@ the poll words' ordering, and every later stage's tests, do not.
   of the simultaneous slot clauses, since an arm of its own grew
   `vm::run` past its budget ("Stopping at and going past a breakpoint").
   What stage 3 costs a program without a debugger was measured against
-  its base ("What stage 3 moved"); a program with a debugger attached and
+  its base, `bench_signal` +0.3% at forty iterations and the geometric
+  mean +0.36%, nothing separated ("What stage 3 moved"); a program with a
+  debugger attached and
   no breakpoint cannot be timed until stage 4's `--debug` attaches one
   from the command line. The `linux` and `aarch64` gates already run the
   atomics on both architectures.
@@ -1531,48 +1533,52 @@ Everything else stage 2 adds runs only at a stop.
 Stage 3 makes every slot of a body a `Cell`, which the run loop's fetch
 copies out as before; puts the `Breakpoint` arm into the run loop,
 sharing the out-of-line arm of the simultaneous slot clauses; makes
-`MixinMethod::fast_path` a `Cell`, read by every hit as before; adds two
-mirror sends to the kernel's handler search, whose leaves machine code
-calls without exiting -- `exceptionCaught:at:handler:ifFail:` before
-every handler runs, `exceptionUnhandled:ifFail:` before every
-`defaultAction`; and adds
-to the unwinder, for every frame it pops, the test whether a method
-breakpoint is set (`breakpoint::leaving_by_unwind`, and
-`returning_by_unwind` where it arrives) and, in `pop_for_unwind`, two
-tests whether a step is in progress. It was measured against its base on
-`master` (`e42f896a`) in one sitting on 2026-11-13, a program without a
-debugger, by the protocol of the `measuring-performance` skill: three
-pinned builds a side with the zone paddings, built at once, three
-rotated rounds, CD, Havlak, Mandelbrot, NBody and DeltaBlue at three
-iterations and every other program and microbenchmark at eight, every
-process held to the eight performance cores.
+`MixinMethod::fast_path` a `Cell`, read by every hit as before; adds a
+leaf machine code calls without exiting to the kernel's handler search,
+`exceptionUnhandled:ifFail:` before every `defaultAction`, and reports
+a caught exception through the exit that reads the handler, which the
+search made before, now `exceptionCaught:at:ifFail:`, so that a caught
+exception costs no send it did not cost; and adds to the unwinder one
+test per unwind, whether a step is in progress or a method breakpoint
+set (`breakpoint::follows_unwinds`). Only then does it make the
+per-frame reports (`leaving_by_unwind`, `returning_by_unwind` where it
+arrives, and `pop_for_unwind`'s tests whether a step is in progress):
+a version that made them for every frame it popped, and sent the report
+of a caught exception beside the read of its handler, measured
+`bench_signal` +2.3% slower, separated, at forty iterations, two thirds
+of it those per-frame tests and a sixth that send, as two probe builds
+showed.
 
-The geometric mean over the twenty-three sources is +0.47%; by build
-pair it is +0.04%, +0.48% and +0.91%, by round +0.17%, +0.94% and
-+0.31%. The seconds-long programs are within 0.6%. Five sources lie
-outside 2%, none separated at eight iterations: List (+3.1%; -1.0%,
-+8.9%, +1.7% by build), Queens (+3.4%; +0.5%, +2.0%, +7.7%),
-`bench_recursion` (+3.0%; -0.1%, +5.3%, +3.7%), Json (-3.2%) and
-`bench_signal` (+2.1%; +2.2%, +2.9%, +1.0%). At forty iterations, three
-rounds of the six binaries, List is +0.0%, Queens -1.6%,
-`bench_recursion` +0.1%, Json -2.1% and Richards +1.2%, none separated:
-noise of sub-millisecond medians, as stage 1 found. `bench_signal`
-stays: +2.3% at forty iterations (+4.0%, +1.2%, +1.7% by build), every
-branch build's run slower than every base build's, the one source
-separated slower. It is the one program that is mostly caught
-exceptions: each of its 5,000 iterations signals an `Error` fifty
-frames deep, which a handler catches, and `return:` unwinds the fifty
-frames. Two probe builds of the branch (build a's flags, five
-alternating runs of forty iterations each beside both sides' build a)
-place the cost: without the `exceptionCaught:at:handler:ifFail:` send
-the branch is +2.4% instead of +2.9% over the base, and without the
-unwinder's per-frame tests as well +0.4%. So about two thirds of it are
-the tests the unwinder makes for every frame it pops, which a program
-pays at every unwind whether or not a debugger is attached, and about a
-sixth the leaf's send ([OPEN-WORK.md](../OPEN-WORK.md), "The unwinder's debugger
-tests cost every unwind"). No other source moved: the `Cell` slots, the
-shared `Breakpoint` arm and the fast path's `Cell` cost nothing
-measurable.
+Stage 3 was measured against its base on `master` (`e42f896a`) in one
+sitting on 2026-11-13, a program without a debugger, by the protocol of
+the `measuring-performance` skill: three pinned builds a side with the
+zone paddings, built at once, three rotated rounds, CD, Havlak,
+Mandelbrot, NBody and DeltaBlue at three iterations and every other
+program and microbenchmark at eight, every process held to the eight
+performance cores. The geometric mean over the twenty-three sources is
++0.36%; by build pair it is +0.13%, +2.09% and -1.12%, by round +0.63%,
++0.91% and -0.46%. The seconds-long programs are within 1.1%. None
+separated at eight iterations; the sources outside 2% swing by build
+pair in both directions -- List +1.8% (-24.4%, +17.6%, +18.8% by
+build), Towers +4.7% (+20.5%, +27.2%, -25.0%), Queens +3.9%, Sieve
++3.1%, `bench_recursion` +4.4%, Permute -7.5%, `bench_send` -7.9% --
+and at forty iterations, three rounds of the six binaries, Queens is
+-9.7%, Sieve -5.4%, Towers +2.5% and `bench_recursion` -1.6%, none
+separated: noise of sub-millisecond medians, as stage 1 found.
+
+`bench_signal` is the one program that is mostly caught exceptions:
+each of its 5,000 iterations signals an `Error` fifty frames deep,
+which a handler catches, and `return:` unwinds the fifty frames. At
+eight iterations it is +1.7% (+2.2%, +1.7%, +1.3% by build), not
+separated. At forty iterations, six rotated rounds of the six binaries
+beside the three of the per-frame version, it is +0.29% (+0.5%, +0.3%,
++0.1% by build; 19.48 against 19.42 ms), not separated, while the
+per-frame version in the same rounds is +2.6% (+3.0%, +2.6%, +2.2%).
+Three more rounds of the six binaries in the same sitting put it at
++1.7%, one run of build a 20.88 ms against no other above 19.97 ms,
+not separated either; all twenty-seven runs a side pooled, +0.75%. The
+`Cell` slots, the shared `Breakpoint` arm and the fast path's `Cell`
+cost nothing measurable.
 
 Not covered: a run with a debugger attached and no breakpoint, which no
 command line attaches yet; Linux, AArch64 and Windows on ARM; start-up,
@@ -2144,7 +2150,11 @@ unwinder as it pops (`Mutator::pop_for_unwind`) and in
 `apply_continuation`'s arms other than `Deliver`'s, which call one cold
 function (`interpreter::breakpoint::frame_left`), so the return's hot
 path is unchanged: `finish` keeps no handle of the popped frame for
-them. The report finds the popped frame as the one whose offset lies
+them. The unwinder asks once per unwind whether a step is in progress
+or a method breakpoint set (`breakpoint::follows_unwinds`), and only
+then reports each frame it pops: no pop can start a step that neither
+already holds, and an unwind of fifty frames made the tests for every
+frame cost a caught exception 1.5% ("What stage 3 moved"). The report finds the popped frame as the one whose offset lies
 above the stack's top (`Heap::activation_lies_above_the_top`), since
 nothing is pushed between the pop and the report, and every name the
 step knew it by becomes `Holder::Left`, which no activation is
@@ -2647,15 +2657,17 @@ what they reach through a shipped level.
 ### Exceptions
 
 **Built** (`debugger/exceptions.rs`; `Command::SetExceptionBreakpoints`;
-the leaves `exceptionUnhandled:ifFail:` and `exceptionCaught:at:handler:ifFail:`,
+the leaves `exceptionUnhandled:ifFail:` and `exceptionCaught:at:ifFail:`,
 `builtins/activation.rs`), but for "Create Method" and the declined
 `MessageNotUnderstood`'s forced `nil`, which are planned with the forced
 return ("Restart frame and force return"). The handler search of
 `Kernel.ns` reports its outcome through two mirror leaves:
 `invokeNextHandler`, having found no handler, sends
 `exceptionUnhandled:ifFail:` just before `defaultAction`, and
-`invokeHandlerAt:disabling:` sends `exceptionCaught:at:handler:ifFail:`
-just before `handler cull: self`; only the shipped modules reach the mirror
+`invokeHandlerAt:disabling:` reads the handler it is about to send
+`cull: self` through `exceptionCaught:at:ifFail:`, which answers the
+`on:do:` activation's handler as `activationHandlerBlock:ifFail:` does;
+only the shipped modules reach the mirror
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). With no debugger attached
 each does nothing and answers what its failure block would, so that an
@@ -2664,13 +2676,15 @@ exception behaves as it does without the debugger; and
 unhandled exception, is served first, so that an exception it resumes
 stops nothing; nor does an exception an `ensure:` block of the
 debugger's termination raises, from the `Terminate` to the run's end,
-as the termination ends a step. Both rows are leaves machine code calls
-without exiting (`MachineCall::Leaf`), so that a program without a
-debugger pays no exit for a caught exception: a leaf only decides and
-records -- it reads the exception and its class chain, holds the
-`on:do:` activation and the handler as `Root`s unread, and sets a bit --
-runs no Newspeak code, collects nothing, reads no other activation and
-leaves no stretch. What it decides is recorded on the `Mutator`
+as the termination ends a step. `exceptionUnhandled:ifFail:` is a leaf
+machine code calls without exiting (`MachineCall::Leaf`), and
+`exceptionCaught:at:ifFail:` the exit the search made already to read
+the handler, which reads another activation and so is no leaf: a
+program without a debugger pays no send of its own for either report.
+Each only decides and records -- it reads the exception and its class
+chain, holds the `on:do:` activation and the handler as `Root`s, and
+sets a bit -- runs no Newspeak code and collects nothing. What it
+decides is recorded on the `Mutator`
 (`Breakpoints::request_exception_stop`) and asked of the next poll
 through the request bit `DEBUGGER_STOP` ("The poll words as atomics"),
 which lowers the depth limit, so that the next push is the
