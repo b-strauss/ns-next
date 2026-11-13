@@ -377,6 +377,11 @@ fn run_recording_after(
     // nor inlined, and its baseline code exits at every statement.
     #[cfg(debug_assertions)]
     interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     let class = interpreter.load_module(&resolved);
@@ -1056,6 +1061,11 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
     // nor inlined, and its baseline code exits at every statement.
     #[cfg(debug_assertions)]
     interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     interpreter.set_optimize_stress(true);

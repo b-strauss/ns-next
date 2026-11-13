@@ -102,13 +102,16 @@ impl Attachments {
 
 /// Where a stop takes its commands from and sends its answers to: the
 /// attached debugger's channels, or, in a debug build, the pause stress
-/// mode's reader, which needs no debugger.
+/// mode's reader or the step stress mode's, which need no debugger.
 pub(crate) enum CommandSource {
     /// The attached debugger's remote.
     Remote,
     /// The pause stress mode's reader.
     #[cfg(debug_assertions)]
     Reader(StressReader),
+    /// The step stress mode's reader.
+    #[cfg(debug_assertions)]
+    Stepper(StepReader),
 }
 
 /// The pause stress mode's agent (`Interpreter::stop_for_stress`): it asks
@@ -119,8 +122,9 @@ pub(crate) enum CommandSource {
 /// -- changes nothing and reads no dead register, which a debug build
 /// refuses (`docs/design/debugger.md`, "The pause stress mode").
 #[cfg(debug_assertions)]
-#[derive(Default)]
 pub(crate) struct StressReader {
+    /// The stress mode the reader reads for, which a refusal names.
+    mode: &'static str,
     /// Whether the stack trace was asked for yet.
     started: bool,
     /// The commands the answers so far call for, in order.
@@ -134,6 +138,17 @@ pub(crate) struct StressReader {
 impl StressReader {
     /// How many children of each value the reader asks for.
     const CHILDREN: usize = 8;
+
+    /// A reader for the stress mode `mode`, which has asked for nothing
+    /// yet.
+    fn for_mode(mode: &'static str) -> StressReader {
+        StressReader {
+            mode,
+            started: false,
+            pending: std::collections::VecDeque::new(),
+            reading_children: false,
+        }
+    }
 
     /// The reader's next command: the stack trace first, then what the
     /// answers called for, then `Continue`.
@@ -172,7 +187,10 @@ impl StressReader {
             // The reader asks only for frames and values the stop handed
             // out: a refusal is the stop misreading its own stack.
             Event::Refused { command, reason } => {
-                panic!("internal: the pause stress mode's {command} was refused: {reason}")
+                panic!(
+                    "internal: the {} stress mode's {command} was refused: {reason}",
+                    self.mode
+                )
             }
             Event::Stopped { .. }
             | Event::Continued
@@ -180,6 +198,118 @@ impl StressReader {
             | Event::MethodBreakpoints(_)
             | Event::StepFiltersSet
             | Event::ExceptionBreakpointsSet => {}
+        }
+    }
+}
+
+/// The step stress mode's agent (`Interpreter::step_for_stress` and the
+/// stops its steps make): it sets the step filters the burst's
+/// rotation calls for, reads the stack as the pause stress mode's reader
+/// does, and goes on with the step, or `Continue` once the burst is over
+/// (`docs/design/debugger.md`, "The step stress mode"). The stop refuses
+/// no step command -- a step with no frame to step in goes on as a
+/// `Continue` does (`stepping::begin`) -- so every refusal is the stop
+/// misreading its own stack, and panics.
+#[cfg(debug_assertions)]
+pub(crate) struct StepReader {
+    reader: StressReader,
+    /// The shipped filter to set first, if the rotation switches it here.
+    shipped_filter: Option<bool>,
+    /// What the stop goes on with once the stack is read.
+    then: Command,
+}
+
+#[cfg(debug_assertions)]
+impl StepReader {
+    fn next_command(&mut self) -> Command {
+        if let Some(shipped) = self.shipped_filter.take() {
+            return Command::SetStepFilters {
+                shipped,
+                classes: Vec::new(),
+            };
+        }
+        match self.reader.next_command() {
+            Command::Continue => std::mem::replace(&mut self.then, Command::Continue),
+            command => command,
+        }
+    }
+
+    fn take(&mut self, event: Event) {
+        self.reader.take(event);
+    }
+}
+
+/// How many steps a burst of the step stress mode takes from each stop
+/// its schedule picks. Stepping every instruction of a program to its end
+/// would make the `stress` gate's run far too slow; a burst steps through
+/// a callee's first statements, out of it and over its sends, with and
+/// without the shipped filter, each action meeting both filters within a
+/// burst, while the schedule spreads the bursts over the whole run.
+#[cfg(debug_assertions)]
+pub(crate) const STEP_STRESS_BURST: usize = 16;
+
+/// The step stress mode's state (`NS_NEXT_STRESS_STEP`, or
+/// `Interpreter::set_stress_step`): its schedule, the burst under way and
+/// the rotation of its steps.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+pub(crate) struct StepStress {
+    /// Picks the safepoints a burst begins at, paced as the pause stress
+    /// mode is; a step in progress is given one whole period more before
+    /// the next due ends it (`Interpreter::step_for_stress`).
+    pub(crate) schedule: crate::interpreter::safepoint::StressSchedule,
+    /// The steps the burst under way has still to take.
+    left: usize,
+    /// The steps begun since the mode was switched on, which picks the
+    /// next one's action and filter.
+    begun: usize,
+    /// The steps that stopped since the mode was switched on.
+    pub(crate) stopped: usize,
+    /// Whether the schedule fell due while the step in progress ran,
+    /// which the next due ends.
+    overdue: bool,
+}
+
+#[cfg(debug_assertions)]
+impl StepStress {
+    /// Whether `NS_NEXT_STRESS_STEP` asks for the mode: set, and neither
+    /// empty nor `0`.
+    pub(crate) fn from_env() -> Option<StepStress> {
+        let requested = std::env::var_os("NS_NEXT_STRESS_STEP")
+            .is_some_and(|value| !value.is_empty() && value != "0");
+        requested.then(StepStress::default)
+    }
+
+    /// The reader of the mode's next stop: a step's, when `stepped`, or
+    /// the stop that begins a burst. Steps into, over and out in turn, the
+    /// shipped filter switched at every third, so that each action steps
+    /// with the filter on and off.
+    fn reader(&mut self, stepped: bool) -> StepReader {
+        self.overdue = false;
+        if stepped {
+            self.stopped += 1;
+        } else {
+            self.left = STEP_STRESS_BURST;
+        }
+        let reader = StressReader::for_mode("step");
+        if self.left == 0 {
+            return StepReader {
+                reader,
+                shipped_filter: None,
+                then: Command::Continue,
+            };
+        }
+        self.left -= 1;
+        let (then, shipped_filter) = match self.begun % 3 {
+            0 => (Command::StepInto, Some(self.begun.is_multiple_of(6))),
+            1 => (Command::StepOver, None),
+            _ => (Command::StepOut, None),
+        };
+        self.begun += 1;
+        StepReader {
+            reader,
+            shipped_filter,
+            then,
         }
     }
 }
@@ -260,7 +390,7 @@ impl Interpreter {
         if bits & DEBUGGER_STOP != 0 {
             self.clear_debugger_bits(DEBUGGER_STOP);
         }
-        if self.debugger.is_none() {
+        if !self.has_agent() {
             // A remote that set a bit and was dropped before this
             // safepoint, whose debugger a former one detached: nobody is
             // left to stop for.
@@ -292,14 +422,14 @@ impl Interpreter {
             // filters filter, is not made: the step goes on from the first
             // unfiltered frame below, and the frame fetches the slot it
             // stands at again, past it once.
-            let filtered = self.debugger.is_some()
+            let filtered = self.has_agent()
                 && breakpoint.hits.only_a_step()
                 && self.enter(|mutator| {
                     stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
                 });
             if filtered {
                 self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
-            } else if self.debugger.is_some() {
+            } else if self.has_agent() {
                 // The stop serves a pause asked meanwhile too, and ends a
                 // step, whatever made it.
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
@@ -315,7 +445,8 @@ impl Interpreter {
                         None => (StopReason::Step, returned),
                     }
                 });
-                let served = self.stop(reason, returned, floor, CommandSource::Remote);
+                let source = self.step_agent();
+                let served = self.stop(reason, returned, floor, source);
                 // The frame fetches the patched slot again as it goes on:
                 // the breakpoint it stopped at lets it past once.
                 if served == Served::GoOn {
@@ -359,7 +490,8 @@ impl Interpreter {
                 })
                 .map_or((None, None), |(reason, standing)| (reason, Some(standing)));
             let reason = reason.unwrap_or(StopReason::Step);
-            let served = self.stop(reason, None, floor, CommandSource::Remote);
+            let source = self.step_agent();
+            let served = self.stop(reason, None, floor, source);
             if let (Served::GoOn, Some(standing)) = (served, standing) {
                 self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
             }
@@ -376,12 +508,70 @@ impl Interpreter {
             StopReason::Pause,
             None,
             floor,
-            CommandSource::Reader(StressReader::default()),
+            CommandSource::Reader(StressReader::for_mode("pause")),
         );
         debug_assert!(
             served == Served::GoOn,
             "internal: the pause stress mode's reader never terminates"
         );
+    }
+
+    /// The step stress mode at a safepoint: when its schedule says a
+    /// burst is due, the program stops as a pause does, with the mode's
+    /// reader as the agent, which begins the burst's first step. A step
+    /// still in progress -- a step out of the run's first frame, which
+    /// returns to the host, or a step over a long call -- is given one
+    /// whole period of the schedule more, then ended as a debugger's pause
+    /// ends it, so that no step keeps the mode from its next burst. The
+    /// mode stands aside while a debugger is attached, so that it never
+    /// steps in the debugger's place.
+    #[cfg(debug_assertions)]
+    pub(crate) fn step_for_stress(&mut self, floor: usize, traced_size: usize) {
+        if self.debugger.is_some() {
+            return;
+        }
+        let stepping = self.enter(|mutator| mutator.stepping.is_some());
+        let Some(stress) = &mut self.stress_step else {
+            return;
+        };
+        if !stress.schedule.due(traced_size) {
+            return;
+        }
+        if stepping && !stress.overdue {
+            stress.overdue = true;
+            return;
+        }
+        let source = CommandSource::Stepper(stress.reader(false));
+        self.enter(|mutator| {
+            stepping::take_exits(mutator);
+            stepping::end(mutator);
+        });
+        let served = self.stop(StopReason::Pause, None, floor, source);
+        debug_assert!(
+            served == Served::GoOn,
+            "internal: the step stress mode's reader never terminates"
+        );
+    }
+
+    /// Whether anything takes a step's stop: an attached debugger, or, in
+    /// a debug build, the step stress mode.
+    fn has_agent(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if self.stress_step.is_some() {
+            return true;
+        }
+        self.debugger.is_some()
+    }
+
+    /// The agent a step's stop serves: the attached debugger, else the
+    /// step stress mode's reader. The mode stands aside while a debugger
+    /// is attached, so that it never steps in the debugger's place.
+    fn step_agent(&mut self) -> CommandSource {
+        #[cfg(debug_assertions)]
+        if let (None, Some(stress)) = (&self.debugger, &mut self.stress_step) {
+            return CommandSource::Stepper(stress.reader(true));
+        }
+        CommandSource::Remote
     }
 
     /// Drains the commands queued while the program ran. The bit is
@@ -535,6 +725,8 @@ impl Interpreter {
                 }
                 #[cfg(debug_assertions)]
                 CommandSource::Reader(reader) => reader.next_command(),
+                #[cfg(debug_assertions)]
+                CommandSource::Stepper(stepper) => stepper.next_command(),
             };
             match command {
                 Command::Continue => {
@@ -648,6 +840,8 @@ impl Interpreter {
             CommandSource::Remote => self.tell(event),
             #[cfg(debug_assertions)]
             CommandSource::Reader(reader) => reader.take(event),
+            #[cfg(debug_assertions)]
+            CommandSource::Stepper(stepper) => stepper.take(event),
         }
     }
 

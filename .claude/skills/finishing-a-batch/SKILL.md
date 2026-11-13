@@ -46,9 +46,12 @@ Create a todo for each item.
    does at the safepoints its schedule picks, reads its whole stack and every
    value one level deep, and continues, and BREAKPOINTS patches every
    statement start of the bodies it finds running at its safepoints with a
-   breakpoint that never stops, each gone past through the run loop's arm;
+   breakpoint that never stops, each gone past through the run loop's arm,
+   and STEP stops the run at the safepoints its schedule picks and takes a
+   burst of steps into, over and out from there, the shipped filter on and
+   off, reading the stack at every stop;
    beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the fifteen suites at once,
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the sixteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,

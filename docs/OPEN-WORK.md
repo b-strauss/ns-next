@@ -1702,7 +1702,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   taken up in a session of its own). The stress step of `cargo xtask
   gates end-of-batch` takes about 965 s (2026-11-07; 690 s with one
   mode fewer on 2026-11-06), when its thirteen suites ran at once; the
-  fifteen it runs now do too, so both the slowest mode and the CPU work
+  sixteen it runs now do too, so both the slowest mode and the CPU work
   of all of them count. Measure first:
   the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
   test's time, from which the slowest tests per mode and each crate's

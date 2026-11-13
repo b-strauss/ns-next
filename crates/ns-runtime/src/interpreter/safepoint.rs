@@ -20,7 +20,9 @@
 //! each running body not patched yet patched with a breakpoint that never
 //! stops, the mode that runs every program through the `Breakpoint` arm
 //! at every statement (`docs/design/debugger.md`, "The breakpoint stress
-//! mode").
+//! mode") -- and a stop at the safepoints an eighth schedule picks, from
+//! which a burst of steps is taken, the stack read at every stop
+//! (`docs/design/debugger.md`, "The step stress mode").
 //! The step state's side of a
 //! move -- its own roots, forwarded after the heap's -- is
 //! `World::move_everything`, in `heap/world.rs`; a collection's is
@@ -61,10 +63,12 @@ impl Interpreter {
     /// mode suspends every activation of the run into its frame and
     /// resumes the top one when its own schedule says so, and the zone
     /// stress mode compacts the code zone, freeing every body no activation
-    /// runs, when its own schedule says so, and the breakpoint stress mode,
-    /// right after the pause stress mode, patches every statement start of
-    /// each running body it has not patched yet; any one of the eight keeps
-    /// the request set, so that every safepoint comes here.
+    /// runs, when its own schedule says so, and the step stress mode, right
+    /// after the pause stress mode, stops when its own schedule says a
+    /// burst of steps is due, and the breakpoint stress mode, right after
+    /// those two, patches every statement start of each running body it
+    /// has not patched yet; any one of the nine keeps the request set,
+    /// so that every safepoint comes here.
     ///
     /// A compaction of the code zone a compile that found it full asked
     /// for (`jit::after_compile_trigger`) is served next, before a pending
@@ -120,6 +124,12 @@ impl Interpreter {
                 if due {
                     self.stop_for_stress(floor);
                 }
+                stressed = true;
+            }
+            // The step stress mode's stop, which begins a burst of steps,
+            // where the pause stress mode's stops.
+            if self.stress_step.is_some() {
+                self.step_for_stress(floor, traced_size);
                 stressed = true;
             }
             // The breakpoint stress mode's patches, next, before an
@@ -389,8 +399,8 @@ impl StressMoves {
     }
 }
 
-/// The schedule of the collect, the scavenge, the suspend, the zone and
-/// the pause stress modes: their work at every safepoint while the traced
+/// The schedule of the collect, the scavenge, the suspend, the zone, the
+/// pause and the step stress modes: their work at every safepoint while the traced
 /// size is within `STRESS_MOVE_BUDGET`, and above it once per
 /// size-over-budget safepoints -- the pacing `StressMoves` uses, for the
 /// same reason.
@@ -412,7 +422,7 @@ pub(crate) struct StressSchedule {
 
 #[cfg(debug_assertions)]
 impl StressSchedule {
-    fn due(&mut self, traced_size: usize) -> bool {
+    pub(crate) fn due(&mut self, traced_size: usize) -> bool {
         self.safepoints_since_fired += 1;
         if self
             .safepoints_since_fired
@@ -494,7 +504,8 @@ impl Interpreter {
             || self.stress_suspend.is_some()
             || self.stress_zone.is_some()
             || self.stress_pause.is_some()
-            || self.stress_breakpoints;
+            || self.stress_breakpoints
+            || self.stress_step.is_some();
         self.world.set_safepoint_requested(enabled);
     }
 
@@ -599,6 +610,27 @@ impl Interpreter {
         }
         self.stress_breakpoints = enabled;
         self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the step stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_STEP` says: at the safepoints its schedule
+    /// picks, the run stopped as for a debugger's pause, and from there a
+    /// burst of steps taken, into, over and out in turn, the stack read at
+    /// every stop. Turned off, a step it left in progress ends. For tests.
+    /// Keeps the safepoint request set while any other stress mode is on
+    /// (`hold_safepoints_for_stress`).
+    pub fn set_stress_step(&mut self, enabled: bool) {
+        if self.stress_step.is_some() && !enabled && self.debugger.is_none() {
+            self.enter(crate::debugger::stepping::end);
+        }
+        self.stress_step = enabled.then(crate::debugger::StepStress::default);
+        self.hold_safepoints_for_stress();
+    }
+
+    /// How many of the step stress mode's steps have stopped since it was
+    /// switched on; 0 while it is off.
+    pub fn stress_steps(&self) -> usize {
+        self.stress_step.as_ref().map_or(0, |stress| stress.stopped)
     }
 
     /// How many times a `Breakpoint` arm went past a slot the breakpoint

@@ -884,3 +884,48 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+// The step stress mode: at the safepoints its schedule picks, the run
+// stops as for a debugger's pause and takes a burst of steps -- into,
+// over and out in turn, the shipped filter switched every third --
+// reading the stack and its values at every stop
+// (`docs/design/debugger.md`, "The step stress mode").
+
+/// How a run of `source`'s `run` ended under `lowering`, the JIT on or
+/// off, and how many of the step stress mode's steps stopped.
+fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (String, usize) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_stress_step(step);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outcome = match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Ok(answer) => interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            ValueKind::SmallInteger(answer) => format!("answered {answer}"),
+            _ => "answered something other than a small integer".to_string(),
+        }),
+        Err(HostSignal::Return) => "a non-local return escaped".to_string(),
+        Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
+    };
+    (outcome, interpreter.stress_steps())
+}
+
+ns_runtime::for_each_lowering! {
+    fn the_step_stress_mode_keeps_outcomes(lowering) {
+        for jit in [true, false] {
+            let (plain, plain_steps) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, false);
+            assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
+            assert_eq!(plain_steps, 0);
+            let (stepped, steps) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            assert_eq!(stepped, plain, "the JIT on: {jit}");
+            assert!(steps > 0, "the step stress mode never stepped, the JIT on: {jit}");
+        }
+    }
+}

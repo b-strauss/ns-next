@@ -37,6 +37,11 @@ fn load_spending_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     // its baseline code exits at every statement.
     #[cfg(debug_assertions)]
     interpreter.set_stress_breakpoints(false);
+    // The step stress mode is off for the same reason: a body a step's one-shot
+    // breakpoints patched loses its machine code and every copy that inlined
+    // it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_step(false);
     let class = interpreter.load_module(&resolved);
     (interpreter, class)
 }

@@ -280,6 +280,11 @@ mod tests {
         // id, for as long as the mode is on.
         #[cfg(debug_assertions)]
         interpreter.set_stress_breakpoints(false);
+        // The step stress mode is off for the same reason: a step's one-shot
+        // breakpoints keep the bodies they patch, and their code ids, while the
+        // step lasts.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_step(false);
         let class = load_into(&mut interpreter, source);
         (interpreter, class)
     }

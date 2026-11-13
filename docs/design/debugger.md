@@ -51,9 +51,10 @@
 > search reports the handler it found to a step in progress ("Exceptions");
 > and the breakpoint stress mode patches every statement start of every
 > body it finds running at a safepoint with a breakpoint that never stops ("The breakpoint
-> stress mode").
-> Everything else is planned: the rest of stage 3 -- the step stress
-> mode -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
+> stress mode"); and the step stress mode stops every program at the
+> safepoints its schedule picks and takes a burst of steps from there,
+> reading the stack at every stop ("The step stress mode").
+> Everything else is planned: the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
 > ("Planned: the order of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
@@ -66,7 +67,8 @@
 > aspect ("What exists").
 > **Code:** stages 1 and 2 are `crates/ns-runtime/src/debugger/` (`mod.rs`: the
 > VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
-> the arming lock `Arming`, the pause stress mode's `StressReader`;
+> the arming lock `Arming`, the pause stress mode's `StressReader`, the
+> step stress mode's `StepReader` and `StepStress`;
 > `breakpoints.rs`: the breakpoint table, line breakpoints, the
 > one-shots and the breakpoint stress mode's patches; `stepping.rs`: the step in progress, `Stepping`;
 > `exceptions.rs`: the exception breakpoints, decided by the handler
@@ -1020,7 +1022,7 @@ every evaluation does.
 ### The pause stress mode
 
 The pause stress mode (`NS_NEXT_STRESS_PAUSE`, debug builds, one of the
-`stress` gate's fourteen modes; `Interpreter::set_stress_pause` for a
+`stress` gate's fifteen modes; `Interpreter::set_stress_pause` for a
 test, `Interpreter::stress_pauses` the count of its stops) stops the run
 at the safepoints its schedule picks -- paced by the traced size as the
 collect and suspend modes are (`StressSchedule`,
@@ -1049,13 +1051,13 @@ to its outcome under both lowerings with the mode on and off.
 ### The breakpoint stress mode
 
 The breakpoint stress mode (`NS_NEXT_STRESS_BREAKPOINTS`, debug builds,
-one of the `stress` gate's fourteen modes;
+one of the `stress` gate's fifteen modes;
 `Interpreter::set_stress_breakpoints` for a test,
 `Interpreter::stress_breakpoint_hits` the count of the patches gone past
 since it was switched on) runs every program through the `Breakpoint`
 arm at the statements of every body it finds running at a safepoint,
 which is every body whose first entry is interpreted (below). No debugger need be attached. At every
-safepoint, right after the pause stress mode's,
+safepoint, right after the pause and the step stress modes' stops,
 `breakpoints::patch_running_for_stress` walks the running activations
 from the top and patches every statement start of each body it has not
 resolved yet -- the first instruction of every statement its metadata
@@ -1111,10 +1113,57 @@ code, the optimizing tier or a collection's reclamation does switch the
 mode off, as they switch off the cache stress mode, since a patched body
 is never optimized and the patches keep every body they patched.
 
+### The step stress mode
+
+The step stress mode (`NS_NEXT_STRESS_STEP`, debug builds, one of the
+`stress` gate's fifteen modes; `Interpreter::set_stress_step` for a
+test, `Interpreter::stress_steps` the count of its steps that stopped)
+stops the run at the safepoints its schedule picks -- the pause stress
+mode's `StressSchedule`, paced by the traced size -- as a pause does,
+and from each such stop takes a burst of sixteen steps
+(`debugger::STEP_STRESS_BURST`): a step into, a step over and a step out
+in turn, the shipped filter switched on before every sixth step and off
+three steps later, so that each action steps with the filter on and
+off. At every stop, the one that begins the burst and each a step makes,
+the mode's reader (`debugger::StepReader`, a `CommandSource` of its own)
+reads the stack, the variables of every frame and the first children of
+every value as the pause stress mode's reader does, then sends the
+burst's next step, or `Continue` once the burst is over. No debugger
+need be attached: a step's stop, which `serve_debugger` makes for an
+attached debugger, takes the mode's reader as its agent when none is,
+and the mode stands aside while one is attached, so that it never steps
+in the debugger's place and every debugger test runs under it as
+without it. The stop refuses no step command -- a step with no frame to
+step in goes on as a `Continue` -- so any refusal is the stop misreading
+its own stack, and panics.
+
+Stepping every instruction of a program to its end would make the
+`stress` gate's run far too slow; a burst steps into a callee's first
+statements, over its sends and out of it, through blocks, unwinds,
+handlers and the shipped frames the filter passes, while the schedule
+spreads the bursts over the whole run. The schedule counts every
+safepoint, a step in progress included, and a burst is due only once no
+step is in progress: a step that outlasts a whole period of the schedule
+-- a step out of the run's first frame, which returns to the host and
+stops nowhere, or a step over a long call -- is ended at the next due,
+as a debugger's pause ends a step, so that no step keeps the mode from
+its next burst. The run's end ends a step in progress, as it does a
+debugger's. Every golden and the corpus run under it, under both
+lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`, so that the
+steps' one-shot breakpoints, their held request, the reports of a frame
+left otherwise than by a return and the filters are shown never to
+change a program's outcome, and reading the stack at every stop never to
+read a register the leftover analysis calls dead;
+`the_step_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a
+program of a loop, blocks, a non-local return out of a `do:`, an
+exception handler and a recursion to its outcome under both lowerings,
+the JIT on and off, the mode on and off, and requires that its steps
+stopped.
+
 ### Testing and gates
 
-**Partial:** stage 1's and stage 2's tests, the pause stress mode and
-the breakpoint stress mode exist; the model test of the poll words' ordering, and every later
+**Partial:** stage 1's and stage 2's tests, the pause stress mode, the
+breakpoint stress mode and the step stress mode exist; the model test of the poll words' ordering, and every later
 stage's tests, do not.
 
 - **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
@@ -1358,8 +1407,11 @@ stage's tests, do not.
   of every body it finds running at a safepoint -- every body whose first
   entry is interpreted -- goes on at each, and holds every
   golden's outcome under both lowerings, with the JIT and with
-  `NS_NEXT_NO_JIT=1`. Planned: a **step stress mode** steps into
-  everything, and joins the `stress` gate.
+  `NS_NEXT_NO_JIT=1`.
+- **The step stress mode** (above) takes bursts of steps into, over and
+  out, the shipped filter on and off, from the stops its schedule picks,
+  reads the stack at every stop, and holds every golden's outcome under
+  both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`.
 - Planned: **debugger goldens**, a `.ns` with a script of commands and the
   stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.

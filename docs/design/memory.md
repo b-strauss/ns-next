@@ -2332,7 +2332,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are fourteen stress modes, each a gate of its own at the end of a batch,
+There are fifteen stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2348,7 +2348,11 @@ reads its whole stack and every value one level deep and continues
 every body it finds running at a safepoint with a breakpoint that never stops, each gone past
 through the run loop's arm ([debugger.md](debugger.md), "The breakpoint
 stress mode"),
-each of these eight keeping the safepoint flag set while it is on,
+`NS_NEXT_STRESS_STEP`, which stops the run as a pause does at the
+safepoints its schedule picks and takes a burst of steps into, over and
+out from there, reading the stack at every stop
+([debugger.md](debugger.md), "The step stress mode"),
+each of these nine keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
@@ -3020,7 +3024,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name fourteen stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name fifteen stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

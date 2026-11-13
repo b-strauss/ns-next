@@ -131,9 +131,9 @@ cargo xtask gates benchmarks
 cargo xtask gates release-checks
 # the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-# the suite under the fourteen stress modes (MOVES, CACHES, COLLECT, SCAVENGE,
-# WIDE, SUSPEND, JIT, EXIT, ZONE, OPTIMIZE, DEOPT, INVALIDATE, PAUSE and
-# BREAKPOINTS) and
+# the suite under the fifteen stress modes (MOVES, CACHES, COLLECT, SCAVENGE,
+# WIDE, SUSPEND, JIT, EXIT, ZONE, OPTIMIZE, DEOPT, INVALIDATE, PAUSE,
+# BREAKPOINTS and STEP) and
 # once without the JIT, each into .temp/stress-<MODE>.log (NO_JIT for the
 # last), then run-corpus plain and under each mode
 cargo xtask gates stress

@@ -1882,6 +1882,7 @@ mod tests {
                 "EXIT",
                 "ZONE",
                 "BREAKPOINTS",
+                "STEP",
             ]
             .iter()
                 .any(|mode| {

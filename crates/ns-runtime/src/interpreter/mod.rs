@@ -679,6 +679,13 @@ pub struct Interpreter {
     /// before. Debug builds only.
     #[cfg(debug_assertions)]
     stress_breakpoints: bool,
+    /// The step stress mode's state, when it is on
+    /// (`NS_NEXT_STRESS_STEP`, or `set_stress_step`): at the safepoints
+    /// its schedule picks, the run stopped and a burst of steps taken from
+    /// there, the stack read at every stop (`debugger::StepStress`).
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_step: Option<crate::debugger::StepStress>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -749,6 +756,8 @@ impl Interpreter {
             stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
             #[cfg(debug_assertions)]
             stress_breakpoints: safepoint::stress_breakpoints_from_env(),
+            #[cfg(debug_assertions)]
+            stress_step: crate::debugger::StepStress::from_env(),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
             debugger: None,

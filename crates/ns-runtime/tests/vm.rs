@@ -1352,6 +1352,8 @@ fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
     // `callee` through its return would make its push and return one
     // switch of the loop's.
     interpreter.set_jit_enabled(false);
+    // A step's stop leaves its stretch for a safepoint of its own.
+    interpreter.set_stress_step(false);
     interpreter.set_stress_moves(true);
     let answer = expect_ok(send(&mut interpreter, &probe, "caller", &[]), "caller");
     let safepoints = interpreter.stress_safepoints();
@@ -1379,6 +1381,8 @@ fn a_loop_that_sends_nothing_still_reaches_a_safepoint() {
         ) : ()
     "});
     let probe = new_instance(&mut interpreter, &class);
+    // A step's stop leaves its stretch for a safepoint of its own.
+    interpreter.set_stress_step(false);
     interpreter.set_stress_moves(true);
     let answer = expect_ok(send(&mut interpreter, &probe, "count", &[]), "count");
     let safepoints = interpreter.stress_safepoints();
