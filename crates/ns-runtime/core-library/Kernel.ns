@@ -1243,10 +1243,10 @@ class Kernel vmMirror: mirror = Value (
         searching:: false.
         /// The handler is about to run on top of the stack, before
         /// anything unwinds: an attached debugger's caught-exception
-        /// breakpoint stops at the push of `cull:`, and a step whose
-        /// exception this handler takes goes on into it; with none
-        /// attached the leaf does nothing.
-        vmMirror exceptionCaught: self at: activation ifFail: [nil].
+        /// breakpoint stops at the handler's first instruction, and a
+        /// step whose exception this handler takes goes on into it; with
+        /// none attached the leaf does nothing.
+        vmMirror exceptionCaught: self at: activation handler: handler ifFail: [nil].
         handler cull: self.
       ] ensure: [
         handlers do: [:each | vmMirror activation: each handlerActive: true ifFail: [nil]].

@@ -455,9 +455,10 @@ pub(crate) const DEBUGGER_STEP: u64 = 1 << 4;
 
 /// The bit of `MachineWord::SafepointRequested` an exception's leaf sets
 /// once it recorded the stop an exception breakpoint asks for
-/// (`debugger::exceptions`): the next poll -- the push of `defaultAction`,
-/// of the handler's `cull:` or of a `Halt`'s `resume:` -- takes the
-/// safepoint, which stops before that frame runs an instruction. Set and
+/// (`debugger::exceptions`): the next poll takes the safepoint, which
+/// serves it, and the bit is set again while the stop waits for the frame
+/// the search runs next -- `defaultAction`, the handler, a `Halt`'s
+/// `resume:` -- to stand at its first instruction. Set and
 /// cleared by the VM alone, on its own thread, under the arming lock.
 pub(crate) const DEBUGGER_STOP: u64 = 1 << 5;
 

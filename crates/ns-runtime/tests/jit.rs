@@ -5596,6 +5596,10 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
             "ephemeron:finalizer:ifFail:",
         ],
     ),
+    (
+        "with no debugger attached answers at once; with one, reads the exception's class chain and messageText slot, holds its arguments as roots unread, records the stop on the Mutator and sets the request bit under the arming lock, runs no code, collects nothing, reads no other activation and pushes nothing",
+        &["exceptionUnhandled:ifFail:", "exceptionCaught:at:handler:ifFail:"],
+    ),
 ];
 
 ns_runtime::for_each_lowering! {

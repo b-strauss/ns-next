@@ -117,17 +117,14 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::ExceptionUnhandled => Some(Ok(Step::Value(Value::boolean(
             crate::debugger::exceptions::unhandled(mutator, subject),
         )))),
-        // The search found the handler of the `on:do:` activation the
-        // argument is: reported to a step in progress and to the
-        // caught-exception breakpoint, before the handler runs.
+        // The search found the handler, the second argument, of the
+        // `on:do:` activation the first is: recorded for a step in
+        // progress and the caught-exception breakpoint, before the handler
+        // runs. Neither argument is read here: the safepoint reads them.
         ActivationPrimitive::ExceptionCaught => {
-            let handler = arguments
-                .first(&mutator.heap)
-                .and_then(|value| value.as_object())
-                .and_then(|object| mutator.heap.object_frame(object))?;
-            if mutator.heap.frame_is_running(handler) {
-                crate::debugger::exceptions::caught(mutator, subject, handler);
-            }
+            let activation = arguments.first(&mutator.heap)?;
+            let handler = arguments.try_get(&mutator.heap, 1)?;
+            crate::debugger::exceptions::caught(mutator, subject, activation, handler);
             Some(Ok(Step::Value(Value::nil())))
         }
     }

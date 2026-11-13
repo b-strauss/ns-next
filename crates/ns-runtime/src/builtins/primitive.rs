@@ -3311,21 +3311,25 @@ pub const MIRROR: &[MirrorEntry] = &[
         "levelEnclosingObject",
         Primitive::Behavior(BehaviorPrimitive::LevelEnclosing),
     )),
-    // Unary: the exception is the row's subject. It decides and records
-    // an attached debugger's stop, which the next poll serves, and runs
-    // nothing (`debugger::exceptions`).
-    mirror(
+    // Leaf: unary, the exception the row's subject. With no debugger
+    // attached it answers false at once; with one, it reads the
+    // exception's class chain and slot, records the stop for the next
+    // poll and sets the request bit under the arming lock -- no Newspeak
+    // code, no collection, no other activation read, no push
+    // (`debugger::exceptions`), so a program pays no exit for it.
+    leaf(mirror(
         "exceptionUnhandled:ifFail:",
         "exceptionUnhandled",
         Primitive::Activation(ActivationPrimitive::ExceptionUnhandled),
-    ),
-    // The exception is the subject and the handler's `on:do:` activation
-    // the argument, as `exceptionUnhandled:ifFail:` records.
-    mirror(
-        "exceptionCaught:at:ifFail:",
-        "exceptionCaughtAt:",
+    )),
+    // Leaf: the exception the subject, the handler's `on:do:` activation
+    // and the handler the arguments, held as roots for the safepoint, which
+    // reads them; otherwise as `exceptionUnhandled:ifFail:`.
+    leaf(mirror(
+        "exceptionCaught:at:handler:ifFail:",
+        "exceptionCaughtAt:handler:",
         Primitive::Activation(ActivationPrimitive::ExceptionCaught),
-    ),
+    )),
 ];
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);

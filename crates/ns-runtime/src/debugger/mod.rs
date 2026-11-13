@@ -270,11 +270,16 @@ impl Interpreter {
         if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
             return self.terminate();
         }
-        if let (Some(reason), true) = (exception, self.debugger.is_some()) {
-            // The frame on top -- `defaultAction`, the handler's `cull:`,
-            // a `Halt`'s `resume:` -- was just pushed and has run nothing.
-            // The stop serves a pause asked meanwhile too, and ends a step,
-            // whose handler report may have led it here.
+        let exception = match (exception, self.debugger.is_some()) {
+            (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),
+            _ => None,
+        };
+        if let Some(reason) = exception {
+            // Where the frame on top stands is debugger.md's "Exceptions":
+            // the first instruction of what the search runs next, unless a
+            // fast path answered it without a push. The stop serves a
+            // pause asked meanwhile too, and ends a step, whose handler
+            // report may have led it here.
             self.clear_debugger_bits(DEBUGGER_PAUSE);
             self.enter(|mutator| {
                 stepping::take_exits(mutator);
@@ -612,7 +617,13 @@ impl Interpreter {
         // So is an exception's stop not served yet, whose frame the
         // termination pops.
         self.clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_STOP);
-        self.enter(|mutator| mutator.breakpoints.take_pending_exception());
+        // An exception an `ensure:` block of the termination's unwind
+        // raises stops nothing either, until the run ends
+        // (`exceptions::drop_pending`).
+        self.enter(|mutator| {
+            mutator.breakpoints.take_pending_exception();
+            mutator.breakpoints.set_terminating(true);
+        });
         // A step in progress ends with the run: its request would lower
         // the depth limit for the `ensure:` blocks the unwind runs, and
         // stop in one of them after the termination.

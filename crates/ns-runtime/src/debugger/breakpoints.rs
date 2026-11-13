@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use ns_syntax::Span;
 
-use super::exceptions::ExceptionBreakpoints;
+use super::exceptions::{ExceptionBreakpoints, PendingException};
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{
@@ -52,11 +52,15 @@ pub(crate) struct Breakpoints {
     /// The stop the last `Breakpoint` arm decided, which the safepoint it
     /// left for takes.
     pending_stop: Option<PendingStop>,
-    /// The stop an exception breakpoint asked for (`debugger::exceptions`),
-    /// which the next poll's safepoint takes, the request bit
-    /// (`DEBUGGER_STOP`) leading it there: an exception's leaf runs in
-    /// the middle of a stretch, which no leaf leaves.
-    pending_exception: Option<StopReason>,
+    /// What the handler search's leaves recorded for the next poll's
+    /// safepoint (`debugger::exceptions`), the request bit
+    /// (`DEBUGGER_STOP`) leading it there: a leaf runs in the middle of a
+    /// stretch, machine code's included, which no leaf leaves.
+    pending_exception: Option<PendingException>,
+    /// Whether the debugger terminated the run, whose unwind runs the
+    /// pending `ensure:` blocks: an exception one of them raises stops
+    /// nothing, as the termination ends a step.
+    terminating: bool,
     /// The exception breakpoints the attached debugger set; the default
     /// until it sets them.
     exceptions: ExceptionBreakpoints,
@@ -339,15 +343,26 @@ impl Breakpoints {
         &self.exceptions
     }
 
-    /// Records the stop an exception breakpoint asked for, which the next
+    /// Records what the handler search's leaves decided, which the next
     /// poll's safepoint takes.
-    pub(crate) fn request_exception_stop(&mut self, reason: StopReason) {
-        self.pending_exception = Some(reason);
+    pub(crate) fn request_exception_stop(&mut self, pending: PendingException) {
+        self.pending_exception = Some(pending);
     }
 
-    /// The stop an exception breakpoint asked for, taken.
-    pub(crate) fn take_pending_exception(&mut self) -> Option<StopReason> {
+    /// What the handler search's leaves decided, taken.
+    pub(crate) fn take_pending_exception(&mut self) -> Option<PendingException> {
         self.pending_exception.take()
+    }
+
+    /// Whether the debugger terminated the run in progress.
+    pub(crate) fn terminating(&self) -> bool {
+        self.terminating
+    }
+
+    /// The debugger terminated the run (`true`), or the run ended
+    /// (`false`).
+    pub(crate) fn set_terminating(&mut self, terminating: bool) {
+        self.terminating = terminating;
     }
 
     /// Records the stop a `Breakpoint` arm decided.
@@ -980,6 +995,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.past_once = None;
     table.pending_stop = None;
     table.pending_exception = None;
+    table.terminating = false;
     table.step_filters = StepFilters::default();
     table.exceptions = ExceptionBreakpoints::default();
     settle(mutator);

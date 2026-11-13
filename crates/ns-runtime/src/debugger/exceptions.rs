@@ -2,14 +2,16 @@
 //! handler search of `Kernel.ns`'s `Exception` reports its outcome
 //! through two mirror leaves: no handler, just before it sends
 //! `defaultAction` (`unhandled`), and the handler it found, just before
-//! that runs (`caught`). Each only decides and records: it runs no
-//! Newspeak code and collects nothing, and the class an exception
-//! breakpoint names is matched by walking the exception's class chain by
-//! declaration. A stop it decides is recorded on the `Mutator` and asked
-//! of the next poll through the request bit (`DEBUGGER_STOP`), so that the
-//! program stops at the safepoint -- the push of `defaultAction`, of the
-//! handler's `cull:`, or of the `resume:` that resumes a `Halt` -- before
-//! that frame runs an instruction. At the stop, the stack trace shows
+//! that runs (`caught`). Each is a leaf machine code calls without
+//! exiting, and only decides and records: it runs no Newspeak code,
+//! collects nothing and reads no other activation, and the class an
+//! exception breakpoint names is matched by walking the exception's class
+//! chain by declaration. What it decides is recorded on the `Mutator` and
+//! asked of the next poll through the request bit (`DEBUGGER_STOP`), whose
+//! safepoint serves it (`serve`): reports a handler found to a step in
+//! progress and stops once the frame the search runs next --
+//! `defaultAction`, the handler block, the `resume:` that resumes a `Halt`
+//! -- stands at its first instruction. At the stop, the stack trace shows
 //! first the frame below the exception's own machinery (`first_shown`).
 
 use std::rc::Rc;
@@ -19,12 +21,12 @@ use super::metadata::again::{declaration_path, Member};
 use super::remote::{ClassName, StopReason};
 use super::stack::{self, StackFrame};
 use super::stepping;
-use crate::heap::{FrameReference, DEBUGGER_STOP};
+use crate::heap::DEBUGGER_STOP;
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;
 use crate::types::BuiltinClass;
-use crate::{Symbol, Value};
+use crate::{Root, Symbol, Value};
 
 /// The exception breakpoints (`Command::SetExceptionBreakpoints`): an
 /// uncaught exception's, a caught one's, each for the classes `classes`
@@ -50,53 +52,169 @@ impl Default for ExceptionBreakpoints {
     }
 }
 
+/// What the handler search's leaves recorded for the next poll's
+/// safepoint (`serve`): the stop an exception breakpoint asks for, and,
+/// for a handler found, its `on:do:` activation, which the safepoint
+/// reports to a step in progress, and its handler, whose first
+/// instruction a caught exception's stop waits for; each held as a
+/// `Root`.
+pub(crate) struct PendingException {
+    /// The stop, `None` when only a step in progress is to hear of the
+    /// handler.
+    reason: Option<StopReason>,
+    /// The `on:do:` activation's frame object, until it is reported.
+    activation: Option<Root>,
+    /// The handler, for a handler found.
+    handler: Option<Root>,
+}
+
 /// The search for `exception`'s handler found none, and `defaultAction`
 /// is about to be sent: with a debugger attached, the stop the exception
 /// breakpoints ask for is recorded for the next poll. Answers whether that
 /// stop is a `Halt`'s, which the kernel resumes with nil once the program
 /// goes on, instead of running its default action. The test hook that
 /// resumes unhandled exceptions (`Interpreter::resume_unhandled_exceptions`)
-/// is served first: the exception it resumes stops nothing.
+/// is served first: the exception it resumes stops nothing; and nothing
+/// stops while the debugger's termination unwinds the run. A leaf machine
+/// code calls (`MachineCall::Leaf`): it reads the exception and its class
+/// chain, records and sets the request bit, and nothing more.
 pub(crate) fn unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Value<'gc>) -> bool {
-    if !mutator.breakpoints.attached() || mutator.unhandled_exceptions_to_resume > 0 {
+    if !mutator.breakpoints.attached()
+        || mutator.breakpoints.terminating()
+        || mutator.unhandled_exceptions_to_resume > 0
+    {
         return false;
     }
     let breakpoints = mutator.breakpoints.exception_breakpoints().clone();
     if breakpoints.halt && is_a(mutator, exception, BuiltinClass::Halt) {
-        request(mutator, StopReason::Halt);
+        request(
+            mutator,
+            PendingException {
+                reason: Some(StopReason::Halt),
+                activation: None,
+                handler: None,
+            },
+        );
         return true;
     }
     if breakpoints.uncaught && selects(mutator, &breakpoints.classes, exception) {
         let reason = reason(mutator, exception, false);
-        request(mutator, reason);
+        request(
+            mutator,
+            PendingException {
+                reason: Some(reason),
+                activation: None,
+                handler: None,
+            },
+        );
     }
     false
 }
 
-/// The search found the handler of the `on:do:` activation `handler` for
-/// `exception`, which is about to run: with a debugger attached, a step in
-/// progress hears of it (`stepping::handler_found`), and the stop the
-/// caught-exception breakpoint asks for is recorded for the next poll.
+/// The search found `handler`, the handler of the `on:do:` activation
+/// `activation`, for `exception`, and is about to run it: with a debugger
+/// attached, what the safepoint does with it is recorded for the next
+/// poll -- a step in progress hears of it there, and the stop the
+/// caught-exception breakpoint asks for waits there for the handler's
+/// first instruction (`serve`). A leaf machine code calls, as
+/// `unhandled` is: flooding a step's frame, which frees machine code, and
+/// reading the `on:do:` activation wait for the safepoint.
 pub(crate) fn caught<'gc>(
     mutator: &mut Mutator<'gc>,
     exception: Value<'gc>,
-    handler: FrameReference<'gc>,
+    activation: Value<'gc>,
+    handler: Value<'gc>,
 ) {
-    if !mutator.breakpoints.attached() {
+    if !mutator.breakpoints.attached() || mutator.breakpoints.terminating() {
         return;
     }
-    stepping::handler_found(mutator, handler);
     let breakpoints = mutator.breakpoints.exception_breakpoints().clone();
-    if breakpoints.caught && selects(mutator, &breakpoints.classes, exception) {
-        let reason = reason(mutator, exception, true);
-        request(mutator, reason);
+    let reason = (breakpoints.caught && selects(mutator, &breakpoints.classes, exception))
+        .then(|| reason(mutator, exception, true));
+    if reason.is_none() && mutator.stepping.is_none() {
+        return;
     }
+    let pending = PendingException {
+        reason,
+        activation: Some(mutator.heap.stash(activation)),
+        handler: Some(mutator.heap.stash(handler)),
+    };
+    request(mutator, pending);
 }
 
-/// Drops a stop an exception breakpoint asked for that no poll served:
-/// the run it was asked in ended first, and the request bit with it.
+/// What the safepoint does with what the leaves recorded: a handler found
+/// is reported to a step in progress (`stepping::handler_found`), once,
+/// where flooding is allowed; then the stop, if any, is answered -- but a
+/// caught exception's waits, recorded again with its request bit, while
+/// the frame on top is the kernel's `cull:` sent to the handler, so that it
+/// stops in the handler block at its first instruction, or at the first
+/// frame of a handler that is no block.
+pub(crate) fn serve(mutator: &mut Mutator<'_>, pending: PendingException) -> Option<StopReason> {
+    let PendingException {
+        reason,
+        activation,
+        handler,
+    } = pending;
+    if let Some(activation) = &activation {
+        let frame = mutator
+            .heap
+            .fetch(activation)
+            .as_object()
+            .and_then(|object| mutator.heap.object_frame(object))
+            .filter(|frame| mutator.heap.frame_is_running(*frame));
+        if let Some(frame) = frame {
+            stepping::handler_found(mutator, frame);
+        }
+    }
+    let reason = reason?;
+    if still_searching(mutator, handler.as_ref()) {
+        let waiting = PendingException {
+            reason: Some(reason),
+            activation: None,
+            handler,
+        };
+        request(mutator, waiting);
+        return None;
+    }
+    Some(reason)
+}
+
+/// Whether the frame on top is still the search's, short of what the stop
+/// waits for: `invokeNextHandler` itself, for an uncaught exception's stop
+/// -- machine code's call of `defaultAction` or of `resume:` refused
+/// under the lowered depth limit leaves it on top at the send, before the
+/// push -- and for a caught one's, the kernel's block that invokes
+/// `handler`, likewise, or the kernel's `Closure>>cull:` sent to it, which
+/// pushes the handler block next.
+fn still_searching(mutator: &Mutator<'_>, handler: Option<&Root>) -> bool {
+    let heap = &mutator.heap;
+    let Some(top) = heap.top_activation() else {
+        return false;
+    };
+    let Some(selector) = kernel_method(mutator, &StackFrame::Running(top)) else {
+        return false;
+    };
+    let Some(handler) = handler else {
+        return selector.as_str() == "invokeNextHandler";
+    };
+    if selector.as_str() == "invokeHandlerAt:disabling:" {
+        return true;
+    }
+    let receives = match (
+        heap.activation_receiver(top).as_object(),
+        heap.fetch(handler).as_object(),
+    ) {
+        (Some(receiver), Some(handler)) => receiver.same(handler),
+        _ => false,
+    };
+    receives && selector.as_str() == "cull:"
+}
+
+/// Drops what the leaves recorded that no poll served, and the request
+/// bit with it, and ends a termination: the run ended.
 pub(crate) fn drop_pending(mutator: &mut Mutator<'_>) {
     mutator.breakpoints.take_pending_exception();
+    mutator.breakpoints.set_terminating(false);
     if mutator.heap.debugger_bits() & DEBUGGER_STOP == 0 {
         return;
     }
@@ -107,10 +225,10 @@ pub(crate) fn drop_pending(mutator: &mut Mutator<'_>) {
     mutator.heap.clear_debugger_bits(DEBUGGER_STOP);
 }
 
-/// Records the stop `reason` for the next poll and asks for it under the
-/// attached debugger's arming lock, as the agent arms the poll.
-fn request(mutator: &mut Mutator<'_>, reason: StopReason) {
-    mutator.breakpoints.request_exception_stop(reason);
+/// Records `pending` for the next poll and asks for it under the attached
+/// debugger's arming lock, as the agent arms the poll.
+fn request(mutator: &mut Mutator<'_>, pending: PendingException) {
+    mutator.breakpoints.request_exception_stop(pending);
     let arming = mutator.breakpoints.arming();
     let _armed = arming
         .as_ref()
@@ -193,14 +311,7 @@ fn reason<'gc>(mutator: &Mutator<'gc>, exception: Value<'gc>, caught: bool) -> S
 /// hides nothing, and one whose frames below it are all filtered shows
 /// the first below it.
 pub(crate) fn first_shown(mutator: &Mutator<'_>, frames: &[StackFrame]) -> usize {
-    let kernel_method = |frame: &StackFrame| -> Option<Symbol> {
-        let origin = stack::origin(&mutator.heap, frame)?;
-        let Member::Method(selector) = origin.member else {
-            return None;
-        };
-        let (root, _) = declaration_path(mutator, &origin.mixin)?;
-        (root.shipped && root.name.as_str() == KERNEL_MODULE).then_some(selector)
-    };
+    let kernel_method = |frame: &StackFrame| kernel_method(mutator, frame);
     let searching = |frame: &StackFrame| {
         kernel_method(frame)
             .is_some_and(|selector| selector == Symbol::SIGNAL || selector.as_str() == "pass")
@@ -224,4 +335,15 @@ pub(crate) fn first_shown(mutator: &Mutator<'_>, frames: &[StackFrame]) -> usize
         .position(|frame| !stepping::is_filtered(mutator, frame))
         .map_or(below, |offset| below + offset);
     unfiltered.min(frames.len().saturating_sub(1))
+}
+
+/// The selector of the kernel's method `frame` runs; `None` for a frame
+/// that runs no method of the shipped `Kernel`.
+fn kernel_method(mutator: &Mutator<'_>, frame: &StackFrame) -> Option<Symbol> {
+    let origin = stack::origin(&mutator.heap, frame)?;
+    let Member::Method(selector) = origin.member else {
+        return None;
+    };
+    let (root, _) = declaration_path(mutator, &origin.mixin)?;
+    (root.shipped && root.name.as_str() == KERNEL_MODULE).then_some(selector)
 }

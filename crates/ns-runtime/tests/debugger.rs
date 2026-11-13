@@ -3655,16 +3655,18 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the shipped filter off, the same step goes on from the frame
-    /// the handler search reports from, the kernel's block that invokes
-    /// the handler, and stops at its next statement.
-    fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_in_the_handler_s_invocation(lowering) {
+    /// on top where the safepoint reports the handler found, the kernel's
+    /// `cull:` that runs it, and stops at its first statement.
+    fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_in_the_handler_s_cull(lowering) {
         let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, false);
         assert_eq!(clause, "Inner superclass clause");
         assert_eq!(
             stood,
             (
-                String::from("[] in Exception>>invokeHandlerAt:disabling:"),
-                String::from("handler cull: self")
+                String::from("Closure>>cull:"),
+                String::from(
+                    "^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument]"
+                )
             )
         );
         assert_eq!(answer, 9);
@@ -5481,8 +5483,9 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the `Halt` breakpoint off, an uncaught `Halt` is an uncaught
-    /// exception as any other: it stops as one while that breakpoint is
-    /// on, and, going on, ends the run as it does without a debugger.
+    /// exception as any other: it stops as one while the
+    /// uncaught-exception breakpoint is on, and, going on, ends the run as
+    /// it does without a debugger.
     fn with_the_halt_breakpoint_off_a_halt_is_an_uncaught_exception(lowering) {
         let (reason, result) = raised(
             HALTING,
@@ -5794,5 +5797,170 @@ ns_runtime::for_each_lowering! {
         assert_eq!(reason, exception("Hushed", "Hushed", false));
         assert_eq!(shown, "Quiet>>raise");
         assert_eq!(result, Ok(42));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A caught exception's stop waits for the handler: the frame on top
+    /// is the handler block's, at its first instruction, before it ran,
+    /// past the kernel's `cull:` that sends it.
+    fn a_caught_exception_stops_at_the_handler_block_s_first_instruction(lowering) {
+        let ((name, program_counter), result) = raised(
+            CATCHING,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                expect_stop(remote);
+                let frames = stack_trace(remote);
+                continue_stopped(remote);
+                (frames[0].name.clone(), frames[0].program_counter)
+            },
+        );
+        assert_eq!(name, "[] in Catching>>run");
+        assert_eq!(program_counter, 0);
+        assert_eq!(result, Ok(7));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Under the JIT stress mode, which compiles every body at its first
+    /// entry, the handler search and the method that signals run in
+    /// machine code, whose calls of the two leaves do not exit: an
+    /// uncaught exception still stops before `defaultAction`'s first
+    /// instruction, and a caught one before the handler block's, the
+    /// compiled prologue refusing the push under the lowered depth limit.
+    fn in_machine_code_an_exception_stops_before_the_first_instruction(lowering) {
+        let ((name, program_counter), result) = raised(
+            RAISING,
+            lowering,
+            |interpreter, _| interpreter.set_jit_stress(true),
+            |remote| {
+                expect_stop(remote);
+                let frames = stack_trace(remote);
+                continue_stopped(remote);
+                (frames[0].name.clone(), frames[0].program_counter)
+            },
+        );
+        assert_eq!(name, "Exception>>defaultAction");
+        assert_eq!(program_counter, 0);
+        assert_eq!(result, Err(String::from("boom")));
+        let ((name, program_counter), result) = raised(
+            CATCHING,
+            lowering,
+            |interpreter, remote| {
+                interpreter.set_jit_stress(true);
+                set_exception_breakpoints(remote, true, true, true, Vec::new());
+            },
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                expect_stop(remote);
+                let frames = stack_trace(remote);
+                continue_stopped(remote);
+                (frames[0].name.clone(), frames[0].program_counter)
+            },
+        );
+        assert_eq!(name, "[] in Catching>>run");
+        assert_eq!(program_counter, 0);
+        assert_eq!(result, Ok(7));
+    }
+}
+
+/// A block's `^` whose home has returned, which nothing handles: the VM
+/// raises the `CannotReturn` at the block's own instruction.
+const STRANDED: &str = indoc! {"
+    class Stranded = Object new () (
+      public run = (
+        ^self escaper value: 3
+      )
+      escaper = (
+        ^[:value | ^value]
+      )
+    ) : ()
+"};
+
+/// The first frame an uncaught `CannotReturn` in `STRANDED` shows, the
+/// shipped filter as `shipped` says.
+fn shown_for_stranded(lowering: Lowering, shipped: bool) -> String {
+    let (shown, result) = raised(
+        STRANDED,
+        lowering,
+        |_, remote| {
+            remote.send(Command::SetStepFilters {
+                shipped,
+                classes: Vec::new(),
+            });
+        },
+        |remote| {
+            expect_step_filters_set(remote);
+            expect_stop(remote);
+            let shown = first_shown(&stack_trace(remote));
+            continue_stopped(remote);
+            shown
+        },
+    );
+    assert!(result.is_err(), "the error ends the run");
+    shown
+}
+
+ns_runtime::for_each_lowering! {
+    /// An uncaught error the VM raises shows the raising frame first, the
+    /// `signal` it pushed right above that frame hidden, with the shipped
+    /// filter on and off.
+    fn an_uncaught_vm_error_shows_the_raising_frame_first(lowering) {
+        assert_eq!(shown_for_stranded(lowering, true), "[] in Stranded>>escaper");
+        assert_eq!(shown_for_stranded(lowering, false), "[] in Stranded>>escaper");
+    }
+}
+
+/// A method stopped at a breakpoint below two `ensure:` blocks, one that
+/// signals an `Error` nothing handles and one that sends `halt`.
+const ENDING: &str = indoc! {"
+    class Ending = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        [
+          [self bump] ensure: [Error signal: 'late'].
+        ] ensure: [self halt].
+        ^count
+      )
+      bump = (
+        count:: count + 1.
+        ^count
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A termination's unwind runs the pending `ensure:` blocks, and an
+    /// uncaught exception or a `halt` one of them raises stops nothing:
+    /// no stop arrives after the `Terminate`. Each such exception's
+    /// default action ends the run in turn, as it does without a
+    /// debugger, so the host receives the last one's error, the `Halt`.
+    fn a_termination_s_ensure_blocks_stop_at_no_exception(lowering) {
+        let offset = line_start(ENDING, "count:: count + 1.");
+        let (after, result) = debugged(
+            ENDING,
+            lowering,
+            |remote| set_breakpoints(remote, "Ending", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Ending");
+                remote.send(Command::Terminate);
+                let after = remote.next_event(Duration::from_millis(500));
+                // A stop that should not have come is let go, so that the
+                // test fails on it rather than waiting.
+                if let Some(Event::Stopped { .. }) = after {
+                    remote.send(Command::Continue);
+                }
+                after
+            },
+        );
+        assert_eq!(after, None);
+        match result {
+            Err(HostSignal::Error(error)) => assert_eq!(error.message.as_str(), "Halt"),
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Ok(_) => panic!("the run was expected to end with an error"),
+        }
     }
 }
