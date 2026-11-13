@@ -4327,26 +4327,22 @@ ns_runtime::for_each_lowering! {
 
 /// `check:with:` sends `ifTrue:` to `true` with an object that is no
 /// block, which activates `True>>ifTrue:` though it has a fast path --
-/// the fast path takes only a block -- and then with a block, which the
-/// fast path runs without an activation; `Action>>value` loops for a
-/// while before it answers.
+/// the fast path takes only a block. That object's `value` sends
+/// `ifTrue:` again and again, now with a block, which the fast path runs
+/// without an activation, until a cap no passing run reaches.
 const FORWARDING: &str = indoc! {"
-    class Forwarding = Object new (
-      | count ::= 0. |
-    ) (
+    class Forwarding = Object new () (
       public run = (
-        self check: true with: Action new.
-        self check: true with: [count:: count + 1].
-        ^count
+        ^self check: true with: Action new
       )
-      check: condition with: action = (
+      public check: condition with: action = (
         ^condition ifTrue: action
       )
       public class Action = Object new () (
         public value = (
           | index ::= 0. |
-          [index < 20000] whileTrue: [
-            index:: index + 1].
+          [index < 10000000] whileTrue: [
+            check: true with: [index:: index + 1]].
           ^index
         )
       )
@@ -4358,7 +4354,9 @@ ns_runtime::for_each_lowering! {
     /// a fast path patches that body with the step's one-shot first; a
     /// line breakpoint set into the same body while the step runs still
     /// switches the fast path off, so that the next send of the method
-    /// activates it and stops; removed, it switches the fast path back on.
+    /// with a block activates it and stops there -- the callee's loop
+    /// sends it until then, so that the stop does not depend on when the
+    /// breakpoint is served; removed, it switches the fast path back on.
     fn a_line_breakpoint_set_after_a_step_s_one_shot_switches_the_fast_path_off(lowering) {
         let (mut interpreter, class) = load(FORWARDING, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -4372,10 +4370,10 @@ ns_runtime::for_each_lowering! {
         set_breakpoints(
             &remote,
             "Forwarding",
-            vec![line_start(FORWARDING, "[index < 20000] whileTrue: [")],
+            vec![line_start(FORWARDING, "[index < 10000000] whileTrue: [")],
         );
         let if_true = line_start(KERNEL, "public ifTrue: trueBlock = (");
-        let ((stepped_to, stopped_in), result, _) = debugged_by(
+        let (stopped_in, result, _) = debugged_by(
             remote,
             move |remote| {
                 expect_step_filters_set(remote);
@@ -4384,22 +4382,14 @@ ns_runtime::for_each_lowering! {
                 expect_breakpoints(remote, "Forwarding");
                 remote.send(Command::StepOut);
                 // Served while the step runs, its one-shot already in
-                // `ifTrue:`'s body.
+                // `ifTrue:`'s body: the loop runs until the breakpoint
+                // stops it.
                 set_breakpoints(remote, "Kernel", vec![if_true]);
                 match remote.next_event(EVENT_TIMEOUT) {
                     Some(Event::Continued) => {}
                     other => panic!("the step's confirmation was expected, not {other:?}"),
                 }
                 let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
-                match remote.next_event(EVENT_TIMEOUT) {
-                    Some(Event::Stopped {
-                        reason: StopReason::Step,
-                        ..
-                    }) => {}
-                    other => panic!("the step's stop was expected, not {other:?}"),
-                }
-                let stepped_to = top_name(remote);
-                continue_stopped(remote);
                 assert_eq!(expect_breakpoint_stop(remote), [id]);
                 let stopped_in: Vec<String> = stack_trace(remote)
                     .into_iter()
@@ -4408,14 +4398,13 @@ ns_runtime::for_each_lowering! {
                     .collect();
                 set_breakpoints(remote, "Kernel", Vec::new());
                 expect_breakpoints(remote, "Kernel");
-                continue_stopped(remote);
-                (stepped_to, stopped_in)
+                remote.send(Command::Terminate);
+                stopped_in
             },
             || run(&mut interpreter, &instance),
         );
-        assert_eq!(stepped_to, "True>>ifTrue:");
         assert_eq!(stopped_in, ["True>>ifTrue:", "Forwarding>>check:with:"]);
-        assert_eq!(answered(&mut interpreter, result), 1);
+        assert_terminated(result);
         assert_eq!(if_true_fast_path(&mut interpreter), quick);
     }
 }
@@ -4924,5 +4913,233 @@ ns_runtime::for_each_lowering! {
             })
             .collect();
         assert_eq!(ends, ["entry", "exit", "entry", "exit", "entry", "exit"]);
+    }
+}
+
+/// A method that makes a block, loops, and then runs the block, whose
+/// non-local return returns from the method, its home.
+const ESCAPING: &str = indoc! {"
+    class Escaping = Object new () (
+      public run = (
+        | found |
+        found:: self spin.
+        ^found + 1
+      )
+      spin = (
+        |
+          index ::= 0.
+          action ::= nil.
+        |
+        action:: [:value |
+          ^value * 10].
+        [index < 100] whileTrue: [
+          index:: index + 1].
+        action value: 2.
+        ^0
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the JIT stress mode a body that exits at once at its method
+    /// breakpoint's entry is installed all the same, and its loop's
+    /// on-stack replacement runs it in machine code: the cut of its own
+    /// block's non-local return, which would return from it as the
+    /// stretch's entry frame, leaves it to the unwinder, whose arrival
+    /// reports its exit.
+    fn a_method_breakpoint_reports_the_exit_of_a_compiled_home_a_block_returns_from(lowering) {
+        let (mut interpreter, class) = load(ESCAPING, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_compile_at_back_jump(1);
+        interpreter.set_optimization_budget(i64::MAX);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..2 {
+            assert_eq!(send_answered(&mut interpreter, &instance, "run"), 21);
+        }
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(
+            &remote,
+            vec![method_breakpoint("Escaping", &[], false, "spin")],
+        );
+        let ((ends, stood, again), result, _) = debugged_by(
+            remote,
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let entry = method_end(expect_stop(remote), id);
+                continue_stopped(remote);
+                let exit = method_end(expect_stop(remote), id);
+                let stood = standing(remote, ESCAPING);
+                continue_stopped(remote);
+                ((entry, exit), stood, stops_until_the_end(remote))
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(ends, ("entry", "exit"));
+        assert_eq!(
+            stood,
+            (String::from("Escaping>>run"), String::from("found:: self spin"))
+        );
+        assert_eq!(again, 0);
+        assert_eq!(answered(&mut interpreter, result), 21);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into whose push stops at the callee's first statement, where
+    /// a line breakpoint stands, reports the breakpoint.
+    fn a_step_into_a_callee_s_first_statement_a_breakpoint_stands_at_reports_it(lowering) {
+        let calling = line_start(STEPPING, "x:: self compute.");
+        let first = line_start(STEPPING, "a:: 3.");
+        let ((reason, ids, stood), _) = stepped(
+            STEPPING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Stepping", vec![calling, first]),
+            |remote| {
+                let ids: Vec<BreakpointId> = expect_breakpoints(remote, "Stepping")
+                    .iter()
+                    .map(|state| state.id)
+                    .collect();
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                remote.send(Command::StepInto);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the step's confirmation was expected, not {other:?}"),
+                }
+                let reason = expect_stop(remote);
+                let stood = standing(remote, STEPPING);
+                continue_stopped(remote);
+                (reason, ids, stood)
+            },
+        );
+        assert_eq!(reason, StopReason::Breakpoint { ids: vec![ids[1]] });
+        assert_eq!(
+            stood,
+            (String::from("Stepping>>compute"), String::from("a:: 3"))
+        );
+    }
+}
+
+/// A class-side method with two returns, one in a block the optimized
+/// lowering inlines.
+const SIDED: &str = indoc! {"
+    class Sided = Object new () (
+      public run = (
+        ^(Helper pick: 1) + (Helper pick: 5)
+      )
+      public class Helper = Object new () () : (
+        public pick: number = (
+          number > 3 ifTrue: [
+            ^number * 2].
+          ^number
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint on a class-side method stops at its entry and
+    /// at each return it takes, the one in its inlined block included.
+    fn a_method_breakpoint_on_a_class_side_method_stops_at_entry_and_each_return(lowering) {
+        let (stops, answer) = stepped(
+            SIDED,
+            lowering,
+            "run",
+            |remote| {
+                set_method_breakpoints(
+                    remote,
+                    vec![method_breakpoint("Sided", &["Helper"], true, "pick:")],
+                );
+            },
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let mut stops = Vec::new();
+                for _ in 0..4 {
+                    let end = method_end(expect_stop(remote), id);
+                    stops.push((end, top_statement(remote, SIDED)));
+                    continue_stopped(remote);
+                }
+                assert_eq!(stops_until_the_end(remote), 0);
+                stops
+            },
+        );
+        let entry = "number > 3 ifTrue: [\n        ^number * 2]";
+        assert_eq!(
+            stops,
+            [
+                ("entry", String::from(entry)),
+                ("exit", String::from("^number")),
+                ("entry", String::from(entry)),
+                ("exit", String::from("^number * 2")),
+            ]
+        );
+        assert_eq!(answer, 11);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An install replaces a method's body: its method breakpoint is set
+    /// again on the new body, which stops at its entry and its exit.
+    fn an_install_sets_a_method_breakpoint_again_on_the_new_body(lowering) {
+        let (mut interpreter, class) = interpreted(EDITING, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let ((ends, names, again), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| {
+                set_method_breakpoints(
+                    remote,
+                    vec![method_breakpoint("Editing", &["Subject"], false, "answer")],
+                );
+            },
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let mut ends = Vec::new();
+                let mut names = Vec::new();
+                for _ in 0..2 {
+                    ends.push(method_end(expect_stop(remote), id));
+                    names.push(top_name(remote));
+                    continue_stopped(remote);
+                }
+                (ends, names, stops_until_the_end(remote))
+            },
+        );
+        assert_eq!(ends, ["entry", "exit"]);
+        assert_eq!(names, ["Subject>>answer", "Subject>>answer"]);
+        assert_eq!(again, 0);
+        assert_eq!(answered(&mut interpreter, result), 48);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Sending the method breakpoints already set again changes no slot:
+    /// the body the JIT stress mode installed though it exits at once
+    /// keeps its machine code, and the method still stops.
+    fn resending_unchanged_method_breakpoints_frees_no_machine_code(lowering) {
+        let (mut interpreter, instance, _) = compiled(BUMPED, lowering);
+        interpreter.set_jit_stress(true);
+        assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+        let bump = || vec![method_breakpoint("Bumped", &[], false, "bump")];
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, bump());
+        let (events, result, remote) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_eq!(answered(&mut interpreter, result), 2003);
+        assert_eq!(stop_count(&events), 6, "{events:?}");
+        let before = interpreter.jit_statistics();
+        set_method_breakpoints(&remote, bump());
+        let (events, result, _) = events_during(remote, || run(&mut interpreter, &instance));
+        assert_eq!(answered(&mut interpreter, result), 2006);
+        assert_eq!(stop_count(&events), 6, "{events:?}");
+        let after = interpreter.jit_statistics();
+        if runs_in_machine_code(lowering) {
+            assert_eq!(
+                after.freed_bodies, before.freed_bodies,
+                "the unchanged method breakpoint freed no code: {before:?} {after:?}"
+            );
+        }
     }
 }
