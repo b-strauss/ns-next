@@ -345,6 +345,21 @@ pub(crate) fn frame_left<'gc>(mutator: &mut Mutator<'gc>, signal: Option<&Signal
     stepping::frame_left(mutator, now_on_top);
 }
 
+/// An unwind stopped popping: with a step in progress -- a step a pop
+/// left, or one waiting to report a method's exit -- the step goes on
+/// from the frame on top, the one the program goes on in
+/// (`stepping::unwind_stopped`). Out of line and cold: called once per
+/// unwind the debugger follows, never per frame popped.
+#[cold]
+#[inline(never)]
+pub(crate) fn unwind_stopped(mutator: &mut Mutator<'_>) {
+    if mutator.stepping.is_none() {
+        return;
+    }
+    let now_on_top = mutator.heap.top_activation();
+    stepping::unwind_stopped(mutator, now_on_top);
+}
+
 /// The run loop popped a frame whose sender is suspended into its frame
 /// and about to be resumed onto the stack, where it may take the popped
 /// frame's offset: with a step in progress, the step forgets every name

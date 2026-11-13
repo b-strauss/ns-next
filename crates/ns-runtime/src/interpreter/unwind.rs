@@ -235,6 +235,7 @@ pub(crate) fn unwind_signal<'gc>(
                     .expect("internal: a stack deeper than the floor has a top");
                 mutator.pop_for_unwind(top);
             }
+            breakpoint::unwind_stopped(mutator);
             return UnwindOutcome::Exit(Err(error));
         }
     };
@@ -271,7 +272,9 @@ pub(crate) fn unwind_signal<'gc>(
 /// first: only a step in progress or a method breakpoint wants them
 /// (`breakpoint::follows_unwinds`), and nothing the pops do starts either
 /// unless one of them already is, so an unwind with neither pays one test
-/// rather than several for every frame it pops.
+/// rather than several for every frame it pops. A followed unwind tells
+/// the step where it stops popping, once (`breakpoint::unwind_stopped`):
+/// only that frame is flooded, never one it passes.
 pub(crate) fn unwind<'gc>(
     mutator: &mut Mutator<'gc>,
     pending: PendingUnwind<'gc>,
@@ -292,6 +295,9 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
 ) -> UnwindOutcome<'gc> {
     loop {
         if mutator.heap.activation_stack_top() <= floor {
+            if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
+            }
             return UnwindOutcome::Exit(Err(exit_signal(pending)));
         }
         let top = mutator
@@ -311,6 +317,7 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             // return instruction of its own, whose exit a method
             // breakpoint reports (`breakpoint::returning_by_unwind`).
             if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
                 if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
                     breakpoint::returning_by_unwind(mutator, top, frame);
                 }
@@ -318,6 +325,9 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             return arrive(mutator, top, pending.action);
         }
         if let Some(block) = block_to_run(mutator, top) {
+            if FOLLOWED {
+                breakpoint::unwind_stopped(mutator);
+            }
             return UnwindOutcome::RunBlock {
                 block,
                 then: Box::new(pending),

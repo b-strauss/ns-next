@@ -137,6 +137,28 @@ pub(crate) struct Stepping {
     waiting_on: Option<ActivationReference>,
 }
 
+impl Stepping {
+    /// A step of `action` whose frame is `Holder::Left`, `returned` the
+    /// value recorded so far: one `start` is about to name its frame for,
+    /// or one waiting for where the program goes on.
+    fn new(action: StepAction, returned: Option<Root>) -> Stepping {
+        Stepping {
+            action,
+            frame: Holder::Left,
+            between: Vec::new(),
+            flooded: Vec::new(),
+            return_point: None,
+            returned,
+            suspended: Vec::new(),
+            next_key: 0,
+            started_filtered: false,
+            exits: Vec::new(),
+            #[cfg(debug_assertions)]
+            waiting_on: None,
+        }
+    }
+}
+
 /// A frame of the run: an activation on the stack, or one suspended into
 /// its frame object.
 #[derive(Clone, Copy)]
@@ -249,9 +271,10 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
 /// popped frame's names are forgotten first (`popped`). When it was the
 /// stepping frame, or the caller its return point is in, the step goes on
 /// as a step into from `now_on_top`, so that it stops at the next
-/// statement start the program reaches: in the frame an unwind goes on
-/// in, a block it runs there, the caller an instruction runs again in, or
-/// what that pushes. Any other frame the step named above the stepping
+/// statement start the program reaches: in the caller an instruction
+/// runs again in, the frame a superclass clause's continuation goes on
+/// in, or what that pushes -- an unwind's pops are reported one by one
+/// (`popped`) and its stop once (`unwind_stopped`). Any other frame the step named above the stepping
 /// one -- one the step was taken in, a pushed frame's one-shot -- is only
 /// forgotten. `now_on_top` is `None` when no frame goes on yet -- the run
 /// ends, whose end ends the step, or an error is about to be signalled,
@@ -259,6 +282,24 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
 /// goes on; the step's frame stays `Holder::Left` until then.
 pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
     popped(mutator);
+    went_on(mutator, now_on_top);
+}
+
+/// An unwind stopped popping, its pops reported one by one as they were
+/// made (`popped`): the program goes on in `now_on_top` -- the frame the
+/// unwind arrived at, the `ensure:` or `ifCurtailed:` frame whose block it
+/// runs, or the frame below the run's floor -- and a step whose frame, or
+/// its return point's caller, the pops left goes on as a step into from
+/// there (`frame_left`), once for the whole unwind: flooding each frame
+/// it passed on the way would patch bodies no stop is made in -- every
+/// frame of a deep recursion it unwinds -- and free their machine code.
+pub(crate) fn unwind_stopped(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
+    went_on(mutator, now_on_top);
+}
+
+/// `frame_left` once the pop is forgotten: the step goes on as a step
+/// into from `now_on_top` if its frame or its return point's caller left.
+fn went_on(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
     let Some(stepping) = &mutator.stepping else {
         return;
     };
@@ -399,18 +440,20 @@ pub(crate) enum Leaving {
 /// the exit is reported at the next place the program reaches, by a step
 /// of the same kind as a step whose frame an unwind pops (decision 17),
 /// which replaces any step in progress, its value of the last call kept
-/// -- a step into from the frame now on top for a popped frame, a step out
-/// from the method's frame for one that returns -- and whose stop reports
-/// the exits (`take_exits`), or an exception's stop served first, beside
-/// its exception.
+/// -- a step into from the frame the unwind stops in for a popped frame,
+/// a step out from the method's frame for one that returns -- and whose
+/// stop reports the exits (`take_exits`), or an exception's stop served
+/// first, beside its exception. For a popped frame the step waits, its
+/// frame `Holder::Left`, until the unwind stops popping
+/// (`unwind_stopped`), so that no frame it passes is flooded.
 pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, leaving: Leaving) {
     match leaving {
-        Leaving::Popped => {
-            let Some(now_on_top) = mutator.heap.top_activation() else {
-                return;
-            };
-            continue_as_step_into(mutator, now_on_top);
-        }
+        Leaving::Popped => match &mut mutator.stepping {
+            Some(stepping) => stepping.frame = Holder::Left,
+            None => {
+                mutator.stepping = Some(Box::new(Stepping::new(StepAction::Into, None)));
+            }
+        },
         Leaving::Returning(home) => {
             let (returned, exits) = carried(mutator);
             mutator.breakpoints.remove_one_shots();
@@ -942,22 +985,9 @@ fn start<'gc>(
     taken_in: Place<'gc>,
     returned: Option<Root>,
 ) {
-    mutator.stepping = Some(Box::new(Stepping {
-        action,
-        // Named by `stepping_frame`, which may hold `taken_in` as a
-        // suspended frame first.
-        frame: Holder::Left,
-        between: Vec::new(),
-        flooded: Vec::new(),
-        return_point: None,
-        returned,
-        suspended: Vec::new(),
-        next_key: 0,
-        started_filtered: false,
-        exits: Vec::new(),
-        #[cfg(debug_assertions)]
-        waiting_on: None,
-    }));
+    // Its frame is named by `stepping_frame`, which may hold `taken_in` as
+    // a suspended frame first.
+    mutator.stepping = Some(Box::new(Stepping::new(action, returned)));
     let (frame, body) = stepping_frame(mutator, taken_in);
     let between = frames_between(mutator, top, frame);
     if let Some(stepping) = &mut mutator.stepping {

@@ -2149,7 +2149,8 @@ nothing.
 place, or an error), `VmErrorSignalled`, `Reexecute` and
 `ReturnToSuspended` report to the stepping state
 (`Mutator::pop_for_unwind`, `interpreter::breakpoint::frame_left`,
-`stepping::frame_left`), and so does the handler search, once it found
+`stepping::frame_left`; an unwind's stop once, `stepping::unwind_stopped`),
+and so does the handler search, once it found
 a handler (`stepping::handler_found`, "Exceptions"); the step goes on
 past the shipped frames -- `ensure:`'s, `on:do:`'s, `resolve`'s, the
 exception's machinery -- by decision 16's filter. The unwinder's pops
@@ -2182,7 +2183,15 @@ or a method breakpoint set (`breakpoint::follows_unwinds`), and only
 then reports each frame it pops: no pop can start a step that neither
 already holds; made for every frame, those tests cost `bench_signal`,
 which unwinds fifty frames per caught exception, about 1.5%, two thirds
-of the +2.3% that version measured ("What stage 3 moved"). The report finds the popped frame as the one whose offset lies
+of the +2.3% that version measured ("What stage 3 moved"). A pop only
+forgets the names the step knew the popped frame by
+(`stepping::popped`); where the step goes on is decided once, where the
+unwind stops popping -- it arrives at its target, runs an `ensure:` or
+`ifCurtailed:` block, or leaves the run -- by one cold call
+(`breakpoint::unwind_stopped`, `stepping::unwind_stopped`), so that only
+the frame the program goes on in is flooded, never one the unwind
+passes, which a deep recursion's unwind would otherwise patch, its
+machine code freed, at every frame. The report finds the popped frame as the one whose offset lies
 above the stack's top (`Heap::activation_lies_above_the_top`), since
 nothing is pushed between the pop and the report, and every name the
 step knew it by becomes `Holder::Left`, which no activation is
@@ -2197,8 +2206,8 @@ refused as no class -- makes no frame the step goes on in yet: stepping
 into the `signal` pushed for it would stop in the exception's
 machinery, so the step waits, its frame `Holder::Left`, for the
 handler search's report of the handler it found, which goes on into the
-handler block, or for the unwind its default action starts, whose first
-pop goes on. A step out of a
+handler block, or for the unwind its default action starts, which goes
+on where it stops popping. A step out of a
 superclass clause whose class is handed to the accessor's send, the
 `NestedClass` arm's value, reports nothing and stops at the accessor's
 return point.
@@ -2957,8 +2966,9 @@ and stops every activation of it at its entry and at each of its exits.
   (`breakpoint::returning_by_unwind`); a termination reports none. The
   exit stops where the program goes on, by a step of the same kind as a
   step whose frame an unwind pops (decision 17, `stepping::method_left`):
-  a step into from the frame now on top, or a step out from the method's
-  frame the unwind arrives at, which stops at its caller's return point.
+  a step into from the frame the unwind stops in -- the step waits, its
+  frame `Holder::Left`, while the unwind pops on -- or a step out from
+  the method's frame the unwind arrives at, which stops at its caller's return point.
   That step replaces any step in progress, carrying its value of the
   last call, and its stop reports the exit; so does an exception's stop
   served before it, the place the program reached first, in its

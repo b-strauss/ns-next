@@ -5481,6 +5481,78 @@ fn error_text(result: HostResult) -> String {
     }
 }
 
+/// A block's non-local return from fifty frames of `descend:with:` deep,
+/// which returns from `find`, its home; `call:` runs the block, so that a
+/// step from it sets its return point there.
+const DEEP_UNWIND: &str = indoc! {"
+    class DeepUnwind = Object new () (
+      public run = (
+        | result |
+        result:: self find.
+        ^result + 1
+      )
+      find = (
+        self descend: 50 with: [:value |
+          ^value * 2].
+        ^0
+      )
+      descend: depth with: action = (
+        depth = 0 ifTrue: [
+          ^self call: action].
+        ^(self descend: depth - 1 with: action) + 1
+      )
+      call: action = (
+        ^action value: 7
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over from a block whose non-local return unwinds through
+    /// fifty frames of `descend:with:` goes on from `find`, the home the
+    /// unwind stops in, which alone it floods, and stops at `find`'s
+    /// return point in `run`: `descend:with:`, whose frames it passes,
+    /// keeps its machine code.
+    fn an_unwind_while_stepping_floods_only_the_frame_it_stops_in(lowering) {
+        let (mut interpreter, instance, class) = compiled(DEEP_UNWIND, lowering);
+        let descend = Symbol::intern("descend:with:");
+        for _ in 0..3 {
+            assert_eq!(send_answered(&mut interpreter, &instance, "run"), 15);
+        }
+        if runs_in_machine_code(lowering) {
+            assert!(
+                interpreter.jit_body_offset(&class, MethodSide::Instance, descend).is_some(),
+                "`descend:with:` is compiled"
+            );
+        }
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "DeepUnwind", vec![line_start(DEEP_UNWIND, "^value * 2].")]);
+        let (stood, result, _) = debugged_by(
+            remote,
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "DeepUnwind"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, DEEP_UNWIND);
+                continue_stopped(remote);
+                stood
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 15);
+        assert_eq!(
+            stood,
+            (String::from("DeepUnwind>>run"), String::from("result:: self find"))
+        );
+        if runs_in_machine_code(lowering) {
+            assert!(
+                interpreter.jit_body_offset(&class, MethodSide::Instance, descend).is_some(),
+                "no flood of the frames the unwind passed freed `descend:with:`'s code"
+            );
+        }
+    }
+}
+
 /// A method that signals an `Error` nothing handles.
 const RAISING: &str = indoc! {"
     class Raising = Object new () (

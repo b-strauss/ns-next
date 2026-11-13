@@ -2005,12 +2005,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-    - *An unwind while stepping floods every frame it passes*:
-      `pop_for_unwind` reports every frame it pops to the step, which
-      floods each intermediate frame it goes on in -- 100,000 floods for
-      an unwind from the depth limit -- where flooding only the frame
-      the unwind stops in would do ([debugger.md](design/debugger.md),
-      decision 17).
     - *The step filter allocates at every poll*: `is_filtered` builds a
       declaration path (`again::declaration_path`) at every poll of a
       held step into through shipped code; a cache by body would remove
