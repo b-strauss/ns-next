@@ -17,6 +17,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
+use crate::interpreter::breakpoint::{self, BreakpointDecision};
 use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
@@ -675,7 +676,14 @@ fn run_stretch<'gc>(
                     let public = 'public: {
                         let super_send = 'super_send: {
                             let inlinable = 'inlinable: {
-                                match code.slot(program_counter) {
+                                // A slot a breakpoint patched hands its
+                                // original back to this match, which runs it
+                                // through its ordinary arm; every other arm
+                                // leaves the loop, so it costs no other
+                                // instruction a compare.
+                                let mut slot = code.slot(program_counter);
+                                loop {
+                                    match slot {
                                     CompactInstruction::LoadNil { destination } => {
                                         mutator.heap.set_register(
                                             register_base,
@@ -1208,23 +1216,31 @@ fn run_stretch<'gc>(
                                     }
                                     // §6.3.2's simultaneous slot clauses: one arm and one call,
                                     // out of line (`simultaneous_clause_instruction`). A
-                                    // breakpoint shares the arm until it has its own: an arm
-                                    // of its own costs the loop's code in every other arm.
-                                    slot @ (CompactInstruction::MakeFuture { .. }
+                                    // breakpoint's slot shares the arm: an arm of its own,
+                                    // one more target of the match's jump table, grew the
+                                    // loop's code in every other arm past the `codegen`
+                                    // gate's budget, where sharing this one costs nothing.
+                                    out_of_line @ (CompactInstruction::MakeFuture { .. }
                                     | CompactInstruction::ResolveFuture { .. }
                                     | CompactInstruction::LoadOwnSlot { .. }
                                     | CompactInstruction::InitializeSlotProvisionally {
                                         ..
                                     }
                                     | CompactInstruction::Breakpoint) => {
-                                        break 'decided simultaneous_clause_instruction(
+                                        match simultaneous_clause_instruction(
                                             mutator,
                                             activation,
                                             program_counter,
-                                            slot,
+                                            out_of_line,
                                             floor,
                                             &mut handoff,
-                                        )
+                                        ) {
+                                            OutOfLine::Transfer(transfer) => {
+                                                break 'decided transfer
+                                            }
+                                            OutOfLine::Execute(original) => slot = original,
+                                            OutOfLine::Stop => break 'run Leave::Safepoint,
+                                        }
                                     }
                                     // The instructions of a compiled `new`: each
                                     // one call, out of line; what each decides is
@@ -1512,6 +1528,7 @@ fn run_stretch<'gc>(
                                         WideOutcome::Jump(target) => jump_to!(target),
                                         WideOutcome::Transfer(transfer) => break 'decided transfer,
                                     },
+                                }
                                 }
                             };
                             break 'decided send_path!(inlinable, Inlinable);
@@ -2884,7 +2901,9 @@ fn machine_code_switch<'gc>(
 /// running it once. A host's send has no instruction to run again; a
 /// future it passes in straight to a leaf ends the run. Only the
 /// interpreter forces a future this way, so the caller runs the
-/// instruction again interpreted, as it met the future.
+/// instruction again interpreted, as it met the future. A breakpoint at
+/// the instruction lets it past again, since it went past it once
+/// (`interpreter::breakpoint::reexecuting`).
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
@@ -2895,6 +2914,7 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
     let program_counter = mutator.heap.activation_program_counter(caller);
+    breakpoint::reexecuting(mutator, caller, program_counter);
     handoff.switch_to(mutator, caller, program_counter)
 }
 
@@ -3090,7 +3110,10 @@ fn initialize_slot_refused<'gc>(
 
 /// The four instructions only a simultaneous slot clause emits, in their
 /// narrow form; the slot, one word, carries their operands. Their wide
-/// forms call the same functions from `run_wide`.
+/// forms call the same functions from `run_wide`. And a slot a breakpoint
+/// patched, whose decision is `interpreter::breakpoint`'s: it shares the
+/// run loop's arm and this call so that it costs the loop no arm of its
+/// own.
 #[inline(never)]
 fn simultaneous_clause_instruction<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -3099,8 +3122,8 @@ fn simultaneous_clause_instruction<'gc>(
     slot: CompactInstruction,
     floor: usize,
     handoff: &mut Handoff,
-) -> Transfer {
-    match slot {
+) -> OutOfLine {
+    let transfer = match slot {
         // A crafted image can put anything in `closure`'s register (an
         // image must never panic, `CLAUDE.md`, "An image is untrusted
         // input"), so an operand that is not a closure is an ordinary error,
@@ -3154,10 +3177,27 @@ fn simultaneous_clause_instruction<'gc>(
                 handoff,
             )
         }
-        // Nothing patches a slot yet.
-        CompactInstruction::Breakpoint => unreachable!("internal: no slot is patched yet"),
+        CompactInstruction::Breakpoint => {
+            return match breakpoint::reached(mutator, activation, program_counter) {
+                BreakpointDecision::Execute(original) => OutOfLine::Execute(original),
+                BreakpointDecision::Stop => OutOfLine::Stop,
+            }
+        }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
-    }
+    };
+    OutOfLine::Transfer(transfer)
+}
+
+/// What `simultaneous_clause_instruction` answers the run loop.
+enum OutOfLine {
+    /// Where control goes after a simultaneous clause's instruction.
+    Transfer(Transfer),
+    /// A breakpoint's slot goes past: its original, which the loop runs
+    /// through its ordinary arm.
+    Execute(CompactInstruction),
+    /// A breakpoint's slot stops: the loop leaves for the safepoint, the
+    /// frame standing at the slot.
+    Stop,
 }
 
 /// `MakeFuture`: a new unresolved future of the closure in `closure`.

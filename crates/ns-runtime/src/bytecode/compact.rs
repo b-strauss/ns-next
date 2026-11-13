@@ -1596,13 +1596,6 @@ impl EncodedBody {
 
     /// Replaces slot `index` by `Breakpoint`, keeping the instruction it
     /// held; a slot already patched keeps its first original.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn patch(&self, index: usize) {
         let slot = &self.slots[index];
         let original = slot.get();
@@ -1618,13 +1611,6 @@ impl EncodedBody {
 
     /// Gives slot `index` back its original; an unpatched slot stays as it
     /// is.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn restore(&self, index: usize) {
         if !self.is_patched(index) {
             return;
@@ -1638,13 +1624,6 @@ impl EncodedBody {
     }
 
     /// Whether a breakpoint replaces slot `index`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn is_patched(&self, index: usize) -> bool {
         matches!(self.slots[index].get(), CompactInstruction::Breakpoint)
     }

@@ -199,12 +199,22 @@ impl Interpreter {
                     // baseline code, its blocks made while every frame is
                     // where the exit left it: no frame is after this.
                     self.enter(crate::jit::deoptimize_stopped_at_poll);
-                    rebuilt = self.enter(|mutator| match mutator.heap.suspend_activations(floor) {
-                        Some(top) => {
-                            mutator.resume_frame(top);
-                            true
+                    rebuilt = self.enter(|mutator| {
+                        let running = mutator.heap.top_activation();
+                        match mutator.heap.suspend_activations(floor) {
+                            Some(top) => {
+                                mutator.resume_frame(top);
+                                // A breakpoint's token follows the frame
+                                // it lets past to where it was resumed.
+                                if let (Some(running), Some(resumed)) =
+                                    (running, mutator.heap.top_activation())
+                                {
+                                    mutator.breakpoints.move_past_once(running, resumed);
+                                }
+                                true
+                            }
+                            None => false,
                         }
-                        None => false,
                     });
                 }
                 stressed = true;

@@ -7050,7 +7050,6 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `code`'s code id, if it has one now, without minting one.
-    #[cfg(ns_jit)]
     pub(crate) fn minted_code_id(&self, code: &CompiledCode) -> Option<CodeId> {
         self.tables
             .code_ids

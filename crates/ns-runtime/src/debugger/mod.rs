@@ -8,16 +8,19 @@
 //! terminates the program. Meanwhile it answers the run's stack
 //! (`stack.rs`) -- its activations on the activation stack and the
 //! senders suspended into their frame objects -- and the values it hands
-//! out, held for the stop (`values.rs`).
+//! out, held for the stop (`values.rs`). A line breakpoint patches the
+//! slot its statement starts at (`breakpoints.rs`); the run loop's arm
+//! there leaves for the safepoint, which stops.
 
+pub(crate) mod breakpoints;
 pub(crate) mod metadata;
 mod remote;
 mod stack;
 mod values;
 
 pub use remote::{
-    Command, DebugRemote, Event, FrameDescription, FrameKind, FrameLocation, SendLocation,
-    StopReason, ValueDescription, ValueId, Variable,
+    BreakpointId, BreakpointState, Command, DebugRemote, Event, FrameDescription, FrameKind,
+    FrameLocation, SendLocation, StopReason, ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -161,7 +164,7 @@ impl StressReader {
             Event::Refused { command, reason } => {
                 panic!("internal: the pause stress mode's {command} was refused: {reason}")
             }
-            Event::Stopped { .. } | Event::Continued => {}
+            Event::Stopped { .. } | Event::Continued | Event::Breakpoints { .. } => {}
         }
     }
 }
@@ -200,6 +203,13 @@ impl Interpreter {
                 .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
         });
         drop(guarded);
+        // The earlier attachment's breakpoints go with it, as its pause
+        // does.
+        let reports = event_sender.clone();
+        self.enter(|mutator| {
+            breakpoints::clear(mutator);
+            mutator.breakpoints.report_to(Some(reports));
+        });
         self.debugger = Some(Debugger {
             commands: command_receiver,
             events: event_sender,
@@ -216,12 +226,17 @@ impl Interpreter {
 
     /// Serves the debugger's bits at the run loop's safepoint, before
     /// anything else there: first the commands queued while the program
-    /// ran, then a pause, which stops until the agent continues or
-    /// terminates. A remote that is gone detaches the debugger, and the
-    /// program runs on.
+    /// ran, then the stop a `Breakpoint` arm left for, then a pause; each
+    /// stop waits until the agent continues or terminates. A remote that
+    /// is gone detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
-        let bits = self.enter(|mutator| mutator.heap.debugger_bits());
-        if bits == 0 {
+        let (bits, breakpoint) = self.enter(|mutator| {
+            (
+                mutator.heap.debugger_bits(),
+                mutator.breakpoints.take_pending_stop(),
+            )
+        });
+        if bits == 0 && breakpoint.is_none() {
             return Served::GoOn;
         }
         if self.debugger.is_none() {
@@ -233,6 +248,25 @@ impl Interpreter {
         }
         if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
             return self.terminate();
+        }
+        if let Some(breakpoint) = breakpoint {
+            if self.debugger.is_some() {
+                // The stop serves a pause asked meanwhile too.
+                self.clear_debugger_bits(DEBUGGER_PAUSE);
+                let served = self.stop(
+                    StopReason::Breakpoint {
+                        ids: breakpoint.ids,
+                    },
+                    floor,
+                    CommandSource::Remote,
+                );
+                // The frame fetches the patched slot again as it goes on:
+                // the breakpoint it stopped at lets it past once.
+                if served == Served::GoOn {
+                    self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
+                }
+                return served;
+            }
         }
         let pause_requested = self.enter(|mutator| mutator.heap.debugger_bits()) & DEBUGGER_PAUSE;
         if pause_requested != 0 && self.debugger.is_some() {
@@ -262,7 +296,8 @@ impl Interpreter {
     /// meanwhile keeps its bit for the next safepoint
     /// (`docs/design/debugger.md`, "Commands while the program runs"). A
     /// `Terminate` ends the run, and the commands queued after it go with
-    /// the run (`drop_queued_commands`), never to the next.
+    /// the run (`serve_between_runs`), never to the next; a configuration
+    /// command among them is served all the same.
     fn serve_queued_commands(&mut self) -> Served {
         self.clear_debugger_bits(DEBUGGER_COMMANDS);
         loop {
@@ -279,8 +314,11 @@ impl Interpreter {
             };
             match command {
                 Command::Terminate => {
-                    self.drop_queued_commands();
+                    self.serve_between_runs();
                     return Served::Terminate;
+                }
+                command @ Command::SetBreakpoints { .. } => {
+                    self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
                 | Command::StackTrace
@@ -288,6 +326,25 @@ impl Interpreter {
                 | Command::Children { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
+            }
+        }
+    }
+
+    /// Serves a configuration command, which changes what stops the
+    /// program later and stops nothing itself, answering to `source`.
+    fn configure(&mut self, source: &mut CommandSource, command: Command) {
+        match command {
+            Command::SetBreakpoints { module, offsets } => {
+                let event = self
+                    .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, offsets));
+                self.answer(source, event);
+            }
+            Command::Continue
+            | Command::Terminate
+            | Command::StackTrace
+            | Command::Variables { .. }
+            | Command::Children { .. } => {
+                unreachable!("internal: only a configuration command configures")
             }
         }
     }
@@ -303,7 +360,13 @@ impl Interpreter {
     /// with it when the program goes on.
     fn stop(&mut self, reason: StopReason, floor: usize, mut source: CommandSource) -> Served {
         self.enter(crate::jit::deoptimize_stopped_at_poll);
-        self.answer(&mut source, Event::Stopped { reason });
+        self.answer(
+            &mut source,
+            Event::Stopped {
+                reason,
+                returned: None,
+            },
+        );
         let first_value_id = self
             .debugger
             .as_ref()
@@ -358,6 +421,7 @@ impl Interpreter {
                     Some(children) => self.answer(&mut source, Event::Variables(children)),
                     None => self.refuse(&mut source, &command, NO_SUCH_VALUE),
                 },
+                command @ Command::SetBreakpoints { .. } => self.configure(&mut source, command),
             }
         };
         // The next stop's ids begin past this one's, so that none of
@@ -408,36 +472,46 @@ impl Interpreter {
         }
     }
 
-    /// Drops every command queued for a run that is over, or that has not
+    /// Takes every command queued for a run that is over, or that has not
     /// begun, after clearing the commands bit under the arming lock: a
-    /// command is served by the run it arrives during, and one left
-    /// queued -- a `Terminate` sent after its run ended, or queued after
-    /// the one that ended it -- would otherwise end the next run at its
-    /// first safepoint, or be taken by its first stop, a run nobody
-    /// terminated. The bit is cleared before the queue is drained, as
-    /// `serve_queued_commands` clears it: the agent queues a command
-    /// before it sets the bit, so a command the drain misses keeps its bit
-    /// and is served, or dropped again, at the next safepoint; the other
-    /// order would leave it queued with its bit cleared, for a later stop
-    /// to take. A pause asked between runs is no command and stays, to
-    /// stop the next run. A remote that is gone detaches the debugger.
-    pub(crate) fn drop_queued_commands(&mut self) {
+    /// configuration command, which stops nothing, is served, and every
+    /// other dropped. A command that acts on a run is served by the run it
+    /// arrives during, and one left queued -- a `Terminate` sent after its
+    /// run ended, or queued after the one that ended it -- would otherwise
+    /// end the next run at its first safepoint, or be taken by its first
+    /// stop, a run nobody terminated. The bit is cleared before the queue
+    /// is drained, as `serve_queued_commands` clears it: the agent queues
+    /// a command before it sets the bit, so a command the drain misses
+    /// keeps its bit and is served, or dropped, at the next safepoint; the
+    /// other order would leave it queued with its bit cleared, for a later
+    /// stop to take. A pause asked between runs is no command and stays,
+    /// to stop the next run. A remote that is gone detaches the debugger.
+    pub(crate) fn serve_between_runs(&mut self) {
         if self.debugger.is_none() {
             return;
         }
         self.clear_debugger_bits(DEBUGGER_COMMANDS);
-        let Some(debugger) = &self.debugger else {
-            return;
-        };
-        let disconnected = loop {
+        loop {
+            let Some(debugger) = &self.debugger else {
+                return;
+            };
             match debugger.commands.try_recv() {
-                Ok(_) => {}
-                Err(TryRecvError::Empty) => break false,
-                Err(TryRecvError::Disconnected) => break true,
+                Ok(command @ Command::SetBreakpoints { .. }) => {
+                    self.configure(&mut CommandSource::Remote, command);
+                }
+                Ok(
+                    Command::Continue
+                    | Command::Terminate
+                    | Command::StackTrace
+                    | Command::Variables { .. }
+                    | Command::Children { .. },
+                ) => {}
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.detach_debugger();
+                    return;
+                }
             }
-        };
-        if disconnected {
-            self.detach_debugger();
         }
     }
 
@@ -456,6 +530,12 @@ impl Interpreter {
                 .clear_debugger_bits(DEBUGGER_PAUSE | DEBUGGER_COMMANDS);
         });
         drop(guarded);
+        // Nobody is left to stop for: every breakpoint goes, each slot
+        // given its original back.
+        self.enter(|mutator| {
+            breakpoints::clear(mutator);
+            mutator.breakpoints.report_to(None);
+        });
         self.debugger = None;
     }
 

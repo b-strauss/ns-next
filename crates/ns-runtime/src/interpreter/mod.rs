@@ -4,6 +4,7 @@
 //! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
+pub(crate) mod breakpoint;
 pub(crate) mod core_library;
 pub(crate) mod edit;
 pub mod future;
@@ -592,6 +593,13 @@ pub struct Mutator<'gc> {
     /// stress mode, which runs with no debugger attached, reads through it
     /// too. Holds no handle, so nothing traces it.
     pub(crate) debug_metadata: crate::debugger::metadata::Cache,
+    /// The attached debugger's breakpoints (`debugger::breakpoints`): on
+    /// the mutator, since the run loop's `Breakpoint` arm, a module's
+    /// build and an install, which run inside an entry, reach nothing
+    /// else. It holds its patched bodies by `Rc` and no handle but its
+    /// token's activation, which never outlives the arm that reads it,
+    /// so nothing traces it.
+    pub(crate) breakpoints: crate::debugger::breakpoints::Breakpoints,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -925,18 +933,24 @@ impl Interpreter {
         let result = match start {
             HostStart::Finished(result) => result,
             HostStart::Run(activation) => {
-                // A debugger's command is served by the run it arrives
-                // during: one queued between runs, or left by the run
-                // before, ends none (`Interpreter::drop_queued_commands`).
-                self.drop_queued_commands();
+                // A debugger's command that acts on a run is served by the
+                // run it arrives during: one queued between runs, or left
+                // by the run before, ends none; a configuration command
+                // is served here (`Interpreter::serve_between_runs`).
+                self.serve_between_runs();
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
-                self.drop_queued_commands();
+                self.serve_between_runs();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
-                // to the next check to find so.
-                self.enter(|mutator| mutator.set_depth_reserve(None));
+                // to the next check to find so. So is the activation a
+                // breakpoint's token names, whose slot a termination left
+                // unexecuted.
+                self.enter(|mutator| {
+                    mutator.set_depth_reserve(None);
+                    mutator.breakpoints.drop_past_once();
+                });
                 result
             }
         };

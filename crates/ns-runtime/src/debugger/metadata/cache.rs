@@ -11,6 +11,7 @@ use super::{address, BodyMetadata};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::interpreter::Mutator;
+use crate::mixin::Mixin;
 
 /// Each body's metadata, `None` for a body that pairs with none, keyed by
 /// the body's address.
@@ -48,12 +49,7 @@ impl Cache {
             return entry.metadata.clone();
         }
         mutator.debug_metadata.forget_dead();
-        let first = mutator.lowering;
-        let other = match first {
-            Lowering::Optimized => Lowering::Reference,
-            Lowering::Reference => Lowering::Optimized,
-        };
-        for lowering in [first, other] {
+        for lowering in lowerings(mutator.lowering) {
             // No text, or text that holds no such declaration, is the same
             // under either lowering.
             let Some(level) = compile_level(mutator, &origin.mixin, lowering) else {
@@ -84,6 +80,42 @@ impl Cache {
             .clone()
     }
 
+    /// Every body of the level of the instance side `mixin` -- its own,
+    /// its class side's and every block they create -- with its metadata,
+    /// compiled again as `metadata` compiles it: what a breakpoint is
+    /// resolved against. Empty when the level has no text, or its text
+    /// does not hold the declaration.
+    pub(crate) fn level(mutator: &mut Mutator<'_>, mixin: &Rc<Mixin>) -> PairedBodies {
+        mutator.debug_metadata.forget_dead();
+        let mut bodies = Vec::new();
+        for lowering in lowerings(mutator.lowering) {
+            let Some(level) = compile_level(mutator, mixin, lowering) else {
+                break;
+            };
+            if bodies.is_empty() {
+                bodies = level
+                    .pairs
+                    .iter()
+                    .map(|(code, _)| Rc::clone(code))
+                    .collect();
+            }
+            if mutator.debug_metadata.fill(level.pairs) {
+                break;
+            }
+        }
+        let cache = &mutator.debug_metadata;
+        bodies
+            .into_iter()
+            .map(|code| {
+                let metadata = cache
+                    .bodies
+                    .get(&address(&code))
+                    .and_then(|entry| entry.metadata.clone());
+                (code, metadata)
+            })
+            .collect()
+    }
+
     /// Forgets every body's metadata: an install changes the module's
     /// text, which every span counts in, and may replace what the bodies
     /// pair with.
@@ -112,4 +144,15 @@ impl Cache {
     fn forget_dead(&mut self) {
         self.bodies.retain(|_, entry| entry.code.strong_count() > 0);
     }
+}
+
+/// The lowerings a level is compiled again under, in order: the
+/// interpreter's, then the other, for an image's code, which either may
+/// have compiled (decision 5).
+fn lowerings(first: Lowering) -> [Lowering; 2] {
+    let other = match first {
+        Lowering::Optimized => Lowering::Reference,
+        Lowering::Reference => Lowering::Optimized,
+    };
+    [first, other]
 }

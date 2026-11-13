@@ -23,6 +23,9 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// safepoint drains the queue before the stop or the stop serves it. A
 /// command is served by the run it arrives during; one queued while no
 /// run executes, or still queued when a run ends, is dropped unanswered.
+/// A configuration command -- `SetBreakpoints` -- is served wherever
+/// commands are taken instead: at a safepoint while the program runs, at
+/// a stop, and when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.
@@ -43,6 +46,15 @@ pub enum Command {
         start: usize,
         count: usize,
     },
+    /// Replaces every line breakpoint of the module `module` names -- its
+    /// root class's name, as `FrameLocation::module` names it, a shipped
+    /// module's too -- by one at each of `offsets`, byte offsets into the
+    /// module's current text. Each resolves to the first statement start
+    /// at or after its offset in any body of the module, and every body
+    /// with a statement of that same span stops there: an inlined block's
+    /// copy in its home and its fallback closure alike. Answered by
+    /// `Event::Breakpoints`.
+    SetBreakpoints { module: String, offsets: Vec<u32> },
 }
 
 impl Command {
@@ -54,6 +66,7 @@ impl Command {
             Command::StackTrace => "StackTrace",
             Command::Variables { .. } => "Variables",
             Command::Children { .. } => "Children",
+            Command::SetBreakpoints { .. } => "SetBreakpoints",
         }
     }
 }
@@ -62,8 +75,11 @@ impl Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The program stopped at a safepoint, and serves commands until a
-    /// `Continue` or a `Terminate`.
-    Stopped { reason: StopReason },
+    /// `Continue` or a `Terminate`. `returned` is `None`.
+    Stopped {
+        reason: StopReason,
+        returned: Option<ValueDescription>,
+    },
     /// The answer to `Command::StackTrace`.
     StackTrace(Vec<FrameDescription>),
     /// The answer to `Command::Variables` and `Command::Children`.
@@ -73,13 +89,39 @@ pub enum Event {
     Refused { command: String, reason: String },
     /// The answer to `Command::Continue`: the program runs again.
     Continued,
+    /// The line breakpoints of the module `module` names, in the order of
+    /// their offsets: the answer to `Command::SetBreakpoints`, and sent
+    /// unasked when a pending one resolves -- its module was built -- or
+    /// an install moved one.
+    Breakpoints {
+        module: String,
+        breakpoints: Vec<BreakpointState>,
+    },
 }
 
 /// Why the program stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopReason {
     /// The agent asked for it (`DebugRemote::pause`).
     Pause,
+    /// The program reached the statement the breakpoints `ids` stand at.
+    Breakpoint { ids: Vec<BreakpointId> },
+}
+
+/// A breakpoint, by the number the VM gave it when it was set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BreakpointId(pub u32);
+
+/// Where a line breakpoint stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakpointState {
+    pub id: BreakpointId,
+    /// The offset it was set at.
+    pub offset: u32,
+    /// The statement it stops at, in its module's current text; `None`
+    /// while it is pending: its module is not built, or no statement
+    /// starts at or after its offset.
+    pub statement: Option<ns_syntax::Span>,
 }
 
 /// A value a stop handed out, by its index in the stop's table; it names
@@ -208,8 +250,9 @@ impl DebugRemote {
     }
 
     /// Queues `command` for the VM: the next safepoint serves it if the
-    /// program runs, the stop does if it is stopped, and none if no run
-    /// executes, which drops it (`Command`). Queued before the bit
+    /// program runs, the stop does if it is stopped, and the start of the
+    /// next run if no run executes, which drops it unless it is a
+    /// configuration command (`Command`). Queued before the bit
     /// is set, so that the safepoint that finds the bit finds the command;
     /// a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {

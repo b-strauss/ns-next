@@ -13,10 +13,11 @@ use std::time::Duration;
 
 use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
+use ns_runtime::debugger::{BreakpointId, BreakpointState};
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
-    Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
+    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -145,6 +146,7 @@ fn expect_paused(remote: &DebugRemote) {
     match remote.next_event(EVENT_TIMEOUT) {
         Some(Event::Stopped {
             reason: StopReason::Pause,
+            returned: None,
         }) => {}
         other => panic!("a stop for the pause was expected, not {other:?}"),
     }
@@ -1487,5 +1489,571 @@ ns_runtime::for_each_lowering! {
             Ok(count) => assert!(count > 0, "no shipped body was checked"),
             Err(failure) => panic!("{failure}"),
         }
+    }
+}
+
+/// `source`, parsed and resolved, for a module loaded after the first.
+fn resolved_module(source: &str) -> ns_runtime::types::ResolvedModule {
+    let module = ns_syntax::parse(source).expect("parse");
+    ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File("later.ns".into()),
+    )
+    .expect("resolve")
+}
+
+/// An interpreter compiling with `lowering`, its JIT off, so that every
+/// breakpoint is the interpreter's, with `source` loaded, and its module
+/// class.
+fn interpreted(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load(source, lowering);
+    interpreter.set_jit_enabled(false);
+    (interpreter, class)
+}
+
+/// Runs `source`'s `run` under `lowering`, the JIT off, with a debugger
+/// attached: `configure` queues its commands on the test thread before
+/// the run, which serves them as it starts, and `agent` serves the run
+/// from another thread. Answers what `agent` answered and the run's
+/// result.
+fn debugged<T: Send + 'static>(
+    source: &str,
+    lowering: Lowering,
+    configure: impl FnOnce(&DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, HostResult) {
+    let (mut interpreter, class) = interpreted(source, lowering);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    debugged_in(&mut interpreter, &instance, configure, agent)
+}
+
+/// `debugged` for `instance` of `interpreter`.
+fn debugged_in<T: Send + 'static>(
+    interpreter: &mut Interpreter,
+    instance: &Root,
+    configure: impl FnOnce(&DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, HostResult) {
+    let remote = interpreter.attach_debugger();
+    configure(&remote);
+    let (answer, result, _) = debugged_by(remote, agent, || run(interpreter, instance));
+    (answer, result)
+}
+
+/// Runs what `run` runs while `agent` serves `remote` from another
+/// thread, and answers what `agent` answered, the run's result and the
+/// remote. The agent's thread goes on continuing every stop once `agent`
+/// returned, until the run ended, and terminates the run if `agent`
+/// panicked, so that a failing assertion fails the test rather than
+/// leaving the run stopped.
+fn debugged_by<T: Send + 'static>(
+    remote: DebugRemote,
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    run: impl FnOnce() -> HostResult,
+) -> (T, HostResult, DebugRemote) {
+    let finished = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let finished = Arc::clone(&finished);
+        thread::spawn(move || {
+            let answer = panic::catch_unwind(AssertUnwindSafe(|| agent(&remote)));
+            if answer.is_err() {
+                remote.send(Command::Terminate);
+            }
+            while !finished.load(Ordering::SeqCst) {
+                if let Some(Event::Stopped { .. }) = remote.next_event(Duration::from_millis(10)) {
+                    remote.send(Command::Continue);
+                }
+            }
+            // Held until the run ended, so that the run does not take its
+            // departure for a detach.
+            (answer, remote)
+        })
+    };
+    let result = run();
+    finished.store(true, Ordering::SeqCst);
+    let (answer, remote) = thread.join().expect("the agent's thread");
+    let answer = answer.unwrap_or_else(|failure| panic::resume_unwind(failure));
+    (answer, result, remote)
+}
+
+/// The offset of the start of the line of `source` that holds `text`.
+fn line_start(source: &str, text: &str) -> u32 {
+    let found = source
+        .find(text)
+        .unwrap_or_else(|| panic!("the source holds {text}"));
+    let start = source[..found].rfind('\n').map_or(0, |newline| newline + 1);
+    u32::try_from(start).expect("a test's source is small")
+}
+
+/// Sets the line breakpoints of `module` at `offsets`.
+fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
+    remote.send(Command::SetBreakpoints {
+        module: String::from(module),
+        offsets,
+    });
+}
+
+/// Waits for the breakpoints of `module`: the answer to `SetBreakpoints`,
+/// or the report of a resolution.
+fn expect_breakpoints(remote: &DebugRemote, module: &str) -> Vec<BreakpointState> {
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Breakpoints {
+            module: reported,
+            breakpoints,
+        }) if reported == module => breakpoints,
+        other => panic!("the breakpoints of {module} were expected, not {other:?}"),
+    }
+}
+
+/// The one breakpoint of `breakpoints`, which resolved to a statement:
+/// its id and the statement.
+fn resolved(breakpoints: &[BreakpointState]) -> (BreakpointId, ns_syntax::Span) {
+    match breakpoints {
+        [only] => (
+            only.id,
+            only.statement
+                .unwrap_or_else(|| panic!("the breakpoint at {} resolves", only.offset)),
+        ),
+        other => panic!("one breakpoint was expected, not {other:?}"),
+    }
+}
+
+/// The one breakpoint of `breakpoints`, which is pending: its id.
+fn pending(breakpoints: &[BreakpointState]) -> BreakpointId {
+    match breakpoints {
+        [only] if only.statement.is_none() => only.id,
+        other => panic!("one pending breakpoint was expected, not {other:?}"),
+    }
+}
+
+/// Waits for a stop at a breakpoint and answers the ids it names.
+fn expect_breakpoint_stop(remote: &DebugRemote) -> Vec<BreakpointId> {
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Stopped {
+            reason: StopReason::Breakpoint { ids },
+            returned: None,
+        }) => ids,
+        other => panic!("a stop at a breakpoint was expected, not {other:?}"),
+    }
+}
+
+/// The small integer a run answered.
+fn answered(interpreter: &mut Interpreter, result: HostResult) -> i64 {
+    let root = expect_ok(result, "run");
+    small_integer(interpreter, &root)
+}
+
+/// A method of three statements, each of which changes the slot.
+const THREE_STATEMENTS: &str = indoc! {"
+    class Lines = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        count:: count + 1.
+        count:: count + 10.
+        ^count + 100
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint at a line's start resolves to the statement that
+    /// starts there, and stops the run with its frame standing at it;
+    /// continued, the run goes on to its unchanged outcome.
+    fn a_line_breakpoint_stops_at_its_statement(lowering) {
+        let offset = line_start(THREE_STATEMENTS, "count:: count + 10.");
+        let ((statement, location), result) = debugged(
+            THREE_STATEMENTS,
+            lowering,
+            |remote| set_breakpoints(remote, "Lines", vec![offset]),
+            |remote| {
+                let (id, statement) = resolved(&expect_breakpoints(remote, "Lines"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let location = stack_trace(remote)[0].location.clone();
+                continue_stopped(remote);
+                (statement, location)
+            },
+        );
+        assert_eq!(statement.text(THREE_STATEMENTS), "count:: count + 10");
+        let location = location.expect("the stopped frame is located");
+        assert_eq!(location.module, "Lines");
+        assert_eq!(location.statement, statement);
+        expect_ok(result, "run");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The run a breakpoint stopped answers what it answers undebugged.
+    fn a_stopped_run_answers_its_unchanged_outcome(lowering) {
+        let (mut interpreter, class) = interpreted(THREE_STATEMENTS, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(THREE_STATEMENTS, "count:: count + 10.");
+        let ((), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Lines", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Lines"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                continue_stopped(remote);
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 111);
+    }
+}
+
+/// A loop whose body counts its passes.
+const LOOPING: &str = indoc! {"
+    class Looping = Object new (
+      | count ::= 0. passes ::= 0. |
+    ) (
+      public run = (
+        1 to: 3 do: [:index |
+          passes:: passes + 1.
+          count:: count + index].
+        ^count * 10 + passes
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a loop's body stops at every pass, and each
+    /// statement of the body runs once per pass.
+    fn a_breakpoint_in_a_loop_stops_every_iteration(lowering) {
+        let (mut interpreter, class) = interpreted(LOOPING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(LOOPING, "passes:: passes + 1.");
+        let (statement, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Looping", vec![offset]),
+            |remote| {
+                let (id, statement) = resolved(&expect_breakpoints(remote, "Looping"));
+                for _ in 0..3 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+                statement
+            },
+        );
+        assert_eq!(statement.text(LOOPING), "passes:: passes + 1");
+        assert_eq!(answered(&mut interpreter, result), 63);
+    }
+}
+
+/// A send that increments a slot, as a statement of its own.
+const BUMPING: &str = indoc! {"
+    class Bumping = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        self bump.
+        ^count
+      )
+      public bump = (
+        count:: count + 1
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Removing the breakpoint the run stopped at gives the slot its
+    /// original back, which the continued run executes once.
+    fn removing_the_breakpoint_one_stands_at_runs_the_original_once(lowering) {
+        let (mut interpreter, class) = interpreted(BUMPING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(BUMPING, "self bump.");
+        let (left, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Bumping", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Bumping"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                set_breakpoints(remote, "Bumping", Vec::new());
+                let left = expect_breakpoints(remote, "Bumping");
+                continue_stopped(remote);
+                left
+            },
+        );
+        assert_eq!(left, []);
+        assert_eq!(answered(&mut interpreter, result), 1);
+    }
+}
+
+/// An `ifTrue:` sent once to a Boolean, whose block the compiler inlines,
+/// and once to an object that answers it by running its argument, the
+/// block's fallback closure.
+const FALLING_BACK: &str = indoc! {"
+    class FallingBack = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        self check: true.
+        self check: Yes new.
+        ^count
+      )
+      public check: condition = (
+        condition ifTrue: [
+          count:: count + 1].
+        ^count
+      )
+      public class Yes = Object new () (
+        public ifTrue: block = (
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in an inlined block patches both of its copies: the
+    /// one inline in its home and the fallback closure a receiver that is
+    /// no Boolean runs.
+    fn a_breakpoint_in_a_block_and_in_its_fallback_both_stop(lowering) {
+        let (mut interpreter, class) = interpreted(FALLING_BACK, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(FALLING_BACK, "count:: count + 1].");
+        let (statement, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "FallingBack", vec![offset]),
+            |remote| {
+                let (id, statement) = resolved(&expect_breakpoints(remote, "FallingBack"));
+                for _ in 0..2 {
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                }
+                statement
+            },
+        );
+        assert_eq!(statement.text(FALLING_BACK), "count:: count + 1");
+        assert_eq!(answered(&mut interpreter, result), 2);
+    }
+}
+
+/// A loop that never ends, its body a statement of its own line.
+const SPINNING: &str = indoc! {"
+    class Spinning = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        [true] whileTrue: [
+          count:: count + 1].
+        ^count
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint set while the program runs is served at the next
+    /// safepoint without stopping, and the loop then stops at it.
+    fn a_breakpoint_set_while_running_takes_effect(lowering) {
+        let (mut interpreter, class) = interpreted(SPINNING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(SPINNING, "count:: count + 1].");
+        let (statement, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |_| {},
+            move |remote| {
+                thread::sleep(PAUSE_DELAY);
+                set_breakpoints(remote, "Spinning", vec![offset]);
+                let (id, statement) = resolved(&expect_breakpoints(remote, "Spinning"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                remote.send(Command::Terminate);
+                statement
+            },
+        );
+        assert_eq!(statement.text(SPINNING), "count:: count + 1");
+        assert_terminated(result);
+    }
+}
+
+/// A module loaded after the program's first run.
+const LATER: &str = indoc! {"
+    class Later = Object new () (
+      public answer = (
+        | value |
+        value:: 6 * 7.
+        ^value
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a module not loaded yet is pending; loading the
+    /// module resolves it, reported unasked, and its method then stops.
+    fn a_pending_breakpoint_resolves_when_its_module_loads(lowering) {
+        let (mut interpreter, class) = interpreted(THREE_STATEMENTS, lowering);
+        let remote = interpreter.attach_debugger();
+        set_breakpoints(&remote, "Later", vec![line_start(LATER, "value:: 6 * 7.")]);
+        // The instantiation is a run, which serves the command as it
+        // starts.
+        expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let id = pending(&expect_breakpoints(&remote, "Later"));
+        let later_class = interpreter.load_module(&resolved_module(LATER));
+        let (resolved_id, statement) = resolved(&expect_breakpoints(&remote, "Later"));
+        assert_eq!(resolved_id, id);
+        assert_eq!(statement.text(LATER), "value:: 6 * 7");
+        let later = expect_ok(interpreter.instantiate(&later_class, &[]), "instantiate Later");
+        let ((), result, _) = debugged_by(
+            remote,
+            move |remote| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                continue_stopped(remote);
+            },
+            || interpreter.send(&later, Symbol::intern("answer"), &[]),
+        );
+        assert_eq!(answered(&mut interpreter, result), 42);
+    }
+}
+
+/// The text of the shipped module `TranscriptFactory`, which its spans
+/// count in.
+const TRANSCRIPT_FACTORY: &str = include_str!("../core-library/platform/TranscriptFactory.ns");
+
+/// A program whose run asks the platform for its transcript, which builds
+/// the shipped module `TranscriptFactory` on first demand.
+const PRINTING: &str = indoc! {"
+    class Printing usingPlatform: platform = Object new (
+      | thePlatform = platform. |
+    ) (
+      public run = (
+        ^thePlatform transcript
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint in a shipped module built on first demand is pending
+    /// until the program first asks for the module, and stops at its
+    /// first use.
+    fn a_breakpoint_in_a_lazily_built_shipped_module_resolves_when_it_is_built(lowering) {
+        let (mut interpreter, class) = interpreted(PRINTING, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let offset = line_start(TRANSCRIPT_FACTORY, "^Transcript new.");
+        let ((location, statement), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "TranscriptFactory", vec![offset]),
+            |remote| {
+                let id = pending(&expect_breakpoints(remote, "TranscriptFactory"));
+                let (resolved_id, statement) =
+                    resolved(&expect_breakpoints(remote, "TranscriptFactory"));
+                assert_eq!(resolved_id, id);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let location = stack_trace(remote)[0].location.clone();
+                continue_stopped(remote);
+                (location, statement)
+            },
+        );
+        assert_eq!(statement.text(TRANSCRIPT_FACTORY), "^Transcript new");
+        let location = location.expect("the stopped frame is located");
+        assert_eq!(location.module, "TranscriptFactory");
+        assert_eq!(location.statement, statement);
+        expect_ok(result, "run");
+    }
+}
+
+/// A method whose running replaces another method through a
+/// MirrorBuilder before it sends it; the replacement declares one more
+/// temporary, so that its statement starts later in the module's text.
+const EDITING: &str = indoc! {"
+    class Editing usingPlatform: platform = Object new (
+      | mirrors = platform mirrors. |
+    ) (
+      public class Subject = Object new () (
+        public answer = ( | value | value:: 6 * 7. ^value )
+      )
+      public run = (
+        change.
+        ^Subject new answer
+      )
+      public change = (
+        | builder = (mirrors ClassMirror reflecting: Subject) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: 'public answer = ( | value other | value:: 6 * 8. ^value )'.
+        builder install
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An install replaces the bodies of the class it edits: a breakpoint
+    /// in one is set again on the new body by its offset, reported
+    /// unasked with its new statement, and the new body stops.
+    fn an_install_sets_the_breakpoint_again_on_the_new_body(lowering) {
+        let (mut interpreter, class) = interpreted(EDITING, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let offset = EDITING.find("value:: 6 * 7").expect("the first answer's statement");
+        let offset = u32::try_from(offset).expect("a test's source is small");
+        let ((first, moved, stopped_at, name), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Editing", vec![offset]),
+            |remote| {
+                let (id, first) = resolved(&expect_breakpoints(remote, "Editing"));
+                let (moved_id, moved) = resolved(&expect_breakpoints(remote, "Editing"));
+                assert_eq!(moved_id, id);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let frames = stack_trace(remote);
+                let stopped_at = frames[0]
+                    .location
+                    .clone()
+                    .map(|location| location.statement);
+                continue_stopped(remote);
+                (first, moved, stopped_at, frames[0].name.clone())
+            },
+        );
+        assert_eq!(first.text(EDITING), "value:: 6 * 7");
+        assert_ne!(moved, first);
+        assert_eq!(stopped_at, Some(moved));
+        assert_eq!(name, "Subject>>answer");
+        assert_eq!(answered(&mut interpreter, result), 48);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A full collection keeps a patched body's code id, though no
+    /// running activation names it; the breakpoint removed after it gives
+    /// the body its original back, which the next run executes.
+    fn a_patched_body_keeps_its_code_id_across_a_full_collection(lowering) {
+        let (mut interpreter, class) = interpreted(BUMPING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let remote = interpreter.attach_debugger();
+        let offset = line_start(BUMPING, "count:: count + 1");
+        set_breakpoints(&remote, "Bumping", vec![offset]);
+        let ((), result, remote) = debugged_by(
+            remote,
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Bumping"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                continue_stopped(remote);
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 1);
+        let bump = Symbol::intern("bump");
+        let before = interpreter.jit_code_id(&class, MethodSide::Instance, bump);
+        interpreter.collect_now();
+        let after = interpreter.jit_code_id(&class, MethodSide::Instance, bump);
+        assert_eq!(after, before, "the patched body keeps its code id");
+        set_breakpoints(&remote, "Bumping", Vec::new());
+        let (left, result, _) = debugged_by(
+            remote,
+            |remote| expect_breakpoints(remote, "Bumping"),
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(left, []);
+        assert_eq!(answered(&mut interpreter, result), 2);
     }
 }

@@ -18,10 +18,16 @@
 > when the body compiled again is alike; a stopped frame shows its name,
 > the statement and the send it stands at, and its named variables over
 > its whole lexical chain, and the oracle holds every body of every
-> golden and of the shipped modules to compiling again alike. Everything
-> else is planned: breakpoints and stepping (stage 3, next), the DAP
-> agent and the plugin, evaluation, hot swap and edit-and-continue
-> ("Planned: the order of building it"). The
+> golden and of the shipped modules to compiling again alike. Stage 3 is
+> under way: a line breakpoint, set by its module and an offset into its
+> text, pending until its module is built and set again on the bodies an
+> install replaces, patches its statement's slots in place and stops the
+> interpreter there ("Stopping at and going past a breakpoint", "A
+> breakpoint names a source position"). Everything else is planned: the
+> rest of stage 3 -- breakpoints in machine code, stepping, run to
+> cursor, method and exception breakpoints -- the DAP agent and the
+> plugin, evaluation, hot swap and edit-and-continue ("Planned: the order
+> of building it"). The
 > design rests on fifteen decisions made with the user, nine on
 > 2026-11-10 and stage 2's six on 2026-11-12 ("The decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
 > and leaves the questions in "Open questions" to be decided. It builds on
@@ -257,9 +263,10 @@ named variables ("Reading the stack at a stop", "Compiling the metadata
 again"). It lives in `crates/ns-runtime/src/debugger/`
 and is reached through `Interpreter::attach_debugger`; its only clients
 today are the test suite (`crates/ns-runtime/tests/debugger.rs`) and the
-pause stress mode, since the DAP agent in `ns-cli` is stage 4's. No
-breakpoint, step, evaluation or write of a frame exists yet: a program
-stops only for a pause, and a stop only reads.
+pause stress mode, since the DAP agent in `ns-cli` is stage 4's. A
+program stops for a pause and at a line breakpoint the interpreter
+reaches ("Stopping at and going past a breakpoint"); no step, evaluation
+or write of a frame exists yet, and a stop only reads.
 
 ### The attachment and the remote
 
@@ -287,9 +294,10 @@ The remote has three operations:
 - `send(command)` queues a command and then sets the commands bit, so that
   the next safepoint serves it while the program runs, or the stop serves
   it while the program is stopped. A command queued while no run
-  executes, or still queued when a run ends, is dropped unanswered
-  ("Commands while the program runs"). A remote whose VM is gone queues
-  it nowhere and arms nothing.
+  executes, or still queued when a run ends, is dropped unanswered, but
+  a configuration command -- `SetBreakpoints` -- which the start or the
+  end of a run serves ("Commands while the program runs"). A remote
+  whose VM is gone queues it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
 
@@ -302,9 +310,10 @@ Attaching again replaces the debugger: the earlier one's channels go with
 it, the commands still queued in them included, its pause and commands
 bits are cleared under the hold of the arming lock that makes the new
 attachment current, so that the new remote meets no stop it never asked
-for (`a_pause_before_a_replacement_does_not_stop_the_run`), and its
-remote, still held, arms nothing from then on. Dropping the remote
-detaches the debugger ("Detaching" below).
+for (`a_pause_before_a_replacement_does_not_stop_the_run`), every
+breakpoint it set is removed, and its remote, still held, arms nothing
+from then on. Dropping the remote detaches the debugger ("Detaching"
+below).
 
 ### Commands and events
 
@@ -323,19 +332,35 @@ The commands (`debugger::Command`):
 - `Children { value, start, count }` -- `count` children of a value the
   stop handed out, from the `start`th; answered by `Event::Variables`, or
   refused with "no value of this stop has that id".
+- `SetBreakpoints { module, offsets }` -- replaces every line breakpoint
+  of the module `module` names, its root class's name as
+  `FrameLocation::module` names it, by one at each byte offset into the
+  module's current text ("A breakpoint names a source position");
+  answered by `Event::Breakpoints`. A configuration command: served
+  wherever commands are taken, at a stop, at a safepoint while the
+  program runs, and at the start and the end of a run.
 
-The events (`debugger::Event`): `Stopped { reason }`, the program stopped
-and serves commands until a `Continue` or a `Terminate` (the one
-`StopReason` is `Pause`); `StackTrace`; `Variables`, the answer to both
-`Variables` and `Children`; `Refused { command, reason }`, the command
-`Command::name` names not served; and `Continued`. `Continue`,
-`StackTrace`, `Variables` and `Children` are served only at a stop; one
-that arrives while the program runs is refused with "the program is
-running". Every command a stop or a safepoint serves but `Terminate` is
-answered by one event, in the order the commands came. An agent therefore
-waits for `Stopped` before it sends a command only a stop serves: one sent
-right after `pause()` is refused or served depending on whether a
-safepoint drains the queue before the stop or the stop serves it.
+The events (`debugger::Event`): `Stopped { reason, returned }`, the
+program stopped and serves commands until a `Continue` or a `Terminate`
+-- `StopReason::Pause`, or `StopReason::Breakpoint { ids }`, the
+breakpoints standing at the statement it stopped at; `returned`, the
+value the last call returned, is `None` until step out builds it
+("The return value of the last call"); `StackTrace`; `Variables`, the
+answer to both `Variables` and `Children`; `Refused { command, reason }`,
+the command `Command::name` names not served; `Continued`; and
+`Breakpoints { module, breakpoints }`, the module's line breakpoints in
+the order of their offsets, each a `BreakpointState` -- its
+`BreakpointId`, its offset and the span of the statement it stops at, or
+`None` while it is pending -- the answer to `SetBreakpoints`, and sent
+unasked when a pending one resolves or an install moves one.
+`Continue`, `StackTrace`, `Variables` and `Children` are served only at a
+stop; one that arrives while the program runs is refused with "the
+program is running". Every command a stop or a safepoint serves but
+`Terminate` is answered by one event, in the order the commands came. An
+agent therefore waits for `Stopped` before it sends a command only a stop
+serves: one sent right after `pause()` is refused or served depending on
+whether a safepoint drains the queue before the stop or the stop serves
+it.
 
 ### The poll words as atomics
 
@@ -444,32 +469,41 @@ compaction and a pending collection: a safepoint whose service raised
 another request returns before it clears the request, and a pause served
 after that point would wait for a later safepoint
 (`a_pause_while_a_collection_is_requested_is_served`). `serve_debugger`
-reads the debugger's bits; with none set the safepoint goes on. Bits set
-with no debugger attached are cleared, since nobody is left to stop for.
-The commands are served first, then the pause.
+reads the debugger's bits and takes the stop a `Breakpoint` arm left
+for ("Stopping at and going past a breakpoint"); with neither the
+safepoint goes on. Bits set with no debugger attached are cleared, since
+nobody is left to stop for. The commands are served first, then the
+breakpoint's stop, which serves a pause asked meanwhile too, then the
+pause.
 
 ### Commands while the program runs
 
 With the commands bit set, the queue is drained
 (`serve_queued_commands`): the bit is cleared first, under the arming
 lock, then every queued command is taken without waiting (`try_recv`). A
-`Terminate` ends the run, and the commands queued after it are dropped;
-any other command is refused, "the program is running". The agent queues
+`Terminate` ends the run, and the commands queued after it are dropped
+but for a configuration command; a `SetBreakpoints` is served -- the
+breakpoints patched or restored, answered by `Event::Breakpoints` -- and
+the program runs on; any other command is refused, "the program is
+running". The agent queues
 a command before it sets the bit, and the VM clears the bit before it
 drains the queue, so that a
 command queued while the queue is drained keeps its bit set for the next
 safepoint; the other order would lose it, a `Terminate` sent to a fully
 compiled loop included.
 
-A command is served by the run it arrives during. `run_from_host` clears
-the commands bit, under the arming lock, and then drops every queued
-command, before a run starts and once it ended
-(`Interpreter::drop_queued_commands`), in the order the drain keeps and
-for its reason: a command the drop misses keeps its bit and is served, or
-dropped again, at the next safepoint. Without the drop,
-a command left queued -- a `Terminate` sent after its run ended, or queued
-after the one that ended it -- would otherwise end the next run at its
-first safepoint, or be taken by its first stop, a run nobody terminated
+A command that acts on a run is served by the run it arrives during.
+`run_from_host` clears the commands bit, under the arming lock, and then
+takes every queued command, before a run starts and once it ended
+(`Interpreter::serve_between_runs`), in the order the drain keeps and
+for its reason: a command the drain misses keeps its bit and is served,
+or dropped, at the next safepoint. A configuration command is served
+there, so that breakpoints an agent sets before the program runs, or
+between two runs, are set when the next run starts; every other command
+is dropped unanswered. Without the drop, a command left queued -- a
+`Terminate` sent after its run ended, or queued after the one that ended
+it -- would otherwise end the next run at its first safepoint, or be
+taken by its first stop, a run nobody terminated
 (`a_terminate_after_its_run_ended_does_not_end_the_next`,
 `a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other`). A
 pause is no command: one asked between runs stays, and stops the next run
@@ -485,12 +519,13 @@ does a leaf blocked waiting for input, reading the standard input among
 them, which no pause and no `Terminate` served at a safepoint reaches
 ("Open questions", "Terminating a program that reaches no safepoint").
 
-Planned: the DAP requests `setBreakpoints` and `disconnect` arrive while
-the program runs, as `pause` and `terminate` do. Each becomes a command
-the agent queues, setting the commands bit, and the next safepoint serves
-it from the queue without stopping, as it serves `Terminate` today: the
-breakpoints patched or restored, or the debugger detached with every
-breakpoint removed, and the program runs on.
+The DAP request `setBreakpoints` arrives while the program runs, as
+`pause` and `terminate` do, and becomes `SetBreakpoints`, which the next
+safepoint serves from the queue without stopping
+(`a_breakpoint_set_while_running_takes_effect`). Planned: `disconnect`
+becomes a command served the same way, the debugger detached with every
+breakpoint removed, as a remote's departure detaches it today
+("Detaching"), and the program runs on.
 
 ### The stop
 
@@ -507,13 +542,14 @@ the stack is the interpreter's word for word before the agent reads it
 of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
-The stop then sends `Stopped { reason: Pause }` and blocks on the command
-channel (`recv`), on the VM's thread, between two stretches: no handle is
-live, and nothing pushes or pops until the program goes on. The stack is
-the activations on the activation stack and, below them, the senders a
-suspension left in their frame objects ("Reading the stack at a stop").
-It serves `StackTrace`, `Variables` and
-`Children` ("Reading the stack at a stop", "Values the IDE holds") until a
+The stop then sends `Stopped { reason, returned: None }` -- a pause's, or
+a breakpoint's with the ids standing at its slot -- and blocks on the
+command channel (`recv`), on the VM's thread, between two stretches: no
+handle is live, and nothing pushes or pops until the program goes on. The
+stack is the activations on the activation stack and, below them, the
+senders a suspension left in their frame objects ("Reading the stack at a
+stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
+stack at a stop", "Values the IDE holds") and `SetBreakpoints` until a
 `Continue` or a `Terminate`. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
 clears it and finds the queue empty. A pause asked while stopped likewise
@@ -549,7 +585,8 @@ Dropping the remote detaches the debugger. The VM notices it where it next
 talks to the remote -- a command channel found disconnected while draining
 or while stopped, or an event that cannot be sent -- and
 `detach_debugger` makes no attachment current and clears both debugger
-bits under one hold of the arming lock, then drops the debugger. A stopped
+bits under one hold of the arming lock, removes every breakpoint, each
+slot given its original back, then drops the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
 again (`a_dropped_remote_lets_the_program_finish`,
 `a_remote_dropped_while_stopped_lets_the_program_finish`).
@@ -973,6 +1010,18 @@ stage's tests, do not.
   a broken table, and `debugger/metadata/tests.rs`'s
   `a_body_that_compiles_again_otherwise_fails_the_check` fails an
   image's body whose text, patched, compiles otherwise.
+- **The breakpoints' tests** (`tests/debugger.rs`, each under both
+  lowerings with the JIT off): a line breakpoint resolved to its
+  statement and stopping there, the stopped frame located at it, the
+  run's outcome unchanged; a breakpoint in a loop stopping at every pass;
+  the breakpoint a stop stands at removed, its original run once; an
+  inlined block's breakpoint stopping in its home and in its fallback
+  closure; a breakpoint set while the program runs; a pending breakpoint
+  resolved when its module loads, and one in `TranscriptFactory`
+  resolved when the program first asks for it; an install setting the
+  breakpoint again on the new body; and a patched body keeping its code
+  id across a full collection. The helper `debugged` queues an agent's
+  configuration before the run and serves the run from another thread.
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -994,9 +1043,12 @@ stage's tests, do not.
 - Planned: **debugger goldens**, a `.ns` with a script of commands and the
   stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
-- Planned: **the `codegen` gate** after the `Cell` slots and the
-  `Breakpoint` arm, and a measurement (the `measuring-performance` skill)
-  that `--debug` with no breakpoint runs at plain speed. The `linux` and
+- **The `codegen` gate** holds the run loop with the `Cell` slots and
+  the `Breakpoint` arm to its budgets: the arm shares the out-of-line arm
+  of the simultaneous slot clauses, since an arm of its own grew
+  `vm::run` past its budget ("Stopping at and going past a breakpoint").
+  Planned: a measurement (the `measuring-performance` skill) that
+  `--debug` with no breakpoint runs at plain speed. The `linux` and
   `aarch64` gates already run the atomics on both architectures.
 - Planned: **the plugin's tests** drive its `XDebugProcess` against the
   agent.
@@ -1055,12 +1107,14 @@ specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 Each states the choice and the reasons the alternatives were rejected; the
 mechanisms each implies are in "Planned: the mechanisms". Decisions 7
 and 10 to 15 are built, and of decisions 1 and 9 what pausing, reading
-the stack and ending a run need: the debugging API's first part, and the
-stop waiting at the safepoint ("The debugging API at the safepoint"); of
-decision 4 the tables, and of decision 5 the compilation again, the
-comparison and the cache ("Compiling the metadata again"), which a stop
-reads and a breakpoint will. Everything else they decide is planned, and
-is written below as the design to build.
+the stack, ending a run and setting breakpoints need: the debugging
+API's first part, and the stop waiting at the safepoint ("The debugging
+API at the safepoint"); of decision 2 the patching and the interpreter's
+stop at a line breakpoint; of decision 4 the tables, and of decision 5
+the compilation again, the comparison and the cache ("Compiling the
+metadata again"), which a stop and a breakpoint's resolution read.
+Everything else they decide is planned, and is written below as the
+design to build.
 
 ### 1. One debugging API in Rust, two clients over it
 
@@ -1095,15 +1149,20 @@ Newspeak can still be built later, on the same mirrors.
 
 ### 2. A breakpoint patches the body in place
 
-A breakpoint will replace its slot of `EncodedBody::slots` by an
-instruction `Breakpoint`, and keep the original beside the slots, on the
+**Partial:** the patching and the interpreter's stop are built; the
+JIT's side -- a patch freeing machine code, the baseline's exit at a
+patched index and the optimizing tier's refusal -- is planned.
+
+A breakpoint replaces its slot of `EncodedBody::slots` by an
+instruction `Breakpoint`, and keeps the original beside the slots, on the
 body ("Where the original lives" below). The interpreter stops at it and,
-going on, executes the original. The slots become interior-mutable
-(`Cell<CompactInstruction>`), written only through one narrow API; the run
-loop's fetch copies a slot out as it does today. Setting a breakpoint
-frees the body's machine code and every optimized copy that inlined it;
-the baseline lowers a patched index as an exit, so every other body keeps
-running in machine code.
+going on, executes the original. The slots are interior-mutable
+(`Cell<CompactInstruction>`), written only through one narrow API
+(`CompiledCode::patch`, `restore`); the run loop's fetch copies a slot
+out as it did before. Planned: setting a breakpoint frees the body's
+machine code and every optimized copy that inlined it; the baseline
+lowers a patched index as an exit, so every other body keeps running in
+machine code.
 
 - `Breakpoint` has no wire tag: the image encoder and `cargo xtask
   shipped-code` read the decoded view, which answers the original.
@@ -1563,9 +1622,14 @@ questions"). The mechanisms stages 1 and 2 built -- the poll words as
 atomics, the commands served while the program runs, reading the stack at
 a stop, compiling the metadata again and the values a stop holds -- are
 described in "The debugging API at the safepoint", with what of them is
-still planned.
+still planned; a mechanism below that stage 3 has begun to build says
+what of it is built.
 
 ### Where the original lives
+
+**Partial:** the original and every reader's view of it are built; the
+baseline's exit at a patched index and the optimizing tier's refusal are
+planned.
 
 The run loop is not the only reader of a slot: `send_destination`
 (`vm.rs`), two leaves in `jit/leaves.rs`, and the decoded view
@@ -1575,11 +1639,12 @@ snapshot and build, the image encoder, `shipped-code`, `disasm` and the
 debugger's `compiles_alike`. So the
 original of a patched slot is kept on the body, beside `EncodedBody::slots`,
 and every reader but two sees the original without reaching the debugger:
-the decoded view answers it, and `send_destination` reads it. Only the run
-loop's fetch sees `Breakpoint`, and `jit::baseline::lower` asks
-`CompiledCode::is_patched(index)` and lowers a patched index as an exit.
-The optimizing tier refuses to optimize or inline a body with a patched
-slot. `Breakpoint` is therefore a compact form only, never an
+the decoded view answers it (`EncodedBody::original`), and
+`send_destination` reads it. Only the run loop's fetch sees `Breakpoint`.
+Planned: `jit::baseline::lower` asks `CompiledCode::is_patched(index)`
+and lowers a patched index as an exit, and the optimizing tier refuses to
+optimize or inline a body with a patched slot. `Breakpoint` is a compact
+form only, never an
 `Instruction`: `bytecode.rs`'s exhaustive matches over `Instruction`
 (`registers_read`, `register_written`, `outer_reach_of`, …) never see it,
 and the leftover analysis runs over the originals.
@@ -1642,68 +1707,106 @@ decides"), so the check would cost every send of every fast-path method.
 
 ### Stopping at and going past a breakpoint
 
-The `Breakpoint` arm of the run loop is `#[cold]`, out of line, and calls
-into `interpreter/` (`vm.rs` holds no dispatch logic), which decides: stop,
-evaluate a condition, count a hit, log, or skip. Going on, the arm
-replaces the fetched slot by the original and re-enters the loop's `match`
-with it -- the `match` sits inside a dispatch loop that runs once per
-instruction unless the `Breakpoint` arm continues it with the original,
-which costs nothing until the arm is reached, since breaking the loop's
-outer labelled blocks from inside it is legal; a check before the `match`
-would cost every instruction a compare -- so every kind of instruction, sends included, runs through its
-ordinary arm and the original's behaviour is the interpreter's own;
+**Partial:** the stop and the going past are built for line breakpoints;
+conditions, hit counts and logpoints, and what a restart, a forced
+return, edit-and-continue and an evaluation do with the token, are
+planned.
+
+A `Breakpoint` slot shares the run loop's out-of-line arm of the
+simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an
+arm of its own, one more target of the `match`'s jump table, grew
+`vm::run` past the `codegen` gate's budget, where the shared one costs
+nothing. That call hands the decision to `interpreter/` (`vm.rs` holds
+no dispatch logic): `interpreter::breakpoint::reached`, `#[cold]`, which
+answers `BreakpointDecision::Execute` with the slot's original or
+`BreakpointDecision::Stop`; planned, it also evaluates a condition,
+counts a hit or logs. Going on, the arm replaces the fetched slot by the
+original and re-enters the loop's `match` with it -- the `match` sits
+inside a dispatch loop that runs once per instruction unless the arm
+continues it with the original, which costs nothing until the arm is
+reached, since breaking the loop's outer labelled blocks from inside it
+is legal; a check before the `match` would cost every instruction a
+compare -- so every kind of instruction, sends included, runs through
+its ordinary arm and the original's behaviour is the interpreter's own;
 `run_wide`'s way, the effect functions called out of line, is closed to a
 send (`unreachable!("internal: a send is never encoded through Wide")`),
-and statement starts and return points are often sends.
+and statement starts and return points are often sends. Stopping, it
+records the stop on the `Mutator` (`Breakpoints::request_stop`) and the
+arm leaves the stretch as `Leave::Safepoint`, the frame standing at the
+slot: the stop is the safepoint's (`serve_debugger`, "Serving at the
+safepoint"), never the arm's.
 
-A stop that resumes sets a "past (activation, index) once" token, so the
-loop does not stop at the same breakpoint again before executing it. An
+A stop that resumes sets a "past (activation, body, index) once" token,
+so the loop does not stop at the same breakpoint again before executing
+it; it is set only while a breakpoint still patches the slot, since one
+removed at the stop left the original there, which no arm reads. An
 activation's offset is reused after its pop, so the token is consumed or
-dropped at the next `Breakpoint` arm the loop executes, and dropped when
-its activation pops -- a restart, a forced return, a termination or an
-unwind may leave it unexecuted; a restart, a forced return and
-edit-and-continue drop it explicitly, since a restart does not pop its
-activation and would otherwise skip the breakpoint at its first statement.
-Breakpoints skipped during an evaluation neither consume nor drop it. A
+dropped at the next `Breakpoint` arm the loop executes -- after a
+`Continue`, the same frame fetching the same slot again, so no pop needs
+to look at it -- and dropped when a run ends, since a termination leaves
+it unexecuted, and when its slot is restored. The suspend stress mode,
+which resumes the stopped frame at another offset, moves it there.
+Planned: a restart, a forced return and edit-and-continue drop it
+explicitly, since a restart does not pop its activation and would
+otherwise skip the breakpoint at its first statement, and breakpoints
+skipped during an evaluation neither consume nor drop it. A
 `Continuation::Reexecute` runs a caller's instruction again at the same
 index once a future it met is resolved (`vm::reexecute`); when that
-instruction is a patched one, the arm sets the token again, so the
-breakpoint neither stops, counts nor logs twice. The codegen gate's budget of
-`vm::run` and `resume_caller` would show any growth the `Cell` slots or the
-new arm cost the hot path.
+instruction is a patched one, `interpreter::breakpoint::reexecuting` sets
+the token again, so the breakpoint neither stops, counts nor logs twice.
+The `codegen` gate's budgets of `vm::run`, `resume_caller` and `finish`
+hold what the `Cell` slots and the arm cost the hot path.
 
 ### Breakpoints by body, and reclaimed code ids
 
 A full collection reclaims code ids nothing names (`heap/tables.rs`,
 `heap/reclaim.rs`), so a breakpoint keyed by code id could restore its
 original into another body that later gets the id. The breakpoint table
-holds the body itself (`Rc<CompiledCode>`) with its index, and a full
-collection treats every patched body's code id as named, as it does
-`CopyDependencies::code_ids`; a body without an id yet is given one. The
+(`debugger::breakpoints::Breakpoints`, on the `Mutator`) holds the body
+itself (`Rc<CompiledCode>`), keyed by its address and the index, with
+every breakpoint standing there; restoring the last of an index restores
+the slot. A full collection treats every patched body's code id as named
+(`Breakpoints::patched_code_ids`, beside `jit::inlined_code_ids` in
+`Mutator::reclaim_ids`), as it does `CopyDependencies::code_ids`; a body
+without an id yet is given one when it is patched. Planned: the
 invalidation a patch needs is new: keyed by code id over every copy's
 `CopyDependencies::code_ids`, it frees every copy that inlined the patched
 body, beside the body's own machine code.
 
 ### A breakpoint names a source position
 
-The IDE sets a breakpoint at a file and line. The agent resolves it
-against the bodies compiled from that file -- methods, blocks (a block's
-body is a literal of its home, so a block never yet created is patched in
-place all the same), slot initializers, superclass clauses and initializer
-expressions, each a body of its own -- through their metadata, compiled
-again for the purpose. A breakpoint whose module is not built yet -- a
-program module not loaded, a shipped module built on first demand through
-`recordShippedModule:` -- is pending and is resolved when the module's
-code is built. An install replaces bodies: each breakpoint in an edited
-class is set again by its source position on the new bodies, and frames
-still running the old bodies keep theirs.
+The IDE sets a breakpoint at a file and line; the agent, stage 4's, turns
+the line into a byte offset into the module's current text and sends
+`SetBreakpoints` with the module's name and the offsets. The VM resolves
+each offset (`debugger::breakpoints`) against every current body of the
+module -- methods, blocks (a block's body is a literal of its home, so a
+block never yet created is patched in place all the same), slot
+initializers, superclass clauses and initializer expressions, each a
+body of its own, of every level of the module, both sides -- through
+their metadata, compiled again for the purpose (`metadata::Cache::level`):
+to the first statement that compiled to an instruction and starts at or
+after the offset, and patches the first instruction of every statement
+with that same span, in every body. A body without metadata is not
+patched. A shipped module's text is its shipped text. A breakpoint whose
+module is not built yet -- a program module not loaded, a shipped module
+built on first demand through the mirror -- is pending
+(`BreakpointState::statement` is `None`) and is resolved when the
+module's root class is built (`Mutator::load_root_class`,
+`core_library::module_class`, before its factory and initializer run),
+reported unasked by `Event::Breakpoints`. An image's load builds its
+modules in an interpreter of its own, which no debugger is attached to
+yet. An install replaces bodies: the edited module's breakpoints are
+resolved again by their offsets against its current bodies, a patch on a
+current body a breakpoint no longer stands at is removed, a moved one is
+reported unasked, and frames still running the old bodies keep theirs,
+whose patches stay until the breakpoint is removed.
 
 An inlined control-flow block -- an `ifTrue:`'s, an `and:`'s, a
 `whileTrue:`'s -- is lowered twice: inline in its home, and as the
 fallback closure a receiver that is not a Boolean runs
-([execution.md](execution.md), "Fallback blocks"). A line breakpoint, a
-flood and a method breakpoint patch both copies, or a non-Boolean receiver
-runs past the breakpoint.
+([execution.md](execution.md), "Fallback blocks"). A line breakpoint
+patches both copies, as a flood and a method breakpoint will, or a
+non-Boolean receiver runs past the breakpoint.
 
 The plugin needs the breakable places before any session runs, since
 IntelliJ asks `canPutAt` and the variants while breakpoints are set before

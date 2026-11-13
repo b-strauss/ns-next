@@ -1897,7 +1897,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       whose service raised a request from one served at a later
       safepoint, since no deterministic setup keeps a collection
       requested at the stop; and the order in which
-      `Interpreter::drop_queued_commands` clears the commands bit before
+      `Interpreter::serve_between_runs` clears the commands bit before
       it drains is held by review only, since the race needs the agent's
       `send` between two instructions of the VM's thread and the runtime
       has no hook there ([debugger.md](design/debugger.md), "Commands

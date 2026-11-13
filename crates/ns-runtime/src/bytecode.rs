@@ -879,37 +879,16 @@ impl CompiledCode {
     /// answers `Breakpoint` there, and every other reader the instruction
     /// it replaced (`docs/design/debugger.md`, "Where the original
     /// lives"). Patching a patched index changes nothing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn patch(&self, index: usize) {
         self.body.patch(index);
     }
 
     /// Removes the breakpoint at instruction `index`, if one is set.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn restore(&self, index: usize) {
         self.body.restore(index);
     }
 
     /// Whether a breakpoint is set at instruction `index`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the breakpoints, which patch a body, are not built yet"
-        )
-    )]
     pub(crate) fn is_patched(&self, index: usize) -> bool {
         self.body.is_patched(index)
     }
