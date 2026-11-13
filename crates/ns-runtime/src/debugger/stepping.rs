@@ -123,7 +123,8 @@ pub(crate) struct Stepping {
     /// The key the next suspended frame takes.
     next_key: u32,
     /// Whether the step was begun in a frame the step filters filter,
-    /// which it then steps in as in any other (`is_filtered`).
+    /// which it then steps in as in any other (`is_filtered`); decided as
+    /// the step begins, whatever filters are set while it runs.
     started_filtered: bool,
     /// The method breakpoints whose method an unwind left since the step
     /// began (`method_left`), which its stop reports as the method's exit.
@@ -152,17 +153,25 @@ pub(crate) enum HeldStep {
     Stop,
 }
 
-/// Begins a step of `action` in the top activation, the frame a stop
-/// stands in: floods it, sets its return point and, for a step into,
-/// holds the request bit. The program then goes on as after a
-/// `Continue`.
-pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction) {
+/// Begins a step of `action` in the frame a stop stands in: the top
+/// activation, or `shown`, the first frame an exception's stop shows
+/// below the exception's machinery (`exceptions::first_shown`), which the
+/// step steps from as if it had stopped there, the machinery's frames above
+/// it frames the step was taken above. Floods that frame, sets its return
+/// point and, for a step into, holds the request bit. The program then
+/// goes on as after a `Continue`. Whether the step starts in a frame the
+/// step filters filter is decided here, once: a `SetStepFilters` served
+/// while the step runs changes where it lands, not that.
+pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option<&StackFrame>) {
     end(mutator);
     let Some(top) = mutator.heap.top_activation() else {
         return;
     };
-    let started_filtered = is_filtered(mutator, &StackFrame::Running(top));
-    start(mutator, action, Place::Running(top), None);
+    let taken_in = shown
+        .and_then(|frame| place_of(mutator, frame))
+        .unwrap_or(Place::Running(top));
+    let started_filtered = is_filtered(mutator, shown.unwrap_or(&StackFrame::Running(top)));
+    start(mutator, action, Place::Running(top), taken_in, None);
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
     }
@@ -180,6 +189,20 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction) {
         after: AfterPast::Nothing,
     };
     mutator.breakpoints.go_past_once(standing);
+}
+
+/// The frame of the run `frame` names at a stop.
+fn place_of<'gc>(mutator: &Mutator<'gc>, frame: &StackFrame) -> Option<Place<'gc>> {
+    match frame {
+        StackFrame::Running(activation) => Some(Place::Running(*activation)),
+        StackFrame::Suspended(root) => {
+            let heap = &mutator.heap;
+            heap.fetch(root)
+                .as_object()
+                .and_then(|object| heap.object_frame(object))
+                .map(Place::Suspended)
+        }
+    }
 }
 
 /// Ends the step, if one is in progress: every one-shot is removed, each
@@ -270,7 +293,7 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
     let (returned, exits) = carried(mutator);
     mutator.breakpoints.remove_one_shots();
     let place = first_unfiltered(mutator, frame).unwrap_or(Place::Running(frame));
-    start(mutator, StepAction::Into, place, returned);
+    start(mutator, StepAction::Into, place, place, returned);
     keep_exits(mutator, exits);
     settle(mutator);
 }
@@ -390,7 +413,8 @@ pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, lea
         Leaving::Returning(home) => {
             let (returned, exits) = carried(mutator);
             mutator.breakpoints.remove_one_shots();
-            start(mutator, StepAction::Out, Place::Running(home), returned);
+            let home = Place::Running(home);
+            start(mutator, StepAction::Out, home, home, returned);
             keep_exits(mutator, exits);
             settle(mutator);
         }
@@ -904,20 +928,23 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
     mutator.breakpoints.rename_one_shots(from, onto);
 }
 
-/// Starts the step of `action` taken in `top`, `returned` the value
-/// recorded so far: in the frame `stepping_frame` finds, flooded unless
-/// the step goes out, its return point set, and the request held for a
-/// step into. The caller settles the table.
+/// Starts the step of `action` taken in `taken_in`, at or below `top`,
+/// the frame on top, `returned` the value recorded so far: in the frame
+/// `stepping_frame` finds, flooded unless the step goes out, its return
+/// point set, and the request held for a step into; the frames from `top`
+/// down to it are there already, none of them a push of the step's. The
+/// caller settles the table.
 fn start<'gc>(
     mutator: &mut Mutator<'gc>,
     action: StepAction,
     top: Place<'gc>,
+    taken_in: Place<'gc>,
     returned: Option<Root>,
 ) {
     mutator.stepping = Some(Box::new(Stepping {
         action,
-        // Named by `stepping_frame`, which may hold `top` as a suspended
-        // frame first.
+        // Named by `stepping_frame`, which may hold `taken_in` as a
+        // suspended frame first.
         frame: Holder::Left,
         between: Vec::new(),
         flooded: Vec::new(),
@@ -930,7 +957,7 @@ fn start<'gc>(
         #[cfg(debug_assertions)]
         waiting_on: None,
     }));
-    let (frame, body) = stepping_frame(mutator, top);
+    let (frame, body) = stepping_frame(mutator, taken_in);
     let between = frames_between(mutator, top, frame);
     if let Some(stepping) = &mut mutator.stepping {
         stepping.frame = frame;

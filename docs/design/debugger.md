@@ -2093,8 +2093,15 @@ through the pushes of filtered bodies until an unfiltered one is
 pushed. The filter decides only where a step lands: a breakpoint the
 user set in a filtered body stops, and a step that starts in a filtered
 frame -- stopped there by a breakpoint, or with the filter off -- steps
-in it as in any other. The exception's first frame shown is likewise the
-first unfiltered one ("Exceptions").
+in it as in any other. Whether it did is decided as the step begins: a
+`SetStepFilters` served while the step runs changes where it lands, not
+that. The exception's first frame shown is likewise the first unfiltered
+one ("Exceptions"), and the rule of a step that starts in a filtered
+frame does not reach the machinery frames an exception's stop hides
+above it, which the debugger chose, not the user: a step taken at that
+stop starts from the frame shown first, as if it had stopped there, the
+hidden frames ones it was taken above, so that neither they nor what
+they push are the step's.
 
 V8 does the same with blackboxing (`v8/src/debug/debug.cc`): a step at a
 return becomes a step out in step-into mode (`:1601-1612`), the step out
@@ -2735,7 +2742,8 @@ above it; with step filters (decision 16) that is the first frame below
 it they do not filter, the first frame of program code
 (`exceptions::first_shown`). The frames above it are marked
 `FrameDescription::hidden`, never dropped, so that a frame's index is
-the same at every stop. Going on lets `defaultAction` run, which ends
+the same at every stop, and a step taken at the stop steps from the frame
+shown first (decision 16; `stepping::begin`). Going on lets `defaultAction` run, which ends
 the program for every exception whose class does not override it, as its
 `terminate…` leaf does without a debugger, resumable ones included; a
 `Halt` and a declined `MessageNotUnderstood` are handled as below.

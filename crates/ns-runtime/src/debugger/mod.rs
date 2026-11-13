@@ -811,7 +811,18 @@ impl Interpreter {
                         Command::StepInto => StepAction::Into,
                         _ => StepAction::Out,
                     };
-                    self.enter(|mutator| stepping::begin(mutator, action));
+                    // An exception's stop steps from the frame it shows
+                    // first, as the user sees it, never in the machinery
+                    // above it the debugger chose to stop in.
+                    self.enter(|mutator| {
+                        let shown = exceptional.then(|| {
+                            let frames =
+                                frames.get_or_insert_with(|| stack::frames(mutator, floor));
+                            let first = exceptions::first_shown(mutator, frames);
+                            frames.get(first)
+                        });
+                        stepping::begin(mutator, action, shown.flatten());
+                    });
                     self.answer(&mut source, Event::Continued);
                     break Served::GoOn;
                 }

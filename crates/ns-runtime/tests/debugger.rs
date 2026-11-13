@@ -5590,6 +5590,159 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A `halt` between two statements of a method a caller sent.
+const HALTING_BETWEEN: &str = indoc! {"
+    class Pausing = Object new () (
+      public run = (
+        | x |
+        x:: self middle.
+        ^x + 1
+      )
+      middle = (
+        | x |
+        x:: 3.
+        self halt.
+        self note: x.
+        ^x
+      )
+      note: value = (
+        ^value
+      )
+    ) : ()
+"};
+
+/// Takes the step `command` at the `Halt` stop of `HALTING_BETWEEN` and
+/// answers the frame and statement it stops at, and the run's outcome.
+fn stepped_from_halt(
+    lowering: Lowering,
+    command: Command,
+) -> ((String, String), Result<i64, String>) {
+    raised(
+        HALTING_BETWEEN,
+        lowering,
+        |_, _| {},
+        move |remote| {
+            assert_eq!(expect_stop(remote), StopReason::Halt);
+            step(remote, command);
+            let stood = standing(remote, HALTING_BETWEEN);
+            continue_stopped(remote);
+            stood
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a `Halt` stop steps from the frame the stop shows
+    /// first, the one that sent `halt`, never in the kernel's machinery the
+    /// stop stands in: it stops at that frame's next statement.
+    fn a_step_over_from_a_halt_stops_at_the_next_statement(lowering) {
+        let (stood, result) = stepped_from_halt(lowering, Command::StepOver);
+        assert_eq!(
+            stood,
+            (String::from("Pausing>>middle"), String::from("self note: x"))
+        );
+        assert_eq!(result, Ok(4));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a `Halt` stop stops where a step into from the
+    /// statement `self halt` would: the `halt`'s continuation pushes no
+    /// program code, so at the next statement.
+    fn a_step_into_from_a_halt_stops_at_the_next_statement(lowering) {
+        let (stood, result) = stepped_from_halt(lowering, Command::StepInto);
+        assert_eq!(
+            stood,
+            (String::from("Pausing>>middle"), String::from("self note: x"))
+        );
+        assert_eq!(result, Ok(4));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out at a `Halt` stop goes out of the frame that sent `halt`,
+    /// to its caller's return point.
+    fn a_step_out_from_a_halt_stops_in_the_caller(lowering) {
+        let (stood, result) = stepped_from_halt(lowering, Command::StepOut);
+        assert_eq!(
+            stood,
+            (String::from("Pausing>>run"), String::from("x:: self middle"))
+        );
+        assert_eq!(result, Ok(4));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at an uncaught error's stop steps from the frame that
+    /// signalled it, never in `defaultAction`, which ends the run: no stop
+    /// follows.
+    fn a_step_over_from_an_uncaught_error_goes_where_the_program_goes(lowering) {
+        let (stops, result) = raised(
+            RAISING,
+            lowering,
+            |_, _| {},
+            |remote| {
+                expect_stop(remote);
+                remote.send(Command::StepOver);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the confirmation of the step was expected, not {other:?}"),
+                }
+                stops_until_the_end(remote)
+            },
+        );
+        assert_eq!(stops, 0);
+        assert_eq!(result, Err(String::from("boom")));
+    }
+}
+
+/// An error whose class's `defaultAction`, of two statements, answers, so
+/// that its `signal:` does and the method goes on.
+const SOFTLY_RAISING: &str = indoc! {"
+    class SoftlyRaising = Object new () (
+      public run = (
+        ^self boom
+      )
+      boom = (
+        | x |
+        x:: Soft new signal: 'soft'.
+        ^x + 1
+      )
+      class Soft = Error () (
+        public defaultAction = (
+          | answer |
+          answer:: 40.
+          ^answer + 1
+        )
+      ) : ()
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over at an uncaught error's stop whose default action
+    /// answers stops at the next statement of the frame that signalled it,
+    /// not in the default action the stop stands in, a program's method.
+    fn a_step_over_from_an_error_a_default_action_answers_stops_at_the_next_statement(lowering) {
+        let (stood, result) = raised(
+            SOFTLY_RAISING,
+            lowering,
+            |_, _| {},
+            |remote| {
+                expect_stop(remote);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, SOFTLY_RAISING);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (String::from("SoftlyRaising>>boom"), String::from("^x + 1"))
+        );
+        assert_eq!(result, Ok(42));
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// With the `Halt` breakpoint off, an uncaught `Halt` is an uncaught
     /// exception as any other: it stops as one while the
