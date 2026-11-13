@@ -2345,7 +2345,7 @@ optimized code ([execution.md](execution.md), "The code zone"),
 reads its whole stack and every value one level deep and continues
 ([debugger.md](debugger.md), "The pause stress mode"),
 `NS_NEXT_STRESS_BREAKPOINTS`, which patches every statement start of
-every body that runs with a breakpoint that never stops, each gone past
+every body it finds running at a safepoint with a breakpoint that never stops, each gone past
 through the run loop's arm ([debugger.md](debugger.md), "The breakpoint
 stress mode"),
 each of these eight keeping the safepoint flag set while it is on,

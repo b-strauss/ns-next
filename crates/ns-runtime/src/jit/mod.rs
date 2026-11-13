@@ -9445,10 +9445,6 @@ mod tests {
         #[test]
         fn every_return_address_into_an_installed_body_names_it() {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            // A body the breakpoint stress mode patched is neither optimized
-            // nor inlined, and its baseline code exits at every statement.
-            #[cfg(debug_assertions)]
-            interpreter.set_stress_breakpoints(false);
             interpreter.enter(|mutator| every_return_address_names_its_body(&mut mutator.heap));
         }
 
@@ -10112,10 +10108,6 @@ mod tests {
         #[test]
         fn an_abandoned_baseline_body_frees_its_optimized_code_too() {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            // A body the breakpoint stress mode patched is neither optimized
-            // nor inlined, and its baseline code exits at every statement.
-            #[cfg(debug_assertions)]
-            interpreter.set_stress_breakpoints(false);
             interpreter.set_jit_enabled(true);
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
@@ -10602,10 +10594,6 @@ mod tests {
         fn a_reified_frame_is_divorced_by_its_return_in_machine_code() {
             for retains_registers in [false, true] {
                 let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-                // A body the breakpoint stress mode patched is neither optimized
-                // nor inlined, and its baseline code exits at every statement.
-                #[cfg(debug_assertions)]
-                interpreter.set_stress_breakpoints(false);
                 interpreter.set_jit_enabled(true);
                 interpreter.enter(|mutator| {
                     divorced_by_its_return(mutator, retains_registers);
@@ -10701,10 +10689,6 @@ mod tests {
         #[test]
         fn a_frame_the_interpreter_reified_resumes_in_the_twin() {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            // A body the breakpoint stress mode patched is neither optimized
-            // nor inlined, and its baseline code exits at every statement.
-            #[cfg(debug_assertions)]
-            interpreter.set_stress_breakpoints(false);
             interpreter.set_jit_enabled(true);
             interpreter.enter(|mutator| {
                 let code = body();
@@ -11133,10 +11117,6 @@ mod tests {
         #[test]
         fn a_block_refused_while_the_jit_is_off_keeps_no_machine_entry_row() {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            // A body the breakpoint stress mode patched is neither optimized
-            // nor inlined, and its baseline code exits at every statement.
-            #[cfg(debug_assertions)]
-            interpreter.set_stress_breakpoints(false);
             interpreter.set_jit_enabled(true);
             let block = Rc::new(CompiledCode::new(
                 CodeKind::Block,

@@ -786,8 +786,8 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-// The breakpoint stress mode: every statement start of every body that
-// runs patched with a breakpoint that never stops, each hit gone past
+// The breakpoint stress mode: every statement start of every body found
+// running at a safepoint patched with a breakpoint that never stops, each hit gone past
 // through the run loop's arm (`docs/design/debugger.md`, "The breakpoint
 // stress mode").
 

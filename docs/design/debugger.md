@@ -50,7 +50,7 @@
 > the first one below the exception's machinery hidden, and the handler
 > search reports the handler it found to a step in progress ("Exceptions");
 > and the breakpoint stress mode patches every statement start of every
-> body that runs with a breakpoint that never stops ("The breakpoint
+> body it finds running at a safepoint with a breakpoint that never stops ("The breakpoint
 > stress mode").
 > Everything else is planned: the rest of stage 3 -- the step stress
 > mode -- the DAP agent and the plugin, evaluation, hot swap and edit-and-continue
@@ -1053,7 +1053,8 @@ one of the `stress` gate's fourteen modes;
 `Interpreter::set_stress_breakpoints` for a test,
 `Interpreter::stress_breakpoint_hits` the count of the patches gone past
 since it was switched on) runs every program through the `Breakpoint`
-arm at every statement. No debugger need be attached. At every
+arm at the statements of every body it finds running at a safepoint,
+which is every body whose first entry is interpreted (below). No debugger need be attached. At every
 safepoint, right after the pause stress mode's,
 `breakpoints::patch_running_for_stress` walks the running activations
 from the top and patches every statement start of each body it has not
@@ -1061,15 +1062,31 @@ resolved yet -- the first instruction of every statement its metadata
 names, an inlined block's included -- with a breakpoint of its own kind
 (`PatchKind::Stress`), which never stops: the arm counts the hit and
 executes the original through its ordinary arm, as for a slot nothing
-stops at. While the mode is on it holds the stress bit
-(`hold_safepoints_for_stress`), so every push comes to the safepoint
-with its frame on top, and the walk stops at the first body it resolved
-before, which keeps a deep recursion's safepoints from walking its
-whole stack. A body without metadata -- an image's without source -- is
-resolved to no slot. The patches change through `settle`, so a patched
-body loses its machine code and is compiled again with an exit at every
-statement start, and is never optimized nor inlined; under the JIT the
-mode thus runs every exit at a patch and every abandonment it leads to.
+stops at. The walk stops at the first body it resolved before, which
+keeps a deep recursion's safepoints from walking its whole stack. A
+body without metadata -- an image's without source -- is resolved to
+no slot. The patches change through `settle`, so a patched body loses
+its machine code and is compiled again with an exit at every statement
+start, and is never optimized nor inlined; under the JIT the mode thus
+runs every exit at a patch and every abandonment it leads to.
+
+What brings a body to the walk is its first entry. While the mode is on
+it holds the stress bit (`hold_safepoints_for_stress`), which the
+interpreter's poll after a push takes, so an interpreted push comes to
+the safepoint with its frame on top. A body is compiled at its second
+entry, so its first runs interpreted and is resolved there, before any
+machine code of it exists; and a patched caller exits at every
+statement start, so its sends are the interpreter's. The hold is not a
+real request: it lowers no depth limit (`LOWERS_DEPTH_LIMIT`), so a push
+in machine code never takes it, and an interpreted push that switches
+into a body's machine code is polled only once that code has run. The
+mode therefore misses a body whose first entry is in machine code --
+under the JIT stress mode, which compiles at the first entry, or one a
+body without metadata, whose machine code the mode leaves alone, calls
+directly -- unless the body is on the stack at a later safepoint above
+every resolved frame, at a poll of its own loop, say; and a method with
+a fast path the send answers without a push is never on the stack at
+all.
 
 The mode's patches are its own, not a debugger's: an attachment, a
 detach and `clear` leave them, a line breakpoint and a stress patch at
@@ -1338,7 +1355,8 @@ stage's tests, do not.
   is built ([OPEN-WORK.md](../OPEN-WORK.md), "A model test of the poll
   words' ordering").
 - **The breakpoint stress mode** (above) patches every statement start
-  of every body a program runs, goes on at each, and holds every
+  of every body it finds running at a safepoint -- every body whose first
+  entry is interpreted -- goes on at each, and holds every
   golden's outcome under both lowerings, with the JIT and with
   `NS_NEXT_NO_JIT=1`. Planned: a **step stress mode** steps into
   everything, and joins the `stress` gate.

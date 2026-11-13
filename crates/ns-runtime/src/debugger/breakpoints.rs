@@ -1298,12 +1298,18 @@ impl Mutator<'_> {
 /// whose body it has, gets every statement start its metadata names
 /// patched with a breakpoint that never stops, and the machine code of
 /// every body patched is freed (`settle`), so that every statement start
-/// of every body that runs is a `Breakpoint` slot, interpreted or lowered
-/// as an exit. The mode holds every poll's request, so each push comes
-/// here with its frame on top, and the walk stops at the first body
-/// resolved before, which keeps a deep recursion's safepoints from
-/// walking its whole stack. A body without metadata -- an image's
-/// without source -- is resolved to no slot.
+/// of such a body is a `Breakpoint` slot, interpreted or lowered as an
+/// exit. The walk stops at the first body resolved before, which
+/// keeps a deep recursion's safepoints from walking its whole stack. A
+/// body is found at its first entry: the mode's hold brings an
+/// interpreted push here with its frame on top, and a body is compiled
+/// only at its second entry. A push in machine code never takes the
+/// hold, which lowers no depth limit, so a body first entered there --
+/// under the JIT stress mode, or called by the machine code of a body
+/// without metadata -- is missed unless a later safepoint finds it above
+/// every resolved frame (`docs/design/debugger.md`, "The breakpoint
+/// stress mode"). A body without metadata -- an image's without source --
+/// is resolved to no slot.
 #[cfg(debug_assertions)]
 pub(crate) fn patch_running_for_stress(mutator: &mut Mutator<'_>) {
     let mut next = mutator.heap.top_activation();
