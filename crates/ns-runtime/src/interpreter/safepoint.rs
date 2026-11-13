@@ -633,6 +633,13 @@ impl Interpreter {
         self.stress_step.as_ref().map_or(0, |stress| stress.stopped)
     }
 
+    /// The steps of each of the step stress mode's bursts
+    /// (`debugger::STEP_STRESS_BURST`), for a test's bounds.
+    #[doc(hidden)]
+    pub fn stress_step_burst() -> usize {
+        crate::debugger::STEP_STRESS_BURST
+    }
+
     /// How many of the step stress mode's steps it ended itself, still in
     /// progress several periods of its schedule after a burst fell due,
     /// since it was switched on; 0 while it is off.

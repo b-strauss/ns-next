@@ -1151,7 +1151,10 @@ bursts paced as the pause stress mode's stops and makes a deep stack's
 as much rarer as they cost more. The schedule counts every safepoint, a
 step in progress included, and a burst is due only once no step is in
 progress: a step still in progress when the schedule has fallen due
-four times more (`STEP_STRESS_GRACE`) -- a step out of the run's first
+four times more (`STEP_STRESS_GRACE`), and after 64 safepoints at least
+(`STEP_STRESS_GRACE_SAFEPOINTS`), a floor that keeps the grace from
+shrinking with a heap the collect and scavenge stress modes keep small,
+and so the schedule's period with it -- a step out of the run's first
 frame, which returns to the host and stops nowhere, or out of a shipped
 `to:do:` looping long, stopped in with the shipped filter off -- is
 ended there, as a debugger's pause ends a step, so that no step keeps
@@ -1171,10 +1174,18 @@ reported, `Holder::Left` -- a step waits so for the handler search's
 report of an error the popped frame's continuation raised, while the
 exception's machinery runs (decision 17) -- (`stepping::frame_still_there`);
 a running name no live activation answers to, a pop no report reached,
-fails it. The steps it ends
-are counted apart from those that stopped, and
-`the_step_stress_mode_keeps_outcomes` requires both many whole bursts
-and the steps that stopped to be at least three times those ended. Every golden and the corpus run under it, under both
+fails it. A step waiting `Left` keeps the frame that was on top when
+the error was raised, and the check requires it still to run below the
+top, the exception's machinery above it
+(`stepping::still_waiting_for_a_handler`), so that a step waiting for a
+report that never came fails it too. The check is made only at a forced
+end: a short run, which ends before its grace is spent, ends its step
+with it unchecked, so a missed report in a short program is caught less
+often than in a long one. The steps it ends are counted apart from
+those that stopped, and `the_step_stress_mode_keeps_outcomes`, which
+runs under every mode of the `stress` gate, requires both many whole
+bursts and the steps that stopped to be at least four times those
+ended. Every golden and the corpus run under it, under both
 lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`, so that the
 steps' one-shot breakpoints, their held request, the reports of a frame
 left otherwise than by a return and the filters are shown never to

@@ -885,9 +885,6 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `debugger::STEP_STRESS_BURST`, the steps of a burst.
-const STEP_STRESS_BURST: usize = 16;
-
 // The step stress mode: at the safepoints its schedule picks, the run
 // stops as for a debugger's pause and takes a burst of steps -- into,
 // over and out in turn, the shipped filter switched every third --
@@ -937,14 +934,21 @@ ns_runtime::for_each_lowering! {
             // Many whole bursts. The steps the mode ends itself are steps
             // out of the shipped `to:do:` looping 200 times, stopped in
             // with the shipped filter off, and of `run`, which returns to
-            // the host -- about one in five; the steps that stop are at
-            // least three times as many (measured: about 4.5 times).
+            // the host. The test runs under every mode of the `stress`
+            // gate: measured under each of the fifteen and with the JIT
+            // off, the steps that stopped were at least 178 and at least
+            // 6.4 times those ended (the scavenge stress mode's optimized
+            // run with the JIT, the lowest of both), since the grace's
+            // floor of safepoints keeps it from shrinking with a heap
+            // the collect and scavenge stress modes keep small. The
+            // bounds lie more than a third below both.
+            let burst = Interpreter::stress_step_burst();
             assert!(
-                steps >= 10 * STEP_STRESS_BURST,
+                steps >= 6 * burst,
                 "the step stress mode's steps stopped {steps} times, the JIT on: {jit}"
             );
             assert!(
-                steps >= 3 * ended,
+                steps >= 4 * ended,
                 "{steps} steps stopped and {ended} were ended, the JIT on: {jit}"
             );
         }

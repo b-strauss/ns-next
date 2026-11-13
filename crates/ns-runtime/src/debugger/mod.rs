@@ -249,13 +249,24 @@ impl StepReader {
 pub(crate) const STEP_STRESS_BURST: usize = 16;
 
 /// How many times the step stress mode's schedule may fall due while a
-/// step is in progress before the mode ends the step itself. A step that
-/// legitimately outlasts it is a step out of a long loop -- a shipped
+/// step is in progress before the mode ends the step itself, and how many
+/// safepoints the step must have run through first. A step that
+/// legitimately outlasts both is a step out of a long loop -- a shipped
 /// `to:do:` stopped in with the shipped filter off -- or of the run's
 /// first frame, which returns to the host; four periods let most steps
-/// over a call stop, while a long one costs the mode few bursts.
+/// over a call stop, while a long one costs the mode few bursts. The
+/// floor of safepoints keeps the grace from shrinking with the heap: the
+/// schedule's period is paced by the traced size, which the collect and
+/// scavenge stress modes keep small by reclaiming at their safepoints, so
+/// that four dues alone came in under half the safepoints there, and a
+/// step was ended about one time in three rather than one in five.
 #[cfg(debug_assertions)]
 const STEP_STRESS_GRACE: usize = 4;
+
+/// The safepoints a step runs through before the step stress mode may end
+/// it (`STEP_STRESS_GRACE`).
+#[cfg(debug_assertions)]
+const STEP_STRESS_GRACE_SAFEPOINTS: usize = 64;
 
 /// The step stress mode's state (`NS_NEXT_STRESS_STEP`, or
 /// `Interpreter::set_stress_step`): its schedule, the burst under way and
@@ -280,6 +291,8 @@ pub(crate) struct StepStress {
     /// How many times the schedule fell due while the step in progress
     /// ran; at `STEP_STRESS_GRACE` the mode ends it.
     overdue: usize,
+    /// The safepoints the step in progress has run through.
+    safepoints_in_step: usize,
 }
 
 #[cfg(debug_assertions)]
@@ -298,6 +311,7 @@ impl StepStress {
     /// with the filter on and off.
     fn reader(&mut self, stepped: bool) -> StepReader {
         self.overdue = 0;
+        self.safepoints_in_step = 0;
         if stepped {
             self.stopped += 1;
         } else {
@@ -547,7 +561,8 @@ impl Interpreter {
     /// more, and a shallow program's are paced as the pause stress mode's
     /// stops. A step still in progress -- a step out of the run's first
     /// frame, which returns to the host, or a step over a long call -- is
-    /// given `STEP_STRESS_GRACE` periods of the schedule more, then ended
+    /// given `STEP_STRESS_GRACE` periods of the schedule more, and at least
+    /// `STEP_STRESS_GRACE_SAFEPOINTS` safepoints, then ended
     /// as a debugger's pause ends it, so that no step keeps the mode from its
     /// next burst; its frame must still be there then, or it left without
     /// the step learning of it, which a debug build refuses. The mode
@@ -568,13 +583,18 @@ impl Interpreter {
         let Some(stress) = &mut self.stress_step else {
             return;
         };
+        if stepping {
+            stress.safepoints_in_step += 1;
+        }
         let paced_size = traced_size.saturating_add(STEP_STRESS_BURST.saturating_mul(stack_words));
         if !stress.schedule.due(paced_size) {
             return;
         }
         // A step whose frame has just returned stops at its caller's next
         // fetch: it is left to make that stop, its grace still running.
-        if stepping && (stress.overdue < STEP_STRESS_GRACE || about_to_stop) {
+        let in_grace = stress.overdue < STEP_STRESS_GRACE
+            || stress.safepoints_in_step < STEP_STRESS_GRACE_SAFEPOINTS;
+        if stepping && (in_grace || about_to_stop) {
             stress.overdue += 1;
             return;
         }
@@ -590,6 +610,10 @@ impl Interpreter {
             debug_assert!(
                 stepping::frame_still_there(mutator),
                 "internal: the step stress mode ended a step whose frame left unreported"
+            );
+            debug_assert!(
+                stepping::still_waiting_for_a_handler(mutator),
+                "internal: the step stress mode ended a step that waits for a handler report that never came"
             );
             stepping::take_exits(mutator);
             stepping::end(mutator);

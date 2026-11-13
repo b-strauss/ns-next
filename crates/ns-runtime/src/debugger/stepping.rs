@@ -128,6 +128,12 @@ pub(crate) struct Stepping {
     /// The method breakpoints whose method an unwind left since the step
     /// began (`method_left`), which its stop reports as the method's exit.
     exits: Vec<BreakpointId>,
+    /// The frame on top when the step's frame left and an error was about
+    /// to be signalled (`frame_left` with no frame to go on in): the
+    /// exception's machinery runs above it until the handler search
+    /// reports, which replaces the step. For the step stress mode's check.
+    #[cfg(debug_assertions)]
+    waiting_on: Option<ActivationReference>,
 }
 
 /// A frame of the run: an activation on the stack, or one suspended into
@@ -237,8 +243,16 @@ pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<Activatio
         || stepping
             .return_point
             .is_some_and(|(caller, _)| caller.is(Holder::Left));
-    if let (true, Some(frame)) = (left, now_on_top) {
-        continue_as_step_into(mutator, frame);
+    match (left, now_on_top) {
+        (true, Some(frame)) => continue_as_step_into(mutator, frame),
+        #[cfg(debug_assertions)]
+        (true, None) => {
+            let top = mutator.heap.top_activation();
+            if let Some(stepping) = &mut mutator.stepping {
+                stepping.waiting_on = top;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -415,6 +429,37 @@ pub(crate) fn frame_still_there(mutator: &Mutator<'_>) -> bool {
         }
         Holder::Suspended(_) | Holder::Left => true,
     }
+}
+
+/// Whether a step waiting, `Left`, for the handler search's report of an
+/// error still has the error's machinery running: the frame on top when
+/// the error was raised is still running, and is not the top, so frames
+/// of the search lie above it. A waiting step whose frame went back to
+/// the top, or away, without a report replacing the step is one whose
+/// report never came. For the step stress mode's check as it ends a step
+/// itself.
+#[cfg(debug_assertions)]
+pub(crate) fn still_waiting_for_a_handler(mutator: &Mutator<'_>) -> bool {
+    let Some(stepping) = &mutator.stepping else {
+        return true;
+    };
+    let (Holder::Left, Some(waiting_on)) = (stepping.frame, stepping.waiting_on) else {
+        return true;
+    };
+    let Some(top) = mutator.heap.top_activation() else {
+        return false;
+    };
+    if waiting_on.names(top) {
+        return false;
+    }
+    let mut next = mutator.heap.activation_sender(top);
+    while let Some(live) = next {
+        if waiting_on.names(live) {
+            return true;
+        }
+        next = mutator.heap.activation_sender(live);
+    }
+    false
 }
 
 /// Whether the step's frame has returned to its caller, which stands on
@@ -882,6 +927,8 @@ fn start<'gc>(
         next_key: 0,
         started_filtered: false,
         exits: Vec::new(),
+        #[cfg(debug_assertions)]
+        waiting_on: None,
     }));
     let (frame, body) = stepping_frame(mutator, top);
     let between = frames_between(mutator, top, frame);
