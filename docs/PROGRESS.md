@@ -7573,16 +7573,18 @@ the handler search reports the handler it found. No step lands in a
 filtered frame. Run to cursor stops once at a position resolved as a
 line breakpoint is; a method breakpoint stops at its method's entry and
 before each of its returns, and reports an exit an unwind makes where
-the program goes on; exception breakpoints, decided by two mirror leaves
-of the kernel's handler search -- the second the exit that reads the
+the program goes on; exception breakpoints, decided by two mirror rows
+of the kernel's handler search -- a leaf, and the exit that reads the
 handler it found -- stop an uncaught exception before its
 `defaultAction` runs and a caught one before its handler runs, filtered
 by class, and an uncaught `halt`, which goes on resumed with nil. The
 breakpoint stress mode patches every statement start of every running
 body with a breakpoint that never stops, and the step stress mode takes
 bursts of steps from the stops its schedule picks, reading the stack at
-every one; both hold every golden's outcome. Compiling never changed: no
-golden, no shipped-code fingerprint and no image.
+every one; both hold every golden's outcome. Compiling a program changed
+nothing: no golden, no `run-corpus` outcome and no program's image. The
+handler search's edits of `Kernel.ns` changed the shipped source's
+fingerprint and with it `tests/fixtures/golden-image.bin`.
 
 Measured against its base on `master` with no debugger attached, the
 geometric mean over the twenty-three sources is +0.36%, nothing
@@ -7595,7 +7597,11 @@ follows it rather than testing at every frame it pops, which measured
 read of its handler ("What stage 3 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen`
-and `images` where their files changed).
+and `images` where their files changed), and every end-of-batch group
+passed on the final tree, `fce8baf3`: `images`, `caches`, `benchmarks`,
+`release-checks`, `codegen`, `stress` -- the suite under each of the
+fifteen modes and without the JIT, 1,577 s, and `run-corpus` under each
+-- `linux` and `aarch64`, whose suite took 710 s.
 
 - `91b13682` -- the plan
   (`docs/superpowers/plans/2026-11-12-2359-debugger-stage-3.md`).

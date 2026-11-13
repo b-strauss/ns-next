@@ -117,9 +117,10 @@ pub(crate) fn unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Value<'gc>) 
 /// poll -- a step in progress hears of it there, and the stop the
 /// caught-exception breakpoint asks for waits there for the handler's
 /// first instruction (`serve`). Run by the mirror send that reads the
-/// handler (`exceptionCaught:at:ifFail:`), which machine code exits for:
-/// flooding a step's frame, which frees machine code, and reading the
-/// `on:do:` activation's frame still wait for the safepoint.
+/// handler (`exceptionCaught:at:ifFail:`), which machine code exits for
+/// and which reads the handler off the `on:do:` activation's frame
+/// itself: only flooding a step's frame, which frees machine code, and the
+/// step's reading of the handler's frame wait for the safepoint.
 pub(crate) fn caught<'gc>(
     mutator: &mut Mutator<'gc>,
     exception: Value<'gc>,

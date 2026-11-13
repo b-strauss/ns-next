@@ -3694,7 +3694,7 @@ the handler it found, just before it runs it, through
 `exceptionCaught:at:ifFail:`, which answers the `on:do:` activation's
 handler and reports the catch to the caught-exception breakpoint and a
 step in progress, which goes on into the handler block; the report
-costs no send of its own. Neither leaf runs Newspeak code, so the
+costs no send of its own. Neither row runs Newspeak code, so the
 search pushes no activation it did not push before, and the outcome of
 every program without a debugger is unchanged. A test resumes an
 unhandled exception with `Interpreter::resume_unhandled_exceptions`, a

@@ -75,7 +75,7 @@
 > `breakpoints.rs`: the breakpoint table, line breakpoints, the
 > one-shots and the breakpoint stress mode's patches; `stepping.rs`: the step in progress, `Stepping`;
 > `exceptions.rs`: the exception breakpoints, decided by the handler
-> search's two leaves (`builtins/activation.rs`), and the first frame an
+> search's two mirror rows (`builtins/activation.rs`), and the first frame an
 > exception's stop shows;
 > `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
 > cross to the agent's thread; `stack.rs`: the stack trace, a frame's
@@ -1470,6 +1470,11 @@ the poll words' ordering, and every later stage's tests, do not.
 - Planned: **debugger goldens**, a `.ns` with a script of commands and the
   stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
+- **Stage 3's end-of-batch gates** passed on its final tree
+  (`fce8baf3`, 2026-11-13): `images`, `caches`, `benchmarks`,
+  `release-checks`, `codegen`, `stress` -- the suite under the fifteen
+  modes and with `NS_NEXT_NO_JIT=1`, 1,577 s, and `run-corpus` under
+  each -- `linux` and `aarch64`, whose suite took 710 s.
 - **The `codegen` gate** holds the run loop with the `Cell` slots and
   the `Breakpoint` arm to its budgets: the arm shares the out-of-line arm
   of the simultaneous slot clauses, since an arm of its own grew
@@ -2153,8 +2158,9 @@ path is unchanged: `finish` keeps no handle of the popped frame for
 them. The unwinder asks once per unwind whether a step is in progress
 or a method breakpoint set (`breakpoint::follows_unwinds`), and only
 then reports each frame it pops: no pop can start a step that neither
-already holds, and an unwind of fifty frames made the tests for every
-frame cost a caught exception 1.5% ("What stage 3 moved"). The report finds the popped frame as the one whose offset lies
+already holds; made for every frame, those tests cost `bench_signal`,
+which unwinds fifty frames per caught exception, about 1.5%, two thirds
+of the +2.3% that version measured ("What stage 3 moved"). The report finds the popped frame as the one whose offset lies
 above the stack's top (`Heap::activation_lies_above_the_top`), since
 nothing is pushed between the pop and the report, and every name the
 step knew it by becomes `Holder::Left`, which no activation is
@@ -2657,11 +2663,11 @@ what they reach through a shipped level.
 ### Exceptions
 
 **Built** (`debugger/exceptions.rs`; `Command::SetExceptionBreakpoints`;
-the leaves `exceptionUnhandled:ifFail:` and `exceptionCaught:at:ifFail:`,
-`builtins/activation.rs`), but for "Create Method" and the declined
+the mirror rows `exceptionUnhandled:ifFail:`, a leaf, and
+`exceptionCaught:at:ifFail:`, an exit, `builtins/activation.rs`), but for "Create Method" and the declined
 `MessageNotUnderstood`'s forced `nil`, which are planned with the forced
 return ("Restart frame and force return"). The handler search of
-`Kernel.ns` reports its outcome through two mirror leaves:
+`Kernel.ns` reports its outcome through two mirror rows:
 `invokeNextHandler`, having found no handler, sends
 `exceptionUnhandled:ifFail:` just before `defaultAction`, and
 `invokeHandlerAt:disabling:` reads the handler it is about to send
@@ -2669,9 +2675,15 @@ return ("Restart frame and force return"). The handler search of
 `on:do:` activation's handler as `activationHandlerBlock:ifFail:` does;
 only the shipped modules reach the mirror
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
-boundary"). With no debugger attached
-each does nothing and answers what its failure block would, so that an
-exception behaves as it does without the debugger; and
+boundary"). With no debugger attached `exceptionUnhandled:ifFail:`
+does nothing and answers what its failure block would, false, and
+`exceptionCaught:at:ifFail:` answers the handler and records nothing;
+with one attached the caught row answers the handler all the same and
+records the catch beside it. A handler it cannot read -- the activation
+not running, or no `on:do:` marker's -- makes it record nothing and
+decline, so that its failure block answers nil, as
+`activationHandlerBlock:ifFail:` did. So an exception behaves as it
+does without the debugger; and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
 stops nothing; nor does an exception an `ensure:` block of the
@@ -2681,9 +2693,10 @@ machine code calls without exiting (`MachineCall::Leaf`), and
 `exceptionCaught:at:ifFail:` the exit the search made already to read
 the handler, which reads another activation and so is no leaf: a
 program without a debugger pays no send of its own for either report.
-Each only decides and records -- it reads the exception and its class
-chain, holds the `on:do:` activation and the handler as `Root`s, and
-sets a bit -- runs no Newspeak code and collects nothing. What it
+Beyond the handler the caught row answers, each only decides and
+records, and only with a debugger attached -- it reads the exception and
+its class chain, holds the `on:do:` activation and the handler as
+`Root`s, and sets a bit -- runs no Newspeak code and collects nothing. What it
 decides is recorded on the `Mutator`
 (`Breakpoints::request_exception_stop`) and asked of the next poll
 through the request bit `DEBUGGER_STOP` ("The poll words as atomics"),

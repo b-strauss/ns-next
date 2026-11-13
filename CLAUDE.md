@@ -132,8 +132,9 @@ Rust 1.98.0, edition 2021, seven crates:
   breakpoints and a request bit held until the next push, a frame left
   otherwise reported by the unwinder and the run loop's cold arms, the
   shipped modules filtered (`debugger/stepping.rs`); exception
-  breakpoints are decided by two leaves the kernel's handler search
-  sends (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
+  breakpoints are decided by two mirror rows the kernel's handler
+  search sends, a leaf and the exit that reads the handler it found
+  (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
   at the safepoint", "Compiling the metadata again", "Where the
   original lives", "Step over in recursion and blocks", "Exceptions"),
   the core library
