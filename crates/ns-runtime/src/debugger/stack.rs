@@ -216,6 +216,11 @@ pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> 
     origin_of(heap, frame, &code)
 }
 
+/// Whether `frame` is a block's activation.
+pub(crate) fn is_block(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Closure(_))
+}
+
 /// The body `frame` runs.
 pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
     frame.read(heap).code(heap)

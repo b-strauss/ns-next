@@ -196,9 +196,12 @@ pub(crate) fn serve(
 }
 
 /// Whether the frame on top is one the handler pushed: the handler
-/// block's activation, or a method -- its `cull:`, or the
-/// `doesNotUnderstand:` a handler that does not understand `cull:` makes
-/// -- sent to the handler.
+/// block's activation, or a method sent to the handler by the kernel's
+/// block in `invokeHandlerAt:disabling:` that sends it `cull:` -- its
+/// `cull:`, or the `doesNotUnderstand:` a handler that does not
+/// understand `cull:` makes. The sender is asked too, since a handler
+/// whose `cull:` pushes nothing can be sent another message by the search
+/// next: an exception that is its own handler receives `return:`.
 fn in_handler(mutator: &Mutator<'_>, handler: &Root) -> bool {
     let heap = &mutator.heap;
     let Some(top) = heap.top_activation() else {
@@ -209,7 +212,23 @@ fn in_handler(mutator: &Mutator<'_>, handler: &Root) -> bool {
         ActivationKind::Closure(closure) => handler
             .as_object()
             .is_some_and(|handler| handler.same(closure)),
-        _ => identical(heap, heap.activation_receiver(top), handler),
+        _ => {
+            if !identical(heap, heap.activation_receiver(top), handler) {
+                return false;
+            }
+            let sender = match heap.activation_suspended_sender(top) {
+                Some(frame) => {
+                    StackFrame::Suspended(heap.stash(Value::object(heap.frame_object(frame))))
+                }
+                None => match heap.activation_sender(top) {
+                    Some(sender) => StackFrame::Running(sender),
+                    None => return false,
+                },
+            };
+            stack::is_block(heap, &sender)
+                && kernel_method(mutator, &sender)
+                    .is_some_and(|selector| selector.as_str() == "invokeHandlerAt:disabling:")
+        }
     }
 }
 
@@ -377,8 +396,10 @@ pub(crate) fn first_shown(mutator: &Mutator<'_>, frames: &[StackFrame]) -> usize
 /// one's, which stands in the handler about to run -- where the program
 /// goes on -- the frames between that handler, on top and shown first,
 /// and the one `first_shown` answers below the machinery, which is shown
-/// next. A handler whose `cull:` a fast path answered pushed nothing, and
-/// the machinery frame the stop stands in instead stays shown.
+/// next. A caught one's whose handler pushed no frame -- its `cull:` a
+/// slot's setter or a fast path -- stands in the machinery, and is
+/// passed here as an uncaught one's (`caught` false), every frame above
+/// the one `first_shown` answers hidden.
 pub(crate) fn hidden(
     mutator: &Mutator<'_>,
     frames: &[StackFrame],

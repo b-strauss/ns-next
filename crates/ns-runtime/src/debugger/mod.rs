@@ -450,7 +450,7 @@ impl Interpreter {
         if let Some((mut reason, in_handler)) = exception {
             // Where the frame on top stands is debugger.md's "Exceptions":
             // the first instruction of what the search runs next, unless a
-            // fast path answered it without a push. The stop serves a
+            // slot's setter or a fast path answered it without a push. The stop serves a
             // pause asked meanwhile too, and ends a step, whose handler
             // report may have led it here -- and the step that waited to
             // report a method's exit by an unwind, which this stop, the

@@ -6651,6 +6651,137 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A caught error that is its own handler: its class declares a slot
+/// `cull`, whose setter answers the handler's `cull:` without pushing a
+/// frame, and the search then sends `return:` to it.
+const SELF_HANDLED: &str = indoc! {"
+    class SelfHandled = Object new () (
+      public run = (
+        | problem result |
+        problem:: Selfish new.
+        result:: [self raise: problem] on: Selfish do: problem.
+        ^7
+      )
+      raise: problem = (
+        ^problem signal
+      )
+      public class Selfish = Error (
+        | public cull ::= nil. |
+      ) ()
+    ) : ()
+"};
+
+/// The first frame shown and where a step over stands at the caught stop
+/// of `SELF_HANDLED`, the JIT's stress modes as `stressed` says, and the
+/// run's outcome.
+fn self_handled_stop(
+    lowering: Lowering,
+    stressed: bool,
+) -> ((String, (String, String)), Result<i64, String>) {
+    raised(
+        SELF_HANDLED,
+        lowering,
+        move |interpreter, remote| {
+            if stressed {
+                interpreter.set_jit_stress(true);
+                interpreter.set_optimize_stress(true);
+            }
+            set_exception_breakpoints(remote, true, true, true, Vec::new());
+        },
+        |remote| {
+            expect_exception_breakpoints_set(remote);
+            let reason = expect_stop(remote);
+            assert!(
+                matches!(reason, StopReason::Exception { caught: true, .. }),
+                "a caught exception's stop: {reason:?}"
+            );
+            let shown = first_shown(&stack_trace(remote));
+            step(remote, Command::StepOver);
+            let stood = standing(remote, SELF_HANDLED);
+            continue_stopped(remote);
+            (shown, stood)
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// An exception that is its own handler pushes no frame for its
+    /// `cull:`, a slot's setter: the frame the search pushes next -- its
+    /// `return:`, sent to the same object -- is no frame the handler
+    /// pushed, so the stop hides the machinery, shows the program frame
+    /// below it first and steps from there.
+    fn an_exception_that_is_its_own_handler_steps_from_the_program(lowering) {
+        let ((shown, stood), result) = self_handled_stop(lowering, false);
+        assert_eq!(shown, "SelfHandled>>raise:");
+        assert_eq!(stood, (String::from("SelfHandled>>run"), String::from("^7")));
+        assert_eq!(result, Ok(7));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same under the JIT's stress modes, whose optimized code may
+    /// inline the search's own sends, so that the first poll after the
+    /// setter is the push of `return:`.
+    fn an_exception_that_is_its_own_handler_steps_from_the_program_in_machine_code(lowering) {
+        let ((shown, stood), result) = self_handled_stop(lowering, true);
+        assert_eq!(shown, "SelfHandled>>raise:");
+        assert_eq!(stood, (String::from("SelfHandled>>run"), String::from("^7")));
+        assert_eq!(result, Ok(7));
+    }
+}
+
+/// A caught error whose handler is an object with a `cull:` method of its
+/// own, which pushes a frame.
+const METHOD_HANDLED: &str = indoc! {"
+    class MethodHandled = Object new () (
+      public run = (
+        | result |
+        result:: [self raise] on: Error do: Answering new.
+        ^result
+      )
+      raise = (
+        ^Error signal: 'method'
+      )
+      public class Answering = Object new () (
+        public cull: exception = (
+          | answer |
+          answer:: 5.
+          ^answer
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A handler object's `cull:` method is a frame the handler pushed:
+    /// the caught stop stands in it, shown first on top above the hidden
+    /// machinery, and a step over is taken in it.
+    fn a_caught_stop_stands_in_a_handler_object_s_cull(lowering) {
+        let ((shown, stood), result) = raised(
+            METHOD_HANDLED,
+            lowering,
+            |_, remote| set_exception_breakpoints(remote, true, true, true, Vec::new()),
+            |remote| {
+                expect_exception_breakpoints_set(remote);
+                assert_eq!(expect_stop(remote), exception("Error", "method", true));
+                let frames = stack_trace(remote);
+                assert!(frames[1].hidden, "the machinery below the handler is hidden");
+                let shown = frames[0].name.clone();
+                step(remote, Command::StepOver);
+                let stood = standing(remote, METHOD_HANDLED);
+                continue_stopped(remote);
+                (shown, stood)
+            },
+        );
+        assert_eq!(shown, "Answering>>cull:");
+        assert_eq!(
+            stood,
+            (String::from("Answering>>cull:"), String::from("^answer"))
+        );
+        assert_eq!(result, Ok(5));
+    }
+}
+
 /// A block's `^` whose home has returned, which nothing handles: the VM
 /// raises the `CannotReturn` at the block's own instruction.
 const STRANDED: &str = indoc! {"

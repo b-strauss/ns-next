@@ -2814,7 +2814,9 @@ That stop hides the machinery as an uncaught one's does, showing first
 the frame below it, and a step taken there steps from that frame
 (`exceptions::serve` answers whether the frame on top is one the handler
 pushed: the handler block's activation, or a method sent to the
-handler). A handler that does not understand `cull:` pushes
+handler by the kernel's block in `invokeHandlerAt:disabling:` that sends
+it `cull:` -- not one the search sends it later, as the `return:` an
+exception that is its own handler receives). A handler that does not understand `cull:` pushes
 `Object>>doesNotUnderstand:` sent to it, a real call it made, which the
 stop shows on top and a step steps in as in any kernel code. A class filter -- `ClassName`s, as the step
 filters name a declaration -- is decided in Rust by walking the
