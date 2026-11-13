@@ -108,8 +108,8 @@
 > path switched off (`mixin.rs`, `MixinMethod::switch_fast_path`), the
 > machine code a patch frees and the patched index lowered as an exit
 > (`jit::free_for_patch`, `jit/baseline.rs`, `jit/optimizing/`,
-> `jit/cut.rs`), and the handler search's leaves (`Kernel.ns`,
-> `builtins/activation.rs`); and the tests in
+> `jit/cut.rs`), and the handler search's two rows, a leaf and an
+> exit (`Kernel.ns`, `builtins/activation.rs`); and the tests in
 > `crates/ns-runtime/tests/debugger.rs`, `tests/stress.rs` (the pause,
 > breakpoint and step stress modes), `debugger/metadata/tests.rs` and the oracle's runners
 > `crates/ns-cli/tests/debug_metadata.rs` and `golden_round_trips.rs`
@@ -499,7 +499,7 @@ The request word (`MachineWord::SafepointRequested`) is a set of bits
   (`Heap::hold_step_request`) and cleared on its thread alone, under the
   arming lock as the debugger's other bits are cleared;
 - `DEBUGGER_STOP` (bit 5) -- an exception breakpoint's stop, which the
-  handler search's leaf recorded on the `Mutator` and asks of the next
+  handler search's rows recorded on the `Mutator` and ask of the next
   poll ("Exceptions"): the VM's own, set (`Heap::request_debugger_stop`)
   and cleared on its thread alone, under the arming lock, by the
   safepoint that takes the stop, and dropped with the stop at a
@@ -1481,10 +1481,10 @@ the poll words' ordering, and every later stage's tests, do not.
   stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
 - **Stage 3's end-of-batch gates** passed on its final tree
-  (`fce8baf3`, 2026-11-13): `images`, `caches`, `benchmarks`,
+  (`b3da5ce3`, 2026-11-13): `images`, `caches`, `benchmarks`,
   `release-checks`, `codegen`, `stress` -- the suite under the fifteen
-  modes and with `NS_NEXT_NO_JIT=1`, 1,577 s, and `run-corpus` under
-  each -- `linux` and `aarch64`, whose suite took 710 s.
+  modes and with `NS_NEXT_NO_JIT=1`, 1,642 s, and `run-corpus` under
+  each -- `linux` and `aarch64`, whose suite took 688 s.
 - **The `codegen` gate** holds the run loop with the `Cell` slots and
   the `Breakpoint` arm to its budgets: the arm shares the out-of-line arm
   of the simultaneous slot clauses, since an arm of its own grew
@@ -2335,10 +2335,11 @@ decides"), so the check would cost every send of every fast-path method.
 
 ### Stopping at and going past a breakpoint
 
-**Partial:** the stop and the going past are built for line breakpoints;
-conditions, hit counts and logpoints, and what a restart, a forced
-return, edit-and-continue and an evaluation do with the token, are
-planned.
+**Partial:** the stop and the going past are built for every patched
+slot -- a line breakpoint's, a method breakpoint's, a step's and run to
+cursor's one-shots, and the breakpoint stress mode's; conditions, hit
+counts and logpoints, and what a restart, a forced return,
+edit-and-continue and an evaluation do with the token, are planned.
 
 A `Breakpoint` slot shares the run loop's out-of-line arm of the
 simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an

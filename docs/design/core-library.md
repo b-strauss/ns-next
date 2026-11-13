@@ -21,7 +21,12 @@
 > `StringBuilder` and the views"), and its weak references, `WeakArray`,
 > `Ephemeron` and `WeakMap` ("Weak references"). `Closure`'s `whileTrue:`
 > and `whileFalse:` and `Array>>do:` are Newspeak loops, for the JIT tiers
-> to see through ("Real bodies for control flow and `do:`").
+> to see through ("Real bodies for control flow and `do:`"). The
+> handler search reports to an attached debugger through two mirror
+> rows, `exceptionUnhandled:ifFail:` just before `defaultAction` and
+> `exceptionCaught:at:ifFail:` as it reads the handler it found, which
+> decide its exception breakpoints and change nothing without one
+> ([debugger.md](debugger.md), "Exceptions").
 > Every member of `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`,
 > `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
 > `TypedArraysFactory.ns` and `MirrorsFactory.ns` -- public, protected and
@@ -50,6 +55,8 @@
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions',
+> `builtins/activation.rs`'s two report rows deciding through
+> `crates/ns-runtime/src/debugger/exceptions.rs`,
 > `builtins/module.rs` `moduleInstanceNamed:`, `shippedModuleClassNamed:`
 > and `recordShippedModule:`, `builtins/future.rs` the pull
 > future's forcing, `builtins/bytes.rs` `ByteArray`'s and the UTF-8

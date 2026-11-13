@@ -7598,10 +7598,11 @@ read of its handler ("What stage 3 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen`
 and `images` where their files changed), and every end-of-batch group
-passed on the final tree, `fce8baf3`: `images`, `caches`, `benchmarks`,
-`release-checks`, `codegen`, `stress` -- the suite under each of the
-fifteen modes and without the JIT, 1,577 s, and `run-corpus` under each
--- `linux` and `aarch64`, whose suite took 710 s.
+passed on the final tree, `b3da5ce3` (after it only Markdown changed):
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
+-- the suite under each of the fifteen modes and without the JIT,
+1,642 s, and `run-corpus` under each -- `linux` and `aarch64`, whose
+suite took 688 s.
 
 - `91b13682` -- the plan
   (`docs/superpowers/plans/2026-11-12-2359-debugger-stage-3.md`).
@@ -7627,6 +7628,15 @@ fifteen modes and without the JIT, 1,577 s, and `run-corpus` under each
   mode paused again in its test.
 - `6bb4ecf0` -- the unwinder tests once per unwind whether the debugger
   follows it, and a catch is reported through the read of its handler.
+- `e5393238`, `60a882e6`, `7ec3cd3f`, `9fa1fd62`, `0dacde30`,
+  `7828b387` -- the final review's fixes: a test waits for the run's
+  end, a step from an exception's stop starts in the frame the stop
+  shows first, a breakpoint's stop is decided again after the commands
+  served before it, a method breakpoint is set in every built module of
+  its name, the dead `activationHandlerBlock:ifFail:` row removed, and a
+  body's originals kept sorted.
+- `b3da5ce3` -- a caught exception's stop shows and steps in the
+  handler block it stands in.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 4,
 the DAP agent and the plugin's `XDebugProcess`) and "The debugger" (what

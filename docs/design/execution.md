@@ -35,9 +35,10 @@
 > compiling does so in a zone of fixed size ("Stage 4: closures, non-local
 > return, allocation and the barrier", "The code zone"). The optimizing
 > JIT is designed in ten stages ("Planned: the optimizing JIT") and its
-> first two are built, the foundation ("The optimizing tier's
-> foundation") and speculation ("Speculation"): a body whose budget, spent by its baseline code,
-> runs out is snapshotted and compiled at the next safepoint into an SSA
+> first three are built, the foundation ("The optimizing tier's
+> foundation"), speculation ("Speculation") and inlining ("Inlining"):
+> a body whose budget, spent by its baseline code, runs out is
+> snapshotted and compiled at the next safepoint into an SSA
 > graph, its values kept in machine registers by a linear scan between
 > interrupt points and written back into the frame before each, every
 > instruction it does not lower as register arithmetic emitted by the
@@ -49,7 +50,16 @@
 > slots at fixed offsets; a site the feedback says never ran traps,
 > and a copy that keeps failing is compiled again ever more rarely,
 > past its last version without traps; an edit, a bulk forward and a
-> reclaimed id free the copies they make stale.
+> reclaimed id free the copies they make stale. A cached send inlines
+> its callees in a type-case, each inlined scope laid out where the
+> interpreter would push its activation, and a copy is freed when
+> anything it inlined changes ("Inlining"). A debugger's breakpoint
+> patches its body's slots in place: the patch frees the body's machine
+> code and every copy that inlined it, the baseline lowers a patched
+> slot as an exit to the interpreter's `Breakpoint` arm, and the
+> optimizing tier neither optimizes nor inlines a patched body
+> ("Invalidation", "Planned: the baseline JIT";
+> [debugger.md](debugger.md), "Where the original lives").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -83,7 +93,11 @@
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
 > the code zone's compaction and freeing in `jit/zone.rs`; the
 > optimizing compiler in `jit/optimizing/`, and its request, install,
-> entries, copies, traps, retirement and invalidation in `jit/mod.rs`),
+> entries, copies, traps, retirement and invalidation in `jit/mod.rs`,
+> where `jit::free_for_patch` frees what a breakpoint's patch makes
+> stale), the run loop's `Breakpoint` arm in `vm.rs` and its decision in
+> `interpreter/breakpoint.rs`, the patchable slots in
+> `bytecode/compact.rs` (`EncodedBody::patch`, `restore`, `original`),
 > `heap/machine_words.rs` (the machine words, atomics behind an `Arc`,
 > the safepoint request among them, which an attached debugger's remote
 > arms from its own thread; `crates/ns-runtime/src/debugger/` serves it at

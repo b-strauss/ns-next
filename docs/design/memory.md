@@ -96,7 +96,8 @@
 > (`crates/ns-runtime/src/debugger/`), `Interpreter::tenure_now`,
 > `Interpreter::collect_now` and the switches of the memory-facing stress
 > modes: moves, caches, collection, scavenges, every instruction wide,
-> suspensions, the code zone's compaction and the debugger's pause; the
+> suspensions, the code zone's compaction, the debugger's pause, its
+> breakpoints and its steps; the
 > JIT's, the exits', the optimizer's and the deoptimizations' are in
 > `jit/mod.rs`, which also
 > reads the zone's to force the JIT on),
@@ -517,9 +518,13 @@ did. The request word is a set of bits, each set by a `fetch_or` and
 cleared by a `fetch_and` so that no writer erases another's: the VM's own
 request (`REAL_REQUEST`, which a collection's, a scavenge's and a full
 code zone's trigger set through `Heap::request_safepoint`), a stress
-mode's hold (`STRESS_HOLD`), and the debugger's pause and commands
+mode's hold (`STRESS_HOLD`), the debugger's pause and commands
 (`DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`; [debugger.md](debugger.md), "The
-poll words as atomics"). The poll takes the safepoint for any of them;
+poll words as atomics"), and the two the VM sets for the debugger on its
+own thread, a step into's request held until the next push and a stop an
+exception breakpoint recorded for the next poll (`DEBUGGER_STEP`,
+`DEBUGGER_STOP`; [debugger.md](debugger.md), "Step into's held request",
+"Exceptions"). The poll takes the safepoint for any of them;
 every bit but the hold's lowers the depth limit machine code's prologues
 compare with to 0 while it stands (`LOWERS_DEPTH_LIMIT`,
 `Heap::synchronize_depth_limit`; [execution.md](execution.md), "Polls and
@@ -1984,8 +1989,10 @@ so machine code reads only committed memory: an id past the lowered
 machine entry rows reads as no machine entry, and the interpreter calls
 the block. The code table's length counts every body with machine code,
 not only the bodies an activation runs: a full collection frees the id
-of a body nothing runs, and the budget words' pointing that follows
-mints one again for each body whose code lives
+of a body nothing runs -- a body a live optimized copy inlined or a
+breakpoint patched counts as run ([debugger.md](debugger.md),
+"Breakpoints by body, and reclaimed code ids") -- and the budget words'
+pointing that follows mints one again for each body whose code lives
 (`jit::point_budget_words_after_collection`), so that a compiled body
 keeps a code id, and its rows in the three tables, for as long as its
 code lives. The stack shrinks between entries, when no frame machine
