@@ -40,7 +40,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  linux                in Docker: clippy, the platform-dependent tests and the Newspeak benchmark programs for x86_64-unknown-linux-gnu
+  linux                in Docker: clippy, the platform-dependent tests, the doctests and the Newspeak benchmark programs for x86_64-unknown-linux-gnu
   aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the platform-dependent tests under the image's qemu-aarch64
   end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
 
@@ -567,12 +567,14 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "cargo clippy --workspace --all-targets -- -D warnings",
                 ),
                 ("suite", &platform_suite("--test-threads $(nproc)")),
+                ("doctests", "cargo test --workspace --doc"),
                 (
                     "benchmark programs",
                     "cargo nextest run --workspace --profile benchmarks-newspeak",
                 ),
             ],
         )),
+        // No doctests: `cargo test --doc` would build them for the host.
         "aarch64" => steps(in_docker(
             "aarch64",
             AARCH64_ENVIRONMENT,
@@ -781,35 +783,8 @@ fn recorded_suite(
     unreached::read_record(&directory)
 }
 
-/// The commit group's suite: the default profile with the reach record
-/// on, then every test the list of unreached tests names held to reaching
-/// no more than the list says, so that no gate leaves out a test a change
-/// made reachable.
-fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
-    let record = recorded_suite(root, "suite", times)?;
-    let text = std::fs::read_to_string(root.join(unreached::LIST))
-        .map_err(|error| format!("read {}: {error}", unreached::LIST))?;
-    let listed =
-        unreached::parse_list(&text).map_err(|error| format!("{}: {error}", unreached::LIST))?;
-    let stale = unreached::stale(&listed, &record);
-    if stale.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "{} lists tests that now reach more than it says, which the stress and \
-         Docker groups would leave out; run `cargo xtask unreached-tests`:\n  {}",
-        unreached::LIST,
-        stale.join("\n  ")
-    ))
-}
-
-/// `cargo xtask unreached-tests`: the default profile's suite run with
-/// the reach record on, after the shipped code it tests against, and the
-/// list of unreached tests written from it.
-fn unreached_tests(root: &Path) -> Result<(), String> {
-    let mut times = Vec::new();
-    run(&shipped_code_step(), root, &mut times)?;
-    let record = recorded_suite(root, "the suite, recorded", &mut times)?;
+/// The tests of the default profile, as `nextest list` names them.
+fn default_tests(root: &Path) -> Result<Vec<unreached::TestId>, String> {
     let output = Command::new(cargo())
         .args([
             "nextest",
@@ -825,11 +800,79 @@ fn unreached_tests(root: &Path) -> Result<(), String> {
     if !output.status.success() {
         return Err(format!("nextest list ({})", output.status));
     }
-    let tests: Vec<unreached::TestId> = String::from_utf8_lossy(&output.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| line.split_once(' '))
         .map(|(binary, name)| unreached::TestId::new(binary, name))
-        .collect();
+        .collect())
+}
+
+/// The commit group's suite: the default profile with the reach record
+/// on, then the record held to the list of unreached tests, so that no
+/// gate leaves out a test a change made reachable: the sentinel over the
+/// tests that run a program, every listed test reaching no more than the
+/// list says, and no listed test missing from the run; the tests a
+/// measurement would add to the list are only named.
+fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
+    let record = recorded_suite(root, "suite", times)?;
+    let tests = default_tests(root)?;
+    unreached::sentinel(&tests, &record, |path| {
+        unreached::golden_exits_with_zero(root, path)
+    })?;
+    let text = std::fs::read_to_string(root.join(unreached::LIST))
+        .map_err(|error| format!("read {}: {error}", unreached::LIST))?;
+    let listed =
+        unreached::parse_list(&text).map_err(|error| format!("{}: {error}", unreached::LIST))?;
+    let addable = unreached::could_be_listed(&listed, &tests, &record);
+    if !addable.is_empty() {
+        println!(
+            "\n{} tests reach no runtime but are not listed in {}, so every gate runs \
+             them; `cargo xtask unreached-tests` would list them:",
+            addable.len(),
+            unreached::LIST
+        );
+        for test in &addable {
+            println!("  {} {}", test.binary, test.name);
+        }
+    }
+    let stale = unreached::stale(&listed, &record);
+    let dead = unreached::dead(&listed, &tests);
+    if stale.is_empty() && dead.is_empty() {
+        return Ok(());
+    }
+    let mut failures = Vec::new();
+    if !stale.is_empty() {
+        failures.push(format!(
+            "tests that now reach more than it says, which the stress and Docker groups \
+             would leave out:\n  {}",
+            stale.join("\n  ")
+        ));
+    }
+    if !dead.is_empty() {
+        failures.push(format!(
+            "tests that did not run, renamed or removed:\n  {}",
+            dead.join("\n  ")
+        ));
+    }
+    Err(format!(
+        "{} lists {}\nRun `cargo xtask unreached-tests`.",
+        unreached::LIST,
+        failures.join("\nand ")
+    ))
+}
+
+/// `cargo xtask unreached-tests`: the default profile's suite run with
+/// the reach record on, after the shipped code it tests against, and the
+/// list of unreached tests written from it, once the sentinel says the
+/// record saw the tests that run a program.
+fn unreached_tests(root: &Path) -> Result<(), String> {
+    let mut times = Vec::new();
+    run(&shipped_code_step(), root, &mut times)?;
+    let record = recorded_suite(root, "the suite, recorded", &mut times)?;
+    let tests = default_tests(root)?;
+    unreached::sentinel(&tests, &record, |path| {
+        unreached::golden_exits_with_zero(root, path)
+    })?;
     let mut unwritable = Vec::new();
     let unreached = unreached::unreached_of(&tests, &record, &mut unwritable);
     let path = root.join(unreached::LIST);
@@ -1283,7 +1326,9 @@ mod tests {
     /// `linux` also verifies the Newspeak benchmark programs, as the
     /// host's `benchmarks` group does, without their Java and Python
     /// counterparts, which run nothing that differs by platform; `aarch64`
-    /// does not. Neither runs the doctests.
+    /// does not. Only `linux` runs the doctests: those of
+    /// `Interpreter::enter` boot an interpreter and reserve memory, and
+    /// `aarch64`'s `cargo test --doc` would build them for the host.
     #[test]
     fn only_linux_runs_the_benchmark_programs() {
         let scripts = |name: &str| -> Vec<String> {
@@ -1303,12 +1348,13 @@ mod tests {
         };
         assert!(runs_benchmarks("linux"));
         assert!(!runs_benchmarks("aarch64"));
-        for name in ["linux", "aarch64"] {
-            assert!(
-                scripts(name).iter().all(|script| !script.contains("--doc")),
-                "{name} runs no doctests"
-            );
-        }
+        let runs_doctests = |name: &str| {
+            scripts(name)
+                .iter()
+                .any(|script| script == "cargo test --workspace --doc")
+        };
+        assert!(runs_doctests("linux"));
+        assert!(!runs_doctests("aarch64"));
     }
 
     /// Each Docker group's suite runs the generated profile `platform`,

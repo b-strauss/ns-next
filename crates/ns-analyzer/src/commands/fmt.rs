@@ -81,6 +81,7 @@ fn format_file(file: &Path, check: bool) -> bool {
 /// Writes beside the target and renames over it, so that a failure part way
 /// never leaves a truncated source behind.
 fn write_replacing(file: &Path, text: &str) -> std::io::Result<()> {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     let mut temporary_name = file.file_name().unwrap_or_default().to_os_string();
     temporary_name.push(".fmt-temporary");
     let temporary = file.with_file_name(temporary_name);

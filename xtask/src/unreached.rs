@@ -72,7 +72,9 @@ impl TestId {
 /// What each test recorded, or each listed test is listed as reaching.
 pub(crate) type Reaches = BTreeMap<TestId, BTreeSet<Reach>>;
 
-/// The markers a recorded run left in `directory`, by test.
+/// The markers a recorded run left in `directory`, by test; a temporary
+/// file a killed process left before renaming it into a marker is
+/// skipped.
 pub(crate) fn read_record(directory: &Path) -> Result<Reaches, String> {
     let mut reaches = Reaches::new();
     let entries = std::fs::read_dir(directory)
@@ -81,6 +83,9 @@ pub(crate) fn read_record(directory: &Path) -> Result<Reaches, String> {
         let path = entry
             .map_err(|error| format!("read {}: {error}", directory.display()))?
             .path();
+        if path.extension().is_some_and(|extension| extension == "tmp") {
+            continue;
+        }
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("read {}: {error}", path.display()))?;
         let fields: Vec<&str> = text.trim_end().split('\t').collect();
@@ -236,6 +241,93 @@ pub(crate) fn stale(unreached: &Reaches, record: &Reaches) -> Vec<String> {
             })
         })
         .collect()
+}
+
+/// The listed tests that did not run among `tests`: a renamed or removed
+/// test's entry, which leaves its name in every generated filter.
+pub(crate) fn dead(unreached: &Reaches, tests: &[TestId]) -> Vec<String> {
+    let ran: BTreeSet<&TestId> = tests.iter().collect();
+    unreached
+        .keys()
+        .filter(|test| !ran.contains(test))
+        .map(|test| format!("{} {}", test.binary, test.name))
+        .collect()
+}
+
+/// The tests among `tests` the list does not name that the record found
+/// reaching no runtime: a measurement would list them, so the gates could
+/// leave them out too.
+pub(crate) fn could_be_listed(
+    unreached: &Reaches,
+    tests: &[TestId],
+    record: &Reaches,
+) -> Vec<TestId> {
+    let mut unwritable = Vec::new();
+    unreached_of(tests, record, &mut unwritable)
+        .into_keys()
+        .filter(|test| !unreached.contains_key(test))
+        .collect()
+}
+
+/// The golden a trial of `ns-cli`'s `run_goldens` runs, `golden::<lowering>::<path>`
+/// naming `goldens/<path>.ns`: its path, or `None` for another test.
+fn golden_of(test: &TestId) -> Option<&str> {
+    if test.binary != "ns-cli::run_goldens" {
+        return None;
+    }
+    let rest = test.name.strip_prefix("golden::")?;
+    Some(rest.split_once("::")?.1)
+}
+
+/// Whether the golden at `path` below `goldens/` ends its run with status
+/// 0, as its `.toml` records: a program that ran to its end, so its run
+/// made an interpreter. A golden refused before it runs -- a resolve or
+/// parse error -- makes none, and is no sentinel.
+pub(crate) fn golden_exits_with_zero(root: &Path, path: &str) -> bool {
+    std::fs::read_to_string(root.join("goldens").join(format!("{path}.toml"))).is_ok_and(|text| {
+        text.lines()
+            .filter_map(|line| line.trim().strip_prefix("status = "))
+            .all(|status| status.trim() == "0")
+    })
+}
+
+/// The sentinel over a recorded run of `tests`: every golden trial whose
+/// program runs to status 0 -- `exits_with_zero` says which, by the
+/// golden's path -- recorded `runtime`, and there are such trials. One
+/// that did not means the record has come unwired from the interpreter --
+/// a marker lost across the child process, say -- and a list measured
+/// from it would leave out tests that run programs.
+pub(crate) fn sentinel(
+    tests: &[TestId],
+    record: &Reaches,
+    exits_with_zero: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let programs: Vec<&TestId> = tests
+        .iter()
+        .filter(|test| golden_of(test).is_some_and(&exits_with_zero))
+        .collect();
+    if programs.is_empty() {
+        return Err("the recorded run ran no golden trial of a program".to_string());
+    }
+    let unrecorded: Vec<String> = programs
+        .iter()
+        .filter(|test| {
+            !record
+                .get(test)
+                .is_some_and(|reaches| reaches.contains(&Reach::Runtime))
+        })
+        .map(|test| format!("{} {}", test.binary, test.name))
+        .collect();
+    if unrecorded.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the reach record missed the runtime of {} of {} tests that run a program, so it \
+         cannot be trusted to list tests:\n  {}",
+        unrecorded.len(),
+        programs.len(),
+        unrecorded.join("\n  ")
+    ))
 }
 
 /// A filterset matching the listed tests `leave_out` picks, a term per
@@ -550,8 +642,64 @@ mod tests {
             record[&TestId::new("ns-runtime::vm", "a_send")],
             reaches(&[Reach::Runtime, Reach::Platform])
         );
+        std::fs::write(directory.join("a-compiler.1234.tmp"), "").expect("a leftover");
+        assert_eq!(read_record(&directory).expect("a record").len(), 1);
         std::fs::write(directory.join("broken"), "nothing to read").expect("a marker");
         assert!(read_record(&directory).is_err());
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_listed_test_that_did_not_run_is_dead() {
+        let unreached = example();
+        let ran: Vec<TestId> = unreached.keys().skip(1).cloned().collect();
+        let first = unreached.keys().next().expect("a test");
+        assert_eq!(
+            dead(&unreached, &ran),
+            [format!("{} {}", first.binary, first.name)]
+        );
+        let all: Vec<TestId> = unreached.keys().cloned().collect();
+        assert!(dead(&unreached, &all).is_empty());
+    }
+
+    #[test]
+    fn an_unlisted_test_that_reaches_nothing_could_be_listed() {
+        let unreached = example();
+        let mut tests: Vec<TestId> = unreached.keys().cloned().collect();
+        let new_one = TestId::new("ns-syntax", "lexer::a_new_test");
+        let running = TestId::new("ns-runtime::vm", "a_send");
+        tests.extend([new_one.clone(), running.clone()]);
+        let record: Reaches = [(running, reaches(&[Reach::Runtime]))]
+            .into_iter()
+            .collect();
+        assert_eq!(could_be_listed(&unreached, &tests, &record), [new_one]);
+    }
+
+    #[test]
+    fn the_sentinel_wants_every_program_run_recorded() {
+        let golden = TestId::new("ns-cli::run_goldens", "golden::optimized::language/a");
+        let other = TestId::new("ns-cli::run_goldens", "every_golden_is_a_complete_pair");
+        let refused = TestId::new("ns-cli::run_goldens", "golden::reference::language/refused");
+        let tests = [golden.clone(), other, refused];
+        let exits_with_zero = |path: &str| path == "language/a";
+        let recorded: Reaches = [(golden.clone(), reaches(&[Reach::Runtime]))]
+            .into_iter()
+            .collect();
+        assert_eq!(sentinel(&tests, &recorded, exits_with_zero), Ok(()));
+        let error = sentinel(&tests, &Reaches::new(), exits_with_zero).expect_err("unrecorded");
+        assert!(error.contains("golden::optimized::language/a"), "{error}");
+        assert!(
+            sentinel(&tests[1..], &recorded, exits_with_zero).is_err(),
+            "no golden of a program ran"
+        );
+        let root = crate::repository_root();
+        assert!(golden_exits_with_zero(
+            &root,
+            "language/block/and_or_fallback_closures_share_variables"
+        ));
+        assert!(!golden_exits_with_zero(
+            &root,
+            "language/module/root_superclass_naming_top_is_refused"
+        ));
     }
 }

@@ -595,9 +595,7 @@ ns-analyzer::corpus no_truncated_module_produces_an_internal_error::modules_8_of
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::modules_9_of_32
 ns-analyzer::corpus the_editor_entry_agrees_with_resolve
 ns-analyzer::corpus the_editor_parse_agrees_with_parse
-ns-analyzer::formatting_gate every_repository_source_is_formatted
 ns-analyzer::formatting_gate the_first_differing_line_counts_every_line_ending
-ns-analyzer::hint_gate the_core_library_has_no_hint
 ns-analyzer::protocol a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file
 ns-analyzer::protocol a_malformed_notification_is_reported_and_the_server_keeps_serving
 ns-analyzer::protocol an_unknown_request_is_method_not_found
@@ -735,11 +733,8 @@ ns-cli::bin/ns-next command_line::tests::plain_words_are_separate_arguments
 ns-cli::bin/ns-next command_line::tests::runs_of_whitespace_and_whitespace_at_the_ends_yield_no_empty_argument
 ns-cli::bin/ns-next command_line::tests::single_quotes_hold_everything_literally
 ns-cli::bin/ns-next command_line::tests::whitespace_other_than_space_tab_and_newline_belongs_to_an_argument
-ns-cli::bin/ns-next project::tests::a_directory_is_the_project_its_newspeak_json_describes
-ns-cli::bin/ns-next project::tests::a_directory_without_a_newspeak_json_is_refused_naming_the_file
 ns-cli::bin/ns-next project::tests::a_file_that_is_no_json_object_is_refused_saying_so
 ns-cli::bin/ns-next project::tests::a_file_without_main_is_refused_naming_main_whatever_else_it_holds
-ns-cli::bin/ns-next project::tests::a_json_file_of_another_name_is_refused_naming_the_file
 ns-cli::bin/ns-next project::tests::a_key_written_twice_is_refused
 ns-cli::bin/ns-next project::tests::a_path_that_is_empty_or_names_no_ns_file_is_refused_naming_its_key
 ns-cli::bin/ns-next project::tests::a_schema_reference_that_is_no_string_is_refused
@@ -748,7 +743,6 @@ ns-cli::bin/ns-next project::tests::a_script_name_written_twice_is_refused_namin
 ns-cli::bin/ns-next project::tests::a_script_that_does_not_split_is_refused_naming_it
 ns-cli::bin/ns-next project::tests::a_script_that_is_no_string_is_refused_naming_scripts
 ns-cli::bin/ns-next project::tests::an_empty_script_name_is_refused
-ns-cli::bin/ns-next project::tests::any_other_file_is_a_source
 ns-cli::debug_metadata debug_metadata::floor
 ns-cli::debug_metadata debug_metadata::optimized::language/method/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error
 ns-cli::debug_metadata debug_metadata::optimized::language/module/root_applying_two_mixins_is_refused
@@ -777,9 +771,7 @@ ns-cli::debug_metadata debug_metadata::reference::language/module/root_superclas
 ns-cli::run_goldens every_golden_is_a_complete_pair
 ns-cli::run_goldens the_guards_on_skipped_refuse_what_they_promise_to
 ns-cli::source_formatting newspeak_sources_outside_the_corpus_comment_with_line_comments
-ns-cli::target_runner a_runner_goes_before_the_binary_with_its_own_arguments
 ns-cli::target_runner the_runner_variable_is_spelled_as_cargo_spells_it
-ns-cli::target_runner without_a_runner_the_binary_runs_itself
 ns-runtime arbitrary_integer::division::tests::a_guess_one_too_large_is_corrected
 ns-runtime arbitrary_integer::division::tests::burnikel_ziegler_agrees_with_algorithm_d
 ns-runtime arbitrary_integer::division::tests::burnikel_ziegler_rare_steps_hold_the_identity
@@ -1171,6 +1163,11 @@ ns-runtime::opcode_tags the_integer_binary_opcode_keeps_its_tag
 ns-runtime::opcode_tags the_next_free_instruction_tag_is_fifty_two
 ns-runtime::opcode_tags the_non_boolean_signal_keeps_its_number
 ns-runtime::opcode_tags the_simultaneous_slot_instructions_keep_their_numbers
+ns-runtime::reach_wiring every_interpreter_is_built_after_its_record
+ns-runtime::reach_wiring every_recording_reader_records
+ns-runtime::reach_wiring every_switch_read_stands_in_a_reader_the_record_covers
+ns-runtime::reach_wiring the_kernel_readers_are_called_only_after_the_kernels_record
+ns-runtime::reach_wiring the_scan_finds_a_read_in_a_function_but_not_in_a_test_module
 ns-runtime::resolver a_class_side_may_not_declare_a_keyword_factory_selector
 ns-runtime::resolver a_class_side_may_not_declare_the_default_factory_selector
 ns-runtime::resolver a_class_side_may_not_declare_the_factory_selector
@@ -1688,13 +1685,16 @@ xtask::bin/xtask tests::the_stress_group_runs_fifteen_modes
 xtask::bin/xtask tests::the_usage_names_every_group
 xtask::bin/xtask tests::without_formatting_the_shipped_code_runs_first
 xtask::bin/xtask unreached::tests::a_generated_profile_narrows_its_parents_filter
+xtask::bin/xtask unreached::tests::a_listed_test_that_did_not_run_is_dead
 xtask::bin/xtask unreached::tests::a_listed_test_that_reaches_more_is_stale
 xtask::bin/xtask unreached::tests::a_marker_is_read_into_the_record
 xtask::bin/xtask unreached::tests::a_test_that_reaches_the_runtime_or_the_memory_layer_is_not_listed
+xtask::bin/xtask unreached::tests::an_unlisted_test_that_reaches_nothing_could_be_listed
 xtask::bin/xtask unreached::tests::each_profile_leaves_out_what_it_need_not_run
 xtask::bin/xtask unreached::tests::the_checked_in_list_parses
 xtask::bin/xtask unreached::tests::the_list_reads_back_what_it_wrote
 xtask::bin/xtask unreached::tests::the_repositorys_config_has_the_parents_filters
+xtask::bin/xtask unreached::tests::the_sentinel_wants_every_program_run_recorded
 
 [compiler]
 ns-runtime bytecode::compact::tests::call_sites_and_blocks_are_visited_in_emission_order
@@ -2058,6 +2058,8 @@ ns-analyzer::fmt_command check_on_formatted_files_succeeds_silently
 ns-analyzer::fmt_command check_prints_the_path_of_a_file_that_would_change_and_writes_nothing
 ns-analyzer::fmt_command fmt_rewrites_an_unformatted_file_and_leaves_a_formatted_one_untouched
 ns-analyzer::fmt_command without_a_path_the_current_directory_is_formatted
+ns-analyzer::formatting_gate every_repository_source_is_formatted
+ns-analyzer::hint_gate the_core_library_has_no_hint
 ns-analyzer::inspect inspect_reports_a_corrupt_artifact_rather_than_panicking
 ns-analyzer::parse parse_bad_file_exits_1
 ns-analyzer::parse parse_corpus_reports_counts
@@ -2067,13 +2069,17 @@ ns-analyzer::protocol a_file_never_opened_answers_its_symbols_from_disk
 ns-analyzer::protocol an_editor_session
 ns-analyzer::protocol an_open_document_wins_over_the_file_on_disk
 ns-analyzer::protocol an_unreadable_file_or_a_uri_that_names_no_file_answers_no_symbols
+ns-cli::bin/ns-next project::tests::a_directory_is_the_project_its_newspeak_json_describes
+ns-cli::bin/ns-next project::tests::a_directory_without_a_newspeak_json_is_refused_naming_the_file
 ns-cli::bin/ns-next project::tests::a_doubled_separator_names_the_same_path_as_a_single_one
+ns-cli::bin/ns-next project::tests::a_json_file_of_another_name_is_refused_naming_the_file
 ns-cli::bin/ns-next project::tests::a_module_named_twice_or_equal_to_main_is_refused_in_any_spelling
 ns-cli::bin/ns-next project::tests::a_relative_path_is_relative_to_the_project_file_with_either_separator
 ns-cli::bin/ns-next project::tests::a_script_is_split_into_arguments_when_the_file_is_read
 ns-cli::bin/ns-next project::tests::a_script_name_may_hold_whitespace_inside_and_begin_with_a_dash
 ns-cli::bin/ns-next project::tests::a_unc_path_is_absolute_with_either_separator
 ns-cli::bin/ns-next project::tests::an_absolute_path_is_taken_as_written
+ns-cli::bin/ns-next project::tests::any_other_file_is_a_source
 ns-cli::bin/ns-next project::tests::modules_may_be_absent_or_empty
 ns-cli::bin/ns-next project::tests::other_keys_are_ignored
 ns-cli::cli benchmark_rejects_zero_iterations
@@ -2112,7 +2118,9 @@ ns-cli::run_goldens golden::reference::language/module/root_superclass_naming_to
 ns-cli::run_goldens golden::reference::language/module/root_superclass_prefixed_with_outer_is_refused
 ns-cli::run_goldens golden::reference::language/module/root_superclass_prefixed_with_self_is_refused
 ns-cli::run_goldens golden::reference::language/module/root_superclass_sending_other_than_new_is_refused
+ns-cli::target_runner a_runner_goes_before_the_binary_with_its_own_arguments
 ns-cli::target_runner the_binary_starts_through_the_target_command
+ns-cli::target_runner without_a_runner_the_binary_runs_itself
 ns-runtime heap::frames::tests::a_push_past_the_committed_end_commits_the_words_it_answers
 ns-runtime heap::frames::tests::a_push_the_reservation_cannot_hold_is_refused_and_leaves_the_top
 ns-runtime heap::frames::tests::a_reserved_push_may_use_the_room_an_ordinary_push_leaves

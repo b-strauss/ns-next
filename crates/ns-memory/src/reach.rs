@@ -70,7 +70,7 @@ pub fn record(reach: Reach) {
 
 #[cfg(debug_assertions)]
 mod markers {
-    use std::io::Write;
+
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{Reach, VARIABLE};
@@ -96,10 +96,13 @@ mod markers {
     /// The marker of `reach` for the running test, unless the record is
     /// off or no test runs. Its name is a hash of the test's binary and
     /// name, so that the test and the processes it starts write the same
-    /// file, which only the first creates; its one line names all three,
-    /// which the hash cannot be read back into. A marker that cannot be
-    /// written fails the test, since a record missing one would let a gate
-    /// leave out a test it must run.
+    /// file; its one line names all three, which the hash cannot be read
+    /// back into. It is written beside its name, under one ending in this
+    /// process's id and `.tmp`, and renamed into place, so that a process
+    /// killed while writing leaves no empty or half-written marker, only a
+    /// temporary file the reader skips. A marker that cannot be written
+    /// fails the test, since a record missing one would let a gate leave
+    /// out a test it must run.
     #[cold]
     fn write_marker(reach: Reach) {
         let Some(directory) = std::env::var_os(VARIABLE) else {
@@ -116,16 +119,22 @@ mod markers {
             fnv1a(&format!("{binary}\t{test}")),
             reach.name()
         ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => file
-                .write_all(format!("{binary}\t{test}\t{}\n", reach.name()).as_bytes())
-                .unwrap_or_else(|error| panic!("{VARIABLE}: write {}: {error}", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("{VARIABLE}: create {}: {error}", path.display()),
+        if path.exists() {
+            return;
+        }
+        let mut temporary_name = path.file_name().unwrap_or_default().to_os_string();
+        temporary_name.push(format!(".{}.tmp", std::process::id()));
+        let temporary = path.with_file_name(temporary_name);
+        std::fs::write(&temporary, format!("{binary}\t{test}\t{}\n", reach.name()))
+            .unwrap_or_else(|error| panic!("{VARIABLE}: write {}: {error}", temporary.display()));
+        if let Err(error) = std::fs::rename(&temporary, &path) {
+            // Another process of the same test may have put the same
+            // marker in place meanwhile, which some systems refuse to
+            // replace while it is being written.
+            let _ = std::fs::remove_file(&temporary);
+            if !path.exists() {
+                panic!("{VARIABLE}: rename to {}: {error}", path.display());
+            }
         }
     }
 

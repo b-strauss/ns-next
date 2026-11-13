@@ -29,6 +29,7 @@ pub(crate) enum ProgramPath {
 /// other name, are refused with the name a project file must have rather
 /// than read as a source.
 pub(crate) fn locate_program(path: &Path) -> Result<ProgramPath, String> {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     if path.is_dir() {
         let project = path.join(PROJECT_FILE_NAME);
         if project.is_file() {
@@ -250,6 +251,7 @@ fn check_module_path(key: &str, written: &str) -> Result<(), String> {
 /// refused later, by `program.rs`'s check that no two modules declare the
 /// same name.
 fn same_path(first: &Path, second: &Path) -> bool {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     fn significant(path: &Path) -> impl Iterator<Item = std::path::Component<'_>> {
         path.components()
             .filter(|component| *component != std::path::Component::CurDir)
