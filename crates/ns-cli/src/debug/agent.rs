@@ -975,7 +975,7 @@ impl Agent {
             // safepoint: no `ensure:` block runs. The response is written
             // first, within the writer's bound.
             if let Some(client) = self.client.take() {
-                client.writer.finish();
+                client.writer.finish(write_bound());
             }
             eprintln!("{TERMINATED_LINE}");
             std::process::exit(1);
@@ -1404,7 +1404,7 @@ impl Agent {
                 // Written before the host goes on to end the process,
                 // within the writer's bound.
                 if let Some(client) = self.client.take() {
-                    client.writer.finish();
+                    client.writer.finish(write_bound());
                 }
                 let _ = done.send(());
             }

@@ -284,14 +284,28 @@ fn lexically_normal(path: &Path) -> PathBuf {
 }
 
 /// Whether two `file_identity`s are one file's: on Windows without regard
-/// to ASCII case, as its file names ignore it.
+/// to ASCII case, as its file names ignore it, and without the verbatim
+/// prefix, since a canonical path has it and a path that no longer
+/// resolves -- a module's file deleted after the program read it -- has
+/// not.
 fn same_identity(first: &Path, second: &Path) -> bool {
     if cfg!(windows) {
-        first
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&second.to_string_lossy())
+        let (first, second) = (first.to_string_lossy(), second.to_string_lossy());
+        without_verbatim_prefix(&first).eq_ignore_ascii_case(&without_verbatim_prefix(&second))
     } else {
         first == second
+    }
+}
+
+/// A Windows path without its verbatim prefix: `\\?\C:\x` as `C:\x`, and
+/// `\\?\UNC\server\share` as `\\server\share`.
+fn without_verbatim_prefix(path: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        std::borrow::Cow::Owned(format!(r"\\{rest}"))
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        std::borrow::Cow::Borrowed(rest)
+    } else {
+        std::borrow::Cow::Borrowed(path)
     }
 }
 
@@ -306,6 +320,54 @@ mod tests {
             identity: Some(file_identity(Path::new("/programs/Hello.ns"))),
             text: Some("class Hello = ()".to_string()),
         }])
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_canonical_and_a_spelled_path_of_one_file_agree() {
+        assert!(same_identity(
+            Path::new(r"\\?\C:\programs\Hello.ns"),
+            Path::new(r"c:\Programs\Hello.ns")
+        ));
+        assert!(same_identity(
+            Path::new(r"\\?\UNC\server\share\Hello.ns"),
+            Path::new(r"\\server\share\Hello.ns")
+        ));
+        assert!(!same_identity(
+            Path::new(r"\\?\C:\programs\Hello.ns"),
+            Path::new(r"C:\programs\Other.ns")
+        ));
+        assert_eq!(without_verbatim_prefix(r"C:\x"), r"C:\x");
+    }
+
+    /// A module's file deleted after the program read it is still named
+    /// by its path: its identity was made canonical, the client's path
+    /// now resolves by its spelling only. Windows' only: elsewhere the two
+    /// forms differ only where a link was resolved, which the spelling
+    /// cannot undo.
+    #[cfg(windows)]
+    #[test]
+    fn a_module_whose_file_is_gone_is_still_named_by_its_path() {
+        // The repository's own scratch directory: the system's may be
+        // spelled with short names, which only the file system resolves.
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.temp")
+            .join(format!("identity-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let file = directory.join("Gone.ns");
+        std::fs::write(&file, "class Gone = ()").expect("the file");
+        let sources = Sources::new(vec![ProgramModule {
+            name: "Gone".to_string(),
+            path: Some(file.clone()),
+            identity: Some(file_identity(&file)),
+            text: Some("class Gone = ()".to_string()),
+        }]);
+        std::fs::remove_dir_all(&directory).expect("remove the directory");
+        let named = sources.module_named_by(&SourceArgument {
+            path: Some(file.display().to_string()),
+            ..SourceArgument::default()
+        });
+        assert_eq!(named.as_deref(), Some("Gone"));
     }
 
     #[test]

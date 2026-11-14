@@ -1776,22 +1776,23 @@ a `.ns` module.
   from 17 to 26; the JDK 21 the build compiles with is a toolchain the foojay
   resolver provisions, so the build does not depend on which JDK happens to
   run Gradle.
-- **Rust from Gradle.** `buildLanguageServerDebug` and `buildLanguageServerRelease`
-  each run `cargo build -p ns-analyzer` at the repository root, debug and `--release`
-  respectively; the lexer comparison depends on the debug build and points
-  its test at it, and `buildRuntimeDebug` builds `ns-next` (debug) for the
-  DAP session test and the debug process test. Every sandbox an IDE
-  starts from depends on the release build and gets the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
-  `platform-directories.properties` names for it (a host the file does not
-  name fails the sandbox task rather than bundling a server the plugin would
-  not look for), beside `THIRD-PARTY-NOTICES.txt` and
-  `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
-  `prepareSandbox_runIde` with its split-mode siblings, which `runIde` starts
-  from — a separate sandbox (`plugins_runIde/`), so configuring
-  `prepareSandbox` alone leaves `runIde` without a server. The test sandboxes
-  (`prepareTest…`) are left out: only these build `--release`, because the
-  release profile's fat LTO and single codegen unit make that build slow and
-  the tests use the debug build.
+- **Rust from Gradle.** `buildLanguageServerDebug` and
+  `buildLanguageServerRelease` each run `cargo build -p ns-analyzer` at the
+  repository root, debug and `--release` respectively; the lexer comparison
+  depends on the debug build and points its test at it, and
+  `buildRuntimeDebug` builds `ns-next` (debug) for the DAP session test and
+  the debug process test. Every sandbox an IDE starts from depends on the
+  release build and gets the binary in `bin/<os>-<arch>/` for the host it
+  runs on, the directory `platform-directories.properties` names for it (a
+  host the file does not name fails the sandbox task rather than bundling a
+  server the plugin would not look for), beside `THIRD-PARTY-NOTICES.txt`
+  and `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
+  `prepareSandbox_runIde` with its split-mode siblings, which `runIde`
+  starts from — a separate sandbox (`plugins_runIde/`), so configuring
+  `prepareSandbox` alone leaves `runIde` without a server. The test
+  sandboxes (`prepareTest…`) are left out: only these build `--release`,
+  because the release profile's fat LTO and single codegen unit make that
+  build slow and the tests use the debug build.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
   been tried end to end: the server starts from `plugins_runIde/`, the
   semantic colours land over the lexer's, a resolver error
@@ -1878,27 +1879,27 @@ The server's own tests are described under its section, above ("Testing").
   workspace binary takes a task of its own the same way, declaring the
   sources its answers run through and `binaryBuildSettings`
   (`editors/jetbrains/build.gradle.kts`);
-- the DAP client against the real agent (`DapSessionTest`) --
-  `ns-next run --debug-connect` connecting to a socket the test listens
-  on, then `initialize`, `attach`, `setBreakpoints`, `configurationDone`,
-  the `stopped` event, the top frame of `stackTrace` and `continue` to the
+- the DAP client against the real agent (`DapSessionTest`) -- `ns-next run
+  --debug-connect` connecting to a socket the test listens on, then
+  `initialize`, `attach`, `setBreakpoints`, `configurationDone`, the
+  `stopped` event, the top frame of `stackTrace` and `continue` to the
   `exited` event's 0, every wait bounded; the debug build of `ns-next`
   (`buildRuntimeDebug`, `cargo build -p ns-cli`) is named by the system
   property `nsNext.runtime`. A task of its own, `dapSessionTest`, which
   `check` depends on: its answers run through the whole runtime, so its
   inputs are the sources of `ns-cli`, `ns-runtime` (the core library
-  included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler`
-  and `binaryBuildSettings`: every change to the runtime reruns it, while
-  a change to the analyzer alone leaves it up to date; its framing and
-  bookkeeping, piped to a scripted peer instead, are `DapConnectionTest`'s, in plain JUnit under `test`
-  (UTF-8 byte counts, header names in any case beside other headers, a
-  body arriving in pieces, a failed response failing its future, events
-  by name, a close or the stream's end failing every pending request, a
-  peer closing inside a body, an oversized `Content-Length` and malformed
-  JSON ending the connection, an `Error` the message handler throws
-  ending it, an `Error` an event listener throws and a failing close
-  listener leaving the other listeners called, and a stream that throws
-  something other than an `IOException` failing the send and its
+  included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and
+  `binaryBuildSettings`: every change to the runtime reruns it, while a
+  change to the analyzer alone leaves it up to date; its framing and
+  bookkeeping, piped to a scripted peer instead, are `DapConnectionTest`'s,
+  in plain JUnit under `test` (UTF-8 byte counts, header names in any case
+  beside other headers, a body arriving in pieces, a failed response failing
+  its future, events by name, a close or the stream's end failing every
+  pending request, a peer closing inside a body, an oversized
+  `Content-Length` and malformed JSON ending the connection, an `Error` the
+  message handler throws ending it, an `Error` an event listener throws and
+  a failing close listener leaving the other listeners called, and a stream
+  that throws something other than an `IOException` failing the send and its
   request);
 - the debug process in the platform's debugger
   (`NewspeakDebugProcessTest`, on `BasePlatformTestCase` run off the event

@@ -3510,29 +3510,32 @@ started through a link, and an IDE names the file it resolved
 (`a_module_named_through_dot_dot_takes_a_breakpoint_by_its_plain_path`,
 `a_program_started_through_a_link_takes_a_breakpoint_by_its_real_path`); a
 path that does not resolve is compared with its `.` and `..` resolved by
-their spelling. A breakpoint is verified once the VM resolved it to a
-statement, whose line and column the response gives, so that one on a
-comment line shows on the next statement. `setFunctionBreakpoints` names a
-method `Module.Path.To.Class>>selector`, or `Module.Path.To.Class
-class>>selector` for the class side's; a line or function breakpoint takes
-a hit condition ("Hit counts and temporary breakpoints").
-`setExceptionBreakpoints` turns `uncaught`, `caught` and `halt` on by its
-`filters` or `filterOptions`, and the conditions of its filter options,
-each a comma-separated list of classes `Module.Path.To.Class`, parsed as
-the step filters' are, together name the classes both exception filters
-stop for, since the VM keeps one list ("Exceptions"). A breakpoint's DAP
-id is the agent's own, kept for as long as the client sends the breakpoint
-again -- a line breakpoint by its module and offset, a function breakpoint
-by its name -- since the VM sets a set afresh under new ids at every
-replacement, which an IDE sends at every change; the VM's ids of each
-set's latest answer map to them, and a stop's `hitBreakpointIds` name only
-ids the client's latest request for their set holds, never one it replaced
-since the VM decided the stop: before it reports a stop, the agent serves
-every `setBreakpoints` and `setFunctionBreakpoints` of the attached client
-that has reached it, the client having sent it before it could see the
-stop, and keeps every other input's order -- a peer's that has not
-attached among them, which would otherwise overtake its own `attach`; one
-still on the wire then crosses the stop, as DAP allows
+their spelling, and on Windows every path without the verbatim prefix
+`\\?\` a canonical one has, so that a module's file deleted after the
+program read it is still named by its path. A breakpoint is verified once
+the VM resolved it to a statement, whose line and column the response
+gives, so that one on a comment line shows on the next statement.
+`setFunctionBreakpoints` names a method `Module.Path.To.Class>>selector`,
+or `Module.Path.To.Class class>>selector` for the class side's; a line or
+function breakpoint takes a hit condition ("Hit counts and temporary
+breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
+`halt` on by its `filters` or `filterOptions`, and the conditions of its
+filter options, each a comma-separated list of classes
+`Module.Path.To.Class`, parsed as the step filters' are, together name the
+classes both exception filters stop for, since the VM keeps one list
+("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as long
+as the client sends the breakpoint again -- a line breakpoint by its
+module and offset, a function breakpoint by its name -- since the VM sets
+a set afresh under new ids at every replacement, which an IDE sends at
+every change; the VM's ids of each set's latest answer map to them, and a
+stop's `hitBreakpointIds` name only ids the client's latest request for
+their set holds, never one it replaced since the VM decided the stop:
+before it reports a stop, the agent serves every `setBreakpoints` and
+`setFunctionBreakpoints` of the attached client that has reached it, the
+client having sent it before it could see the stop, and keeps every other
+input's order -- a peer's that has not attached among them, which would
+otherwise overtake its own `attach`; one still on the wire then crosses
+the stop, as DAP allows
 (`a_stop_naming_a_replaced_breakpoint_is_reported_without_it`,
 `a_pending_replacement_hides_the_ids_it_replaces`). An
 `Event::Breakpoints` or `Event::MethodBreakpoints` the VM sends unasked --
@@ -3599,10 +3602,14 @@ does not read never blocks it, and with it the VM's events, the host's
 word, a pause or a terminate. The writer bounds each message's whole
 write, however the client reads -- by the attach deadline until the client
 attached, by 30 s from the message's start after -- and its queue holds
-1,024 messages; a write past its bound, or a full queue, ends the session
-as a disconnect does: the connecting mode detaches, the listening mode
-resets the VM and accepts the next client
-(`a_peer_that_never_reads_is_closed_at_the_deadline`,
+1,024 messages; the agent's wait for what is still queued as a session
+ends -- at the program's end, or before `terminateDebuggee`'s kill -- is
+bounded by one 30 s deadline as a whole, past which what is left is
+dropped and the connection shut down, since the process's end waits for it
+(`finish_ends_within_its_deadline_whatever_is_queued`); a write past its
+bound, or a full queue, ends the session as a disconnect does: the
+connecting mode detaches, the listening mode resets the VM and accepts the
+next client (`a_peer_that_never_reads_is_closed_at_the_deadline`,
 `an_attached_client_that_stops_reading_is_dropped`). A debug build reads
 both bounds and the 2 s after `terminated` from variables, so that their
 tests take a fraction of a second. The agent refuses a connection it

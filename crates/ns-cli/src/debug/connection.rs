@@ -7,8 +7,8 @@
 use std::io::{BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::agent::Input;
@@ -137,10 +137,17 @@ const WRITE_QUEUE: usize = 1024;
 /// bytes at a time cannot stretch one message's write without end. A
 /// write that runs out of its bound, or fails, ends the connection and
 /// tells the agent the client left. Dropping this end lets the thread
-/// write what is queued and then shut the connection down.
+/// write what is queued and then shut the connection down; `finish`
+/// bounds that wait as a whole.
 pub(crate) struct Writer {
     queue: SyncSender<serde_json::Value>,
     attached: Arc<AtomicBool>,
+    /// The deadline `finish` set, which every write meets as well.
+    finish_by: Arc<Mutex<Option<Instant>>>,
+    /// Ends the connection, which ends a write that is waiting.
+    close: Arc<dyn Fn() + Send + Sync>,
+    /// Answers once the thread is done.
+    done: Receiver<()>,
     thread: std::thread::JoinHandle<()>,
 }
 
@@ -158,10 +165,25 @@ impl Writer {
         self.attached.store(true, Ordering::SeqCst);
     }
 
-    /// Waits until what is queued is written, or the bound ran out, and
-    /// the connection is shut down.
-    pub(crate) fn finish(self) {
+    /// Writes what is queued within `total` from now, then shuts the
+    /// connection down; what is left when `total` passed is dropped. One
+    /// deadline for the whole rest rather than each message's own, since
+    /// the process's end waits for this: a client that reads a little now
+    /// and then would otherwise hold it for as many write bounds as
+    /// messages are queued.
+    pub(crate) fn finish(self, total: Duration) {
+        let deadline = Instant::now() + total;
+        *self
+            .finish_by
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(deadline);
         drop(self.queue);
+        if let Err(RecvTimeoutError::Timeout) = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            (self.close)();
+        }
         let _ = self.thread.join();
     }
 }
@@ -169,39 +191,85 @@ impl Writer {
 /// Starts the writer of the connection numbered `connection`; `attached`
 /// is the flag `Writer::mark_attached` sets, shared with the reader.
 pub(crate) fn spawn_writer(
-    mut stream: TcpStream,
+    stream: TcpStream,
     connection: u64,
     inputs: Sender<Input>,
     attach_by: Option<Instant>,
     bound: Duration,
     attached: Arc<AtomicBool>,
 ) -> std::io::Result<Writer> {
+    let closing = stream.try_clone()?;
+    let close = move || {
+        let _ = closing.shutdown(std::net::Shutdown::Both);
+    };
+    start_writer(
+        stream,
+        Arc::new(close),
+        WriterBounds {
+            connection,
+            attach_by,
+            bound,
+        },
+        inputs,
+        attached,
+    )
+}
+
+/// What bounds a writer's writes, and the connection it writes.
+struct WriterBounds {
+    connection: u64,
+    attach_by: Option<Instant>,
+    bound: Duration,
+}
+
+/// The writer thread over `sink`, which `close` ends.
+fn start_writer(
+    mut sink: impl Sink + Send + 'static,
+    close: Arc<dyn Fn() + Send + Sync>,
+    bounds: WriterBounds,
+    inputs: Sender<Input>,
+    attached: Arc<AtomicBool>,
+) -> std::io::Result<Writer> {
     let (queue, queued) = std::sync::mpsc::sync_channel::<serde_json::Value>(WRITE_QUEUE);
+    let (finished, done) = std::sync::mpsc::channel();
+    let finish_by = Arc::new(Mutex::new(None::<Instant>));
     let attached_here = Arc::clone(&attached);
+    let finish_by_here = Arc::clone(&finish_by);
+    let close_here = Arc::clone(&close);
     let thread = std::thread::Builder::new()
         .name("ns-next debugger writer".to_string())
         .spawn(move || {
             let mut failed = false;
             for message in queued {
-                let deadline = match attach_by {
+                let own = match bounds.attach_by {
                     Some(attach_by) if !attached_here.load(Ordering::SeqCst) => attach_by,
-                    _ => Instant::now() + bound,
+                    _ => Instant::now() + bounds.bound,
                 };
+                let finish = *finish_by_here
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let deadline = finish.map_or(own, |finish| finish.min(own));
                 let written =
-                    wire::frame(&message).and_then(|frame| write_by(&mut stream, &frame, deadline));
+                    wire::frame(&message).and_then(|frame| write_by(&mut sink, &frame, deadline));
                 if written.is_err() {
                     failed = true;
                     break;
                 }
             }
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+            close_here();
             if failed {
-                let _ = inputs.send(Input::Closed { connection });
+                let _ = inputs.send(Input::Closed {
+                    connection: bounds.connection,
+                });
             }
+            let _ = finished.send(());
         })?;
     Ok(Writer {
         queue,
         attached,
+        finish_by,
+        close,
+        done,
         thread,
     })
 }
@@ -255,6 +323,8 @@ mod tests {
     struct Trickle {
         pause: Duration,
         timeouts: Vec<Duration>,
+        /// Set once the connection is closed, which fails every write.
+        closed: Arc<AtomicBool>,
     }
 
     impl Sink for Trickle {
@@ -264,9 +334,51 @@ mod tests {
         }
 
         fn write_some(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
             std::thread::sleep(self.pause);
             Ok(bytes.len().min(1))
         }
+    }
+
+    /// `finish` ends within its one deadline however much is queued for a
+    /// client that reads a byte at a time: each of the queued messages
+    /// would take the trickle far longer than the deadline, all of them
+    /// some seconds, though each stays within its own bound.
+    #[test]
+    fn finish_ends_within_its_deadline_whatever_is_queued() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let closing = Arc::clone(&closed);
+        let trickle = Trickle {
+            pause: Duration::from_millis(2),
+            timeouts: Vec::new(),
+            closed: Arc::clone(&closed),
+        };
+        let (inputs, _received) = std::sync::mpsc::channel();
+        let writer = start_writer(
+            trickle,
+            Arc::new(move || closing.store(true, Ordering::SeqCst)),
+            WriterBounds {
+                connection: 1,
+                attach_by: None,
+                bound: Duration::from_secs(10),
+            },
+            inputs,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .expect("a writer thread");
+        for index in 0..50 {
+            assert!(writer.send(serde_json::json!({ "index": index })));
+        }
+        let started = Instant::now();
+        writer.finish(Duration::from_millis(100));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "finish took {:?}",
+            started.elapsed()
+        );
+        assert!(closed.load(Ordering::SeqCst), "the connection is closed");
     }
 
     #[test]
@@ -274,6 +386,7 @@ mod tests {
         let mut trickle = Trickle {
             pause: Duration::from_millis(2),
             timeouts: Vec::new(),
+            closed: Arc::new(AtomicBool::new(false)),
         };
         let bound = Duration::from_millis(50);
         // 200 bytes take the trickle 400 ms at least, each write a byte.
