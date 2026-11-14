@@ -227,9 +227,13 @@ impl Mutator<'_> {
                 "internal: a freed mixin is held outside the tables"
             );
         }
-        // Before step 4 frees the code ids that say which bodies run.
-        let running = self.heap.running_bodies(&gathered.codes);
-        self.heap.drop_superseded(&running);
+        // Before step 4 frees the code ids that say which bodies run. A
+        // program that never installed an edit has no superseded version,
+        // and nothing to drop: the set of running bodies is not built.
+        if self.heap.has_superseded() {
+            let running = self.heap.running_bodies(&gathered.codes);
+            self.heap.drop_superseded(&running);
+        }
         self.heap.truncate_mixin_rows();
         // Kept whatever changed above: its generation says whether the
         // next collection may read it.

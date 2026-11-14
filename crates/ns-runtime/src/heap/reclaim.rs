@@ -509,6 +509,11 @@ impl Heap<'_> {
         self.tables.mixin_generation
     }
 
+    /// Whether any version an install superseded is still kept.
+    pub(crate) fn has_superseded(&self) -> bool {
+        !self.tables.superseded.is_empty()
+    }
+
     /// The lengths of the mixin rows, their ids and the superseded
     /// versions: every change to them between two collections -- a row
     /// registered, a version superseded -- alters one, which a debug
