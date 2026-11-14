@@ -265,6 +265,34 @@ fn a_second_client_connects_after_the_first_disconnected() {
     assert_eq!(finished.stdout, "hi\n");
 }
 
+/// A listening agent clears what a client that left set: the next client
+/// meets none of its line or function breakpoints.
+#[test]
+fn a_second_client_meets_none_of_the_first_s_breakpoints() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let breakpoints = client.set_breakpoints(file_source(&path), &[3]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    let functions = client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Hello>>main:args:" }] }),
+    );
+    assert_eq!(functions["breakpoints"][0]["verified"], true, "{functions}");
+    client.succeed("disconnect", json!({}));
+    client.connection.expect_closed();
+
+    client.reconnect();
+    client.start_session(false);
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "hi
+"
+    );
+}
+
 #[test]
 fn a_client_that_cannot_be_reached_is_reported() {
     let (_directory, path) = program("Hello", HELLO);
@@ -636,7 +664,8 @@ const LOOP: &str = indoc! {"
 /// A breakpoint replaced while the program goes on to it: the stop that
 /// reaches it names, at most, the breakpoint that replaced it, whichever of
 /// the stop and the replacement the VM served first; and a variables
-/// reference of the earlier stop is refused.
+/// reference of the earlier stop is refused. A breakpoint the client sends
+/// again keeps its id.
 #[test]
 fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     let (_directory, path) = program("Loop", LOOP);
@@ -646,11 +675,13 @@ fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     assert_eq!(stopped["body"]["hitBreakpointIds"], json!([first[0]["id"]]));
     let frames = client.stack_frames(0, 0);
     let stale = locals_of(&mut client, &frames[0]);
+    let again = client.set_breakpoints(file_source(&path), &[6]);
+    assert_eq!(again[0]["id"], first[0]["id"], "{again:?}");
 
     let continue_seq = client.connection.send("continue", json!({ "threadId": 1 }));
     let replace_seq = client.connection.send(
         "setBreakpoints",
-        json!({ "source": file_source(&path), "breakpoints": [{ "line": 6 }] }),
+        json!({ "source": file_source(&path), "breakpoints": [{ "line": 8 }] }),
     );
     let continued = client.connection.response_to(continue_seq, "continue");
     assert_eq!(continued["success"], true, "{continued}");
@@ -663,6 +694,18 @@ fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     }
     let refused = client.request("variables", json!({ "variablesReference": stale }));
     assert_eq!(refused["success"], false, "{refused}");
+    // A stop the VM decided before it served the replacement stands on
+    // line 6; the replacement's on line 8 follows it.
+    if top_frame(&mut client).1 == 6 {
+        client.succeed("continue", json!({ "threadId": 1 }));
+        let stopped = client.stopped("breakpoint");
+        assert_eq!(
+            stopped["body"]["hitBreakpointIds"],
+            json!([second["id"]]),
+            "{stopped}"
+        );
+    }
+    assert_eq!(top_frame(&mut client).1, 8);
 
     client.set_breakpoints(file_source(&path), &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
@@ -825,6 +868,432 @@ fn a_program_class_named_array_shows_named_variables() {
     let fields = client.variables(&value["variablesReference"], None, None);
     let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
     assert_eq!(names, [&json!("field 0"), &json!("field 1")]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A program that says it spins, then counts forever on line 7.
+const SPINNER: &str = indoc! {"
+    class Spinner = Object new () (
+      public main: platform args: arguments = (
+        | count |
+        count:: 0.
+        platform transcript show: 'spinning'; newLine.
+        [true] whileTrue: [
+          count:: count + 1.
+        ].
+      )
+    ) : ()
+"};
+
+/// Ends a session whose program spins forever.
+fn terminate_the_spinner(mut client: DapClient) {
+    client.succeed("terminate", json!({}));
+    assert_eq!(exit_code_reported(&mut client), 1);
+    assert_eq!(client.finish().status, Some(1));
+}
+
+/// The top frame's name and line.
+fn top_frame(client: &mut DapClient) -> (Value, Value) {
+    let frames = client.stack_frames(0, 1);
+    (frames[0]["name"].clone(), frames[0]["line"].clone())
+}
+
+#[test]
+fn a_breakpoint_set_while_running_stops_the_loop() {
+    let (_directory, path) = program("Spinner", SPINNER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(false);
+    client.wait_for_stdout("spinning\n");
+    let breakpoints = client.set_breakpoints(file_source(&path), &[7]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client).1, 7);
+    terminate_the_spinner(client);
+}
+
+/// A root whose line 10 sends `do:` with a block that sends `sink:`.
+const BLOCKS: &str = indoc! {"
+    class Blocks = Object new (
+      |
+        total ::= 0.
+      |
+    ) (
+      sink: value = (
+        total:: total + value.
+      )
+      public main: platform args: arguments = (
+        {1. 2} do: [:each | sink: each].
+        platform transcript show: total printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_block_variant_stops_inside_the_block_only() {
+    let (_directory, path) = program("Blocks", BLOCKS);
+    let mut client = DapClient::connect_mode(&path);
+    let line = breakpoints_before_the_start(&mut client, &path, &[10]);
+    assert_eq!(line[0]["verified"], true, "{line:?}");
+    client.stopped("breakpoint");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Blocks>>main:args:"), json!(10))
+    );
+
+    let text = BLOCKS.lines().nth(9).expect("line 10");
+    let column = text.find("sink:").expect("the block's send") + 1;
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 10, "column": column }],
+        }),
+    );
+    let variant = &body["breakpoints"][0];
+    assert_eq!(variant["verified"], true, "{body}");
+    assert_eq!(variant["column"], column, "{body}");
+    for _ in 0..2 {
+        client.succeed("continue", json!({ "threadId": 1 }));
+        let stopped = client.stopped("breakpoint");
+        assert_eq!(
+            stopped["body"]["hitBreakpointIds"],
+            json!([variant["id"]]),
+            "{stopped}"
+        );
+        assert_eq!(
+            top_frame(&mut client),
+            (json!("[] in Blocks>>main:args:"), json!(10))
+        );
+    }
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+#[test]
+fn a_pass_count_stops_at_that_iteration() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [
+                { "line": 6, "hitCondition": "3" },
+                { "line": 8, "hitCondition": "3 times" },
+            ],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], true, "{body}");
+    assert_eq!(breakpoints[1]["verified"], false, "{body}");
+    assert!(
+        breakpoints[1]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("3 times")),
+        "{body}"
+    );
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 0);
+    let block = &frames[0];
+    assert_eq!(block["line"], 6, "{block}");
+    let locals = locals_of(&mut client, block);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "index")["value"], "3", "{variables:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+/// A root whose line 4 is a comment above the statement on line 5.
+const COMMENTED: &str = indoc! {"
+    class Commented = Object new () (
+      public main: platform args: arguments = (
+        | count |
+        /// The count starts at 3.
+        count:: 3.
+        platform transcript show: count printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_breakpoint_on_a_comment_line_is_moved_to_the_next_statement() {
+    let (_directory, path) = program("Commented", COMMENTED);
+    let mut client = DapClient::connect_mode(&path);
+    let breakpoints = breakpoints_before_the_start(&mut client, &path, &[4]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    assert_eq!(breakpoints[0]["line"], 5, "{breakpoints:?}");
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client).1, 5);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root whose line 4 holds three statements.
+const LINES: &str = indoc! {"
+    class Lines = Object new () (
+      public main: platform args: arguments = (
+        | first second third |
+        first:: 1. second:: 2. third:: 3.
+        platform transcript show: (first + second + third) printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn next_by_line_steps_over_a_whole_line() {
+    let (_directory, path) = program("Lines", LINES);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    let line = LINES.lines().nth(3).expect("line 4");
+    let column_of = |text: &str| line.find(text).expect("a statement") + 1;
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames[0]["column"], column_of("first::"), "{frames:?}");
+
+    client.succeed("next", json!({ "threadId": 1, "granularity": "statement" }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames[0]["line"], 4, "{frames:?}");
+    assert_eq!(frames[0]["column"], column_of("second::"), "{frames:?}");
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(frames[0]["line"], 5, "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "third")["value"], "3", "{variables:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// A root whose line 4 sends `double:`, a method of its own.
+const CALLS: &str = indoc! {"
+    class Calls = Object new () (
+      public main: platform args: arguments = (
+        | value |
+        value:: self double: 21.
+        platform transcript show: value printString; newLine.
+      )
+      double: number = (
+        ^number * 2
+      )
+    ) : ()
+"};
+
+#[test]
+fn step_in_and_out_stop_in_the_callee_and_back() {
+    let (_directory, path) = program("Calls", CALLS);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames.len(), 2, "{frames:?}");
+    assert_eq!(frames[0]["name"], "Calls>>double:", "{frames:?}");
+    assert_eq!(frames[0]["line"], 8, "{frames:?}");
+
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(frames[0]["name"], "Calls>>main:args:", "{frames:?}");
+    assert_eq!(frames[0]["line"], 4, "{frames:?}");
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = &scopes["scopes"][1];
+    assert_eq!(returned["name"], "Return value", "{scopes}");
+    let value = client.variables(&returned["variablesReference"], None, None);
+    assert_eq!(value[0]["value"], "42", "{value:?}");
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Calls>>main:args:"), json!(5))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+#[test]
+fn run_to_cursor_stops_at_the_line() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    let refused = client.request(
+        "nsNext/runToPosition",
+        json!({ "source": { "name": "Elsewhere.ns" }, "line": 1 }),
+    );
+    assert_eq!(refused["success"], false, "{refused}");
+    client.succeed(
+        "nsNext/runToPosition",
+        json!({ "source": file_source(&path), "line": 8 }),
+    );
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames[0]["line"], 8, "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(
+        variable(&variables, "total")["value"],
+        "15",
+        "{variables:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+#[test]
+fn a_function_breakpoint_stops_at_the_method_s_entry() {
+    let (_directory, path) = program("Calls", CALLS);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({
+            "breakpoints": [{ "name": "Calls>>double:" }, { "name": "Calls double:" }],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], true, "{body}");
+    assert_eq!(breakpoints[1]["verified"], false, "{body}");
+    client.configuration_done();
+    let stopped = client.stopped("function breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client), (json!("Calls>>double:"), json!(8)));
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A root that signals an Error no handler takes.
+const FAILS: &str = indoc! {"
+    class Fails = Object new () (
+      public main: platform args: arguments = (
+        platform transcript show: 'before'; newLine.
+        Error signal: 'boom'.
+      )
+    ) : ()
+"};
+
+#[test]
+fn an_uncaught_exception_stops_with_its_description() {
+    let (_directory, path) = program("Fails", FAILS);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setExceptionBreakpoints",
+        json!({
+            "filters": [],
+            "filterOptions": [
+                { "filterId": "uncaught", "condition": "Kernel.Error, Kernel.Exception" },
+            ],
+        }),
+    );
+    client.configuration_done();
+    let stopped = client.stopped("exception");
+    assert_eq!(stopped["body"]["text"], "boom", "{stopped}");
+    assert_eq!(stopped["body"]["description"], "Error", "{stopped}");
+    // The exception's own machinery is shown on demand only.
+    let frames = client.stack_frames(0, 0);
+    let shown = frames
+        .iter()
+        .find(|frame| frame.get("presentationHint").is_none())
+        .unwrap_or_else(|| panic!("no frame shown: {frames:?}"));
+    assert_eq!(shown["name"], "Fails>>main:args:", "{frames:?}");
+    assert_eq!(shown["line"], 4, "{frames:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 1);
+    let finished = client.finish();
+    assert!(finished.stderr.contains("boom"), "{}", finished.stderr);
+}
+
+#[test]
+fn pause_stops_a_running_loop() {
+    let (_directory, path) = program("Spinner", SPINNER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(false);
+    client.wait_for_stdout("spinning\n");
+    client.succeed("pause", json!({ "threadId": 1 }));
+    client.stopped("pause");
+    assert_eq!(top_frame(&mut client).0, "Spinner>>main:args:");
+    terminate_the_spinner(client);
+}
+
+#[test]
+fn a_stack_trace_while_running_is_an_error() {
+    let (_directory, path) = program("Spinner", SPINNER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(false);
+    client.wait_for_stdout("spinning\n");
+    for command in ["stackTrace", "next", "stepIn", "stepOut", "continue"] {
+        let refused = client.request(command, json!({ "threadId": 1 }));
+        assert_eq!(refused["success"], false, "{refused}");
+        assert_eq!(refused["message"], "the program is running", "{refused}");
+    }
+    terminate_the_spinner(client);
+}
+
+/// A breakpoint in a shipped module built on first demand is pending until
+/// the program builds it, then reported changed under the id it was
+/// answered with, and stops.
+#[test]
+fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
+    let (_directory, path) = program("Hello", HELLO);
+    let transcript = std::fs::read_to_string(
+        common::repository_root()
+            .join("crates/ns-runtime/core-library/platform/TranscriptFactory.ns"),
+    )
+    .expect("read TranscriptFactory.ns");
+    let line = transcript
+        .lines()
+        .position(|line| line.contains("^vmMirror transcript: self show: text ifFail:"))
+        .expect("`show:`'s body");
+    let line = u32::try_from(line + 1).expect("a line number");
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let breakpoints = client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[line]);
+    assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
+    client.configuration_done();
+    let changed = client.event("breakpoint");
+    assert_eq!(changed["body"]["reason"], "changed", "{changed}");
+    let breakpoint = &changed["body"]["breakpoint"];
+    assert_eq!(breakpoint["id"], breakpoints[0]["id"], "{changed}");
+    assert_eq!(breakpoint["verified"], true, "{changed}");
+    assert_eq!(breakpoint["line"], line, "{changed}");
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }

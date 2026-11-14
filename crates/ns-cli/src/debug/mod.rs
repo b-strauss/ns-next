@@ -10,10 +10,12 @@
 //! and answers the host's `HostLink` (`host.rs`) between the host's runs.
 
 mod agent;
+mod breakpoints;
 mod connection;
 mod host;
 mod protocol;
 mod sources;
+mod stepping;
 mod stopped;
 mod wire;
 

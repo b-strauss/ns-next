@@ -12,20 +12,16 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use std::collections::BTreeMap;
-
-use ns_runtime::{
-    BreakpointState, ClassName, Command, DebugControl, Event, LineBreakpoint, StopReason,
-    ValueDescription, Variable,
-};
-use ns_tooling::lines::LineIndex;
+use ns_runtime::{Command, DebugControl, Event, StopReason, ValueDescription, Variable};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::breakpoints::{self, Breakpoints, FunctionEntry, LineEntry};
 use super::connection::{self, Token};
 use super::host::{HostStart, HostState, TERMINATED_LINE};
 use super::protocol::{self, THREAD_ID};
 use super::sources::Sources;
+use super::stepping::{LineStep, Phase};
 use super::stopped::{self, Frames, Stop, Target};
 use super::wire;
 
@@ -103,7 +99,7 @@ struct Client {
 }
 
 /// Whom the VM's answer to a command goes to.
-enum Reply {
+pub(super) enum Reply {
     /// The response to a request of the connection numbered `connection`,
     /// made of the answer by `conversion`.
     Request {
@@ -114,6 +110,9 @@ enum Reply {
     },
     /// A command the agent sent of its own accord, whose answer it drops.
     Internal,
+    /// A step by line's step after its first, which reports the stop it
+    /// left from when the VM refuses it.
+    Repeated,
     /// The stop's frames, asked at the stop `generation`, which the
     /// requests waiting for them read.
     Frames { generation: u64 },
@@ -122,7 +121,7 @@ enum Reply {
 }
 
 /// How the VM's answer becomes a request's response body.
-enum Conversion {
+pub(super) enum Conversion {
     /// No body.
     Plain,
     /// `continue`'s.
@@ -134,13 +133,17 @@ enum Conversion {
         generation: u64,
         page: Option<(usize, usize)>,
     },
-    /// `setBreakpoints`': the offset of each breakpoint asked for, in the
-    /// request's order, `None` for one on a line past the text's end, and
-    /// the text the offsets count in.
+    /// `setBreakpoints`': its module, each breakpoint asked for, in the
+    /// request's order, and the text the offsets count in.
     Breakpoints {
-        offsets: Vec<Option<u32>>,
+        module: String,
+        entries: Vec<LineEntry>,
         text: String,
     },
+    /// `setFunctionBreakpoints`': each breakpoint asked for.
+    FunctionBreakpoints { entries: Vec<FunctionEntry> },
+    /// `setExceptionBreakpoints`': the number of filters it turned on.
+    ExceptionBreakpoints { count: usize },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
@@ -190,20 +193,24 @@ pub(crate) struct Agent {
     stop_on_entry: bool,
     /// The next pause stop is the entry's.
     entry_pending: bool,
+    /// The VM stands at a stop.
     stopped: bool,
+    /// A `Continue`, a step or a run to cursor is on its way: the program
+    /// counts as running for the client, but stays stopped for the agent
+    /// until the VM answers it, so that a refused one leaves the stop as
+    /// it was.
+    pub(super) resuming: bool,
+    /// A step by line in progress (`stepping.rs`).
+    pub(super) line_step: Option<LineStep>,
     pending: VecDeque<Pending>,
-    /// Every module a client set line breakpoints in, which a listening
-    /// agent clears when the client leaves.
-    breakpoint_modules: BTreeSet<String>,
-    /// The line breakpoints each module stands with, by the VM's latest
-    /// answer for it: a stop reports only these, never one the client
-    /// replaced meanwhile.
-    breakpoint_ids: BTreeMap<String, Vec<u32>>,
+    /// The client's breakpoints and their ids; every module among them a
+    /// listening agent clears when the client leaves.
+    pub(super) breakpoints: Breakpoints,
     exited: bool,
     /// The modules and their texts.
-    sources: Sources,
+    pub(super) sources: Sources,
     /// The current stop's frames and references.
-    stop: Stop,
+    pub(super) stop: Stop,
     waiting: Vec<Waiting>,
 }
 
@@ -237,9 +244,10 @@ impl Agent {
             stop_on_entry: false,
             entry_pending: false,
             stopped: false,
+            resuming: false,
+            line_step: None,
             pending: VecDeque::new(),
-            breakpoint_modules: BTreeSet::new(),
-            breakpoint_ids: BTreeMap::new(),
+            breakpoints: Breakpoints::default(),
             exited: false,
             sources,
             stop: Stop::new(),
@@ -365,14 +373,18 @@ impl Agent {
                 })),
             ),
             "pause" => self.pause(connection, &request),
-            "continue" => self.forward(connection, &request, Command::Continue),
-            // One statement until steps go by line.
-            "stepIn" => self.forward(connection, &request, Command::StepInto),
+            "continue" => self.continue_running(connection, &request),
+            "next" => self.step(connection, &request, Command::StepOver),
+            "stepIn" => self.step(connection, &request, Command::StepInto),
+            "stepOut" => self.step_out(connection, &request),
+            "nsNext/runToPosition" => self.run_to_position(connection, &request),
             "stackTrace" => self.stack_trace(connection, &request),
             "scopes" => self.scopes(connection, &request),
             "variables" => self.variables(connection, &request),
             "source" => self.source(connection, &request),
             "setBreakpoints" => self.set_breakpoints(connection, &request),
+            "setFunctionBreakpoints" => self.set_function_breakpoints(connection, &request),
+            "setExceptionBreakpoints" => self.set_exception_breakpoints(connection, &request),
             "nsNext/setStepFilters" => self.set_step_filters(connection, &request),
             "nsNext/statistics" => {
                 let statistics = json!({ "moduleTexts": self.sources.text_answers() });
@@ -458,18 +470,30 @@ impl Agent {
 
     fn pause(&mut self, connection: u64, request: &protocol::Request) {
         // A pause asked while stopped would stop the program again at the
-        // next safepoint once it goes on.
-        if !self.stopped {
+        // next safepoint once it goes on; one asked while a `Continue` or
+        // a step is on its way is asked of the program it resumes.
+        if !self.stopped || self.resuming {
             if let Some(control) = &self.control {
                 control.pause();
             }
         }
+        if let Some(step) = &mut self.line_step {
+            step.interrupted = true;
+        }
         self.respond(connection, request, None);
+        // A step by line deciding at a stop the client has not seen
+        // reports it now.
+        self.advance_line_step();
     }
 
     /// Sends `command` to the VM, the request answered when the VM
     /// answers it.
-    fn forward(&mut self, connection: u64, request: &protocol::Request, command: Command) {
+    pub(super) fn forward(
+        &mut self,
+        connection: u64,
+        request: &protocol::Request,
+        command: Command,
+    ) {
         let conversion = if command == Command::Continue {
             Conversion::Continued
         } else {
@@ -478,17 +502,14 @@ impl Agent {
         self.forward_converted(connection, request, command, conversion);
     }
 
-    fn forward_converted(
+    pub(super) fn forward_converted(
         &mut self,
         connection: u64,
         request: &protocol::Request,
         command: Command,
         conversion: Conversion,
     ) {
-        // The program resumes once the VM serves a `Continue` or a step; a
-        // `pause` that follows at once is asked of the running program, not
-        // dropped as one asked of a stopped one.
-        let goes_on = matches!(command, Command::Continue | Command::StepInto);
+        let goes_on = is_going_on(command.name());
         let reply = Reply::Request {
             connection,
             request_seq: request.seq,
@@ -499,8 +520,11 @@ impl Agent {
             self.respond_error(connection, request, "the debugger is detached");
             return;
         }
+        // The stop ends when the VM answers `Event::Continued`; until then
+        // the client's requests of the stop are refused, and a `pause` is
+        // asked of the program it resumes.
         if goes_on {
-            self.went_on();
+            self.resuming = true;
         }
     }
 
@@ -514,13 +538,15 @@ impl Agent {
 
     // ---- The stop ----
 
-    /// Whether the program stands at a stop; a request only a stop serves
-    /// is answered by an error otherwise, never sent to the VM.
-    fn at_stop(&mut self, connection: u64, request: &protocol::Request) -> bool {
-        if !self.stopped {
+    /// Whether the program stands at a stop the client was shown and has
+    /// not asked to leave; a request only a stop serves is answered by an
+    /// error otherwise, never sent to the VM.
+    pub(super) fn at_stop(&mut self, connection: u64, request: &protocol::Request) -> bool {
+        let at_stop = self.stopped && !self.resuming && self.line_step.is_none();
+        if !at_stop {
             self.respond_error(connection, request, "the program is running");
         }
-        self.stopped
+        at_stop
     }
 
     fn stack_trace(&mut self, connection: u64, request: &protocol::Request) {
@@ -576,6 +602,7 @@ impl Agent {
                 None => self.waiting.push(waiting),
             }
         }
+        self.advance_line_step();
     }
 
     /// A waiting request's answer, `None` while the VM has not answered
@@ -588,21 +615,29 @@ impl Agent {
         }
     }
 
-    fn try_stack_trace(&mut self, request: &protocol::Request) -> Option<Outcome> {
-        let arguments: protocol::StackTraceArguments =
-            serde_json::from_value(request.arguments.clone()).unwrap_or_default();
+    /// Whether the stop's frames are known, asking the VM for them when
+    /// they were not asked yet; `None` while they are on their way.
+    pub(super) fn frames_known(&mut self) -> Option<Result<(), String>> {
         match self.stop.frames() {
-            Frames::Known(_) => {}
-            Frames::Asked => return None,
-            Frames::Refused(reason) => return Some(Err(reason.clone())),
+            Frames::Known(_) => Some(Ok(())),
+            Frames::Asked => None,
+            Frames::Refused(reason) => Some(Err(reason.clone())),
             Frames::Missing => {
                 let generation = self.stop.generation();
                 if !self.command(Command::StackTrace, Reply::Frames { generation }) {
                     return Some(Err("the debugger is detached".to_string()));
                 }
                 self.stop.frames_asked();
-                return None;
+                None
             }
+        }
+    }
+
+    fn try_stack_trace(&mut self, request: &protocol::Request) -> Option<Outcome> {
+        let arguments: protocol::StackTraceArguments =
+            serde_json::from_value(request.arguments.clone()).unwrap_or_default();
+        if let Err(reason) = self.frames_known()? {
+            return Some(Err(reason));
         }
         let (total, page) = self.stop.page(
             arguments.start_frame.unwrap_or(0),
@@ -637,7 +672,7 @@ impl Agent {
 
     /// Whether `module`'s current text is there for this stop, asking the
     /// VM for it, with the revision the agent holds, when it is not.
-    fn read_text(&mut self, module: &str) -> Result<bool, String> {
+    pub(super) fn read_text(&mut self, module: &str) -> Result<bool, String> {
         let generation = self.stop.generation();
         if !self.sources.needs_text(module, generation) || !self.stopped {
             return Ok(true);
@@ -786,83 +821,7 @@ impl Agent {
         }
     }
 
-    // ---- Configuration ----
-
-    /// `setBreakpoints` by line: each at the start of its line in the text
-    /// the agent has for the module, the module's current text once a stop
-    /// read it, else the program's as loaded.
-    fn set_breakpoints(&mut self, connection: u64, request: &protocol::Request) {
-        let Some(arguments) =
-            self.arguments::<protocol::SetBreakpointsArguments>(connection, request)
-        else {
-            return;
-        };
-        let unverified = |message: &str| {
-            let breakpoints: Vec<protocol::Breakpoint> = arguments
-                .breakpoints
-                .iter()
-                .map(|_| protocol::Breakpoint::unverified(message))
-                .collect();
-            json!({ "breakpoints": breakpoints })
-        };
-        let Some(module) = self.sources.module_named_by(&arguments.source) else {
-            let body = unverified("not a module of this program");
-            self.respond(connection, request, Some(body));
-            return;
-        };
-        let Some(text) = self.sources.text_for_positions(&module).map(str::to_string) else {
-            let body = unverified("the module's text is not known yet");
-            self.respond(connection, request, Some(body));
-            return;
-        };
-        let lines = LineIndex::new(&text);
-        let offsets: Vec<Option<u32>> = arguments
-            .breakpoints
-            .iter()
-            .map(|breakpoint| lines.line_start(breakpoint.line.checked_sub(1)?))
-            .collect();
-        let breakpoints = offsets
-            .iter()
-            .flatten()
-            .copied()
-            .map(LineBreakpoint::at)
-            .collect();
-        self.breakpoint_modules.insert(module.clone());
-        // Replaced from now on: a stop that names one of them was decided
-        // before the VM saw the replacement, and is reported without it.
-        self.breakpoint_ids.remove(&module);
-        let command = Command::SetBreakpoints {
-            module,
-            breakpoints,
-        };
-        let conversion = Conversion::Breakpoints { offsets, text };
-        self.forward_converted(connection, request, command, conversion);
-    }
-
-    fn set_step_filters(&mut self, connection: u64, request: &protocol::Request) {
-        let Some(arguments) =
-            self.arguments::<protocol::SetStepFiltersArguments>(connection, request)
-        else {
-            return;
-        };
-        let mut classes = Vec::new();
-        for name in &arguments.classes {
-            let mut segments = name.split('.').map(str::to_string);
-            let module = segments.next().unwrap_or_default();
-            let path: Vec<String> = segments.collect();
-            if module.is_empty() || path.iter().any(String::is_empty) {
-                let message = format!("`{name}` names no class: write `Module.Path.To.Class`");
-                self.respond_error(connection, request, &message);
-                return;
-            }
-            classes.push(ClassName { module, path });
-        }
-        let command = Command::SetStepFilters {
-            shipped: arguments.shipped,
-            classes,
-        };
-        self.forward(connection, request, command);
-    }
+    // ---- The session's end ----
 
     fn terminate(&mut self, connection: u64, request: &protocol::Request) {
         self.host.request_terminate();
@@ -877,6 +836,7 @@ impl Agent {
             control.send(Command::Terminate);
         }
         self.entry_pending = false;
+        self.line_step = None;
         self.went_on();
     }
 
@@ -896,7 +856,7 @@ impl Agent {
     }
 
     /// Parses a request's arguments, answering an error for ones it cannot.
-    fn arguments<T: serde::de::DeserializeOwned + Default>(
+    pub(super) fn arguments<T: serde::de::DeserializeOwned + Default>(
         &mut self,
         connection: u64,
         request: &protocol::Request,
@@ -914,8 +874,6 @@ impl Agent {
         }
     }
 
-    // ---- The session's end ----
-
     /// The client left: by `disconnect`, by closing its connection, or
     /// refused. A client that never attached configured nothing and is
     /// only let go.
@@ -926,6 +884,7 @@ impl Agent {
         let _ = client.writer.shutdown(Shutdown::Both);
         let was_attached = client.attached;
         self.waiting.clear();
+        self.line_step = None;
         self.stop_on_entry = false;
         self.entry_pending = false;
         match &self.mode {
@@ -962,6 +921,8 @@ impl Agent {
         self.control = None;
         self.events_detached.store(true, Ordering::SeqCst);
         self.pending.clear();
+        self.resuming = false;
+        self.line_step = None;
         self.went_on();
     }
 
@@ -971,7 +932,7 @@ impl Agent {
     /// exceptions and halts the VM stops at before any client configures
     /// it -- the default step filters, and a stopped program going on.
     fn reset_the_vm(&mut self) {
-        for module in std::mem::take(&mut self.breakpoint_modules) {
+        for module in self.breakpoints.modules() {
             self.command(
                 Command::SetBreakpoints {
                     module,
@@ -997,6 +958,7 @@ impl Agent {
             },
             Reply::Internal,
         );
+        self.breakpoints.clear();
         if self.stopped {
             self.go_on();
         }
@@ -1005,6 +967,7 @@ impl Agent {
     /// Lets a stopped program go on, nobody being there to see the stop.
     fn go_on(&mut self) {
         self.command(Command::Continue, Reply::Internal);
+        self.resuming = false;
         self.went_on();
     }
 
@@ -1012,7 +975,7 @@ impl Agent {
 
     /// Queues `command`, its answer going to `reply`; `false` once the
     /// debugger was detached.
-    fn command(&mut self, command: Command, reply: Reply) -> bool {
+    pub(super) fn command(&mut self, command: Command, reply: Reply) -> bool {
         let Some(control) = &self.control else {
             return false;
         };
@@ -1062,38 +1025,75 @@ impl Agent {
 
     fn stopped_at(&mut self, reason: &StopReason, returned: Option<ValueDescription>) {
         self.stopped = true;
+        self.resuming = false;
         self.stop.begin(returned);
         if !self.is_attached() {
             self.go_on();
             return;
         }
-        let body = stopped_body(reason, self.entry_pending, &self.breakpoint_ids);
+        if self.line_step_stopped(reason) {
+            return;
+        }
+        self.report_stop(reason);
+    }
+
+    /// Shows the client the stop the program stands at, for `reason`.
+    pub(super) fn report_stop(&mut self, reason: &StopReason) {
+        self.line_step = None;
+        let body = stopped_body(reason, self.entry_pending, &self.breakpoints);
         self.entry_pending = false;
         self.event("stopped", Some(to_value(body)));
     }
 
+    /// Whether a command `command` names (`Command::name`), for `module`
+    /// when given, is on its way to the VM: a replacement of a set, which
+    /// outdates an event the VM sent unasked about that set before it.
+    pub(super) fn replacing(&self, command: &str, module: Option<&str>) -> bool {
+        self.pending.iter().any(|pending| {
+            pending.command == command && (module.is_none() || pending.module.as_deref() == module)
+        })
+    }
+
     /// Hands the VM's answer to the command it answers.
     fn answer(&mut self, event: Event) {
-        if matches!(event, Event::Continued) {
-            self.stopped = false;
-        }
-        if let Event::Breakpoints {
-            module,
-            breakpoints,
-        } = &event
-        {
-            let ids = breakpoints
-                .iter()
-                .map(|breakpoint| breakpoint.id.0)
-                .collect();
-            self.breakpoint_ids.insert(module.clone(), ids);
+        match &event {
+            Event::Continued => {
+                self.resuming = false;
+                self.went_on();
+            }
+            Event::Breakpoints {
+                module,
+                breakpoints,
+            } => {
+                let ids: Vec<u32> = breakpoints.iter().map(|state| state.id.0).collect();
+                let asked = self.breakpoints.is_answer(&ids);
+                self.breakpoints.saw(&ids);
+                if !asked {
+                    self.line_breakpoints_changed(module, breakpoints);
+                    return;
+                }
+            }
+            Event::MethodBreakpoints(states) => {
+                let ids: Vec<u32> = states.iter().map(|state| state.id.0).collect();
+                let asked = self.breakpoints.is_answer(&ids);
+                self.breakpoints.saw(&ids);
+                if !asked {
+                    self.function_breakpoints_changed(states);
+                    return;
+                }
+            }
+            Event::Refused { command, .. } if is_going_on(command) => {
+                // The program stays at its stop, which the client keeps
+                // reading.
+                self.resuming = false;
+            }
+            _ => {}
         }
         let Some(index) = self
             .pending
             .iter()
             .position(|pending| answers(&event, pending))
         else {
-            // Unasked: a pending breakpoint resolved, an install moved one.
             return;
         };
         let Some(pending) = self.pending.remove(index) else {
@@ -1101,6 +1101,11 @@ impl Agent {
         };
         match pending.reply {
             Reply::Internal => {}
+            Reply::Repeated => {
+                if matches!(event, Event::Refused { .. }) && self.stopped {
+                    self.report_stop(&StopReason::Step);
+                }
+            }
             Reply::Frames { generation } => {
                 if generation == self.stop.generation() {
                     match event {
@@ -1126,6 +1131,14 @@ impl Agent {
                 command,
                 conversion,
             } => {
+                let running = self
+                    .line_step
+                    .as_ref()
+                    .is_some_and(|step| matches!(step.phase, Phase::Running { .. }));
+                if running && matches!(event, Event::Refused { .. }) {
+                    // A step by line's first step, refused: no step runs.
+                    self.line_step = None;
+                }
                 let outcome = self.convert(event, conversion);
                 self.write_response(connection, request_seq, &command, outcome);
             }
@@ -1155,8 +1168,29 @@ impl Agent {
                     .collect();
                 Ok(Some(json!({ "variables": variables })))
             }
-            (Event::Breakpoints { breakpoints, .. }, Conversion::Breakpoints { offsets, text }) => {
-                Ok(Some(breakpoints_body(&breakpoints, &offsets, &text)))
+            (
+                Event::Breakpoints { breakpoints, .. },
+                Conversion::Breakpoints {
+                    module,
+                    entries,
+                    text,
+                },
+            ) => {
+                let (breakpoints, pairs) =
+                    breakpoints::line_response(&entries, &breakpoints, &text);
+                self.breakpoints.answered_lines(&module, &pairs);
+                Ok(Some(json!({ "breakpoints": breakpoints })))
+            }
+            (Event::MethodBreakpoints(states), Conversion::FunctionBreakpoints { entries }) => {
+                let (breakpoints, pairs) = breakpoints::function_response(&entries, &states);
+                self.breakpoints.answered_functions(&pairs);
+                Ok(Some(json!({ "breakpoints": breakpoints })))
+            }
+            (Event::ExceptionBreakpointsSet, Conversion::ExceptionBreakpoints { count }) => {
+                let breakpoints: Vec<protocol::Breakpoint> = (0..count)
+                    .map(|_| protocol::Breakpoint::verified())
+                    .collect();
+                Ok(Some(json!({ "breakpoints": breakpoints })))
             }
             _ => Ok(None),
         }
@@ -1177,6 +1211,7 @@ impl Agent {
             }
             HostMessage::Exited { status, done } => {
                 self.exited = true;
+                self.line_step = None;
                 self.answer_what_the_vm_sent();
                 if self.is_attached() {
                     let exited = protocol::ExitedEventBody {
@@ -1236,11 +1271,21 @@ impl Agent {
 
     // ---- Writing ----
 
-    fn respond(&mut self, connection: u64, request: &protocol::Request, body: Option<Value>) {
+    pub(super) fn respond(
+        &mut self,
+        connection: u64,
+        request: &protocol::Request,
+        body: Option<Value>,
+    ) {
         self.write_response(connection, request.seq, &request.command, Ok(body));
     }
 
-    fn respond_error(&mut self, connection: u64, request: &protocol::Request, message: &str) {
+    pub(super) fn respond_error(
+        &mut self,
+        connection: u64,
+        request: &protocol::Request,
+        message: &str,
+    ) {
         self.write_response(
             connection,
             request.seq,
@@ -1277,7 +1322,7 @@ impl Agent {
     }
 
     /// Sends an event to the attached client.
-    fn event(&mut self, event: &'static str, body: Option<Value>) {
+    pub(super) fn event(&mut self, event: &'static str, body: Option<Value>) {
         if !self.is_attached() {
             return;
         }
@@ -1305,14 +1350,20 @@ impl Agent {
     }
 }
 
+/// Whether the command named `name` (`Command::name`) makes the stopped
+/// program go on.
+fn is_going_on(name: &str) -> bool {
+    matches!(
+        name,
+        "Continue" | "StepOver" | "StepInto" | "StepOut" | "RunToPosition"
+    )
+}
+
 /// Whether `event` answers the command `pending` waits for.
 fn answers(event: &Event, pending: &Pending) -> bool {
     let command = pending.command;
     match event {
-        Event::Continued => matches!(
-            command,
-            "Continue" | "StepOver" | "StepInto" | "StepOut" | "RunToPosition"
-        ),
+        Event::Continued => is_going_on(command),
         Event::Refused {
             command: refused, ..
         } => refused == command,
@@ -1332,13 +1383,14 @@ fn answers(event: &Event, pending: &Pending) -> bool {
 }
 
 /// The `stopped` event's body for a stop of `reason`: `entry_pending`
-/// says a pause is the entry's, and a breakpoint stop names only the ids
-/// in `known`, each module's line breakpoints by the VM's latest answer,
-/// never one the client replaced since the VM decided the stop.
+/// says a pause is the entry's, and a stop names the breakpoints it is for
+/// by the DAP ids `known` gave them, only those the client's latest
+/// request for their set holds, never one it replaced since the VM decided
+/// the stop.
 fn stopped_body(
     reason: &StopReason,
     entry_pending: bool,
-    known: &BTreeMap<String, Vec<u32>>,
+    known: &Breakpoints,
 ) -> protocol::StoppedEventBody {
     let mut body = protocol::StoppedEventBody {
         reason: "pause",
@@ -1348,72 +1400,42 @@ fn stopped_body(
         all_threads_stopped: true,
         hit_breakpoint_ids: Vec::new(),
     };
+    let named = |ids: &mut dyn Iterator<Item = &ns_runtime::BreakpointId>| -> Vec<u32> {
+        ids.filter_map(|id| known.dap_id(id.0)).collect()
+    };
     match reason {
         StopReason::Pause if entry_pending => body.reason = "entry",
         StopReason::Pause => {}
         StopReason::Breakpoint { ids } => {
             body.reason = "breakpoint";
-            body.hit_breakpoint_ids = ids
-                .iter()
-                .map(|id| id.0)
-                .filter(|id| known.values().flatten().any(|standing| standing == id))
-                .collect();
+            body.hit_breakpoint_ids = named(&mut ids.iter());
         }
         StopReason::Step => body.reason = "step",
         StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
             body.reason = "function breakpoint";
-            body.hit_breakpoint_ids = std::iter::once(id).chain(others).map(|id| id.0).collect();
+            body.hit_breakpoint_ids = named(&mut std::iter::once(id).chain(others));
         }
         StopReason::Exception {
             class_name,
             description,
+            exits,
             ..
         } => {
             body.reason = "exception";
             body.text = Some(description.clone());
             body.description = Some(class_name.clone());
+            body.hit_breakpoint_ids = named(&mut exits.iter());
         }
-        StopReason::Halt { .. } => {
+        StopReason::Halt { exits } => {
             body.reason = "exception";
             body.text = Some("halt".to_string());
+            body.hit_breakpoint_ids = named(&mut exits.iter());
         }
     }
     body
 }
 
-/// A `setBreakpoints` response's body: for each breakpoint asked for, in
-/// the request's order, the VM's state of the one at its offset, its line
-/// and column those of the statement it stops at in `text`.
-fn breakpoints_body(states: &[BreakpointState], offsets: &[Option<u32>], text: &str) -> Value {
-    let lines = LineIndex::new(text);
-    let mut taken = vec![false; states.len()];
-    let breakpoints: Vec<protocol::Breakpoint> = offsets
-        .iter()
-        .map(|offset| {
-            let index = offset.and_then(|offset| {
-                (0..states.len()).find(|index| !taken[*index] && states[*index].offset == offset)
-            });
-            let Some(index) = index else {
-                return protocol::Breakpoint::unverified("the module has no such line");
-            };
-            taken[index] = true;
-            let state = &states[index];
-            let position = state
-                .statement
-                .map(|statement| lines.position(text, statement.start));
-            protocol::Breakpoint {
-                id: Some(state.id.0),
-                verified: position.is_some(),
-                message: None,
-                line: position.map(|position| position.line + 1),
-                column: position.map(|position| position.column + 1),
-            }
-        })
-        .collect();
-    json!({ "breakpoints": breakpoints })
-}
-
-fn to_value(value: impl Serialize) -> Value {
+pub(super) fn to_value(value: impl Serialize) -> Value {
     serde_json::to_value(value).expect("the agent's own types serialize")
 }
 
@@ -1424,7 +1446,11 @@ mod tests {
 
     #[test]
     fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {
-        let known = BTreeMap::from([("Loop".to_string(), vec![2])]);
+        let mut known = Breakpoints::default();
+        let ids = known.request_lines("Loop", vec![10, 20]);
+        known.answered_lines("Loop", &[(1, ids[0]), (2, ids[1])]);
+        // The client removes the breakpoint at 10.
+        known.request_lines("Loop", vec![20]);
         let replaced = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
@@ -1436,7 +1462,7 @@ mod tests {
             ids: vec![BreakpointId(1), BreakpointId(2)],
         };
         let body = to_value(stopped_body(&standing, false, &known));
-        assert_eq!(body["hitBreakpointIds"], json!([2]));
+        assert_eq!(body["hitBreakpointIds"], json!([ids[1]]));
     }
 
     #[test]
@@ -1447,14 +1473,18 @@ mod tests {
             caught: false,
             exits: Vec::new(),
         };
-        let body = to_value(stopped_body(&exception, false, &BTreeMap::new()));
+        let body = to_value(stopped_body(&exception, false, &Breakpoints::default()));
         assert_eq!(body["reason"], "exception");
         assert_eq!(body["text"], "division by zero");
         assert_eq!(body["description"], "ZeroDivide");
         let halt = StopReason::Halt { exits: Vec::new() };
-        let body = to_value(stopped_body(&halt, false, &BTreeMap::new()));
+        let body = to_value(stopped_body(&halt, false, &Breakpoints::default()));
         assert_eq!(body["text"], "halt");
-        let entry = to_value(stopped_body(&StopReason::Pause, true, &BTreeMap::new()));
+        let entry = to_value(stopped_body(
+            &StopReason::Pause,
+            true,
+            &Breakpoints::default(),
+        ));
         assert_eq!(entry["reason"], "entry");
     }
 }

@@ -55,8 +55,10 @@
 > safepoints its schedule picks and takes a burst of steps from there,
 > reading the stack at every stop ("The step stress mode").
 > The DAP agent's connection and session are built: `ns-next run` and
-> `load` take `--debug` and `--debug-connect` ("Launching, the start and
-> the end").
+> `load` take `--debug` and `--debug-connect`, and the agent shows a
+> stop's stack, variables and sources, sets line, function and exception
+> breakpoints, steps by line or statement, runs to a cursor and pauses
+> ("Launching, the start and the end").
 > Everything else is planned: the rest of the DAP agent and the plugin
 > (stage 4, next), evaluation, conditional breakpoints and logpoints, smart step
 > into, restart frame and force return (stage 5), hot swap and
@@ -692,12 +694,13 @@ stands, so that one that reached the queue just after the host's check,
 and that the start of the run then dropped, still ends that run; once no
 run follows, it waits in the queue unserved. The VM's drop and its two
 tests stand, since only the host knows which runs are one program.
-Planned (stage 4, decided with the user on 2026-11-14): the agent sends a
-command that acts only at a stop -- `StackTrace`, `Variables`,
-`Children`, the steps, `RunToPosition`, `Continue` -- only while the
-program stands at one, and answers such a DAP request itself, with an
-error, while the program runs; today it forwards each, and the VM
-refuses it.
+Decided with the user on 2026-11-14: the agent sends a command that acts
+only at a stop -- `StackTrace`, `Variables`, `Children`, the steps,
+`RunToPosition`, `Continue` -- only while the program stands at one it
+showed the client, and answers such a DAP request itself while the
+program runs, with the error "the program is running", never reaching
+the VM (`a_stack_trace_while_running_is_an_error`). The VM's refusal
+stays for an agent that sends one all the same.
 
 Once the queue is drained, `serve_debugger` reads the pause bit again;
 if it is set, it is cleared, under the arming lock, and the program stops
@@ -1830,9 +1833,9 @@ call would run it interpreted.
 
 **Partial:** the tables are built (`debugger::metadata::BodyMetadata`,
 "Compiling the metadata again"), a stopped frame's location reads them,
-and line breakpoints and steps stop at their statement starts and
-return points; smart step into's targets and IntelliJ's stepping by
-line, the agent's, are planned.
+line breakpoints and steps stop at their statement starts and return
+points, and the agent steps by line (`crates/ns-cli/src/debug/stepping.rs`);
+smart step into's targets are planned.
 
 The metadata of a body lists:
 
@@ -1860,8 +1863,21 @@ The metadata of a body lists:
 The agent steps by line for IntelliJ, over statement starts until the line
 or the frame changes, as the JDWP agent steps by its line table
 (`stepControl_handleStep`, `jdk/src/jdk.jdwp.agent/share/native/libjdwp/stepControl.c:523-697`,
-the line comparison at `:640-669`, `findLineNumber` at `:130`); a client
-may ask for `granularity: statement`. A source span per instruction,
+the line comparison at `:640-669`, `findLineNumber` at `:130`): a `next`
+or `stepIn` by line -- DAP's default `granularity` -- sends the VM's
+`StepOver` or `StepInto` and, while the stop it makes is a step's in the
+frame the step began in -- the same stack depth and frame name -- on the
+line it began on, sends it again, reporting only the stop that leaves the
+line or the frame; a stop for any other reason -- a breakpoint, an
+exception, a pause -- ends the step at once and is reported as it is
+(`next_by_line_steps_over_a_whole_line`). A frame without a location
+ends it too, since no line can be compared. Each repetition reads the
+stop's frames and the top frame's module's text from the VM, the text
+by revision, so that a step over a line of several statements costs a
+round trip per statement and never a stop the client sees. A client may
+ask for `granularity: statement`, one VM step, and `instruction` steps
+as `statement` does, a statement being the smallest place a stop is
+made at. A source span per instruction,
 Primordial Soup's `bciSourceMapping`
 (`primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns:564-596`),
 is rejected: most of ns-next's instructions are register moves with no
@@ -1899,6 +1915,17 @@ leave the embedded core library and images without them and need this
 decision's mechanism anyway.
 
 ### 6. The protocol is DAP over a localhost socket
+
+**Partial:** the agent speaks the session, a stop's `stackTrace`,
+`scopes`, paged `variables` and `source`, `setBreakpoints` with hit
+conditions and block variants, `setFunctionBreakpoints`,
+`setExceptionBreakpoints`, `pause`, `continue`, the steps with their
+`granularity`, run to cursor, `terminate` and `disconnect`, and the
+`stopped`, `breakpoint` and `exited` events (`crates/ns-cli/src/debug/`,
+"Launching, the start and the end"); conditions and logpoints,
+`breakpointLocations`, `stepInTargets`, `restartFrame`, `evaluate`,
+`setVariable` and the requests of ns-next's own for hot swap,
+edit-and-continue and force return are planned.
 
 The agent speaks the Debug Adapter Protocol, JSON in `Content-Length`
 frames, over a TCP socket bound to 127.0.0.1, since the program owns its
@@ -2525,13 +2552,16 @@ once the last is removed, without exits.
 ### A breakpoint names a source position
 
 **Built** in the VM (`Command::SetBreakpoints`, `debugger/breakpoints.rs`),
-and the runtime's answer of the breakable places before a session
-(`Interpreter::breakable_statements`, `debugger/metadata/breakable.rs`);
-the agent's line to offset and the analyzer's request are planned.
+the runtime's answer of the breakable places before a session
+(`Interpreter::breakable_statements`, `debugger/metadata/breakable.rs`),
+and the agent's line to offset (`crates/ns-cli/src/debug/breakpoints.rs`);
+the analyzer's request is planned.
 
-The IDE sets a breakpoint at a file and line; the agent, stage 4's, turns
-the line into a byte offset into the module's current text and sends
-`SetBreakpoints` with the module's name and the offsets. The VM resolves
+The IDE sets a breakpoint at a file and line; the agent turns the line
+into a byte offset into the module's current text -- the start of the
+line, or, for a breakpoint with a `column`, the place of that column, a
+block variant -- and sends `SetBreakpoints` with the module's name and
+the offsets. The VM resolves
 each offset (`debugger::breakpoints`) against every current body of the
 module -- methods, blocks (a block's body is a literal of its home, so a
 block never yet created is patched in place all the same), slot
@@ -2610,9 +2640,9 @@ statement compiled to an instruction.
 
 ### Hit counts and temporary breakpoints
 
-**Partial:** the VM's count is built (`HitCondition`,
-`Breakpoints::count_hits`, `interpreter/breakpoint.rs`); the agent's
-parsing of DAP's string is planned.
+**Built** (`HitCondition`, `Breakpoints::count_hits`,
+`interpreter/breakpoint.rs`; the agent's parsing,
+`crates/ns-cli/src/debug/breakpoints.rs`).
 
 Decided with the user on 2026-11-14 for stage 4. A breakpoint's hit
 condition -- DAP's `hitCondition`, IntelliJ's pass count -- is counted
@@ -2621,9 +2651,12 @@ by the VM: `SetBreakpoints` carries it for each line breakpoint
 method breakpoint (`MethodBreakpoint::hit_condition`), a `HitCondition`
 -- `Equal(n)`, `Greater(n)`, `GreaterOrEqual(n)` or `Multiple(n)`, the
 last holding at no hit for 0 -- or `None`, which stops at every hit.
-Planned, the agent parses it from DAP's string, in the forms `n`, `=n`,
-`>n`, `>=n` and `%n`, a malformed one answered as an unverified
-breakpoint with its message.
+The agent parses it from DAP's string (`parse_hit_condition`), in the
+forms `n`, `=n`, `==n`, `>n`, `>=n` and `%n`, `n` a decimal `u32`, a
+plain `n` the hit numbered so, as IntelliJ's pass count and JDWP's
+`Count` mean it; a malformed one is never sent, its breakpoint answered
+unverified with the message saying so
+(`a_pass_count_stops_at_that_iteration`).
 
 The count lives on the breakpoint's record in the table
 (`debugger/breakpoints.rs`), starts at none when the breakpoint is set
@@ -3312,16 +3345,65 @@ value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
 `variablesReference` is valid until the program goes on, and the ids
 continue across stops, so that a stale one is refused rather than
-naming another value. A stop's `hitBreakpointIds` name only the
-breakpoints the VM's latest answer for their module stands with:
-a `setBreakpoints` replaces its module's ids when it is sent. Requests
-only a stop serves -- `stackTrace`, `scopes`, `variables` -- are
-answered by an error while the program runs, never sent to the VM.
-`setBreakpoints` sets each breakpoint at its line's start, in a
-shipped module too before any stop showed it, and
-`stepIn` steps one statement; `nsNext/setStepFilters` and
-`nsNext/statistics` (the number of texts the VM sent, for tests) are
-requests of ns-next's own. The host waits for the configuration before its first
+naming another value.
+
+The breakpoints (`breakpoints.rs`): `setBreakpoints` sets each at the
+start of its line or, with a `column`, at that place of it, a block
+variant, in UTF-16 columns of the module's text as the agent knows it
+-- a program module's file as loaded until a stop read a newer current
+text, a shipped module's own, before any stop showed it too -- the
+module named by a source's path, its name `<Module>.ns` or its
+reference, and a source naming none answered unverified, "not a module
+of this program". A breakpoint is verified once the VM resolved it to a
+statement, whose line and column the response gives, so that one on a
+comment line shows on the next statement. `setFunctionBreakpoints` names
+a method `Module.Path.To.Class>>selector`, or
+`Module.Path.To.Class class>>selector` for the class side's; a line or
+function breakpoint takes a hit condition ("Hit counts and temporary
+breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
+`halt` on by its `filters` or `filterOptions`, and the conditions of its
+filter options, each a comma-separated list of classes
+`Module.Path.To.Class`, parsed as the step filters' are, together name
+the classes both exception filters stop for, since the VM keeps one list
+("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as
+long as the client sends the breakpoint again -- a line breakpoint by its
+module and offset, a function breakpoint by its name -- since the VM sets
+a set afresh under new ids at every replacement, which an IDE sends at
+every change; the VM's ids of each set's latest answer map to them, and
+a stop's `hitBreakpointIds` name only ids the client's latest request
+for their set holds, never one it replaced since the VM decided the
+stop. An `Event::Breakpoints` or `Event::MethodBreakpoints` the VM sends
+unasked -- a pending breakpoint resolved as its module was built, an
+install that moved one -- is told from an answer by its ids: the VM
+numbers every breakpoint from one counter and an answer sets its whole
+set afresh, so an answer's ids are all new and an unasked event's all
+named by an earlier answer, which offsets could not tell apart from a
+replacement of the same offsets. It is reported as `breakpoint` events,
+`reason: "changed"`, and dropped while a replacement of its set is on
+its way, which removes what it names
+(`a_pending_breakpoint_is_reported_once_its_module_is_built`). A module
+an install changed is counted in its new text only once a stop read it:
+a `setBreakpoints` sent between the install and that stop counts its
+lines in the older text, and the VM resolves those offsets in the
+current one.
+
+The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
+default, or by statement (decision 4); `stepOut`, one `StepOut`; and
+`nsNext/runToPosition`, a request of ns-next's own, which runs to the
+statement at or after a line, or a line and column, counted as a
+breakpoint's offset is, the VM's refusal its error response. A
+`continue`, a step or a run to cursor leaves the stop only when the VM
+answers it with `Event::Continued`: a refused one leaves the agent at
+its stop, which the client keeps reading, and answers the request with
+the refusal; a `pause` sent meanwhile is asked of the program it
+resumes, and one sent during a step by line reports the step's next
+stop. Requests only a stop serves -- `stackTrace`, `scopes`,
+`variables`, `continue`, the steps, run to cursor -- are answered by an
+error while the program runs, never sent to the VM; `pause` sends the
+remote's pause. `nsNext/setStepFilters` and `nsNext/statistics` (the
+number of texts the VM sent, for tests) are requests of ns-next's own.
+
+The host waits for the configuration before its first
 run, serving meanwhile every configuration command the agent queues
 (`Interpreter::serve_debugger_between_runs`, woken by the agent), so
 that a client has the answer to its `setBreakpoints` before it sends
@@ -3341,8 +3423,8 @@ cannot start a reader for.
 A client of the connecting mode that leaves detaches the debugger: both
 halves of the remote are dropped and the program runs on, a host still
 waiting for the configuration starting it. A client of the listening mode
-that leaves, once attached, has the VM reset -- no line, method or
-exception breakpoint, since nobody would be there to go on from a stop,
+that leaves, once attached, has the VM reset -- no line breakpoint in
+any module the client set one in, no method or exception breakpoint, since nobody would be there to go on from a stop,
 the default step filters, a stopped program going on -- and the next
 client is accepted; a host still waiting for the configuration waits for
 that client's, as it waited for the first. A stop that arrives while no

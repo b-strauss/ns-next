@@ -219,10 +219,70 @@ pub(crate) struct SetBreakpointsArguments {
     pub(crate) breakpoints: Vec<SourceBreakpoint>,
 }
 
+/// A line breakpoint as the client asks for it; with a `column`, the
+/// variant that stops in a block body beginning there.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SourceBreakpoint {
     pub(crate) line: u32,
+    pub(crate) column: Option<u32>,
+    pub(crate) hit_condition: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SetFunctionBreakpointsArguments {
+    pub(crate) breakpoints: Vec<FunctionBreakpoint>,
+}
+
+/// A method breakpoint, its method named `Module.Path.To.Class>>selector`
+/// or `Module.Path.To.Class class>>selector`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct FunctionBreakpoint {
+    pub(crate) name: String,
+    pub(crate) hit_condition: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SetExceptionBreakpointsArguments {
+    pub(crate) filters: Vec<String>,
+    pub(crate) filter_options: Vec<ExceptionFilterOptions>,
+}
+
+/// A filter turned on with a condition: the classes, each
+/// `Module.Path.To.Class`, separated by commas, whose exceptions it stops.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ExceptionFilterOptions {
+    pub(crate) filter_id: String,
+    pub(crate) condition: Option<String>,
+}
+
+/// `next`, `stepIn` and `stepOut`: `line` (the default), `statement`, or
+/// `instruction`, which steps as `statement` does.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct StepArguments {
+    pub(crate) granularity: Option<String>,
+}
+
+/// `nsNext/runToPosition`, a request of ns-next's own: the program goes
+/// on to the statement at or after this place.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct RunToPositionArguments {
+    pub(crate) source: SourceArgument,
+    pub(crate) line: u32,
+    pub(crate) column: Option<u32>,
+}
+
+/// The `breakpoint` event's body.
+#[derive(Serialize)]
+pub(crate) struct BreakpointEventBody {
+    pub(crate) reason: &'static str,
+    pub(crate) breakpoint: Breakpoint,
 }
 
 /// `nsNext/setStepFilters`, a request of ns-next's own: whether a step
@@ -321,6 +381,18 @@ pub(crate) struct Breakpoint {
 }
 
 impl Breakpoint {
+    /// A breakpoint that stands, for which there is nothing else to say:
+    /// an exception filter's.
+    pub(crate) fn verified() -> Breakpoint {
+        Breakpoint {
+            id: None,
+            verified: true,
+            message: None,
+            line: None,
+            column: None,
+        }
+    }
+
     /// A breakpoint the VM does not stand with, for `message`.
     pub(crate) fn unverified(message: &str) -> Breakpoint {
         Breakpoint {
