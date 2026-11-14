@@ -15,8 +15,8 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only while the
-/// program is stopped; one that arrives while it runs is refused
+/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only
+/// while the program is stopped; one that arrives while it runs is refused
 /// (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
 /// sent right after `DebugRemote::pause` is refused or served depending
@@ -132,11 +132,15 @@ pub enum Command {
         classes: Vec<ClassName>,
     },
     /// The current text of the module `module` names -- its root class's
-    /// name, as `FrameLocation::module` names it, a shipped module's too
-    /// -- unless `known_revision` is the revision the answer would carry,
-    /// which the agent holds the text of already. Served only while the
-    /// program is stopped, as `StackTrace` is, so that the agent reads a
-    /// text only where it reads positions in it. Answered by
+    /// name, as `FrameLocation::module` names it, a shipped module's too,
+    /// built or not -- unless `known_revision` is the revision the answer
+    /// would carry. `known_revision` is the revision of a
+    /// `ModuleTextAnswer::Text` the agent holds for this very module; an
+    /// agent keeps a revision only beside a `Text`, since the revision
+    /// counts every install and every build of a module's root class, and
+    /// a `None` answered at one revision says nothing of the next. Served
+    /// only while the program is stopped, as `StackTrace` is, so that the
+    /// agent reads a text only where it reads positions in it. Answered by
     /// `Event::ModuleText`.
     ModuleText {
         module: String,
@@ -281,8 +285,9 @@ pub enum Event {
     /// breakpoints are in effect.
     ExceptionBreakpointsSet,
     /// The answer to `Command::ModuleText`. `revision` is the interpreter's
-    /// count of installs, the same for every module and 0 before the first:
-    /// a text read at a revision is current until it is raised.
+    /// count of installs and of builds of a module's root class, the same
+    /// for every module and 0 before the first: a text read at a revision
+    /// is current until it is raised.
     ModuleText {
         module: String,
         revision: u64,
@@ -297,8 +302,8 @@ pub enum ModuleTextAnswer {
     Unchanged,
     /// The module's current text.
     Text(String),
-    /// The module is not built, or has no text (an image built without its
-    /// source).
+    /// No module of that name is built (a shipped module needs no build),
+    /// or it has no text (an image built without its source).
     None,
 }
 

@@ -351,6 +351,9 @@ fn module_class<'gc>(
     let mixin = root_mixin.unwrap_or_else(|| mutator.shipped_root_mixin(shipped.name));
     let class = mutator.root_class_of_mixin(&mixin);
     mutator.shipped_world.add_pending(name, class);
+    // The module's root class exists now, as a program module's does
+    // once loaded (`Breakpoints::text_revision`).
+    mutator.note_module_built();
     // A breakpoint in the module, pending until it was built, resolves
     // now, before its factory and its initializer run.
     if !mutator.has_no_breakpoints() {

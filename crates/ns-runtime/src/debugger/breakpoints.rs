@@ -27,7 +27,8 @@ use super::remote::{
 use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
 use super::Attachments;
 use crate::bytecode::{CompiledCode, Instruction};
-use crate::heap::{ActivationReference, CodeId, FrameReference, Heap};
+use crate::heap::{ActivationReference, CodeId, FrameReference, Heap, MixinId};
+use crate::interpreter::core_library::{shipped_module_text, KERNEL_MODULE, SHIPPED_MODULES};
 use crate::interpreter::Mutator;
 use crate::mixin::{Mixin, MixinMethod};
 use crate::Root;
@@ -494,6 +495,14 @@ impl Breakpoints {
     /// the text compares to know that the one it holds is current.
     pub(crate) fn text_revision(&self) -> u64 {
         self.text_revision
+    }
+
+    /// A module was built: raises the revision if a debugger is attached,
+    /// since one that is not has seen no text to hold.
+    pub(crate) fn raise_text_revision_if_attached(&mut self) {
+        if self.events.is_some() {
+            self.raise_text_revision();
+        }
     }
 
     /// An install changed a module's text.
@@ -1375,25 +1384,39 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
     table.sweep();
 }
 
-/// The current text of the module whose root class is named `name`, found
-/// as `module_bodies` finds the module: a shipped module's is its shipped
-/// text, a program's its text as the last install left it. `None` while no
-/// module of that name is built, and for a module without text (an image
-/// built with its source stripped).
+/// The ids of the root mixins, instance sides, named `name`: the modules
+/// whose root class is, as `FrameLocation::module` names a module.
+fn module_roots(mutator: &Mutator<'_>, name: &str) -> Vec<MixinId> {
+    mutator
+        .heap
+        .mixin_ids()
+        .into_iter()
+        .filter(|id| {
+            mutator.heap.enclosing_mixin_id(*id).is_none()
+                && mutator
+                    .heap
+                    .mixin(*id)
+                    .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
+        })
+        .collect()
+}
+
+/// The current text of the module whose root class is named `name`: a
+/// built program module's, as the last install left it, which a program
+/// module named like a shipped one keeps for itself; otherwise the shipped
+/// module's shipped text, which needs no build, taken from the binary's
+/// tables and never from the heap. `None` for a name neither has, and for
+/// a program module without text (an image built with its source
+/// stripped).
 pub(crate) fn module_text(mutator: &Mutator<'_>, name: &str) -> Option<String> {
-    let root = mutator.heap.mixin_ids().into_iter().find(|id| {
-        mutator.heap.enclosing_mixin_id(*id).is_none()
-            && mutator
-                .heap
-                .mixin(*id)
-                .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
-    })?;
-    if mutator.heap.mixin(root)?.shipped {
-        return Some(String::from(
-            &*crate::interpreter::core_library::shipped_module_text(name),
-        ));
+    let program = module_roots(mutator, name)
+        .into_iter()
+        .find(|id| mutator.heap.mixin(*id).is_some_and(|mixin| !mixin.shipped));
+    if let Some(root) = program {
+        return mutator.heap.module_source(root);
     }
-    mutator.heap.module_source(root)
+    (name == KERNEL_MODULE || SHIPPED_MODULES.iter().any(|shipped| shipped.name == name))
+        .then(|| String::from(&*shipped_module_text(name)))
 }
 
 /// Resolves `offsets` against every current body of the module whose
@@ -1429,17 +1452,7 @@ fn module_bodies(
     name: &str,
 ) -> Option<(PairedBodies, HashMap<usize, Rc<MixinMethod>>)> {
     let ids = mutator.heap.mixin_ids();
-    let roots: Vec<_> = ids
-        .iter()
-        .copied()
-        .filter(|id| {
-            mutator.heap.enclosing_mixin_id(*id).is_none()
-                && mutator
-                    .heap
-                    .mixin(*id)
-                    .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
-        })
-        .collect();
+    let roots = module_roots(mutator, name);
     if roots.is_empty() {
         return None;
     }
@@ -1520,6 +1533,14 @@ impl Mutator<'_> {
     /// their walk then.
     pub(crate) fn has_no_breakpoints(&self) -> bool {
         self.breakpoints.is_empty()
+    }
+
+    /// A module's root class was built: what an agent knows of module
+    /// texts is stale (`Command::ModuleText`). A build before any agent
+    /// attached is no change an agent could have seen, so that the
+    /// revision is 0 at the first stop of a program loaded before it.
+    pub(crate) fn note_module_built(&mut self) {
+        self.breakpoints.raise_text_revision_if_attached();
     }
 }
 

@@ -7468,3 +7468,88 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answered(&mut interpreter, result), 48);
     }
 }
+
+/// A program that demands the mirrors module, built on first use, between
+/// two statements.
+const DEMANDING: &str = indoc! {"
+    class Demanding usingPlatform: platform = Object new (
+      | platform = platform. |
+    ) (
+      public run = (
+        | before after |
+        before:: 1.
+        platform mirrors.
+        after:: 2.
+        ^after
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_shipped_module_not_built_yet_answers_its_shipped_text() {
+    let (revision, text) = while_stopped(FOREVER, |remote| {
+        module_text(remote, "CollectionsFactory", None)
+    });
+    assert_eq!(revision, 0);
+    let ModuleTextAnswer::Text(text) = text else {
+        panic!("the shipped text was expected, not {text:?}");
+    };
+    assert!(
+        text.starts_with("/// The collections module: the growable Collections"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_program_module_named_like_a_shipped_one_answers_its_own_text() {
+    let source = indoc! {"
+        class TimeFactory = Object new (
+          | count ::= 0. |
+        ) (
+          public run = (
+            [true] whileTrue: [count:: count + 1].
+            ^count
+          )
+        ) : ()
+    "};
+    let expected = String::from(source);
+    let (_, text) = while_stopped(source, |remote| module_text(remote, "TimeFactory", None));
+    assert_eq!(text, ModuleTextAnswer::Text(expected));
+}
+
+ns_runtime::for_each_lowering! {
+    /// Building a module raises the revision, so that a revision a text
+    /// was read at is never the one of a later build.
+    fn building_a_module_raises_the_revision(lowering) {
+        let (mut interpreter, class) = interpreted(DEMANDING, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let first = line_start(DEMANDING, "before:: 1");
+        let second = line_start(DEMANDING, "after:: 2");
+        let ((before, unchanged, after), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Demanding", vec![first, second]),
+            |remote| {
+                expect_breakpoints(remote, "Demanding");
+                let first_stop = expect_breakpoint_stop(remote);
+                assert_eq!(first_stop.len(), 1);
+                let before = module_text(remote, "Demanding", None);
+                let unchanged = module_text(remote, "Demanding", Some(before.0));
+                continue_stopped(remote);
+                let second_stop = expect_breakpoint_stop(remote);
+                assert_eq!(second_stop.len(), 1);
+                let after = module_text(remote, "Demanding", Some(before.0));
+                continue_stopped(remote);
+                (before, unchanged, after)
+            },
+        );
+        assert_eq!(unchanged, (before.0, ModuleTextAnswer::Unchanged));
+        assert_eq!(after.0, before.0 + 1);
+        assert_eq!(after.1, before.1, "the same text, read at a later revision");
+        assert_eq!(answered(&mut interpreter, result), 2);
+    }
+}
