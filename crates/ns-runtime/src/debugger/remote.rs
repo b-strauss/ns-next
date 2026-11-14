@@ -24,8 +24,7 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// safepoint drains the queue before the stop or the stop serves it. A
 /// command is served by the run it arrives during; one queued while no
 /// run executes, or still queued when a run ends, is dropped and answered
-/// by `Event::Refused`, its reason that no run executes.
-/// A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
+/// by `Event::Refused`, its reason that no run executes. A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
 /// `SetStepFilters`, `SetExceptionBreakpoints` -- is served wherever
 /// commands are taken instead: at a safepoint while the program runs, at
 /// a stop, and when a run starts or ends, for one queued between runs.
@@ -423,9 +422,9 @@ impl DebugRemote {
     /// Queues `command` for the VM: the next safepoint serves it if the
     /// program runs, the stop does if it is stopped, and the start of the
     /// next run if no run executes, which drops it unless it is a
-    /// configuration command (`Command`) and answers it with a refusal. Queued before the bit
-    /// is set, so that the safepoint that finds the bit finds the command;
-    /// a remote whose VM is gone queues it nowhere.
+    /// configuration command (`Command`) and answers it with a refusal.
+    /// Queued before the bit is set, so that the safepoint that finds the
+    /// bit finds the command; a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {
         if self.commands.send(command).is_ok() {
             self.arm(DEBUGGER_COMMANDS);

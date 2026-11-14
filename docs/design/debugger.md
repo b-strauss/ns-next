@@ -348,9 +348,10 @@ The remote has three operations:
 - `send(command)` queues a command and then sets the commands bit, so that
   the next safepoint serves it while the program runs, or the stop serves
   it while the program is stopped. A command queued while no run
-  executes, or still queued when a run ends, is dropped unanswered, but
-  a configuration command -- `SetBreakpoints`, `SetStepFilters` -- which
-  the start or the end of a run serves ("Commands while the program runs"). A remote
+  executes, or still queued when a run ends, is dropped and answered by
+  `Event::Refused`, but a configuration command -- `SetBreakpoints`,
+  `SetStepFilters` -- which the start or the end of a run serves
+  ("Commands while the program runs"). A remote
   whose VM is gone queues it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
@@ -464,7 +465,8 @@ when a module's build or an install changes whether one is verified;
 and `ExceptionBreakpointsSet`, the answer to `SetExceptionBreakpoints`.
 `Continue`, the three steps, `RunToPosition`, `StackTrace`, `Variables` and `Children` are
 served only at a stop; one that arrives while the program runs is refused
-with "the program is running", and one queued between runs is dropped. Every command a stop or a safepoint serves but
+with "the program is running", and one queued between runs is dropped and
+refused with "no run executes". Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
 agent therefore waits for `Stopped` before it sends a command only a stop
 serves: one sent right after `pause()` is refused or served depending on
@@ -634,7 +636,7 @@ for its reason: a command the drain misses keeps its bit and is served,
 or dropped, at the next safepoint. A configuration command is served
 there, so that breakpoints an agent sets before the program runs, or
 between two runs, are set when the next run starts; every other command
-is dropped unanswered. Without the drop, a command left queued -- a
+is dropped and answered by `Event::Refused`. Without the drop, a command left queued -- a
 `Terminate` sent after its run ended, or queued after the one that ended
 it -- would otherwise end the next run at its first safepoint, or be
 taken by its first stop, a run nobody terminated
@@ -648,8 +650,8 @@ reason that no run executes, so that every command the debugging API
 takes has exactly one answer, as every DAP request has one response and
 JDWP answers a command it cannot serve with an error (`VM_DEAD`,
 `THREAD_NOT_SUSPENDED`; `a_command_queued_between_runs_is_refused`).
-Planned for stage 4 (decided with the user on 2026-11-14): `ns-next run` is several host runs -- a
-project's manifest instantiated, the root module, then `main:args:`
+Planned for stage 4 (decided with the user on 2026-11-14): `ns-next run`
+is several host runs -- a project's manifest instantiated, the root module, then `main:args:`
 (`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
 two of them, where the drop would let the program go on. The DAP agent
 records a `terminate` in `ns-cli` as well as queuing it, and the host
