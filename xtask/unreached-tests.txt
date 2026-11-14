@@ -909,6 +909,7 @@ ns-runtime compiler::reference::tests::the_shape_check_accepts_a_copied_read_of_
 ns-runtime compiler::reference::tests::the_shape_check_refuses_a_move_out_of_a_scratch_register
 ns-runtime compiler::reference::tests::the_shape_check_refuses_a_named_local_read_other_than_by_move
 ns-runtime compiler::reference::tests::the_shape_check_refuses_a_store_into_a_scratch_register
+ns-runtime debugger::remote::tests::hit_condition_holds
 ns-runtime dispatch::tests::default_access_is_protected
 ns-runtime hash::tests::a_thousand_consecutive_symbols_answer_back
 ns-runtime hash::tests::an_aligned_address_hashes_to_non_zero_bottom_bits

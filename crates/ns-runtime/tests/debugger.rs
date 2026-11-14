@@ -7120,3 +7120,257 @@ ns_runtime::for_each_lowering! {
         expect_ok(result, "run");
     }
 }
+
+/// A loop whose method stores its argument, then answers it by a return
+/// that is a statement of its own.
+const STORING: &str = indoc! {"
+    class Storing = Object new (
+      | last ::= 0. |
+    ) (
+      public run = (
+        1 to: 3 do: [:index |
+          store: index].
+        ^last
+      )
+      store: value = (
+        last:: value.
+        ^value
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A stop decided at a slot whose breakpoints a `SetBreakpoints`
+    /// served at the same safepoint removed is not made, and the frame
+    /// fetches the slot again: the method breakpoint's exit standing there
+    /// too, counted at the reach and not holding, is not counted again by
+    /// that fetch. Its `Equal(4)` stops at the second call's exit, not at
+    /// its entry, as a hit counted twice would. The `SetBreakpoints` is
+    /// sent right after the `Continue` of the first statement's stop, long
+    /// before the run reaches the return, and served at the safepoint the
+    /// return's stop leaves for, as in
+    /// `a_breakpoint_removed_before_its_stop_is_served_is_not_reported`;
+    /// should it arrive later, the return's stop is made and reported, and
+    /// is left out of what the test compares. Only the optimized lowering
+    /// makes `^value` one `Return`, a statement start that is the exit;
+    /// the reference lowering moves the value first, so there the exit
+    /// stands at a slot of its own and the outcome is the same.
+    fn a_stop_not_made_counts_no_hit_twice(lowering) {
+        let first = line_start(STORING, "last:: value.");
+        let returned = line_start(STORING, "^value");
+        let (events, result) = debugged(
+            STORING,
+            lowering,
+            move |remote| {
+                set_breakpoints(remote, "Storing", vec![first, returned]);
+                let mut breakpoint = method_breakpoint("Storing", &[], false, "store:");
+                breakpoint.hit_condition = Some(HitCondition::Equal(4));
+                set_method_breakpoints(remote, vec![breakpoint]);
+            },
+            move |remote| {
+                let lines = expect_breakpoints(remote, "Storing");
+                let method = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let reason = expect_stop(remote);
+                remote.send(Command::Continue);
+                set_breakpoints(remote, "Storing", vec![first]);
+                (lines, method, reason, events_until_the_end(remote))
+            },
+        );
+        expect_ok(result, "run");
+        let (lines, method, reason, events) = events;
+        assert_eq!(reason, StopReason::Breakpoint { ids: vec![lines[0].id] });
+        let again = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Breakpoints { breakpoints, .. } => Some(breakpoints[0].id),
+                _ => None,
+            })
+            .expect("the new set is answered");
+        let reasons: Vec<StopReason> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Stopped { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .filter(|reason| *reason != StopReason::Breakpoint { ids: vec![lines[1].id] })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                StopReason::Breakpoint { ids: vec![again] },
+                StopReason::MethodExit {
+                    id: method,
+                    others: Vec::new()
+                },
+                StopReason::Breakpoint { ids: vec![again] },
+            ]
+        );
+    }
+}
+
+/// Every stop's reason, the run continued after each, until the run of
+/// `source`'s `run` ends, with one method breakpoint on `selector` of the
+/// module's root class whose hit condition is `condition`; and the
+/// breakpoint's id.
+fn method_stops(
+    source: &str,
+    module: &'static str,
+    selector: &str,
+    condition: HitCondition,
+    lowering: Lowering,
+) -> (BreakpointId, Vec<StopReason>) {
+    let mut breakpoint = method_breakpoint(module, &[], false, selector);
+    breakpoint.hit_condition = Some(condition);
+    let (stops, result) = debugged(
+        source,
+        lowering,
+        move |remote| set_method_breakpoints(remote, vec![breakpoint]),
+        |remote| {
+            let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+            let reasons = events_until_the_end(remote)
+                .into_iter()
+                .filter_map(|event| match event {
+                    Event::Stopped { reason, .. } => Some(reason),
+                    _ => None,
+                })
+                .collect();
+            (id, reasons)
+        },
+    );
+    expect_ok(result, "run");
+    stops
+}
+
+/// The one stop a method breakpoint `id` makes at an exit.
+fn only_exit(id: BreakpointId) -> [StopReason; 1] {
+    [StopReason::MethodExit {
+        id,
+        others: Vec::new(),
+    }]
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method of one statement, `^value`, counts its entry, then its
+    /// exit: `Equal(2)` stops once, at the first call's exit. Under the
+    /// optimized lowering its one instruction is both, the exit counted
+    /// as the frame goes past the entry; under the reference lowering a
+    /// move comes first.
+    fn a_hit_condition_counts_an_entry_that_is_an_exit_twice(lowering) {
+        let source = indoc! {"
+            class Echoing = Object new (
+              | last ::= 0. |
+            ) (
+              public run = (
+                last:: echo: 1.
+                last:: echo: 2.
+                ^last
+              )
+              echo: value = (
+                ^value
+              )
+            ) : ()
+        "};
+        let (id, stops) = method_stops(source, "Echoing", "echo:", HitCondition::Equal(2), lowering);
+        assert_eq!(stops, only_exit(id));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method left by a non-local return of a block it passed on counts
+    /// the exit once, where the return arrives: `Equal(4)` holds at the
+    /// second call's exit only, the first call's entry and exit and the
+    /// second's entry going past uncounted twice.
+    fn a_hit_condition_counts_an_exit_by_a_non_local_return_once(lowering) {
+        let source = indoc! {"
+            class Finding = Object new (
+              | last ::= 0. |
+            ) (
+              public run = (
+                last:: find: 2.
+                last:: last + (find: 3).
+                ^last
+              )
+              find: target = (
+                {1. 2. 3} do: [:each | each = target ifTrue: [^each]].
+                ^0
+              )
+            ) : ()
+        "};
+        let (id, stops) = method_stops(source, "Finding", "find:", HitCondition::Equal(4), lowering);
+        assert_eq!(stops, only_exit(id));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method's exit at a non-local return of a block lowered inline in
+    /// it -- a block the reference lowering sends, whose return the
+    /// breakpoint patches -- is counted at the return and not again where
+    /// the return arrives: `Equal(4)` holds at the second call's exit only.
+    fn a_hit_condition_counts_an_exit_at_an_inlined_non_local_return_once(lowering) {
+        let source = indoc! {"
+            class Picking = Object new (
+              | last ::= 0. |
+            ) (
+              public run = (
+                last:: pick: true.
+                last:: last + (pick: true).
+                ^last
+              )
+              pick: flag = (
+                flag ifTrue: [^1].
+                ^2
+              )
+            ) : ()
+        "};
+        let (id, stops) = method_stops(source, "Picking", "pick:", HitCondition::Equal(4), lowering);
+        assert_eq!(stops, only_exit(id));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method an exception's unwind leaves counts the exit once:
+    /// `Equal(4)` holds at the second call's exit only.
+    fn a_hit_condition_counts_an_exit_by_an_exception_once(lowering) {
+        let source = indoc! {"
+            class Failing = Object new (
+              | last ::= 0. |
+            ) (
+              public run = (
+                last:: [fail] on: Error do: [:error | 1].
+                last:: last + ([fail] on: Error do: [:error | 2]).
+                ^last
+              )
+              fail = (
+                Error signal: 'boom'.
+                ^0
+              )
+            ) : ()
+        "};
+        let (id, stops) = method_stops(source, "Failing", "fail", HitCondition::Equal(4), lowering);
+        assert_eq!(stops, only_exit(id));
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A lazy slot's getter, once its slot is filled, has its entry and its
+    /// exit at its first instruction under both lowerings: the read counts
+    /// the entry, then the exit as the frame goes past the entry. The first
+    /// read counts its entry and the exit that computes the slot, the
+    /// second its entry and, at the same slot, its exit, where `Equal(4)`
+    /// holds.
+    fn a_hit_condition_counts_a_filled_lazy_getter_s_entry_and_exit(lowering) {
+        let source = indoc! {"
+            class Lazing = Object new (
+              | last ::= 0. |
+            ) (
+              lazy value = 21.
+              public run = (
+                last:: value + value.
+                ^last
+              )
+            ) : ()
+        "};
+        let (id, stops) = method_stops(source, "Lazing", "value", HitCondition::Equal(4), lowering);
+        assert_eq!(stops, only_exit(id));
+    }
+}

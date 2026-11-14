@@ -441,14 +441,21 @@ impl Interpreter {
             }
             // A `SetBreakpoints` just served may have removed a breakpoint
             // the arm's stop is for, whose id the client no longer knows.
-            breakpoint = breakpoint
-                .and_then(|stop| self.enter(|mutator| stop.still_standing(&mutator.breakpoints)));
+            breakpoint = breakpoint.and_then(|stop| {
+                self.enter(|mutator| stop.still_standing(&mut mutator.breakpoints))
+            });
         }
         let exception = match (exception, self.debugger.is_some()) {
             (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),
             _ => None,
         };
         if let Some((mut reason, in_handler)) = exception {
+            // The exception's stop is made instead of the arm's, whose
+            // frame fetches its slot again as it goes on: that fetch
+            // counts none of the reach's breakpoints once more.
+            if let Some(stop) = breakpoint {
+                self.enter(|mutator| stop.not_made(&mut mutator.breakpoints));
+            }
             // Where the frame on top stands is debugger.md's "Exceptions":
             // the first instruction of what the search runs next, unless a
             // slot's setter or a fast path answered it without a push. The stop serves a

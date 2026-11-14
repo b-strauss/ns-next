@@ -57,6 +57,9 @@ pub(crate) struct Breakpoints {
     patches: HashMap<(usize, usize), Patch>,
     /// The slot a resumed stop goes past once (`PastOnce`).
     past_once: Option<PastOnce>,
+    /// The reach of a slot whose stop was not made, which the frame's
+    /// fetch of the slot again counts no more (`CountedReach`).
+    counted_reach: Option<CountedReach>,
     /// The stop the last `Breakpoint` arm decided, which the safepoint it
     /// left for takes.
     pending_stop: Option<PendingStop>,
@@ -277,6 +280,36 @@ pub(crate) struct PendingStop {
     pub(crate) slot: PastOnce,
     pub(crate) hits: Hits,
     pub(crate) step_stops: bool,
+    /// The breakpoints the reach counted that the stop is not for: those
+    /// whose hit condition did not hold, and, at a method's exit owed
+    /// past its entry, the entries the stop before was for.
+    pub(crate) passed: Vec<BreakpointId>,
+}
+
+/// A reach of a slot whose stop was not made -- a command served at its
+/// safepoint removed every breakpoint it was for, or an exception's stop
+/// came first -- by the activation standing at it, its body's address
+/// and its index: the frame fetches the slot again as it goes on, and
+/// that fetch counts no breakpoint the reach counted, so that each reach
+/// counts each breakpoint once. `passed` it neither counts nor stops for;
+/// `held`, whose stop was not made, it stops for uncounted. Consumed or
+/// dropped by the next `Breakpoint` arm, as the token is.
+pub(crate) struct CountedReach {
+    pub(crate) activation: ActivationReference,
+    pub(crate) body: usize,
+    pub(crate) index: usize,
+    pub(crate) passed: Vec<BreakpointId>,
+    pub(crate) held: Vec<BreakpointId>,
+}
+
+impl CountedReach {
+    /// Whether this is the reach of slot `index` of the body at `body` by
+    /// `activation`.
+    pub(crate) fn is_at(&self, activation: ActivationReference, body: usize, index: usize) -> bool {
+        // The body and the index first: an activation is compared only
+        // with one that may be the same.
+        self.body == body && self.index == index && self.activation.same(activation)
+    }
 }
 
 impl PendingStop {
@@ -284,14 +317,16 @@ impl PendingStop {
     /// served before it: only the breakpoints still standing at its slot,
     /// or no stop where none is left and no step's one-shot stops there
     /// -- the frame fetches the slot again as it goes on, and what stands
-    /// there then decides afresh. A breakpoint set there meanwhile is not
+    /// there then decides afresh, counting no breakpoint this reach
+    /// counted (`CountedReach`). A breakpoint set there meanwhile is not
     /// added: the frame goes past the slot once after the stop, as after
     /// any other.
-    pub(crate) fn still_standing(self, table: &Breakpoints) -> Option<PendingStop> {
+    pub(crate) fn still_standing(self, table: &mut Breakpoints) -> Option<PendingStop> {
         let PendingStop {
             slot,
             hits,
             step_stops,
+            passed,
         } = self;
         let standing = table.kinds_at(slot.body, slot.index);
         let still = |ids: Vec<BreakpointId>, standing: &[BreakpointId]| -> Vec<BreakpointId> {
@@ -303,14 +338,39 @@ impl PendingStop {
             exits: still(hits.exits, &standing.exits),
             run_to: hits.run_to && standing.run_to,
         };
-        if hits.only_a_step() && !step_stops {
-            return None;
-        }
-        Some(PendingStop {
+        let stop = PendingStop {
             slot,
             hits,
             step_stops,
-        })
+            passed,
+        };
+        if stop.hits.only_a_step() && !step_stops {
+            stop.not_made(table);
+            return None;
+        }
+        Some(stop)
+    }
+
+    /// The stop is not made: the reach it was decided at is remembered,
+    /// so that the frame's fetch of the slot again counts none of its
+    /// breakpoints once more.
+    pub(crate) fn not_made(self, table: &mut Breakpoints) {
+        let PendingStop {
+            slot, hits, passed, ..
+        } = self;
+        let held = hits
+            .lines
+            .into_iter()
+            .chain(hits.entries)
+            .chain(hits.exits)
+            .collect();
+        table.counted_reach = Some(CountedReach {
+            activation: slot.activation,
+            body: slot.body,
+            index: slot.index,
+            passed,
+            held,
+        });
     }
 }
 
@@ -491,11 +551,18 @@ impl Breakpoints {
         self.past_once.take()
     }
 
-    /// Drops the token and the reported home: a run ended, which may
-    /// leave the token's slot unexecuted and the home's unwind not
-    /// arrived.
+    /// The reach whose stop was not made, taken: the arm that reads it
+    /// consumes or drops it, as it does the token.
+    pub(crate) fn take_counted_reach(&mut self) -> Option<CountedReach> {
+        self.counted_reach.take()
+    }
+
+    /// Drops the token, the reach whose stop was not made and the reported
+    /// home: a run ended, which may leave the token's slot unexecuted and
+    /// the home's unwind not arrived.
     pub(crate) fn drop_past_once(&mut self) {
         self.past_once = None;
+        self.counted_reach = None;
         self.reported_home = None;
     }
 
@@ -542,7 +609,7 @@ impl Breakpoints {
 
     /// Counts a hit of the breakpoint `id`, and answers whether its hit
     /// condition holds at it.
-    fn count_hit(&mut self, id: BreakpointId) -> bool {
+    pub(crate) fn count_hit(&mut self, id: BreakpointId) -> bool {
         let line = self
             .modules
             .iter_mut()
@@ -557,8 +624,11 @@ impl Breakpoints {
                 .find(|entry| entry.id == id)
                 .map(|entry| (entry.method.hit_condition, &mut entry.hits)),
         };
-        // Every id a patch holds is one of the table's; one that is not
-        // stops, as a breakpoint without a condition does.
+        // Every id a patch holds is one of the table's, which removes a
+        // breakpoint's patches with it.
+        debug_assert!(counted.is_some(), "internal: a patch names no breakpoint");
+        // In a release build such a hit stops, as a breakpoint without a
+        // condition does, rather than being lost.
         let Some((condition, hits)) = counted else {
             return true;
         };
@@ -798,6 +868,13 @@ impl Breakpoints {
                     .is_some_and(|past| (past.body, past.index) == key)
                 {
                     self.past_once = None;
+                }
+                if self
+                    .counted_reach
+                    .as_ref()
+                    .is_some_and(|reach| (reach.body, reach.index) == key)
+                {
+                    self.counted_reach = None;
                 }
             }
         }
@@ -1169,6 +1246,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.methods.clear();
     table.reported_home = None;
     table.past_once = None;
+    table.counted_reach = None;
     table.pending_stop = None;
     table.pending_exception = None;
     table.terminating = false;

@@ -610,8 +610,9 @@ they are served it is decided again from the table
 (`PendingStop::still_standing`), so that it reports only the
 breakpoints still standing at its slot, and is not made when none is
 left and no step's one-shot stops there -- the frame fetches the slot
-again as it goes on, and what stands there decides afresh
-(`a_breakpoint_removed_before_its_stop_is_served_is_not_reported`).
+again as it goes on, and what stands there decides afresh, counting
+no hit the first reach counted ("Hit counts and temporary breakpoints";
+`a_breakpoint_removed_before_its_stop_is_served_is_not_reported`).
 
 ### Commands while the program runs
 
@@ -2596,6 +2597,19 @@ resumed stop's token lets it. A step's, a step into's or a run to
 cursor's stop at the same slot is made whatever the conditions say,
 and names only the breakpoints whose condition holds there: none makes
 it the step's (`StopReason::Step`).
+
+Each reach of a slot counts each breakpoint standing there once. A stop
+the arm decided and the safepoint does not make -- the commands served
+there removed every breakpoint it was for (`PendingStop::still_standing`),
+or an exception's stop is made instead -- leaves the frame to fetch the
+slot again with no token, so the table remembers the reach
+(`CountedReach`: the activation, the body and the index, the
+breakpoints counted that did not hold and those that held), consumed or
+dropped by the next `Breakpoint` arm as the token is: that fetch counts
+none of them again, stops for the held ones that still stand, and counts
+only a breakpoint set there since. Without it, a breakpoint counted at
+the reach but not holding, beside one a `SetBreakpoints` replaced, would
+count the same reach twice (`a_stop_not_made_counts_no_hit_twice`).
 
 JDWP counts in-process the same way, its `Count` modifier decremented at
 each event and the event reported at zero
