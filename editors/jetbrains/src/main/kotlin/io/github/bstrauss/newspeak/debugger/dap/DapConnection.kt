@@ -10,6 +10,10 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -18,7 +22,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * a blank line -- over a pair of streams, the messages read by a thread of
  * the connection's own.
  *
- * [send] may be called from any thread; frames are never interleaved.
+ * [send] may be called from any thread, the event dispatch thread among
+ * them: it hands the frame to a writer thread of the connection's own,
+ * which writes the frames whole and in the order they were sent, so that
+ * no caller waits for a socket the peer is slow to read.
  * Nothing reads before [start], so whoever starts it decides the thread
  * that every message is handed to: the reader's.
  */
@@ -28,22 +35,38 @@ class DapConnection(
     private val resource: Closeable? = null,
 ) : Closeable {
     private val input = BufferedInputStream(input)
-    private val writeLock = Any()
+    private val writer: ExecutorService = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "Newspeak DAP writer").apply { isDaemon = true }
+    }
     private val started = AtomicBoolean()
     private val closed = AtomicBoolean()
 
-    /** Writes [message] as one frame and flushes it. */
-    @Throws(IOException::class)
-    fun send(message: JsonObject) {
+    /**
+     * Writes [message] as one frame and flushes it, on the writer thread.
+     * The future completes once it is written, and fails with the
+     * [IOException] that kept it from being written, a closed connection's
+     * among them.
+     */
+    fun send(message: JsonObject): CompletableFuture<Unit> {
         val body = message.toString().toByteArray(Charsets.UTF_8)
         val frame = ByteArrayOutputStream(body.size + HEADER_ROOM)
         frame.write("$CONTENT_LENGTH ${body.size}\r\n\r\n".toByteArray(Charsets.US_ASCII))
         frame.write(body)
-        // One write, so that a frame is never split between two senders.
-        synchronized(writeLock) {
-            frame.writeTo(output)
-            output.flush()
+        val written = CompletableFuture<Unit>()
+        try {
+            writer.execute {
+                try {
+                    frame.writeTo(output)
+                    output.flush()
+                    written.complete(Unit)
+                } catch (exception: IOException) {
+                    written.completeExceptionally(exception)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            written.completeExceptionally(IOException("the connection is closed"))
         }
+        return written
     }
 
     /**
@@ -83,6 +106,8 @@ class DapConnection(
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // A frame still queued then fails: the stream it would go to is closed.
+        writer.shutdown()
         for (closeable in listOfNotNull(resource, input, output)) {
             try {
                 closeable.close()

@@ -52,7 +52,7 @@ class DapConnectionTest {
         ).asJsonObject
 
         val bytes = ByteArrayOutputStream()
-        DapConnection(ByteArrayInputStream(ByteArray(0)), bytes).send(message)
+        DapConnection(ByteArrayInputStream(ByteArray(0)), bytes).send(message).get(WAIT_SECONDS, TimeUnit.SECONDS)
         val written = bytes.toByteArray()
         val separator = "\r\n\r\n".toByteArray(Charsets.US_ASCII)
         val headerEnd = indexOf(written, separator)
@@ -260,16 +260,24 @@ class DapConnectionTest {
     }
 
     @Test
-    fun anErrorAListenerThrowsStillClosesTheClient() {
+    fun anErrorAListenerThrowsLeavesTheOtherListenersAndTheSession() {
         val (clientSide, agentSide) = joinedPair()
         val client = DapClient(clientSide).also { client -> opened.add(AutoCloseable(client::close)) }
-        val closed = CompletableFuture<Unit>()
-        client.onClose { closed.complete(Unit) }
-        client.onEvent("stopped") { _ -> throw AssertionError("a listener's own failure") }
-        val pending = client.request("threads")
-        agentSide.send(JsonParser.parseString("""{"seq":1,"type":"event","event":"stopped","body":{}}""").asJsonObject)
-        closed.get(WAIT_SECONDS, TimeUnit.SECONDS)
-        assertTrue(failureOf(pending) is DapConnectionClosedException)
+        val reached = CompletableFuture<JsonObject>()
+        client.onEvent("stopped") { _ -> throw StackOverflowError("a listener's own failure") }
+        client.onEvent("stopped") { body -> reached.complete(body) }
+        agentSide.send(JsonParser.parseString("""{"seq":1,"type":"event","event":"stopped","body":{"reason":"pause"}}""").asJsonObject)
+        assertEquals("pause", reached.get(WAIT_SECONDS, TimeUnit.SECONDS).get("reason").asString)
+        assertTrue("the session goes on", !client.isClosed)
+    }
+
+    @Test
+    fun anErrorTheMessageHandlerThrowsEndsTheConnectionWithIt() {
+        val (reader, writer) = joinedPair()
+        val ended = CompletableFuture<Throwable?>()
+        reader.start({ _ -> throw StackOverflowError("the handler's own failure") }, { cause -> ended.complete(cause) })
+        writer.send(JsonParser.parseString("""{"seq":1,"type":"event","event":"stopped"}""").asJsonObject)
+        assertTrue(ended.get(WAIT_SECONDS, TimeUnit.SECONDS) is StackOverflowError)
     }
 
     @Test
@@ -277,6 +285,7 @@ class DapConnectionTest {
         val client = clientAgainst { _ -> null }
         val later = AtomicInteger()
         client.onClose { throw IllegalStateException("a close listener's own failure") }
+        client.onClose { throw AssertionError("a close listener's own error") }
         client.onClose { later.incrementAndGet() }
         client.close()
         assertEquals(1, later.get())

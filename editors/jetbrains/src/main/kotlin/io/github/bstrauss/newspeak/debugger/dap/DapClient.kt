@@ -3,7 +3,6 @@ package io.github.bstrauss.newspeak.debugger.dap
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.intellij.openapi.diagnostic.Logger
-import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -61,11 +60,8 @@ class DapClient(private val connection: DapConnection) {
             addProperty("command", command)
             add("arguments", arguments)
         }
-        try {
-            connection.send(message)
-        } catch (exception: IOException) {
-            pending.remove(seq)
-            future.completeExceptionally(DapConnectionClosedException(command, exception))
+        connection.send(message).whenComplete { _, failure ->
+            if (failure != null) pending.remove(seq)?.future?.completeExceptionally(DapConnectionClosedException(command, failure))
         }
         return future
     }
@@ -122,11 +118,11 @@ class DapClient(private val connection: DapConnection) {
         val name = event.stringOrNull("event") ?: return
         val body = event.objectOrEmpty("body")
         for (listener in eventListeners[name].orEmpty()) {
-            // One faulty listener must not end the session for the others.
+            // One faulty listener, an `Error` included, must not end the session for the others.
             try {
                 listener(body)
-            } catch (exception: RuntimeException) {
-                LOG.warn("a listener of the DAP event `$name` failed", exception)
+            } catch (throwable: Throwable) {
+                LOG.warn("a listener of the DAP event `$name` failed", throwable)
             }
         }
     }
@@ -142,11 +138,8 @@ class DapClient(private val connection: DapConnection) {
             addProperty("command", command)
             addProperty("message", "the Newspeak plugin does not support the request `$command`")
         }
-        try {
-            connection.send(response)
-        } catch (exception: IOException) {
-            // The reader will see the connection end.
-        }
+        // A failed write needs no answer: the reader will see the connection end.
+        connection.send(response)
     }
 
     private fun ended(cause: Throwable?) {
@@ -162,8 +155,8 @@ class DapClient(private val connection: DapConnection) {
             // As with the events: one faulty listener must not keep the others from learning of the close.
             try {
                 listener()
-            } catch (exception: RuntimeException) {
-                LOG.warn("a listener of the DAP connection's close failed", exception)
+            } catch (throwable: Throwable) {
+                LOG.warn("a listener of the DAP connection's close failed", throwable)
             }
         }
     }

@@ -3512,7 +3512,7 @@ reports a failure, and hands each event's body to the listeners of its
 name; a close, by either side, fails every request still unanswered and
 tells every close listener, one that fails keeping none of the others
 from it. Whatever ends the reader -- a malformed frame, the stream's end,
-an `Error` a listener throws -- closes the client, so no request waits
+anything the message handler throws -- closes the client, so no request waits
 for ever. Every future completes and every listener runs on the reader thread, in
 the order the agent sent them, so the debug process hops to the thread
 its work needs. `DapTypes.kt` reads the bodies the plugin uses. A test
@@ -3529,15 +3529,22 @@ process (`NewspeakDebugProcess.kt`) takes the connection within 30 s,
 initializes and attaches, and checks that the `process` event's
 `systemProcessId` is the PID of the process it started; on a mismatch --
 another process connected to the port first -- it reports the error, kills
-the process and the session ends. At the `initialized` event it sends
+the process and the session ends. Nothing else the connection says is
+acted on before a matching `process` event: an `initialized`, `stopped`,
+`breakpoint` or `output` event ahead of it ends the session the same way,
+since the agent sends that event first and only another peer would not.
+At the `initialized` event it sends
 every line breakpoint the session registered, a file's set at a time, and
 `configurationDone` once the agent answered them. The platform's Stop
 destroys the process: while the agent is attached the handler asks it to
 `terminate` instead, so the program ends as its own `terminate…` would,
 and the platform's second Stop, on a process still terminating, kills it
 (`KillableProcess.killProcess`), which ends a program inside one long
-leaf at once; `XDebugProcess.stop()` sends `terminate` too, for a session
-ended otherwise. The process's console is the program's own, the agent's
+leaf at once. `XDebugProcess.stop()`, which ends a session otherwise,
+sends `terminate` to a program still running too, and keeps the
+connection until the agent answered or the process ended, at most 10 s,
+since a connection closed at once would lose the request; a process
+whose agent did not answer is killed. The process's console is the program's own, the agent's
 `output` events printed into it.
 
 A `stopped` event reads the first page of the stack (50 frames) before the
@@ -3558,7 +3565,9 @@ next page (`tooManyChildren`) -- an indexed value's count known, a named
 value's until a page comes back short. Resume is `continue`; Step Over,
 Step Into and Step Out are `next`, `stepIn` and `stepOut` with
 `granularity: "line"`; Run to Cursor is `nsNext/runToPosition`, Pause
-`pause`. A step or a resume the agent refuses leaves it at its stop,
+`pause`; a Run to Cursor in a file the agent cannot name -- a module's
+text an earlier session showed -- is reported and leaves the program at
+its stop. A step or a resume the agent refuses leaves it at its stop,
 which the debug process shows again with the refusal.
 
 Every event reaches the client's reader thread, which must never wait for
@@ -3567,7 +3576,11 @@ session's own, which takes them one at a time in the agent's order and
 waits, bounded, for the answers a stop needs before it tells the platform,
 which allows that from any thread. The value tree's and the frames view's
 requests complete their nodes from the reader thread, as the nodes allow;
-nothing waits for an answer on the event dispatch thread.
+nothing waits for an answer on the event dispatch thread. Nor does any
+caller wait for the socket: `DapConnection.send` hands each frame to a
+writer thread of the connection's own, which writes them in order. An
+event or close listener that throws, an `Error` included, is logged and
+keeps no other listener from being called.
 
 A line breakpoint (`NewspeakLineBreakpointType`) can be put on any line of
 a `.ns` file on disk, and `NewspeakLineBreakpointHandler` marks each

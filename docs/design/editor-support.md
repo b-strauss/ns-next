@@ -1856,8 +1856,9 @@ The server's own tests are described under its section, above ("Testing").
   body arriving in pieces, a failed response failing its future, events
   by name, a close or the stream's end failing every pending request, a
   peer closing inside a body, an oversized `Content-Length` and malformed
-  JSON ending the connection, an `Error` a listener throws closing the
-  client, a failing close listener leaving the others called);
+  JSON ending the connection, an `Error` the message handler throws
+  ending it, an `Error` an event listener throws and a failing close
+  listener leaving the other listeners called);
 - the debug process in the platform's debugger
   (`NewspeakDebugProcessTest`, on `BasePlatformTestCase` run off the event
   dispatch thread, so that it can wait while the platform updates the
@@ -1868,8 +1869,16 @@ The server's own tests are described under its section, above ("Testing").
   `Array`'s elements read through the value tree; Step Over moves to the
   next line; the first Stop of a program inside one long leaf terminates
   through the agent and leaves the process running, the second kills it;
-  and a fake agent reporting another process's id ends the session with
-  the error and kills the process, before any configuration is sent.
+  and, against a fake agent over the same harness (a session over an
+  undebugged `ns-next` process of the test's own): an agent reporting
+  another process's id, and one sending `initialized` and `stopped`
+  without any `process` event, ends the session with the error and kills
+  the process before any configuration is sent; `stop()` keeps the
+  connection until `terminate` is answered; a module shown by reference
+  is one read-only `LightVirtualFile` across two stops, asked for once;
+  a hidden frame is drawn greyed and the program's frame not; and an
+  `Array` of 150 elements shows 100, offers 50 more, and fetches them
+  with `start` 100.
   Every listener is registered as the platform creates the debug process
   (`XDebuggerManager.TOPIC`), before it connects, and every wait is
   bounded. A task of its own, `debugProcessTest`, with

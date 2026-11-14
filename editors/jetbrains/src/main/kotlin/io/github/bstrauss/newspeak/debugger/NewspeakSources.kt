@@ -43,15 +43,22 @@ class NewspeakSources(private val client: DapClient) {
         return files.findFileByNioFile(nioPath) ?: files.refreshAndFindFileByNioFile(nioPath)
     }
 
-    /** How the agent names [file]: by its reference when the session showed it so, by its path otherwise. */
-    fun sourceOf(file: VirtualFile): JsonObject = JsonObject().apply {
+    /**
+     * How the agent names [file]: by its reference when this session showed
+     * it so, by its path when it is a file on disk; null for any other --
+     * a module's text an earlier session showed, say -- which the agent
+     * cannot name.
+     */
+    fun sourceOf(file: VirtualFile): JsonObject? {
         val reference = byReference.entries.firstOrNull { (_, shown) -> shown == file }?.key
         if (reference != null) {
-            addProperty("name", file.name)
-            addProperty("sourceReference", reference)
-        } else {
-            addProperty("path", file.toNioPath().toString())
+            return JsonObject().apply {
+                addProperty("name", file.name)
+                addProperty("sourceReference", reference)
+            }
         }
+        if (!file.isInLocalFileSystem) return null
+        return JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
     }
 
     private fun fileForReference(reference: Int, name: String?): VirtualFile? {
@@ -62,6 +69,9 @@ class NewspeakSources(private val client: DapClient) {
         }
         val text = try {
             client.request("source", arguments).get(ANSWER_SECONDS, TimeUnit.SECONDS).stringOrNull("content")
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
         } catch (_: Exception) {
             null
         } ?: return null

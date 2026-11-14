@@ -1,6 +1,8 @@
 package io.github.bstrauss.newspeak.debugger
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.intellij.execution.KillableProcess
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.executors.DefaultDebugExecutor
@@ -16,6 +18,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
 import com.intellij.xdebugger.XDebugProcess
@@ -28,7 +31,11 @@ import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
+import com.intellij.ui.ColoredTextContainer
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.frame.XCompositeNode
+import com.intellij.xdebugger.frame.XExecutionStack
+import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XDebuggerTreeNodeHyperlink
 import com.intellij.xdebugger.frame.XFullValueEvaluator
 import com.intellij.xdebugger.frame.XValue
@@ -163,19 +170,151 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
     }
 
     fun testAWrongProcessIdEndsTheSession() {
+        val reported = notifications()
+        val faked = fakeSession()
+        val otherProcess = ProcessHandle.current().pid()
+        val agent = FakeAgent(faked.port, onAttach = {
+            event("process", JsonObject().apply { addProperty("systemProcessId", otherProcess) })
+            event("initialized")
+        })
+        assertEquals(
+            NewspeakBundle.message("debugger.error.wrong.process", otherProcess.toString(), faked.handler.process.pid().toString()),
+            reported.get(WAIT_SECONDS, TimeUnit.SECONDS),
+        )
+        assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
+        faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(listOf("initialize", "attach"), agent.commands())
+    }
+
+    fun testAPeerThatNeverIdentifiesItsProcessEndsTheSession() {
+        val reported = notifications()
+        val faked = fakeSession()
+        val agent = FakeAgent(faked.port, onAttach = {
+            event("initialized")
+            event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        })
+        assertEquals(NewspeakBundle.message("debugger.error.unidentified"), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
+        faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(listOf("initialize", "attach"), agent.commands())
+        assertTrue("no stop is shown", faked.debugging.pauses.isEmpty())
+    }
+
+    fun testStopKeepsTheConnectionUntilTheTerminateIsAnswered() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { _, _ -> JsonObject() }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        val process = faked.debugging.process as NewspeakDebugProcess
+        process.stop()
+        process.terminateAnswered.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(agent.commands().toString(), agent.commands().contains("terminate"))
+    }
+
+    fun testAModuleShownByReferenceIsOneReadOnlyFileAcrossStops() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        val first = faked.debugging.nextPause()
+        val file = first.file
+        assertTrue(file.toString(), file is LightVirtualFile)
+        assertEquals("Kernel.ns", file.name)
+        assertFalse("a module's text is read-only", file.isWritable)
+        assertEquals(KERNEL_TEXT, String(file.contentsToByteArray(), Charsets.UTF_8))
+        assertEquals(1, first.line)
+
+        // The shipped frame is listed, greyed; the program's own is not.
+        val frames = framesOf(faked.debugging.session)
+        assertEquals(listOf("Kernel>>value", "Program>>main:args:"), frames.map { frame -> textOf(frame).first })
+        assertEquals(SimpleTextAttributes.GRAYED_ATTRIBUTES, textOf(frames[0]).second)
+        assertEquals(SimpleTextAttributes.REGULAR_ATTRIBUTES, textOf(frames[1]).second)
+
+        onEdt { faked.debugging.session.resume() }
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        val second = faked.debugging.nextPause()
+        assertSame("one file per module for the session", file, second.file)
+        assertEquals(1, agent.commands().count { command -> command == "source" })
+    }
+
+    fun testVariablesArePagedByAHundred() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, arguments ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "scopes" -> JsonParser.parseString(
+                    """{"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":$LOCALS_REFERENCE,"expensive":false}]}""",
+                ).asJsonObject
+                "variables" -> variablesAnswer(arguments)
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+
+        val elements = childrenOf(checkNotNull(faked.debugging.session.currentStackFrame)).getValue("elements")
+        val node = PagingNode()
+        elements.computeChildren(node)
+        val firstPage = node.pages.poll(WAIT_SECONDS, TimeUnit.SECONDS) ?: throw AssertionError("no first page")
+        assertEquals((1..100).map { index -> "[$index]" }, firstPage)
+        assertEquals("the elements not yet shown", 50, node.remaining.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        checkNotNull(node.next).run()
+        val secondPage = node.pages.poll(WAIT_SECONDS, TimeUnit.SECONDS) ?: throw AssertionError("no second page")
+        assertEquals((101..150).map { index -> "[$index]" }, secondPage)
+        assertTrue("the second page is the last", node.last)
+        val pageRequests = agent.requests("variables")
+            .filter { arguments -> arguments.get("variablesReference").asInt == ELEMENTS_REFERENCE }
+            .map { arguments -> arguments.get("start").asInt to arguments.get("count").asInt }
+        assertEquals(listOf(0 to 100, 100 to 100), pageRequests)
+    }
+
+    /** The agent's `variables` answer: one local, an `Array` of 150 elements, and its elements a page at a time. */
+    private fun variablesAnswer(arguments: JsonObject): JsonObject {
+        val variables = JsonArray()
+        when (arguments.get("variablesReference").asInt) {
+            LOCALS_REFERENCE -> variables.add(
+                JsonObject().apply {
+                    addProperty("name", "elements")
+                    addProperty("value", "an Array")
+                    addProperty("type", "Array")
+                    addProperty("variablesReference", ELEMENTS_REFERENCE)
+                    addProperty("indexedVariables", ELEMENT_COUNT)
+                },
+            )
+            ELEMENTS_REFERENCE -> {
+                val start = arguments.get("start").asInt
+                val end = minOf(ELEMENT_COUNT, start + arguments.get("count").asInt)
+                for (index in start until end) {
+                    variables.add(
+                        JsonObject().apply {
+                            addProperty("name", "[${index + 1}]")
+                            addProperty("value", (index * 10).toString())
+                            addProperty("variablesReference", 0)
+                        },
+                    )
+                }
+            }
+        }
+        return JsonObject().apply { add("variables", variables) }
+    }
+
+    // ---- A fake agent ----
+
+    /** A session over a process of the test's own, `ns-next` running a program undebugged, whose port no runtime connects to. */
+    private class FakedSession(val debugging: Debugging, val handler: NewspeakDebuggeeProcessHandler, val port: Int)
+
+    private fun fakeSession(): FakedSession {
         val program = program("LongLeaf", LONG_LEAF)
-        // A process of ns-next's own, which the fake agent below does not speak for.
         val handler = NewspeakDebuggeeProcessHandler(GeneralCommandLine(runtime.toString(), "run", program.path))
         val serverSocket = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
-        val reported = CompletableFuture<String>()
-        project.messageBus.connect(testRootDisposable).subscribe(
-            Notifications.TOPIC,
-            object : Notifications {
-                override fun notify(notification: Notification) {
-                    reported.complete(notification.content)
-                }
-            },
-        )
         val recorder = recordNextProcess()
         onEdt {
             XDebuggerManager.getInstance(project)
@@ -185,39 +324,155 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                             NewspeakDebugProcess(session, serverSocket, handler, null)
                     },
                 )
-                .sessionName("wrong process")
+                .sessionName("fake agent")
                 .showTab(true)
                 .startSession()
         }
-        val debugging = recorder.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        return FakedSession(recorder.get(WAIT_SECONDS, TimeUnit.SECONDS), handler, serverSocket.localPort)
+    }
 
-        val otherProcess = ProcessHandle.current().pid()
-        val received = CopyOnWriteArrayList<String>()
-        val socket = Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort)
-        val agent = DapConnection(socket.getInputStream(), socket.getOutputStream(), socket)
-        agent.start(
-            { request ->
-                val command = request.get("command").asString
-                received.add(command)
-                agent.send(response(request))
-                if (command == "attach") {
-                    agent.send(event("process", JsonObject().apply { addProperty("systemProcessId", otherProcess) }))
-                    agent.send(event("initialized", JsonObject()))
+    /** A fake agent that names the session's own process, as `ns-next`'s does. */
+    private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject): FakeAgent =
+        FakeAgent(
+            faked.port,
+            onAttach = {
+                event("process", JsonObject().apply { addProperty("systemProcessId", faked.handler.process.pid()) })
+                event("initialized")
+            },
+            answer = answer,
+        )
+
+    /**
+     * A scripted agent in place of `ns-next`'s: it answers every request
+     * with what [answer] gives, a success, and after `attach` sends what
+     * [onAttach] sends. Its connection writes in order, so its events
+     * follow its answers as the real agent's do.
+     */
+    private inner class FakeAgent(
+        port: Int,
+        private val onAttach: FakeAgent.() -> Unit,
+        private val answer: (String, JsonObject) -> JsonObject = { _, _ -> JsonObject() },
+    ) {
+        private val received = CopyOnWriteArrayList<JsonObject>()
+        private val connection: DapConnection
+
+        /** Completes when the session sent `configurationDone`. */
+        val configured = CompletableFuture<Unit>()
+
+        init {
+            val socket = Socket(InetAddress.getLoopbackAddress(), port)
+            connection = DapConnection(socket.getInputStream(), socket.getOutputStream(), socket)
+            Disposer.register(testRootDisposable) { connection.close() }
+            connection.start(
+                { request ->
+                    received.add(request)
+                    val command = request.get("command").asString
+                    val arguments = request.getAsJsonObject("arguments") ?: JsonObject()
+                    connection.send(response(request).apply { add("body", answer(command, arguments)) })
+                    if (command == "attach") onAttach()
+                    if (command == "configurationDone") configured.complete(Unit)
+                },
+                { _ -> },
+            )
+        }
+
+        fun event(name: String, body: JsonObject = JsonObject()) {
+            connection.send(eventMessage(name, body))
+        }
+
+        fun commands(): List<String> = received.map { request -> request.get("command").asString }
+
+        fun requests(command: String): List<JsonObject> =
+            received.filter { request -> request.get("command").asString == command }
+                .map { request -> request.getAsJsonObject("arguments") }
+    }
+
+    /** The text of the next notification the project shows. */
+    private fun notifications(): CompletableFuture<String> {
+        val reported = CompletableFuture<String>()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            Notifications.TOPIC,
+            object : Notifications {
+                override fun notify(notification: Notification) {
+                    reported.complete(notification.content)
                 }
             },
-            { _ -> },
         )
-        try {
-            assertEquals(
-                NewspeakBundle.message("debugger.error.wrong.process", otherProcess.toString(), handler.process.pid().toString()),
-                reported.get(WAIT_SECONDS, TimeUnit.SECONDS),
-            )
-            assertTrue("the process started is ended", handler.waitFor(WAIT_MILLISECONDS))
-            debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
-            assertEquals(listOf("initialize", "attach"), received.toList())
-        } finally {
-            agent.close()
+        return reported
+    }
+
+    /** The frames of the current stop, all of them. */
+    private fun framesOf(session: XDebugSession): List<XStackFrame> {
+        val collected = CompletableFuture<List<XStackFrame>>()
+        val frames = CopyOnWriteArrayList<XStackFrame>()
+        checkNotNull(session.suspendContext).activeExecutionStack!!.computeStackFrames(
+            0,
+            object : XExecutionStack.XStackFrameContainer {
+                override fun addStackFrames(stackFrames: MutableList<out XStackFrame>, last: Boolean) {
+                    frames.addAll(stackFrames)
+                    if (last) collected.complete(frames.toList())
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    collected.completeExceptionally(AssertionError(errorMessage))
+                }
+
+                override fun isObsolete(): Boolean = false
+            },
+        )
+        return collected.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /** A frame's name as the frames view draws it, and the attributes it draws it with. */
+    private fun textOf(frame: XStackFrame): Pair<String, SimpleTextAttributes> {
+        val fragments = mutableListOf<Pair<String, SimpleTextAttributes>>()
+        frame.customizePresentation(
+            object : ColoredTextContainer {
+                override fun append(fragment: String, attributes: SimpleTextAttributes) {
+                    fragments.add(fragment to attributes)
+                }
+            },
+        )
+        return fragments.first()
+    }
+
+    /** A node that records each page of children and the offer of the next. */
+    private class PagingNode : XCompositeNode {
+        val pages = LinkedBlockingQueue<List<String>>()
+        val remaining = CompletableFuture<Int>()
+
+        @Volatile
+        var next: Runnable? = null
+
+        @Volatile
+        var last = false
+
+        override fun addChildren(children: XValueChildrenList, last: Boolean) {
+            this.last = last
+            pages.add((0 until children.size()).map(children::getName))
         }
+
+        @Deprecated("the platform's own deprecation; the tree calls it still")
+        override fun tooManyChildren(remaining: Int) {
+            this.remaining.complete(remaining)
+        }
+
+        override fun tooManyChildren(remaining: Int, addNextChildren: Runnable) {
+            next = addNextChildren
+            this.remaining.complete(remaining)
+        }
+
+        override fun setAlreadySorted(alreadySorted: Boolean) {}
+
+        override fun setErrorMessage(errorMessage: String) {
+            pages.add(listOf("error: $errorMessage"))
+        }
+
+        override fun setErrorMessage(errorMessage: String, link: XDebuggerTreeNodeHyperlink?) {
+            pages.add(listOf("error: $errorMessage"))
+        }
+
+        override fun setMessage(message: String, icon: Icon?, attributes: SimpleTextAttributes, link: XDebuggerTreeNodeHyperlink?) {}
     }
 
     // ---- Starting a session ----
@@ -365,7 +620,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             collected.completeExceptionally(AssertionError(errorMessage))
         }
 
-        override fun setMessage(message: String, icon: Icon?, attributes: com.intellij.ui.SimpleTextAttributes, link: XDebuggerTreeNodeHyperlink?) {}
+        override fun setMessage(message: String, icon: Icon?, attributes: SimpleTextAttributes, link: XDebuggerTreeNodeHyperlink?) {}
     }
 
     private data class Presentation(val type: String?, val value: String, val hasChildren: Boolean)
@@ -413,7 +668,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         addProperty("success", true)
     }
 
-    private fun event(name: String, body: JsonObject) = JsonObject().apply {
+    private fun eventMessage(name: String, body: JsonObject) = JsonObject().apply {
         addProperty("seq", 0)
         addProperty("type", "event")
         addProperty("event", name)
@@ -426,6 +681,28 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
         /** How long a program inside one leaf must outlive the terminate: it would end at once otherwise. */
         const val LEAF_OUTLIVES_MILLISECONDS = 1_000L
+
+        /** The fake agent's references: a frame's locals, and an `Array` among them with [ELEMENT_COUNT] elements. */
+        const val LOCALS_REFERENCE = 100
+        const val ELEMENTS_REFERENCE = 200
+        const val ELEMENT_COUNT = 150
+
+        /** A shipped module's text, which the fake agent names by a reference only. */
+        val KERNEL_TEXT = """
+            class Kernel = (
+              value = (
+                ^self
+              )
+            )
+        """.trimIndent() + "\n"
+
+        /** A stop in it: its shipped frame hidden by default, above the program's own, placed nowhere. */
+        val SHIPPED_STACK = """
+            {"stackFrames":[
+              {"id":1,"name":"Kernel>>value","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle"},
+              {"id":2,"name":"Program>>main:args:","line":0,"column":0}
+            ],"totalFrames":2}
+        """.trimIndent()
 
         /** A root with two locals; line 6 prints the count. */
         val STOPS = """

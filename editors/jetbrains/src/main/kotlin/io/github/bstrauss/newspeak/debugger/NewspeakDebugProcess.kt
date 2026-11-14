@@ -1,7 +1,9 @@
 package io.github.bstrauss.newspeak.debugger
 
 import com.google.gson.JsonObject
+import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.execution.ui.ExecutionConsole
 import com.intellij.openapi.diagnostic.Logger
@@ -74,6 +76,15 @@ class NewspeakDebugProcess(
     @Volatile
     private var ended = false
 
+    /**
+     * Whether a `process` event named the process this session started.
+     * Nothing the connection says is acted on before: a peer that never
+     * identifies itself is no more trusted than one that names another
+     * process.
+     */
+    @Volatile
+    private var verified = false
+
     /** The stop shown last, shown again when the agent refuses to leave it. */
     @Volatile
     private var lastStop: NewspeakSuspendContext? = null
@@ -117,10 +128,10 @@ class NewspeakDebugProcess(
             return
         }
         client.onEvent("process") { body -> work.execute { checkProcess(DapProcessEvent.from(body)) } }
-        client.onEvent("initialized") { _ -> work.execute { configure(client) } }
-        client.onEvent("stopped") { body -> work.execute { stopped(client, DapStoppedEvent.from(body)) } }
-        client.onEvent("breakpoint") { body -> work.execute { lineBreakpoints.changed(DapBreakpointEvent.from(body)) } }
-        client.onEvent("output") { body -> show(DapOutputEvent.from(body)) }
+        client.onEvent("initialized") { _ -> work.execute { if (identified()) configure(client) } }
+        client.onEvent("stopped") { body -> work.execute { if (identified()) stopped(client, DapStoppedEvent.from(body)) } }
+        client.onEvent("breakpoint") { body -> work.execute { if (identified()) lineBreakpoints.changed(DapBreakpointEvent.from(body)) } }
+        client.onEvent("output") { body -> work.execute { if (identified()) show(DapOutputEvent.from(body)) } }
         client.onEvent("terminated") { _ -> work.execute(::terminated) }
         client.onClose { work.execute(::connectionClosed) }
         val initialize = JsonObject().apply {
@@ -151,7 +162,21 @@ class NewspeakDebugProcess(
             fail(NewspeakBundle.message("debugger.error.wrong.process", event.systemProcessId?.toString() ?: "?", started.toString()))
             return
         }
-        handler.terminateThroughDebugger = ::requestTerminate
+        verified = true
+        handler.terminateThroughDebugger = { client?.let(::requestTerminate) != null }
+    }
+
+    /**
+     * Whether the session may act on what the connection says: false, and
+     * the session failed, while no `process` event named its process. The
+     * agent sends that event before every other, so only a peer that is
+     * not `ns-next`'s agent meets this.
+     */
+    private fun identified(): Boolean {
+        if (ended) return false
+        if (verified) return true
+        fail(NewspeakBundle.message("debugger.error.unidentified"))
+        return false
     }
 
     /** The agent takes the configuration: the breakpoints, then the start. */
@@ -194,6 +219,9 @@ class NewspeakDebugProcess(
         }
         val body = try {
             client.request("stackTrace", arguments).get(ANSWER_SECONDS, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return emptyList<NewspeakStackFrame>() to start
         } catch (exception: Exception) {
             LOG.warn("the stack of a stop could not be read", exception)
             return emptyList<NewspeakStackFrame>() to start
@@ -243,9 +271,14 @@ class NewspeakDebugProcess(
     override fun startStepOut(context: XSuspendContext?) = goOn("stepOut", line = true)
 
     override fun runToPosition(position: XSourcePosition, context: XSuspendContext?) {
-        val sources = sources ?: return
+        val source = sources?.sourceOf(position.file)
+        if (source == null) {
+            session.reportError(NewspeakBundle.message("debugger.error.no.source", position.file.name))
+            showLastStopAgain()
+            return
+        }
         goOn("nsNext/runToPosition") {
-            add("source", sources.sourceOf(position.file))
+            add("source", source)
             addProperty("line", position.line + 1)
         }
     }
@@ -269,8 +302,13 @@ class NewspeakDebugProcess(
         }
         client.request(command, arguments).whenComplete { _, failure ->
             if (failure == null || refused(failure)) return@whenComplete
-            lastStop?.let { stop -> work.execute { if (!ended) session.positionReached(stop) } }
+            showLastStopAgain()
         }
+    }
+
+    /** The platform left the stop when it asked to go on; the agent, which did not, is shown at it again. */
+    private fun showLastStopAgain() {
+        lastStop?.let { stop -> work.execute { if (!ended) session.positionReached(stop) } }
     }
 
     /** Reports what the agent refused; true when there is nothing to report, the session having ended. */
@@ -284,29 +322,50 @@ class NewspeakDebugProcess(
 
     /**
      * The first Stop: the program ends as its own `terminate…` would, at
-     * its next safepoint. False when the connection is gone, so the
-     * process is killed instead.
+     * its next safepoint. The answer's future; null when the connection is
+     * gone, so the process is killed instead. A connection that closes
+     * before the answer kills it too, as the second Stop would, since
+     * nobody is left to ask.
      */
-    private fun requestTerminate(): Boolean {
-        val client = client ?: return false
-        if (client.isClosed) return false
-        client.request("terminate").whenComplete { _, failure ->
+    private fun requestTerminate(client: DapClient): CompletableFuture<JsonObject>? {
+        if (client.isClosed) return null
+        return client.request("terminate").whenComplete { _, failure ->
             if (failure == null) {
                 terminateAnswered.complete(Unit)
             } else if (!handler.isProcessTerminated) {
-                // Nobody is left to ask: as the second Stop would.
                 handler.killProcess()
             }
         }
-        return true
     }
 
+    /**
+     * The session ends. A program still running is asked to terminate, and
+     * the connection is kept until the agent answered or the process ended
+     * -- closed at once, the request might never arrive -- but no longer
+     * than [STOP_GRACE_SECONDS], after which the process is killed.
+     */
     override fun stop() {
-        if (!handler.isProcessTerminated) requestTerminate()
         ended = true
         handler.terminateThroughDebugger = null
         serverSocket.close()
-        client?.close()
+        val client = client ?: return
+        val terminate = if (handler.isProcessTerminated) null else requestTerminate(client)
+        if (terminate == null) {
+            client.close()
+            return
+        }
+        val processEnded = CompletableFuture<Unit>()
+        handler.addProcessListener(
+            object : ProcessListener {
+                override fun processTerminated(event: ProcessEvent) {
+                    processEnded.complete(Unit)
+                }
+            },
+        )
+        if (handler.isProcessTerminated) processEnded.complete(Unit)
+        CompletableFuture.anyOf(terminate, processEnded)
+            .orTimeout(STOP_GRACE_SECONDS, TimeUnit.SECONDS)
+            .whenComplete { _, _ -> client.close() }
     }
 
     /** The agent ended the session: the program has ended, and its process ends the platform's session as it exits. */
@@ -354,6 +413,9 @@ class NewspeakDebugProcess(
 
         /** Bounds each answer a stop waits for, so that a stalled connection cannot hold the session's thread. */
         const val ANSWER_SECONDS = 30L
+
+        /** How long a stopped session keeps the connection for its `terminate` to be answered. */
+        const val STOP_GRACE_SECONDS = 10L
 
         /** The frames a stop reads before it is shown, and a page of the rest. */
         const val FRAMES_PAGE = 50
