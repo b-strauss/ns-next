@@ -557,9 +557,10 @@ fn an_attached_client_that_stops_reading_is_dropped() {
     };
     let mut requests = frame(1, "attach", json!({ "token": client.token() }));
     // Far more answers than the socket's buffers and the agent's queue
-    // hold.
+    // hold on any platform: an `initialize`'s answer, its capabilities,
+    // is some 700 bytes, so these are some 14 MB.
     for seq in 2..=20_000 {
-        requests.push_str(&frame(seq, "threads", json!({})));
+        requests.push_str(&frame(seq, "initialize", json!({})));
     }
     let started = std::time::Instant::now();
     let _ = std::io::Write::write_all(&mut unread, requests.as_bytes());
@@ -804,9 +805,10 @@ fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     let again = client.set_breakpoints(file_source(&path), &[6]);
     assert_eq!(again[0]["id"], first[0]["id"], "{again:?}");
 
-    // Sent together, so that the replacement reaches the agent before any
-    // stop the `continue` makes: a request still on the wire when the
-    // stop is reported is one DAP lets cross it.
+    // Sent in one write, so that the replacement is on its way before any
+    // stop the `continue` makes. That does not make the agent's reader
+    // hand it over before the stop is reported: a request still on its
+    // way then is one DAP lets cross the stop.
     let seqs = client.connection.send_together(&[
         ("continue", json!({ "threadId": 1 })),
         (
@@ -823,11 +825,16 @@ fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     let refused = client.request("variables", json!({ "variablesReference": stale }));
     assert_eq!(refused["success"], false, "{refused}");
     // A stop the VM decided before it served the replacement stands on
-    // line 6 and names no breakpoint, the client having replaced line 6's;
-    // the replacement's on line 8 follows it.
+    // line 6. It names no breakpoint when the agent had the replacement
+    // as it reported the stop, the client having replaced line 6's, and
+    // line 6's when the replacement crossed the stop; never any other.
+    // Which of the two is a race, the rule itself pinned by
+    // `a_pending_replacement_hides_the_ids_it_replaces`. The
+    // replacement's on line 8 follows it.
     if top_frame(&mut client).1 == 6 {
+        let named = stopped["body"].get("hitBreakpointIds");
         assert!(
-            stopped["body"].get("hitBreakpointIds").is_none(),
+            named.is_none() || named == Some(&json!([first[0]["id"]])),
             "{stopped}"
         );
         client.succeed("continue", json!({ "threadId": 1 }));
