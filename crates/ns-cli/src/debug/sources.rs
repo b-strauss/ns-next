@@ -4,7 +4,8 @@
 //! (`Command::ModuleText`) and is kept beside its revision, so that a stop
 //! asks again only whether it changed; a module whose current text is its
 //! file's as the program was loaded is shown by its path, every other by a
-//! `sourceReference` the `source` request answers.
+//! `sourceReference` the `source` request answers. A shipped module's text
+//! is the binary's own and never changes, so it is never asked of the VM.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -63,9 +64,33 @@ impl Sources {
     }
 
     /// Whether `module`'s text has to be asked of the VM before a reader
-    /// at the stop `generation` reads it.
-    pub(crate) fn needs_text(&self, module: &str, generation: u64) -> bool {
+    /// at the stop `generation` reads it: never a shipped module's, which
+    /// is taken from the binary the first time it is read.
+    pub(crate) fn needs_text(&mut self, module: &str, generation: u64) -> bool {
+        if let Some(text) = self.shipped(module) {
+            if !self.texts.contains_key(module) {
+                let lines = LineIndex::new(text);
+                self.texts.insert(
+                    module.to_string(),
+                    CurrentText {
+                        revision: 0,
+                        text: text.to_string(),
+                        lines,
+                    },
+                );
+            }
+            return false;
+        }
         self.checked.get(module) != Some(&generation)
+    }
+
+    /// The text of the shipped module `module`, unless a module of the
+    /// program has its name, which a frame's module then names.
+    fn shipped(&self, module: &str) -> Option<&'static str> {
+        if self.program_module(module).is_some() {
+            return None;
+        }
+        ns_runtime::shipped_module_source(module)
     }
 
     /// Records that `module`'s text is asked at the stop `generation`, and
@@ -123,12 +148,15 @@ impl Sources {
     }
 
     /// The text breakpoints' lines are counted in: the current text the VM
-    /// last answered, or else the program's as loaded.
+    /// last answered, or else the program's as loaded, or a shipped
+    /// module's own.
     pub(crate) fn text_for_positions(&self, module: &str) -> Option<&str> {
-        self.text(module).or_else(|| {
-            self.program_module(module)
-                .and_then(|program| program.text.as_deref())
-        })
+        self.text(module)
+            .or_else(|| {
+                self.program_module(module)
+                    .and_then(|program| program.text.as_deref())
+            })
+            .or_else(|| self.shipped(module))
     }
 
     /// Where `span` of `module`'s current text starts and ends.
@@ -184,7 +212,7 @@ impl Sources {
 
     /// The module a client's source names: by its reference, by the path
     /// of a program's file, or by its name, `<Module>.ns`, for a module
-    /// of the program or one a stop showed.
+    /// of the program, a shipped one, or one a stop showed.
     pub(crate) fn module_named_by(&self, source: &SourceArgument) -> Option<String> {
         if let Some(reference) = source.source_reference.filter(|reference| *reference > 0) {
             return self.module_of_reference(reference).map(str::to_string);
@@ -203,6 +231,7 @@ impl Sources {
         }
         let module = source.name.as_deref()?.strip_suffix(".ns")?;
         let known = self.program_module(module).is_some()
+            || self.shipped(module).is_some()
             || self.texts.contains_key(module)
             || self.references.iter().any(|named| named == module);
         known.then(|| module.to_string())
@@ -213,8 +242,12 @@ impl Sources {
     }
 }
 
-/// Whether two paths name one file: compared as absolute paths, and, on
-/// Windows, whose file names ignore case, without regard to it.
+/// Whether two paths name one file: compared as absolute paths, on
+/// Windows without regard to ASCII case, as its file names ignore it, and
+/// without resolving `..` or a symbolic link. That suffices: both come
+/// from the program's own reading -- the host's, made absolute, and the
+/// path a client took from a frame's source or from the file the program
+/// was started with -- not from two independent spellings of one file.
 fn same_file(first: &Path, second: &Path) -> bool {
     let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let (first, second) = (absolute(first), absolute(second));
@@ -276,15 +309,15 @@ mod tests {
     #[test]
     fn a_text_asked_at_a_stop_is_current_for_that_stop_only() {
         let mut sources = sources();
-        assert!(sources.needs_text("Kernel", 1));
-        assert_eq!(sources.ask("Kernel", 1), Some(None));
-        assert_eq!(sources.ask("Kernel", 1), None, "an ask is on its way");
-        sources.answered("Kernel", 2, ModuleTextAnswer::Text("text".to_string()));
-        assert!(!sources.needs_text("Kernel", 1));
-        assert!(sources.needs_text("Kernel", 2));
-        assert_eq!(sources.ask("Kernel", 2), Some(Some(2)));
-        sources.answered("Kernel", 2, ModuleTextAnswer::Unchanged);
-        assert_eq!(sources.text("Kernel"), Some("text"));
+        assert!(sources.needs_text("Library", 1));
+        assert_eq!(sources.ask("Library", 1), Some(None));
+        assert_eq!(sources.ask("Library", 1), None, "an ask is on its way");
+        sources.answered("Library", 2, ModuleTextAnswer::Text("text".to_string()));
+        assert!(!sources.needs_text("Library", 1));
+        assert!(sources.needs_text("Library", 2));
+        assert_eq!(sources.ask("Library", 2), Some(Some(2)));
+        sources.answered("Library", 2, ModuleTextAnswer::Unchanged);
+        assert_eq!(sources.text("Library"), Some("text"));
         assert_eq!(sources.text_answers(), 1);
     }
 
@@ -324,5 +357,22 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn a_shipped_module_s_text_is_the_binary_s_and_never_asked() {
+        let mut sources = sources();
+        assert!(!sources.needs_text("Kernel", 1));
+        assert_eq!(
+            sources.text("Kernel"),
+            ns_runtime::shipped_module_source("Kernel")
+        );
+        assert!(sources.text_for_positions("PlatformFactory").is_some());
+        let named = sources.module_named_by(&SourceArgument {
+            name: Some("Kernel.ns".to_string()),
+            ..SourceArgument::default()
+        });
+        assert_eq!(named.as_deref(), Some("Kernel"));
+        assert_eq!(sources.text_answers(), 0);
     }
 }

@@ -151,6 +151,21 @@ thread_local! {
 /// The text of `Kernel` or of the `SHIPPED_MODULES` entry `name`, as one
 /// `Rc<str>` per thread (`SHIPPED_MODULE_TEXTS`). A name that is neither
 /// is a defect in the binary, so it panics.
+/// The text of the shipped module `name` -- its root class's name, as
+/// `FrameLocation::module` names it -- `None` for a name no shipped module
+/// has. The text is the binary's own and never changes: an agent counts a
+/// shipped module's lines in it before any stop shows the module, and the
+/// `MirrorBuilder` refuses every edit of a shipped module.
+pub fn shipped_module_source(name: &str) -> Option<&'static str> {
+    if name == KERNEL_MODULE {
+        return Some(super::kernel::KERNEL_SOURCE);
+    }
+    SHIPPED_MODULES
+        .iter()
+        .find(|shipped| shipped.name == name)
+        .map(|shipped| shipped.source)
+}
+
 pub(crate) fn shipped_module_text(name: &str) -> Rc<str> {
     let (index, text) = if name == KERNEL_MODULE {
         (0, super::kernel::KERNEL_SOURCE)

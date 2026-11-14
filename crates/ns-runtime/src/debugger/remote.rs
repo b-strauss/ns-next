@@ -461,13 +461,17 @@ pub struct Variable {
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its
-/// label, its class's name and how many children it has.
+/// label, its class's name, how many children it has and whether they are
+/// elements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueDescription {
     pub id: ValueId,
     pub label: String,
     pub class_name: String,
     pub child_count: usize,
+    /// Whether its children are elements, named `[1]` up, rather than
+    /// fields: an `Array`'s, by its shape.
+    pub indexed: bool,
 }
 
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),

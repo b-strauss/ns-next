@@ -449,16 +449,14 @@ fn absolute(path: &Path) -> String {
         .to_string()
 }
 
-/// Starts a session that stops at the entry, sets breakpoints at the start
-/// of `lines` of the program file `path` there and goes on; answers the
-/// breakpoints. Set at the entry, since the VM serves a configuration
-/// command only once a run starts, and the first starts after
-/// `configurationDone`.
-fn breakpoints_from_the_entry(client: &mut DapClient, path: &Path, lines: &[u32]) -> Vec<Value> {
-    client.start_session(true);
-    client.stopped("entry");
+/// Starts a session in DAP's order: breakpoints at the start of `lines` of
+/// the program file `path`, their response awaited, then
+/// `configurationDone`; answers the breakpoints.
+fn breakpoints_before_the_start(client: &mut DapClient, path: &Path, lines: &[u32]) -> Vec<Value> {
+    client.initialize();
+    client.attach(false);
     let breakpoints = client.set_breakpoints(file_source(path), lines);
-    client.succeed("continue", json!({ "threadId": 1 }));
+    client.configuration_done();
     breakpoints
 }
 
@@ -482,7 +480,7 @@ fn locals_of(client: &mut DapClient, frame: &Value) -> Value {
 fn a_breakpoint_stop_shows_its_frame_and_variables() {
     let (_directory, path) = program("Stops", STOPS);
     let mut client = DapClient::connect_mode(&path);
-    let breakpoints = breakpoints_from_the_entry(&mut client, &path, &[6]);
+    let breakpoints = breakpoints_before_the_start(&mut client, &path, &[6]);
     assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
     assert_eq!(breakpoints[0]["line"], 6, "{breakpoints:?}");
     let stopped = client.stopped("breakpoint");
@@ -548,7 +546,7 @@ const NON_ASCII: &str = indoc! {"
 fn a_frame_after_non_ascii_text_reports_its_line_and_column() {
     let (_directory, path) = program("Wide", NON_ASCII);
     let mut client = DapClient::connect_mode(&path);
-    let breakpoints = breakpoints_from_the_entry(&mut client, &path, &[7]);
+    let breakpoints = breakpoints_before_the_start(&mut client, &path, &[7]);
     assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
     client.stopped("breakpoint");
     let frames = client.stack_frames(0, 0);
@@ -580,12 +578,14 @@ const WALKER: &str = indoc! {"
 fn a_shipped_frame_is_shown_through_a_source_reference() {
     let (_directory, path) = program("Walker", WALKER);
     let mut client = DapClient::connect_mode(&path);
-    client.start_session(true);
-    client.stopped("entry");
+    client.initialize();
+    client.attach(true);
     client.succeed(
         "nsNext/setStepFilters",
         json!({ "shipped": false, "classes": [] }),
     );
+    client.configuration_done();
+    client.stopped("entry");
     client.succeed("stepIn", json!({ "threadId": 1 }));
     client.stopped("step");
     let frames = client.stack_frames(0, 1);
@@ -602,10 +602,13 @@ fn a_shipped_frame_is_shown_through_a_source_reference() {
     )
     .expect("read Kernel.ns");
     assert!(text["content"] == kernel.as_str(), "not Kernel.ns's text");
+    // Every frame: the program's module's text is asked of the VM, a
+    // shipped module's never is.
+    client.stack_frames(0, 0);
 
     client.succeed("stepIn", json!({ "threadId": 1 }));
     client.stopped("step");
-    let frames = client.stack_frames(0, 1);
+    let frames = client.stack_frames(0, 0);
     assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
     assert_eq!(frames[0]["source"]["sourceReference"], reference);
     let statistics = client.succeed("nsNext/statistics", json!({}));
@@ -638,7 +641,7 @@ const LOOP: &str = indoc! {"
 fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     let (_directory, path) = program("Loop", LOOP);
     let mut client = DapClient::connect_mode(&path);
-    let first = breakpoints_from_the_entry(&mut client, &path, &[6]);
+    let first = breakpoints_before_the_start(&mut client, &path, &[6]);
     let stopped = client.stopped("breakpoint");
     assert_eq!(stopped["body"]["hitBreakpointIds"], json!([first[0]["id"]]));
     let frames = client.stack_frames(0, 0);
@@ -721,6 +724,107 @@ fn a_stripped_image_shows_frames_without_lines() {
     assert_eq!(main["line"], 0, "{main}");
     assert_eq!(main["column"], 0, "{main}");
     assert!(main.get("source").is_none(), "{main}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// DAP's order -- a `setBreakpoints` answered before `configurationDone`
+/// is sent -- holds: the host serves the configuration while it waits.
+#[test]
+fn a_breakpoint_set_before_configuration_done_is_answered_and_stops() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::connect_mode(&path);
+    let breakpoints = breakpoints_before_the_start(&mut client, &path, &[3]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    assert_eq!(breakpoints[0]["line"], 3, "{breakpoints:?}");
+    client.stopped("breakpoint");
+    assert_eq!(client.stdout(), "");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "hi
+"
+    );
+}
+
+#[test]
+fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
+    let (_directory, path) = program("Walker", WALKER);
+    let kernel = std::fs::read_to_string(
+        common::repository_root().join("crates/ns-runtime/core-library/Kernel.ns"),
+    )
+    .expect("read Kernel.ns");
+    // `Array>>do:`'s loop body, which `WALKER`'s `do:` reaches.
+    let lines: Vec<&str> = kernel.lines().collect();
+    let size = lines
+        .iter()
+        .position(|line| line.contains("count = vmMirror collectionSize: self ifFail:"))
+        .expect("Array>>do:");
+    let body = size
+        + lines[size..]
+            .iter()
+            .position(|line| line.trim() == "action value: (self at: index).")
+            .expect("its loop body");
+    let line = u32::try_from(body + 1).expect("a line number");
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let breakpoints = client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[line]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    assert_eq!(breakpoints[0]["line"], line, "{breakpoints:?}");
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(frames[0]["line"], line, "{frames:?}");
+    assert_eq!(frames[0]["source"]["name"], "Kernel.ns", "{frames:?}");
+    client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "12
+"
+    );
+}
+
+/// A root with a class of its own named `Array`, whose instance holds two
+/// slots, made before line 11.
+const SHADOW: &str = indoc! {"
+    class Shadow = Object new () (
+      class Array = (
+        |
+          first = 1.
+          second = 2.
+        |
+      ) ()
+      public main: platform args: arguments = (
+        | value |
+        value:: Array new.
+        platform transcript show: 'done'; newLine.
+      )
+    ) : ()
+"};
+
+/// Whether a value's children are elements is the VM's to say, by the
+/// object's shape: a program's own class named `Array` shows its slots as
+/// named variables.
+#[test]
+fn a_program_class_named_array_shows_named_variables() {
+    let (_directory, path) = program("Shadow", SHADOW);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[11]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let value = variable(&variables, "value");
+    assert_eq!(value["type"], "Array", "{value}");
+    assert!(value.get("indexedVariables").is_none(), "{value}");
+    let fields = client.variables(&value["variablesReference"], None, None);
+    let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
+    assert_eq!(names, [&json!("field 0"), &json!("field 1")]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }

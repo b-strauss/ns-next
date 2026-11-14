@@ -556,6 +556,11 @@ impl Agent {
     /// come: the program went on since it was asked.
     fn answer_waiting(&mut self) {
         for waiting in std::mem::take(&mut self.waiting) {
+            // A write that failed let the client go, and with it every
+            // request it was waiting for.
+            if !self.is_current(waiting.connection) {
+                continue;
+            }
             let outcome = if waiting.generation == self.stop.generation() {
                 self.try_answer(&waiting.request)
             } else {
@@ -634,7 +639,7 @@ impl Agent {
     /// VM for it, with the revision the agent holds, when it is not.
     fn read_text(&mut self, module: &str) -> Result<bool, String> {
         let generation = self.stop.generation();
-        if !self.stopped || !self.sources.needs_text(module, generation) {
+        if !self.sources.needs_text(module, generation) || !self.stopped {
             return Ok(true);
         }
         if let Some(known_revision) = self.sources.ask(module, generation) {
@@ -1017,12 +1022,22 @@ impl Agent {
             }
             _ => None,
         };
+        let configures = matches!(
+            command,
+            Command::SetBreakpoints { .. }
+                | Command::SetStepFilters { .. }
+                | Command::SetMethodBreakpoints(_)
+                | Command::SetExceptionBreakpoints { .. }
+        );
         self.pending.push_back(Pending {
             command: command.name(),
             module,
             reply,
         });
         control.send(command);
+        if configures {
+            self.host.configuration_queued();
+        }
         true
     }
 
@@ -1052,50 +1067,7 @@ impl Agent {
             self.go_on();
             return;
         }
-        let mut body = protocol::StoppedEventBody {
-            reason: "pause",
-            description: None,
-            text: None,
-            thread_id: THREAD_ID,
-            all_threads_stopped: true,
-            hit_breakpoint_ids: Vec::new(),
-        };
-        match reason {
-            StopReason::Pause if self.entry_pending => body.reason = "entry",
-            StopReason::Pause => {}
-            StopReason::Breakpoint { ids } => {
-                body.reason = "breakpoint";
-                body.hit_breakpoint_ids = ids
-                    .iter()
-                    .map(|id| id.0)
-                    .filter(|id| {
-                        self.breakpoint_ids
-                            .values()
-                            .flatten()
-                            .any(|known| known == id)
-                    })
-                    .collect();
-            }
-            StopReason::Step => body.reason = "step",
-            StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
-                body.reason = "function breakpoint";
-                body.hit_breakpoint_ids =
-                    std::iter::once(id).chain(others).map(|id| id.0).collect();
-            }
-            StopReason::Exception {
-                class_name,
-                description,
-                ..
-            } => {
-                body.reason = "exception";
-                body.text = Some(description.clone());
-                body.description = Some(class_name.clone());
-            }
-            StopReason::Halt { .. } => {
-                body.reason = "exception";
-                body.text = Some("halt".to_string());
-            }
-        }
+        let body = stopped_body(reason, self.entry_pending, &self.breakpoint_ids);
         self.entry_pending = false;
         self.event("stopped", Some(to_value(body)));
     }
@@ -1359,6 +1331,56 @@ fn answers(event: &Event, pending: &Pending) -> bool {
     }
 }
 
+/// The `stopped` event's body for a stop of `reason`: `entry_pending`
+/// says a pause is the entry's, and a breakpoint stop names only the ids
+/// in `known`, each module's line breakpoints by the VM's latest answer,
+/// never one the client replaced since the VM decided the stop.
+fn stopped_body(
+    reason: &StopReason,
+    entry_pending: bool,
+    known: &BTreeMap<String, Vec<u32>>,
+) -> protocol::StoppedEventBody {
+    let mut body = protocol::StoppedEventBody {
+        reason: "pause",
+        description: None,
+        text: None,
+        thread_id: THREAD_ID,
+        all_threads_stopped: true,
+        hit_breakpoint_ids: Vec::new(),
+    };
+    match reason {
+        StopReason::Pause if entry_pending => body.reason = "entry",
+        StopReason::Pause => {}
+        StopReason::Breakpoint { ids } => {
+            body.reason = "breakpoint";
+            body.hit_breakpoint_ids = ids
+                .iter()
+                .map(|id| id.0)
+                .filter(|id| known.values().flatten().any(|standing| standing == id))
+                .collect();
+        }
+        StopReason::Step => body.reason = "step",
+        StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
+            body.reason = "function breakpoint";
+            body.hit_breakpoint_ids = std::iter::once(id).chain(others).map(|id| id.0).collect();
+        }
+        StopReason::Exception {
+            class_name,
+            description,
+            ..
+        } => {
+            body.reason = "exception";
+            body.text = Some(description.clone());
+            body.description = Some(class_name.clone());
+        }
+        StopReason::Halt { .. } => {
+            body.reason = "exception";
+            body.text = Some("halt".to_string());
+        }
+    }
+    body
+}
+
 /// A `setBreakpoints` response's body: for each breakpoint asked for, in
 /// the request's order, the VM's state of the one at its offset, its line
 /// and column those of the statement it stops at in `text`.
@@ -1393,4 +1415,46 @@ fn breakpoints_body(states: &[BreakpointState], offsets: &[Option<u32>], text: &
 
 fn to_value(value: impl Serialize) -> Value {
     serde_json::to_value(value).expect("the agent's own types serialize")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ns_runtime::BreakpointId;
+
+    #[test]
+    fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {
+        let known = BTreeMap::from([("Loop".to_string(), vec![2])]);
+        let replaced = StopReason::Breakpoint {
+            ids: vec![BreakpointId(1)],
+        };
+        let body = to_value(stopped_body(&replaced, false, &known));
+        assert_eq!(body["reason"], "breakpoint");
+        assert!(body.get("hitBreakpointIds").is_none(), "{body}");
+
+        let standing = StopReason::Breakpoint {
+            ids: vec![BreakpointId(1), BreakpointId(2)],
+        };
+        let body = to_value(stopped_body(&standing, false, &known));
+        assert_eq!(body["hitBreakpointIds"], json!([2]));
+    }
+
+    #[test]
+    fn an_exception_stop_carries_its_text_and_class() {
+        let exception = StopReason::Exception {
+            class_name: "ZeroDivide".to_string(),
+            description: "division by zero".to_string(),
+            caught: false,
+            exits: Vec::new(),
+        };
+        let body = to_value(stopped_body(&exception, false, &BTreeMap::new()));
+        assert_eq!(body["reason"], "exception");
+        assert_eq!(body["text"], "division by zero");
+        assert_eq!(body["description"], "ZeroDivide");
+        let halt = StopReason::Halt { exits: Vec::new() };
+        let body = to_value(stopped_body(&halt, false, &BTreeMap::new()));
+        assert_eq!(body["text"], "halt");
+        let entry = to_value(stopped_body(&StopReason::Pause, true, &BTreeMap::new()));
+        assert_eq!(entry["reason"], "entry");
+    }
 }

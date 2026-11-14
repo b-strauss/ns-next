@@ -84,17 +84,18 @@ pub(crate) fn execute(
         Ok(link) => link,
         Err(code) => return code,
     };
-    let code =
-        if link.wait_for_configuration() == HostStart::Terminate || link.terminate_requested() {
-            debug::report_terminated()
-        } else {
-            crate::entry::report_entry_send(crate::entry::send_main(
-                &mut loaded.interpreter,
-                &application,
-                program_arguments,
-                Some(&link),
-            ))
-        };
+    let code = if link.wait_for_configuration(&mut loaded.interpreter) == HostStart::Terminate
+        || link.terminate_requested()
+    {
+        debug::report_terminated()
+    } else {
+        crate::entry::report_entry_send(crate::entry::send_main(
+            &mut loaded.interpreter,
+            &application,
+            program_arguments,
+            Some(&link),
+        ))
+    };
     link.exited(debug::status_of(code));
     code
 }

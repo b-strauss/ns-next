@@ -32,31 +32,49 @@ pub(crate) enum HostStart {
     Terminate,
 }
 
-/// What the agent and the host share.
-pub(crate) struct HostState {
+/// What the host waiting for the configuration waits for.
+#[derive(Default)]
+struct Awaited {
     /// `None` until the client's `configurationDone` -- or a `terminate`,
     /// or the connecting mode's client gone -- decides the start.
-    start: Mutex<Option<HostStart>>,
-    decided: Condvar,
+    start: Option<HostStart>,
+    /// The agent queued a configuration command the VM has not served.
+    configuration: bool,
+}
+
+/// What the agent and the host share.
+pub(crate) struct HostState {
+    awaited: Mutex<Awaited>,
+    changed: Condvar,
     terminate: AtomicBool,
 }
 
 impl HostState {
     pub(crate) fn new() -> HostState {
         HostState {
-            start: Mutex::new(None),
-            decided: Condvar::new(),
+            awaited: Mutex::new(Awaited::default()),
+            changed: Condvar::new(),
             terminate: AtomicBool::new(false),
         }
     }
 
     /// Decides the start, unless it was decided already.
     pub(crate) fn decide(&self, start: HostStart) {
-        let mut decided = self.start.lock().unwrap_or_else(PoisonError::into_inner);
-        if decided.is_none() {
-            *decided = Some(start);
-            self.decided.notify_all();
+        let mut awaited = self.awaited.lock().unwrap_or_else(PoisonError::into_inner);
+        if awaited.start.is_none() {
+            awaited.start = Some(start);
+            self.changed.notify_all();
         }
+    }
+
+    /// The agent queued a configuration command: a host still waiting for
+    /// the configuration serves it, so that the client has its answer
+    /// before it sends `configurationDone`, as DAP's sequence has it. Once
+    /// the start is decided, the next run's start serves it.
+    pub(crate) fn configuration_queued(&self) {
+        let mut awaited = self.awaited.lock().unwrap_or_else(PoisonError::into_inner);
+        awaited.configuration = true;
+        self.changed.notify_all();
     }
 
     /// Records a `terminate`: no host run starts from now on, and a host
@@ -83,21 +101,39 @@ impl HostLink {
     }
 
     /// Waits for the client's `configurationDone`, so that its breakpoints
-    /// are set before anything runs.
-    pub(crate) fn wait_for_configuration(&self) -> HostStart {
-        let mut decided = self
+    /// are set before anything runs, serving meanwhile the configuration
+    /// commands the agent queues, whose answers the client waits for
+    /// before it sends `configurationDone`.
+    pub(crate) fn wait_for_configuration(
+        &self,
+        interpreter: &mut ns_runtime::Interpreter,
+    ) -> HostStart {
+        let mut awaited = self
             .state
-            .start
+            .awaited
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         loop {
-            if let Some(start) = *decided {
+            if let Some(start) = awaited.start {
                 return start;
             }
-            decided = self
+            if awaited.configuration {
+                awaited.configuration = false;
+                // Served without the lock: the agent queues the next
+                // command meanwhile.
+                drop(awaited);
+                interpreter.serve_debugger_between_runs();
+                awaited = self
+                    .state
+                    .awaited
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            awaited = self
                 .state
-                .decided
-                .wait(decided)
+                .changed
+                .wait(awaited)
                 .unwrap_or_else(PoisonError::into_inner);
         }
     }

@@ -770,17 +770,19 @@ fn the_stack_reaches_suspended_senders() {
 
 #[test]
 fn an_array_s_children_are_its_elements_paged() {
-    let children = while_stopped(STACKED, |remote| {
-        let items = value_of(&loop_variables(remote), "items").id;
-        variables(
+    let (items, children) = while_stopped(STACKED, |remote| {
+        let items = value_of(&loop_variables(remote), "items").clone();
+        let children = variables(
             remote,
             Command::Children {
-                value: items,
+                value: items.id,
                 start: 0,
                 count: 2,
             },
-        )
+        );
+        (items, children)
     });
+    assert!(items.indexed, "an Array's children are its elements");
     let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
     assert_eq!(names, ["[1]", "[2]"]);
     assert_eq!(shown(&children[0]).label, "the String \"one\"");
@@ -808,6 +810,7 @@ fn an_instance_s_children_are_its_fields() {
     });
     assert_eq!(receiver.class_name, "Forever");
     assert_eq!(receiver.child_count, 1);
+    assert!(!receiver.indexed, "an instance's children are its fields");
     let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
     assert_eq!(names, ["field 0"]);
     assert!(

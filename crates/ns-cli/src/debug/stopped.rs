@@ -159,7 +159,7 @@ impl Stop {
                 indexed_variables: None,
             };
         };
-        let indexed = is_indexed(&value.class_name);
+        let indexed = value.indexed;
         let variables_reference = if value.child_count > 0 {
             self.reference(Target::Value {
                 id: value.id,
@@ -177,12 +177,6 @@ impl Stop {
             indexed_variables: indexed.then_some(value.child_count),
         }
     }
-}
-
-/// Whether a value of the class `class_name` has indexed children: an
-/// `Array`'s are its elements, every other value's its named fields.
-fn is_indexed(class_name: &str) -> bool {
-    class_name == "Array"
 }
 
 /// The frame at `index` of the stack trace as a `stackTrace` response

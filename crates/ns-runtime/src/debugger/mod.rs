@@ -1023,6 +1023,19 @@ impl Interpreter {
         }
     }
 
+    /// Serves the commands an agent queued while no run executes, for a
+    /// host that waits between runs -- before its first, for the client's
+    /// configuration -- so that a configuration command is answered while
+    /// the host waits rather than when the next run starts: every
+    /// configuration command is served, and every other is refused as one
+    /// queued between runs is (`serve_between_runs`). A host calls it on
+    /// its own thread, never during a run. Cold: only a debugged host
+    /// calls it.
+    #[cold]
+    pub fn serve_debugger_between_runs(&mut self) {
+        self.serve_between_runs();
+    }
+
     /// What a run's start serves, its first activation pushed and about
     /// to run: the commands queued between runs (`serve_between_runs`),
     /// then a pause asked meanwhile, which stops the first activation at

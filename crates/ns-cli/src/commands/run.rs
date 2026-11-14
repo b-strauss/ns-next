@@ -81,7 +81,7 @@ fn run_loaded(
     statistics: Statistics,
 ) -> ExitCode {
     if let Some(link) = link {
-        if link.wait_for_configuration() == HostStart::Terminate {
+        if link.wait_for_configuration(&mut loaded.interpreter) == HostStart::Terminate {
             return debug::report_terminated();
         }
     }

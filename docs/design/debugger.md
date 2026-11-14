@@ -1089,7 +1089,9 @@ is gone, names nothing in a later one rather than another value, and is
 refused (`a_value_id_does_not_outlive_its_stop`); they wrap only after
 2^32 values handed out. A `ValueDescription` carries the id, the label
 `Heap::describe` gives -- never `{:?}` -- the name of the value's class
-(`Heap::class_display_name`) and how many children it has.
+(`Heap::class_display_name`), how many children it has and whether they
+are elements, decided by the object's shape rather than its class's name,
+which a program's own class may share (`ValueDescription::indexed`).
 
 `Children` answers, from `start` and at most `count` of them: for an
 instance, its fields, named `field 0` up (`Heap::instance_field`;
@@ -3298,14 +3300,16 @@ plus 1, placed at the selector of the send it waits on or else its
 statement, in lines and UTF-16 columns of its module's current text,
 which the agent asks of the VM (`Command::ModuleText`) only for the
 frames a `stackTrace` page shows and keeps by revision, so that a later
-stop asks only whether it changed; a frame without a location shows no
-source and line 0. A program module whose current text is its file's as
+stop asks only whether it changed -- a shipped module's text is the
+binary's own (`ns_runtime::shipped_module_source`), never asked; a frame
+without a location shows no source and line 0. A program module whose current text is its file's as
 loaded is shown by the file's path, every other module -- a shipped
 one, an image's, one an install changed -- by a `sourceReference`,
 stable per module for the session, whose `source` request answers the
 text. `scopes` gives a frame's `Locals` and, at a step's stop, the top
 frame's `Return value`; `variables` pages a frame's variables and a
-value's children, an `Array`'s as indexed ones; every
+value's children, as indexed ones where the VM says so
+(`ValueDescription::indexed`, by the object's shape); every
 `variablesReference` is valid until the program goes on, and the ids
 continue across stops, so that a stale one is refused rather than
 naming another value. A stop's `hitBreakpointIds` name only the
@@ -3313,11 +3317,15 @@ breakpoints the VM's latest answer for their module stands with:
 a `setBreakpoints` replaces its module's ids when it is sent. Requests
 only a stop serves -- `stackTrace`, `scopes`, `variables` -- are
 answered by an error while the program runs, never sent to the VM.
-`setBreakpoints` sets each breakpoint at its line's start, and
+`setBreakpoints` sets each breakpoint at its line's start, in a
+shipped module too before any stop showed it, and
 `stepIn` steps one statement; `nsNext/setStepFilters` and
 `nsNext/statistics` (the number of texts the VM sent, for tests) are
 requests of ns-next's own. The host waits for the configuration before its first
-run; with `stopOnEntry` the agent pauses the remote when the host
+run, serving meanwhile every configuration command the agent queues
+(`Interpreter::serve_debugger_between_runs`, woken by the agent), so
+that a client has the answer to its `setBreakpoints` before it sends
+`configurationDone`, as DAP's order has it; with `stopOnEntry` the agent pauses the remote when the host
 announces `main:args:`, which stops `main:args:` at its first statement
 ("Commands while the program runs"), and reports that pause's stop as
 the entry's. At the program's end the agent has the pump hand over every

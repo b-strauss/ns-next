@@ -49,6 +49,7 @@ impl StopValues {
             label: mutator.heap.describe(value),
             class_name: mutator.heap.class_display_name(mutator.class_of(value)),
             child_count: child_count(mutator, value),
+            indexed: is_indexed(mutator, value),
         }
     }
 
@@ -98,6 +99,16 @@ impl StopValues {
         }
         Some(children)
     }
+}
+
+/// Whether `value`'s children are elements, counted from 1, rather than
+/// fields: decided by its shape, as `children` names them, never by its
+/// class's name, which a program's own class may share.
+fn is_indexed<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
+    let ValueKind::Object(object) = value.kind() else {
+        return false;
+    };
+    mutator.heap.object_shape(object) == ObjectShape::Array
 }
 
 /// How many children `value` shows: an instance's fields, an `Array`'s
