@@ -138,6 +138,20 @@ impl BitSet {
     }
 }
 
+/// Each version's holders inside the tables (`Heap::inside_counts`): its
+/// row or its place in `superseded`, the `class_side` of every version of
+/// its tree that declares it, and the metaclass memo's entry for a
+/// synthesized class side. Holds no `Rc`, since one held here would
+/// change the count it is compared with.
+#[derive(Default, PartialEq, Eq, Debug)]
+pub(crate) struct InsideCounts {
+    /// Per mixin row, its current version's count; 0 for a free row.
+    pub(crate) rows: Vec<usize>,
+    /// Per superseded version, in the table's order, its id and its count;
+    /// `None` for one the tables name no id of.
+    pub(crate) superseded: Vec<Option<(MixinId, usize)>>,
+}
+
 /// What a reclamation freed, for the caches' scrub.
 #[derive(Default)]
 pub(crate) struct FreedIds {
@@ -381,24 +395,20 @@ impl Heap<'_> {
         trees
     }
 
-    /// The ids among `trees`' rows of which some version, current or
-    /// superseded, is held outside the tables: by a host, an activation's
-    /// nested-class creation, a cache entry. Such a holder can present the
-    /// version again, and must find it under the same id, so its tree
-    /// lives.
-    ///
-    /// A version's own holders inside the tables are counted rather than
-    /// listed: its row or its place in `superseded`, the `class_side` of
-    /// every version of its tree that declares it, and `memo`'s entry
-    /// for a synthesized class side, which is a memo of its tree and is
-    /// dropped with it. A holder in another tree is a holder outside, so
-    /// that a tree is never freed while another one still holds a version
-    /// of it.
-    pub(crate) fn held_mixin_ids(
+    /// Every version's holders inside the tables (`InsideCounts`), each
+    /// version of `trees`' rows, current or superseded: its row or its
+    /// place in `superseded`, the `class_side` of every version of its
+    /// tree that declares it, and `memo`'s entry for a synthesized class
+    /// side, which is a memo of its tree and is dropped with it. A holder
+    /// in another tree is a holder outside, so that a tree is never freed
+    /// while another one still holds a version of it. Derived from the
+    /// tables and `memo` alone, so it stays what it is while neither
+    /// changes (`Tables::mixin_generation`).
+    pub(crate) fn inside_counts(
         &self,
         trees: &[Vec<MixinId>],
         memo: &crate::hash::IdentityMap<MixinId, Rc<Mixin>>,
-    ) -> BitSet {
+    ) -> InsideCounts {
         let mut tree_of: Vec<Option<usize>> = vec![None; self.tables.mixins.len()];
         for (tree, members) in trees.iter().enumerate() {
             for id in members {
@@ -444,14 +454,72 @@ impl Heap<'_> {
                 *structural.entry(mixin_key(synthesized)).or_default() += 1;
             }
         }
+        let inside =
+            |version: &Rc<Mixin>| structural.get(&mixin_key(version)).copied().unwrap_or(0);
+        InsideCounts {
+            rows: self
+                .tables
+                .mixins
+                .iter()
+                .map(|entry| entry.as_ref().map_or(0, |entry| inside(&entry.current)))
+                .collect(),
+            superseded: self
+                .tables
+                .superseded
+                .iter()
+                .map(|version| Some((self.known_mixin_id(version)?, inside(version))))
+                .collect(),
+        }
+    }
+
+    /// The ids of which some version, current or superseded, is held
+    /// outside the tables: by a host, an activation's nested-class
+    /// creation, a cache entry -- its count above its holders inside
+    /// (`counts`, `inside_counts` of the tables as they are). Such a
+    /// holder can present the version again, and must find it under the
+    /// same id, so its tree lives. One pass over the versions, no lookup.
+    pub(crate) fn held_mixin_ids(&self, counts: &InsideCounts) -> BitSet {
+        debug_assert!(
+            counts.rows.len() == self.tables.mixins.len()
+                && counts.superseded.len() == self.tables.superseded.len(),
+            "internal: the inside counts are the tables' as they are"
+        );
         let mut held = BitSet::default();
-        for (id, version) in &versions {
-            let inside = structural.get(&mixin_key(version)).copied().unwrap_or(0);
-            if Rc::strong_count(version) > inside {
-                held.insert(mixin_row_number(*id));
+        for (row, entry) in self.tables.mixins.iter().enumerate() {
+            let Some(entry) = entry else {
+                continue;
+            };
+            if Rc::strong_count(&entry.current) > counts.rows.get(row).copied().unwrap_or(0) {
+                held.insert(u32::try_from(row).expect("a mixin row fits a u32"));
+            }
+        }
+        for (version, count) in self.tables.superseded.iter().zip(&counts.superseded) {
+            if let Some((id, inside)) = count {
+                if Rc::strong_count(version) > *inside {
+                    held.insert(mixin_row_number(*id));
+                }
             }
         }
         held
+    }
+
+    /// The generation of the mixin rows, their ids and the superseded
+    /// versions (`Tables::mixin_generation`).
+    pub(crate) fn mixin_generation(&self) -> u64 {
+        self.tables.mixin_generation
+    }
+
+    /// The lengths of the mixin rows, their ids and the superseded
+    /// versions: every change to them between two collections -- a row
+    /// registered, a version superseded -- alters one, which a debug
+    /// build compares a kept reclamation memo against.
+    #[cfg(debug_assertions)]
+    pub(crate) fn mixin_table_lengths(&self) -> [usize; 3] {
+        [
+            self.tables.mixins.len() - self.tables.free_mixins.len(),
+            self.tables.mixin_ids.len(),
+            self.tables.superseded.len(),
+        ]
     }
 
     /// Frees the row of every id in `freed`, and drops every superseded
@@ -476,6 +544,7 @@ impl Heap<'_> {
             self.tables.free_mixins.free(number);
             dropped.push(entry.current);
         }
+        self.tables.mixins_changed();
         let Tables {
             superseded,
             mixin_ids,
@@ -514,6 +583,7 @@ impl Heap<'_> {
     /// frame still runs code of is kept, because it is what admits that
     /// code into an image of its module (`image::extra_bodies`).
     pub(crate) fn drop_superseded(&mut self, running: &HashSet<usize>) {
+        let kept = self.tables.superseded.len();
         let Tables {
             superseded,
             mixin_ids,
@@ -544,11 +614,18 @@ impl Heap<'_> {
                 break;
             }
         }
+        if self.tables.superseded.len() != kept {
+            self.tables.mixins_changed();
+        }
     }
 
     /// Gives back the mixin table's trailing free rows.
     pub(crate) fn truncate_mixin_rows(&mut self) {
+        let rows = self.tables.mixins.len();
         super::ids::truncate_trailing(&mut self.tables.mixins, &mut self.tables.free_mixins);
+        if self.tables.mixins.len() != rows {
+            self.tables.mixins_changed();
+        }
     }
 
     /// Frees every code id `codes` does not name: the caller's set holds

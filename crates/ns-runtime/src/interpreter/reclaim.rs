@@ -7,8 +7,8 @@ use std::rc::{Rc, Weak};
 
 use super::Mutator;
 use crate::hash::{IdentityBuildHasher, IdentityMap};
-use crate::heap::reclaim::{mixin_row_number, BitSet, FreedIds, GatheredIds};
-use crate::heap::ApplicationIndex;
+use crate::heap::reclaim::{mixin_row_number, BitSet, FreedIds, GatheredIds, InsideCounts};
+use crate::heap::{ApplicationIndex, MixinId};
 use crate::mixin::{DispatchId, Mixin};
 
 impl Mutator<'_> {
@@ -175,14 +175,19 @@ impl Mutator<'_> {
     /// holder that presents a version again must find it under the id it
     /// had, which is why a tree dies whole -- a live mixin names the ids of
     /// the mixins it is declared in and of those declared in it.
+    ///
+    /// The trees and each version's holders inside the tables are derived
+    /// from the tables and the metaclass memo alone, so they are kept
+    /// across collections while neither changes (`MixinReclaimMemo`);
+    /// only the counts of the versions' holders are read afresh.
     fn reclaim_mixins(&mut self, gathered: &GatheredIds) {
-        let trees = self.heap.module_trees();
+        let memo = self.current_mixin_memo();
         let applied = self.heap.applied_mixin_ids();
         let reified = self.heap.reified_mixin_ids();
-        let held = self.heap.held_mixin_ids(&trees, &self.metaclass_mixins);
+        let held = self.heap.held_mixin_ids(&memo.counts);
         let mut freed = BitSet::default();
         let mut any_freed = false;
-        for tree in &trees {
+        for tree in &memo.trees {
             let lives = tree.iter().any(|id| {
                 let row = mixin_row_number(*id);
                 applied.contains(row)
@@ -197,7 +202,7 @@ impl Mutator<'_> {
                 freed.insert(mixin_row_number(*id));
                 // A memo of the tree, keyed by an id about to be minted
                 // again for another mixin.
-                self.metaclass_mixins.remove(id);
+                self.metaclass_mixins.remove(*id);
             }
             any_freed = true;
         }
@@ -226,8 +231,93 @@ impl Mutator<'_> {
         let running = self.heap.running_bodies(&gathered.codes);
         self.heap.drop_superseded(&running);
         self.heap.truncate_mixin_rows();
+        // Kept whatever changed above: its generation says whether the
+        // next collection may read it.
+        self.mixin_reclaim = memo;
+    }
+
+    /// The memo of the trees and the inside counts, taken out of the
+    /// mutator: the one kept, while the tables and the metaclass memo are
+    /// at the generations it was derived at, and otherwise derived
+    /// afresh. A debug build holds a kept one to the tables' lengths at
+    /// every collection, and to a memo derived afresh at every
+    /// `MIXIN_MEMO_CHECK_PERIOD`th, so that a change that raised no
+    /// generation is found under the collect stress mode.
+    fn current_mixin_memo(&mut self) -> MixinReclaimMemo {
+        let generation = (
+            self.heap.mixin_generation(),
+            self.metaclass_mixins.generation(),
+        );
+        let mut memo = std::mem::take(&mut self.mixin_reclaim);
+        if memo.generation == Some(generation) {
+            #[cfg(debug_assertions)]
+            {
+                assert_eq!(
+                    memo.lengths,
+                    self.heap.mixin_table_lengths(),
+                    "internal: the mixin tables changed without raising their generation"
+                );
+                memo.reuses += 1;
+                if memo.reuses.is_multiple_of(MIXIN_MEMO_CHECK_PERIOD) {
+                    let trees = self.heap.module_trees();
+                    let counts = self.heap.inside_counts(&trees, &self.metaclass_mixins);
+                    assert!(
+                        trees == memo.trees && counts == memo.counts,
+                        "internal: the mixin tables changed without raising their generation"
+                    );
+                }
+            }
+            return memo;
+        }
+        let trees = self.heap.module_trees();
+        let counts = self.heap.inside_counts(&trees, &self.metaclass_mixins);
+        MixinReclaimMemo {
+            generation: Some(generation),
+            trees,
+            counts,
+            #[cfg(debug_assertions)]
+            lengths: self.heap.mixin_table_lengths(),
+            #[cfg(debug_assertions)]
+            reuses: 0,
+        }
     }
 }
+
+/// What a full collection's reclamation of mixin ids derives from the
+/// mixin tables and the metaclass memo, kept for the next collection:
+/// every module's tree (`Heap::module_trees`) and each version's holders
+/// inside the tables (`Heap::inside_counts`). Neither changes unless the
+/// tables or the metaclass memo do, and every change to either raises its
+/// generation (`Tables::mixins_changed`, `MetaclassMixins`), so a
+/// collection that finds both at the generations recorded here reads the
+/// trees as they are and decides which versions are held by one pass of
+/// `Rc::strong_count` against the counts, no hashing. A missed raise
+/// would read trees and counts the tables no longer have: a tree could be
+/// freed while a version of it is held, and its ids minted again for
+/// another mixin -- which a debug build's checks here and the
+/// reclamation's own `watched` assertion catch.
+#[derive(Default)]
+pub(crate) struct MixinReclaimMemo {
+    /// The tables' and the metaclass memo's generations it was derived
+    /// at; `None` before the first collection.
+    generation: Option<(u64, u64)>,
+    trees: Vec<Vec<MixinId>>,
+    counts: InsideCounts,
+    /// The tables' lengths it was derived at (`Heap::mixin_table_lengths`),
+    /// which every change between two collections alters.
+    #[cfg(debug_assertions)]
+    lengths: [usize; 3],
+    /// The collections that have read it since it was derived.
+    #[cfg(debug_assertions)]
+    reuses: u64,
+}
+
+/// How often a debug build derives a kept `MixinReclaimMemo` afresh to
+/// compare: every collection would cost what the memo saves, and the
+/// collect stress mode's collections at every safepoint make every
+/// eighth plenty.
+#[cfg(debug_assertions)]
+const MIXIN_MEMO_CHECK_PERIOD: u64 = 8;
 
 /// The row of the application table a `GatheredIds` bit stands for.
 fn row_number(row: usize) -> u32 {

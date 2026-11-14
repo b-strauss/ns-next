@@ -200,6 +200,51 @@ pub(crate) fn synthesized_class_side(mixin: &Rc<crate::mixin::Mixin>) -> Rc<crat
     synthesized
 }
 
+/// The class side `metaclass_mixin` synthesized for each instance side
+/// that declares none, keyed by the instance side's id
+/// (`Mutator::metaclass_mixins`), with a generation raised by every insert
+/// and removal. Reads go through the map; changes only through this, so
+/// that none can leave a full collection's reclamation counting a
+/// version's holders by a memo the map no longer matches
+/// (`interpreter::reclaim`, `MixinReclaimMemo`).
+#[derive(Default)]
+pub(crate) struct MetaclassMixins {
+    map: crate::hash::IdentityMap<crate::heap::MixinId, Rc<crate::mixin::Mixin>>,
+    generation: u64,
+}
+
+impl MetaclassMixins {
+    /// Records `synthesized` for the instance side `id`.
+    pub(crate) fn insert(
+        &mut self,
+        id: crate::heap::MixinId,
+        synthesized: Rc<crate::mixin::Mixin>,
+    ) {
+        self.map.insert(id, synthesized);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Forgets the instance side `id`'s synthesized class side, if any.
+    pub(crate) fn remove(&mut self, id: crate::heap::MixinId) {
+        if self.map.remove(&id).is_some() {
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    /// Raised by every insert and every removal that removed something.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl std::ops::Deref for MetaclassMixins {
+    type Target = crate::hash::IdentityMap<crate::heap::MixinId, Rc<crate::mixin::Mixin>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

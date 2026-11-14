@@ -5596,6 +5596,7 @@ impl<'gc> Heap<'gc> {
         self.tables
             .mixin_ids
             .insert(crate::mixin::mixin_key(mixin), id);
+        self.tables.mixins_changed();
         id
     }
 
@@ -5793,6 +5794,7 @@ impl<'gc> Heap<'gc> {
         let children = replacement.take_declared_nested();
         let superseded = std::mem::replace(&mut self.mixin_row_mut(id).current, replacement);
         self.tables.superseded.push(superseded);
+        self.tables.mixins_changed();
         children
     }
 
