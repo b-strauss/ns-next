@@ -200,6 +200,33 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertTrue("no stop is shown", faked.debugging.pauses.isEmpty())
     }
 
+    fun testATerminatedEventFromAPeerThatNeverIdentifiedItsProcessEndsTheSession() {
+        val reported = notifications()
+        val faked = fakeSession()
+        FakeAgent(faked.port, onAttach = { event("terminated") })
+        assertEquals(NewspeakBundle.message("debugger.error.unidentified"), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
+        faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    fun testAPeerThatClosesBeforeIdentifyingItsProcessEndsTheSession() {
+        val reported = notifications()
+        val faked = fakeSession()
+        FakeAgent(faked.port, onAttach = { close() })
+        assertEquals(NewspeakBundle.message("debugger.error.unidentified"), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
+        faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    fun testRunToCursorBeforeTheConnectionSaysTheSessionHasNotStarted() {
+        val reported = notifications()
+        val faked = fakeSession()
+        val program = program("Stops", STOPS)
+        val position = checkNotNull(XDebuggerUtil.getInstance().createPosition(program, 3))
+        onEdt { faked.debugging.process.runToPosition(position, null) }
+        assertEquals(NewspeakBundle.message("debugger.error.not.started"), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+    }
+
     fun testStopKeepsTheConnectionUntilTheTerminateIsAnswered() {
         val faked = fakeSession()
         val agent = identifiedAgent(faked) { _, _ -> JsonObject() }
@@ -378,6 +405,11 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
         fun event(name: String, body: JsonObject = JsonObject()) {
             connection.send(eventMessage(name, body))
+        }
+
+        /** Closes the connection, as a peer that goes away does. */
+        fun close() {
+            connection.close()
         }
 
         fun commands(): List<String> = received.map { request -> request.get("command").asString }

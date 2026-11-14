@@ -1107,6 +1107,22 @@ not the editor's recovering parse) or does not resolve (`resolve`) answers
 client never opened, or has closed, is an `InvalidParams` error rather
 than an empty set, which would forbid every line.
 
+The plugin's `BreakableLinesCache` (`debugger/`) keeps each file's answer
+with the document stamp it was asked for, as `DocumentSymbolCache` keeps
+the symbols, and drops one whose `version` is not the one the platform's
+client holds for the document -- an edit the server has not been told of
+yet. `NewspeakLineBreakpointType.canPutAt` answers from it and never
+waits: while there is no answer for the current text -- the server not
+started, the document not opened with it, an error -- it allows every line
+and asks in the background, again every second for about a minute, so
+that a click is never refused for want of an answer. A file that is not
+on disk -- a module's text the debugger shows by reference -- is allowed
+every line without asking. A line's variants are the line and each of
+its blocks (`computeVariants`), but a block whose first statement is the
+line's first, where the two stop at the same statement; a block
+variant's breakpoint keeps the column of that statement and is sent with
+it ([debugger.md](debugger.md), "The JetBrains plugin").
+
 The answer is `Interpreter::breakable_statements`' over the resolved
 module, which compiles every level of it under the optimized lowering
 without loading or running anything, grouped by line. It is
@@ -1430,7 +1446,11 @@ Components:
   plugin descriptor of its own to depend on at compile time.
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
   project. Folding needs nothing of its own: the platform's `LspFoldingBuilder`
-  asks the server ("Folding").
+  asks the server ("Folding"). The server's own request,
+  `newspeak/breakableLines`, is declared on `NewspeakLanguageServer`, an
+  lsp4j interface the client descriptor names as its `lsp4jServerClass`,
+  which is how the platform's client sends a request the protocol does
+  not define ("Breakable lines").
 - **Structure view** — `NewspeakStructureViewFactory`, its model and
   `NewspeakStructureElement`, over the server's document symbols, which
   `DocumentSymbolCache` keeps per file and stamp for the structure view and
@@ -1858,7 +1878,9 @@ The server's own tests are described under its section, above ("Testing").
   peer closing inside a body, an oversized `Content-Length` and malformed
   JSON ending the connection, an `Error` the message handler throws
   ending it, an `Error` an event listener throws and a failing close
-  listener leaving the other listeners called);
+  listener leaving the other listeners called, and a stream that throws
+  something other than an `IOException` failing the send and its
+  request);
 - the debug process in the platform's debugger
   (`NewspeakDebugProcessTest`, on `BasePlatformTestCase` run off the event
   dispatch thread, so that it can wait while the platform updates the
@@ -1878,12 +1900,30 @@ The server's own tests are described under its section, above ("Testing").
   is one read-only `LightVirtualFile` across two stops, asked for once;
   a hidden frame is drawn greyed and the program's frame not; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
-  with `start` 100.
+  with `start` 100; an agent's `terminated` event or a close before any
+  `process` event ends the session with the error and kills the process,
+  and Run to Cursor before the runtime connected says the session has not
+  started.
   Every listener is registered as the platform creates the debug process
   (`XDebuggerManager.TOPIC`), before it connects, and every wait is
   bounded. A task of its own, `debugProcessTest`, with
   `dapSessionTest`'s inputs (`debugsWithTheRuntime` in
   `build.gradle.kts`), which `check` depends on;
+- the breakpoint types (`NewspeakBreakpointTypesTest`, as
+  `NewspeakDebugProcessTest` off the event dispatch thread) -- with the
+  breakable lines' fetcher replaced, `canPutAt` refuses a comment's line,
+  allows a statement's, allows every line for a `null` answer and while
+  no answer has come; a line's variants are the line and its block, the
+  block's highlighted range and column the server's; and, through each
+  handler over a scripted peer and a session that records what it is
+  told: a pass count is sent as the `hitCondition` and a block variant's
+  column as the `column`, a breakpoint the agent moves says the line it
+  stops at and one it refuses its reason, a method breakpoint is sent by
+  its name and pass count, and the exception breakpoints as the filters
+  and the classes' options, "Any exception" for uncaught ones taking
+  every class; against the real runtime, a temporary breakpoint in a loop
+  stops once and is gone. A task of its own, `breakpointTypesTest`, with
+  `debugProcessTest`'s inputs, which `check` depends on;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`

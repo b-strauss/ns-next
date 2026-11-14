@@ -113,15 +113,17 @@ val binaryBuildSettings: FileCollection = files(
 val LEXER_COMPARISON_TEST = "io.github.bstrauss.newspeak.lexer.LexerComparisonTest"
 val DAP_SESSION_TEST = "io.github.bstrauss.newspeak.debugger.DapSessionTest"
 val DEBUG_PROCESS_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakDebugProcessTest"
+val BREAKPOINT_TYPES_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakBreakpointTypesTest"
 
 tasks.test {
     description = "Runs the plugin's tests that start no workspace binary."
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
-    // See `lexerComparisonTest`, `dapSessionTest` and `debugProcessTest`.
+    // See `lexerComparisonTest`, `dapSessionTest`, `debugProcessTest` and `breakpointTypesTest`.
     filter {
         excludeTestsMatching(LEXER_COMPARISON_TEST)
         excludeTestsMatching(DAP_SESSION_TEST)
         excludeTestsMatching(DEBUG_PROCESS_TEST)
+        excludeTestsMatching(BREAKPOINT_TYPES_TEST)
     }
     // The directories `NewspeakDocCommentAgreementTest`, `LexerRestartTest`
     // and `NewspeakHighlightingLexerTest` walk.
@@ -262,8 +264,20 @@ val debugProcessTest = tasks.register<Test>("debugProcessTest") {
     mustRunAfter(lexerComparisonTest, dapSessionTest)
 }
 
+/**
+ * The breakpoint types, as a task of their own: one of their tests stops
+ * at a temporary breakpoint in the real runtime, the others need nothing
+ * beyond the platform.
+ */
+val breakpointTypesTest = tasks.register<Test>("breakpointTypesTest") {
+    description = "Sets line, method and exception breakpoints, and stops ns-next at a temporary one."
+    runsLikeUnitTests(BREAKPOINT_TYPES_TEST)
+    debugsWithTheRuntime()
+    mustRunAfter(lexerComparisonTest, dapSessionTest, debugProcessTest)
+}
+
 tasks.check {
-    dependsOn(lexerComparisonTest, dapSessionTest, debugProcessTest)
+    dependsOn(lexerComparisonTest, dapSessionTest, debugProcessTest, breakpointTypesTest)
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {

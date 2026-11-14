@@ -31,8 +31,9 @@
           of a module whose root class is created with <code>new</code>, and Run in its context menu.</li>
       <li>Debugging a program: Debug on a Newspeak run configuration starts <code>ns-next run</code>
           connected to the IDE's debugger, which shows its stops, stack and variables, the core
-          library's modules among them, with line breakpoints, stepping by line, run to cursor and
-          pause. The first Stop ends the program as its own <code>terminate</code> would; a second
+          library's modules among them, with line breakpoints (on the lines a statement starts on, in a
+          block of the line, with a pass count, removed once hit), method and exception breakpoints,
+          stepping by line, run to cursor and pause. The first Stop ends the program as its own <code>terminate</code> would; a second
           one kills it.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
@@ -110,6 +111,8 @@
         <!-- Debug on a Newspeak run configuration; the debugger is the platform's XDebugger, so no <depends>. -->
         <programRunner implementation="io.github.bstrauss.newspeak.debugger.NewspeakDebugRunner"/>
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointType"/>
+        <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakMethodBreakpointType"/>
+        <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakExceptionBreakpointType"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

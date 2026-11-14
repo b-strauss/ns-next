@@ -3531,11 +3531,13 @@ initializes and attaches, and checks that the `process` event's
 another process connected to the port first -- it reports the error, kills
 the process and the session ends. Nothing else the connection says is
 acted on before a matching `process` event: an `initialized`, `stopped`,
-`breakpoint` or `output` event ahead of it ends the session the same way,
-since the agent sends that event first and only another peer would not.
-At the `initialized` event it sends
-every line breakpoint the session registered, a file's set at a time, and
-`configurationDone` once the agent answered them. The platform's Stop
+`breakpoint`, `output` or `terminated` event ahead of it, or the
+connection's close, ends the session the same way, since the agent sends
+that event first and only another peer would not.
+At the `initialized` event it sends every breakpoint the session
+registered -- the line breakpoints a file's set at a time, the method
+breakpoints and the exception breakpoints, the last two even when empty --
+and `configurationDone` once the agent answered them. The platform's Stop
 destroys the process: while the agent is attached the handler asks it to
 `terminate` instead, so the program ends as its own `terminate…` would,
 and the platform's second Stop, on a process still terminating, kills it
@@ -3552,7 +3554,8 @@ stop is shown, so that the top frame is at hand: a `NewspeakSuspendContext`
 holds one `NewspeakExecutionStack`, the thread `main`, which reads the
 rest a page at a time when the frames view asks. A stop with
 `hitBreakpointIds` is shown through `breakpointReached` for the first
-breakpoint they name, every other through `positionReached`. A
+line or method breakpoint they name, every other through
+`positionReached`. A
 `NewspeakStackFrame` is placed through `NewspeakSources`: a program
 module's file by its path, any other module -- a shipped one, an image's,
 one an install changed -- as a read-only `LightVirtualFile` named
@@ -3567,7 +3570,8 @@ Step Into and Step Out are `next`, `stepIn` and `stepOut` with
 `granularity: "line"`; Run to Cursor is `nsNext/runToPosition`, Pause
 `pause`; a Run to Cursor in a file the agent cannot name -- a module's
 text an earlier session showed -- is reported and leaves the program at
-its stop. A step or a resume the agent refuses leaves it at its stop,
+its stop, and one before the runtime connected says the session has not
+started. A step or a resume the agent refuses leaves it at its stop,
 which the debug process shows again with the refusal.
 
 Every event reaches the client's reader thread, which must never wait for
@@ -3582,21 +3586,68 @@ writer thread of the connection's own, which writes them in order. An
 event or close listener that throws, an `Error` included, is logged and
 keeps no other listener from being called.
 
-A line breakpoint (`NewspeakLineBreakpointType`) can be put on any line of
-a `.ns` file on disk, and `NewspeakLineBreakpointHandler` marks each
-verified or invalid with the agent's message as its answer and every later
-`breakpoint` event say. A test debugs programs with the real runtime
-through the platform's debugger (`NewspeakDebugProcessTest`,
+Three breakpoint types, each with its `XBreakpointHandler`
+(`NewspeakBreakpointHandlers.kt`), which sends its kind's whole set at
+every change, as DAP sets each kind -- line breakpoints a file's set at a
+time:
+
+- **Line breakpoints** (`NewspeakLineBreakpointType`) stand on the lines
+  the language server's `newspeak/breakableLines` answers a statement
+  starts on, before any session runs, kept per document stamp by
+  `BreakableLinesCache`; `canPutAt` never waits, and allows every line
+  while there is no answer for the document's current text and for a
+  document that does not parse ([editor-support.md](editor-support.md),
+  "Breakable lines"). A line on which a block's first statement starts
+  offers the line and each such block as variants; a block variant's
+  breakpoint is sent with the `column` of that statement, the line's
+  without one. A module's file on disk is named by its `path`, a module
+  the session shows by reference -- a shipped one, as `<Module>.ns` --
+  by its `name`. The pass count (`NewspeakLineBreakpointProperties`,
+  edited in the breakpoint's properties) is sent as the `hitCondition`,
+  in the agent's forms ("Hit counts and temporary breakpoints"). The
+  handler marks each breakpoint verified, or, where the agent set it at
+  another line, verified with the line it stops at
+  (`updateBreakpointPresentation`) -- the breakpoint stays where the user
+  put it -- or invalid with the agent's message, as its answer and every
+  later `breakpoint` event say. "Remove once hit" needs nothing of the
+  plugin: the platform removes the breakpoint as the stop
+  `breakpointReached` reported is left, and the removal resends the
+  file's set before the `continue`.
+- **Method breakpoints** (`NewspeakMethodBreakpointType`), added from the
+  Breakpoints dialog by the method's name in the agent's form,
+  `Module.Outer.Inner>>selector` or `Module.Inner class>>selector`, with
+  a pass count, sent by `setFunctionBreakpoints`. One the agent cannot set
+  -- its name refused, or no built module declaring the method yet -- is
+  reported with the agent's reason, since the platform shows whether a
+  breakpoint is verified for line breakpoints only.
+- **Exception breakpoints** (`NewspeakExceptionBreakpointType`): the
+  default "Any exception", on, with boxes for uncaught exceptions (on),
+  caught ones (off) and `halt` (on), and one per class the user adds,
+  `Module.Path.To.Class`, with boxes for uncaught and caught exceptions;
+  sent by `setExceptionBreakpoints` as the filters `uncaught`, `caught`
+  and `halt`, each class breakpoint's filters as `filterOptions` whose
+  condition names its class. The agent keeps one list of classes for
+  both filters (`Command::SetExceptionBreakpoints`), so a class taken for
+  caught exceptions is taken for uncaught ones too when another class
+  breakpoint takes those, and "Any exception" taking uncaught or caught
+  exceptions makes the class breakpoints' filters take every class.
+
+A property the user edits -- a pass count, an exception breakpoint's
+boxes -- reaches a running session by turning the breakpoint off and on
+again through its public setter, whose change events unregister and
+register it: the platform's own way to report a plugin's property is
+internal API.
+
+A test debugs programs with the real runtime through the platform's
+debugger (`NewspeakDebugProcessTest`), and one sets each kind of
+breakpoint over a scripted agent and stops at a temporary one with the
+real runtime (`NewspeakBreakpointTypesTest`;
 [editor-support.md](editor-support.md), "Plugin testing and gates").
 
-Planned: the plugin will add, over that client:
-
-- an `XLineBreakpointType` whose `canPutAt` and variants come from
-  `breakpointLocations`, a method breakpoint type, and a breakpoint type
-  for exceptions, with their `XBreakpointHandler`s;
-- an `XDebuggerEvaluator`, an `XSmartStepIntoHandler` over `stepInTargets`,
-  restart frame, force return and a hot-swap action on the agent's own
-  requests, and inline values and step times.
+Planned: the plugin will add, over that client, an `XDebuggerEvaluator`,
+an `XSmartStepIntoHandler` over `stepInTargets`, restart frame, force
+return and a hot-swap action on the agent's own requests, and inline
+values and step times.
 
 ## Planned: the order of building it
 

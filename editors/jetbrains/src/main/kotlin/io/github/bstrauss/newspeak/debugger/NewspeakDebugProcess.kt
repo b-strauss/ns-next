@@ -65,6 +65,8 @@ class NewspeakDebugProcess(
 ) : XDebugProcess(session) {
     private val work = AppExecutorUtil.createBoundedApplicationPoolExecutor("Newspeak debugger", 1)
     private val lineBreakpoints = NewspeakLineBreakpointHandler(session)
+    private val methodBreakpoints = NewspeakMethodBreakpointHandler(session)
+    private val exceptionBreakpoints = NewspeakExceptionBreakpointHandler(session)
 
     @Volatile
     private var client: DapClient? = null
@@ -94,7 +96,7 @@ class NewspeakDebugProcess(
 
     override fun getEditorsProvider(): XDebuggerEditorsProvider = NewspeakDebuggerEditorsProvider
 
-    override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(lineBreakpoints)
+    override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(lineBreakpoints, methodBreakpoints, exceptionBreakpoints)
 
     override fun doGetProcessHandler(): ProcessHandler = handler
 
@@ -130,9 +132,9 @@ class NewspeakDebugProcess(
         client.onEvent("process") { body -> work.execute { checkProcess(DapProcessEvent.from(body)) } }
         client.onEvent("initialized") { _ -> work.execute { if (identified()) configure(client) } }
         client.onEvent("stopped") { body -> work.execute { if (identified()) stopped(client, DapStoppedEvent.from(body)) } }
-        client.onEvent("breakpoint") { body -> work.execute { if (identified()) lineBreakpoints.changed(DapBreakpointEvent.from(body)) } }
+        client.onEvent("breakpoint") { body -> work.execute { if (identified()) breakpointChanged(DapBreakpointEvent.from(body)) } }
         client.onEvent("output") { body -> work.execute { if (identified()) show(DapOutputEvent.from(body)) } }
-        client.onEvent("terminated") { _ -> work.execute(::terminated) }
+        client.onEvent("terminated") { _ -> work.execute { if (identified()) terminated() } }
         client.onClose { work.execute(::connectionClosed) }
         val initialize = JsonObject().apply {
             addProperty("clientID", "jetbrains")
@@ -179,10 +181,10 @@ class NewspeakDebugProcess(
         return false
     }
 
-    /** The agent takes the configuration: the breakpoints, then the start. */
+    /** The agent takes the configuration: the breakpoints of every kind, then the start. */
     private fun configure(client: DapClient) {
         if (ended) return
-        val answers = lineBreakpoints.sendAll(client)
+        val answers = lineBreakpoints.sendAll(client) + methodBreakpoints.sendAll(client) + exceptionBreakpoints.sendAll(client)
         // The start waits for every answer, since DAP's order has the client configure before it.
         CompletableFuture.allOf(*answers.toTypedArray())
             .handle { _, _ -> client.request("configurationDone") }
@@ -197,13 +199,20 @@ class NewspeakDebugProcess(
         val (frames, total) = framesFrom(client, 0)
         val context = NewspeakSuspendContext(NewspeakExecutionStack(this, frames, total))
         lastStop = context
-        val breakpoint = event.hitBreakpointIds.firstNotNullOfOrNull(lineBreakpoints::breakpointOf)
+        val breakpoint = event.hitBreakpointIds.firstNotNullOfOrNull { id ->
+            lineBreakpoints.breakpointOf(id) ?: methodBreakpoints.breakpointOf(id)
+        }
         if (breakpoint == null) {
             session.positionReached(context)
         } else if (!session.breakpointReached(breakpoint, null, context)) {
             // The platform's own decision not to suspend there, as a logging breakpoint's.
             resume(context)
         }
+    }
+
+    /** A `breakpoint` event: the agent resolved, moved or set one of them unasked. */
+    private fun breakpointChanged(event: DapBreakpointEvent) {
+        if (!lineBreakpoints.changed(event)) methodBreakpoints.changed(event)
     }
 
     /**
@@ -271,7 +280,12 @@ class NewspeakDebugProcess(
     override fun startStepOut(context: XSuspendContext?) = goOn("stepOut", line = true)
 
     override fun runToPosition(position: XSourcePosition, context: XSuspendContext?) {
-        val source = sources?.sourceOf(position.file)
+        val sources = sources
+        if (sources == null) {
+            session.reportError(NewspeakBundle.message("debugger.error.not.started"))
+            return
+        }
+        val source = sources.sourceOf(position.file)
         if (source == null) {
             session.reportError(NewspeakBundle.message("debugger.error.no.source", position.file.name))
             showLastStopAgain()
@@ -375,9 +389,15 @@ class NewspeakDebugProcess(
         client?.close()
     }
 
+    /**
+     * The connection closed. One that never named this session's process
+     * is failed as any other word of it would be, so that the process
+     * started is not left running undebugged.
+     */
     private fun connectionClosed() {
         handler.terminateThroughDebugger = null
         if (ended || handler.isProcessTerminating || handler.isProcessTerminated) return
+        if (!identified()) return
         ended = true
         session.reportMessage(NewspeakBundle.message("debugger.connection.closed"), MessageType.WARNING)
     }

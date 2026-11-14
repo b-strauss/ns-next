@@ -13,6 +13,7 @@ import com.intellij.platform.lsp.api.customization.LspSemanticTokensCustomizer
 import com.intellij.platform.lsp.api.customization.LspSymbolKindCustomizer
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
+import org.eclipse.lsp4j.services.LanguageServer
 import java.nio.file.Path
 
 class NewspeakLspClientDescriptor(project: Project, private val server: Path) :
@@ -22,6 +23,9 @@ class NewspeakLspClientDescriptor(project: Project, private val server: Path) :
     override fun createCommandLine(): GeneralCommandLine = GeneralCommandLine(server.toString(), "lsp")
 
     override val lspCustomization: LspCustomization = NewspeakLspCustomization
+
+    /** The server's own requests beside the protocol's: `newspeak/breakableLines`. */
+    override val lsp4jServerClass: Class<out LanguageServer> = NewspeakLanguageServer::class.java
 }
 
 /** Which of the platform's LSP features the Newspeak client uses, and how. */

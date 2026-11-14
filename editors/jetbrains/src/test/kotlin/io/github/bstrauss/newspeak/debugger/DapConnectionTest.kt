@@ -157,6 +157,26 @@ class DapConnectionTest {
         assertTrue(failureOf(pending) is DapConnectionClosedException)
     }
 
+    @Test
+    fun aStreamThatThrowsAnythingFailsTheSendAndTheRequest() {
+        val failing = object : java.io.OutputStream() {
+            override fun write(byte: Int) = throw IllegalStateException("the stream refuses")
+        }
+        val connection = DapConnection(PipedInputStream(PipedOutputStream(), PIPE_SIZE), failing)
+        opened.add(connection)
+        val written = connection.send(JsonObject())
+        try {
+            written.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            fail("the send completed normally")
+        } catch (exception: ExecutionException) {
+            assertTrue(exception.cause.toString(), exception.cause is IllegalStateException)
+        }
+
+        val client = DapClient(DapConnection(PipedInputStream(PipedOutputStream(), PIPE_SIZE), failing))
+        opened.add(AutoCloseable(client::close))
+        assertTrue(failureOf(client.request("threads")) is DapConnectionClosedException)
+    }
+
     /** A connection reading what the test writes, byte by byte as it chooses, onto `writer`. */
     private class RawPeer(val connection: DapConnection, val writer: PipedOutputStream) {
         fun write(text: String) = write(text.toByteArray(Charsets.UTF_8))

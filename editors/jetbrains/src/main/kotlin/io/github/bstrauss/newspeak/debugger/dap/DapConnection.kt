@@ -43,9 +43,9 @@ class DapConnection(
 
     /**
      * Writes [message] as one frame and flushes it, on the writer thread.
-     * The future completes once it is written, and fails with the
-     * [IOException] that kept it from being written, a closed connection's
-     * among them.
+     * The future completes once it is written, and fails with whatever
+     * kept it from being written: an [IOException], a closed connection's
+     * among them, or anything else the stream throws.
      */
     fun send(message: JsonObject): CompletableFuture<Unit> {
         val body = message.toString().toByteArray(Charsets.UTF_8)
@@ -59,8 +59,9 @@ class DapConnection(
                     frame.writeTo(output)
                     output.flush()
                     written.complete(Unit)
-                } catch (exception: IOException) {
-                    written.completeExceptionally(exception)
+                } catch (throwable: Throwable) {
+                    // Anything the stream throws, or this send's future would never complete.
+                    written.completeExceptionally(throwable)
                 }
             }
         } catch (_: RejectedExecutionException) {
