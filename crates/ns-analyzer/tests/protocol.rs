@@ -925,3 +925,53 @@ fn breakable_lines_of_an_unknown_document_are_invalid_params() {
     );
     shut_down(&client, server_thread);
 }
+
+/// A module whose one method answers a chain of `links` messages, which
+/// nests as many sends.
+fn a_chain_of(links: usize) -> String {
+    indoc::formatdoc! {"
+        class Module = Object new () (
+          public chain = (
+            ^1{links}
+          )
+        ) : ()
+        ",
+        links = " + 1".repeat(links),
+    }
+}
+
+/// The compiler recurses along a chain of messages: a chain as long as
+/// the cap is compiled and answered, in a debug build too, on the
+/// worker's stack, and a longer one answers `null` rather than
+/// overflowing a stack, which would abort the server.
+#[test]
+fn a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on() {
+    let (client, server_thread) = initialized_server();
+    let at_cap = "file:///C:/work/AtTheCap.ns";
+    open_document(
+        &client,
+        at_cap,
+        &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS),
+    );
+    assert_eq!(
+        breakable_lines(&client, 2, at_cap),
+        json!({ "version": 1, "lines": [breakable_line(0, &[]), breakable_line(2, &[])] })
+    );
+    let past_cap = "file:///C:/work/PastTheCap.ns";
+    open_document(
+        &client,
+        past_cap,
+        &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS + 1),
+    );
+    assert_eq!(
+        breakable_lines(&client, 3, past_cap),
+        json!({ "version": 1, "lines": null })
+    );
+    open_document(&client, URI, BREAKABLE);
+    assert_eq!(
+        breakable_lines(&client, 4, URI),
+        json!({ "version": 1, "lines": breakable_lines_of_the_module(0) }),
+        "the server serves on"
+    );
+    shut_down(&client, server_thread);
+}

@@ -1109,22 +1109,40 @@ than an empty set, which would forbid every line.
 
 The answer is `Interpreter::breakable_statements`' over the resolved
 module, which compiles every level of it under the optimized lowering
-without loading or running anything, grouped by line. The server
-bootstraps one interpreter for it, at the first request rather than at
-its start, so that an editor that never asks pays nothing, and keeps it:
-the bootstrap instantiates the shipped core library, the only Newspeak
-that runs. The interpreter stays on the server's one thread, whose
-symbol interner it shares. The answer is computed once per document
-version, by the first request for it; on `Kernel.ns`, 8,355 lines and
-1,399 breakable statements, `breakable_statements` takes about 9 ms in a
-debug build, its parse and resolve about 8 ms more. The compile runs
-under `catch_unwind`, as the analysis does ("Robustness"): a panic
+without loading or running anything, grouped by line. It is
+compiled on a worker thread of its own, which the server spawns at the
+first request and asks synchronously, handing it the document's text: the
+worker parses, resolves and compiles, and answers spans only, since an
+interpreter and the symbol interner are bound to the thread that made
+them. The worker bootstraps one interpreter, at its first module rather
+than at the server's start, so that an editor that never asks pays
+nothing, and keeps it: the bootstrap instantiates the shipped core
+library, the only Newspeak that runs. The answer is computed once per
+document version, by the first request for it; on `Kernel.ns`, 8,355
+lines and 1,399 breakable statements, `breakable_statements` takes about
+9 ms in a debug build, its parse and resolve about 8 ms more. The compile
+runs under `catch_unwind`, as the analysis does ("Robustness"): a panic
 answers `"lines": null` and drops the interpreter, which a new one
-replaces at the next request. The compiler recurses along a chain of
-messages, so a body that is one chain of some 20,000 links overflows the
-server's stack here as it does `ns-next run` ([OPEN-WORK.md](../OPEN-WORK.md),
-"A valid method whose body is one long chain of messages aborts `ns-next
-run`").
+replaces at the next request.
+
+**The chain guard.** The compiler recurses along a chain of messages,
+which the parser does not bound ([frontend.md](frontend.md), "Recovery",
+rule 7), and a stack overflow aborts the process, past `catch_unwind`,
+taking the editor's support for every file with it. So the worker
+counts, without recursion, the most sends any path through the module
+nests -- a chain one per message, `breakable::nested_sends` -- and above
+`MAX_NESTED_SENDS`, 20,000, answers `"lines": null` without compiling.
+The cap sits above what `ns-next run`'s 8 MiB thread compiles today -- a
+body of one chain overflows it past about 14,900 messages in a release
+build and 10,000 in a debug one, measured by bisecting the chain's length
+with `ns-next run` -- so every module `ns-next` can compile gets its
+exact answer; and below what the worker's stack holds: it reserves
+64 MiB, address space rather than memory, on which a debug build
+compiles a chain of 80,000 and overflows below 100,000. Pinned by
+`a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on`. The
+guard goes when the compiler takes a chain link by link
+([OPEN-WORK.md](../OPEN-WORK.md), "A valid method whose body is one long
+chain of messages aborts `ns-next run`").
 
 ### Robustness
 

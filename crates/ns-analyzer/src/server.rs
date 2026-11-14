@@ -45,7 +45,9 @@ struct Document {
     text: String,
     /// The version the client last gave the text, which the breakable
     /// lines' answer names so that the plugin keeps it per version; 0 for
-    /// a document read from disk, which is never asked for them.
+    /// a document read from disk, which has none. `breakable_lines_of`
+    /// answers open documents only, never one `document_on_disk` read:
+    /// routed through it, the answer would name the version 0.
     version: i32,
     line_index: LineIndex,
     analysis: Analysis,
