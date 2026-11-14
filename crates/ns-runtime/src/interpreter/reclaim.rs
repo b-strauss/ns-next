@@ -321,6 +321,10 @@ impl Mutator<'_> {
     /// generation is found under the collect stress mode.
     fn current_mixin_memo(&mut self) -> MixinReclaimMemo {
         let generation = self.mixin_generations();
+        #[cfg_attr(
+            not(debug_assertions),
+            allow(unused_mut, reason = "only a debug build counts the memo's reuses")
+        )]
         let mut memo = std::mem::take(&mut self.mixin_reclaim);
         if memo.generation == Some(generation) {
             #[cfg(debug_assertions)]
