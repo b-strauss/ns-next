@@ -15,7 +15,7 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables` and `Children` are served only while the
+/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only while the
 /// program is stopped; one that arrives while it runs is refused
 /// (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
@@ -131,6 +131,17 @@ pub enum Command {
         halt: bool,
         classes: Vec<ClassName>,
     },
+    /// The current text of the module `module` names -- its root class's
+    /// name, as `FrameLocation::module` names it, a shipped module's too
+    /// -- unless `known_revision` is the revision the answer would carry,
+    /// which the agent holds the text of already. Served only while the
+    /// program is stopped, as `StackTrace` is, so that the agent reads a
+    /// text only where it reads positions in it. Answered by
+    /// `Event::ModuleText`.
+    ModuleText {
+        module: String,
+        known_revision: Option<u64>,
+    },
 }
 
 /// A method a method breakpoint names: by its selector, the class
@@ -227,6 +238,7 @@ impl Command {
             Command::SetStepFilters { .. } => "SetStepFilters",
             Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
             Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
+            Command::ModuleText { .. } => "ModuleText",
         }
     }
 }
@@ -268,6 +280,26 @@ pub enum Event {
     /// The answer to `Command::SetExceptionBreakpoints`: the exception
     /// breakpoints are in effect.
     ExceptionBreakpointsSet,
+    /// The answer to `Command::ModuleText`. `revision` is the interpreter's
+    /// count of installs, the same for every module and 0 before the first:
+    /// a text read at a revision is current until it is raised.
+    ModuleText {
+        module: String,
+        revision: u64,
+        text: ModuleTextAnswer,
+    },
+}
+
+/// What `Event::ModuleText` says of a module's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleTextAnswer {
+    /// The agent's `known_revision` is the current one.
+    Unchanged,
+    /// The module's current text.
+    Text(String),
+    /// The module is not built, or has no text (an image built without its
+    /// source).
+    None,
 }
 
 /// Why the program stopped.

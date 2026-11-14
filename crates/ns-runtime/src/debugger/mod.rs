@@ -28,7 +28,8 @@ mod values;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
     FrameKind, FrameLocation, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState, SendLocation, StopReason, ValueDescription, ValueId, Variable,
+    MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason, ValueDescription, ValueId,
+    Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -198,7 +199,8 @@ impl StressReader {
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
             | Event::StepFiltersSet
-            | Event::ExceptionBreakpointsSet => {}
+            | Event::ExceptionBreakpointsSet
+            | Event::ModuleText { .. } => {}
         }
     }
 }
@@ -710,6 +712,7 @@ impl Interpreter {
                 | Command::StepOut
                 | Command::RunToPosition { .. }
                 | Command::StackTrace
+                | Command::ModuleText { .. }
                 | Command::Variables { .. }
                 | Command::Children { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
@@ -768,6 +771,7 @@ impl Interpreter {
             | Command::RunToPosition { .. }
             | Command::Terminate
             | Command::StackTrace
+            | Command::ModuleText { .. }
             | Command::Variables { .. }
             | Command::Children { .. } => {
                 unreachable!("internal: only a configuration command configures")
@@ -906,6 +910,26 @@ impl Interpreter {
                     });
                     self.answer(&mut source, Event::StackTrace(descriptions));
                 }
+                Command::ModuleText {
+                    module,
+                    known_revision,
+                } => {
+                    let event = self.enter(|mutator| {
+                        let revision = mutator.breakpoints.text_revision();
+                        let text = if known_revision == Some(revision) {
+                            ModuleTextAnswer::Unchanged
+                        } else {
+                            breakpoints::module_text(mutator, &module)
+                                .map_or(ModuleTextAnswer::None, ModuleTextAnswer::Text)
+                        };
+                        Event::ModuleText {
+                            module,
+                            revision,
+                            text,
+                        }
+                    });
+                    self.answer(&mut source, event);
+                }
                 Command::Variables { frame } => {
                     match self.enter(|mutator| {
                         let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
@@ -1035,6 +1059,7 @@ impl Interpreter {
                     | Command::RunToPosition { .. }
                     | Command::Terminate
                     | Command::StackTrace
+                    | Command::ModuleText { .. }
                     | Command::Variables { .. }
                     | Command::Children { .. }),
                 ) => {

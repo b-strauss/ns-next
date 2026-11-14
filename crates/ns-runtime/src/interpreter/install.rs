@@ -57,6 +57,8 @@ impl<'gc> Mutator<'gc> {
             })
             .collect();
         self.replace_versions(&prepared);
+        // Every module text an agent holds may be this edit's.
+        self.breakpoints.raise_text_revision();
         let new_applications = self.reapply(&classes, &old_applications);
         let migration = self.migrate(
             &classes,

@@ -48,7 +48,7 @@ pub use compiler::Lowering;
 pub use debugger::{
     BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
     FrameLocation, HitCondition, LineBreakpoint, MethodBreakpoint, MethodBreakpointState,
-    SendLocation, StopReason, ValueDescription, ValueId, Variable,
+    ModuleTextAnswer, SendLocation, StopReason, ValueDescription, ValueId, Variable,
 };
 
 /// Test helper: turns one test body into a module holding an `optimized` and

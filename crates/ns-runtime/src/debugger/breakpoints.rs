@@ -49,6 +49,8 @@ const NO_STATEMENT: &str = "no statement starts at or after that position";
 pub(crate) struct Breakpoints {
     /// The number the next breakpoint takes.
     next_id: u32,
+    /// The count of installs, raised after each (`text_revision`).
+    text_revision: u64,
     /// Each module's line breakpoints, by the module's name.
     modules: Vec<ModuleBreakpoints>,
     /// Each patched slot, by its body's address and its index. The body
@@ -486,6 +488,17 @@ impl Breakpoints {
     /// to another declaration's version.
     pub(crate) fn forget_filter_decisions(&mut self) {
         self.filter_decisions.forget();
+    }
+
+    /// How many installs have replaced a module's text: what a reader of
+    /// the text compares to know that the one it holds is current.
+    pub(crate) fn text_revision(&self) -> u64 {
+        self.text_revision
+    }
+
+    /// An install changed a module's text.
+    pub(crate) fn raise_text_revision(&mut self) {
+        self.text_revision += 1;
     }
 
     /// The stop the last `Breakpoint` arm decided, taken.
@@ -1360,6 +1373,27 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
         }
     }
     table.sweep();
+}
+
+/// The current text of the module whose root class is named `name`, found
+/// as `module_bodies` finds the module: a shipped module's is its shipped
+/// text, a program's its text as the last install left it. `None` while no
+/// module of that name is built, and for a module without text (an image
+/// built with its source stripped).
+pub(crate) fn module_text(mutator: &Mutator<'_>, name: &str) -> Option<String> {
+    let root = mutator.heap.mixin_ids().into_iter().find(|id| {
+        mutator.heap.enclosing_mixin_id(*id).is_none()
+            && mutator
+                .heap
+                .mixin(*id)
+                .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
+    })?;
+    if mutator.heap.mixin(root)?.shipped {
+        return Some(String::from(
+            &*crate::interpreter::core_library::shipped_module_text(name),
+        ));
+    }
+    mutator.heap.module_source(root)
 }
 
 /// Resolves `offsets` against every current body of the module whose

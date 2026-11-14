@@ -16,7 +16,7 @@ use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
 use ns_runtime::debugger::{
     BreakpointId, BreakpointState, ClassName, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState,
+    MethodBreakpointState, ModuleTextAnswer,
 };
 use ns_runtime::JitStatistics;
 use ns_runtime::{
@@ -7372,5 +7372,99 @@ ns_runtime::for_each_lowering! {
         "};
         let (id, stops) = method_stops(source, "Lazing", "value", HitCondition::Equal(4), lowering);
         assert_eq!(stops, only_exit(id));
+    }
+}
+
+/// What `Command::ModuleText` answers for `module`.
+fn module_text(
+    remote: &DebugRemote,
+    module: &str,
+    known_revision: Option<u64>,
+) -> (u64, ModuleTextAnswer) {
+    let command = Command::ModuleText {
+        module: String::from(module),
+        known_revision,
+    };
+    match request(remote, command) {
+        Event::ModuleText {
+            module: answered,
+            revision,
+            text,
+        } => {
+            assert_eq!(answered, module);
+            (revision, text)
+        }
+        other => panic!("the text of {module} was expected, not {other:?}"),
+    }
+}
+
+#[test]
+fn module_text_is_answered_once_per_revision() {
+    let (first, known, none) = while_stopped(FOREVER, |remote| {
+        (
+            module_text(remote, "Forever", None),
+            module_text(remote, "Forever", Some(0)),
+            module_text(remote, "Forever", Some(7)),
+        )
+    });
+    assert_eq!(first, (0, ModuleTextAnswer::Text(String::from(FOREVER))));
+    assert_eq!(known, (0, ModuleTextAnswer::Unchanged));
+    // A revision the agent could not have been told of is no match.
+    assert_eq!(none, (0, ModuleTextAnswer::Text(String::from(FOREVER))));
+}
+
+#[test]
+fn a_shipped_module_s_text_is_its_shipped_text() {
+    let (revision, text) = while_stopped(FOREVER, |remote| module_text(remote, "Kernel", None));
+    assert_eq!(revision, 0);
+    let ModuleTextAnswer::Text(text) = text else {
+        panic!("the kernel's text was expected, not {text:?}");
+    };
+    let first_line = "/// The kernel module: `Object` and the classes every program uses without";
+    assert_eq!(text.lines().next(), Some(first_line));
+}
+
+#[test]
+fn an_unknown_module_has_no_text() {
+    let (revision, text) = while_stopped(FOREVER, |remote| module_text(remote, "Nowhere", None));
+    assert_eq!((revision, text), (0, ModuleTextAnswer::None));
+}
+
+ns_runtime::for_each_lowering! {
+    /// An install raises the revision, and the text a reader holds of an
+    /// earlier one is stale: the module's current text is the edited one.
+    fn an_install_raises_the_revision(lowering) {
+        let (mut interpreter, class) = interpreted(EDITING, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let offset = EDITING.find("value:: 6 * 7").expect("the first answer's statement");
+        let offset = u32::try_from(offset).expect("a test's source is small");
+        let ((before, after), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Editing", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Editing"));
+                expect_breakpoints(remote, "Editing");
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let answers = (
+                    module_text(remote, "Editing", None),
+                    module_text(remote, "Editing", Some(0)),
+                );
+                continue_stopped(remote);
+                answers
+            },
+        );
+        assert_eq!(before.0, 1);
+        assert_eq!(after.0, 1);
+        let ModuleTextAnswer::Text(edited) = &before.1 else {
+            panic!("the edited text was expected, not {:?}", before.1);
+        };
+        assert!(edited.contains("value:: 6 * 8"), "{edited}");
+        assert_eq!(after.1, before.1);
+        assert_eq!(answered(&mut interpreter, result), 48);
     }
 }
