@@ -2605,9 +2605,10 @@ or an exception's stop is made instead -- leaves the frame to fetch the
 slot again with no token, so the table remembers the reach
 (`CountedReach`: the activation, the body and the index, the
 breakpoints counted that did not hold and those that held), consumed or
-dropped by the next `Breakpoint` arm as the token is: that fetch counts
-none of them again, stops for the held ones that still stand, and counts
-only a breakpoint set there since. Without it, a breakpoint counted at
+dropped by the next `Breakpoint` arm and moved by the suspend stress
+mode as the token is: that fetch counts none of them again, stops for
+the held ones that still stand, and counts only a breakpoint set there
+since. Without it, a breakpoint counted at
 the reach but not holding, beside one a `SetBreakpoints` replaced, would
 count the same reach twice (`a_stop_not_made_counts_no_hit_twice`).
 

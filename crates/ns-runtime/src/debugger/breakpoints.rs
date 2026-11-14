@@ -566,13 +566,21 @@ impl Breakpoints {
         self.reported_home = None;
     }
 
-    /// The token's activation moved from `from` to `onto`: the suspend
-    /// stress mode suspended the stack and resumed its top elsewhere.
+    /// The activation of the token and of the reach whose stop was not
+    /// made moved from `from` to `onto`: the suspend stress mode suspended
+    /// the stack and resumed its top elsewhere. Both follow the frame, or
+    /// its fetch of the slot again would go past no token, or count the
+    /// reach's breakpoints twice.
     #[cfg(debug_assertions)]
     pub(crate) fn move_past_once(&mut self, from: ActivationReference, onto: ActivationReference) {
         if let Some(past) = &mut self.past_once {
             if past.activation.same(from) {
                 past.activation = onto;
+            }
+        }
+        if let Some(reach) = &mut self.counted_reach {
+            if reach.activation.same(from) {
+                reach.activation = onto;
             }
         }
     }
