@@ -22,6 +22,8 @@ pub(crate) struct ProgramModule {
     pub(crate) name: String,
     /// The file it was read from, absolute; `None` for an image's module.
     pub(crate) path: Option<PathBuf>,
+    /// The file's `file_identity`, made once as the module is loaded.
+    pub(crate) identity: Option<PathBuf>,
     /// Its text as loaded; `None` for a module of an image without source.
     pub(crate) text: Option<String>,
 }
@@ -218,14 +220,15 @@ impl Sources {
             return self.module_of_reference(reference).map(str::to_string);
         }
         if let Some(path) = &source.path {
+            let named = file_identity(Path::new(path));
             return self
                 .program
                 .iter()
                 .find(|program| {
                     program
-                        .path
+                        .identity
                         .as_deref()
-                        .is_some_and(|file| same_file(file, Path::new(path)))
+                        .is_some_and(|identity| same_identity(identity, &named))
                 })
                 .map(|program| program.name.clone());
         }
@@ -242,15 +245,47 @@ impl Sources {
     }
 }
 
-/// Whether two paths name one file: compared as absolute paths, on
-/// Windows without regard to ASCII case, as its file names ignore it, and
-/// without resolving `..` or a symbolic link. That suffices: both come
-/// from the program's own reading -- the host's, made absolute, and the
-/// path a client took from a frame's source or from the file the program
-/// was started with -- not from two independent spellings of one file.
-fn same_file(first: &Path, second: &Path) -> bool {
-    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let (first, second) = (absolute(first), absolute(second));
+/// What a path is compared by to tell whether it names a module's file:
+/// its canonical form, every `..` and symbolic link resolved. The two
+/// sides are spelled independently -- a module's path as the program
+/// wrote it, `../shared/Tree.ns` in a project file or a link the program
+/// was started through, and the client's as its editor resolved the file
+/// -- so only the file system can tell they name one file. A path it
+/// cannot resolve is made absolute and its `.` and `..` resolved by their
+/// spelling.
+pub(crate) fn file_identity(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        lexically_normal(&absolute)
+    })
+}
+
+/// `path` with its `.` components dropped and each `..` taking away the
+/// component before it.
+fn lexically_normal(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if matches!(
+                    normal.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                ) {
+                    normal.pop();
+                } else if !normal.has_root() {
+                    normal.push(component);
+                }
+            }
+            other => normal.push(other),
+        }
+    }
+    normal
+}
+
+/// Whether two `file_identity`s are one file's: on Windows without regard
+/// to ASCII case, as its file names ignore it.
+fn same_identity(first: &Path, second: &Path) -> bool {
     if cfg!(windows) {
         first
             .to_string_lossy()
@@ -268,8 +303,27 @@ mod tests {
         Sources::new(vec![ProgramModule {
             name: "Hello".to_string(),
             path: Some(PathBuf::from("/programs/Hello.ns")),
+            identity: Some(file_identity(Path::new("/programs/Hello.ns"))),
             text: Some("class Hello = ()".to_string()),
         }])
+    }
+
+    #[test]
+    fn a_path_through_dot_dot_names_the_module_its_file_is() {
+        let sources = sources();
+        let named = sources.module_named_by(&SourceArgument {
+            path: Some("/programs/lib/./../Hello.ns".to_string()),
+            ..SourceArgument::default()
+        });
+        assert_eq!(named.as_deref(), Some("Hello"));
+        assert_eq!(
+            lexically_normal(Path::new("/a/b/../../../c/./d")),
+            PathBuf::from("/c/d")
+        );
+        assert_eq!(
+            lexically_normal(Path::new("../a/../b")),
+            PathBuf::from("../b")
+        );
     }
 
     #[test]

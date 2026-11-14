@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) use host::{report_terminated, status_of, terminated_before_run, HostLink, HostStart};
-pub(crate) use sources::ProgramModule;
+pub(crate) use sources::{file_identity, ProgramModule};
 
 /// How the agent opens its connection.
 pub(crate) enum DebugOptions {
@@ -68,7 +68,8 @@ pub(crate) fn start(
                 eprintln!("error: connecting the debugger to {address}: {error}");
                 ExitCode::FAILURE
             })?;
-            (agent::Mode::Connecting, Some(stream))
+            let secret = std::env::var(agent::SECRET_VARIABLE).ok();
+            (agent::Mode::Connecting { secret }, Some(stream))
         }
         DebugOptions::Listen => {
             let token = connection::Token::generate().map_err(|error| {

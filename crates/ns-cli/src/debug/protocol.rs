@@ -136,6 +136,11 @@ pub(crate) struct ProcessEventBody {
     pub(crate) system_process_id: u32,
     pub(crate) is_local_process: bool,
     pub(crate) start_method: &'static str,
+    /// ns-next's own: the secret the launcher of `--debug-connect` handed
+    /// the process (`agent::SECRET_VARIABLE`), returned so that it can
+    /// tell its process from another that connected first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ns_next_secret: Option<String>,
 }
 
 /// The `stopped` event's body.

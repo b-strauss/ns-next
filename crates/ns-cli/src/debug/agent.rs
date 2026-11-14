@@ -10,7 +10,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,9 +35,6 @@ pub(crate) enum Input {
     Request { connection: u64, message: Value },
     /// The connection numbered `connection` ended.
     Closed { connection: u64 },
-    /// The listening mode's deadline for the connection numbered
-    /// `connection` to present the token passed.
-    AttachDeadline { connection: u64 },
     /// An event of the VM.
     Event(Event),
     /// A word from the host, which waits for the agent to act on it.
@@ -84,11 +81,25 @@ const WRITE_BOUND: Duration = Duration::from_secs(30);
 #[cfg(debug_assertions)]
 const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 
-/// How long the agent waits, after `terminated`, for the client's next
-/// request or its disconnect before the process ends anyway: a client
+/// How long the agent answers the client's requests after `terminated`,
+/// waiting for its disconnect, before the process ends anyway: a client
 /// answers `terminated` at once, with its `disconnect`, and one that does
-/// not delays the process's end by no more than this.
+/// not -- however busy -- delays the process's end by no more than this.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
+
+/// The variable a debug build reads `ENDED_LINGER` from, in milliseconds,
+/// as `ATTACH_DEADLINE_VARIABLE`.
+#[cfg(debug_assertions)]
+const ENDED_LINGER_VARIABLE: &str = "NS_NEXT_DEBUG_ENDED_LINGER_MILLISECONDS";
+
+/// How long the agent lingers after `terminated`.
+fn ended_linger() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(shortened) = debug_override(ENDED_LINGER_VARIABLE) {
+        return shortened;
+    }
+    ENDED_LINGER
+}
 
 /// The bound of one write to an attached client.
 fn write_bound() -> Duration {
@@ -118,9 +129,16 @@ pub(crate) enum Mode {
         next_connection: Sender<()>,
     },
     /// `--debug-connect`: when the client leaves, the debugger detaches
-    /// and the program runs on.
-    Connecting,
+    /// and the program runs on. `secret` is the one the launcher handed
+    /// the process (`SECRET_VARIABLE`), which the `process` event returns.
+    Connecting { secret: Option<String> },
 }
+
+/// The variable through which whoever starts `ns-next --debug-connect`
+/// hands it a one-time secret, which the agent returns in its `process`
+/// event (`nsNextSecret`), so that the launcher can tell its own process
+/// from another that connected first: a process id is no secret.
+pub(crate) const SECRET_VARIABLE: &str = "NS_NEXT_DEBUG_SECRET";
 
 /// The connected client.
 struct Client {
@@ -130,6 +148,8 @@ struct Client {
     /// Whether its `attach` succeeded: in the listening mode, whether it
     /// presented the token.
     attached: bool,
+    /// The listening mode's deadline for it to attach.
+    attach_by: Option<Instant>,
 }
 
 /// Whom the VM's answer to a command goes to.
@@ -293,15 +313,47 @@ impl Agent {
         }
     }
 
-    /// Serves every input until the process ends.
+    /// Serves every input until the process ends, and ends the session of
+    /// a client of the listening mode that has not attached by its
+    /// deadline: kept here, beside the inputs, rather than by a timer per
+    /// connection, and checked before every input too, so that a peer
+    /// sending without a pause cannot keep it from passing.
     pub(crate) fn run(mut self) {
-        while let Some(input) = self
-            .deferred
-            .pop_front()
-            .or_else(|| self.received.recv().ok())
-        {
+        loop {
+            if self
+                .attach_by()
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.leave();
+                continue;
+            }
+            let input = match self.deferred.pop_front() {
+                Some(input) => input,
+                None => match self.attach_by() {
+                    Some(deadline) => match self
+                        .received
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(input) => input,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    },
+                    None => match self.received.recv() {
+                        Ok(input) => input,
+                        Err(_) => return,
+                    },
+                },
+            };
             self.serve(input);
         }
+    }
+
+    /// The deadline of the current client to attach, while it has not.
+    fn attach_by(&self) -> Option<Instant> {
+        self.client
+            .as_ref()
+            .filter(|client| !client.attached)
+            .and_then(|client| client.attach_by)
     }
 
     fn serve(&mut self, input: Input) {
@@ -313,11 +365,6 @@ impl Agent {
             } => self.request(connection, message),
             Input::Closed { connection } => {
                 if self.is_current(connection) {
-                    self.leave();
-                }
-            }
-            Input::AttachDeadline { connection } => {
-                if self.is_current(connection) && !self.is_attached() {
                     self.leave();
                 }
             }
@@ -341,32 +388,30 @@ impl Agent {
         // from its reader would otherwise end.
         self.connections += 1;
         let connection = self.connections;
-        let reader = stream
-            .try_clone()
-            .and_then(|reader| connection::spawn_reader(reader, connection, self.inputs.clone()));
         let attach_by = self.listening().then(|| Instant::now() + attach_deadline());
-        let deadline = if self.listening() && reader.is_ok() {
-            connection::spawn_attach_deadline(attach_deadline(), connection, self.inputs.clone())
-        } else {
-            Ok(())
-        };
-        let writer = match (reader, deadline) {
-            (Ok(()), Ok(())) => stream.try_clone().and_then(|stream| {
+        // Shared by the reader and the writer; only the listening mode
+        // reads an unattached peer's frames short, since the connecting
+        // mode's peer is the one its user named.
+        let attached = Arc::new(AtomicBool::new(false));
+        let reader_bound = self.listening().then(|| Arc::clone(&attached));
+        let writer = stream
+            .try_clone()
+            .and_then(|reader| {
+                connection::spawn_reader(reader, connection, self.inputs.clone(), reader_bound)
+            })
+            .and_then(|()| stream.try_clone())
+            .and_then(|stream| {
                 connection::spawn_writer(
                     stream,
                     connection,
                     self.inputs.clone(),
                     attach_by,
                     write_bound(),
+                    attached,
                 )
-            }),
-            (Err(error), _) | (_, Err(error)) => Err(error),
-        };
+            });
         let Ok(writer) = writer else {
-            // A connection the agent cannot read or write is refused, never
-            // a panic of the agent's that would leave the host waiting.
-            let _ = stream.shutdown(Shutdown::Both);
-            self.next_connection();
+            self.refuse(&stream);
             return;
         };
         self.client = Some(Client {
@@ -374,7 +419,18 @@ impl Agent {
             writer,
             next_seq: 1,
             attached: false,
+            attach_by,
         });
+    }
+
+    /// A connection the agent cannot read or write is refused, never a
+    /// panic of the agent's that would leave the host waiting; its
+    /// session ends as one whose client left before it attached, so that
+    /// the connecting mode's program starts rather than wait for a
+    /// configuration that cannot come.
+    fn refuse(&mut self, stream: &TcpStream) {
+        let _ = stream.shutdown(Shutdown::Both);
+        self.session_ended(false);
     }
 
     fn is_current(&self, connection: u64) -> bool {
@@ -508,6 +564,10 @@ impl Agent {
             system_process_id: std::process::id(),
             is_local_process: true,
             start_method: "attach",
+            ns_next_secret: match &self.mode {
+                Mode::Connecting { secret } => secret.clone(),
+                Mode::Listening { .. } => None,
+            },
         };
         self.event("process", Some(to_value(process)));
         self.event("initialized", None);
@@ -908,7 +968,9 @@ impl Agent {
             return;
         };
         self.respond(connection, request, None);
-        if arguments.terminate_debuggee {
+        // A program that ended has its status already, which the process
+        // ends with once the host goes on; nothing is left to kill.
+        if arguments.terminate_debuggee && !self.exited {
             // At once, from this thread, for a program that reaches no
             // safepoint: no `ensure:` block runs. The response is written
             // first, within the writer's bound.
@@ -955,8 +1017,14 @@ impl Agent {
         self.line_step = None;
         self.stop_on_entry = false;
         self.entry_pending = false;
+        self.session_ended(was_attached);
+    }
+
+    /// What follows a session's end, by the mode: `was_attached` says
+    /// whether its client had configured anything.
+    fn session_ended(&mut self, was_attached: bool) {
         match &self.mode {
-            Mode::Connecting => {
+            Mode::Connecting { .. } => {
                 // The program runs on without its debugger, and without
                 // waiting for a configuration nobody will finish.
                 self.host.decide(HostStart::Run {
@@ -1116,15 +1184,35 @@ impl Agent {
     /// leave them out. Every other input keeps its order, served after.
     /// A request still on its way to the agent is not seen; DAP lets a
     /// stop and a request cross, and a client ignores an id it no longer
-    /// holds.
+    /// holds. Only the attached client's are served early: another
+    /// connection's would be dropped in any case, and one of a peer that
+    /// has not attached would overtake its own `attach`, which it needs.
     fn serve_replacements_received(&mut self) {
         while let Ok(input) = self.received.try_recv() {
-            if replaces_breakpoints(&input) {
+            if self.replaces_breakpoints(&input) {
                 self.serve(input);
             } else {
                 self.deferred.push_back(input);
             }
         }
+    }
+
+    /// Whether `input` is a request of the attached client that replaces
+    /// a breakpoint set.
+    fn replaces_breakpoints(&self, input: &Input) -> bool {
+        let Input::Request {
+            connection,
+            message,
+        } = input
+        else {
+            return false;
+        };
+        self.is_current(*connection)
+            && self.is_attached()
+            && matches!(
+                message.get("command").and_then(Value::as_str),
+                Some("setBreakpoints" | "setFunctionBreakpoints")
+            )
     }
 
     /// Shows the client the stop the program stands at, for `reason`.
@@ -1156,7 +1244,8 @@ impl Agent {
                 breakpoints,
             } => {
                 let ids: Vec<u32> = breakpoints.iter().map(|state| state.id.0).collect();
-                let asked = self.breakpoints.is_answer(&ids);
+                let replacement_pending = self.replacing("SetBreakpoints", Some(module));
+                let asked = self.breakpoints.is_answer(&ids, replacement_pending);
                 self.breakpoints.saw(&ids);
                 if !asked {
                     self.line_breakpoints_changed(module, breakpoints);
@@ -1165,7 +1254,8 @@ impl Agent {
             }
             Event::MethodBreakpoints(states) => {
                 let ids: Vec<u32> = states.iter().map(|state| state.id.0).collect();
-                let asked = self.breakpoints.is_answer(&ids);
+                let replacement_pending = self.replacing("SetMethodBreakpoints", None);
+                let asked = self.breakpoints.is_answer(&ids, replacement_pending);
                 self.breakpoints.saw(&ids);
                 if !asked {
                     self.function_breakpoints_changed(states);
@@ -1324,19 +1414,25 @@ impl Agent {
     /// After `terminated`, every request the client sends is still
     /// answered -- one it sent before it heard of the end, a `terminate`
     /// racing the program's end among them, which DAP answers like any
-    /// other -- until it disconnects, closes the connection, or is silent
-    /// for `ENDED_LINGER`, which bounds how long the process outlives its
-    /// program for a client that never disconnects. A `terminate` or a
-    /// `disconnect` succeeds, the program having ended; any other request
-    /// is refused, nothing being left to serve it.
+    /// other -- until it disconnects, closes the connection, or
+    /// `ENDED_LINGER` passed since `terminated`: a deadline rather than a
+    /// bound on its silence, so that a client that keeps asking and never
+    /// disconnects cannot keep the process past its program. A
+    /// `terminate` or a `disconnect` succeeds, the program having ended;
+    /// any other request is refused, nothing being left to serve it.
     fn answer_until_disconnected(&mut self) {
+        let deadline = Instant::now() + ended_linger();
         loop {
             let Some(connection) = self.client.as_ref().map(|client| client.connection) else {
                 return;
             };
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
             let input = match self.deferred.pop_front() {
                 Some(input) => input,
-                None => match self.received.recv_timeout(ENDED_LINGER) {
+                None => match self.received.recv_timeout(left) {
                     Ok(input) => input,
                     Err(_) => return,
                 },
@@ -1501,17 +1597,6 @@ impl Agent {
     }
 }
 
-/// Whether `input` is a request that replaces a breakpoint set.
-fn replaces_breakpoints(input: &Input) -> bool {
-    let Input::Request { message, .. } = input else {
-        return false;
-    };
-    matches!(
-        message.get("command").and_then(Value::as_str),
-        Some("setBreakpoints" | "setFunctionBreakpoints")
-    )
-}
-
 /// Whether the command named `name` (`Command::name`) makes the stopped
 /// program go on.
 fn is_going_on(name: &str) -> bool {
@@ -1605,6 +1690,152 @@ pub(super) fn to_value(value: impl Serialize) -> Value {
 mod tests {
     use super::*;
     use ns_runtime::BreakpointId;
+
+    /// An agent of `mode` over a VM that runs nothing, and the channel
+    /// its inputs come on. The interpreter is kept, since the remote's
+    /// halves name it.
+    struct Harness {
+        agent: Agent,
+        inputs: Sender<Input>,
+        host: Arc<HostState>,
+        _interpreter: ns_runtime::Interpreter,
+    }
+
+    fn harness(mode: Mode) -> Harness {
+        let mut interpreter = ns_runtime::Interpreter::bootstrap();
+        let (control, _events) = interpreter.attach_debugger().into_parts();
+        let (inputs, received) = std::sync::mpsc::channel();
+        let (drain, _) = std::sync::mpsc::channel();
+        let host = Arc::new(HostState::new());
+        let agent = Agent::new(
+            mode,
+            inputs.clone(),
+            received,
+            drain,
+            control,
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&host),
+            "test".to_string(),
+            Sources::new(Vec::new()),
+        );
+        Harness {
+            agent,
+            inputs,
+            host,
+            _interpreter: interpreter,
+        }
+    }
+
+    /// Connects a peer to `agent`, answering the peer's end, read with a
+    /// timeout so that a missing answer fails the test.
+    fn connect(agent: &mut Agent) -> std::io::BufReader<TcpStream> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let peer = TcpStream::connect(listener.local_addr().expect("an address")).expect("connect");
+        let (stream, _) = listener.accept().expect("accept");
+        agent.connected(stream);
+        peer.set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("a read timeout");
+        std::io::BufReader::new(peer)
+    }
+
+    fn request(seq: i64, command: &str, arguments: Value) -> Value {
+        json!({ "seq": seq, "type": "request", "command": command, "arguments": arguments })
+    }
+
+    /// The next message the peer reads that responds to `seq`.
+    fn response_to(peer: &mut std::io::BufReader<TcpStream>, seq: i64) -> Value {
+        loop {
+            let message = super::super::wire::read_message(peer, || usize::MAX)
+                .expect("a message")
+                .expect("the connection open");
+            if message["type"] == "response" && message["request_seq"] == seq {
+                return message;
+            }
+        }
+    }
+
+    /// A `disconnect` with `terminateDebuggee` served once the program
+    /// ended -- as the end's draining of the inputs serves one -- leaves
+    /// the process to end with the program's status: killing it here
+    /// would end this test's process.
+    #[test]
+    fn a_terminating_disconnect_after_the_end_kills_nothing() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        harness.agent.request(1, request(1, "attach", json!({})));
+        harness.agent.exited = true;
+        harness.agent.request(
+            1,
+            request(2, "disconnect", json!({ "terminateDebuggee": true })),
+        );
+        let response = response_to(&mut peer, 2);
+        assert_eq!(response["success"], true, "{response}");
+        assert!(harness.agent.client.is_none());
+    }
+
+    /// A connection the agent cannot read or write ends the connecting
+    /// mode's session as a client that left does: the program starts
+    /// without its debugger rather than wait for a configuration.
+    #[test]
+    fn a_refused_connection_of_the_connecting_mode_starts_the_program() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let _peer = TcpStream::connect(listener.local_addr().expect("an address"));
+        let (stream, _) = listener.accept().expect("accept");
+        harness.agent.refuse(&stream);
+        assert!(harness.agent.control.is_none(), "the debugger detached");
+        let (sender, _) = std::sync::mpsc::channel();
+        let link = super::super::host::HostLink::new(Arc::clone(&harness.host), sender);
+        let mut interpreter = ns_runtime::Interpreter::bootstrap();
+        assert!(matches!(
+            link.wait_for_configuration(&mut interpreter),
+            HostStart::Run {
+                stop_on_entry: false
+            }
+        ));
+    }
+
+    /// A stop served while a peer of the listening mode has not attached
+    /// leaves its `setBreakpoints` in its turn, after its `attach`, rather
+    /// than serve it early and refuse the peer for not having attached.
+    #[test]
+    fn a_stop_serves_no_replacement_of_a_peer_that_has_not_attached() {
+        let (next_connection, _next) = std::sync::mpsc::channel();
+        let token = Token::generate().expect("a token");
+        let presented = token.hex();
+        let mut harness = harness(Mode::Listening {
+            token,
+            next_connection,
+        });
+        let mut peer = connect(&mut harness.agent);
+        for message in [
+            request(1, "attach", json!({ "token": presented })),
+            request(
+                2,
+                "setBreakpoints",
+                json!({ "source": { "name": "Nothing.ns" } }),
+            ),
+        ] {
+            harness
+                .inputs
+                .send(Input::Request {
+                    connection: 1,
+                    message,
+                })
+                .expect("the agent's channel");
+        }
+        harness.agent.vm_event(Event::Stopped {
+            reason: StopReason::Pause,
+            returned: None,
+        });
+        assert!(harness.agent.client.is_some(), "the peer was refused");
+        while let Some(input) = harness.agent.deferred.pop_front() {
+            harness.agent.serve(input);
+        }
+        assert!(harness.agent.is_attached());
+        assert_eq!(response_to(&mut peer, 1)["success"], true);
+        assert_eq!(response_to(&mut peer, 2)["success"], true);
+    }
 
     #[test]
     fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {

@@ -296,6 +296,16 @@ impl DapClient {
     /// `ns-next <subcommand> --debug-connect=<address> <target>`, `run` or
     /// `load`.
     pub fn connect_mode_of(subcommand: &str, target: &Path) -> DapClient {
+        DapClient::connect_mode_with(subcommand, target, &[])
+    }
+
+    /// As `connect_mode_of`, the child given the environment `variables`
+    /// besides this process's.
+    pub fn connect_mode_with(
+        subcommand: &str,
+        target: &Path,
+        variables: &[(&str, &str)],
+    ) -> DapClient {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listen on a local port");
         let address = listener.local_addr().expect("the listener's address");
         let mut command = ns_next();
@@ -303,6 +313,7 @@ impl DapClient {
             .arg(subcommand)
             .arg(format!("--debug-connect={address}"))
             .arg(target);
+        command.envs(variables.iter().copied());
         let (mut child, stdout, stderr) = start(command);
         listener
             .set_nonblocking(true)

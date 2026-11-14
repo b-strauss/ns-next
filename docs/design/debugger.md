@@ -3405,20 +3405,25 @@ logpoints, which come with stage 5's conditions.
 
 Decided with the user on 2026-11-14: the agent opens its connection in
 either direction, as JDWP's `server=y` and `server=n` do
-(`jdk/src/jdk.jdwp.agent/share/native/libjdwp/debugInit.c:1197`,
-`:1246`). `ns-next run --debug` listens: it binds 127.0.0.1 on a port
-the system chooses and prints the port and a token on the standard error
-stream before the program writes anything, for a program started in a
-terminal and for any DAP client. `ns-next run --debug-connect=<address>`
-connects to a client that listens; the plugin always starts its programs
-this way, as IntelliJ starts a JVM with `server=n` and an address it
-listens at, so no port of the program is open to another process, nothing
-is read out of the program's standard error, and the plugin checks that
-the `process` event's `systemProcessId` is the process it started.
-`ns-next load` takes both options too: a program loaded from an image
-shows its modules through `source` requests on the image's text, and an
-image built with `--strip-source` shows frames without lines, a line
-breakpoint in it unverified.
+(`jdk/src/jdk.jdwp.agent/share/native/libjdwp/debugInit.c:1197`, `:1246`).
+`ns-next run --debug` listens: it binds 127.0.0.1 on a port the system
+chooses and prints the port and a token on the standard error stream
+before the program writes anything, for a program started in a terminal
+and for any DAP client. `ns-next run --debug-connect=<address>` connects
+to a client that listens; the plugin always starts its programs this way,
+as IntelliJ starts a JVM with `server=n` and an address it listens at, so
+no port of the program is open to another process, nothing is read out of
+the program's standard error, and the plugin checks that the `process`
+event's `systemProcessId` is the process it started. The connecting mode
+returns in that event, as `nsNextSecret`, a field of ns-next's own, the
+one-time secret its launcher handed it in the variable
+`NS_NEXT_DEBUG_SECRET`, so that a launcher can tell its process from
+another that connected to its port first -- a process id is no secret; it
+sends none when it was given none, and the listening mode, whose client
+presents a token, never sends one. `ns-next load` takes both options too:
+a program loaded from an image shows its modules through `source` requests
+on the image's text, and an image built with `--strip-source` shows frames
+without lines, a line breakpoint in it unverified.
 
 The token guards the listening socket, since a client that connects can
 run code in the program through evaluation, as the user who started it,
@@ -3440,36 +3445,41 @@ its own `terminate…` would, its `ensure:` blocks run, served at the next
 safepoint; `disconnect` removes every breakpoint and lets the program run
 on, and `disconnect` with `terminateDebuggee` ends the process at once
 from the agent's thread, with a terminated program's exit status and no
-`ensure:` block run, for a program that reaches no safepoint. The plugin's
-Stop sends `terminate`, and a second Stop kills the process, as IntelliJ's
-`KillableProcessHandler` does for a JVM; no timer in `ns-next` decides it
-(decided with the user on 2026-11-14). A program that ends -- while
-running, while stopped, or in the middle of a step -- sends `exited` with
-its exit status. The program's standard streams stay its own: when the IDE
-launched the process it shows them itself, and the agent is to send
-`output` events only for logpoints and messages of its own -- none today --
-so that no line is shown twice.
+`ensure:` block run, for a program that reaches no safepoint -- unless the
+program ended already, whose process then ends with its own status. The
+plugin's Stop sends `terminate`, and a second Stop kills the process, as
+IntelliJ's `KillableProcessHandler` does for a JVM; no timer in `ns-next`
+decides it (decided with the user on 2026-11-14). A program that ends --
+while running, while stopped, or in the middle of a step -- sends `exited`
+with its exit status. The program's standard streams stay its own: when
+the IDE launched the process it shows them itself, and the agent is to
+send `output` events only for logpoints and messages of its own -- none
+today -- so that no line is shown twice.
 
 Built (`crates/ns-cli/src/debug/`; its tests
 `crates/ns-cli/tests/debug_adapter.rs`, through the test client
 `crates/ns-cli/tests/common/dap.rs`): the framing (`wire.rs`, bounding a
 header and a message's length before it reads them, since the listening
-socket answers whoever connects), the connection in either direction with
-the token compared in constant time (`connection.rs`), the agent's thread
-(`agent.rs`), which every input reaches on one channel -- a connection, a
-request a reader thread read, a connection's end, an event a pump thread
-took off `DebugEvents`, a word of the host -- so that it is the only
-writer to the socket, and the host's link (`host.rs`). The session:
-`initialize` (its capabilities in `protocol.rs`), `attach` (the token,
-`stopOnEntry`), the `process` and `initialized` events, the client's
-configuration, then `configurationDone`, which starts the host; `pause`,
-`continue`, `terminate` and `disconnect`. A stop (`stopped.rs`,
-`sources.rs`) shows one thread, `main`; its frames, each `id` its index
-plus 1, placed at the selector of the send it waits on or else its
-statement, in lines and UTF-16 columns of its module's current text, which
-the agent asks of the VM (`Command::ModuleText`) only for the frames a
-`stackTrace` page shows and keeps by revision, so that a later stop asks
-only whether it changed -- a shipped module's text is the binary's own
+socket answers whoever connects: a message of at most 64 KiB from a peer
+that has not attached, which is far above an `initialize` or an `attach`,
+and of at most 64 MiB once it has, the bound decided as each header is
+read; `an_unattached_peer_s_long_frame_closes_its_connection`), the
+connection in either direction with the token compared in constant time
+(`connection.rs`), the agent's thread (`agent.rs`), which every input
+reaches on one channel -- a connection, a request a reader thread read, a
+connection's end, an event a pump thread took off `DebugEvents`, a word of
+the host -- so that it alone decides what the client is sent and in which
+order, and the host's link (`host.rs`). The session: `initialize` (its
+capabilities in `protocol.rs`), `attach` (the token, `stopOnEntry`), the
+`process` and `initialized` events, the client's configuration, then
+`configurationDone`, which starts the host; `pause`, `continue`,
+`terminate` and `disconnect`. A stop (`stopped.rs`, `sources.rs`) shows
+one thread, `main`; its frames, each `id` its index plus 1, placed at the
+selector of the send it waits on or else its statement, in lines and
+UTF-16 columns of its module's current text, which the agent asks of the
+VM (`Command::ModuleText`) only for the frames a `stackTrace` page shows
+and keeps by revision, so that a later stop asks only whether it changed
+-- a shipped module's text is the binary's own
 (`ns_runtime::shipped_module_source`), never asked; a frame without a
 location shows no source and line 0. A program module whose current text
 is its file's as loaded is shown by the file's path, every other module --
@@ -3489,11 +3499,18 @@ variant, in UTF-16 columns of the module's text as the agent knows it -- a
 program module's file as loaded until a stop read a newer current text, a
 shipped module's own, before any stop showed it too -- the module named by
 a source's path, its name `<Module>.ns` or its reference, and a source
-naming none answered unverified, "not a module of this program". A
-breakpoint is verified once the VM resolved it to a statement, whose line
-and column the response gives, so that one on a comment line shows on the
-next statement. `setFunctionBreakpoints` names a method
-`Module.Path.To.Class>>selector`, or `Module.Path.To.Class
+naming none answered unverified, "not a module of this program". A path
+names a module's file when both resolve to one canonical path, every `..`
+and symbolic link resolved, since the two are spelled independently: a
+project file names `../shared/Tree.ns` as written, a program may be
+started through a link, and an IDE names the file it resolved
+(`a_module_named_through_dot_dot_takes_a_breakpoint_by_its_plain_path`,
+`a_program_started_through_a_link_takes_a_breakpoint_by_its_real_path`); a
+path that does not resolve is compared with its `.` and `..` resolved by
+their spelling. A breakpoint is verified once the VM resolved it to a
+statement, whose line and column the response gives, so that one on a
+comment line shows on the next statement. `setFunctionBreakpoints` names a
+method `Module.Path.To.Class>>selector`, or `Module.Path.To.Class
 class>>selector` for the class side's; a line or function breakpoint takes
 a hit condition ("Hit counts and temporary breakpoints").
 `setExceptionBreakpoints` turns `uncaught`, `caught` and `halt` on by its
@@ -3508,23 +3525,26 @@ replacement, which an IDE sends at every change; the VM's ids of each
 set's latest answer map to them, and a stop's `hitBreakpointIds` name only
 ids the client's latest request for their set holds, never one it replaced
 since the VM decided the stop: before it reports a stop, the agent serves
-every `setBreakpoints` and `setFunctionBreakpoints` that has reached it,
-the client having sent it before it could see the stop, and keeps every
-other input's order; one still on the wire then crosses the stop, as DAP
-allows (`a_stop_naming_a_replaced_breakpoint_is_reported_without_it`,
-`a_pending_replacement_hides_the_ids_it_replaces`). An `Event::Breakpoints` or
-`Event::MethodBreakpoints` the VM sends unasked -- a pending breakpoint
-resolved as its module was built, an install that moved one -- is told
-from an answer by its ids: the VM numbers every breakpoint from one
-counter and an answer sets its whole set afresh, so an answer's ids are
-all new and an unasked event's all named by an earlier answer, which
-offsets could not tell apart from a replacement of the same offsets. It is
-reported as `breakpoint` events, `reason: "changed"`, and dropped while a
-replacement of its set is on its way, which removes what it names
-(`a_pending_breakpoint_is_reported_once_its_module_is_built`). A module an
-install changed is counted in its new text only once a stop read it: a
-`setBreakpoints` sent between the install and that stop counts its lines
-in the older text, and the VM resolves those offsets in the current one.
+every `setBreakpoints` and `setFunctionBreakpoints` of the attached client
+that has reached it, the client having sent it before it could see the
+stop, and keeps every other input's order -- a peer's that has not
+attached among them, which would otherwise overtake its own `attach`; one
+still on the wire then crosses the stop, as DAP allows
+(`a_stop_naming_a_replaced_breakpoint_is_reported_without_it`,
+`a_pending_replacement_hides_the_ids_it_replaces`). An
+`Event::Breakpoints` or `Event::MethodBreakpoints` the VM sends unasked --
+a pending breakpoint resolved as its module was built, an install that
+moved one -- is told from an answer by its ids: the VM numbers every
+breakpoint from one counter and an answer sets its whole set afresh, so an
+answer's ids are all new and an unasked event's all named by an earlier
+answer, which offsets could not tell apart from a replacement of the same
+offsets. It is reported as `breakpoint` events, `reason: "changed"`, and
+dropped while a replacement of its set is on its way, which removes what
+it names (`a_pending_breakpoint_is_reported_once_its_module_is_built`). A
+module an install changed is counted in its new text only once a stop read
+it: a `setBreakpoints` sent between the install and that stop counts its
+lines in the older text, and the VM resolves those offsets in the current
+one.
 
 The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
 default, or by statement (decision 4); `stepOut`, one `StepOut`; and
@@ -3554,39 +3574,47 @@ agent has the pump hand over every event the VM sent before it, answers
 each request they answer, and answers every request still waiting with an
 error, before it sends `exited` and `terminated`: the host's word comes on
 another path than the VM's events. It then answers every request the
-client sends until the client disconnects or closes the connection, or
-is silent for 2 s, which bounds how long the process outlives its
-program: a request sent before the client heard of the end -- a
-`terminate` racing it -- is answered like any other, `terminate` and
-`disconnect` with success, the program having ended, and every other
-request with an error
-(`a_request_after_the_program_ended_is_answered`). A listening agent gives a connection 10
-s from its acceptance to present the token in a good `attach`, a deadline
-for the whole exchange rather than a read timeout, so that neither a
-silent nor a trickling peer holds the one connection it serves, while an
-attached client may stay silent as long as it likes. The agent never
-writes to the socket itself: it queues each message for the
+client sends until the client disconnects or closes the connection, or 2 s
+passed since `terminated`, a deadline rather than a bound on the client's
+silence, which bounds how long the process outlives its program however
+busy the client is
+(`a_client_that_never_disconnects_cannot_keep_the_ended_program_s_process`):
+a request sent before the client heard of the end -- a `terminate` racing
+it -- is answered like any other, `terminate` and `disconnect` with
+success, the program having ended, and every other request with an error
+(`a_request_after_the_program_ended_is_answered`). A listening agent gives
+a connection 10 s from its acceptance to present the token in a good
+`attach`, a deadline for the whole exchange rather than a read timeout, so
+that neither a silent nor a trickling peer holds the one connection it
+serves, while an attached client may stay silent as long as it likes; the
+agent's loop keeps the deadline, waiting for its next input no longer than
+the deadline is away and checking it before every input, so that no thread
+waits for it and a peer that sends without a pause cannot hold it off. The
+agent never writes to the socket itself: it queues each message for the
 connection's writer thread (`connection::Writer`), so that a client that
 does not read never blocks it, and with it the VM's events, the host's
-word, a pause or a terminate. The writer bounds every write -- by the
-time left to the attach deadline until the client attached, by 30 s
-after -- and its queue holds 1,024 messages; a write past its bound, or
-a full queue, ends the session as a disconnect does: the connecting
-mode detaches, the listening mode resets the VM and accepts the next
-client (`a_peer_that_never_reads_is_closed_at_the_deadline`,
-`an_attached_client_that_stops_reading_is_dropped`). A debug build
-reads both bounds from variables, so that their tests take a fraction
-of a second. The agent refuses a connection it cannot start a reader,
-a deadline or a writer for. A client of the connecting mode
-that leaves detaches the debugger: both halves of the remote are dropped
-and the program runs on, a host still waiting for the configuration
-starting it. A client of the listening mode that leaves, once attached,
-has the VM reset -- no line breakpoint in any module the client set one
-in, no method or exception breakpoint, since nobody would be there to go
-on from a stop, the default step filters, a stopped program going on --
-and the next client is accepted; a host still waiting for the
-configuration waits for that client's, as it waited for the first. A stop
-that arrives while no client is attached goes on at once.
+word, a pause or a terminate. The writer bounds each message's whole
+write, however the client reads -- by the attach deadline until the client
+attached, by 30 s from the message's start after -- and its queue holds
+1,024 messages; a write past its bound, or a full queue, ends the session
+as a disconnect does: the connecting mode detaches, the listening mode
+resets the VM and accepts the next client
+(`a_peer_that_never_reads_is_closed_at_the_deadline`,
+`an_attached_client_that_stops_reading_is_dropped`). A debug build reads
+both bounds and the 2 s after `terminated` from variables, so that their
+tests take a fraction of a second. The agent refuses a connection it
+cannot start a reader or a writer for, which ends its session as a client
+that left before it attached: the connecting mode's program starts without
+its debugger. A client of the connecting mode that leaves detaches the
+debugger: both halves of the remote are dropped and the program runs on, a
+host still waiting for the configuration starting it. A client of the
+listening mode that leaves, once attached, has the VM reset -- no line
+breakpoint in any module the client set one in, no method or exception
+breakpoint, since nobody would be there to go on from a stop, the default
+step filters, a stopped program going on -- and the next client is
+accepted; a host still waiting for the configuration waits for that
+client's, as it waited for the first. A stop that arrives while no client
+is attached goes on at once.
 
 ### Threads
 

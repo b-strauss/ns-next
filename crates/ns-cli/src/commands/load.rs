@@ -72,6 +72,7 @@ pub(crate) fn execute(
         .map(|module| debug::ProgramModule {
             name: module.declaration.name.as_str().to_string(),
             path: None,
+            identity: None,
             text: module.source.as_deref().map(str::to_string),
         })
         .collect();

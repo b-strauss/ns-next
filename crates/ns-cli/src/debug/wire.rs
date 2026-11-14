@@ -4,13 +4,23 @@
 //!
 //! The listening socket answers whoever connects before any token is
 //! checked, so a frame is bounded before it is read: a header line, the
-//! number of header lines and a message's length.
+//! number of header lines and a message's length, which the reader
+//! decides once it read the header -- far shorter for a peer that has not
+//! attached than for a client that has.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read};
 
-/// The longest message read: far above any request a client sends, and a
-/// bound on what one connection can make the agent allocate.
-const MAXIMUM_LENGTH: usize = 64 * 1024 * 1024;
+/// The longest message read from an attached client: far above any
+/// request a client sends, and a bound on what one connection can make
+/// the agent allocate.
+pub(crate) const MAXIMUM_LENGTH: usize = 64 * 1024 * 1024;
+
+/// The longest message read from a peer that has not attached: far above
+/// an `initialize` or an `attach`, which are all it is served, and short
+/// enough that whoever reaches the listening socket, before presenting
+/// the token, cannot make the program parse a long message -- a JSON
+/// array of 64 MiB takes about 1 GiB as a `serde_json::Value`.
+pub(crate) const UNATTACHED_MAXIMUM_LENGTH: usize = 64 * 1024;
 
 /// The longest header line read.
 const MAXIMUM_HEADER_LINE: u64 = 1024;
@@ -31,7 +41,10 @@ pub(crate) enum WireError {
     /// The header held no `Content-Length`, or one that is no number.
     MissingLength,
     /// The length named is above the bound.
-    TooLong(usize),
+    TooLong {
+        length: usize,
+        maximum: usize,
+    },
     MalformedJson(serde_json::Error),
 }
 
@@ -44,9 +57,9 @@ impl std::fmt::Display for WireError {
             WireError::MissingLength => {
                 write!(formatter, "a message's header has no Content-Length")
             }
-            WireError::TooLong(length) => write!(
+            WireError::TooLong { length, maximum } => write!(
                 formatter,
-                "a message of {length} bytes is longer than the {MAXIMUM_LENGTH} the agent reads"
+                "a message of {length} bytes is longer than the {maximum} the agent reads"
             ),
             WireError::MalformedJson(error) => write!(formatter, "a message is no JSON: {error}"),
         }
@@ -54,9 +67,12 @@ impl std::fmt::Display for WireError {
 }
 
 /// The next message off `reader`, or `None` at a clean end of the stream,
-/// one before a frame begins.
+/// one before a frame begins. `maximum_length` gives the longest message
+/// read once the header is, so that a client that attached while the
+/// reader waited for the header is read as one that has.
 pub(crate) fn read_message(
     reader: &mut impl BufRead,
+    maximum_length: impl FnOnce() -> usize,
 ) -> Result<Option<serde_json::Value>, WireError> {
     let mut length = None;
     let mut lines = 0;
@@ -104,8 +120,9 @@ pub(crate) fn read_message(
         }
     }
     let length = length.ok_or(WireError::MissingLength)?;
-    if length > MAXIMUM_LENGTH {
-        return Err(WireError::TooLong(length));
+    let maximum = maximum_length();
+    if length > maximum {
+        return Err(WireError::TooLong { length, maximum });
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).map_err(|error| {
@@ -120,15 +137,21 @@ pub(crate) fn read_message(
         .map_err(WireError::MalformedJson)
 }
 
-/// Writes `message` as one frame and flushes it.
-pub(crate) fn write_message(
-    writer: &mut impl Write,
-    message: &serde_json::Value,
-) -> std::io::Result<()> {
+/// `message` as one frame's bytes.
+pub(crate) fn frame(message: &serde_json::Value) -> std::io::Result<Vec<u8>> {
     let body = serde_json::to_vec(message).map_err(std::io::Error::other)?;
     let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
     frame.extend_from_slice(&body);
-    writer.write_all(&frame)?;
+    Ok(frame)
+}
+
+/// Writes `message` as one frame and flushes it.
+#[cfg(test)]
+pub(crate) fn write_message(
+    writer: &mut impl std::io::Write,
+    message: &serde_json::Value,
+) -> std::io::Result<()> {
+    writer.write_all(&frame(message)?)?;
     writer.flush()
 }
 
@@ -138,7 +161,7 @@ mod tests {
     use serde_json::json;
 
     fn read_all(bytes: &[u8]) -> Result<Option<serde_json::Value>, WireError> {
-        read_message(&mut std::io::BufReader::new(bytes))
+        read_message(&mut std::io::BufReader::new(bytes), || MAXIMUM_LENGTH)
     }
 
     #[test]
@@ -153,10 +176,13 @@ mod tests {
         }
         let mut reader = std::io::BufReader::new(bytes.as_slice());
         for message in &messages {
-            let read = read_message(&mut reader).expect("a frame");
+            let read = read_message(&mut reader, || MAXIMUM_LENGTH).expect("a frame");
             assert_eq!(read.as_ref(), Some(message));
         }
-        assert!(matches!(read_message(&mut reader), Ok(None)));
+        assert!(matches!(
+            read_message(&mut reader, || MAXIMUM_LENGTH),
+            Ok(None)
+        ));
     }
 
     #[test]
@@ -182,7 +208,23 @@ mod tests {
         let header = format!("Content-Length: {}\r\n\r\n", MAXIMUM_LENGTH + 1);
         assert!(matches!(
             read_all(header.as_bytes()),
-            Err(WireError::TooLong(length)) if length == MAXIMUM_LENGTH + 1
+            Err(WireError::TooLong { length, .. }) if length == MAXIMUM_LENGTH + 1
+        ));
+    }
+
+    #[test]
+    fn wire_takes_the_bound_the_reader_gives_once_the_header_is_read() {
+        let body = format!("\"{}\"", "x".repeat(UNATTACHED_MAXIMUM_LENGTH));
+        let message = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        let mut reader = std::io::BufReader::new(message.as_bytes());
+        assert!(matches!(
+            read_message(&mut reader, || UNATTACHED_MAXIMUM_LENGTH),
+            Err(WireError::TooLong { maximum, .. }) if maximum == UNATTACHED_MAXIMUM_LENGTH
+        ));
+        let mut reader = std::io::BufReader::new(message.as_bytes());
+        assert!(matches!(
+            read_message(&mut reader, || MAXIMUM_LENGTH),
+            Ok(Some(serde_json::Value::String(_)))
         ));
     }
 

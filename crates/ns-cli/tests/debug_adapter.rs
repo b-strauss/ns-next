@@ -112,12 +112,43 @@ fn a_session_runs_the_program_to_its_end() {
         "{process}"
     );
     assert_eq!(process["body"]["startMethod"], "attach", "{process}");
+    assert!(
+        process["body"].get("nsNextSecret").is_none(),
+        "a process given no secret returns none: {process}"
+    );
     client.configuration_done();
     assert_eq!(exit_code_reported(&mut client), 0);
     let finished = client.finish();
     assert_eq!(finished.status, Some(0), "{}", finished.stderr);
     assert_eq!(finished.stdout, "hi\n");
     assert_eq!(finished.stderr, "");
+}
+
+/// The connecting mode returns the secret its launcher handed it in
+/// `NS_NEXT_DEBUG_SECRET` in the `process` event, so that the launcher can
+/// tell its own process from another that connected first, whose process
+/// id it could name; the listening mode, whose client presents a token,
+/// returns none.
+#[test]
+fn the_process_event_returns_the_launcher_s_secret() {
+    let (_directory, path) = program("Hello", HELLO);
+    let secret = "0123456789abcdef0123456789abcdef";
+    let mut client =
+        DapClient::connect_mode_with("run", &path, &[("NS_NEXT_DEBUG_SECRET", secret)]);
+    client.initialize();
+    let process = client.attach(false);
+    assert_eq!(process["body"]["nsNextSecret"], secret, "{process}");
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
+
+    let mut client = DapClient::listen_mode_with("run", &path, &[("NS_NEXT_DEBUG_SECRET", secret)]);
+    client.initialize();
+    let process = client.attach(false);
+    assert!(process["body"].get("nsNextSecret").is_none(), "{process}");
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
 }
 
 /// Every request the agent receives is answered, the ones that arrive
@@ -577,6 +608,167 @@ fn an_attached_client_that_stops_reading_is_dropped() {
     assert_eq!(finished.status, Some(0), "{}", finished.stderr);
     assert_eq!(finished.stdout, "hi\n");
     drop(unread);
+}
+
+/// A peer that has not attached is read no frame longer than 64 KiB, so
+/// that whoever reaches the listening socket cannot make the program
+/// parse a message of the length an attached client may send: its
+/// connection is closed unanswered, and the next client is served, which
+/// once attached may send a frame far longer.
+#[test]
+fn an_unattached_peer_s_long_frame_closes_its_connection() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode(&path);
+    let padding = "x".repeat(1024 * 1024);
+    // The agent may close the connection before the whole frame is
+    // written, which fails the write.
+    let answered = client
+        .connection
+        .try_send("initialize", json!({ "clientID": padding }))
+        .ok()
+        .and_then(|seq| client.connection.response_or_close(seq));
+    assert!(
+        answered.is_none(),
+        "a long frame was answered: {answered:?}"
+    );
+
+    client.reconnect();
+    client.initialize();
+    client.attach(false);
+    let long = "x".repeat(256 * 1024);
+    let threads = client.request("threads", json!({ "padding": long }));
+    assert_eq!(threads["success"], true, "{threads}");
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
+}
+
+/// The linger after `terminated` is a deadline from that event, not a
+/// bound on the client's silence: a client that keeps sending requests
+/// and never disconnects is answered until it passes, then the process
+/// ends with the program's status. A debug build reads the linger from a
+/// variable, so that the test takes a fraction of a second.
+#[cfg(debug_assertions)]
+#[test]
+fn a_client_that_never_disconnects_cannot_keep_the_ended_program_s_process() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::connect_mode_with(
+        "run",
+        &path,
+        &[("NS_NEXT_DEBUG_ENDED_LINGER_MILLISECONDS", "500")],
+    );
+    client.start_session(false);
+    client.event("terminated");
+    let started = std::time::Instant::now();
+    // Every 100 ms, well inside the linger, for far longer than it.
+    while started.elapsed() < Duration::from_secs(10) {
+        if client.connection.try_send("threads", json!({})).is_err()
+            || client.connection.closed_now()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the process outlived its program by {:?}",
+        started.elapsed()
+    );
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
+}
+
+/// A project's root that reaches `Shared` through its manifest.
+const SHARING: &str = indoc! {"
+    class App packageUsing: manifest = Object new (
+      | Shared = manifest Shared. |
+    ) (
+      public main: platform args: arguments = (
+        platform transcript show: Shared new greeting; newLine.
+      )
+    ) : ()
+"};
+
+/// A module whose `greeting` answers on line 3.
+const SHARED: &str = indoc! {"
+    class Shared = Object new () (
+      public greeting = (
+        ^'shared'
+      )
+    ) : ()
+"};
+
+/// A project whose module lies beside the project's directory, named
+/// `../shared/Shared.ns` in its `newspeak.json`, as written: a breakpoint
+/// the client sets by the module's plain path, as an IDE names the file,
+/// stops there.
+#[test]
+fn a_module_named_through_dot_dot_takes_a_breakpoint_by_its_plain_path() {
+    let directory = ScratchDirectory::new("SharedModule");
+    let project = directory.join("app");
+    let shared = directory.join("shared");
+    std::fs::create_dir_all(&project).expect("make the project's directory");
+    std::fs::create_dir_all(&shared).expect("make the module's directory");
+    std::fs::write(project.join("App.ns"), SHARING).expect("write the root");
+    std::fs::write(shared.join("Shared.ns"), SHARED).expect("write the module");
+    std::fs::write(
+        project.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": ["../shared/Shared.ns"] }"#,
+    )
+    .expect("write the project file");
+    let mut client = DapClient::connect_mode(&project);
+    let breakpoints = breakpoints_before_the_start(&mut client, &shared.join("Shared.ns"), &[3]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client).1, 3);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "shared\n");
+}
+
+/// Makes `link` a link to the directory `target`: a symbolic link, or on
+/// Windows a junction, which needs no privilege.
+fn link_directory(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    {
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            made.status.success(),
+            "mklink /J: {}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).expect("make a symbolic link");
+}
+
+/// A program started through a link to its directory takes a breakpoint
+/// the client sets by the file's real path, which is how an IDE names a
+/// file it resolved.
+#[test]
+fn a_program_started_through_a_link_takes_a_breakpoint_by_its_real_path() {
+    let directory = ScratchDirectory::new("LinkedProgram");
+    let real = directory.join("real");
+    std::fs::create_dir_all(&real).expect("make the program's directory");
+    std::fs::write(real.join("Stops.ns"), STOPS).expect("write the program");
+    let link = directory.join("link");
+    link_directory(&real, &link);
+    let mut client = DapClient::connect_mode(&link.join("Stops.ns"));
+    let breakpoints = breakpoints_before_the_start(&mut client, &real.join("Stops.ns"), &[6]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client).1, 6);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
 }
 
 /// A root whose `main:args:` holds an Integer and an Array in its locals

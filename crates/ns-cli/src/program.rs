@@ -128,19 +128,26 @@ pub(crate) fn entry_arguments(
 
 /// The program's modules as a debugger shows them: each by its root
 /// class's name, with the file it was read from and its text as read.
+/// A file is shown by its absolute path as the program named it, and
+/// known by its canonical one, which a client's path is compared with
+/// (`debug::file_identity`).
 pub(crate) fn debug_modules(program: &Program) -> Vec<debug::ProgramModule> {
     program
         .sources
         .iter()
-        .map(|loaded| debug::ProgramModule {
-            name: declared_name(loaded).to_string(),
-            path: match &loaded.origin {
+        .map(|loaded| {
+            let path = match &loaded.origin {
                 ns_runtime::SourceOrigin::File(path) => {
                     Some(std::path::absolute(path).unwrap_or_else(|_| path.clone()))
                 }
                 ns_runtime::SourceOrigin::Embedded(_) => None,
-            },
-            text: Some(loaded.source.clone()),
+            };
+            debug::ProgramModule {
+                name: declared_name(loaded).to_string(),
+                identity: path.as_deref().map(debug::file_identity),
+                path,
+                text: Some(loaded.source.clone()),
+            }
         })
         .collect()
 }

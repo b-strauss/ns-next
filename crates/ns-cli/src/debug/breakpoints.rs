@@ -255,7 +255,17 @@ impl Breakpoints {
     /// named. Telling them apart by their ids rather than by the offsets
     /// keeps an unasked event apart from the answer to a request of the
     /// same offsets, which is what an IDE sends at every change.
-    pub(crate) fn is_answer(&self, ids: &[u32]) -> bool {
+    ///
+    /// An event naming no id passes vacuously, which is right only
+    /// because the VM sends no unasked event of an empty set -- it reports
+    /// a set unasked only when one of its breakpoints changed -- so an
+    /// empty one answers a replacement that is on its way
+    /// (`replacement_pending`), which a debug build checks.
+    pub(crate) fn is_answer(&self, ids: &[u32], replacement_pending: bool) -> bool {
+        debug_assert!(
+            !ids.is_empty() || replacement_pending,
+            "the VM sent a breakpoints event of an empty set nothing asked for"
+        );
         ids.iter()
             .all(|id| self.highest_seen.is_none_or(|highest| *id > highest))
     }
@@ -754,12 +764,19 @@ mod tests {
     #[test]
     fn an_unasked_event_names_only_ids_an_answer_named() {
         let mut table = Breakpoints::default();
-        assert!(table.is_answer(&[]));
-        assert!(table.is_answer(&[0, 1]));
+        assert!(table.is_answer(&[], true));
+        assert!(table.is_answer(&[0, 1], true));
         table.saw(&[0, 1]);
-        assert!(!table.is_answer(&[0, 1]), "a pending one resolved");
-        assert!(table.is_answer(&[2, 3]), "the same offsets set again");
-        assert!(table.is_answer(&[]), "an empty set");
+        assert!(!table.is_answer(&[0, 1], false), "a pending one resolved");
+        assert!(table.is_answer(&[2, 3], true), "the same offsets set again");
+        assert!(table.is_answer(&[], true), "an empty set");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an empty set nothing asked for")]
+    fn an_empty_event_nothing_asked_for_is_a_broken_assumption() {
+        Breakpoints::default().is_answer(&[], false);
     }
 
     #[test]
