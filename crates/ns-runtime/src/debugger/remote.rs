@@ -558,7 +558,8 @@ impl DebugControl {
     /// Asks the program to stop at its next safepoint, interpreted or in
     /// machine code, a push or a loop's head; the VM answers
     /// `Event::Stopped`. A pause asked while no run executes stops the
-    /// next run at its first safepoint.
+    /// next run's first activation -- the method or block the host sent --
+    /// at its first statement start.
     pub fn pause(&self) {
         self.arm(DEBUGGER_PAUSE);
     }

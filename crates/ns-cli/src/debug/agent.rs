@@ -10,6 +10,7 @@ use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ns_runtime::{Command, DebugControl, Event, FrameDescription, StopReason};
 use serde::Serialize;
@@ -41,6 +42,11 @@ pub(crate) enum HostMessage {
     AboutToRunMain(Sender<()>),
     Exited { status: u8, done: Sender<()> },
 }
+
+/// How long a listening agent waits for the next message of a client that
+/// has not presented the token yet: a peer that connects and stays silent
+/// would otherwise hold the one connection the agent serves.
+const UNATTACHED_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Which way the connection was opened.
 pub(crate) enum Mode {
@@ -91,6 +97,12 @@ pub(crate) struct Agent {
     mode: Mode,
     /// Handed to each connection's reader.
     inputs: Sender<Input>,
+    /// What the agent serves, in order.
+    received: Receiver<Input>,
+    /// Asks the pump of the VM's events to hand over every event the VM
+    /// sent so far, and to end: the host's `Exited` reaches the agent on
+    /// another path than the events, which may still be on their way.
+    drain: Sender<Sender<()>>,
     /// `None` once the debugger was detached.
     control: Option<DebugControl>,
     /// Tells the pump of the VM's events to drop its half of the remote.
@@ -113,9 +125,15 @@ pub(crate) struct Agent {
 }
 
 impl Agent {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the agent's channels and shared state, each made by `start`"
+    )]
     pub(crate) fn new(
         mode: Mode,
         inputs: Sender<Input>,
+        received: Receiver<Input>,
+        drain: Sender<Sender<()>>,
         control: DebugControl,
         events_detached: Arc<AtomicBool>,
         host: Arc<HostState>,
@@ -124,6 +142,8 @@ impl Agent {
         Agent {
             mode,
             inputs,
+            received,
+            drain,
             control: Some(control),
             events_detached,
             host,
@@ -140,22 +160,26 @@ impl Agent {
     }
 
     /// Serves every input until the process ends.
-    pub(crate) fn run(mut self, inputs: Receiver<Input>) {
-        for input in inputs {
-            match input {
-                Input::Connected(stream) => self.connected(stream),
-                Input::Request {
-                    connection,
-                    message,
-                } => self.request(connection, message),
-                Input::Closed { connection } => {
-                    if self.is_current(connection) {
-                        self.leave();
-                    }
+    pub(crate) fn run(mut self) {
+        while let Ok(input) = self.received.recv() {
+            self.serve(input);
+        }
+    }
+
+    fn serve(&mut self, input: Input) {
+        match input {
+            Input::Connected(stream) => self.connected(stream),
+            Input::Request {
+                connection,
+                message,
+            } => self.request(connection, message),
+            Input::Closed { connection } => {
+                if self.is_current(connection) {
+                    self.leave();
                 }
-                Input::Event(event) => self.vm_event(event),
-                Input::Host(message) => self.host_message(message),
             }
+            Input::Event(event) => self.vm_event(event),
+            Input::Host(message) => self.host_message(message),
         }
     }
 
@@ -169,12 +193,26 @@ impl Agent {
         // Requests and responses are small and answer one another, which
         // Nagle's algorithm would hold back.
         let _ = stream.set_nodelay(true);
-        let Ok(reader) = stream.try_clone() else {
+        if self.listening()
+            && stream
+                .set_read_timeout(Some(UNATTACHED_READ_TIMEOUT))
+                .is_err()
+        {
+            let _ = stream.shutdown(Shutdown::Both);
             self.next_connection();
             return;
-        };
+        }
+        let reader = stream.try_clone().and_then(|reader| {
+            connection::spawn_reader(reader, self.connections + 1, self.inputs.clone())
+        });
+        if reader.is_err() {
+            // A connection the agent cannot read is refused, never a panic
+            // of the agent's that would leave the host waiting.
+            let _ = stream.shutdown(Shutdown::Both);
+            self.next_connection();
+            return;
+        }
         self.connections += 1;
-        connection::spawn_reader(reader, self.connections, self.inputs.clone());
         self.client = Some(Client {
             connection: self.connections,
             writer: stream,
@@ -266,6 +304,10 @@ impl Agent {
     fn attach(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) = self.arguments::<protocol::AttachArguments>(connection, request)
         else {
+            // Arguments that hold no token are a token not presented.
+            if self.listening() && !self.is_attached() {
+                self.leave();
+            }
             return;
         };
         if self.is_attached() {
@@ -286,6 +328,8 @@ impl Agent {
         }
         if let Some(client) = &mut self.client {
             client.attached = true;
+            // An attached client may be silent as long as it likes.
+            let _ = client.writer.set_read_timeout(None);
         }
         self.stop_on_entry = arguments.stop_on_entry;
         self.respond(connection, request, None);
@@ -324,6 +368,12 @@ impl Agent {
     /// Sends `command` to the VM, the request answered when the VM
     /// answers it.
     fn forward(&mut self, connection: u64, request: &protocol::Request, command: Command) {
+        // The program resumes once the VM serves a `Continue`; a `pause`
+        // that follows at once is asked of the running program, not
+        // dropped as one asked of a stopped one.
+        if command == Command::Continue {
+            self.stopped = false;
+        }
         let reply = Reply::Request {
             connection,
             request_seq: request.seq,
@@ -393,7 +443,7 @@ impl Agent {
         let Some(client) = self.client.take() else {
             return;
         };
-        let _ = client.writer.shutdown(Shutdown::Write);
+        let _ = client.writer.shutdown(Shutdown::Both);
         let was_attached = client.attached;
         self.stop_on_entry = false;
         self.entry_pending = false;
@@ -434,10 +484,11 @@ impl Agent {
         self.stopped = false;
     }
 
-    /// Puts the VM back as no client had configured it, for the next
-    /// client of a listening agent: no breakpoint, no exception stops
-    /// -- nobody would be there to go on from one -- the default step
-    /// filters, and a stopped program going on.
+    /// Leaves the VM stopping nowhere, for the next client of a listening
+    /// agent, since nobody would be there to go on from a stop: no line or
+    /// method breakpoint and no exception stop -- not even the uncaught
+    /// exceptions and halts the VM stops at before any client configures
+    /// it -- the default step filters, and a stopped program going on.
     fn reset_the_vm(&mut self) {
         for module in std::mem::take(&mut self.breakpoint_modules) {
             self.command(
@@ -593,6 +644,7 @@ impl Agent {
             }
             HostMessage::Exited { status, done } => {
                 self.exited = true;
+                self.answer_what_the_vm_sent();
                 if self.is_attached() {
                     let exited = protocol::ExitedEventBody {
                         exit_code: i64::from(status),
@@ -601,9 +653,41 @@ impl Agent {
                     self.event("terminated", None);
                 }
                 if let Some(client) = self.client.take() {
-                    let _ = client.writer.shutdown(Shutdown::Write);
+                    let _ = client.writer.shutdown(Shutdown::Both);
                 }
                 let _ = done.send(());
+            }
+        }
+    }
+
+    /// At the program's end: every event the VM sent before it is served
+    /// -- the pump hands them over and ends, and the inputs they join are
+    /// served in order -- so that a request the VM answered gets its
+    /// answer, and every request still waiting, whose answer can no longer
+    /// come, is answered by an error, never by silence.
+    fn answer_what_the_vm_sent(&mut self) {
+        let (handed_over, all_handed_over) = std::sync::mpsc::channel();
+        if self.control.is_some()
+            && self.drain.send(handed_over).is_ok()
+            && all_handed_over.recv().is_ok()
+        {
+            while let Ok(input) = self.received.try_recv() {
+                self.serve(input);
+            }
+        }
+        while let Some(pending) = self.pending.pop_front() {
+            if let Reply::Request {
+                connection,
+                request_seq,
+                command,
+            } = pending.reply
+            {
+                self.write_response(
+                    connection,
+                    request_seq,
+                    &command,
+                    Err("the program ended".to_string()),
+                );
             }
         }
     }

@@ -53,6 +53,9 @@ impl Token {
     }
 }
 
+/// How long the acceptor waits after a failed `accept`.
+const ACCEPT_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The listening socket on 127.0.0.1, at a port the system chooses.
 pub(crate) fn listen() -> std::io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -67,7 +70,9 @@ pub(crate) fn spawn_acceptor(listener: TcpListener, inputs: Sender<Input>, next:
         .spawn(move || loop {
             let Ok((stream, _)) = listener.accept() else {
                 // A connection that failed before it was accepted: the
-                // next one is awaited as usual.
+                // next one is awaited, after a pause, so that an error
+                // that persists costs no processor.
+                std::thread::sleep(ACCEPT_RETRY);
                 continue;
             };
             if inputs.send(Input::Connected(stream)).is_err() || next.recv().is_err() {
@@ -79,8 +84,13 @@ pub(crate) fn spawn_acceptor(listener: TcpListener, inputs: Sender<Input>, next:
 
 /// Reads the connection numbered `connection` until it ends, handing the
 /// agent each message; a frame that is no DAP message ends it too, since
-/// nothing after it can be framed.
-pub(crate) fn spawn_reader(stream: TcpStream, connection: u64, inputs: Sender<Input>) {
+/// nothing after it can be framed, and so does a read that timed out.
+/// Fails when no thread can be started for it.
+pub(crate) fn spawn_reader(
+    stream: TcpStream,
+    connection: u64,
+    inputs: Sender<Input>,
+) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("ns-next debugger reader".to_string())
         .spawn(move || {
@@ -98,7 +108,7 @@ pub(crate) fn spawn_reader(stream: TcpStream, connection: u64, inputs: Sender<In
             }
             let _ = inputs.send(Input::Closed { connection });
         })
-        .expect("spawn the debugger's reader");
+        .map(drop)
 }
 
 #[cfg(test)]

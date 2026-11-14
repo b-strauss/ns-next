@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub(crate) use host::{report_terminated, status_of, terminated_before_run, HostLink, HostStart};
 
@@ -90,22 +91,13 @@ pub(crate) fn start(
     };
     let (control, events) = interpreter.attach_debugger().into_parts();
     let events_detached = Arc::new(AtomicBool::new(false));
-    let pump_detached = Arc::clone(&events_detached);
-    let pump_inputs = inputs.clone();
-    std::thread::Builder::new()
-        .name("ns-next debugger events".to_string())
-        .spawn(move || {
-            // Ends with the VM, or at the first event after the debugger
-            // was detached, dropping this half of the remote.
-            while let Some(event) = events.recv() {
-                if pump_detached.load(Ordering::SeqCst)
-                    || pump_inputs.send(agent::Input::Event(event)).is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .expect("spawn the debugger's event pump");
+    let (drain, drain_requests) = mpsc::channel::<mpsc::Sender<()>>();
+    spawn_pump(
+        events,
+        inputs.clone(),
+        Arc::clone(&events_detached),
+        drain_requests,
+    );
     if let Some(stream) = connected {
         // The receiver lives in the agent, which is started below.
         let _ = inputs.send(agent::Input::Connected(stream));
@@ -114,6 +106,8 @@ pub(crate) fn start(
     let agent = agent::Agent::new(
         mode,
         inputs.clone(),
+        received,
+        drain,
         control,
         events_detached,
         Arc::clone(&state),
@@ -121,7 +115,46 @@ pub(crate) fn start(
     );
     std::thread::Builder::new()
         .name("ns-next debugger agent".to_string())
-        .spawn(move || agent.run(received))
+        .spawn(move || agent.run())
         .expect("spawn the debugger's agent");
     Ok(HostLink::new(state, inputs))
+}
+
+/// How long the pump waits for an event before it looks for a request of
+/// the agent's: short enough that a detach or the program's end is noticed
+/// at once, long enough to cost nothing.
+const PUMP_SLICE: Duration = Duration::from_millis(10);
+
+/// The pump of the VM's events: hands each to the agent, in order. Ends
+/// once the debugger was detached, dropping its half of the remote, or
+/// when the agent asks at the program's end, after handing over every
+/// event the VM sent until then, which the agent waits for.
+fn spawn_pump(
+    events: ns_runtime::DebugEvents,
+    inputs: mpsc::Sender<agent::Input>,
+    detached: Arc<AtomicBool>,
+    drain_requests: mpsc::Receiver<mpsc::Sender<()>>,
+) {
+    std::thread::Builder::new()
+        .name("ns-next debugger events".to_string())
+        .spawn(move || loop {
+            if let Some(event) = events.next_event(PUMP_SLICE) {
+                if inputs.send(agent::Input::Event(event)).is_err() {
+                    return;
+                }
+            }
+            if detached.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Ok(handed_over) = drain_requests.try_recv() {
+                while let Some(event) = events.next_event(Duration::ZERO) {
+                    if inputs.send(agent::Input::Event(event)).is_err() {
+                        break;
+                    }
+                }
+                let _ = handed_over.send(());
+                return;
+            }
+        })
+        .expect("spawn the debugger's event pump");
 }

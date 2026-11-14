@@ -146,17 +146,11 @@ fn stop_on_entry_stops_at_main() {
     assert_eq!(stopped["body"]["reason"], "entry", "{stopped}");
     let trace = client.request("stackTrace", json!({ "threadId": 1 }));
     assert_eq!(trace["success"], true, "{trace}");
-    // The pause stops the send's first safepoint, which is the first push
-    // `main:args:` makes, not its own entry: the stop stands in
-    // `main:args:`'s run, with its frame at the bottom of the stack.
     let frames = trace["body"]["stackFrames"]
         .as_array()
         .expect("the stack's frames");
-    assert_eq!(
-        frames.last().map(|frame| &frame["name"]),
-        Some(&json!("Hello>>main:args:")),
-        "{trace}"
-    );
+    assert_eq!(frames.len(), 1, "{trace}");
+    assert_eq!(frames[0]["name"], "Hello>>main:args:", "{trace}");
     let continued = client.request("continue", json!({ "threadId": 1 }));
     assert_eq!(continued["success"], true, "{continued}");
     assert_eq!(exit_code_reported(&mut client), 0);
@@ -273,10 +267,10 @@ fn a_second_client_connects_after_the_first_disconnected() {
 #[test]
 fn a_client_that_cannot_be_reached_is_reported() {
     let (_directory, path) = program("Hello", HELLO);
-    // A port nothing listens on: bound, then given back.
-    let address = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("a free port");
+    // Port 0, which nothing listens on and no process can take, and which
+    // every system refuses at once, where a closed port costs Windows
+    // seconds of retries.
+    let address = "127.0.0.1:0";
     let (success, stdout, stderr) = common::ns_next(&[
         "run".as_ref(),
         format!("--debug-connect={address}").as_ref(),
@@ -288,4 +282,89 @@ fn a_client_that_cannot_be_reached_is_reported() {
         stderr.starts_with(&format!("error: connecting the debugger to {address}: ")),
         "{stderr}"
     );
+}
+
+#[test]
+fn an_initialize_counting_from_0_is_refused() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::connect_mode(&path);
+    for (lines, columns) in [(false, true), (true, false)] {
+        let refused = client.request(
+            "initialize",
+            json!({
+                "adapterID": "ns-next",
+                "linesStartAt1": lines,
+                "columnsStartAt1": columns,
+            }),
+        );
+        assert_eq!(refused["success"], false, "{refused}");
+    }
+    client.start_session(false);
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
+}
+
+/// An `attach` without a token, and one whose arguments are no attach's,
+/// are refused and their connections closed; the program waits for a
+/// client that presents the token.
+#[test]
+fn an_attach_without_the_token_is_refused_and_closed() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode(&path);
+    for arguments in [json!({}), json!({ "token": 123 })] {
+        client.initialize();
+        let refused = client.request("attach", arguments);
+        assert_eq!(refused["success"], false, "{refused}");
+        client.connection.expect_closed();
+        client.reconnect();
+    }
+    client.start_session(false);
+    assert_eq!(exit_code_reported(&mut client), 0);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
+}
+
+/// Before an `attach` with the token, a listening agent refuses every
+/// request but `initialize` -- a `disconnect` that would end the process
+/// included -- and closes the connection; the program lives on for the
+/// next client.
+#[test]
+fn a_request_before_the_attach_is_refused_without_ending_the_program() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode(&path);
+    client.initialize();
+    let refused = client.request("disconnect", json!({ "terminateDebuggee": true }));
+    assert_eq!(refused["success"], false, "{refused}");
+    client.connection.expect_closed();
+
+    client.reconnect();
+    client.start_session(false);
+    assert_eq!(exit_code_reported(&mut client), 0);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
+}
+
+/// A `pause` sent right after a `continue` is asked of the running
+/// program, and stops it.
+#[test]
+fn a_pause_right_after_a_continue_stops_the_program() {
+    let (_directory, path) = program("Looper", LOOPER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    let stopped = client.event("stopped");
+    assert_eq!(stopped["body"]["reason"], "entry", "{stopped}");
+    let continue_seq = client.connection.send("continue", json!({ "threadId": 1 }));
+    let pause_seq = client.connection.send("pause", json!({ "threadId": 1 }));
+    let continued = client.connection.response_to(continue_seq, "continue");
+    assert_eq!(continued["success"], true, "{continued}");
+    let paused = client.connection.response_to(pause_seq, "pause");
+    assert_eq!(paused["success"], true, "{paused}");
+    let stopped = client.event("stopped");
+    assert_eq!(stopped["body"]["reason"], "pause", "{stopped}");
+    let terminated = client.request("terminate", json!({}));
+    assert_eq!(terminated["success"], true, "{terminated}");
+    assert_eq!(exit_code_reported(&mut client), 1);
+    assert_eq!(client.finish().status, Some(1));
 }

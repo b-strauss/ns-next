@@ -191,6 +191,67 @@ fn a_pause_before_the_run_stops_it_and_continue_finishes_it() {
     assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
 }
 
+/// Two methods a host sends: one beginning with a send of its own, and one
+/// whose local a block assigns, which lives in an indirection vector its
+/// body makes before its first statement.
+const ENTRY: &str = indoc! {"
+    class Entry = Object new () (
+      helper = (
+        ^41
+      )
+      public plain = (
+        self helper.
+        ^self helper + 1
+      )
+      public captured = (
+        | total ::= 0. |
+        {1. 2} do: [:each | total:: total + each].
+        ^total
+      )
+    ) : ()
+"};
+
+/// A pause asked between runs stops the next run's first activation, the
+/// method the host sent, at its first statement start, before it sends
+/// anything -- not at the run's first safepoint, the first push it makes
+/// -- and reports the stop as the pause's, under either lowering.
+#[test]
+fn a_pause_between_runs_stops_the_sent_method_at_its_first_statement() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        for (selector, first_statement, answer) in [
+            ("plain", "self helper.", 42),
+            ("captured", "total ::= 0.", 3),
+        ] {
+            let (mut interpreter, instance) = instance_of(ENTRY, lowering);
+            let remote = interpreter.attach_debugger();
+            remote.pause();
+            let agent = thread::spawn(move || {
+                expect_paused(&remote);
+                let frames = stack_trace(&remote);
+                continue_stopped(&remote);
+                frames
+            });
+            let result = interpreter.send(&instance, Symbol::intern(selector), &[]);
+            let answered = expect_ok(result, selector);
+            let frames = agent.join().expect("the remote's thread");
+            assert_eq!(small_integer(&mut interpreter, &answered), answer);
+            assert_eq!(frames.len(), 1, "{selector}: {frames:?}");
+            assert_eq!(frames[0].name, format!("Entry>>{selector}"));
+            let statement = frames[0]
+                .location
+                .as_ref()
+                .unwrap_or_else(|| panic!("{selector}: the frame is placed"))
+                .statement;
+            let expected = ENTRY.find(first_statement).expect("the statement");
+            assert_eq!(
+                usize::try_from(statement.start).expect("a small offset"),
+                expected,
+                "{selector} under {lowering:?}"
+            );
+        }
+    }
+}
+
 /// The two halves of a remote serve from two threads: one pumps the events
 /// into a channel while the test thread pauses and continues through the
 /// control, a clone of it for the second command.
@@ -3477,7 +3538,9 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A step over begun at a pause the run's first push stopped at, its
     /// frame standing at its first statement start, which the flood
-    /// patches, stops at the next statement, not where it stands.
+    /// patches, stops at the next statement, not where it stands. The
+    /// pause asked before the run stops the sent `run` at its first
+    /// statement; one asked there stops at the next safepoint, the push.
     fn a_step_over_after_a_pause_at_a_push_stops_at_the_next_statement(lowering) {
         let (mut interpreter, instance) = instance_of(STEPPING, lowering);
         let remote = interpreter.attach_debugger();
@@ -3485,6 +3548,9 @@ ns_runtime::for_each_lowering! {
         let ((before, after), result, _) = debugged_by(
             remote,
             |remote| {
+                expect_paused(remote);
+                remote.pause();
+                continue_stopped(remote);
                 expect_paused(remote);
                 let before = standing(remote, STEPPING);
                 step(remote, Command::StepOver);

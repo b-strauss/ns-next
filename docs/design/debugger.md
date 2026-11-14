@@ -348,7 +348,8 @@ The remote has three operations:
 
 - `pause()` asks the program to stop at its next safepoint, interpreted or
   in machine code, at a push or a loop's head. A pause asked while no run
-  executes stops the next run at its first safepoint.
+  executes stops the next run's first activation, the method or block the
+  host sent, at its first statement start.
 - `send(command)` queues a command and then sets the commands bit, so that
   the next safepoint serves it while the program runs, or the stop serves
   it while the program is stopped. A command queued while no run
@@ -658,8 +659,18 @@ the one that ended it -- would otherwise end the next run at its first
 safepoint, or be taken by its first stop, a run nobody terminated
 (`a_terminate_after_its_run_ended_does_not_end_the_next`,
 `a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other`). A
-pause is no command: one asked between runs stays, and stops the next run
-at its first safepoint.
+pause is no command: one asked between runs stays, and stops the next run.
+It stops the run's first activation at its first statement start, not at
+the run's first safepoint, the first push that activation makes, so that
+a client's stop on entry stands in the method the host sent: the run's
+start (`Interpreter::serve_before_run`, cold) floods the activation as a
+step over does, before it runs anything, and the first one-shot it
+reaches -- its first statement's -- makes a stop reported as the
+pause's, which serves the pause bit; the bit stays set meanwhile, so that
+a body without metadata, which floods nothing, stops at the first
+safepoint as before, and the stop is made whatever the step filters say,
+as a pause's is
+(`a_pause_between_runs_stops_the_sent_method_at_its_first_statement`).
 
 Every command dropped between runs is answered by `Event::Refused`, its
 reason that no run executes, so that every command the debugging API
@@ -3284,7 +3295,16 @@ configuration, then `configurationDone`, which starts the host; `pause`,
 `continue`, `threads`, a `stackTrace` of the frames' names, `terminate`
 and `disconnect`. The host waits for the configuration before its first
 run; with `stopOnEntry` the agent pauses the remote when the host
-announces `main:args:`, and reports that pause's stop as the entry's.
+announces `main:args:`, which stops `main:args:` at its first statement
+("Commands while the program runs"), and reports that pause's stop as
+the entry's. At the program's end the agent has the pump hand over every
+event the VM sent before it, answers each request they answer, and
+answers every request still waiting with an error, before it sends
+`exited` and `terminated`: the host's word comes on another path than
+the VM's events. A listening agent reads a client that has not presented
+the token with a timeout of 10 s, so that a silent peer cannot hold the
+one connection it serves, and refuses a connection it cannot start a
+reader for.
 A client of the connecting mode that leaves detaches the debugger: both
 halves of the remote are dropped and the program runs on, a host still
 waiting for the configuration starting it. A client of the listening mode

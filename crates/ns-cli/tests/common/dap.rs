@@ -48,6 +48,8 @@ pub struct Connection {
     next_seq: i64,
     /// Events that arrived while a response was awaited, in order.
     events: VecDeque<Value>,
+    /// Responses that arrived while another was awaited.
+    responses: Vec<Value>,
     closed: bool,
 }
 
@@ -70,6 +72,7 @@ impl Connection {
             messages,
             next_seq: 1,
             events: VecDeque::new(),
+            responses: Vec::new(),
             closed: false,
         }
     }
@@ -112,16 +115,24 @@ impl Connection {
 
     /// The response to the request `seq`, the events before it kept.
     pub fn response_to(&mut self, seq: i64, command: &str) -> Value {
+        let answers = |message: &Value| message["request_seq"] == seq;
+        if let Some(index) = self.responses.iter().position(answers) {
+            let message = self.responses.remove(index);
+            assert_eq!(message["command"], command, "{message}");
+            return message;
+        }
         loop {
             let Some(message) = self.next_message(command) else {
                 panic!("the connection closed before the response to `{command}`");
             };
-            if message["type"] == "response" && message["request_seq"] == seq {
+            if message["type"] == "response" && answers(&message) {
                 assert_eq!(message["command"], command, "{message}");
                 return message;
             }
             if message["type"] == "event" {
                 self.events.push_back(message);
+            } else if message["type"] == "response" {
+                self.responses.push(message);
             }
         }
     }

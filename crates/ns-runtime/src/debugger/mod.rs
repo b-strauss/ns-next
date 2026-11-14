@@ -359,8 +359,8 @@ impl Interpreter {
     /// another thread; a debugger attached before replaces it, its queued
     /// commands dropped with its channels and its pause and commands bits
     /// cleared, so that the new remote meets no stop it never asked for.
-    /// A pause the remote asks while no run executes stops the next run at
-    /// its first safepoint.
+    /// A pause the remote asks while no run executes stops the next run's
+    /// first activation at its first statement start.
     pub fn attach_debugger(&mut self) -> DebugRemote {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
@@ -496,13 +496,17 @@ impl Interpreter {
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
                 let (reason, returned) = self.enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
+                    let at_entry = stepping::is_at_entry(mutator);
                     let returned = stepping::end(mutator);
                     // A slot only a step's one-shot or the run to cursor
                     // stopped at is the step's stop, which reports the
-                    // value of the last call; a breakpoint the debugger
-                    // set there makes it the breakpoint's.
+                    // value of the last call -- or the pause's, for the
+                    // one-shot a pause pending at a run's start set; a
+                    // breakpoint the debugger set there makes it the
+                    // breakpoint's.
                     match breakpoint.hits.reason(unwound) {
                         Some(reason) => (reason, None),
+                        None if at_entry => (StopReason::Pause, None),
                         None => (StopReason::Step, returned),
                     }
                 });
@@ -1017,6 +1021,31 @@ impl Interpreter {
         if !delivered {
             self.detach_debugger();
         }
+    }
+
+    /// What a run's start serves, its first activation pushed and about
+    /// to run: the commands queued between runs (`serve_between_runs`),
+    /// then a pause asked meanwhile, which stops the first activation at
+    /// its first statement start (`stepping::stop_at_entry`) rather than at
+    /// the run's first safepoint. Cold: a run without a debugger tests one
+    /// option.
+    #[cold]
+    pub(crate) fn serve_before_run(&mut self) {
+        if self.debugger.is_none() {
+            return;
+        }
+        self.serve_between_runs();
+        if self.debugger.is_none() {
+            return;
+        }
+        self.enter(|mutator| {
+            if mutator.heap.debugger_bits() & DEBUGGER_PAUSE == 0 {
+                return;
+            }
+            if let Some(entry) = mutator.heap.top_activation() {
+                stepping::stop_at_entry(mutator, entry);
+            }
+        });
     }
 
     /// Takes every command queued for a run that is over, or that has not
