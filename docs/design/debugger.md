@@ -1637,8 +1637,9 @@ tests do not.
   unasked events told from answers, a module's source and reference,
   and when a line step goes on.
 - **The breakable statements' tests**:
-  `crates/ns-cli/tests/debug_metadata.rs` holds `breakable_statements` to where `SetBreakpoints` lands for every
-  golden of `goldens/language/` under each lowering, and the language
+  `crates/ns-cli/tests/debug_metadata.rs` holds `breakable_statements`
+  to where `SetBreakpoints` lands for every golden of
+  `goldens/language/` under each lowering, and the language
   server's tests (`crates/ns-analyzer/tests/protocol.rs`) its request:
   each statement's line and its block variants, an answer following the
   document's changes, `null` for a document that does not parse, an
@@ -1842,8 +1843,9 @@ served while running, the stop, reading the stack and its values,
 continuing and terminating ("The debugging API at the safepoint"), the
 breakpoints of every kind and the steps with their filters -- and so
 does its first client, the DAP agent in `ns-cli`
-(`crates/ns-cli/src/debug/`; "Launching, the start and the end"), beside the tests and the pause,
-breakpoint and step stress modes; evaluation, writing a frame and
+(`crates/ns-cli/src/debug/`; "Launching, the start and the end"),
+beside the tests and the pause, breakpoint and step stress modes;
+evaluation, writing a frame and
 `ActivationMirror` are planned.
 
 Every mechanism -- stopping and going on, the breakpoint instruction, the

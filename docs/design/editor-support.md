@@ -177,11 +177,12 @@ which prints an image's structure ([image-format.md](image-format.md),
 "Reading an artifact"); and `fmt`, the one command that writes, which
 rewrites `.ns` files in the formatter's layout
 ([formatting.md](formatting.md), "Entry points"). It never runs a program:
-`disasm` compiles a module or decodes an image, `inspect` reads an image without loading it, and neither
-runs the program's code -- the only Newspeak that runs is the shipped core
-library's instantiation in the interpreter `disasm` bootstraps, and in the
-one the language server bootstraps for the breakable lines ("Breakable
-lines"), and no other command starts an interpreter. Running is the `ns-next` binary's. Being a
+`disasm` compiles a module or decodes an image, `inspect` reads an image
+without loading it, and neither runs the program's code -- the only
+Newspeak that runs is the shipped core library's instantiation in the
+interpreter `disasm` bootstraps, and in the one the language server
+bootstraps for the breakable lines ("Breakable lines"), and no other
+command starts an interpreter. Running is the `ns-next` binary's. Being a
 binary of its own keeps the server's dependencies out of `ns-next` and out of
 `ns-runtime`: `lsp-server` (rust-analyzer's transport), `lsp-types` and
 `serde_json`, on top of `ns-syntax`, `ns-runtime` and `ns-tooling`, the crate
@@ -1779,8 +1780,8 @@ a `.ns` module.
   each run `cargo build -p ns-analyzer` at the repository root, debug and `--release`
   respectively; the lexer comparison depends on the debug build and points
   its test at it, and `buildRuntimeDebug` builds `ns-next` (debug) for the
-  DAP session test and the debug process test. Every sandbox an IDE starts from depends on the release build and gets
-  the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
+  DAP session test and the debug process test. Every sandbox an IDE
+  starts from depends on the release build and gets the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
   `platform-directories.properties` names for it (a host the file does not
   name fails the sandbox task rather than bundling a server the plugin would
   not look for), beside `THIRD-PARTY-NOTICES.txt` and
@@ -1888,8 +1889,8 @@ The server's own tests are described under its section, above ("Testing").
   inputs are the sources of `ns-cli`, `ns-runtime` (the core library
   included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler`
   and `binaryBuildSettings`: every change to the runtime reruns it, while
-  a change to the analyzer alone leaves it up to date; its framing and bookkeeping, piped to a scripted
-  peer instead, are `DapConnectionTest`'s, in plain JUnit under `test`
+  a change to the analyzer alone leaves it up to date; its framing and
+  bookkeeping, piped to a scripted peer instead, are `DapConnectionTest`'s, in plain JUnit under `test`
   (UTF-8 byte counts, header names in any case beside other headers, a
   body arriving in pieces, a failed response failing its future, events
   by name, a close or the stream's end failing every pending request, a

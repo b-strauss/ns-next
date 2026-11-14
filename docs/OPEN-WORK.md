@@ -25,8 +25,8 @@ edition 2021 to 2024, by `cargo fix --edition` and a formatting commit
 of its own, every gate run to the end of the batch, since the edition
 changes what the tree relies on: the temporary-scope rules of 2024
 change when a temporary in an `if let` scrutinee or a block's tail
-expression is dropped, `impl Trait` in return position captures every lifetime in
-scope, which touches the `'gc` brand (`CLAUDE.md`, "The brand is the
+expression is dropped, `impl Trait` in return position captures every
+lifetime in scope, which touches the `'gc` brand (`CLAUDE.md`, "The brand is the
 compiler's"), and `ns-memory`'s `extern` blocks become `unsafe extern`.
 Staying on an old toolchain and edition costs every later batch the
 lints and language features it cannot use, and the gap only grows.
@@ -2018,8 +2018,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
-  - **What stage 4's reviews left** (2026-11-14), none of them a wrong
-    outcome:
+  - **What stage 4's reviews left** (2026-11-14), wrong outcomes among
+    them -- a breakpoint a line off, a stop nobody asked for, a frame
+    over an old text:
     - *The plugin starts no image*: its run configurations run a program
       or a project from source, so `ns-next load --debug-connect`, which
       the agent serves, has no run configuration of the plugin's; an
@@ -2065,6 +2066,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       platform does at a breakpoint hit -- removing a temporary
       exception breakpoint, its suspend policy, its log -- does not apply
       to it ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *A module shown by reference keeps its first text in the plugin*:
+      the plugin keeps a `sourceReference`'s `LightVirtualFile` for the
+      whole session (`NewspeakSources.kt`), while the agent keeps a
+      module's reference across an install that changes its text, so
+      after such an install the frames' lines and columns, counted in the
+      new text, are shown over the editor's old one; the plugin would
+      have to read the text again when it changed -- the agent knows its
+      revision -- and replace the file's content
+      ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *The agent's event pump polls*: the pump waits for the VM's next
+      event 10 ms at a time, so that it notices a detach or the drain
+      at the program's end (`debug/mod.rs`, `PUMP_SLICE`), and wakes a
+      hundred times a second for the whole run; a wake-up the agent
+      sends with its request would let it sleep. Only a debugged
+      process pays it ([debugger.md](design/debugger.md), "Launching,
+      the start and the end").
     - *Tests*: the real `newspeak/breakableLines` round trip through the
       platform's LSP client (the breakpoint types' test replaces the
       fetcher), a breakpoint in a shipped module's read-only file, the
