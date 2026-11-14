@@ -1046,18 +1046,30 @@ impl InlineCaches {
     /// block's, a global row -- as the cells hold them: what a debug
     /// build's check after a compaction or a slide holds to naming no twin
     /// (`Mutator::verify_code_zone_holders`).
+    /// Each table's cells are read as one slice, and a vacant global
+    /// entry's row is not read at all: the cells hold it vacant, its entry
+    /// word 0 (`verify_cells`), and the global cache's rows, a thousand,
+    /// are mostly vacant.
     #[cfg(all(ns_jit, debug_assertions))]
-    pub(crate) fn cell_entries(&self) -> Vec<u64> {
-        let mut entries: Vec<u64> = (0..self.sites.len())
-            .map(|index| self.cells.site(index).entry)
-            .collect();
-        for (block, slots) in (0..).zip(&self.pool) {
-            for position in 0..slots.len() {
-                entries.push(self.cells.block_cell(block, position).entry);
-            }
-        }
-        entries.extend((0..self.global.entries.len()).map(|row| self.cells.global_row(row).entry));
-        entries
+    pub(crate) fn cell_entries(&self) -> impl Iterator<Item = u64> + '_ {
+        let cell_entry = |words: &[u64; cells::CELL_WORDS]| Cell::from_words(words).entry;
+        let sites = self.cells.site_words(self.sites.len());
+        let blocks = self.cells.block_words(self.pool.len());
+        let global = self.cells.global_words(self.global.entries.len());
+        let global_entries = self
+            .global
+            .entries
+            .iter()
+            .zip(global.as_chunks::<{ cells::ROW_WORDS }>().0)
+            .filter(|(entry, _)| !entry.is_vacant())
+            .map(|(_, words)| GlobalRow::from_words(words).entry);
+        sites
+            .as_chunks::<{ cells::CELL_WORDS }>()
+            .0
+            .iter()
+            .chain(blocks.as_chunks::<{ cells::CELL_WORDS }>().0)
+            .map(cell_entry)
+            .chain(global_entries)
     }
 
     /// Rewrites the entry address of every cell -- a site's own, a
@@ -1067,8 +1079,16 @@ impl InlineCaches {
     /// entry, as every other write of a cell is: what the entry decided is
     /// unchanged, only the address of the code it decided moved, and a
     /// freed body's target is one `cell_entry` answers the miss stub for.
+    ///
+    /// A vacant entry's cell is not read: the cells hold it vacant, its
+    /// entry word 0 (`verify_cells`), which names no code to move. Most
+    /// of the global cache's thousand rows are vacant, and a stress
+    /// compaction at every safepoint read each of them.
     pub(crate) fn remap_cell_entries(&mut self, plan: &crate::jit::zone::CompactionPlan) {
         for index in 0..self.sites.len() {
+            if matches!(self.sites[index].target, Target::Vacant) {
+                continue;
+            }
             let cell = self.cells.site(index);
             let entry = plan.remap(cell.entry);
             if entry != cell.entry {
@@ -1076,7 +1096,10 @@ impl InlineCaches {
             }
         }
         for (block, slots) in (0..).zip(&self.pool) {
-            for position in 0..slots.len() {
+            for (position, slot) in slots.iter().enumerate() {
+                if matches!(slot.target, Target::Vacant) {
+                    continue;
+                }
                 let cell = self.cells.block_cell(block, position);
                 let entry = plan.remap(cell.entry);
                 if entry != cell.entry {
@@ -1665,7 +1688,10 @@ impl GlobalCache {
     /// Rewrites every mirror row's entry address through `plan`:
     /// `InlineCaches::remap_cell_entries`'s global part.
     fn remap_entries(&self, cells: &mut Cells, plan: &crate::jit::zone::CompactionPlan) {
-        for row in 0..self.entries.len() {
+        for (row, entry) in self.entries.iter().enumerate() {
+            if entry.is_vacant() {
+                continue;
+            }
             let found = cells.global_row(row);
             let entry = plan.remap(found.entry);
             if entry != found.entry {
