@@ -54,81 +54,107 @@
 > finds running at a safepoint with a breakpoint that never stops ("The
 > breakpoint stress mode"); and the step stress mode stops every program
 > at the safepoints its schedule picks and takes a burst of steps from
-> there, reading the stack at every stop ("The step stress mode"). The DAP
-> agent's connection and session are built: `ns-next run` and `load` take
-> `--debug` and `--debug-connect`, and the agent shows a stop's stack,
-> variables and sources, sets line, function and exception breakpoints,
-> steps by line or statement, runs to a cursor and pauses ("Launching, the
-> start and the end"). The plugin's DAP client is built, and Debug on a
-> Newspeak run configuration shows the stops, frames and variables in
-> IntelliJ's debugger and carries its steps ("The JetBrains plugin").
-> Everything else is planned: the rest of the DAP agent and the plugin
-> (stage 4, next), evaluation, conditional breakpoints and logpoints,
-> smart step into, restart frame and force return (stage 5), hot swap and
-> edit-and-continue (stage 6) ("Planned: the order of building it"). The
-> design rests on seventeen decisions made with the user, nine on
-> 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
-> decisions"), on the mechanisms they imply ("Planned: the mechanisms"),
-> and leaves the questions in "Open questions" to be decided. It builds on
+> there, reading the stack at every stop ("The step stress mode").
+> Stage 4 is built too -- the debugger in the IDE: `ns-next run` and
+> `load` take `--debug`, which listens on 127.0.0.1 behind a token, and
+> `--debug-connect`, which connects to a client that listens, and the DAP
+> agent in `ns-cli` speaks the session over the remote's two halves --
+> line breakpoints with block variants and hit conditions, which the VM
+> counts, function and exception breakpoints, steps by line or statement,
+> run to cursor, pause, terminate and disconnect, and a stop's stack,
+> variables and sources, a module's text asked of the VM by revision
+> ("Launching, the start and the end", "Hit counts and temporary
+> breakpoints"); the language server answers a module's breakable lines
+> before any session runs, from `Interpreter::breakable_statements` ("A
+> breakpoint names a source position"); and the plugin debugs a Newspeak
+> run configuration in IntelliJ's debugger over a DAP client of its own,
+> with line, method and exception breakpoints ("The JetBrains plugin"). An
+> attached debugger with its defaults costs a running program nothing
+> measurable ("What stage 4 moved"). Everything else is planned:
+> evaluation, conditional breakpoints and logpoints, watches and setting
+> variables, smart step into, restart frame and force return (stage 5,
+> next), hot swap and edit-and-continue (stage 6) ("Planned: the order of
+> building it"). The design rests on seventeen decisions made with the
+> user, nine on 2026-11-10, stage 2's six and stage 3's two on 2026-11-12
+> ("The decisions"), on the mechanisms they imply, stage 4's questions
+> among them, decided on 2026-11-14 ("Planned: the mechanisms"), and
+> leaves the questions in "Open questions" to be decided. It builds on
 > groundwork that exists: reified activations and the activation stack,
 > suspension into frames, the statement→program-counter table, stable
 > call-site numbers, retained source, the unwinder's frame targets, the
 > JIT's materialization and invalidation, the safepoint poll, and the
 > MirrorBuilder's atomic install, each described in the document for its
 > own aspect ("What exists").
-> **Code:** stages 1 to 3 are `crates/ns-runtime/src/debugger/` (`mod.rs`: the
-> VM's side, `Interpreter::attach_debugger`, `serve_debugger`, the stop,
-> the arming lock `Arming`, the pause stress mode's `StressReader`, the
-> step stress mode's `StepReader` and `StepStress`;
-> `breakpoints.rs`: the breakpoint table, line breakpoints, the
-> one-shots and the breakpoint stress mode's patches; `stepping.rs`: the step in progress, `Stepping`;
-> `exceptions.rs`: the exception breakpoints, decided by the handler
-> search's two mirror rows (`builtins/activation.rs`), and the first frame an
-> exception's stop shows;
-> `remote.rs`: `DebugRemote`, `Command`, `Event` and the descriptions that
-> cross to the agent's thread; `stack.rs`: the stack trace, a frame's
-> body found by its declaration (`origin_of`) and its variables;
-> `values.rs`: the values a stop holds, `StopValues`; `metadata/`: the
-> tables (`mod.rs`: `BodyMetadata`, `MetadataCollector`), a declaration's
-> level compiled again and paired (`again.rs`), the cache (`cache.rs`)
-> and the oracle, `Interpreter::check_debug_metadata` (`check.rs`)),
-> the collection in both lowerers (`compiler/lower.rs`,
-> `compiler/reference.rs`, the `collector` parameter of the entry points
-> in `compiler/mod.rs`), `Mutator::mixin_level`
-> (`interpreter/instantiate.rs`), `bytecode::compiles_alike`, the cache
-> cleared at an install (`interpreter/install.rs`), the selector spans
-> (`ns_syntax::ast::MessageSend::selector_spans`), the
-> request word's bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`,
-> `DEBUGGER_PAUSE`, `DEBUGGER_COMMANDS`, `DEBUGGER_STEP`, `DEBUGGER_STOP`, `LOWERS_DEPTH_LIMIT`,
-> `Heap::synchronize_depth_limit`, `Heap::clear_debugger_bits`),
-> `heap/machine_words.rs` (the machine words as atomics behind an `Arc`),
-> `interpreter/safepoint.rs` (`Interpreter::safepoint`, which serves the
-> debugger first, `SafepointOutcome`, the pause stress mode's schedule),
-> `vm.rs` (`take_safepoint`, `terminate_at_safepoint`), `jit/mod.rs`
-> (`deoptimize_stopped_at_poll`, in every JIT build); stage 3's beyond
-> `debugger/`: the patchable slots and their originals
-> (`bytecode/compact.rs`, `EncodedBody::patch`, `restore`, `original`;
-> `CompiledCode::patch`, `is_patched` in `bytecode.rs`), the run loop's
-> `Breakpoint` arm and its decision (`vm.rs`;
-> `interpreter/breakpoint.rs`: `reached`, the method breakpoints' exits
-> and the reports of a frame left otherwise, `frame_left`), the unwinder's
-> reports (`interpreter/unwind.rs`, `Mutator::pop_for_unwind`), the fast
-> path switched off (`mixin.rs`, `MixinMethod::switch_fast_path`), the
+> **Code:** the VM's side is `crates/ns-runtime/src/debugger/` (`mod.rs`:
+> `Interpreter::attach_debugger`, `serve_debugger`, the service between
+> runs, the stop, a module's text by revision, the arming lock `Arming`,
+> the pause stress mode's `StressReader`, the step stress mode's
+> `StepReader` and `StepStress`; `breakpoints.rs`: the breakpoint table,
+> line breakpoints, the one-shots, the hit counts and the breakpoint
+> stress mode's patches; `stepping.rs`: the step in progress,
+> `Stepping`; `exceptions.rs`: the exception breakpoints, decided by the
+> handler search's two mirror rows (`builtins/activation.rs`), and the
+> first frame an exception's stop shows; `remote.rs`: `DebugRemote`, its
+> halves `DebugControl` and `DebugEvents`, `Command`, `Event` and the
+> descriptions that cross to the agent's thread; `stack.rs`: the stack
+> trace, a frame's body found by its declaration (`origin_of`) and its
+> variables; `values.rs`: the values a stop holds, `StopValues`;
+> `metadata/`: the tables (`mod.rs`: `BodyMetadata`,
+> `MetadataCollector`), a declaration's level compiled again and paired
+> (`again.rs`), a module's breakable statements without loading it
+> (`breakable.rs`), the cache (`cache.rs`) and the oracle,
+> `Interpreter::check_debug_metadata` (`check.rs`)), the collection in
+> both lowerers (`compiler/lower.rs`, `compiler/reference.rs`, the
+> `collector` parameter of the entry points in `compiler/mod.rs`),
+> `Mutator::mixin_level` (`interpreter/instantiate.rs`),
+> `bytecode::compiles_alike`, the cache cleared at an install
+> (`interpreter/install.rs`), the selector spans
+> (`ns_syntax::ast::MessageSend::selector_spans`), the request word's
+> bits in `heap.rs` (`REAL_REQUEST`, `STRESS_HOLD`, `DEBUGGER_PAUSE`,
+> `DEBUGGER_COMMANDS`, `DEBUGGER_STEP`, `DEBUGGER_STOP`,
+> `LOWERS_DEPTH_LIMIT`, `Heap::synchronize_depth_limit`,
+> `Heap::clear_debugger_bits`), `heap/machine_words.rs` (the machine
+> words as atomics behind an `Arc`), `interpreter/safepoint.rs`
+> (`Interpreter::safepoint`, which serves the debugger first,
+> `SafepointOutcome`, the pause stress mode's schedule), `vm.rs`
+> (`take_safepoint`, `terminate_at_safepoint`), `jit/mod.rs`
+> (`deoptimize_stopped_at_poll`, in every JIT build); the patchable
+> slots and their originals (`bytecode/compact.rs`,
+> `EncodedBody::patch`, `restore`, `original`; `CompiledCode::patch`,
+> `is_patched` in `bytecode.rs`), the run loop's `Breakpoint` arm and
+> its decision (`vm.rs`; `interpreter/breakpoint.rs`: `reached`, the hit
+> counts, the method breakpoints' exits and the reports of a frame left
+> otherwise, `frame_left`), the unwinder's reports
+> (`interpreter/unwind.rs`, `Mutator::pop_for_unwind`), the fast path
+> switched off (`mixin.rs`, `MixinMethod::switch_fast_path`), the
 > machine code a patch frees and the patched index lowered as an exit
 > (`jit::free_for_patch`, `jit/baseline.rs`, `jit/optimizing/`,
-> `jit/cut.rs`), and the handler search's two rows, a leaf and an
-> exit (`Kernel.ns`, `builtins/activation.rs`); and the tests in
+> `jit/cut.rs`), and the handler search's two rows, a leaf and an exit
+> (`Kernel.ns`, `builtins/activation.rs`). The DAP agent is
+> `crates/ns-cli/src/debug/` (`wire.rs`, `connection.rs`, `agent.rs`,
+> `host.rs`, `protocol.rs`, `stopped.rs`, `sources.rs`, `breakpoints.rs`,
+> `stepping.rs`), its token drawn by `ns-memory`'s `random.rs` and its
+> lines and columns counted by `ns-tooling`'s `lines.rs`; the breakable
+> lines are `crates/ns-analyzer/src/breakable.rs`; and the plugin's
+> debugger is
+> `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/debugger/`
+> (its DAP client in `dap/`). The tests are in
 > `crates/ns-runtime/tests/debugger.rs`, `tests/stress.rs` (the pause,
-> breakpoint and step stress modes), `debugger/metadata/tests.rs` and the oracle's runners
-> `crates/ns-cli/tests/debug_metadata.rs` and `golden_round_trips.rs`
-> ("Testing and gates"). The groundwork is in `crates/ns-runtime/src/bytecode.rs`
+> breakpoint and step stress modes), `debugger/metadata/tests.rs`, the
+> oracle's runners `crates/ns-cli/tests/debug_metadata.rs` and
+> `golden_round_trips.rs`, the agent's
+> `crates/ns-cli/tests/debug_adapter.rs`, and the plugin's
+> `DapSessionTest`, `NewspeakDebugProcessTest` and
+> `NewspeakBreakpointTypesTest` ("Testing and gates"). The groundwork is
+> in `crates/ns-runtime/src/bytecode.rs`
 > (`CompiledCode::statement_program_counter`, `CallSite`),
-> `bytecode/compact.rs` (`EncodedBody`), `bytecode/leftovers.rs`, `vm.rs`
-> (the run loop, its safepoint, `resume_caller`, `send_destination`),
-> `types.rs` (`Continuation`, `SourceOrigin`), `interpreter/unwind.rs`,
-> `interpreter/install.rs`, `jit/materialize.rs`, `jit/mod.rs` (`abandon`,
-> `invalidate_applications`, `CopyDependencies`), `core-library/Kernel.ns`
-> (the exceptions) and
+> `bytecode/compact.rs` (`EncodedBody`), `bytecode/leftovers.rs`,
+> `vm.rs` (the run loop, its safepoint, `resume_caller`,
+> `send_destination`), `types.rs` (`Continuation`, `SourceOrigin`),
+> `interpreter/unwind.rs`, `interpreter/install.rs`,
+> `jit/materialize.rs`, `jit/mod.rs` (`abandon`,
+> `invalidate_applications`, `CopyDependencies`),
+> `core-library/Kernel.ns` (the exceptions) and
 > `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/run/`
 > (the run configurations).
 
@@ -314,18 +340,21 @@ debugging API at the safepoint". What it and the later stages build on:
 
 ## The debugging API at the safepoint
 
-Stages 1 to 3 of the debugger ("Planned: the order of building it") are
+Stages 1 to 4 of the debugger ("Planned: the order of building it") are
 built: the VM's side of decisions 7 and 9 and the part of decision 1 that
-pausing, reading and ending a run need; the metadata of decisions 4,
-5 and 10 to 15, which give a stopped frame its name, its place and its
+pausing, reading and ending a run need; the metadata of decisions 4, 5
+and 10 to 15, which give a stopped frame its name, its place and its
 named variables ("Reading the stack at a stop", "Compiling the metadata
-again"); and the breakpoints and steps of decisions 2, 3, 16 and 17.
-It lives in `crates/ns-runtime/src/debugger/`
-and is reached through `Interpreter::attach_debugger`; its clients are
-the test suite (`crates/ns-runtime/tests/debugger.rs`), the pause,
-breakpoint and step stress modes, and the DAP agent in `ns-cli`, whose
-connection and session stage 4 has built so far ("Launching, the start
-and the end"). A program stops for a pause, at a line breakpoint, a run
+again"); the breakpoints and steps of decisions 2, 3, 16 and 17; and
+decision 6's agent with what it asks of the VM -- the remote's two
+halves, hit conditions, a module's text by revision, the breakable
+statements of a module not loaded, and a pause between runs stopping the
+run's first activation at its first statement. It lives in
+`crates/ns-runtime/src/debugger/` and is reached through
+`Interpreter::attach_debugger`; its clients are the test suite
+(`crates/ns-runtime/tests/debugger.rs`), the pause, breakpoint and step
+stress modes, and the DAP agent in `ns-cli` ("Launching, the start and
+the end"). A program stops for a pause, at a line breakpoint, a run
 to cursor's target or a method breakpoint's entry or exit ("Stopping at
 and going past a breakpoint", "Method breakpoints"), where a step arrives
 ("Step over in recursion and blocks"), and at an exception an exception
@@ -458,6 +487,16 @@ The commands (`debugger::Command`):
   attachment, `uncaught` and `halt` are on, `caught` is off and no class
   is named. Answered by `Event::ExceptionBreakpointsSet`; a
   configuration command, served as `SetBreakpoints` is.
+- `ModuleText { module, known_revision }` -- the current text of the
+  module `module` names, a shipped module's too, built or not, unless
+  `known_revision` is the revision the answer would carry; answered by
+  `Event::ModuleText { module, revision, text }`, `text` the text, or
+  `Unchanged`, or `None` for a module not built or without text (an
+  image built with `--strip-source`). The revision is the interpreter's
+  count of installs and of builds of a module's root class, one count
+  for every module: a text read at a revision is current until it is
+  raised, so that an agent asks again only whether it changed. Served
+  only at a stop, where the agent reads positions in it.
 
 The events (`debugger::Event`): `Stopped { reason, returned }`, the
 program stopped and serves commands until a `Continue` or a `Terminate` --
@@ -483,11 +522,12 @@ resolves or an install moves one; `StepFiltersSet`, the answer to
 `MethodBreakpointState` -- its id and whether its method is declared
 (`verified`) -- in the order they were set, the answer to
 `SetMethodBreakpoints`, and sent unasked when a module's build or an
-install changes whether one is verified; and `ExceptionBreakpointsSet`,
-the answer to `SetExceptionBreakpoints`. `Continue`, the three steps,
-`RunToPosition`, `StackTrace`, `Variables` and `Children` are served only
-at a stop; one that arrives while the program runs is refused with "the
-program is running", and one queued between runs is dropped and refused
+install changes whether one is verified; `ExceptionBreakpointsSet`,
+the answer to `SetExceptionBreakpoints`; and `ModuleText`, the answer to
+`ModuleText`. `Continue`, the three steps, `RunToPosition`, `StackTrace`,
+`Variables`, `Children` and `ModuleText` are served only at a stop; one
+that arrives while the program runs is refused with "the program is
+running", and one queued between runs is dropped and refused
 with "no run executes". Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
 agent therefore waits for `Stopped` before it sends a command only a stop
@@ -722,10 +762,13 @@ once.
 The DAP request `setBreakpoints` arrives while the program runs, as
 `pause` and `terminate` do, and becomes `SetBreakpoints`, which the next
 safepoint serves from the queue without stopping
-(`a_breakpoint_set_while_running_takes_effect`). Planned: `disconnect`
-becomes a command served the same way, the debugger detached with every
-breakpoint removed, as a remote's departure detaches it today
-("Detaching"), and the program runs on.
+(`a_breakpoint_set_while_running_takes_effect`). `disconnect` is no
+command of the VM's: a connecting agent drops both halves of the remote,
+which detaches the debugger with every breakpoint removed ("Detaching"),
+and a listening one, which serves another client next, sends the
+configuration commands that remove every breakpoint and continues a
+stopped program; either way the program runs on ("Launching, the start
+and the end").
 
 ### The stop
 
@@ -1306,9 +1349,10 @@ stopped, as above.
 
 ### Testing and gates
 
-**Partial:** the tests of stages 1 to 3, the pause stress mode, the
+**Partial:** the tests of stages 1 to 4, the pause stress mode, the
 breakpoint stress mode and the step stress mode exist; the model test of
-the poll words' ordering, and every later stage's tests, do not.
+the poll words' ordering, the debugger goldens, and every later stage's
+tests do not.
 
 - **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
   a pause before the run and from another thread, continue and
@@ -1565,8 +1609,49 @@ the poll words' ordering, and every later stage's tests, do not.
   out, the shipped filter on and off, from the stops its schedule picks,
   reads the stack at every stop, and holds every golden's outcome under
   both lowerings, with the JIT and with `NS_NEXT_NO_JIT=1`.
-- Planned: **debugger goldens**, a `.ns` with a script of commands and the
-  stops, stacks and values expected, run by a scripted DAP client in
+- **The agent's tests** (`crates/ns-cli/tests/debug_adapter.rs`, through
+  the test client `tests/common/dap.rs`, each starting `ns-next` as a
+  process, and its unit tests in `crates/ns-cli/src/debug/`): a session
+  run to its end; the listening mode's line, its token required, an
+  `initialize` counting from 0 and a request before the `attach`
+  refused, a peer that never attaches closed at the deadline and an
+  attached one silent past it kept; `stopOnEntry` stopping at
+  `main:args:`; `terminate` running the `ensure:` blocks, also between
+  runs, before `main:args:`; `disconnect` with `terminateDebuggee`
+  killing a program inside a long leaf, and without it letting a stopped
+  program finish in either mode; a second client of the listening mode
+  meeting none of the first's breakpoints; a breakpoint's stop showing
+  its frame and variables, a frame's line and column after non-ASCII
+  text, a shipped frame through a source reference, a loaded image's
+  modules through source references and a stripped image's frames
+  without lines; breakpoints set before `configurationDone`, in a
+  shipped module, while running, as a block variant, with a pass count
+  and on a comment line; a stop naming a replaced breakpoint; steps by
+  line and by statement, in and out, a line step over a one-line loop
+  and one a breakpoint ends mid-line; run to cursor; a function
+  breakpoint; an uncaught exception's description; `pause` of a running
+  loop and right after a `continue`; a stack trace while running
+  refused; and a pending breakpoint reported once its module is built.
+  The unit tests hold the parsing of hit conditions, method names and
+  class lists, a breakpoint's id kept while the client sends it, the
+  unasked events told from answers, a module's source and reference,
+  and when a line step goes on.
+- **The breakable statements' tests**:
+  `crates/ns-cli/tests/debug_metadata.rs` holds `breakable_statements` to where `SetBreakpoints` lands for every
+  golden of `goldens/language/` under each lowering, and the language
+  server's tests (`crates/ns-analyzer/tests/protocol.rs`) its request:
+  each statement's line and its block variants, an answer following the
+  document's changes, `null` for a document that does not parse, an
+  unknown document's error, and a chain past the cap answered `null`
+  with the server serving on ([editor-support.md](editor-support.md),
+  "Breakable lines").
+- **The plugin's tests** debug programs with the real runtime through
+  its DAP client (`DapSessionTest`), through the platform's debugger
+  (`NewspeakDebugProcessTest`) and through its breakpoint types
+  (`NewspeakBreakpointTypesTest`), each a Gradle task of its own
+  ([editor-support.md](editor-support.md), "Plugin testing and gates").
+- Planned: **debugger goldens**, a `.ns` with a script of commands and
+  the stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
 - **Stage 3's end-of-batch gates** passed on its final tree
   (`b3da5ce3`, 2026-11-13): `images`, `caches`, `benchmarks`,
@@ -1579,13 +1664,11 @@ the poll words' ordering, and every later stage's tests, do not.
   `vm::run` past its budget ("Stopping at and going past a breakpoint").
   What stage 3 costs a program without a debugger was measured against
   its base, `bench_signal` +0.3% at forty iterations and the geometric
-  mean +0.36%, nothing separated ("What stage 3 moved"); a program with a
-  debugger attached and
-  no breakpoint cannot be timed until stage 4's `--debug` attaches one
-  from the command line. The `linux` and `aarch64` gates already run the
-  atomics on both architectures.
-- Planned: **the plugin's tests** drive its `XDebugProcess` against the
-  agent.
+  mean +0.36%, nothing separated ("What stage 3 moved"), and what an
+  attached debugger with its defaults costs, against the same binary
+  without one, +0.04% on the geometric mean, nothing separated ("What
+  stage 4 moved"). The `linux` and `aarch64` gates run the atomics on
+  both architectures.
 
 ### What stage 1 moved
 
@@ -1688,6 +1771,47 @@ command line attaches yet; Linux, AArch64 and Windows on ARM; start-up,
 memory and `ns-next load`; and an unwind through frames running machine
 code beyond what `bench_signal` exercises.
 
+### What stage 4 moved
+
+Stage 4 adds nothing to a program run without `--debug`: the hit counts
+are read only in `interpreter/breakpoint.rs`'s cold decision, and no
+instruction, golden, `run-corpus` outcome or image changed. What it
+adds to a program run with a debugger attached is the agent's thread
+and, at every exception the handler search reports, a clone of the
+exception breakpoints' settings. So stage 4 was measured as an attached
+debugger against none, on one binary, in one sitting on 2026-11-14, on
+the tree `f45b4f0b`, by the protocol of the `measuring-performance`
+skill: two builds, a with the pinned `RUSTFLAGS` and b with them plus
+another code layout (`-C metadata`, every block aligned, the zone
+paddings 208 and 32), each process held to the performance cores before
+it ran. One build a layout rather than three a side, since both sides
+run the same binary: a layout's noise cancels, but in the debugger's own
+cold code. The Are We Fast Yet harness timed each program in process, a
+warm-up of 1,000 ms and a measurement of 2,000 ms (CD, DeltaBlue,
+Havlak, Mandelbrot and NBody 2,000 and 5,000), its result printed to
+four decimals, plain `ns-next run` against `ns-next run --debug-connect`
+with a client that initializes, attaches and sends `configurationDone`
+and nothing else, three rounds alternating and rotating the order.
+
+The attached run's time over the plain one's, as a geometric mean over
+the sixteen programs, is 1.0001 in build a, 1.0008 in build b, 1.0004
+pooled (+0.04%); every pooled program lies within 0.9956 (Storage) and
+1.0065 (Json), while the plain runs alone moved a median 0.65%, at most
+1.84%, between rounds: nothing separates from noise. No Are We Fast Yet
+program signals an exception in a passing run, so the clone was timed
+apart, 200,000 caught signals fifty frames deep timed in process: 0.9995
+in build a and 1.0003 in build b, about 3.8 µs a signal either way. The
+fixed cost is the connection and the handshake, 17 to 32 ms a process
+over loopback (a program that prints a line: 5.3 ms plain, 29.7 ms
+attached).
+
+Not covered: a third build; the listening mode (`--debug`) and
+`load --debug-connect`; any debugger state beyond the defaults --
+breakpoints, filters, steps and pauses; uncaught exceptions,
+`doesNotUnderstand:`, errors the VM raises, and resumed or retried
+exceptions; `ns-next bench`, and of the microbenchmarks only
+`bench_signal`'s signal; Linux, AArch64 and Windows on ARM.
+
 ## The decisions
 
 Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
@@ -1699,31 +1823,38 @@ Each states the choice and the reasons the alternatives were rejected; the
 mechanisms each implies are in "Planned: the mechanisms". Decisions 2,
 5, 7 and 10 to 17 are built; of decisions 1 and 9 what pausing, reading
 the stack, ending a run, breakpoints and steps need: the debugging API
-without evaluation, writing a frame and its second client, and the stop
-waiting at the safepoint ("The debugging API at the safepoint"); of
-decision 3 every step but smart step into; and of decision 4 the tables
-and the stops at statement starts and return points, without smart step
-into's targets and the agent's stepping by line. Everything else they
-decide is planned, and is written below as the design to build.
+without evaluation and writing a frame, its first client, the DAP agent,
+and the stop waiting at the safepoint ("The debugging API at the
+safepoint"); of decision 3 every step but smart step into; of decision 4
+the tables, the stops at statement starts and return points and the
+agent's stepping by line, without smart step into's targets; and of
+decision 6 the session, breakpoints of every kind, steps, run to cursor,
+pause and inspection over DAP, without evaluation, conditions,
+logpoints, smart step into, restart frame, force return and hot swap.
+Everything else they decide is planned, and is written below as the
+design to build.
 
 ### 1. One debugging API in Rust, two clients over it
 
-**Partial:** the API's first part exists in `crates/ns-runtime/src/debugger/`
--- attaching, pausing, the commands served while running, the stop,
-reading the stack and its values, continuing and terminating ("The
-debugging API at the safepoint"), the breakpoints of every kind and the
-steps with their filters -- and its only clients are the tests and the
-pause, breakpoint and step stress modes; evaluation, writing a frame and
-both clients are planned.
+**Partial:** the API's first part exists in
+`crates/ns-runtime/src/debugger/` -- attaching, pausing, the commands
+served while running, the stop, reading the stack and its values,
+continuing and terminating ("The debugging API at the safepoint"), the
+breakpoints of every kind and the steps with their filters -- and so
+does its first client, the DAP agent in `ns-cli`
+(`crates/ns-cli/src/debug/`; "Launching, the start and the end"), beside the tests and the pause,
+breakpoint and step stress modes; evaluation, writing a frame and
+`ActivationMirror` are planned.
 
 Every mechanism -- stopping and going on, the breakpoint instruction, the
-stepping state, reading and writing frames, the metadata, deoptimization --
-sits, or will sit, behind one debugging API of `ns-runtime`. It will have two clients: the
-remote agent in `ns-cli`, which speaks the protocol to an IDE and is built
-first, and `ActivationMirror` in `MirrorsFactory.ns`, through new mirror
-leaves, which gives a program the access to activations §8.2 asks of
-mirrors. Evaluation and edit-and-continue will run Newspeak code through
-the existing resolver, compiler and install.
+stepping state, reading and writing frames, the metadata,
+deoptimization -- sits, or will sit, behind one debugging API of
+`ns-runtime`. It has two clients: the remote agent in `ns-cli`, which
+speaks the protocol to an IDE and is built, and `ActivationMirror` in
+`MirrorsFactory.ns`, through new mirror leaves, which gives a program the
+access to activations §8.2 asks of mirrors and is planned. Evaluation and
+edit-and-continue will run Newspeak code through the existing resolver,
+compiler and install.
 
 HotSpot is cut the same way: JVMTI is the one API, and the JDWP agent
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/`) one of its clients.
@@ -2352,9 +2483,9 @@ questions"). The mechanisms stages 1 and 2 built -- the poll words as
 atomics, the commands served while the program runs, reading the stack at
 a stop, compiling the metadata again and the values a stop holds -- are
 described in "The debugging API at the safepoint", with what of them is
-still planned; a mechanism below that stage 3 built says so, and what of
-it is still planned, in its first line; one that says nothing is planned
-whole.
+still planned; a mechanism below that stage 3 or 4 built says so, and
+what of it is still planned, in its first line; one that says nothing is
+planned whole.
 
 ### Where the original lives
 
@@ -3269,6 +3400,9 @@ none.
 
 ### Launching, the start and the end
 
+**Built** (`crates/ns-cli/src/debug/`), but for the `output` events of
+logpoints, which come with stage 5's conditions.
+
 Decided with the user on 2026-11-14: the agent opens its connection in
 either direction, as JDWP's `server=y` and `server=n` do
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/debugInit.c:1197`,
@@ -3312,10 +3446,11 @@ Stop sends `terminate`, and a second Stop kills the process, as IntelliJ's
 (decided with the user on 2026-11-14). A program that ends -- while
 running, while stopped, or in the middle of a step -- sends `exited` with
 its exit status. The program's standard streams stay its own: when the IDE
-launched the process it shows them itself, and the agent sends `output`
-events only for logpoints and its own messages, so no line is shown twice.
+launched the process it shows them itself, and the agent is to send
+`output` events only for logpoints and messages of its own -- none today --
+so that no line is shown twice.
 
-Built so far (`crates/ns-cli/src/debug/`; its tests
+Built (`crates/ns-cli/src/debug/`; its tests
 `crates/ns-cli/tests/debug_adapter.rs`, through the test client
 `crates/ns-cli/tests/common/dap.rs`): the framing (`wire.rs`, bounding a
 header and a message's length before it reads them, since the listening
@@ -3430,6 +3565,8 @@ configuration waits for that client's, as it waited for the first. A stop
 that arrives while no client is attached goes on at once.
 
 ### Threads
+
+**Built** for the one thread there is (`stopped.rs`).
 
 The VM is single-threaded: the protocol shows one thread. A pull future's
 forcing runs on the same stack and shows as frames of it. Each actor will
@@ -3648,23 +3785,28 @@ values and step times.
 
 ## Planned: the order of building it
 
-Stages 4 to 6 remain, in this order. Stage 1, the debugging API at the
-safepoint -- stopping, the command channel and the commands served while
-running, the atomic poll words and pause, the deoptimization of a stop at
-a poll of optimized code in every build, the stack and values -- is built
-("The debugging API at the safepoint"), and so are stage 2, the metadata:
-both lowerers' stop locations and variable tables, compiled again on
-demand and verified, which give a stopped frame its name, its place and
-its named variables ("Reading the stack at a stop", "Compiling the
-metadata again"), and stage 3: line breakpoints (pending ones included),
-stepping with its filters, run to cursor, method breakpoints and
-exception breakpoints, and the breakpoint and step stress modes ("Where
-the original lives" to "Step into's held request", "Exceptions", "Method
-breakpoints", "The return value of the last call"). The stages keep
-their numbers, which the text above refers to.
+Stages 5 and 6 remain, in this order, stage 5 next. Stage 1, the
+debugging API at the safepoint -- stopping, the command channel and the
+commands served while running, the atomic poll words and pause, the
+deoptimization of a stop at a poll of optimized code in every build, the
+stack and values -- is built ("The debugging API at the safepoint"), and
+so are stage 2, the metadata: both lowerers' stop locations and variable
+tables, compiled again on demand and verified, which give a stopped frame
+its name, its place and its named variables ("Reading the stack at a
+stop", "Compiling the metadata again"); stage 3: line breakpoints
+(pending ones included), stepping with its filters, run to cursor, method
+breakpoints and exception breakpoints, and the breakpoint and step stress
+modes ("Where the original lives" to "Step into's held request",
+"Exceptions", "Method breakpoints", "The return value of the last
+call"); and stage 4: the DAP agent in `ns-cli`, behind `--debug` and
+`--debug-connect` on `run` and `load`, hit counts counted by the VM, the
+breakable lines the language server answers, and the plugin's
+`XDebugProcess` with its three breakpoint types, from which the debugger
+is usable in the IDE ("Launching, the start and the end", "Hit counts and
+temporary breakpoints", "A breakpoint names a source position", "The
+JetBrains plugin"). The stages keep their numbers, which the text above
+refers to.
 
-4. The DAP agent in `ns-cli` and the plugin's `XDebugProcess`: from here
-   the debugger is usable in the IDE.
 5. Evaluation, conditional breakpoints and logpoints, watches and setting
    variables, smart step into, restart frame and force return.
 6. Hot swap, then edit-and-continue of running activations;

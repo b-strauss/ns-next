@@ -7643,3 +7643,108 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 4,
 the DAP agent and the plugin's `XDebugProcess`) and "The debugger" (what
 stage 3's reviews left, hit counts, temporary breakpoints and "Create
 Method").
+
+## The debugger's stage 4: the DAP agent and the plugin's debugger (2026-11-14)
+
+[debugger.md](design/debugger.md), decisions 1, 4 and 6, "Commands while
+the program runs", "A breakpoint names a source position", "Hit counts
+and temporary breakpoints", "Launching, the start and the end", "The
+JetBrains plugin", "What stage 4 moved";
+[editor-support.md](design/editor-support.md), "Breakable lines", "Plugin
+testing and gates".
+
+Stage 4's questions were decided with the user on 2026-11-14: the agent
+opens its connection in either direction, `--debug` listening behind a
+token and `--debug-connect` connecting to a client that listens, which
+is how the plugin starts its programs; `ns-next load` takes both; the
+breakable places come from the analyzer before any session runs; a
+program is ended by DAP's two steps, `terminate` and then
+`disconnect` with `terminateDebuggee`, the plugin's second Stop killing
+the process; every command dropped between runs is answered by
+`Refused`, a `terminate` between two host runs recorded by the host; and
+hit counts are counted by the VM.
+
+The VM's side grew what the agent needs. The remote splits into a
+`DebugControl`, `Clone`, `Send` and `Sync`, which pauses and queues
+commands, and a `DebugEvents`, which hears the VM on a thread of its own;
+a module's current text is answered by revision (`Command::ModuleText`),
+so that the agent reads a text again only after an install or a build;
+a line or method breakpoint takes a hit condition, counted in the cold
+decision of `interpreter/breakpoint.rs` and remembered for a reach whose
+stop is not made, so that no reach counts twice; a pause asked between
+runs stops the run's first activation at its first statement, which is
+how `stopOnEntry` stops in `main:args:`; and
+`Interpreter::breakable_statements` compiles a module's every level
+without loading it and answers the statements a line breakpoint can
+stand at, as `SetBreakpoints` resolves them under the optimized
+lowering. `ns-memory` draws the token from the operating system's random
+source (`random.rs`), and `ns-tooling`'s `lines.rs` counts lines and
+UTF-16 columns for the language server and the agent alike.
+
+The agent (`crates/ns-cli/src/debug/`) is one thread that every input
+reaches on one channel and the only writer to the socket: the framing
+bounded before it reads, the token compared in constant time and a
+deadline for an unattached connection, the session from `initialize` to
+`exited` and `terminated`, a stop's stack, scopes, paged variables and
+sources -- a program module by its file's path while its text is the
+file's, every other module by a stable `sourceReference` -- line
+breakpoints with block variants and hit conditions under ids the client
+keeps, function and exception breakpoints, steps by line or by
+statement, run to cursor (`nsNext/runToPosition`), pause, terminate and
+disconnect; a listening agent resets the VM for the next client. The
+language server answers `newspeak/breakableLines` from a worker thread
+of 64 MiB that bootstraps one interpreter, and answers `null` for a
+module nesting more than 20,000 sends until the compiler walks chains
+link by link. The plugin speaks DAP through a client of its own on the
+platform's Gson, debugs a Newspeak run configuration through an
+`XDebugProcess` that acts only on a connection whose `process` event
+names the process it started, and sets line breakpoints on the server's
+breakable lines with their block variants and pass counts, method
+breakpoints by name and exception breakpoints by filter and class. Its
+tests that start a binary run as Gradle tasks of their own --
+`lexerComparisonTest`, `dapSessionTest`, `debugProcessTest` and
+`breakpointTypesTest` -- each rerun only when what it runs can change.
+
+Compiling a program changed nothing: no golden, no `run-corpus` outcome
+and no image. Measured on one binary with and without an attached
+debugger that configures nothing beyond the defaults, the geometric mean
+over the sixteen Are We Fast Yet programs is +0.04%, every program
+within -0.44% and +0.65%, nothing separated from noise; the clone of
+the exception breakpoints' settings at every reported exception does
+not show over 200,000 caught signals, and the connection and handshake
+cost 17 to 32 ms a process ("What stage 4 moved").
+
+The commit gates passed on every commit (`commit`, and `memory`,
+`analyzer` and `codegen` where their files changed).
+
+- `687c7d65`, `c1367429` -- stage 4's questions decided and the plan
+  (`docs/superpowers/plans/2026-11-14-1235-debugger-stage-4.md`).
+- `69a26c7e`, `a178d646`, `4029399a` -- every command dropped between
+  runs is answered.
+- `6b7b755a` -- the offset and line conversion moves into `ns-tooling`.
+- `acaaf678`, `5ab6cd76`, `f9f0bbdf` -- hit conditions counted by the VM,
+  no reach counted twice.
+- `d6c1322d`, `8186f82f`, `7e9d3213` -- the plugin's tests rerun only
+  when their outcome can change, and the shipped code is written only
+  when stale.
+- `b3b80d93`, `667c57dd` -- a module's current text by revision.
+- `f685579f` -- the remote's two halves.
+- `ce36cda1` -- a module's breakable statements without running it.
+- `c21c29f2` -- the operating system's random source.
+- `bdcecf1f`, `ff6b315e`, `884963cb`, `ec3e101b` -- `--debug` and
+  `--debug-connect`, the session, a pause between runs stopping
+  `main:args:` at its first statement, and the attach deadline.
+- `5349b534`, `7e1fc993` -- a stop's stack, variables and sources.
+- `f6f68011`, `b062a3bf` -- breakpoints and steps.
+- `01e323b4`, `e7e7f6b2` -- `newspeak/breakableLines` and the chain
+  guard.
+- `ef0e5f13`, `ac899c9f`, `af0da206` -- the plugin's DAP client and its
+  debug process.
+- `dc414e22`, `f45b4f0b` -- the plugin's line, method and exception
+  breakpoints.
+- `7b047d21` -- the stage's deferred polish.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 5:
+evaluation, conditional breakpoints and logpoints, watches and setting
+variables, smart step into, restart frame and force return) and "The
+debugger" (what stage 4's reviews left).

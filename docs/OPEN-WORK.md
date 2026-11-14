@@ -15,39 +15,50 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 4, the DAP agent in `ns-cli` and the plugin's
-`XDebugProcess`** (decided with the user on 2026-11-11: the debugger
-goes on before road step 9 resumes): `ns-next run --debug` listens on
-a localhost socket, guarded by a token, `--debug-connect` connects to a
-client that listens, `ns-next load` takes both, and the agent speaks the Debug Adapter Protocol over the
-debugging API -- `setBreakpoints` as line offsets into a module's
-text, `setFunctionBreakpoints`, `setExceptionBreakpoints`, the steps
-and their filters, run to cursor, `pause`, `stackTrace`, `scopes`,
-paged `variables`, `source` for the embedded modules, `terminate`,
-`disconnect` and the `stopped` and `exited` events -- and the plugin
-implements IntelliJ's debugger over a DAP client of its own, from the
-existing run configurations; from here the debugger is usable in the
-IDE ([debugger.md](design/debugger.md), decision 6, "Launching, the
-start and the end", "The JetBrains plugin", "Planned: the
-order of building it"). Stages 1 to 3 are built (2026-11-11 to
-2026-11-13; "The debugging API at the safepoint", "Compiling the
-metadata again", decisions 2, 3, 16 and 17). Stage 4 needs a plan of
-its own; the questions it met were decided with the user on 2026-11-14
--- both directions of the connection, the plugin connecting; a token
-for the listening one; `load --debug`; the breakable places from the
-analyzer; DAP's two steps of terminating; `Refused` for every command
-dropped between runs, a `terminate` recorded by the host; hit counts
-counted by the VM ([debugger.md](design/debugger.md), "Commands while
-the program runs", "A breakpoint names a source position", "Hit counts
-and temporary breakpoints", "Launching, the start and the end"). Once `--debug` exists, a run with a debugger attached
-and no breakpoint set is measured against one without: an attached
-debugger clones the `ExceptionBreakpoints` at every exception the
-handler search reports (`exceptions::caught`, `exceptions::unhandled`),
-beside what stage 3 measured without one. The agent tolerates a stop
-naming a breakpoint id it no longer knows: a `SetBreakpoints` that
-arrives after the safepoint drained the queue is answered after the
-stop it would have changed, which names the ids it removes, under new
-ids for the breakpoints it keeps.
+**First, the toolchain and the edition, on a branch of their own**
+(agreed with the user on 2026-11-14, after the debugger's stage 4): the
+pinned toolchain is raised from 1.98.0 to the stable release of the day
+-- `rust-toolchain.toml`'s channel, the workspace's `rust-version` and
+the Docker image `xtask/docker/Dockerfile` -- the new Clippy lints fixed
+and the `codegen` budgets checked again; then the workspace moves from
+edition 2021 to 2024, by `cargo fix --edition` and a formatting commit
+of its own, every gate run to the end of the batch, since the edition
+changes what the tree relies on: the temporary-scope rules of 2024
+change when a temporary in an `if let` scrutinee or a block's tail
+expression is dropped, `impl Trait` in return position captures every lifetime in
+scope, which touches the `'gc` brand (`CLAUDE.md`, "The brand is the
+compiler's"), and `ns-memory`'s `extern` blocks become `unsafe extern`.
+Staying on an old toolchain and edition costs every later batch the
+lints and language features it cannot use, and the gap only grows.
+
+**The debugger's stage 5: evaluation, conditional breakpoints and
+logpoints, watches and setting variables, smart step into, restart
+frame and force return** (decided with the user on 2026-11-11: the
+debugger goes on before road step 9 resumes;
+[debugger.md](design/debugger.md), "Planned: the order of building
+it"). An expression -- `evaluate`, a breakpoint's condition, a log
+message, a watch, `setVariable` -- is compiled as a block standing at
+the stopped frame's `program_counter` and run above it as ordinary
+program code (decision 8, "Evaluation", "Evaluation never reaches the
+VM mirror"); a condition is decided where a hit is counted, before the
+count ("Hit counts and temporary breakpoints"); a write reaches the
+frame through the variable table ("Writing a frame", "Assigning a
+captured variable"); smart step into stops only at a push from the
+chosen call site (decision 3, "Smart step into a block"); and restart
+and force return unwind to the frame ("Restart frame and force
+return"); over DAP's `evaluate`, `setVariable`, `stepInTargets`,
+`restartFrame` and a request of ns-next's own, and the plugin's
+`XDebuggerEvaluator`, `XSmartStepIntoHandler` and actions ("The
+JetBrains plugin"). Stages 1 to 4 are built (2026-11-11 to 2026-11-14;
+"The debugging API at the safepoint", "Launching, the start and the
+end", "The JetBrains plugin"): from stage 4 the debugger is usable in
+the IDE. Stage 5 needs a plan of its own, and the open questions it
+meets decided first, one at a time: access control in evaluation,
+marking objects, evaluation at the depth limit, restart and force return
+beyond the plain case, restart and the indirection vector, assigning a
+captured variable, and the memory view and folding the shipped modules'
+frames, which the proposal puts in stage 5 ([debugger.md](design/debugger.md),
+"Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1875,17 +1886,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   search invokes a handler for a caught exception and where it is about
   to send `defaultAction` for an uncaught one, and the breakpoint and
   step stress modes ([debugger.md](design/debugger.md), "What stage 3
-  moved" for its cost). An uncaught
+  moved" for its cost). Its fourth stage is built (2026-11-14): the DAP
+  agent in `ns-cli` behind `run` and `load`'s `--debug` and
+  `--debug-connect`, hit counts counted by the VM, the language server's
+  breakable lines, and the plugin's debugger with line, method and
+  exception breakpoints, from which the debugger is usable in the IDE
+  ([debugger.md](design/debugger.md), "Launching, the start and the
+  end", "The JetBrains plugin", "What stage 4 moved" for its cost). An uncaught
   exception whose `defaultAction` override a fast path answers -- a
   constant, a slot -- pushes nothing at that send, so it stops at the
   next poll, the return to `signal`, after the override answered; a
   handler that is no block and whose `cull:` a fast path answers
   likewise stops after it ran ([debugger.md](design/debugger.md),
-  "Exceptions"). The rest, in this order: the DAP agent in
-  `ns-cli` and the plugin's `XDebugProcess` ("Next" above); evaluation as a block in the
+  "Exceptions"). The rest, in this order: evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
-  variables, smart step into, restart frame, force return; hot swap,
-  edit-and-continue and `ActivationMirror`. "Create Method" for
+  variables, smart step into, restart frame, force return ("Next" above);
+  hot swap, edit-and-continue and `ActivationMirror`. "Create Method" for
   an uncaught `MessageNotUnderstood`, and the forced `nil` from
   `Object>>doesNotUnderstand:` when it is declined, need stage 5's
   forced return and stage 6's install; until then going on from such a
@@ -1895,9 +1911,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   evaluation at the depth limit, restart and force return beyond the
   plain case, restart and the indirection vector, assigning a captured
   variable, the memory view, folding shipped frames and attaching
-  ([debugger.md](design/debugger.md), "Open questions"). The plugin
-  starts no image yet, so `load --debug` has no run configuration of
-  the plugin's until it does.
+  ([debugger.md](design/debugger.md), "Open questions").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description
@@ -2004,6 +2018,60 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       program that installs in a loop under a breakpoint grows both
       ([debugger.md](design/debugger.md), "A breakpoint names a source
       position", "Method breakpoints").
+  - **What stage 4's reviews left** (2026-11-14), none of them a wrong
+    outcome:
+    - *The plugin starts no image*: its run configurations run a program
+      or a project from source, so `ns-next load --debug-connect`, which
+      the agent serves, has no run configuration of the plugin's; an
+      image is debugged only by a client the user starts
+      ([debugger.md](design/debugger.md), "Launching, the start and the
+      end"; [editor-support.md](design/editor-support.md), "Known gaps").
+    - *A line step fetches the whole stack at every repetition*: a `next`
+      or `stepIn` by line sends the VM's step again while its stop stays
+      on the line in the same frame, and to tell the frame it asks for
+      the stop's whole stack trace each time (`debug/stepping.rs`), up to
+      100,000 activations deep, where it needs only the depth and the top
+      frame; a VM query answering the depth alone would make a line step
+      in deep recursion cheap ([debugger.md](design/debugger.md),
+      decision 4).
+    - *A `setBreakpoints` after an install counts lines in the older
+      text*: the agent knows a module's text as a stop last read it, so a
+      `setBreakpoints` sent after an install but before the next stop
+      turns its lines into offsets of the older text, which the VM then
+      resolves in the current one; the breakpoint can land a line off
+      until the client sends the set again ([debugger.md](design/debugger.md),
+      "Launching, the start and the end").
+    - *A pause racing a stop stops twice*: a `pause` sent as the VM makes
+      a stop of its own -- a breakpoint's, a step's -- reaches the VM
+      after that stop, so its bit stays set and stops the program again
+      at the next safepoint after the client's `continue`, a stop the
+      client did not ask for there ([debugger.md](design/debugger.md),
+      "The stop").
+    - *One class list for both exception filters*: the VM keeps one
+      list of classes (`Command::SetExceptionBreakpoints`), so a class
+      condition given for caught exceptions restricts uncaught ones too,
+      and the plugin's class breakpoints share it; two lists would give
+      each filter its own ([debugger.md](design/debugger.md),
+      "Exceptions", "The JetBrains plugin").
+    - *An unverified method breakpoint warns at every resend*: the
+      plugin reports a method breakpoint the agent cannot set as a
+      warning each time it sends the method breakpoints, which the
+      platform does at every change of any of them, since it shows no
+      verified state for a method breakpoint
+      ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *An exception stop bypasses the platform's breakpoint handling*: a
+      stop at an exception is shown through `positionReached`, since its
+      `hitBreakpointIds` name no line or method breakpoint, so what the
+      platform does at a breakpoint hit -- removing a temporary
+      exception breakpoint, its suspend policy, its log -- does not apply
+      to it ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *Tests*: the real `newspeak/breakableLines` round trip through the
+      platform's LSP client (the breakpoint types' test replaces the
+      fetcher), a breakpoint in a shipped module's read-only file, the
+      turning off and on that carries an edited pass count to a running
+      session, and a `pause` during a line step's first repetition have
+      none ([editor-support.md](design/editor-support.md), "Known gaps",
+      "Plugin testing and gates").
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2433,11 +2501,13 @@ classes and a class from source with no predecessor are not edited
   separated at eight iterations), unexplained; a sweep of the zone
   paddings, which shift its code's layout, would say whether it is
   layout. And the cold path the batch moved into `vm::take_safepoint` was
-  never timed with safepoints actually requested -- no program ran with a
-  debugger attached or under the pause stress mode -- so what a pause, a
-  queued command or a stop costs a running program is unknown, as is the
-  poll's cost inside machine code beyond what the benchmark programs
-  exercise ([debugger.md](design/debugger.md), "What stage 1 moved").
+  never timed with safepoints actually requested: an attached debugger
+  with its defaults was measured with stage 4 and costs nothing measurable
+  ("What stage 4 moved"), but no measured program paused, queued a
+  command or stopped, so what those cost a running program is unknown, as
+  is the poll's cost inside machine code beyond what the benchmark
+  programs exercise ([debugger.md](design/debugger.md), "What stage 1
+  moved").
 - **CD runs slower on ns-next than on CPython** (2026-11-10). In the
   three-language comparison CD made 0.4 runs a second on ns-next, 1.1 on
   CPython 3.15's interpreter and 64.7 on the JVM: the one program ns-next

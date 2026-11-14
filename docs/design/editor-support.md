@@ -22,7 +22,13 @@
 > `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
 > project with the `ns-next` the settings name; for a module `ns-next` can
 > run from its source, a play button beside its `main:args:` that runs or
-> benchmarks the module ("The project file and running projects").
+> benchmarks the module ("The project file and running projects"). Debug
+> on a Newspeak run configuration debugs the program in the IDE's
+> debugger over a DAP client of the plugin's own (the `debugger`
+> package), with line breakpoints on the lines the server's
+> `newspeak/breakableLines` answers, their block variants and pass
+> counts, and method and exception breakpoints ("Breakable lines";
+> [debugger.md](debugger.md), "The JetBrains plugin").
 > Range formatting, formatting on type, go to definition, find usages and
 > further platforms are planned ("Planned later").
 
@@ -67,8 +73,11 @@ runs a single module from its `main:args:`.
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
-IDE; and running and benchmarking a single module from its `main:args:`
-("The project file and running projects").
+IDE; running and benchmarking a single module from its `main:args:`
+("The project file and running projects"); and debugging what a run
+configuration runs in the IDE's debugger, its line breakpoints placed by
+the server's breakable lines ("Breakable lines"; [debugger.md](debugger.md),
+"The JetBrains plugin").
 
 **Target IDEs.** Every commercial JetBrains IDE that carries JetBrains' own
 LSP API: IntelliJ IDEA, WebStorm, PhpStorm, PyCharm, DataSpell, RubyMine,
@@ -1472,6 +1481,15 @@ Components:
   (`NewspeakModuleRunLineMarkerContributor`) and its context menu's producer
   (`NewspeakModuleRunConfigurationProducer`) ("The project file and running
   projects").
+- **The debugger** -- the `debugger` package: the DAP client in `dap/`
+  (`DapConnection`, `DapClient`, `DapTypes`), Debug on a Newspeak run
+  configuration (`NewspeakDebugRunner`, which starts `ns-next run
+  --debug-connect` against a socket the plugin listens on), the
+  `XDebugProcess` (`NewspeakDebugProcess`) with its suspend context,
+  stack, frames, values and sources, and the three breakpoint types --
+  line, method and exception -- with their handlers and the breakable
+  lines' cache ("Breakable lines"; [debugger.md](debugger.md), "The
+  JetBrains plugin").
 
 ### Indentation and width
 
@@ -2084,6 +2102,14 @@ and resolves cleanly in a JetBrains IDE today.
   stop short of (they check the command line and the process's charset);
   the module's play button against a running server, the daemon restarted
   by the answer (the tests fill the cache through a stand-in).
+- **The debugger's paths into the platform** without a test: the real
+  `newspeak/breakableLines` round trip through the platform's LSP client
+  (the breakpoint types' test replaces the fetcher), a breakpoint in a
+  shipped module's read-only file, and the turning off and on that
+  carries an edited pass count or exception box to a running session
+  ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
+  starts no image, so `ns-next load --debug-connect` has no run
+  configuration of the plugin's.
 
 ## Planned later
 

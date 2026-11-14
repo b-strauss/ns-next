@@ -117,26 +117,35 @@ Rust 1.98.0, edition 2021, seven crates:
   atomically in `install.rs`), the debugging API at the run loop's
   safepoint (`debugger/`: `Interpreter::attach_debugger` hands out a
   `DebugRemote`, whose thread pauses the run and reads its stack and
-  values at the stop, each frame named, placed and its variables named
-  by its body's metadata, which `debugger/metadata/` compiles again from
-  the module's current text through either lowerer's collector, keeps
-  per body only when the body compiled again is alike
+  values at the stop -- or whose two halves (`into_parts`), a
+  `DebugControl` that is `Clone`, `Send` and `Sync` and a
+  `DebugEvents`, let an agent command the VM from several threads and
+  hear it on another -- and a module's current text by revision
+  (`Command::ModuleText`), each frame named, placed and its variables
+  named by its body's metadata, which `debugger/metadata/` compiles
+  again from the module's current text through either lowerer's
+  collector, keeps per body only when the body compiled again is alike
   (`bytecode::compiles_alike`), caches weakly and clears at every
-  install; and breakpoints and stepping: a breakpoint patches its slot
-  of the body in place, the original kept beside the slots for every
-  reader but the run loop's fetch, whose `Breakpoint` arm asks
-  `interpreter/breakpoint.rs` and stops at the safepoint, the patched
-  body's machine code freed and its method's fast path switched off
-  while it stands (`debugger/breakpoints.rs`: line, pending, run to
-  cursor and method breakpoints, keyed by body); steps are one-shot
-  breakpoints and a request bit held until the next push, a frame left
-  otherwise reported by the unwinder and the run loop's cold arms, the
-  shipped modules filtered (`debugger/stepping.rs`); exception
-  breakpoints are decided by two mirror rows the kernel's handler
-  search sends, a leaf and the exit that reads the handler it found
-  (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
+  install, and by which `Interpreter::breakable_statements` answers a
+  module's breakable statements without loading it
+  (`metadata/breakable.rs`); and breakpoints and stepping: a breakpoint
+  patches its slot of the body in place, the original kept beside the
+  slots for every reader but the run loop's fetch, whose `Breakpoint`
+  arm asks `interpreter/breakpoint.rs` and stops at the safepoint, a
+  hit condition counted only in that cold decision, the patched body's
+  machine code freed and its method's fast path switched off while it
+  stands (`debugger/breakpoints.rs`: line, pending, run to cursor and
+  method breakpoints, keyed by body); steps are one-shot breakpoints and
+  a request bit held until the next push, a frame left otherwise
+  reported by the unwinder and the run loop's cold arms, the shipped
+  modules filtered (`debugger/stepping.rs`), and a pause asked between
+  runs stops the run's first activation at its first statement;
+  exception breakpoints are decided by two mirror rows the kernel's
+  handler search sends, a leaf and the exit that reads the handler it
+  found (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
   at the safepoint", "Compiling the metadata again", "Where the
-  original lives", "Step over in recursion and blocks", "Exceptions"),
+  original lives", "Step over in recursion and blocks", "Exceptions",
+  "Hit counts and temporary breakpoints"),
   the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
@@ -191,7 +200,15 @@ Rust 1.98.0, edition 2021, seven crates:
   modules: a directory whose `newspeak.json` names them, the current directory
   when no program is given (`project.rs`, `program.rs`). The file is described
   by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
-  holds the reader to and the JetBrains plugin bundles.
+  holds the reader to and the JetBrains plugin bundles. `run` and `load`
+  take `--debug`, which listens on 127.0.0.1 behind a token from the
+  operating system's random source, and `--debug-connect=<address>`,
+  which connects to a client that listens, as the plugin's does: the DAP
+  agent in `debug/`, a thread of its own over the remote's two halves,
+  the only writer to the socket, writing nothing to the program's
+  standard streams but the listening line and the line a terminated run
+  prints (`debugger.md`, "Launching, the start and the end"; tests
+  `tests/debug_adapter.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
@@ -200,10 +217,17 @@ Rust 1.98.0, edition 2021, seven crates:
   `dump-tokens`, which the JetBrains plugin's lexer is checked against;
   `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
   that writes, which rewrites `.ns` files in the formatter's layout
-  (`--check` only lists the files that would change). It never runs a program: `disasm` compiles a module or
+  (`--check` only lists the files that would change). The server's own
+  request `newspeak/breakableLines` answers the lines a line breakpoint
+  can stand on, and their block variants, from
+  `Interpreter::breakable_statements` (`breakable.rs`), compiled on a
+  worker thread of 64 MiB that bootstraps an interpreter of its own, and
+  answered `null`, uncompiled, for a module nesting more than 20,000
+  sends -- the chain guard, until the compiler walks a chain link by link
+  (`editor-support.md`, "Breakable lines"). It never runs a program: `disasm` compiles a module or
   decodes an image, `inspect` reads an image without loading it, and neither runs
-  the program's code (the interpreter `disasm` bootstraps instantiates only the
-  shipped core library). Its server dependencies
+  the program's code (the interpreters `disasm` and the breakable lines
+  bootstrap instantiate only the shipped core library). Its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime` or
   `ns-next`; `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project
   file is JSON) (`docs/design/editor-support.md`). `hints/` holds the hints:
@@ -211,7 +235,9 @@ Rust 1.98.0, edition 2021, seven crates:
   can be read-only, each with its fix, and `apply_all`
   (`docs/design/editor-support.md`, "Hints").
 - `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
-  resolving a source file, collecting `.ns` files, printing diagnostics, and
+  resolving a source file, collecting `.ns` files, printing diagnostics,
+  the conversion between byte offsets and lines and UTF-16 columns the
+  language server and the DAP agent share (`lines.rs`), and
   the start check of the processor's x86-64-v2 features (`processor.rs`). It is a crate
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
   on `ns-syntax` and `ns-runtime` only.
@@ -221,7 +247,8 @@ Rust 1.98.0, edition 2021, seven crates:
   an executable view and a writable one its one writer stores through, the
   entry into machine code and the shim through which machine code calls a
   Rust leaf; and the native stack's remaining room, which every entry into
-  machine code checks (`native_stack.rs`); and the reach record, in a debug
+  machine code checks (`native_stack.rs`); the operating system's
+  random source, for the debugger's token only (`random.rs`); and the reach record, in a debug
   build, of what a test's process reaches -- the runtime, the compiler,
   platform-dependent code -- by which the stress and Docker gates leave
   tests out (`reach.rs`, re-exported as `ns_runtime::reach`). The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
@@ -248,8 +275,14 @@ artifact (`--check` only says whether it is current).
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
-Code included, through the server's formatting), and a structure view of its
-own over the server's document symbols.
+Code included, through the server's formatting), a structure view of its
+own over the server's document symbols, and the debugger (`debugger/`): a
+DAP client of its own (`dap/`, on the platform's Gson), Debug on a run
+configuration through an `XDebugProcess` that starts `ns-next run
+--debug-connect` against a socket it listens on and acts only on the
+process it started, and three breakpoint types -- line breakpoints on the
+server's breakable lines with block variants and pass counts, method
+and exception breakpoints (`debugger.md`, "The JetBrains plugin").
 
 `benchmarks/are-we-fast-yet/newspeak/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM
@@ -739,7 +772,7 @@ every one runs on 18 threads.
 
 | Group | Runs | When |
 |---|---|---|
-| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, whose tests Gradle reruns only when what can change an outcome changed -- the plugin, a `.ns` they read (`corpus/modules`, `goldens/`, the core library, `benchmarks/`), and for the lexer comparison, a task of its own (`lexerComparisonTest`), the Rust sources `dump-tokens` runs and the build settings, never the analyzer binary's bytes alone (`editors/jetbrains/build.gradle.kts`) -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
+| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, five test tasks, each rerun by Gradle only when what it runs can change, never for a binary's bytes alone (`editors/jetbrains/build.gradle.kts`): `test`, the tests that start no binary, on the plugin and the `.ns` under `goldens/`, the core library and `benchmarks/`; `lexerComparisonTest`, on the plugin, the `.ns` under those and `corpus/modules`, the Rust sources `dump-tokens` runs and the workspace's build settings; and `dapSessionTest`, `debugProcessTest` and `breakpointTypesTest`, which debug with the debug build of `ns-next`, on the plugin, the sources of `ns-cli`, `ns-runtime` (the core library included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and the build settings -- so a runtime change reruns those three and a change to the analyzer alone none of them -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
 | `analyzer` | the hints' behaviour oracle, profile `hints` | a commit touching `crates/ns-analyzer` |
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
