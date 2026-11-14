@@ -2839,7 +2839,11 @@ classes and a class from source with no predecessor are not edited
   image's text is untrusted input, so a crafted image whose text holds a
   deep chain where its code holds none aborts the process at the first
   stop in that declaration rather than answering no metadata
-  ([debugger.md](design/debugger.md), "Compiling the metadata again").
+  ([debugger.md](design/debugger.md), "Compiling the metadata again"),
+  and the language server reaches it at every `newspeak/breakableLines`,
+  which compiles the open document: a document holding such a chain
+  aborts the server, and the editor's support for every file with it
+  ([editor-support.md](design/editor-support.md), "Breakable lines").
   Until it is closed, the overflow at
   about 20,000 links sits below the instruction limit of 2^20, so that limit
   is not yet the real bound on a chain ([compiler.md](design/compiler.md),

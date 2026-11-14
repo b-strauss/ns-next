@@ -756,3 +756,172 @@ fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
     assert_eq!(elsewhere, json!([]), "no action away from a hint");
     shut_down(&client, server_thread);
 }
+
+fn breakable_lines(client: &Connection, id: i32, uri: &str) -> Value {
+    request(
+        client,
+        id,
+        "newspeak/breakableLines",
+        json!({ "textDocument": { "uri": uri } }),
+    )
+}
+
+/// A 0-based `(line, character)` position.
+type LineCharacter = (u32, u32);
+
+/// A breakable line's entry: its 0-based line and its variants, each the
+/// block literal's start and end and its first statement's position.
+fn breakable_line(line: u32, variants: &[(LineCharacter, LineCharacter, LineCharacter)]) -> Value {
+    let position =
+        |(line, character): LineCharacter| json!({ "line": line, "character": character });
+    json!({
+        "line": line,
+        "variants": variants
+            .iter()
+            .map(|&(start, end, statement)| json!({
+                "range": { "start": position(start), "end": position(end) },
+                "position": position(statement),
+            }))
+            .collect::<Vec<Value>>(),
+    })
+}
+
+/// A statement of each kind: the superclass clause, a temporary's
+/// initializer, a line holding a statement and an inlined block's first
+/// one -- after non-ASCII text, so that a column counted in bytes rather
+/// than UTF-16 units would be off -- and a closure whose literal begins a
+/// line above its first statement; and two blocks beginning on one line,
+/// its variants in order.
+const BREAKABLE: &str = indoc! {"
+    class Module = Object new () (
+      public run = (
+        | count ::= 0. |
+        'äö' size > 0 ifTrue: [count:: 1].
+        count > 0 ifTrue: [count:: 1] ifFalse: [count:: 2].
+        {1. 2} do: [:each |
+          count:: count + each].
+        ^count
+      )
+    ) : ()
+"};
+
+/// `BREAKABLE`'s lines, every one moved down by `shift`.
+fn breakable_lines_of_the_module(shift: u32) -> Value {
+    json!([
+        breakable_line(shift, &[]),
+        breakable_line(2 + shift, &[]),
+        breakable_line(
+            3 + shift,
+            &[((3 + shift, 26), (3 + shift, 37), (3 + shift, 27))]
+        ),
+        breakable_line(
+            4 + shift,
+            &[
+                ((4 + shift, 22), (4 + shift, 33), (4 + shift, 23)),
+                ((4 + shift, 43), (4 + shift, 54), (4 + shift, 44)),
+            ]
+        ),
+        breakable_line(5 + shift, &[]),
+        breakable_line(
+            6 + shift,
+            &[((5 + shift, 15), (6 + shift, 27), (6 + shift, 6))]
+        ),
+        breakable_line(7 + shift, &[]),
+    ])
+}
+
+#[test]
+fn breakable_lines_answer_each_statement_line_and_its_block_variants() {
+    let (client, server_thread) = initialized_server();
+    open_document(&client, URI, BREAKABLE);
+    assert_eq!(
+        breakable_lines(&client, 2, URI),
+        json!({ "version": 1, "lines": breakable_lines_of_the_module(0) })
+    );
+    assert_eq!(
+        breakable_lines(&client, 3, URI),
+        json!({ "version": 1, "lines": breakable_lines_of_the_module(0) }),
+        "asked again, the same"
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn a_document_that_does_not_parse_answers_null_lines() {
+    let (client, server_thread) = initialized_server();
+    let unparsed = "file:///C:/work/Unparsed.ns";
+    open_document(
+        &client,
+        unparsed,
+        indoc! {"
+            class Module = () (
+              public run = ( ^1
+            ) : ()
+        "},
+    );
+    assert_eq!(
+        breakable_lines(&client, 2, unparsed),
+        json!({ "version": 1, "lines": null })
+    );
+    let unresolved = "file:///C:/work/Unresolved.ns";
+    open_document(
+        &client,
+        unresolved,
+        indoc! {"
+            class Module = () (
+              public run = ( ^outer Missing foo )
+            ) : ()
+        "},
+    );
+    assert_eq!(
+        breakable_lines(&client, 3, unresolved),
+        json!({ "version": 1, "lines": null }),
+        "nor one that does not resolve"
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn breakable_lines_follow_the_document_s_changes() {
+    let (client, server_thread) = initialized_server();
+    open_document(&client, URI, BREAKABLE);
+    assert_eq!(
+        breakable_lines(&client, 2, URI)["lines"],
+        breakable_lines_of_the_module(0)
+    );
+    notify(
+        &client,
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": URI, "version": 7 },
+            "contentChanges": [{ "text": format!("/// A line above.\n{BREAKABLE}") }],
+        }),
+    );
+    let _ = next_diagnostics(&client);
+    assert_eq!(
+        breakable_lines(&client, 3, URI),
+        json!({ "version": 7, "lines": breakable_lines_of_the_module(1) })
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn breakable_lines_of_an_unknown_document_are_invalid_params() {
+    let (client, server_thread) = initialized_server();
+    client
+        .sender
+        .send(Message::Request(Request::new(
+            RequestId::from(2),
+            "newspeak/breakableLines".to_string(),
+            json!({ "textDocument": { "uri": "file:///never/opened.ns" } }),
+        )))
+        .expect("send");
+    let Message::Response(response) = receive(&client) else {
+        panic!("expected a response");
+    };
+    assert_eq!(
+        response.response_result.err().map(|error| error.code),
+        Some(lsp_server::ErrorCode::InvalidParams as i32)
+    );
+    shut_down(&client, server_thread);
+}

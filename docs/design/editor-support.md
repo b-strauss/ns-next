@@ -2,7 +2,8 @@
 
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
 > `semantic_tokens.rs`, `hover.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
-> `code_actions.rs`, the formatting answer in `server.rs`; on
+> `code_actions.rs`, the formatting answer in `server.rs`, the breakable
+> lines in `breakable.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
@@ -169,8 +170,9 @@ rewrites `.ns` files in the formatter's layout
 ([formatting.md](formatting.md), "Entry points"). It never runs a program:
 `disasm` compiles a module or decodes an image, `inspect` reads an image without loading it, and neither
 runs the program's code -- the only Newspeak that runs is the shipped core
-library's instantiation in the interpreter `disasm` bootstraps, and no other
-command starts an interpreter. Running is the `ns-next` binary's. Being a
+library's instantiation in the interpreter `disasm` bootstraps, and in the
+one the language server bootstraps for the breakable lines ("Breakable
+lines"), and no other command starts an interpreter. Running is the `ns-next` binary's. Being a
 binary of its own keeps the server's dependencies out of `ns-next` and out of
 `ns-runtime`: `lsp-server` (rust-analyzer's transport), `lsp-types` and
 `serde_json`, on top of `ns-syntax`, `ns-runtime` and `ns-tooling`, the crate
@@ -231,6 +233,9 @@ Modules:
   whole-file edit ("Hints").
 - `document_symbols.rs` — the document symbols and their LSP encoding
   ("Structure").
+- `breakable.rs` — the lines a line breakpoint can stand on and their
+  block variants, and the interpreter they are compiled in ("Breakable
+  lines").
 
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
@@ -241,7 +246,8 @@ announced as `true`), `textDocument/documentSymbol` (the
 `file` URI never opened, read from disk), `textDocument/formatting` (the
 `documentFormattingProvider` capability, announced as `true`; "Formatting"),
 `textDocument/codeAction` (the `codeActionProvider` capability, announced
-as `true`; "Hints"), `shutdown` and `exit`. Nothing
+as `true`; "Hints"), the custom request `newspeak/breakableLines`
+("Breakable lines"), `shutdown` and `exit`. Nothing
 else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
@@ -1080,6 +1086,45 @@ parser this design avoids. The format runs on the
 server's one thread under `catch_unwind`, as the analysis does
 ("Robustness"): a panic in the printer answers no edit and leaves the
 document as it is.
+
+### Breakable lines
+
+The custom request `newspeak/breakableLines` answers the lines of an open
+document a line breakpoint can stand on, from which the plugin decides
+`canPutAt` and a line breakpoint's variants before any debug session runs
+([debugger.md](debugger.md), "A breakpoint names a source position").
+Its params are `{ "textDocument": { "uri" } }`; its result is
+`{ "version", "lines" }`: `version` the document's version the server
+holds, so that the plugin keeps the answer per version, and `lines` one
+entry `{ "line", "variants" }` per line a breakable statement starts on,
+in order, `variants` listing, for each statement starting on the line
+that is the first breakable statement of a block literal, the literal's
+`range` and the statement's start `position`, in order -- the block may
+begin on a line above. Lines and positions are 0-based LSP positions in
+UTF-16 code units. A document whose text does not parse (`ns_syntax::parse`,
+not the editor's recovering parse) or does not resolve (`resolve`) answers
+`"lines": null`, every line of which the plugin allows; a document the
+client never opened, or has closed, is an `InvalidParams` error rather
+than an empty set, which would forbid every line.
+
+The answer is `Interpreter::breakable_statements`' over the resolved
+module, which compiles every level of it under the optimized lowering
+without loading or running anything, grouped by line. The server
+bootstraps one interpreter for it, at the first request rather than at
+its start, so that an editor that never asks pays nothing, and keeps it:
+the bootstrap instantiates the shipped core library, the only Newspeak
+that runs. The interpreter stays on the server's one thread, whose
+symbol interner it shares. The answer is computed once per document
+version, by the first request for it; on `Kernel.ns`, 8,355 lines and
+1,399 breakable statements, `breakable_statements` takes about 9 ms in a
+debug build, its parse and resolve about 8 ms more. The compile runs
+under `catch_unwind`, as the analysis does ("Robustness"): a panic
+answers `"lines": null` and drops the interpreter, which a new one
+replaces at the next request. The compiler recurses along a chain of
+messages, so a body that is one chain of some 20,000 links overflows the
+server's stack here as it does `ns-next run` ([OPEN-WORK.md](../OPEN-WORK.md),
+"A valid method whose body is one long chain of messages aborts `ns-next
+run`").
 
 ### Robustness
 

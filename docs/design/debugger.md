@@ -2554,8 +2554,10 @@ once the last is removed, without exits.
 **Built** in the VM (`Command::SetBreakpoints`, `debugger/breakpoints.rs`),
 the runtime's answer of the breakable places before a session
 (`Interpreter::breakable_statements`, `debugger/metadata/breakable.rs`),
-and the agent's line to offset (`crates/ns-cli/src/debug/breakpoints.rs`);
-the analyzer's request is planned.
+the agent's line to offset (`crates/ns-cli/src/debug/breakpoints.rs`),
+and the language server's request `newspeak/breakableLines`
+(`crates/ns-analyzer/src/breakable.rs`; [editor-support.md](editor-support.md),
+"Breakable lines").
 
 The IDE sets a breakpoint at a file and line; the agent turns the line
 into a byte offset into the module's current text -- the start of the
