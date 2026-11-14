@@ -370,11 +370,16 @@ fn a_pause_right_after_a_continue_stops_the_program() {
 }
 
 /// The variable a debug build of `ns-next` reads its deadline to attach
-/// from, in milliseconds; a release build keeps its 10 s.
+/// from, in milliseconds; a release build keeps its 10 s. The tests that
+/// shorten it run only in a debug build: this binary and `ns-next` are
+/// built in one profile, and without the override the deadline would
+/// outlast the trickle test and leave the silence test proving nothing.
+#[cfg(debug_assertions)]
 const ATTACH_DEADLINE: (&str, &str) = ("NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS", "200");
 
 /// The deadline to attach ends nothing once the client attached: a client
 /// silent for longer than it after its `attach` keeps its session.
+#[cfg(debug_assertions)]
 #[test]
 fn an_attached_client_may_stay_silent_past_the_attach_deadline() {
     let (_directory, path) = program("Hello", HELLO);
@@ -392,6 +397,7 @@ fn an_attached_client_may_stay_silent_past_the_attach_deadline() {
 /// A peer that never attaches -- here one that trickles `initialize`
 /// requests, each well inside the deadline -- is closed at the deadline,
 /// and the next client is served.
+#[cfg(debug_assertions)]
 #[test]
 fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
     let (_directory, path) = program("Hello", HELLO);

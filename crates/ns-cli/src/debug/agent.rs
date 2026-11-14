@@ -221,7 +221,11 @@ impl Agent {
         // Requests and responses are small and answer one another, which
         // Nagle's algorithm would hold back.
         let _ = stream.set_nodelay(true);
-        let connection = self.connections + 1;
+        // Numbered before anything can fail, so that a refused connection's
+        // number is never the next one's, whose session a stale `Closed`
+        // from its reader would otherwise end.
+        self.connections += 1;
+        let connection = self.connections;
         let reader = stream
             .try_clone()
             .and_then(|reader| connection::spawn_reader(reader, connection, self.inputs.clone()));
@@ -237,9 +241,8 @@ impl Agent {
             self.next_connection();
             return;
         }
-        self.connections += 1;
         self.client = Some(Client {
-            connection: self.connections,
+            connection,
             writer: stream,
             next_seq: 1,
             attached: false,
