@@ -3552,7 +3552,10 @@ another path than the VM's events. A listening agent gives a connection 10
 s from its acceptance to present the token in a good `attach`, a deadline
 for the whole exchange rather than a read timeout, so that neither a
 silent nor a trickling peer holds the one connection it serves, while an
-attached client may stay silent as long as it likes; it refuses a
+attached client may stay silent as long as it likes; every write to a client
+that has not attached is bounded by the same deadline, so that a peer
+that never reads cannot block the agent in a write and the deadline with
+it; it refuses a
 connection it cannot start a reader for. A client of the connecting mode
 that leaves detaches the debugger: both halves of the remote are dropped
 and the program runs on, a host still waiting for the configuration

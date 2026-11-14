@@ -467,6 +467,40 @@ fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
     assert_eq!(client.finish().status, Some(0));
 }
 
+/// A peer that floods the agent with requests and never reads the answers
+/// cannot keep the agent from its deadline: the agent's writes to it would
+/// otherwise fill the socket's buffers and block the agent, which then
+/// never served the deadline, nor the next client waiting behind it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_peer_that_never_reads_is_closed_at_the_deadline() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode_with("run", &path, &[ATTACH_DEADLINE]);
+    // The first connection leaves at once, so that the agent takes the
+    // unread one next.
+    client.connection.close();
+    let mut unread = client.connect_unread();
+    let frame = |seq: usize| {
+        let body = json!({ "seq": seq, "type": "request", "command": "initialize" }).to_string();
+        format!(
+            "Content-Length: {}
+
+{body}",
+            body.len()
+        )
+    };
+    // Far more answers than any socket buffers: the agent's writes block
+    // unless it bounds them.
+    let flood: String = (1..=20_000).map(frame).collect();
+    let _ = std::io::Write::write_all(&mut unread, flood.as_bytes());
+    client.reconnect();
+    client.attach_racing_the_deadline(ATTACH_ATTEMPTS);
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
+    drop(unread);
+}
+
 /// A root whose `main:args:` holds an Integer and an Array in its locals
 /// before line 6 prints the Integer.
 const STOPS: &str = indoc! {"

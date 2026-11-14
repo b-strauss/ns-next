@@ -103,6 +103,11 @@ impl Connection {
         Ok(seq)
     }
 
+    /// Closes the connection, as a client that leaves without a word.
+    pub fn close(&mut self) {
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
+    }
+
     /// The next message, or `None` once the agent closed the connection;
     /// panics after `TIMEOUT`.
     fn next_message(&mut self, awaited: &str) -> Option<Value> {
@@ -353,6 +358,13 @@ impl DapClient {
     /// The listening mode's token, as the listening line printed it.
     pub fn token(&self) -> &str {
         &self.listening.as_ref().expect("a listening agent").1
+    }
+
+    /// A connection to the listening agent that no reader thread reads:
+    /// the stream alone, for a peer that never reads what it is sent.
+    pub fn connect_unread(&self) -> TcpStream {
+        let port = self.listening.as_ref().expect("a listening agent").0;
+        TcpStream::connect(("127.0.0.1", port)).expect("connect to the agent")
     }
 
     /// A new connection to the listening agent, replacing this one.

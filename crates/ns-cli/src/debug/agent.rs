@@ -10,7 +10,7 @@ use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ns_runtime::{Command, DebugControl, Event, StopReason, ValueDescription, Variable};
 use serde::Serialize;
@@ -96,6 +96,9 @@ struct Client {
     /// Whether its `attach` succeeded: in the listening mode, whether it
     /// presented the token.
     attached: bool,
+    /// The listening mode's deadline to attach, which bounds every write
+    /// to the client until it attached (`Agent::write`).
+    attach_by: Option<Instant>,
 }
 
 /// Whom the VM's answer to a command goes to.
@@ -302,6 +305,7 @@ impl Agent {
         let reader = stream
             .try_clone()
             .and_then(|reader| connection::spawn_reader(reader, connection, self.inputs.clone()));
+        let attach_by = self.listening().then(|| Instant::now() + attach_deadline());
         let deadline = if self.listening() && reader.is_ok() {
             connection::spawn_attach_deadline(attach_deadline(), connection, self.inputs.clone())
         } else {
@@ -319,6 +323,7 @@ impl Agent {
             writer: stream,
             next_seq: 1,
             attached: false,
+            attach_by,
         });
     }
 
@@ -444,6 +449,9 @@ impl Agent {
         }
         if let Some(client) = &mut self.client {
             client.attached = true;
+            // An attached client's writes wait as long as the client
+            // takes to read them.
+            let _ = client.writer.set_write_timeout(None);
         }
         self.stop_on_entry = arguments.stop_on_entry;
         self.respond(connection, request, None);
@@ -1344,10 +1352,28 @@ impl Agent {
 
     /// Writes the message `build` makes of the next sequence number; a
     /// client that cannot be written to has left.
+    ///
+    /// A write to a client that has not attached yet is bounded by its
+    /// deadline: a peer that never reads would otherwise fill the socket's
+    /// buffers and block this thread in the write, the deadline's input
+    /// waiting behind it unserved, and with it the next client.
     fn write(&mut self, build: impl FnOnce(i64) -> Value) {
         let Some(client) = &mut self.client else {
             return;
         };
+        if let (false, Some(attach_by)) = (client.attached, client.attach_by) {
+            let remaining = attach_by.saturating_duration_since(Instant::now());
+            // A zero timeout is refused by the socket, and would mean none.
+            let bounded = !remaining.is_zero()
+                && client
+                    .writer
+                    .set_write_timeout(Some(remaining.max(Duration::from_millis(1))))
+                    .is_ok();
+            if !bounded {
+                self.leave();
+                return;
+            }
+        }
         let message = build(client.next_seq);
         client.next_seq += 1;
         if wire::write_message(&mut client.writer, &message).is_err() {
