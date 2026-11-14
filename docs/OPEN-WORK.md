@@ -17,8 +17,9 @@ when they were written.
 
 **The debugger's stage 4, the DAP agent in `ns-cli` and the plugin's
 `XDebugProcess`** (decided with the user on 2026-11-11: the debugger
-goes on before road step 9 resumes): `ns-next run --debug` binds a
-localhost socket and speaks the Debug Adapter Protocol over the
+goes on before road step 9 resumes): `ns-next run --debug` listens on
+a localhost socket, guarded by a token, `--debug-connect` connects to a
+client that listens, `ns-next load` takes both, and the agent speaks the Debug Adapter Protocol over the
 debugging API -- `setBreakpoints` as line offsets into a module's
 text, `setFunctionBreakpoints`, `setExceptionBreakpoints`, the steps
 and their filters, run to cursor, `pause`, `stackTrace`, `scopes`,
@@ -31,11 +32,14 @@ start and the end", "Planned: the JetBrains plugin", "Planned: the
 order of building it"). Stages 1 to 3 are built (2026-11-11 to
 2026-11-13; "The debugging API at the safepoint", "Compiling the
 metadata again", decisions 2, 3, 16 and 17). Stage 4 needs a plan of
-its own, and the open questions it meets decided first, one at a time:
-a token for the socket, who listens, the breakable places before a
-session, terminating a program that reaches no safepoint, and whether a
-command queued between runs is answered ([debugger.md](design/debugger.md),
-"Open questions"). Once `--debug` exists, a run with a debugger attached
+its own; the questions it met were decided with the user on 2026-11-14
+-- both directions of the connection, the plugin connecting; a token
+for the listening one; `load --debug`; the breakable places from the
+analyzer; DAP's two steps of terminating; `Refused` for every command
+dropped between runs, a `terminate` recorded by the host; hit counts
+counted by the VM ([debugger.md](design/debugger.md), "Commands while
+the program runs", "A breakpoint names a source position", "Hit counts
+and temporary breakpoints", "Launching, the start and the end"). Once `--debug` exists, a run with a debugger attached
 and no breakpoint set is measured against one without: an attached
 debugger clones the `ExceptionBreakpoints` at every exception the
 handler search reports (`exceptions::caught`, `exceptions::unhandled`),
@@ -1881,26 +1885,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `ns-cli` and the plugin's `XDebugProcess` ("Next" above); evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return; hot swap,
-  edit-and-continue and `ActivationMirror`. Hit counts and temporary
-  breakpoints are in no stage yet: the agent of stage 4 could count hits
-  and remove a temporary breakpoint at its first stop, or the VM with
-  stage 5's conditions; to be decided with stage 4. "Create Method" for
+  edit-and-continue and `ActivationMirror`. "Create Method" for
   an uncaught `MessageNotUnderstood`, and the forced `nil` from
   `Object>>doesNotUnderstand:` when it is declined, need stage 5's
   forced return and stage 6's install; until then going on from such a
   stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It needs no yield path out of
   `vm::run`. Still to decide, each before the stage that needs it:
-  watchpoints on slots, access control in evaluation, marking objects, a
-  token for the socket, who listens, `ns-next load --debug`, evaluation at
-  the depth limit, restart and force return beyond the plain case, restart
-  and the indirection vector, assigning a captured variable, the breakable places before a
-  session, terminating a program that reaches no safepoint, the memory
-  view, folding shipped frames and attaching, and, for stage 4, whether
-  a command queued while no run executes is answered: today it is
-  dropped without an event, so an agent that sends a stop-only command
-  between runs waits for its timeout, where a DAP agent may want a
-  `Refused`. [debugger.md](design/debugger.md), "Open
-  questions".
+  watchpoints on slots, access control in evaluation, marking objects,
+  evaluation at the depth limit, restart and force return beyond the
+  plain case, restart and the indirection vector, assigning a captured
+  variable, the memory view, folding shipped frames and attaching
+  ([debugger.md](design/debugger.md), "Open questions"). The plugin
+  starts no image yet, so `load --debug` has no run configuration of
+  the plugin's until it does.
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description

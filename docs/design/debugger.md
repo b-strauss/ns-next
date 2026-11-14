@@ -643,15 +643,38 @@ taken by its first stop, a run nobody terminated
 pause is no command: one asked between runs stays, and stops the next run
 at its first safepoint.
 
+Planned for stage 4 (decided with the user on 2026-11-14): every command
+dropped between runs is answered by `Event::Refused`, its reason that no
+run executes, so that every command the debugging API takes has exactly
+one answer, as every DAP request has one response and JDWP answers a
+command it cannot serve with an error (`VM_DEAD`,
+`THREAD_NOT_SUSPENDED`). `ns-next run` is several host runs -- a
+project's manifest instantiated, the root module, then `main:args:`
+(`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
+two of them, where the drop would let the program go on. The DAP agent
+records a `terminate` in `ns-cli` as well as queuing it, and the host
+checks the record before each run it starts and ends the program as a
+terminated one, `exited` sent with its status; the VM's drop and its two
+tests stand, since only the host knows which runs are one program. The
+agent sends a command that acts only at a stop -- `StackTrace`,
+`Variables`, `Children`, the steps, `RunToPosition`, `Continue` -- only
+while the program stands at one, and answers such a DAP request itself,
+with an error, while the program runs.
+
 Once the queue is drained, `serve_debugger` reads the pause bit again;
 if it is set, it is cleared, under the arming lock, and the program stops
 ("The stop" below).
 
 A leaf that runs long -- a large `LargeInteger` multiplication, a large
-copy -- delays the next poll, and with it the pause, until it returns; so
-does a leaf blocked waiting for input, reading the standard input among
-them, which no pause and no `Terminate` served at a safepoint reaches
-("Open questions", "Terminating a program that reaches no safepoint").
+copy -- delays the next poll, and with it the pause and a `Terminate`,
+until it returns. No leaf waits for input today. One that will -- a read
+of the standard input -- waits in slices and answers "re-execute"
+between them, before it changed anything, so that the safepoint serves
+a pause and a `Terminate` while it waits (decided with the user on
+2026-11-14). A program that reaches no safepoint is ended the way DAP
+provides ("Launching, the start and the end"): `terminate` stays
+orderly, and `disconnect` with `terminateDebuggee` ends the process at
+once.
 
 The DAP request `setBreakpoints` arrives while the program runs, as
 `pause` and `terminate` do, and becomes `SetBreakpoints`, which the next
@@ -1839,8 +1862,9 @@ decision's mechanism anyway.
 
 The agent speaks the Debug Adapter Protocol, JSON in `Content-Length`
 frames, over a TCP socket bound to 127.0.0.1, since the program owns its
-standard streams; `ns-next run --debug …` opens it, as `-agentlib:jdwp`
-does for a JVM. The framing is written by hand on `ns-cli`'s `serde_json`;
+standard streams; `ns-next run --debug …` listens on it and `--debug-connect`
+connects it to a client that listens, as `-agentlib:jdwp` does for a JVM
+("Launching, the start and the end"). The framing is written by hand on `ns-cli`'s `serde_json`;
 the analyzer's server dependencies stay out of `ns-next`, and `ns-runtime`
 sees only the debugging API's types.
 
@@ -2509,9 +2533,38 @@ fast path. `SetMethodBreakpoints` does the same.
 The plugin needs the breakable places before any session runs, since
 IntelliJ asks `canPutAt` and the variants while breakpoints are set before
 a launch; `breakpointLocations` answers only within a session. So the
-places are proposed to come from `ns-next-analyzer`, through a request of
-the language server, which can compile a module, and to be verified by
-`breakpointLocations` when the session starts ("Open questions").
+places come from `ns-next-analyzer` (decided with the user on
+2026-11-14), through a request of the language server of its own: it
+parses, resolves and compiles the document's module through the
+metadata's collector, which `ns-runtime` makes public for it, runs
+nothing, and answers the lines a statement starts on and, for each, the
+block bodies that begin on it, the line breakpoint's variants. The
+plugin keeps the answer per document version and allows every line of a
+document that does not parse. The session verifies what was set before
+it: the VM resolves each breakpoint as above and the agent reports one
+it moved through DAP's `breakpoint` event. A Kotlin rule of where
+statements start is rejected: the plugin has no parser of its own, only
+a lexer held to `ns-syntax`'s, and the compiler alone knows where a
+statement compiled to an instruction.
+
+### Hit counts and temporary breakpoints
+
+Decided with the user on 2026-11-14 for stage 4. A breakpoint's hit
+condition -- DAP's `hitCondition`, IntelliJ's pass count -- is counted
+by the VM: `SetBreakpoints` carries it for each breakpoint, in the forms
+`n`, `=n`, `>n`, `>=n` and `%n`, which the agent parses from DAP's
+string, a malformed one answered as an unverified breakpoint with its
+message; the `Breakpoint` arm's decision (`interpreter/breakpoint.rs`)
+counts each hit and stops only where the condition holds, so a hit that
+does not stop costs a counter, not a stop and a round trip to the
+agent's thread. JDWP counts in-process the same way, its `Count`
+modifier decremented at each event and the event reported at zero
+(`jdk/src/jdk.jdwp.agent/share/native/libjdwp/eventFilter.c:482-488`).
+Stage 5's condition is decided in the same place, before the count, as
+JDWP applies `Count` after the other filters. A temporary breakpoint
+needs nothing of the agent or the VM: IntelliJ's debugger session
+removes a breakpoint marked to be removed once hit when it reports the
+stop, which the `stopped` event's `hitBreakpointIds` tell it.
 
 ### Step over in recursion and blocks
 
@@ -3073,13 +3126,47 @@ none.
 
 ### Launching, the start and the end
 
-`ns-next run --debug` binds the socket, prints its port on the standard
-error stream before the program writes anything, and waits for the
-IDE's `configurationDone` before `main:args:` runs, so breakpoints are set
-first, as JDWP's `suspend=y` does; `stopOnEntry` stops at the first
-statement of `main:args:`. The agent accepts one connection. `terminate`
-ends the program as its own `terminate…` would; `disconnect` removes every
-breakpoint and lets the program run on. A program that ends -- while
+Decided with the user on 2026-11-14: the agent opens its connection in
+either direction, as JDWP's `server=y` and `server=n` do
+(`jdk/src/jdk.jdwp.agent/share/native/libjdwp/debugInit.c:1197`,
+`:1246`). `ns-next run --debug` listens: it binds 127.0.0.1 on a port
+the system chooses and prints the port and a token on the standard error
+stream before the program writes anything, for a program started in a
+terminal and for any DAP client. `ns-next run --debug-connect=<address>`
+connects to a client that listens; the plugin always starts its programs
+this way, as IntelliJ starts a JVM with `server=n` and an address it
+listens at, so no port of the program is open to another process, nothing
+is read out of the program's standard error, and the plugin checks that
+the `process` event's `systemProcessId` is the process it started.
+`ns-next load` takes both options too: a program loaded from an image
+shows its modules through `source` requests on the image's text, and an
+image built with `--strip-source` shows frames without lines, a line
+breakpoint in it unverified.
+
+The token guards the listening socket, since a client that connects can
+run code in the program through evaluation, as the user who started it,
+and on a machine with several users 127.0.0.1 reaches every one of them:
+JDWP checks nothing but a fixed handshake (`socketTransport.c:186`) and
+an `allow` list of addresses. `--debug` takes 128 bits from the
+operating system's random source (`ns-memory`, through the `windows-sys`
+and `libc` it already depends on) and the client presents them as the
+`token` argument of `attach`; before it the agent answers `initialize`
+only, and a missing or wrong token is answered by an error, the
+connection closed and the next one awaited. The connecting mode needs no
+token.
+
+Either way the agent waits for the IDE's `configurationDone` before
+`main:args:` runs, so breakpoints are set first, as JDWP's `suspend=y`
+does; `stopOnEntry` stops at the first statement of `main:args:`. The
+agent accepts one connection at a time. `terminate` ends the program as
+its own `terminate…` would, its `ensure:` blocks run, served at the next
+safepoint; `disconnect` removes every breakpoint and lets the program
+run on, and `disconnect` with `terminateDebuggee` ends the process at
+once from the agent's thread, with a terminated program's exit status
+and no `ensure:` block run, for a program that reaches no safepoint. The
+plugin's Stop sends `terminate`, and a second Stop kills the process, as
+IntelliJ's `KillableProcessHandler` does for a JVM; no timer in `ns-next`
+decides it (decided with the user on 2026-11-14). A program that ends -- while
 running, while stopped, or in the middle of a step -- sends `exited` with
 its exit status. The program's standard streams stay its own: when the
 IDE launched the process it shows them itself, and the agent sends
@@ -3121,15 +3208,6 @@ The proposal is a proposal.
 - **Marking objects.** Whether an object can be marked and named in later
   evaluations. Proposal: yes, within the rule that a value reached only
   through a shipped activation cannot be marked.
-- **The socket.** Whether the agent requires a token the IDE passes, since
-  any local process could connect and run code through evaluation.
-  Proposal: a token generated by the IDE, passed on the command line or the
-  environment, checked at `initialize`.
-- **Who listens.** `ns-next` listens and prints its port (proposed), or the
-  IDE listens and passes its port.
-- **Debugging an image.** Whether `ns-next load --debug` exists; an image
-  built with `--strip-source` shows its frames' names but no variable
-  names and no lines.
 - **Evaluation at the depth limit.** A reserve of its own, or refused.
 - **Restart and force return beyond the plain case.** Whether a restart of
   an initializer or a superclass clause, a forced return for the other
@@ -3150,24 +3228,6 @@ The proposal is a proposal.
   frame moved into a layout where the variable lives in a vector, through
   edit-and-continue, so that the assignment reaches every copy. Proposal:
   refused, as IntelliJ refuses a captured Java local.
-- **Breakable places before a session.** Whether `ns-next-analyzer`
-  answers the breakable places and their variants to the plugin, through a
-  request of the language server, before any session runs (proposed), or
-  the plugin allows a breakpoint on every line and the session moves it.
-- **Terminating a program that reaches no safepoint.** A program blocked
-  in a leaf waiting for input, or in a long leaf, serves no `terminate`.
-  Proposal: the agent's thread ends the process after a short grace
-  period, as IntelliJ's stop button kills a JVM that does not answer.
-- **Commands between runs.** A command queued while no run executes, or
-  still queued when a run ends, is dropped without an answer today unless
-  it configures breakpoints or filters, which is served
-  ("Commands while the program runs"); the debugger's clients so far, the
-  tests and the stress modes, never meet the drop, but an agent that sends
-  a stop-only command between runs gets no event and waits for its
-  timeout. Whether
-  the DAP agent of stage 4 needs a `Refused` for each, sent when the
-  command is dropped, or whether it never sends a command between runs,
-  is to be decided with stage 4.
 - **Further IntelliJ features.** The memory view (the instances of a
   class, and the objects referring to one, through a walk of the heap at a
   stop), folding the shipped modules' frames in the stack, and attaching
