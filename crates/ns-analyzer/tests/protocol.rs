@@ -14,14 +14,38 @@ use serde_json::{json, Value};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The timeout of the breakable lines' tests, for every answer they wait
+/// for after the start. They compile a module -- the first bootstraps the
+/// worker's interpreter -- and so run in the stress gate, alongside its
+/// fifteen other suites, where a test of 0.03 s took 9 to 34 s and one
+/// of 0.2 s more than 25 (and `disasm_arithmetic_initializer` 19.5 s for
+/// 0.03 s): merely slow, as nothing of theirs grows under a stress mode.
+/// Long enough not to fail a loaded machine, short enough that a server
+/// that never answers still fails the test.
+const COMPILING_TIMEOUT: Duration = Duration::from_secs(300);
+
 fn receive(client: &Connection) -> Message {
+    receive_within(client, TIMEOUT)
+}
+
+fn receive_within(client: &Connection, timeout: Duration) -> Message {
     client
         .receiver
-        .recv_timeout(TIMEOUT)
+        .recv_timeout(timeout)
         .expect("the server answers within the timeout")
 }
 
 fn request(client: &Connection, id: i32, method: &str, params: Value) -> Value {
+    request_within(client, id, method, params, TIMEOUT)
+}
+
+fn request_within(
+    client: &Connection,
+    id: i32,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Value {
     client
         .sender
         .send(Message::Request(Request::new(
@@ -31,7 +55,7 @@ fn request(client: &Connection, id: i32, method: &str, params: Value) -> Value {
         )))
         .expect("send a request");
     loop {
-        if let Message::Response(response) = receive(client) {
+        if let Message::Response(response) = receive_within(client, timeout) {
             assert_eq!(response.id, RequestId::from(id));
             // `lsp_server::Response` carries its outcome as one
             // `response_result: Result<Value, ResponseError>` field -- there
@@ -55,8 +79,12 @@ fn notify(client: &Connection, method: &str, params: Value) {
 }
 
 fn next_diagnostics(client: &Connection) -> Value {
+    next_diagnostics_within(client, TIMEOUT)
+}
+
+fn next_diagnostics_within(client: &Connection, timeout: Duration) -> Value {
     loop {
-        if let Message::Notification(notification) = receive(client) {
+        if let Message::Notification(notification) = receive_within(client, timeout) {
             if notification.method == "textDocument/publishDiagnostics" {
                 return notification.params;
             }
@@ -551,12 +579,16 @@ fn a_fifo_answers_no_symbols_without_blocking() {
 
 /// Opens `text` as `uri` and waits for the diagnostics the open publishes.
 fn open_document(client: &Connection, uri: &str, text: &str) {
+    open_document_within(client, uri, text, TIMEOUT);
+}
+
+fn open_document_within(client: &Connection, uri: &str, text: &str, timeout: Duration) {
     notify(
         client,
         "textDocument/didOpen",
         json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": text } }),
     );
-    let _ = next_diagnostics(client);
+    let _ = next_diagnostics_within(client, timeout);
 }
 
 fn format_request(client: &Connection, id: i32, uri: &str, options: Value) -> Value {
@@ -758,11 +790,12 @@ fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
 }
 
 fn breakable_lines(client: &Connection, id: i32, uri: &str) -> Value {
-    request(
+    request_within(
         client,
         id,
         "newspeak/breakableLines",
         json!({ "textDocument": { "uri": uri } }),
+        COMPILING_TIMEOUT,
     )
 }
 
@@ -833,7 +866,7 @@ fn breakable_lines_of_the_module(shift: u32) -> Value {
 #[test]
 fn breakable_lines_answer_each_statement_line_and_its_block_variants() {
     let (client, server_thread) = initialized_server();
-    open_document(&client, URI, BREAKABLE);
+    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 2, URI),
         json!({ "version": 1, "lines": breakable_lines_of_the_module(0) })
@@ -850,7 +883,7 @@ fn breakable_lines_answer_each_statement_line_and_its_block_variants() {
 fn a_document_that_does_not_parse_answers_null_lines() {
     let (client, server_thread) = initialized_server();
     let unparsed = "file:///C:/work/Unparsed.ns";
-    open_document(
+    open_document_within(
         &client,
         unparsed,
         indoc! {"
@@ -858,13 +891,14 @@ fn a_document_that_does_not_parse_answers_null_lines() {
               public run = ( ^1
             ) : ()
         "},
+        COMPILING_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 2, unparsed),
         json!({ "version": 1, "lines": null })
     );
     let unresolved = "file:///C:/work/Unresolved.ns";
-    open_document(
+    open_document_within(
         &client,
         unresolved,
         indoc! {"
@@ -872,6 +906,7 @@ fn a_document_that_does_not_parse_answers_null_lines() {
               public run = ( ^outer Missing foo )
             ) : ()
         "},
+        COMPILING_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 3, unresolved),
@@ -884,7 +919,7 @@ fn a_document_that_does_not_parse_answers_null_lines() {
 #[test]
 fn breakable_lines_follow_the_document_s_changes() {
     let (client, server_thread) = initialized_server();
-    open_document(&client, URI, BREAKABLE);
+    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 2, URI)["lines"],
         breakable_lines_of_the_module(0)
@@ -897,7 +932,7 @@ fn breakable_lines_follow_the_document_s_changes() {
             "contentChanges": [{ "text": format!("/// A line above.\n{BREAKABLE}") }],
         }),
     );
-    let _ = next_diagnostics(&client);
+    let _ = next_diagnostics_within(&client, COMPILING_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 3, URI),
         json!({ "version": 7, "lines": breakable_lines_of_the_module(1) })
@@ -948,26 +983,28 @@ fn a_chain_of(links: usize) -> String {
 fn a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on() {
     let (client, server_thread) = initialized_server();
     let at_cap = "file:///C:/work/AtTheCap.ns";
-    open_document(
+    open_document_within(
         &client,
         at_cap,
         &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS),
+        COMPILING_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 2, at_cap),
         json!({ "version": 1, "lines": [breakable_line(0, &[]), breakable_line(2, &[])] })
     );
     let past_cap = "file:///C:/work/PastTheCap.ns";
-    open_document(
+    open_document_within(
         &client,
         past_cap,
         &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS + 1),
+        COMPILING_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 3, past_cap),
         json!({ "version": 1, "lines": null })
     );
-    open_document(&client, URI, BREAKABLE);
+    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 4, URI),
         json!({ "version": 1, "lines": breakable_lines_of_the_module(0) }),
