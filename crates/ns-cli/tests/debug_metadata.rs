@@ -7,12 +7,22 @@
 //! The shipped modules' bodies are checked once, by `ns-runtime`'s
 //! `every_shipped_body_compiles_again_alike`, not with every golden; the
 //! same check through `build` and `load` is `golden_round_trips.rs`'s.
+//! Beside it, for every golden of `goldens/language/`, the breakable
+//! statements the language server is answered
+//! (`Interpreter::breakable_statements`) are exactly the statements a
+//! `SetBreakpoints` lands on under the optimized lowering, and each lands
+//! on itself under the reference lowering.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use libtest_mimic::{Arguments, Failed, Trial};
-use ns_runtime::{Interpreter, Lowering};
+use ns_runtime::{
+    BreakableStatement, BreakpointState, Command, Event, HostSignal, Interpreter, LineBreakpoint,
+    Lowering,
+};
+use ns_syntax::Span;
 
 mod common;
 
@@ -32,6 +42,15 @@ fn main() {
                 format!("debug_metadata::{lowering_name}::{name}"),
                 move || every_body_compiles_again_alike(&path, lowering),
             ));
+            if name.starts_with("language/") {
+                let path = program.clone();
+                trials.push(Trial::test(
+                    format!(
+                        "breakable_statements_agree_with_the_breakpoints::{lowering_name}::{name}"
+                    ),
+                    move || breakable_statements_agree_with_the_breakpoints(&path, lowering),
+                ));
+            }
         }
     }
     trials.push(Trial::test(
@@ -91,6 +110,173 @@ fn every_body_compiles_again_alike(program: &Path, lowering: Lowering) -> Result
         return Err("no body of the program was checked".into());
     }
     Ok(())
+}
+
+/// How long the test waits for the VM's answer to a `SetBreakpoints`,
+/// which a run served before it ended: it is already queued.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Every breakable statement of each of `program`'s modules, asked before
+/// the module is loaded, is where a `SetBreakpoints` at its start lands
+/// once it is loaded under `lowering`. The answer is the optimized
+/// lowering's whatever the interpreter's, so an interpreter of the other
+/// lowering answers the same; under the optimized lowering nothing else
+/// is landed on either: a breakpoint at the module's start lands on the
+/// first, and one just past a statement's start on the next, or on none
+/// after the last. The reference lowering compiles a few statements the
+/// optimized one compiles to no instruction, which a breakpoint there
+/// lands on instead.
+fn breakable_statements_agree_with_the_breakpoints(
+    program: &Path,
+    lowering: Lowering,
+) -> Result<(), Failed> {
+    let Some(resolved_modules) = resolved_modules(program)? else {
+        return Ok(());
+    };
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    interpreter.set_jit_enabled(false);
+    let breakable: Vec<Vec<BreakableStatement>> = resolved_modules
+        .iter()
+        .map(|resolved| interpreter.breakable_statements(resolved))
+        .collect();
+    let other = match lowering {
+        Lowering::Optimized => Lowering::Reference,
+        Lowering::Reference => Lowering::Optimized,
+    };
+    let mut other_interpreter = Interpreter::bootstrap_with(other);
+    for (resolved, statements) in resolved_modules.iter().zip(&breakable) {
+        let others = other_interpreter.breakable_statements(resolved);
+        if others != *statements {
+            return Err(format!(
+                "an interpreter of the other lowering answers {:?}, this one {:?}",
+                describe(
+                    &resolved.source,
+                    others.iter().map(|breakable| Some(breakable.statement))
+                ),
+                describe(
+                    &resolved.source,
+                    statements.iter().map(|breakable| Some(breakable.statement))
+                ),
+            )
+            .into());
+        }
+    }
+    for resolved in &resolved_modules {
+        interpreter.load_module(resolved);
+    }
+    // Each breakpoint's offset, and the statement it lands on.
+    let expected: Vec<Vec<(u32, Option<Span>)>> = breakable
+        .iter()
+        .map(|statements| {
+            let at_starts = statements
+                .iter()
+                .map(|breakable| (breakable.statement.start, Some(breakable.statement)));
+            if lowering == Lowering::Reference {
+                return at_starts.collect();
+            }
+            let first = (0, statements.first().map(|breakable| breakable.statement));
+            let just_past = statements.iter().enumerate().map(|(index, breakable)| {
+                let next = statements.get(index + 1);
+                (
+                    breakable.statement.start + 1,
+                    next.map(|next| next.statement),
+                )
+            });
+            std::iter::once(first)
+                .chain(at_starts)
+                .chain(just_past)
+                .collect()
+        })
+        .collect();
+    let remote = interpreter.attach_debugger();
+    for (resolved, expected) in resolved_modules.iter().zip(&expected) {
+        let module = resolved.module.root_class.name.name.clone();
+        remote.send(Command::SetBreakpoints {
+            module: module.clone(),
+            breakpoints: expected
+                .iter()
+                .map(|(offset, _)| LineBreakpoint::at(*offset))
+                .collect(),
+        });
+        // Taken off again before anything runs, so that no breakpoint
+        // stops the run that serves them.
+        remote.send(Command::SetBreakpoints {
+            module,
+            breakpoints: Vec::new(),
+        });
+    }
+    // Any run serves the configuration queued before it, as it starts;
+    // the instantiation of a module of no golden's is one.
+    let serving = resolved_text(SERVING)?;
+    let serving = interpreter.load_module(&serving);
+    match interpreter.instantiate(&serving, &[]) {
+        Ok(_) => {}
+        Err(HostSignal::Return) => return Err("a non-local return escaped".into()),
+        Err(HostSignal::Error(error)) => return Err(error.message.into()),
+    }
+    for (resolved, expected) in resolved_modules.iter().zip(&expected) {
+        let module = &resolved.module.root_class.name.name;
+        let states = breakpoints_of(&remote, module)?;
+        if !breakpoints_of(&remote, module)?.is_empty() {
+            return Err(format!("{module}: the second set was not empty").into());
+        }
+        let landed = states.iter().map(|state| state.statement);
+        if !landed
+            .clone()
+            .eq(expected.iter().map(|(_, statement)| *statement))
+        {
+            return Err(format!(
+                "{module}: the breakpoints landed on {:?}, the breakable statements say {:?}",
+                describe(&resolved.source, landed),
+                describe(
+                    &resolved.source,
+                    expected.iter().map(|(_, statement)| *statement)
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// The text of each of `spans` in `source`, `-` for none.
+fn describe(source: &str, spans: impl Iterator<Item = Option<Span>>) -> Vec<String> {
+    spans
+        .map(|span| span.map_or("-", |span| span.text(source)).to_string())
+        .collect()
+}
+
+/// A module whose instantiation is a run, which serves the debugger's
+/// configuration as it starts.
+const SERVING: &str = "class BreakableStatementsServing = Object new () () : ()
+";
+
+/// `source`, parsed and resolved.
+fn resolved_text(source: &str) -> Result<ns_runtime::ResolvedModule, Failed> {
+    let module = ns_syntax::parse(source).map_err(|_| "parse")?;
+    let origin = ns_runtime::SourceOrigin::Embedded("serving.ns".to_string());
+    ns_runtime::resolve(module, Rc::from(source), origin).map_err(|_| "resolve".into())
+}
+
+/// The VM's answer to the next `SetBreakpoints` of `module`.
+fn breakpoints_of(
+    remote: &ns_runtime::DebugRemote,
+    module: &str,
+) -> Result<Vec<BreakpointState>, Failed> {
+    loop {
+        match remote.next_event(EVENT_TIMEOUT) {
+            Some(Event::Breakpoints {
+                module: reported,
+                breakpoints,
+            }) if reported == module => return Ok(breakpoints),
+            Some(Event::Breakpoints { .. }) => {}
+            other => {
+                return Err(
+                    format!("the breakpoints of {module} were expected, not {other:?}").into(),
+                )
+            }
+        }
+    }
 }
 
 /// `program`'s modules resolved, as `run` resolves them; `None` when one

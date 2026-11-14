@@ -25,9 +25,11 @@ mod stack;
 pub(crate) mod stepping;
 mod values;
 
+pub use metadata::breakable::BreakableStatement;
 pub use remote::{
-    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
-    FrameKind, FrameLocation, MethodBreakpoint, MethodBreakpointState, SendLocation, StopReason,
+    BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
+    Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
+    MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
     ValueDescription, ValueId, Variable,
 };
 
@@ -198,7 +200,8 @@ impl StressReader {
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
             | Event::StepFiltersSet
-            | Event::ExceptionBreakpointsSet => {}
+            | Event::ExceptionBreakpointsSet
+            | Event::ModuleText { .. } => {}
         }
     }
 }
@@ -356,8 +359,8 @@ impl Interpreter {
     /// another thread; a debugger attached before replaces it, its queued
     /// commands dropped with its channels and its pause and commands bits
     /// cleared, so that the new remote meets no stop it never asked for.
-    /// A pause the remote asks while no run executes stops the next run at
-    /// its first safepoint.
+    /// A pause the remote asks while no run executes stops the next run's
+    /// first activation at its first statement start.
     pub fn attach_debugger(&mut self) -> DebugRemote {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
@@ -441,14 +444,21 @@ impl Interpreter {
             }
             // A `SetBreakpoints` just served may have removed a breakpoint
             // the arm's stop is for, whose id the client no longer knows.
-            breakpoint = breakpoint
-                .and_then(|stop| self.enter(|mutator| stop.still_standing(&mutator.breakpoints)));
+            breakpoint = breakpoint.and_then(|stop| {
+                self.enter(|mutator| stop.still_standing(&mut mutator.breakpoints))
+            });
         }
         let exception = match (exception, self.debugger.is_some()) {
             (Some(pending), true) => self.enter(|mutator| exceptions::serve(mutator, pending)),
             _ => None,
         };
         if let Some((mut reason, in_handler)) = exception {
+            // The exception's stop is made instead of the arm's, whose
+            // frame fetches its slot again as it goes on: that fetch
+            // counts none of the reach's breakpoints once more.
+            if let Some(stop) = breakpoint {
+                self.enter(|mutator| stop.not_made(&mut mutator.breakpoints));
+            }
             // Where the frame on top stands is debugger.md's "Exceptions":
             // the first instruction of what the search runs next, unless a
             // slot's setter or a fast path answered it without a push. The stop serves a
@@ -486,13 +496,17 @@ impl Interpreter {
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
                 let (reason, returned) = self.enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
+                    let at_entry = stepping::is_at_entry(mutator);
                     let returned = stepping::end(mutator);
                     // A slot only a step's one-shot or the run to cursor
                     // stopped at is the step's stop, which reports the
-                    // value of the last call; a breakpoint the debugger
-                    // set there makes it the breakpoint's.
+                    // value of the last call -- or the pause's, for the
+                    // one-shot a pause pending at a run's start set; a
+                    // breakpoint the debugger set there makes it the
+                    // breakpoint's.
                     match breakpoint.hits.reason(unwound) {
                         Some(reason) => (reason, None),
+                        None if at_entry => (StopReason::Pause, None),
                         None => (StopReason::Step, returned),
                     }
                 });
@@ -703,6 +717,7 @@ impl Interpreter {
                 | Command::StepOut
                 | Command::RunToPosition { .. }
                 | Command::StackTrace
+                | Command::ModuleText { .. }
                 | Command::Variables { .. }
                 | Command::Children { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
@@ -715,9 +730,12 @@ impl Interpreter {
     /// program later and stops nothing itself, answering to `source`.
     fn configure(&mut self, source: &mut CommandSource, command: Command) {
         match command {
-            Command::SetBreakpoints { module, offsets } => {
+            Command::SetBreakpoints {
+                module,
+                breakpoints: requested,
+            } => {
                 let event = self
-                    .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, offsets));
+                    .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, requested));
                 self.answer(source, event);
             }
             Command::SetStepFilters { shipped, classes } => {
@@ -758,6 +776,7 @@ impl Interpreter {
             | Command::RunToPosition { .. }
             | Command::Terminate
             | Command::StackTrace
+            | Command::ModuleText { .. }
             | Command::Variables { .. }
             | Command::Children { .. } => {
                 unreachable!("internal: only a configuration command configures")
@@ -896,6 +915,26 @@ impl Interpreter {
                     });
                     self.answer(&mut source, Event::StackTrace(descriptions));
                 }
+                Command::ModuleText {
+                    module,
+                    known_revision,
+                } => {
+                    let event = self.enter(|mutator| {
+                        let revision = mutator.breakpoints.text_revision();
+                        let text = if known_revision == Some(revision) {
+                            ModuleTextAnswer::Unchanged
+                        } else {
+                            breakpoints::module_text(mutator, &module)
+                                .map_or(ModuleTextAnswer::None, ModuleTextAnswer::Text)
+                        };
+                        Event::ModuleText {
+                            module,
+                            revision,
+                            text,
+                        }
+                    });
+                    self.answer(&mut source, event);
+                }
                 Command::Variables { frame } => {
                     match self.enter(|mutator| {
                         let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
@@ -984,14 +1023,53 @@ impl Interpreter {
         }
     }
 
+    /// Serves the commands an agent queued while no run executes, for a
+    /// host that waits between runs -- before its first, for the client's
+    /// configuration -- so that a configuration command is answered while
+    /// the host waits rather than when the next run starts: every
+    /// configuration command is served, and every other is refused as one
+    /// queued between runs is (`serve_between_runs`). A host calls it on
+    /// its own thread, never during a run. Cold: only a debugged host
+    /// calls it.
+    #[cold]
+    pub fn serve_debugger_between_runs(&mut self) {
+        self.serve_between_runs();
+    }
+
+    /// What a run's start serves, its first activation pushed and about
+    /// to run: the commands queued between runs (`serve_between_runs`),
+    /// then a pause asked meanwhile, which stops the first activation at
+    /// its first statement start (`stepping::stop_at_entry`) rather than at
+    /// the run's first safepoint. Cold: a run without a debugger tests one
+    /// option.
+    #[cold]
+    pub(crate) fn serve_before_run(&mut self) {
+        if self.debugger.is_none() {
+            return;
+        }
+        self.serve_between_runs();
+        if self.debugger.is_none() {
+            return;
+        }
+        self.enter(|mutator| {
+            if mutator.heap.debugger_bits() & DEBUGGER_PAUSE == 0 {
+                return;
+            }
+            if let Some(entry) = mutator.heap.top_activation() {
+                stepping::stop_at_entry(mutator, entry);
+            }
+        });
+    }
+
     /// Takes every command queued for a run that is over, or that has not
     /// begun, after clearing the commands bit under the arming lock: a
     /// configuration command, which stops nothing, is served, and every
-    /// other dropped. A command that acts on a run is served by the run it
-    /// arrives during, and one left queued -- a `Terminate` sent after its
-    /// run ended, or queued after the one that ended it -- would otherwise
-    /// end the next run at its first safepoint, or be taken by its first
-    /// stop, a run nobody terminated. The bit is cleared before the queue
+    /// other command is dropped and answered by `Event::Refused`. A command
+    /// that acts on a run is served by the run it arrives during, and one
+    /// left queued -- a `Terminate` sent after its run ended, or queued
+    /// after the one that ended it -- would otherwise end the next run at
+    /// its first safepoint, or be taken by its first stop, a run nobody
+    /// terminated. The bit is cleared before the queue
     /// is drained, as `serve_queued_commands` clears it: the agent queues
     /// a command before it sets the bit, so a command the drain misses
     /// keeps its bit and is served, or dropped, at the next safepoint; the
@@ -1017,16 +1095,21 @@ impl Interpreter {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 Ok(
-                    Command::Continue
+                    command @ (Command::Continue
                     | Command::StepOver
                     | Command::StepInto
                     | Command::StepOut
                     | Command::RunToPosition { .. }
                     | Command::Terminate
                     | Command::StackTrace
+                    | Command::ModuleText { .. }
                     | Command::Variables { .. }
-                    | Command::Children { .. },
-                ) => {}
+                    | Command::Children { .. }),
+                ) => {
+                    // The drop stays, but never silent: every command has
+                    // exactly one answer, as every DAP request has one.
+                    self.refuse(&mut CommandSource::Remote, &command, "no run executes");
+                }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
                     self.detach_debugger();

@@ -21,6 +21,7 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.debugger.NewspeakDebuggeeProcessHandler
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -132,20 +133,47 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             else -> throw ExecutionException(runtimeProblem(location))
         }
         if (programArgument(this) == null) throw ExecutionException(NewspeakBundle.message("run.configuration.error.no.program"))
-        val configuration = this
-        return object : CommandLineState(environment) {
-            override fun startProcess(): ProcessHandler {
-                val handler = KillableColoredProcessHandler(newspeakProcessCommandLine(runtime, configuration))
-                ProcessTerminatedListener.attach(handler)
-                return handler
-            }
-        }
+        return NewspeakRunState(environment, runtime, this)
     }
 
     private fun openNewspeakSettings() {
         ShowSettingsUtil.getInstance().showSettingsDialog(project, NewspeakSettingsConfigurable::class.java)
     }
 }
+
+/**
+ * What a Newspeak run configuration starts: ns-next, and under the Debug
+ * executor ns-next connecting to the debugger at [debugAddress] and handed
+ * [debugSecret], both of which the debug runner sets before it starts the
+ * process.
+ */
+class NewspeakRunState(
+    environment: ExecutionEnvironment,
+    private val runtime: Path,
+    private val configuration: NewspeakRunConfiguration,
+) : CommandLineState(environment) {
+    /** The `host:port` the debugger listens at; null for a run without it. */
+    var debugAddress: String? = null
+
+    /**
+     * The one-time secret the runtime returns in its `process` event, so
+     * that the debugger can tell its process from another that connected
+     * first; handed over in the environment, never on the command line,
+     * which other processes on the machine can read.
+     */
+    var debugSecret: String? = null
+
+    override fun startProcess(): ProcessHandler {
+        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress)
+        debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
+        val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
+        ProcessTerminatedListener.attach(handler)
+        return handler
+    }
+}
+
+/** `crates/ns-cli/src/debug/agent.rs`'s `SECRET_VARIABLE`: where ns-next --debug-connect takes the secret it returns. */
+const val DEBUG_SECRET_VARIABLE = "NS_NEXT_DEBUG_SECRET"
 
 /** `crates/ns-cli/src/project.rs`'s `PROJECT_FILE_NAME`: the name ns-next recognises a project file by. */
 const val PROJECT_FILE_NAME = "newspeak.json"
@@ -222,16 +250,23 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
 }
 
 /** The process a Newspeak run configuration starts: [newspeakCommandLine], in the program file's directory. */
-fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): GeneralCommandLine =
-    GeneralCommandLine(newspeakCommandLine(runtime, configuration))
+fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): GeneralCommandLine =
+    GeneralCommandLine(newspeakCommandLine(runtime, configuration, debugAddress))
         .withWorkDirectory(workingDirectory(configuration)?.toFile())
         // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
         .withCharset(StandardCharsets.UTF_8)
 
-/** The command line a Newspeak run configuration starts; pure, so its shape is tested without starting anything. */
-fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): List<String> = buildList {
+/**
+ * The command line a Newspeak run configuration starts; pure, so its shape
+ * is tested without starting anything. With [debugAddress], ns-next
+ * connects to the debugger listening there (`--debug-connect`) rather than
+ * listening itself, so that no port of the program is open to another
+ * process.
+ */
+fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): List<String> = buildList {
     add(runtime.toString())
     add(configuration.command.subcommand)
+    debugAddress?.let { address -> add("--debug-connect=$address") }
     // One token, so a name starting with `-` is not read as an option.
     configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))

@@ -46,8 +46,9 @@ pub use compiler::Lowering;
 // The debugger's `FrameKind` stays in `debugger`: the crate root's is the
 // activation kind of `types`.
 pub use debugger::{
-    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
-    FrameLocation, MethodBreakpoint, MethodBreakpointState, SendLocation, StopReason,
+    BreakableStatement, BreakpointId, BreakpointState, ClassName, Command, DebugControl,
+    DebugEvents, DebugRemote, Event, FrameDescription, FrameLocation, HitCondition, LineBreakpoint,
+    MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
     ValueDescription, ValueId, Variable,
 };
 
@@ -97,7 +98,7 @@ pub use heap::{
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,
     NewClosure, ObjectReference, ObjectShape, RegisterBase, Root, StackExhausted,
 };
-pub use interpreter::core_library::MANIFEST_SOURCE;
+pub use interpreter::core_library::{shipped_module_source, MANIFEST_SOURCE};
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,
     HostResult, HostSignal, Interpreter, MethodSide, Mutator,

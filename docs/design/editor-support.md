@@ -2,7 +2,8 @@
 
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
 > `semantic_tokens.rs`, `hover.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
-> `code_actions.rs`, the formatting answer in `server.rs`; on
+> `code_actions.rs`, the formatting answer in `server.rs`, the breakable
+> lines in `breakable.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
@@ -21,7 +22,13 @@
 > `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
 > project with the `ns-next` the settings name; for a module `ns-next` can
 > run from its source, a play button beside its `main:args:` that runs or
-> benchmarks the module ("The project file and running projects").
+> benchmarks the module ("The project file and running projects"). Debug
+> on a Newspeak run configuration debugs the program in the IDE's
+> debugger over a DAP client of the plugin's own (the `debugger`
+> package), with line breakpoints on the lines the server's
+> `newspeak/breakableLines` answers, their block variants and pass
+> counts, and method and exception breakpoints ("Breakable lines";
+> [debugger.md](debugger.md), "The JetBrains plugin").
 > Range formatting, formatting on type, go to definition, find usages and
 > further platforms are planned ("Planned later").
 
@@ -66,8 +73,11 @@ runs a single module from its `main:args:`.
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
-IDE; and running and benchmarking a single module from its `main:args:`
-("The project file and running projects").
+IDE; running and benchmarking a single module from its `main:args:`
+("The project file and running projects"); and debugging what a run
+configuration runs in the IDE's debugger, its line breakpoints placed by
+the server's breakable lines ("Breakable lines"; [debugger.md](debugger.md),
+"The JetBrains plugin").
 
 **Target IDEs.** Every commercial JetBrains IDE that carries JetBrains' own
 LSP API: IntelliJ IDEA, WebStorm, PhpStorm, PyCharm, DataSpell, RubyMine,
@@ -167,9 +177,11 @@ which prints an image's structure ([image-format.md](image-format.md),
 "Reading an artifact"); and `fmt`, the one command that writes, which
 rewrites `.ns` files in the formatter's layout
 ([formatting.md](formatting.md), "Entry points"). It never runs a program:
-`disasm` compiles a module or decodes an image, `inspect` reads an image without loading it, and neither
-runs the program's code -- the only Newspeak that runs is the shipped core
-library's instantiation in the interpreter `disasm` bootstraps, and no other
+`disasm` compiles a module or decodes an image, `inspect` reads an image
+without loading it, and neither runs the program's code -- the only
+Newspeak that runs is the shipped core library's instantiation in the
+interpreter `disasm` bootstraps, and in the one the language server
+bootstraps for the breakable lines ("Breakable lines"), and no other
 command starts an interpreter. Running is the `ns-next` binary's. Being a
 binary of its own keeps the server's dependencies out of `ns-next` and out of
 `ns-runtime`: `lsp-server` (rust-analyzer's transport), `lsp-types` and
@@ -231,6 +243,9 @@ Modules:
   whole-file edit ("Hints").
 - `document_symbols.rs` — the document symbols and their LSP encoding
   ("Structure").
+- `breakable.rs` — the lines a line breakpoint can stand on and their
+  block variants, and the interpreter they are compiled in ("Breakable
+  lines").
 
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
@@ -241,7 +256,8 @@ announced as `true`), `textDocument/documentSymbol` (the
 `file` URI never opened, read from disk), `textDocument/formatting` (the
 `documentFormattingProvider` capability, announced as `true`; "Formatting"),
 `textDocument/codeAction` (the `codeActionProvider` capability, announced
-as `true`; "Hints"), `shutdown` and `exit`. Nothing
+as `true`; "Hints"), the custom request `newspeak/breakableLines`
+("Breakable lines"), `shutdown` and `exit`. Nothing
 else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
@@ -1081,6 +1097,79 @@ server's one thread under `catch_unwind`, as the analysis does
 ("Robustness"): a panic in the printer answers no edit and leaves the
 document as it is.
 
+### Breakable lines
+
+The custom request `newspeak/breakableLines` answers the lines of an open
+document a line breakpoint can stand on, from which the plugin decides
+`canPutAt` and a line breakpoint's variants before any debug session runs
+([debugger.md](debugger.md), "A breakpoint names a source position").
+Its params are `{ "textDocument": { "uri" } }`; its result is
+`{ "version", "lines" }`: `version` the document's version the server
+holds, so that the plugin keeps the answer per version, and `lines` one
+entry `{ "line", "variants" }` per line a breakable statement starts on,
+in order, `variants` listing, for each statement starting on the line
+that is the first breakable statement of a block literal, the literal's
+`range` and the statement's start `position`, in order -- the block may
+begin on a line above. Lines and positions are 0-based LSP positions in
+UTF-16 code units. A document whose text does not parse (`ns_syntax::parse`,
+not the editor's recovering parse) or does not resolve (`resolve`) answers
+`"lines": null`, every line of which the plugin allows; a document the
+client never opened, or has closed, is an `InvalidParams` error rather
+than an empty set, which would forbid every line.
+
+The plugin's `BreakableLinesCache` (`debugger/`) keeps each file's answer
+with the document stamp it was asked for, as `DocumentSymbolCache` keeps
+the symbols, and drops one whose `version` is not the one the platform's
+client holds for the document -- an edit the server has not been told of
+yet. `NewspeakLineBreakpointType.canPutAt` answers from it and never
+waits: while there is no answer for the current text -- the server not
+started, the document not opened with it, an error -- it allows every line
+and asks in the background, again every second for about a minute, so
+that a click is never refused for want of an answer. A file that is not
+on disk -- a module's text the debugger shows by reference -- is allowed
+every line without asking. A line's variants are the line and each of
+its blocks (`computeVariants`), but a block whose first statement is the
+line's first, where the two stop at the same statement; a block
+variant's breakpoint keeps the column of that statement and is sent with
+it ([debugger.md](debugger.md), "The JetBrains plugin").
+
+The answer is `Interpreter::breakable_statements`' over the resolved
+module, which compiles every level of it under the optimized lowering
+without loading or running anything, grouped by line. It is
+compiled on a worker thread of its own, which the server spawns at the
+first request and asks synchronously, handing it the document's text: the
+worker parses, resolves and compiles, and answers spans only, since an
+interpreter and the symbol interner are bound to the thread that made
+them. The worker bootstraps one interpreter, at its first module rather
+than at the server's start, so that an editor that never asks pays
+nothing, and keeps it: the bootstrap instantiates the shipped core
+library, the only Newspeak that runs. The answer is computed once per
+document version, by the first request for it; on `Kernel.ns`, 8,355
+lines and 1,399 breakable statements, `breakable_statements` takes about
+9 ms in a debug build, its parse and resolve about 8 ms more. The compile
+runs under `catch_unwind`, as the analysis does ("Robustness"): a panic
+answers `"lines": null` and drops the interpreter, which a new one
+replaces at the next request.
+
+**The chain guard.** The compiler recurses along a chain of messages,
+which the parser does not bound ([frontend.md](frontend.md), "Recovery",
+rule 7), and a stack overflow aborts the process, past `catch_unwind`,
+taking the editor's support for every file with it. So the worker
+counts, without recursion, the most sends any path through the module
+nests -- a chain one per message, `breakable::nested_sends` -- and above
+`MAX_NESTED_SENDS`, 20,000, answers `"lines": null` without compiling.
+The cap sits above what `ns-next run`'s 8 MiB thread compiles today -- a
+body of one chain overflows it past about 14,900 messages in a release
+build and 10,000 in a debug one, measured by bisecting the chain's length
+with `ns-next run` -- so every module `ns-next` can compile gets its
+exact answer; and below what the worker's stack holds: it reserves
+64 MiB, address space rather than memory, on which a debug build
+compiles a chain of 80,000 and overflows below 100,000. Pinned by
+`a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on`. The
+guard goes when the compiler takes a chain link by link
+([OPEN-WORK.md](../OPEN-WORK.md), "A valid method whose body is one long
+chain of messages aborts `ns-next run`").
+
 ### Robustness
 
 An editor sends invalid text all the time. `ns-syntax`'s contract is that
@@ -1367,7 +1456,11 @@ Components:
   plugin descriptor of its own to depend on at compile time.
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
   project. Folding needs nothing of its own: the platform's `LspFoldingBuilder`
-  asks the server ("Folding").
+  asks the server ("Folding"). The server's own request,
+  `newspeak/breakableLines`, is declared on `NewspeakLanguageServer`, an
+  lsp4j interface the client descriptor names as its `lsp4jServerClass`,
+  which is how the platform's client sends a request the protocol does
+  not define ("Breakable lines").
 - **Structure view** — `NewspeakStructureViewFactory`, its model and
   `NewspeakStructureElement`, over the server's document symbols, which
   `DocumentSymbolCache` keeps per file and stamp for the structure view and
@@ -1389,6 +1482,15 @@ Components:
   (`NewspeakModuleRunLineMarkerContributor`) and its context menu's producer
   (`NewspeakModuleRunConfigurationProducer`) ("The project file and running
   projects").
+- **The debugger** -- the `debugger` package: the DAP client in `dap/`
+  (`DapConnection`, `DapClient`, `DapTypes`), Debug on a Newspeak run
+  configuration (`NewspeakDebugRunner`, which starts `ns-next run
+  --debug-connect` against a socket the plugin listens on), the
+  `XDebugProcess` (`NewspeakDebugProcess`) with its suspend context,
+  stack, frames, values and sources, and the three breakpoint types --
+  line, method and exception -- with their handlers and the breakable
+  lines' cache ("Breakable lines"; [debugger.md](debugger.md), "The
+  JetBrains plugin").
 
 ### Indentation and width
 
@@ -1674,21 +1776,23 @@ a `.ns` module.
   from 17 to 26; the JDK 21 the build compiles with is a toolchain the foojay
   resolver provisions, so the build does not depend on which JDK happens to
   run Gradle.
-- **Rust from Gradle.** `buildLanguageServerDebug` and `buildLanguageServerRelease`
-  each run `cargo build -p ns-analyzer` at the repository root, debug and `--release`
-  respectively; `tasks.test` depends on the debug build and points the tests at
-  it. Every sandbox an IDE starts from depends on the release build and gets
-  the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
-  `platform-directories.properties` names for it (a host the file does not
-  name fails the sandbox task rather than bundling a server the plugin would
-  not look for), beside `THIRD-PARTY-NOTICES.txt` and
-  `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
-  `prepareSandbox_runIde` with its split-mode siblings, which `runIde` starts
-  from — a separate sandbox (`plugins_runIde/`), so configuring
-  `prepareSandbox` alone leaves `runIde` without a server. The test sandboxes
-  (`prepareTest…`) are left out: only these build `--release`, because the
-  release profile's fat LTO and single codegen unit make that build slow and
-  the tests use the debug build.
+- **Rust from Gradle.** `buildLanguageServerDebug` and
+  `buildLanguageServerRelease` each run `cargo build -p ns-analyzer` at the
+  repository root, debug and `--release` respectively; the lexer comparison
+  depends on the debug build and points its test at it, and
+  `buildRuntimeDebug` builds `ns-next` (debug) for the DAP session test and
+  the debug process test. Every sandbox an IDE starts from depends on the
+  release build and gets the binary in `bin/<os>-<arch>/` for the host it
+  runs on, the directory `platform-directories.properties` names for it (a
+  host the file does not name fails the sandbox task rather than bundling a
+  server the plugin would not look for), beside `THIRD-PARTY-NOTICES.txt`
+  and `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
+  `prepareSandbox_runIde` with its split-mode siblings, which `runIde`
+  starts from — a separate sandbox (`plugins_runIde/`), so configuring
+  `prepareSandbox` alone leaves `runIde` without a server. The test
+  sandboxes (`prepareTest…`) are left out: only these build `--release`,
+  because the release profile's fat LTO and single codegen unit make that
+  build slow and the tests use the debug build.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
   been tried end to end: the server starts from `plugins_runIde/`, the
   semantic colours land over the lexer's, a resolver error
@@ -1760,11 +1864,88 @@ The server's own tests are described under its section, above ("Testing").
   and comment tokens must fill exactly the gaps between the Rust tokens.
   `dump-tokens` runs in batches of 100 files, which keeps each command line
   under Windows' length limit over the repository's more than 600 `.ns` files.
-  The test task declares the debug server and those `.ns` files -- not a
-  golden's `.toml`, which the comparison does not read -- as inputs, so a
-  change to any of them — the Rust lexer reaches it through the rebuilt
-  server — reruns the comparison rather than leaving
-  `check` up to date;
+  It is a test task of its own, `lexerComparisonTest`, which `check`
+  depends on beside `test`: its inputs are those `.ns` files -- not a
+  golden's `.toml`, which the comparison does not read -- and what
+  `dump-tokens` answers derive from, `ns-syntax`'s sources, the analyzer's
+  `main`, its dispatch and `token_dump.rs`, the processor check and the
+  reach record `main` runs first, and the workspace's build settings (the
+  toolchain, the compiler flags, `Cargo.lock` and every manifest), so a
+  change to the Rust lexer reruns it rather than leaving `check` up to
+  date. The debug server is built before it, but its bytes are no input:
+  it is relinked whenever `ns-runtime` changes, and the gates' own builds
+  relink it at every run, which would rerun the comparison on every runtime
+  commit though nothing it reads changed. A later test that starts a
+  workspace binary takes a task of its own the same way, declaring the
+  sources its answers run through and `binaryBuildSettings`
+  (`editors/jetbrains/build.gradle.kts`);
+- the DAP client against the real agent (`DapSessionTest`) -- `ns-next run
+  --debug-connect` connecting to a socket the test listens on, then
+  `initialize`, `attach`, `setBreakpoints`, `configurationDone`, the
+  `stopped` event, the top frame of `stackTrace` and `continue` to the
+  `exited` event's 0, every wait bounded; the debug build of `ns-next`
+  (`buildRuntimeDebug`, `cargo build -p ns-cli`) is named by the system
+  property `nsNext.runtime`. A task of its own, `dapSessionTest`, which
+  `check` depends on: its answers run through the whole runtime, so its
+  inputs are the sources of `ns-cli`, `ns-runtime` (the core library
+  included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and
+  `binaryBuildSettings`: every change to the runtime reruns it, while a
+  change to the analyzer alone leaves it up to date; its framing and
+  bookkeeping, piped to a scripted peer instead, are `DapConnectionTest`'s,
+  in plain JUnit under `test` (UTF-8 byte counts, header names in any case
+  beside other headers, a body arriving in pieces, a failed response failing
+  its future, events by name, a close or the stream's end failing every
+  pending request, a peer closing inside a body, an oversized
+  `Content-Length` and malformed JSON ending the connection, an `Error` the
+  message handler throws ending it, an `Error` an event listener throws and
+  a failing close listener leaving the other listeners called, and a stream
+  that throws something other than an `IOException` failing the send and its
+  request);
+- the debug process in the platform's debugger
+  (`NewspeakDebugProcessTest`, on `BasePlatformTestCase` run off the event
+  dispatch thread, so that it can wait while the platform updates the
+  session there) -- Debug on a Newspeak run configuration through the
+  plugin's runner, against the same debug build of `ns-next`: a line
+  breakpoint toggled through `XDebuggerUtil` stops the program, the
+  session's position is its line and the top frame's locals and an
+  `Array`'s elements read through the value tree; Step Over moves to the
+  next line; the first Stop of a program inside one long leaf terminates
+  through the agent and leaves the process running, the second kills it;
+  and, against a fake agent over the same harness (a session over an
+  undebugged `ns-next` process of the test's own): an agent reporting
+  another process's id, one whose `process` event lacks the runner's
+  secret, and one sending `initialized` and `stopped` without any
+  `process` event, ends the session with the error and kills the process
+  before any configuration is sent; an exception's stop says which
+  exception stopped it in the debugger's balloon; `stop()` keeps the
+  connection until `terminate` is answered; a module shown by reference
+  is one read-only `LightVirtualFile` across two stops, asked for once;
+  a hidden frame is drawn greyed and the program's frame not; and an
+  `Array` of 150 elements shows 100, offers 50 more, and fetches them
+  with `start` 100; an agent's `terminated` event or a close before any
+  `process` event ends the session with the error and kills the process,
+  and Run to Cursor before the runtime connected says the session has not
+  started.
+  Every listener is registered as the platform creates the debug process
+  (`XDebuggerManager.TOPIC`), before it connects, and every wait is
+  bounded. A task of its own, `debugProcessTest`, with
+  `dapSessionTest`'s inputs (`debugsWithTheRuntime` in
+  `build.gradle.kts`), which `check` depends on;
+- the breakpoint types (`NewspeakBreakpointTypesTest`, as
+  `NewspeakDebugProcessTest` off the event dispatch thread) -- with the
+  breakable lines' fetcher replaced, `canPutAt` refuses a comment's line,
+  allows a statement's, allows every line for a `null` answer and while
+  no answer has come; a line's variants are the line and its block, the
+  block's highlighted range and column the server's; and, through each
+  handler over a scripted peer and a session that records what it is
+  told: a pass count is sent as the `hitCondition` and a block variant's
+  column as the `column`, a breakpoint the agent moves says the line it
+  stops at and one it refuses its reason, a method breakpoint is sent by
+  its name and pass count, and the exception breakpoints as the filters
+  and the classes' options, "Any exception" for uncaught ones taking
+  every class; against the real runtime, a temporary breakpoint in a loop
+  stops once and is gone. A task of its own, `breakpointTypesTest`, with
+  `debugProcessTest`'s inputs, which `check` depends on;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -1880,7 +2061,8 @@ The server's own tests are described under its section, above ("Testing").
   server has answered; the context menu's "Run" from the file and from inside a
   method, named `<file>.ns` and recognised from the gutter's
   configuration, none for a module that cannot run, and off the EDT asking
-  the server itself). No test starts `ns-next`.
+  the server itself). None of these starts `ns-next`; only the
+  debugger's three tasks above do.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
 `ns-analyzer`'s tests, the hints' behaviour oracle aside ("Hints"), before
@@ -1892,7 +2074,9 @@ stress mode the analyzer's subprocess compiles every instruction wide, so they
 also check that disassembly and decoding do not depend on the form. Which
 gate runs when is the table "The gates" in `CLAUDE.md`: for the editor, the
 plugin's `check` on every commit (Gradle reruns its tests only when the
-plugin, the analyzer binary or a source its lexer comparison reads changed),
+plugin, a source they read or, for the lexer comparison, the Rust sources
+`dump-tokens` runs or the build settings changed, and, for the debugger's
+three tasks, the runtime's sources or the build settings),
 the hints' behaviour oracle for a commit touching `crates/ns-analyzer/`
 ("Hints"), and `verifyPlugin buildPlugin`, which downloads several IDEs, at
 the end of a batch that touched `editors/jetbrains/`. A change to
@@ -1924,6 +2108,14 @@ and resolves cleanly in a JetBrains IDE today.
   stop short of (they check the command line and the process's charset);
   the module's play button against a running server, the daemon restarted
   by the answer (the tests fill the cache through a stand-in).
+- **The debugger's paths into the platform** without a test: the real
+  `newspeak/breakableLines` round trip through the platform's LSP client
+  (the breakpoint types' test replaces the fetcher), a breakpoint in a
+  shipped module's read-only file, and the turning off and on that
+  carries an edited pass count or exception box to a running session
+  ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
+  starts no image, so `ns-next load --debug-connect` has no run
+  configuration of the plugin's.
 
 ## Planned later
 

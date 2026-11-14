@@ -15,19 +15,20 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables` and `Children` are served only while the
-/// program is stopped; one that
-/// arrives while it runs is refused (`Event::Refused`). `Terminate` is
-/// served either way. An agent waits for `Event::Stopped` before it sends
-/// a command only a stop serves: one sent right after
-/// `DebugRemote::pause` is refused or served depending on whether a
-/// safepoint drains the queue before the stop or the stop serves it. A
-/// command is served by the run it arrives during; one queued while no
-/// run executes, or still queued when a run ends, is dropped unanswered.
-/// A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
-/// `SetStepFilters`, `SetExceptionBreakpoints` -- is served wherever
-/// commands are taken instead: at a safepoint while the program runs, at
-/// a stop, and when a run starts or ends, for one queued between runs.
+/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only
+/// while the program is stopped; one that arrives while it runs is refused
+/// (`Event::Refused`). `Terminate` is served either way. An agent waits
+/// for `Event::Stopped` before it sends a command only a stop serves: one
+/// sent right after `DebugRemote::pause` is refused or served depending
+/// on whether a safepoint drains the queue before the stop or the stop
+/// serves it. A command is served by the run it arrives during; one
+/// queued while no run executes, or still queued when a run ends, is
+/// dropped and answered by `Event::Refused`, its reason that no run
+/// executes. A configuration command -- `SetBreakpoints`,
+/// `SetMethodBreakpoints`, `SetStepFilters`, `SetExceptionBreakpoints` --
+/// is served wherever commands are taken instead: at a safepoint while
+/// the program runs, at a stop, and when a run starts or ends, for one
+/// queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.
@@ -76,13 +77,18 @@ pub enum Command {
     },
     /// Replaces every line breakpoint of the module `module` names -- its
     /// root class's name, as `FrameLocation::module` names it, a shipped
-    /// module's too -- by one at each of `offsets`, byte offsets into the
+    /// module's too -- by `breakpoints`, each at a byte offset into the
     /// module's current text. Each resolves to the first statement start
     /// at or after its offset in any body of the module, and every body
     /// with a statement of that same span stops there: an inlined block's
-    /// copy in its home and its fallback closure alike. Answered by
+    /// copy in its home and its fallback closure alike. Each is set
+    /// afresh, under a new id and its hits counted from none, whether or
+    /// not the module's set held it before. Answered by
     /// `Event::Breakpoints`.
-    SetBreakpoints { module: String, offsets: Vec<u32> },
+    SetBreakpoints {
+        module: String,
+        breakpoints: Vec<LineBreakpoint>,
+    },
     /// Replaces the step filters: the frames no step stops in
     /// (`docs/design/debugger.md`, decision 16). `shipped` filters every
     /// body of the shipped modules, and `classes` the bodies of each class
@@ -125,6 +131,21 @@ pub enum Command {
         halt: bool,
         classes: Vec<ClassName>,
     },
+    /// The current text of the module `module` names -- its root class's
+    /// name, as `FrameLocation::module` names it, a shipped module's too,
+    /// built or not -- unless `known_revision` is the revision the answer
+    /// would carry. `known_revision` is the revision of a
+    /// `ModuleTextAnswer::Text` the agent holds for this very module; an
+    /// agent keeps a revision only beside a `Text`, since the revision
+    /// counts every install and every build of a module's root class, and
+    /// a `None` answered at one revision says nothing of the next. Served
+    /// only while the program is stopped, as `StackTrace` is, so that the
+    /// agent reads a text only where it reads positions in it. Answered by
+    /// `Event::ModuleText`.
+    ModuleText {
+        module: String,
+        known_revision: Option<u64>,
+    },
 }
 
 /// A method a method breakpoint names: by its selector, the class
@@ -136,6 +157,60 @@ pub struct MethodBreakpoint {
     /// Whether the method is the class side's.
     pub class_side: bool,
     pub selector: String,
+    /// Which of its hits stop: each entry and each exit of an activation
+    /// of the method is a hit, an exit by an unwind included, counted
+    /// while the debugger is attached from the moment the breakpoint is
+    /// set; `None` stops at every one.
+    pub hit_condition: Option<HitCondition>,
+}
+
+/// A line breakpoint as `Command::SetBreakpoints` asks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineBreakpoint {
+    /// A byte offset into its module's current text.
+    pub offset: u32,
+    /// Which of its hits stop: each time an activation reaches its
+    /// statement is a hit, counted while the debugger is attached from the
+    /// moment the breakpoint is set; `None` stops at every one.
+    pub hit_condition: Option<HitCondition>,
+}
+
+impl LineBreakpoint {
+    /// A breakpoint at `offset` that stops at every hit.
+    pub fn at(offset: u32) -> LineBreakpoint {
+        LineBreakpoint {
+            offset,
+            hit_condition: None,
+        }
+    }
+}
+
+/// Which hits of a breakpoint stop, by the hit's number, the first being
+/// 1: DAP's `hitCondition`, counted by the VM, so that a hit that does not
+/// stop costs a counter rather than a stop and a round trip to the agent
+/// (`docs/design/debugger.md`, "Hit counts and temporary breakpoints").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitCondition {
+    /// The hit numbered so, and no other.
+    Equal(u32),
+    /// Every hit after the one numbered so.
+    Greater(u32),
+    /// The hit numbered so and every one after it.
+    GreaterOrEqual(u32),
+    /// Every hit whose number is a multiple of this one; none for 0.
+    Multiple(u32),
+}
+
+impl HitCondition {
+    /// Whether the hit numbered `hits` stops.
+    pub fn holds(self, hits: u32) -> bool {
+        match self {
+            HitCondition::Equal(count) => hits == count,
+            HitCondition::Greater(count) => hits > count,
+            HitCondition::GreaterOrEqual(count) => hits >= count,
+            HitCondition::Multiple(count) => count != 0 && hits.is_multiple_of(count),
+        }
+    }
 }
 
 /// A class declaration of a module, as a step filter names it.
@@ -167,6 +242,7 @@ impl Command {
             Command::SetStepFilters { .. } => "SetStepFilters",
             Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
             Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
+            Command::ModuleText { .. } => "ModuleText",
         }
     }
 }
@@ -208,6 +284,27 @@ pub enum Event {
     /// The answer to `Command::SetExceptionBreakpoints`: the exception
     /// breakpoints are in effect.
     ExceptionBreakpointsSet,
+    /// The answer to `Command::ModuleText`. `revision` is the interpreter's
+    /// count of installs and of builds of a module's root class, the same
+    /// for every module and 0 before the first: a text read at a revision
+    /// is current until it is raised.
+    ModuleText {
+        module: String,
+        revision: u64,
+        text: ModuleTextAnswer,
+    },
+}
+
+/// What `Event::ModuleText` says of a module's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleTextAnswer {
+    /// The agent's `known_revision` is the current one.
+    Unchanged,
+    /// The module's current text.
+    Text(String),
+    /// No module of that name is built (a shipped module needs no build),
+    /// or it has no text (an image built without its source).
+    None,
 }
 
 /// Why the program stopped.
@@ -364,13 +461,17 @@ pub struct Variable {
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its
-/// label, its class's name and how many children it has.
+/// label, its class's name, how many children it has and whether they are
+/// elements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueDescription {
     pub id: ValueId,
     pub label: String,
     pub class_name: String,
     pub child_count: usize,
+    /// Whether its children are elements, named `[1]` up, rather than
+    /// fields: an `Array`'s, by its shape.
+    pub indexed: bool,
 }
 
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),
@@ -380,10 +481,25 @@ pub struct ValueDescription {
 /// It is served from another thread than the one running the interpreter:
 /// a stop blocks the running thread until a `Continue` or a `Terminate`
 /// arrives, so a host that pauses and then runs the program on one thread
-/// waits in the stop forever.
+/// waits in the stop forever. An agent that pumps events on a thread of its
+/// own while another sends commands splits it (`DebugRemote::into_parts`).
 pub struct DebugRemote {
+    control: DebugControl,
+    events: DebugEvents,
+}
+
+/// The half of a remote that speaks to the VM: it pauses the program and
+/// queues commands. It is `Clone`, `Send` and `Sync`, so that several
+/// threads of an agent command the VM at once, each through its own handle.
+///
+/// The VM notices that every handle is gone where it next takes commands:
+/// at a safepoint that finds the commands bit, or at a stop, whose wait for
+/// a command ends. Dropping the control alone therefore detaches the
+/// debugger at the next stop or drain, and dropping `DebugEvents` alone at
+/// the next event the VM cannot send.
+#[derive(Clone)]
+pub struct DebugControl {
     commands: Sender<Command>,
-    events: Receiver<Event>,
     words: MachineWords,
     /// The interpreter's arming lock: held across the two writes that arm
     /// the poll, so that the VM's clearing of a bit cannot fall between
@@ -392,6 +508,13 @@ pub struct DebugRemote {
     /// The number of the attachment that handed this remote out, which
     /// arms only while it is current.
     attachment: u64,
+}
+
+/// The half of a remote that listens to the VM: its events, in order. It
+/// moves to a thread of its own, so that a stop is heard while another
+/// thread waits to send.
+pub struct DebugEvents {
+    events: Receiver<Event>,
 }
 
 impl DebugRemote {
@@ -403,18 +526,44 @@ impl DebugRemote {
         attachment: u64,
     ) -> DebugRemote {
         DebugRemote {
-            commands,
-            events,
-            words,
-            arming,
-            attachment,
+            control: DebugControl {
+                commands,
+                words,
+                arming,
+                attachment,
+            },
+            events: DebugEvents { events },
         }
     }
 
+    /// Splits the remote into the half that commands the VM and the half
+    /// that hears it.
+    pub fn into_parts(self) -> (DebugControl, DebugEvents) {
+        (self.control, self.events)
+    }
+
+    /// As `DebugControl::pause`.
+    pub fn pause(&self) {
+        self.control.pause();
+    }
+
+    /// As `DebugControl::send`.
+    pub fn send(&self, command: Command) {
+        self.control.send(command);
+    }
+
+    /// As `DebugEvents::next_event`.
+    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
+        self.events.next_event(timeout)
+    }
+}
+
+impl DebugControl {
     /// Asks the program to stop at its next safepoint, interpreted or in
     /// machine code, a push or a loop's head; the VM answers
     /// `Event::Stopped`. A pause asked while no run executes stops the
-    /// next run at its first safepoint.
+    /// next run's first activation -- the method or block the host sent --
+    /// at its first statement start.
     pub fn pause(&self) {
         self.arm(DEBUGGER_PAUSE);
     }
@@ -422,19 +571,13 @@ impl DebugRemote {
     /// Queues `command` for the VM: the next safepoint serves it if the
     /// program runs, the stop does if it is stopped, and the start of the
     /// next run if no run executes, which drops it unless it is a
-    /// configuration command (`Command`). Queued before the bit
-    /// is set, so that the safepoint that finds the bit finds the command;
-    /// a remote whose VM is gone queues it nowhere.
+    /// configuration command (`Command`) and answers it with a refusal.
+    /// Queued before the bit is set, so that the safepoint that finds the
+    /// bit finds the command; a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {
         if self.commands.send(command).is_ok() {
             self.arm(DEBUGGER_COMMANDS);
         }
-    }
-
-    /// The VM's next event, waiting for at most `timeout`; `None` once it
-    /// passed, or once the VM is gone.
-    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
-        self.events.recv_timeout(timeout).ok()
     }
 
     /// Sets `bit` in the request word and lowers the depth limit, so that
@@ -453,5 +596,47 @@ impl DebugRemote {
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+}
+
+impl DebugEvents {
+    /// The VM's next event, waiting for at most `timeout`; `None` once it
+    /// passed, or once the VM is gone.
+    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
+        self.events.recv_timeout(timeout).ok()
+    }
+
+    /// The VM's next event, waiting as long as it takes; `None` once the VM
+    /// is gone, which ends an agent's pumping loop.
+    pub fn recv(&self) -> Option<Event> {
+        self.events.recv().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HitCondition;
+
+    #[test]
+    fn hit_condition_holds() {
+        let table = [
+            (HitCondition::Equal(2), [false, false, true, false, false]),
+            (HitCondition::Equal(0), [true, false, false, false, false]),
+            (HitCondition::Greater(2), [false, false, false, true, true]),
+            (
+                HitCondition::GreaterOrEqual(2),
+                [false, false, true, true, true],
+            ),
+            (HitCondition::Multiple(2), [true, false, true, false, true]),
+            (HitCondition::Multiple(1), [true, true, true, true, true]),
+            (
+                HitCondition::Multiple(0),
+                [false, false, false, false, false],
+            ),
+        ];
+        for (condition, expected) in table {
+            let held: Vec<bool> = (0..=4).map(|hits| condition.holds(hits)).collect();
+            assert_eq!(held, expected, "{condition:?}");
+        }
     }
 }

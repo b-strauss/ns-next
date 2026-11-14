@@ -29,6 +29,8 @@ use crate::mixin::Mixin;
 mod bytes;
 mod decode;
 mod encode;
+#[doc(hidden)]
+pub mod fingerprint;
 
 pub(crate) use encode::encode;
 
@@ -60,6 +62,16 @@ pub(crate) enum ShippedCodePath {
 /// Whether `bytes` is an artifact this binary may decode: one written for
 /// exactly the sources it was built from.
 pub(crate) fn usable(bytes: &[u8]) -> bool {
+    written_for(bytes, SHIPPED_CODE_FINGERPRINT)
+}
+
+/// Whether `bytes` is an artifact written for the sources whose code
+/// fingerprint (`fingerprint::Fingerprints::code`) is `fingerprint`: the
+/// boot's judgement, and the gates', which compute the fingerprint of the
+/// sources as they are before building anything and leave an artifact this
+/// answers `true` for alone.
+#[doc(hidden)]
+pub fn written_for(bytes: &[u8], fingerprint: u64) -> bool {
     // The magic, the format version and the fingerprint.
     let header_length = MAGIC.len() + size_of::<u16>() + size_of::<u64>();
     if bytes.len() < header_length {
@@ -68,7 +80,7 @@ pub(crate) fn usable(bytes: &[u8]) -> bool {
     let mut reader = ByteReader::new(bytes);
     reader.raw(MAGIC.len()) == MAGIC
         && reader.u16() == FORMAT_VERSION
-        && reader.u64() == SHIPPED_CODE_FINGERPRINT
+        && reader.u64() == fingerprint
 }
 
 /// Where a boot takes the shipped modules' mixins from. Only the optimized
@@ -116,6 +128,14 @@ pub fn generate() -> Result<Vec<u8>, &'static str> {
             .collect()
     });
     Ok(encode(&modules, SHIPPED_CODE_FINGERPRINT))
+}
+
+/// Why `generate` would refuse in this process, if it would: so that the
+/// gates, which leave a current artifact alone without generating it, still
+/// refuse where `generate` does.
+#[doc(hidden)]
+pub fn generation_refusal() -> Option<&'static str> {
+    refuse_without_primitive_methods(primitive_method::disabled()).err()
 }
 
 /// `generate`'s refusal, given whether primitive methods are disabled; a
@@ -304,6 +324,53 @@ mod tests {
             total += count_in_mixin(&root);
         }
         assert!(total > 0, "no shipped body addresses its own slots");
+    }
+
+    /// The gates judge the artifact by fingerprints they compute
+    /// themselves: they must be the ones this binary was built with, or a
+    /// current artifact would be rewritten at every call, or worse, a stale
+    /// one left alone. Generates nothing, so it runs under
+    /// `NS_NEXT_NO_PRIMITIVE_METHODS=1` too.
+    #[test]
+    fn the_fingerprints_the_gates_compute_are_the_binarys() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let fingerprints = fingerprint::compute(&workspace).expect("the sources are readable");
+        assert_eq!(fingerprints.code, SHIPPED_CODE_FINGERPRINT);
+        assert_eq!(fingerprints.library, CORE_LIBRARY_FINGERPRINT);
+        assert!(written_for(&header(fingerprints.code), fingerprints.code));
+        assert!(!written_for(
+            &header(fingerprints.code),
+            fingerprints.code ^ 1
+        ));
+    }
+
+    /// The gates leave an artifact alone when its header carries the
+    /// fingerprint, which covers the sources but not every input of the
+    /// generator -- `ns-memory`, `ns-assembler`, the profiles, the compiler
+    /// flags, the toolchain. An embedded artifact the binary would decode
+    /// must be, byte for byte, what generating it now writes, so that a
+    /// change through one of those shows here rather than nowhere.
+    #[test]
+    fn a_usable_embedded_artifact_is_what_generating_it_writes() {
+        if primitive_method::disabled() {
+            eprintln!(
+                "skipped: NS_NEXT_NO_PRIMITIVE_METHODS=1 is set, under which the shipped code \
+                 is not generated"
+            );
+            return;
+        }
+        if !usable(embedded()) {
+            eprintln!(
+                "skipped: the embedded shipped code is missing or stale, which \
+                 `the_optimized_boot_decodes_the_embedded_code` reports"
+            );
+            return;
+        }
+        assert!(
+            embedded() == generated().as_slice(),
+            "the embedded shipped code carries this binary's fingerprint but differs from \
+             what generating it writes: an input outside the fingerprint changed it"
+        );
     }
 
     #[test]

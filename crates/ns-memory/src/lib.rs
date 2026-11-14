@@ -29,6 +29,7 @@ mod code_zone;
 pub mod native_stack;
 mod page_map;
 mod platform;
+mod random;
 pub mod reach;
 
 use std::cell::Cell;
@@ -38,6 +39,7 @@ use std::rc::Rc;
 
 pub use code_zone::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
 use page_map::PageMap;
+pub use random::{fill_random, RandomError};
 
 /// How a committed page range may be accessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

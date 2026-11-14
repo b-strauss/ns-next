@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 
 mod command_line;
 mod commands;
+mod debug;
 mod entry;
 mod program;
 mod project;
@@ -82,6 +83,16 @@ enum Command {
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
         script: Option<String>,
+        /// Listen for a debugger: on 127.0.0.1 at a port the system
+        /// chooses, printed with a token on stderr before anything runs; a
+        /// client speaks the Debug Adapter Protocol there and presents the
+        /// token in `attach`.
+        #[arg(long, conflicts_with = "debug_connect")]
+        debug: bool,
+        /// Connect to a debugger listening at ADDRESS (`host:port`) and
+        /// speak the Debug Adapter Protocol to it.
+        #[arg(long, value_name = "ADDRESS")]
+        debug_connect: Option<String>,
         /// The program's arguments, after `--`: `main:args:` receives them
         /// as its second argument, an `Array` of `String`s (§8.4).
         #[arg(last = true)]
@@ -96,6 +107,16 @@ enum Command {
         /// Fails on an image written with `--strip-source`, which has none.
         #[arg(long)]
         print_source: bool,
+        /// Listen for a debugger: on 127.0.0.1 at a port the system
+        /// chooses, printed with a token on stderr before anything runs; a
+        /// client speaks the Debug Adapter Protocol there and presents the
+        /// token in `attach`.
+        #[arg(long, conflicts_with = "debug_connect")]
+        debug: bool,
+        /// Connect to a debugger listening at ADDRESS (`host:port`) and
+        /// speak the Debug Adapter Protocol to it.
+        #[arg(long, value_name = "ADDRESS")]
+        debug_connect: Option<String>,
         /// The program's arguments, after `--`: `main:args:` receives them
         /// as its second argument, an `Array` of `String`s (§8.4).
         #[arg(last = true)]
@@ -214,6 +235,8 @@ fn execute(command: Command) -> ExitCode {
             collector_statistics,
             jit_statistics,
             script,
+            debug,
+            debug_connect,
             arguments,
         } => commands::run::execute(
             &program,
@@ -222,13 +245,21 @@ fn execute(command: Command) -> ExitCode {
             collector_statistics,
             jit_statistics,
             script.as_deref(),
+            debug::DebugOptions::from_arguments(debug, debug_connect),
             &arguments,
         ),
         Command::Load {
             image,
             print_source,
+            debug,
+            debug_connect,
             arguments,
-        } => commands::load::execute(&image, print_source, &arguments),
+        } => commands::load::execute(
+            &image,
+            print_source,
+            debug::DebugOptions::from_arguments(debug, debug_connect),
+            &arguments,
+        ),
         Command::Bench {
             program,
             iterations,

@@ -167,6 +167,52 @@ pub(crate) fn compile_level(
     })
 }
 
+/// Every body of `declaration`'s level -- its methods, initializer
+/// bodies, clause and class side, never its nested declarations -- and
+/// every block they create, compiled from a resolution no interpreter
+/// loaded, each with the metadata collected for it: the bodies a module's
+/// `SetBreakpoints` would resolve against had it been loaded, compiled by
+/// the same function `compile_level` compiles a loaded level again with.
+/// Each body is paired with itself, so that what is answered is exactly
+/// what a pairing would keep. Registers nothing and runs nothing.
+pub(crate) fn compile_unloaded_level(
+    mutator: &mut Mutator<'_>,
+    resolved: &ResolvedModule,
+    declaration: &ast::ClassDeclaration,
+    lowering: Lowering,
+) -> PairedBodies {
+    // As `load_module` compiles a module (`compile_root_mixin`).
+    let source = if resolved.kernel {
+        ModuleSource::CoreLibrary
+    } else {
+        ModuleSource::User
+    };
+    let collector = MetadataCollector::new();
+    let fresh = mutator.mixin_level(
+        declaration,
+        &resolved.module.root_class,
+        &resolved.bindings,
+        source,
+        &resolved.source,
+        lowering,
+        Some(&collector),
+        |_| Vec::new(),
+    );
+    let factory = factory_again(declaration);
+    let mut pairing = Pairing {
+        collector: &collector,
+        taken: HashMap::new(),
+        seen: HashSet::new(),
+        factory: &factory,
+        pairs: Vec::new(),
+    };
+    pairing.side(&fresh, Some(&fresh));
+    if let Some(class_side) = fresh.class_side.as_deref() {
+        pairing.side(class_side, Some(class_side));
+    }
+    pairing.pairs
+}
+
 /// The id of the declaration `running` is a version of, or of whose
 /// class side it is a version; `None` for a mixin no heap registered.
 fn declaration_id(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<MixinId> {

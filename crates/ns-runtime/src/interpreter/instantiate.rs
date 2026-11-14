@@ -316,6 +316,9 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let mixin = self.compile_root_mixin(resolved);
         let class = self.root_class_of_mixin(&mixin);
+        // A text an agent holds for no module of this name, or for an
+        // earlier one, is not this module's.
+        self.note_module_built();
         // A breakpoint set before the module was loaded resolves now.
         if !self.has_no_breakpoints() {
             crate::debugger::breakpoints::module_built(self, mixin.name.as_str());

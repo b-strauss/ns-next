@@ -148,6 +148,21 @@ thread_local! {
             .collect();
 }
 
+/// The text of the shipped module `name` -- its root class's name, as
+/// `FrameLocation::module` names it -- `None` for a name no shipped module
+/// has. The text is the binary's own and never changes: an agent counts a
+/// shipped module's lines in it before any stop shows the module, and the
+/// `MirrorBuilder` refuses every edit of a shipped module.
+pub fn shipped_module_source(name: &str) -> Option<&'static str> {
+    if name == KERNEL_MODULE {
+        return Some(super::kernel::KERNEL_SOURCE);
+    }
+    SHIPPED_MODULES
+        .iter()
+        .find(|shipped| shipped.name == name)
+        .map(|shipped| shipped.source)
+}
+
 /// The text of `Kernel` or of the `SHIPPED_MODULES` entry `name`, as one
 /// `Rc<str>` per thread (`SHIPPED_MODULE_TEXTS`). A name that is neither
 /// is a defect in the binary, so it panics.
@@ -351,6 +366,9 @@ fn module_class<'gc>(
     let mixin = root_mixin.unwrap_or_else(|| mutator.shipped_root_mixin(shipped.name));
     let class = mutator.root_class_of_mixin(&mixin);
     mutator.shipped_world.add_pending(name, class);
+    // The module's root class exists now, as a program module's does
+    // once loaded (`Breakpoints::text_revision`).
+    mutator.note_module_built();
     // A breakpoint in the module, pending until it was built, resolves
     // now, before its factory and its initializer run.
     if !mutator.has_no_breakpoints() {

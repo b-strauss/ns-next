@@ -23,11 +23,13 @@ use lsp_types::{
     FoldingRangeProviderCapability, HoverParams, HoverProviderCapability, LogMessageParams,
     MessageType, OneOf, PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    ServerCapabilities, TextDocumentIdentifier, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri,
 };
 use ns_syntax::{Severity, Span};
 
 use crate::analysis::{analyze, Analysis};
+use crate::breakable::{self, Breakable};
 use crate::code_actions;
 use crate::document_symbols;
 use crate::documents::LineIndex;
@@ -41,20 +43,31 @@ pub type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 /// One open document and its analysis, computed once per version.
 struct Document {
     text: String,
+    /// The version the client last gave the text, which the breakable
+    /// lines' answer names so that the plugin keeps it per version; 0 for
+    /// a document read from disk, which has none. `breakable_lines_of`
+    /// answers open documents only, never one `document_on_disk` read:
+    /// routed through it, the answer would name the version 0.
+    version: i32,
     line_index: LineIndex,
     analysis: Analysis,
+    /// The `lines` of the breakable lines' answer, computed by the first
+    /// request for them: each compiles the module.
+    breakable_lines: OnceCell<serde_json::Value>,
     /// The edit applying every hint, computed by the first code-action
     /// request that needs it: each round of it parses the text afresh.
     whole_file_edit: OnceCell<Option<(Span, String)>>,
 }
 
 impl Document {
-    fn new(text: String) -> Document {
+    fn new(text: String, version: i32) -> Document {
         let line_index = LineIndex::new(&text);
         let analysis = analyze(&text);
         Document {
             text,
+            version,
             whole_file_edit: OnceCell::new(),
+            breakable_lines: OnceCell::new(),
             line_index,
             analysis,
         }
@@ -90,13 +103,14 @@ pub fn run(connection: Connection) -> ServerResult<()> {
     // `Cell`, so clippy's `mutable_key_type` refuses it as a hash key even
     // though its `Hash`/`Eq` only ever read `as_str()`.
     let mut documents: HashMap<String, Document> = HashMap::new();
+    let mut breakable = Breakable::default();
     for message in &connection.receiver {
         match message {
             Message::Request(request) => {
                 if connection.handle_shutdown(&request)? {
                     return Ok(());
                 }
-                let response = answer(&documents, request);
+                let response = answer(&documents, &mut breakable, request);
                 connection.sender.send(Message::Response(response))?;
             }
             Message::Notification(notification) => match apply(&mut documents, notification) {
@@ -118,7 +132,11 @@ pub fn run(connection: Connection) -> ServerResult<()> {
     Ok(())
 }
 
-fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
+fn answer(
+    documents: &HashMap<String, Document>,
+    breakable: &mut Breakable,
+    request: Request,
+) -> Response {
     match request.method.as_str() {
         SemanticTokensFullRequest::METHOD => semantic_tokens_of(documents, request),
         FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
@@ -126,6 +144,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         Formatting::METHOD => formatting_of(documents, request),
         CodeActionRequest::METHOD => code_actions_of(documents, request),
         HoverRequest::METHOD => hover_of(documents, request),
+        breakable::METHOD => breakable_lines_of(documents, breakable, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -284,7 +303,7 @@ fn document_on_disk(uri: &Uri) -> Option<Document> {
     if text.starts_with('\u{feff}') {
         text.drain(..'\u{feff}'.len_utf8());
     }
-    Some(Document::new(text))
+    Some(Document::new(text, 0))
 }
 
 /// Whether a file of `length` bytes, a regular file or not, may be read as a
@@ -360,6 +379,53 @@ fn hover_of(documents: &HashMap<String, Document>, request: Request) -> Response
     Response::new_ok(request.id, hover)
 }
 
+/// The lines of an open document a line breakpoint can stand on, with
+/// the version they were computed for (`breakable.rs`). Unlike its folds,
+/// a document never opened is an error rather than an empty answer: an
+/// empty set of lines would forbid every breakpoint in the file, where
+/// the plugin, told of the error, allows every line.
+fn breakable_lines_of(
+    documents: &HashMap<String, Document>,
+    breakable: &mut Breakable,
+    request: Request,
+) -> Response {
+    let identifier: Result<TextDocumentIdentifier, _> = serde_json::from_value(
+        request
+            .params
+            .get("textDocument")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let identifier = match identifier {
+        Ok(identifier) => identifier,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                format!("malformed {} request: {error}", breakable::METHOD),
+            )
+        }
+    };
+    let Some(document) = documents.get(identifier.uri.as_str()) else {
+        return Response::new_err(
+            request.id,
+            ErrorCode::InvalidParams as i32,
+            format!(
+                "{} asks of a document never opened: {}",
+                breakable::METHOD,
+                identifier.uri.as_str()
+            ),
+        );
+    };
+    let lines = document
+        .breakable_lines
+        .get_or_init(|| breakable.lines(&identifier.uri, &document.text, &document.line_index));
+    Response::new_ok(
+        request.id,
+        serde_json::json!({ "version": document.version, "lines": lines }),
+    )
+}
+
 /// Applies a document notification; answers the URI whose diagnostics must be
 /// published, or `None` for a notification that changes nothing. A
 /// notification whose params do not match the schema is answered as `Err`
@@ -374,7 +440,7 @@ fn apply(
             let uri = params.text_document.uri;
             documents.insert(
                 uri.as_str().to_string(),
-                Document::new(params.text_document.text),
+                Document::new(params.text_document.text, params.text_document.version),
             );
             Ok(Some(uri))
         }
@@ -385,7 +451,10 @@ fn apply(
             let Some(change) = params.content_changes.into_iter().last() else {
                 return Ok(None);
             };
-            documents.insert(uri.as_str().to_string(), Document::new(change.text));
+            documents.insert(
+                uri.as_str().to_string(),
+                Document::new(change.text, params.text_document.version),
+            );
             Ok(Some(uri))
         }
         DidCloseTextDocument::METHOD => {

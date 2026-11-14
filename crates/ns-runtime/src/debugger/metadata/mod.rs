@@ -15,6 +15,7 @@ use crate::bytecode::{CallSite, CompiledCode};
 use crate::Symbol;
 
 pub(crate) mod again;
+pub(crate) mod breakable;
 mod cache;
 mod check;
 

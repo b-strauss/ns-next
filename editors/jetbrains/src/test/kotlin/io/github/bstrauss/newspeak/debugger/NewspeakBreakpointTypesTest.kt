@@ -1,0 +1,545 @@
+package io.github.bstrauss.newspeak.debugger
+
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.intellij.execution.KillableProcess
+import com.intellij.execution.executors.DefaultDebugExecutor
+import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessListener
+import com.intellij.execution.runners.ExecutionEnvironmentBuilder
+import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.command.CommandProcessor
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.io.NioFiles
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.testFramework.runInEdtAndGet
+import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.xdebugger.XDebugProcess
+import com.intellij.xdebugger.XDebugSession
+import com.intellij.xdebugger.XDebugSessionListener
+import com.intellij.xdebugger.XDebuggerManager
+import com.intellij.xdebugger.XDebuggerManagerListener
+import com.intellij.xdebugger.XDebuggerUtil
+import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.breakpoints.XBreakpoint
+import com.intellij.xdebugger.breakpoints.XLineBreakpoint
+import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.debugger.dap.DapClient
+import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
+import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
+import io.github.bstrauss.newspeak.settings.NewspeakSettings
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.Range
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
+import java.lang.reflect.Proxy
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * The three breakpoint types: where a line breakpoint may stand, what each
+ * kind sends the agent -- through the handlers, over a scripted peer in
+ * place of `ns-next`'s agent -- and, against the real runtime the build
+ * names in `nsNext.runtime`, a temporary breakpoint's one stop.
+ *
+ * The test runs off the event dispatch thread, so that the real session
+ * may be waited for while the platform updates it there.
+ */
+class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
+    private lateinit var directory: Path
+    private lateinit var serverFetcher: (VirtualFile) -> BreakableLines?
+    private val opened = mutableListOf<AutoCloseable>()
+    private val debugged = CopyOnWriteArrayList<Debugging>()
+
+    private val cache: BreakableLinesCache get() = BreakableLinesCache.getInstance(project)
+    private val breakpoints get() = XDebuggerManager.getInstance(project).breakpointManager
+
+    override fun runInDispatchThread(): Boolean = false
+
+    override fun setUp() {
+        super.setUp()
+        directory = Files.createTempDirectory("ns-next-breakpoint-types")
+        serverFetcher = cache.fetcher
+    }
+
+    // The light project, its services and its breakpoints outlive a test.
+    override fun tearDown() {
+        try {
+            for (debugging in debugged) {
+                val handler = debugging.process.processHandler
+                if (!handler.isProcessTerminated) (handler as KillableProcess).killProcess()
+                handler.waitFor(WAIT_MILLISECONDS)
+                debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            }
+            for (resource in opened.asReversed()) resource.close()
+            cache.fetcher = serverFetcher
+            runInEdtAndWait {
+                for (debugging in debugged) {
+                    debugging.session.consoleView?.let(Disposer::dispose)
+                    Disposer.dispose(debugging.session.runContentDescriptor)
+                }
+                val editors = FileEditorManager.getInstance(project)
+                editors.openFiles.forEach(editors::closeFile)
+                WriteAction.run<Throwable> {
+                    breakpoints.allBreakpoints.filterNot(breakpoints::isDefaultBreakpoint).forEach(breakpoints::removeBreakpoint)
+                }
+            }
+            // The default "Any exception" breakpoint is the project's for every test.
+            for (any in breakpoints.getDefaultBreakpoints(exceptionType())) any.properties.loadState(NewspeakExceptionBreakpointProperties())
+            NewspeakSettings.getInstance().state.runtimePath = null
+            NioFiles.deleteRecursively(directory)
+        } finally {
+            super.tearDown()
+        }
+    }
+
+    // ---- Where a line breakpoint may stand ----
+
+    fun testCanPutAtFollowsTheServersBreakableLines() {
+        val file = program("Lines", LINES)
+        val type = lineType()
+        cache.fetcher = { BreakableLines.of(listOf(BREAKABLE_LINE_3, BREAKABLE_LINE_4)) }
+        assertNotNull(cache.fetch(file))
+
+        assertTrue("a statement's line", runInEdtAndGet { type.canPutAt(file, 3, project) })
+        assertFalse("a comment's line", runInEdtAndGet { type.canPutAt(file, 2, project) })
+
+        // A document that does not parse: every line, the comment's too.
+        cache.fetcher = { BreakableLines.EVERY_LINE }
+        assertNotNull(cache.fetch(file))
+        assertTrue(runInEdtAndGet { type.canPutAt(file, 2, project) })
+    }
+
+    fun testCanPutAtAllowsEveryLineUntilTheServerAnswers() {
+        val file = program("Lines", LINES)
+        val asked = CompletableFuture<Unit>()
+        val release = CompletableFuture<Unit>()
+        cache.fetcher = {
+            asked.complete(Unit)
+            release.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            BreakableLines.of(listOf(BREAKABLE_LINE_3))
+        }
+        assertTrue("no answer yet", runInEdtAndGet { lineType().canPutAt(file, 2, project) })
+        asked.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        release.complete(Unit)
+        waitUntil("the answer is kept") { cache.current(file) != null }
+        assertFalse(runInEdtAndGet { lineType().canPutAt(file, 2, project) })
+    }
+
+    fun testVariantsListTheBlocksOfALine() {
+        val file = program("Lines", LINES)
+        cache.fetcher = { BreakableLines.of(listOf(BREAKABLE_LINE_3, BREAKABLE_LINE_4)) }
+        assertNotNull(cache.fetch(file))
+        val type = lineType()
+
+        val variants = runInEdtAndGet { type.computeVariants(project, position(file, 3)) }
+        assertEquals(listOf(null, BLOCK_COLUMN), variants.map { variant -> variant.createProperties()?.column })
+        val block = variants[1]
+        val text = String(file.contentsToByteArray(), Charsets.UTF_8)
+        val range = checkNotNull(block.highlightRange)
+        assertEquals("[:each | each printString]", text.substring(range.startOffset, range.endOffset))
+        assertTrue(block.text, block.text.contains("[:each"))
+
+        assertEquals("a line with no block has none", emptyList<Any>(), runInEdtAndGet { type.computeVariants(project, position(file, 4)) })
+    }
+
+    // ---- What each kind sends ----
+
+    fun testAPassCountIsSentAsTheHitCondition() {
+        val file = program("Lines", LINES)
+        val counted = addLineBreakpoint(file, 4, NewspeakLineBreakpointProperties().apply { passCount = "3" })
+        val block = addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties().apply { column = BLOCK_COLUMN })
+        val agent = RecordingAgent { _ ->
+            JsonParser.parseString(
+                """{"breakpoints":[{"id":1,"verified":true,"line":5},{"id":2,"verified":true,"line":4,"column":${BLOCK_COLUMN + 1}}]}""",
+            ).asJsonObject
+        }
+        val session = RecordingSession()
+        val handler = NewspeakLineBreakpointHandler(session.proxy)
+        handler.registerBreakpoint(counted)
+        handler.registerBreakpoint(block)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        val sent = agent.requests("setBreakpoints").last()
+        assertEquals(file.toNioPath().toString(), sent.getAsJsonObject("source").get("path").asString)
+        assertEquals(
+            JsonParser.parseString("""[{"line":5,"hitCondition":"3"},{"line":4,"column":${BLOCK_COLUMN + 1}}]"""),
+            sent.getAsJsonArray("breakpoints"),
+        )
+        assertEquals(listOf("setBreakpointVerified 5", "setBreakpointVerified 4"), session.calls)
+        assertSame(counted, handler.breakpointOf(1))
+    }
+
+    fun testAMovedBreakpointShowsTheLineItStopsAtAndARefusedOneItsMessage() {
+        val file = program("Lines", LINES)
+        val moved = addLineBreakpoint(file, 2, NewspeakLineBreakpointProperties())
+        val refused = addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties().apply { passCount = "=0" })
+        val agent = RecordingAgent { _ ->
+            JsonParser.parseString(
+                """{"breakpoints":[{"id":1,"verified":true,"line":4},{"verified":false,"message":"`=0` is no hit condition"}]}""",
+            ).asJsonObject
+        }
+        val session = RecordingSession()
+        val handler = NewspeakLineBreakpointHandler(session.proxy)
+        handler.registerBreakpoint(moved)
+        handler.registerBreakpoint(refused)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        assertEquals(
+            listOf(
+                "updateBreakpointPresentation 3 " + NewspeakBundle.message("debugger.breakpoint.moved", "4"),
+                "setBreakpointInvalid 4 `=0` is no hit condition",
+            ),
+            session.calls,
+        )
+    }
+
+    fun testAMethodBreakpointIsSentByItsName() {
+        val method = runInEdtAndGet {
+            WriteAction.compute<XBreakpoint<NewspeakMethodBreakpointProperties>, Throwable> {
+                breakpoints.addBreakpoint(
+                    methodType(),
+                    NewspeakMethodBreakpointProperties().apply {
+                        methodName = "Program.Inner class>>make:"
+                        passCount = ">=2"
+                    },
+                )
+            }
+        }
+        assertEquals("Program.Inner class>>make:", methodType().getDisplayText(method))
+        val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":7,"verified":true}]}""").asJsonObject }
+        val handler = NewspeakMethodBreakpointHandler(RecordingSession().proxy)
+        handler.registerBreakpoint(method)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        assertEquals(
+            JsonParser.parseString("""{"breakpoints":[{"name":"Program.Inner class>>make:","hitCondition":">=2"}]}"""),
+            agent.requests("setFunctionBreakpoints").last(),
+        )
+        assertSame(method, handler.breakpointOf(7))
+    }
+
+    fun testAnExceptionBreakpointSendsItsFiltersAndClasses() {
+        val type = exceptionType()
+        val any = breakpoints.getDefaultBreakpoints(type).single()
+        assertEquals(NewspeakBundle.message("debugger.breakpoint.exception.any"), type.getDisplayText(any))
+        any.properties.uncaught = false
+        any.properties.caught = false
+        any.properties.halt = true
+        val failure = runInEdtAndGet {
+            WriteAction.compute<XBreakpoint<NewspeakExceptionBreakpointProperties>, Throwable> {
+                breakpoints.addBreakpoint(
+                    type,
+                    NewspeakExceptionBreakpointProperties().apply {
+                        className = "Program.Failure"
+                        uncaught = false
+                        caught = true
+                    },
+                )
+            }
+        }
+        val agent = RecordingAgent { _ -> JsonObject() }
+        val handler = NewspeakExceptionBreakpointHandler(RecordingSession().proxy)
+        handler.registerBreakpoint(any)
+        handler.registerBreakpoint(failure)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+        assertEquals(
+            JsonParser.parseString("""{"filters":["halt"],"filterOptions":[{"filterId":"caught","condition":"Program.Failure"}]}"""),
+            agent.requests("setExceptionBreakpoints").last(),
+        )
+
+        // "Any exception" for uncaught ones takes every class: the agent keeps one list of classes for both filters.
+        any.properties.uncaught = true
+        handler.unregisterBreakpoint(any, false)
+        handler.registerBreakpoint(any)
+        waitUntil("the set is sent again") { agent.requests("setExceptionBreakpoints").size == 3 }
+        assertEquals(
+            JsonParser.parseString("""{"filters":["uncaught","caught","halt"],"filterOptions":[]}"""),
+            agent.requests("setExceptionBreakpoints").last(),
+        )
+    }
+
+    fun testTheMethodDialogSplitsAtTheFirstSelectorSeparatorAsTheAgentDoes() {
+        val validator = NewspeakMethodBreakpointType.MethodNameValidator
+        for (accepted in listOf("Module.Class>>>>", "Module.Class class>>>>", "Module.Inner>>at:put:", "Module.Class>>+")) {
+            assertTrue(accepted, validator.checkInput(accepted))
+        }
+        for (refused in listOf("Module.Class", ">>run", "Module.Class>>", "Module.Class>>at: put:")) {
+            assertFalse(refused, validator.checkInput(refused))
+        }
+    }
+
+    fun testTheExceptionDialogRefusesACommaTheAgentWouldReadAsTwoClasses() {
+        val validator = NewspeakExceptionBreakpointType.ClassNameValidator
+        assertTrue(validator.checkInput("Program.Failure"))
+        assertFalse(validator.checkInput("A.B,C.D"))
+        assertFalse(validator.checkInput("Program..Failure"))
+        assertFalse(validator.checkInput("Program. Failure"))
+    }
+
+    fun testABreakpointTheAgentDidNotAnswerIsInvalidAndOneRegisteredTwiceIsSentOnce() {
+        val file = program("Lines", LINES)
+        val first = addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties())
+        val second = addLineBreakpoint(file, 4, NewspeakLineBreakpointProperties())
+        val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true,"line":4}]}""").asJsonObject }
+        val session = RecordingSession()
+        val handler = NewspeakLineBreakpointHandler(session.proxy)
+        handler.registerBreakpoint(first)
+        handler.registerBreakpoint(first)
+        handler.registerBreakpoint(second)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        assertEquals(2, agent.requests("setBreakpoints").last().getAsJsonArray("breakpoints").size())
+        assertEquals(
+            listOf("setBreakpointVerified 4", "setBreakpointInvalid 5 " + NewspeakBundle.message("debugger.breakpoint.unanswered")),
+            session.calls,
+        )
+    }
+
+    fun testTheCacheKeepsOnlyTheCurrentAnswerOfAnOpenFile() {
+        val file = program("Lines", LINES)
+        cache.fetcher = { BreakableLines.of(listOf(BREAKABLE_LINE_3)) }
+        runInEdtAndWait { FileEditorManager.getInstance(project).openFile(file, false) }
+        assertNotNull(cache.fetch(file))
+        assertTrue(cache.keeps(file))
+        runInEdtAndWait { FileEditorManager.getInstance(project).closeFile(file) }
+        assertFalse("a closed file's answer is dropped", cache.keeps(file))
+
+        assertNotNull(cache.fetch(file))
+        runInEdtAndWait {
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
+            WriteAction.run<Throwable> {
+                CommandProcessor.getInstance().executeCommand(project, { document.insertString(0, " ") }, null, null)
+            }
+        }
+        assertNull(cache.current(file))
+        assertFalse("an older text's answer is dropped", cache.keeps(file))
+    }
+
+    // ---- Against the real runtime ----
+
+    fun testATemporaryBreakpointIsRemovedAfterItsStop() {
+        NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        cache.fetcher = { null }
+        val program = program("Loop", LOOP)
+        val temporary = addLineBreakpoint(program, LOOP_BODY_LINE, NewspeakLineBreakpointProperties(), temporary = true)
+        val debugging = debug(program)
+
+        assertEquals(LOOP_BODY_LINE, debugging.nextPause().line)
+        assertTrue("still there while stopped", breakpoints.allBreakpoints.contains(temporary))
+        runInEdtAndWait { debugging.session.resume() }
+
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertEquals(0, debugging.process.processHandler.exitCode)
+        assertTrue("one stop, in the first iteration: ${debugging.pauses}", debugging.pauses.isEmpty())
+        assertFalse("removed once hit", breakpoints.allBreakpoints.contains(temporary))
+        assertTrue(debugging.output(), Regex("""1\s+2\s+3""").containsMatchIn(debugging.output()))
+    }
+
+    // ---- Helpers ----
+
+    private val runtime: Path by lazy { Path.of(System.getProperty("nsNext.runtime")) }
+
+    private fun lineType() = XDebuggerUtil.getInstance().findBreakpointType(NewspeakLineBreakpointType::class.java)
+
+    private fun methodType() = XDebuggerUtil.getInstance().findBreakpointType(NewspeakMethodBreakpointType::class.java)
+
+    private fun exceptionType() = XDebuggerUtil.getInstance().findBreakpointType(NewspeakExceptionBreakpointType::class.java)
+
+    private fun position(file: VirtualFile, line: Int): XSourcePosition = checkNotNull(XDebuggerUtil.getInstance().createPosition(file, line))
+
+    private fun addLineBreakpoint(
+        file: VirtualFile,
+        line: Int,
+        properties: NewspeakLineBreakpointProperties,
+        temporary: Boolean = false,
+    ): XLineBreakpoint<NewspeakLineBreakpointProperties> = runInEdtAndGet {
+        WriteAction.compute<XLineBreakpoint<NewspeakLineBreakpointProperties>, Throwable> {
+            breakpoints.addLineBreakpoint(lineType(), file.url, line, properties).apply { isTemporary = temporary }
+        }
+    }
+
+    private fun program(name: String, source: String): VirtualFile {
+        val path = directory.resolve("$name.ns")
+        Files.writeString(path, source)
+        return checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path))
+    }
+
+    private fun waitUntil(what: String, condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (!condition()) {
+            if (System.nanoTime() > deadline) throw AssertionError("not within $WAIT_SECONDS s: $what")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+    }
+
+    /**
+     * A session that records what the handlers tell it of each breakpoint,
+     * by its line counted from 1; it answers nothing else.
+     */
+    private class RecordingSession {
+        val calls = CopyOnWriteArrayList<String>()
+        val proxy: XDebugSession = Proxy.newProxyInstance(
+            XDebugSession::class.java.classLoader,
+            arrayOf(XDebugSession::class.java),
+        ) { _, method, arguments ->
+            when (method.name) {
+                "setBreakpointVerified", "setBreakpointInvalid", "updateBreakpointPresentation" -> {
+                    val breakpoint = arguments[0] as XLineBreakpoint<*>
+                    val message = arguments.drop(1).filterIsInstance<String>().joinToString(" ")
+                    calls.add(listOf(method.name, (breakpoint.line + 1).toString(), message).filter(String::isNotEmpty).joinToString(" "))
+                    null
+                }
+                "reportError", "reportMessage" -> {
+                    calls.add("${method.name} ${arguments[0]}")
+                    null
+                }
+                "hashCode" -> System.identityHashCode(this)
+                "equals" -> false
+                "toString" -> "a recording session"
+                else -> if (method.returnType == Boolean::class.javaPrimitiveType) false else null
+            }
+        } as XDebugSession
+    }
+
+    /** A scripted agent that answers every request with what [answer] gives and records the requests. */
+    private inner class RecordingAgent(private val answer: (String) -> JsonObject) {
+        private val received = CopyOnWriteArrayList<JsonObject>()
+        val client: DapClient
+
+        init {
+            val towardsAgent = PipedOutputStream()
+            val towardsClient = PipedOutputStream()
+            val clientSide = DapConnection(PipedInputStream(towardsClient, PIPE_SIZE), towardsAgent)
+            val agentSide = DapConnection(PipedInputStream(towardsAgent, PIPE_SIZE), towardsClient)
+            opened.add(agentSide)
+            val responses = AtomicInteger(1)
+            agentSide.start(
+                { request ->
+                    received.add(request)
+                    val command = request.get("command").asString
+                    agentSide.send(
+                        JsonObject().apply {
+                            addProperty("seq", responses.getAndIncrement())
+                            addProperty("type", "response")
+                            addProperty("request_seq", request.get("seq").asInt)
+                            addProperty("command", command)
+                            addProperty("success", true)
+                            add("body", answer(command))
+                        },
+                    )
+                },
+                { _ -> },
+            )
+            client = DapClient(clientSide)
+            opened.add(AutoCloseable(client::close))
+        }
+
+        fun requests(command: String): List<JsonObject> =
+            received.filter { request -> request.get("command").asString == command }
+                .map { request -> request.getAsJsonObject("arguments") }
+    }
+
+    /** One session the test started, and what the test waits for in it. */
+    private inner class Debugging(val process: XDebugProcess) {
+        val session: XDebugSession get() = process.session
+        val pauses = LinkedBlockingQueue<XSourcePosition>()
+        val stopped = CompletableFuture<Unit>()
+        private val text = StringBuffer()
+
+        init {
+            process.session.addSessionListener(
+                object : XDebugSessionListener {
+                    override fun sessionPaused() {
+                        process.session.currentPosition?.let(pauses::add)
+                    }
+
+                    override fun sessionStopped() {
+                        stopped.complete(Unit)
+                    }
+                },
+            )
+            process.processHandler.addProcessListener(
+                object : ProcessListener {
+                    override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
+                        text.append(event.text)
+                    }
+                },
+            )
+        }
+
+        fun nextPause(): XSourcePosition =
+            pauses.poll(WAIT_SECONDS, TimeUnit.SECONDS) ?: throw AssertionError("no stop within $WAIT_SECONDS s: ${output()}")
+
+        fun output(): String = text.toString()
+    }
+
+    /** Debug on a Newspeak run configuration of `program`, as the user starts it; its listeners see every stop. */
+    private fun debug(program: VirtualFile): Debugging {
+        val configuration = NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
+        configuration.program = program.path
+        val environment = ExecutionEnvironmentBuilder.create(DefaultDebugExecutor.getDebugExecutorInstance(), configuration).build()
+        val started = CompletableFuture<Debugging>()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            XDebuggerManager.TOPIC,
+            object : XDebuggerManagerListener {
+                override fun processStarted(debugProcess: XDebugProcess) {
+                    if (started.isDone) return
+                    val debugging = Debugging(debugProcess)
+                    debugged.add(debugging)
+                    started.complete(debugging)
+                }
+            },
+        )
+        runInEdtAndWait { environment.runner.execute(environment) }
+        return started.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    private companion object {
+        const val WAIT_SECONDS = 30L
+        const val WAIT_MILLISECONDS = 30_000L
+        const val POLL_MILLISECONDS = 20L
+        const val PIPE_SIZE = 64 * 1024
+
+        /** A module whose line 3, counted from 0, holds a statement and a block, line 4 a statement, and line 2 a comment. */
+        val LINES = """
+            class Lines = Object new () (
+              public main: platform args: arguments = (
+                /// The elements, printed.
+                {1. 2} collect: [:each | each printString].
+                ^arguments
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** Where the block of line 3 starts its first statement, counted from 0 in UTF-16 code units. */
+        const val BLOCK_COLUMN = 29
+
+        val BREAKABLE_LINE_3 = BreakableLine(3, listOf(BlockPlace(Range(Position(3, 20), Position(3, 46)), Position(3, BLOCK_COLUMN))))
+        val BREAKABLE_LINE_4 = BreakableLine(4, emptyList())
+
+        /** A loop whose body, line 3 counted from 0, runs three times. */
+        val LOOP = """
+            class Loop = Object new () (
+              public main: platform args: arguments = (
+                1 to: 3 do: [:index |
+                  platform transcript show: index printString; newLine].
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+        const val LOOP_BODY_LINE = 3
+    }
+}

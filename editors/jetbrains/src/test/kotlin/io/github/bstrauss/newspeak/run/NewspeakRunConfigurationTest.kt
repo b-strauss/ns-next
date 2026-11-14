@@ -69,6 +69,26 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         assertEquals(listOf(runtime.toString(), "run", "--script=-x", projectDirectory), newspeakCommandLine(runtime, dashed))
     }
 
+    fun testADebuggedRunConnectsToTheDebuggerBeforeItsOtherOptions() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            script = "timed"
+            programArguments = "--debug-connect=elsewhere"
+        }
+        assertEquals(
+            listOf(
+                runtime.toString(),
+                "run",
+                "--debug-connect=127.0.0.1:5005",
+                "--script=timed",
+                projectDirectory,
+                "--",
+                "--debug-connect=elsewhere",
+            ),
+            newspeakCommandLine(runtime, run, "127.0.0.1:5005"),
+        )
+    }
+
     fun testTheProcessDecodesOutputAsUtf8() {
         val run = configuration().apply { program = "/work/app/newspeak.json" }
         assertEquals(StandardCharsets.UTF_8, newspeakProcessCommandLine(runtime, run).charset)

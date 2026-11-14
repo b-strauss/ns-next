@@ -13,6 +13,7 @@ path = "src/main.rs"
 mimalloc.workspace = true
 ns-syntax = { path = "../ns-syntax" }
 ns-runtime = { path = "../ns-runtime" }
+ns-memory = { path = "../ns-memory" }
 ns-tooling = { path = "../ns-tooling" }
 clap.workspace = true
 toml.workspace = true

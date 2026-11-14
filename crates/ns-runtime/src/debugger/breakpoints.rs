@@ -21,12 +21,14 @@ use super::exceptions::{ExceptionBreakpoints, PendingException};
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{
-    BreakpointId, BreakpointState, Event, MethodBreakpoint, MethodBreakpointState, StopReason,
+    BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, MethodBreakpoint,
+    MethodBreakpointState, StopReason,
 };
 use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
 use super::Attachments;
 use crate::bytecode::{CompiledCode, Instruction};
-use crate::heap::{ActivationReference, CodeId, FrameReference, Heap};
+use crate::heap::{ActivationReference, CodeId, FrameReference, Heap, MixinId};
+use crate::interpreter::core_library::{shipped_module_text, KERNEL_MODULE, SHIPPED_MODULES};
 use crate::interpreter::Mutator;
 use crate::mixin::{Mixin, MixinMethod};
 use crate::Root;
@@ -48,6 +50,8 @@ const NO_STATEMENT: &str = "no statement starts at or after that position";
 pub(crate) struct Breakpoints {
     /// The number the next breakpoint takes.
     next_id: u32,
+    /// The count of installs, raised after each (`text_revision`).
+    text_revision: u64,
     /// Each module's line breakpoints, by the module's name.
     modules: Vec<ModuleBreakpoints>,
     /// Each patched slot, by its body's address and its index. The body
@@ -56,6 +60,9 @@ pub(crate) struct Breakpoints {
     patches: HashMap<(usize, usize), Patch>,
     /// The slot a resumed stop goes past once (`PastOnce`).
     past_once: Option<PastOnce>,
+    /// The reach of a slot whose stop was not made, which the frame's
+    /// fetch of the slot again counts no more (`CountedReach`).
+    counted_reach: Option<CountedReach>,
     /// The stop the last `Breakpoint` arm decided, which the safepoint it
     /// left for takes.
     pending_stop: Option<PendingStop>,
@@ -133,21 +140,27 @@ struct MethodBreakpointEntry {
     bodies: Vec<Rc<CompiledCode>>,
     /// Whether the method is declared now.
     verified: bool,
+    /// How many of its entries and exits were reached since it was set.
+    hits: u32,
 }
 
 /// The line breakpoints of one module.
 struct ModuleBreakpoints {
     /// The name of the module's root class.
     name: String,
-    lines: Vec<LineBreakpoint>,
+    lines: Vec<LineBreakpointRecord>,
 }
 
 /// One line breakpoint.
-struct LineBreakpoint {
+struct LineBreakpointRecord {
     id: BreakpointId,
     offset: u32,
     /// The statement it resolved to; `None` while pending.
     statement: Option<Span>,
+    hit_condition: Option<HitCondition>,
+    /// How many times an activation reached its statement since it was
+    /// set.
+    hits: u32,
 }
 
 /// A patched slot: its body, its index, and every breakpoint standing
@@ -270,6 +283,36 @@ pub(crate) struct PendingStop {
     pub(crate) slot: PastOnce,
     pub(crate) hits: Hits,
     pub(crate) step_stops: bool,
+    /// The breakpoints the reach counted that the stop is not for: those
+    /// whose hit condition did not hold, and, at a method's exit owed
+    /// past its entry, the entries the stop before was for.
+    pub(crate) passed: Vec<BreakpointId>,
+}
+
+/// A reach of a slot whose stop was not made -- a command served at its
+/// safepoint removed every breakpoint it was for, or an exception's stop
+/// came first -- by the activation standing at it, its body's address
+/// and its index: the frame fetches the slot again as it goes on, and
+/// that fetch counts no breakpoint the reach counted, so that each reach
+/// counts each breakpoint once. `passed` it neither counts nor stops for;
+/// `held`, whose stop was not made, it stops for uncounted. Consumed or
+/// dropped by the next `Breakpoint` arm, as the token is.
+pub(crate) struct CountedReach {
+    pub(crate) activation: ActivationReference,
+    pub(crate) body: usize,
+    pub(crate) index: usize,
+    pub(crate) passed: Vec<BreakpointId>,
+    pub(crate) held: Vec<BreakpointId>,
+}
+
+impl CountedReach {
+    /// Whether this is the reach of slot `index` of the body at `body` by
+    /// `activation`.
+    pub(crate) fn is_at(&self, activation: ActivationReference, body: usize, index: usize) -> bool {
+        // The body and the index first: an activation is compared only
+        // with one that may be the same.
+        self.body == body && self.index == index && self.activation.same(activation)
+    }
 }
 
 impl PendingStop {
@@ -277,14 +320,16 @@ impl PendingStop {
     /// served before it: only the breakpoints still standing at its slot,
     /// or no stop where none is left and no step's one-shot stops there
     /// -- the frame fetches the slot again as it goes on, and what stands
-    /// there then decides afresh. A breakpoint set there meanwhile is not
+    /// there then decides afresh, counting no breakpoint this reach
+    /// counted (`CountedReach`). A breakpoint set there meanwhile is not
     /// added: the frame goes past the slot once after the stop, as after
     /// any other.
-    pub(crate) fn still_standing(self, table: &Breakpoints) -> Option<PendingStop> {
+    pub(crate) fn still_standing(self, table: &mut Breakpoints) -> Option<PendingStop> {
         let PendingStop {
             slot,
             hits,
             step_stops,
+            passed,
         } = self;
         let standing = table.kinds_at(slot.body, slot.index);
         let still = |ids: Vec<BreakpointId>, standing: &[BreakpointId]| -> Vec<BreakpointId> {
@@ -296,14 +341,39 @@ impl PendingStop {
             exits: still(hits.exits, &standing.exits),
             run_to: hits.run_to && standing.run_to,
         };
-        if hits.only_a_step() && !step_stops {
-            return None;
-        }
-        Some(PendingStop {
+        let stop = PendingStop {
             slot,
             hits,
             step_stops,
-        })
+            passed,
+        };
+        if stop.hits.only_a_step() && !step_stops {
+            stop.not_made(table);
+            return None;
+        }
+        Some(stop)
+    }
+
+    /// The stop is not made: the reach it was decided at is remembered,
+    /// so that the frame's fetch of the slot again counts none of its
+    /// breakpoints once more.
+    pub(crate) fn not_made(self, table: &mut Breakpoints) {
+        let PendingStop {
+            slot, hits, passed, ..
+        } = self;
+        let held = hits
+            .lines
+            .into_iter()
+            .chain(hits.entries)
+            .chain(hits.exits)
+            .collect();
+        table.counted_reach = Some(CountedReach {
+            activation: slot.activation,
+            body: slot.body,
+            index: slot.index,
+            passed,
+            held,
+        });
     }
 }
 
@@ -421,6 +491,25 @@ impl Breakpoints {
         self.filter_decisions.forget();
     }
 
+    /// How many installs have replaced a module's text: what a reader of
+    /// the text compares to know that the one it holds is current.
+    pub(crate) fn text_revision(&self) -> u64 {
+        self.text_revision
+    }
+
+    /// A module was built: raises the revision if a debugger is attached,
+    /// since one that is not has seen no text to hold.
+    pub(crate) fn raise_text_revision_if_attached(&mut self) {
+        if self.events.is_some() {
+            self.raise_text_revision();
+        }
+    }
+
+    /// An install changed a module's text.
+    pub(crate) fn raise_text_revision(&mut self) {
+        self.text_revision += 1;
+    }
+
     /// The stop the last `Breakpoint` arm decided, taken.
     pub(crate) fn take_pending_stop(&mut self) -> Option<PendingStop> {
         self.pending_stop.take()
@@ -484,21 +573,36 @@ impl Breakpoints {
         self.past_once.take()
     }
 
-    /// Drops the token and the reported home: a run ended, which may
-    /// leave the token's slot unexecuted and the home's unwind not
-    /// arrived.
+    /// The reach whose stop was not made, taken: the arm that reads it
+    /// consumes or drops it, as it does the token.
+    pub(crate) fn take_counted_reach(&mut self) -> Option<CountedReach> {
+        self.counted_reach.take()
+    }
+
+    /// Drops the token, the reach whose stop was not made and the reported
+    /// home: a run ended, which may leave the token's slot unexecuted and
+    /// the home's unwind not arrived.
     pub(crate) fn drop_past_once(&mut self) {
         self.past_once = None;
+        self.counted_reach = None;
         self.reported_home = None;
     }
 
-    /// The token's activation moved from `from` to `onto`: the suspend
-    /// stress mode suspended the stack and resumed its top elsewhere.
+    /// The activation of the token and of the reach whose stop was not
+    /// made moved from `from` to `onto`: the suspend stress mode suspended
+    /// the stack and resumed its top elsewhere. Both follow the frame, or
+    /// its fetch of the slot again would go past no token, or count the
+    /// reach's breakpoints twice.
     #[cfg(debug_assertions)]
     pub(crate) fn move_past_once(&mut self, from: ActivationReference, onto: ActivationReference) {
         if let Some(past) = &mut self.past_once {
             if past.activation.same(from) {
                 past.activation = onto;
+            }
+        }
+        if let Some(reach) = &mut self.counted_reach {
+            if reach.activation.same(from) {
+                reach.activation = onto;
             }
         }
     }
@@ -521,6 +625,45 @@ impl Breakpoints {
             }
         }
         standing
+    }
+
+    /// Counts a hit of each of `ids`, the breakpoints the debugger set
+    /// that a frame reached, and answers those whose hit condition holds
+    /// at it, the ones it stops for. Counted here, in the run loop's cold
+    /// decision, so that a hit that does not stop costs no stop and no
+    /// round trip to the agent (`docs/design/debugger.md`, "Hit counts and
+    /// temporary breakpoints").
+    pub(crate) fn count_hits(&mut self, ids: Vec<BreakpointId>) -> Vec<BreakpointId> {
+        ids.into_iter().filter(|id| self.count_hit(*id)).collect()
+    }
+
+    /// Counts a hit of the breakpoint `id`, and answers whether its hit
+    /// condition holds at it.
+    pub(crate) fn count_hit(&mut self, id: BreakpointId) -> bool {
+        let line = self
+            .modules
+            .iter_mut()
+            .flat_map(|module| module.lines.iter_mut())
+            .find(|line| line.id == id)
+            .map(|line| (line.hit_condition, &mut line.hits));
+        let counted = match line {
+            Some(found) => Some(found),
+            None => self
+                .methods
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .map(|entry| (entry.method.hit_condition, &mut entry.hits)),
+        };
+        // Every id a patch holds is one of the table's, which removes a
+        // breakpoint's patches with it.
+        debug_assert!(counted.is_some(), "internal: a patch names no breakpoint");
+        // In a release build such a hit stops, as a breakpoint without a
+        // condition does, rather than being lost.
+        let Some((condition, hits)) = counted else {
+            return true;
+        };
+        *hits = hits.saturating_add(1);
+        condition.is_none_or(|condition| condition.holds(*hits))
     }
 
     /// Whether any method breakpoint is set: the unwinder reports a
@@ -756,6 +899,13 @@ impl Breakpoints {
                 {
                     self.past_once = None;
                 }
+                if self
+                    .counted_reach
+                    .as_ref()
+                    .is_some_and(|reach| (reach.body, reach.index) == key)
+                {
+                    self.counted_reach = None;
+                }
             }
         }
         self.switch_fast_paths_back();
@@ -811,16 +961,17 @@ impl Breakpoints {
     }
 }
 
-/// Replaces every line breakpoint of `module` by one at each of
-/// `offsets`, resolved against the module's bodies if it is built, and
-/// answers their states (`Command::SetBreakpoints`). Only the slots the
-/// two sets do not share change: a slot the old set and the new both
-/// patch stays patched, so that sending the same set again frees no
-/// machine code and switches no fast path.
+/// Replaces every line breakpoint of `module` by `requested`, each
+/// resolved against the module's bodies if it is built, under a new id
+/// and with no hit counted, and answers their states
+/// (`Command::SetBreakpoints`). Only the slots the two sets do not share
+/// change: a slot the old set and the new both patch stays patched, so
+/// that sending the same set again frees no machine code and switches no
+/// fast path.
 pub(crate) fn set_line_breakpoints(
     mutator: &mut Mutator<'_>,
     module: String,
-    offsets: Vec<u32>,
+    requested: Vec<LineBreakpoint>,
 ) -> Event {
     let table = &mut mutator.breakpoints;
     let position = match table.modules.iter().position(|held| held.name == module) {
@@ -843,12 +994,14 @@ pub(crate) fn set_line_breakpoints(
             table.modules.len() - 1
         }
     };
-    let mut lines = Vec::with_capacity(offsets.len());
-    for offset in offsets {
-        lines.push(LineBreakpoint {
+    let mut lines = Vec::with_capacity(requested.len());
+    for breakpoint in requested {
+        lines.push(LineBreakpointRecord {
             id: table.take_id(),
-            offset,
+            offset: breakpoint.offset,
             statement: None,
+            hit_condition: breakpoint.hit_condition,
+            hits: 0,
         });
     }
     let empty = lines.is_empty();
@@ -927,6 +1080,7 @@ pub(crate) fn set_method_breakpoints(
             method,
             bodies: Vec::new(),
             verified: false,
+            hits: 0,
         })
         .collect();
     table.methods = methods;
@@ -1122,6 +1276,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.methods.clear();
     table.reported_home = None;
     table.past_once = None;
+    table.counted_reach = None;
     table.pending_stop = None;
     table.pending_exception = None;
     table.terminating = false;
@@ -1229,6 +1384,41 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
     table.sweep();
 }
 
+/// The ids of the root mixins, instance sides, named `name`: the modules
+/// whose root class is, as `FrameLocation::module` names a module.
+fn module_roots(mutator: &Mutator<'_>, name: &str) -> Vec<MixinId> {
+    mutator
+        .heap
+        .mixin_ids()
+        .into_iter()
+        .filter(|id| {
+            mutator.heap.enclosing_mixin_id(*id).is_none()
+                && mutator
+                    .heap
+                    .mixin(*id)
+                    .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
+        })
+        .collect()
+}
+
+/// The current text of the module whose root class is named `name`: a
+/// built program module's, as the last install left it, which a program
+/// module named like a shipped one keeps for itself; otherwise the shipped
+/// module's shipped text, which needs no build, taken from the binary's
+/// tables and never from the heap. `None` for a name neither has, and for
+/// a program module without text (an image built with its source
+/// stripped).
+pub(crate) fn module_text(mutator: &Mutator<'_>, name: &str) -> Option<String> {
+    let program = module_roots(mutator, name)
+        .into_iter()
+        .find(|id| mutator.heap.mixin(*id).is_some_and(|mixin| !mixin.shipped));
+    if let Some(root) = program {
+        return mutator.heap.module_source(root);
+    }
+    (name == KERNEL_MODULE || SHIPPED_MODULES.iter().any(|shipped| shipped.name == name))
+        .then(|| String::from(&*shipped_module_text(name)))
+}
+
 /// Resolves `offsets` against every current body of the module whose
 /// root class is named `name`: for each, the first statement starting at
 /// or after it, and the slot of every body with a statement of that span.
@@ -1262,17 +1452,7 @@ fn module_bodies(
     name: &str,
 ) -> Option<(PairedBodies, HashMap<usize, Rc<MixinMethod>>)> {
     let ids = mutator.heap.mixin_ids();
-    let roots: Vec<_> = ids
-        .iter()
-        .copied()
-        .filter(|id| {
-            mutator.heap.enclosing_mixin_id(*id).is_none()
-                && mutator
-                    .heap
-                    .mixin(*id)
-                    .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
-        })
-        .collect();
+    let roots = module_roots(mutator, name);
     if roots.is_empty() {
         return None;
     }
@@ -1329,7 +1509,9 @@ fn slots_of(bodies: &PairedBodies, statement: Span) -> Vec<(Rc<CompiledCode>, us
 /// Every statement of `bodies` a breakpoint can stand at -- one that
 /// compiled to an instruction of its body -- with its body, its span and
 /// its first instruction's index. A body without metadata has none.
-fn breakable(bodies: &PairedBodies) -> impl Iterator<Item = (&Rc<CompiledCode>, Span, usize)> {
+pub(crate) fn breakable(
+    bodies: &PairedBodies,
+) -> impl Iterator<Item = (&Rc<CompiledCode>, Span, usize)> {
     bodies.iter().flat_map(|(code, metadata)| {
         metadata
             .iter()
@@ -1353,6 +1535,14 @@ impl Mutator<'_> {
     /// their walk then.
     pub(crate) fn has_no_breakpoints(&self) -> bool {
         self.breakpoints.is_empty()
+    }
+
+    /// A module's root class was built: what an agent knows of module
+    /// texts is stale (`Command::ModuleText`). A build before any agent
+    /// attached is no change an agent could have seen, so that the
+    /// revision is 0 at the first stop of a program loaded before it.
+    pub(crate) fn note_module_built(&mut self) {
+        self.breakpoints.raise_text_revision_if_attached();
     }
 }
 

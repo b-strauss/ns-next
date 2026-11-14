@@ -234,8 +234,9 @@ impl Interpreter {
                         match mutator.heap.suspend_activations(floor) {
                             Some(top) => {
                                 mutator.resume_frame(top);
-                                // A breakpoint's token follows the frame
-                                // it lets past to where it was resumed.
+                                // A breakpoint's token, and a reach whose
+                                // stop was not made, follow the frame they
+                                // name to where it was resumed.
                                 if let (Some(running), Some(resumed)) =
                                     (running, mutator.heap.top_activation())
                                 {

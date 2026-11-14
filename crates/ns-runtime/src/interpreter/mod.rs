@@ -973,8 +973,13 @@ impl Interpreter {
                 // A debugger's command that acts on a run is served by the
                 // run it arrives during: one queued between runs, or left
                 // by the run before, ends none; a configuration command
-                // is served here (`Interpreter::serve_between_runs`).
-                self.serve_between_runs();
+                // is served here (`Interpreter::serve_between_runs`), and
+                // a pause asked between runs stops the run's first
+                // activation at its first statement start
+                // (`Interpreter::serve_before_run`).
+                if self.debugger.is_some() {
+                    self.serve_before_run();
+                }
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;

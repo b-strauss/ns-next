@@ -173,6 +173,9 @@ pub(crate) struct Stepping {
     /// reports, which replaces the step. For the step stress mode's check.
     #[cfg(debug_assertions)]
     waiting_on: Option<ActivationReference>,
+    /// Whether the step stands for a pause a host run started with
+    /// (`stop_at_entry`): its stop is the pause's.
+    at_entry: bool,
 }
 
 impl Stepping {
@@ -193,6 +196,7 @@ impl Stepping {
             exits: Vec::new(),
             #[cfg(debug_assertions)]
             waiting_on: None,
+            at_entry: false,
         }
     }
 }
@@ -249,6 +253,43 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         after: AfterPast::Nothing,
     };
     mutator.breakpoints.go_past_once(standing);
+}
+
+/// A host run starts while the debugger's pause is pending, `entry` its
+/// first activation, which stands at its first instruction: the pause
+/// stops it at its first statement start -- where a step into stops a
+/// pushed frame -- rather than at the run's first safepoint, the first
+/// push the entry makes, so that a client's stop on entry stands in the
+/// method the host sent. The frame is flooded as a step over's is, before
+/// it runs anything, so the first one-shot it reaches is its first
+/// statement's; that stop is the pause's (`is_at_entry`) and serves the
+/// pause bit, which stays set meanwhile, so that a body without metadata,
+/// which floods nothing, still stops at the first safepoint. It stops in
+/// the entry frame whatever the step filters say, as a pause stops where
+/// the program is.
+pub(crate) fn stop_at_entry(mutator: &mut Mutator<'_>, entry: ActivationReference) {
+    end(mutator);
+    start(
+        mutator,
+        StepAction::Over,
+        Place::Running(entry),
+        Place::Running(entry),
+        None,
+    );
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.started_filtered = true;
+        stepping.at_entry = true;
+    }
+    settle(mutator);
+}
+
+/// Whether the step in progress stands for a pause a host run started
+/// with (`stop_at_entry`).
+pub(crate) fn is_at_entry(mutator: &Mutator<'_>) -> bool {
+    mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| stepping.at_entry)
 }
 
 /// The frame of the run `frame` names at a stop.
