@@ -32,6 +32,16 @@ const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The message of the error a run the debugger terminated ends with.
 const TERMINATED: &str = "the debugger terminated the program";
 
+/// An agent commands the VM from several threads, each through its own
+/// clone of the control, and hears it on another: the halves must stay
+/// so, or the agent no longer compiles for a reason its own code hides.
+const _: () = {
+    const fn shareable<T: Send + Sync + Clone>() {}
+    const fn movable<T: Send>() {}
+    shareable::<ns_runtime::DebugControl>();
+    movable::<ns_runtime::DebugEvents>();
+};
+
 /// A loop that ends: a run continued after a stop answers its count. Its
 /// tests pause before the run or never, so the count need not outlast a
 /// thread's sleep, and it stays small enough for the stress modes, under

@@ -26,6 +26,10 @@ pub struct LineIndex {
 }
 
 impl LineIndex {
+    /// The index of `text`'s line starts, line 0 at offset 0 and one more
+    /// after every line break. A start past `u32::MAX` is clamped to it, as
+    /// every number the protocols receive is, so a text too long for them
+    /// answers positions at its clamped end rather than wrapped ones.
     pub fn new(text: &str) -> LineIndex {
         let bytes = text.as_bytes();
         let mut line_starts = vec![0];

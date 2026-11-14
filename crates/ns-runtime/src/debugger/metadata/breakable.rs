@@ -18,9 +18,11 @@ use crate::types::ResolvedModule;
 /// A statement a line breakpoint can stand at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BreakableStatement {
-    /// The statement's span in the module's text: a `SetBreakpoints` at
-    /// any offset after the previous breakable statement's start, up to
-    /// and including this one's, lands on it.
+    /// The statement's span in the module's text: under the optimized
+    /// lowering, a `SetBreakpoints` at any offset after the previous
+    /// breakable statement's start, up to and including this one's, lands
+    /// on it; the reference lowering may land such an offset on a
+    /// statement the optimized one compiles to no instruction.
     pub statement: Span,
     /// The block literal whose body this statement is the first breakable
     /// statement of -- a closure's and an inlined block's alike, which
@@ -164,6 +166,8 @@ fn push_body<'module>(
     expressions.extend(body.statements.iter().map(statement_expression));
 }
 
+/// The one expression a statement holds, a return's included, so that the
+/// walk for block literals sees every statement alike.
 fn statement_expression(statement: &ast::Statement) -> &ast::Expression {
     match &statement.kind {
         ast::StatementKind::Expression(expression) | ast::StatementKind::Return(expression) => {

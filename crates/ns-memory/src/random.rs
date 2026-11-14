@@ -13,11 +13,21 @@ pub struct RandomError {
 
 impl std::fmt::Display for RandomError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "the operating system's random source failed (error {})",
-            self.code
-        )
+        // An `NTSTATUS` is documented, and looked up, in hex; an `errno` in
+        // decimal.
+        if cfg!(windows) {
+            write!(
+                formatter,
+                "the operating system's random source failed (NTSTATUS {:#010x})",
+                self.code.cast_unsigned()
+            )
+        } else {
+            write!(
+                formatter,
+                "the operating system's random source failed (error {})",
+                self.code
+            )
+        }
     }
 }
 
@@ -101,13 +111,31 @@ fn fill(bytes: &mut [u8]) -> Result<(), RandomError> {
 
 #[cfg(test)]
 mod tests {
-    use super::fill_random;
+    use super::{fill_random, RandomError};
 
     #[test]
     fn fill_random_fills_a_large_buffer() {
         let mut bytes = [0u8; 1000];
         fill_random(&mut bytes).expect("the operating system answers");
         assert!(bytes.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn an_empty_buffer_is_filled() {
+        assert!(fill_random(&mut []).is_ok());
+    }
+
+    #[test]
+    fn an_ntstatus_is_shown_in_hex() {
+        let error = RandomError {
+            code: 0xC000_000D_u32.cast_signed(),
+        };
+        let text = error.to_string();
+        if cfg!(windows) {
+            assert!(text.ends_with("(NTSTATUS 0xc000000d)"), "{text}");
+        } else {
+            assert!(text.ends_with(&format!("(error {})", error.code)), "{text}");
+        }
     }
 
     #[test]
