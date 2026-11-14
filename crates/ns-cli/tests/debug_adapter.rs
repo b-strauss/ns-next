@@ -6,7 +6,8 @@ mod common;
 #[path = "common/dap.rs"]
 mod dap;
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::ScratchDirectory;
@@ -421,4 +422,305 @@ fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
     client.start_session(false);
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().status, Some(0));
+}
+
+/// A root whose `main:args:` holds an Integer and an Array in its locals
+/// before line 6 prints the Integer.
+const STOPS: &str = indoc! {"
+    class Stops = Object new () (
+      public main: platform args: arguments = (
+        | count elements |
+        count:: 3.
+        elements:: {10. 20. 30}.
+        platform transcript show: count printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The DAP source of the program file at `path`.
+fn file_source(path: &Path) -> Value {
+    json!({ "path": absolute(path) })
+}
+
+fn absolute(path: &Path) -> String {
+    std::path::absolute(path)
+        .expect("an absolute path")
+        .display()
+        .to_string()
+}
+
+/// Starts a session that stops at the entry, sets breakpoints at the start
+/// of `lines` of the program file `path` there and goes on; answers the
+/// breakpoints. Set at the entry, since the VM serves a configuration
+/// command only once a run starts, and the first starts after
+/// `configurationDone`.
+fn breakpoints_from_the_entry(client: &mut DapClient, path: &Path, lines: &[u32]) -> Vec<Value> {
+    client.start_session(true);
+    client.stopped("entry");
+    let breakpoints = client.set_breakpoints(file_source(path), lines);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    breakpoints
+}
+
+/// The variable named `name` among `variables`.
+fn variable<'a>(variables: &'a [Value], name: &str) -> &'a Value {
+    variables
+        .iter()
+        .find(|variable| variable["name"] == name)
+        .unwrap_or_else(|| panic!("no variable `{name}`: {variables:?}"))
+}
+
+/// The `Locals` scope's reference of the frame `frame`.
+fn locals_of(client: &mut DapClient, frame: &Value) -> Value {
+    let scopes = client.succeed("scopes", json!({ "frameId": frame["id"] }));
+    let scopes = dap::array(&scopes["scopes"]);
+    assert_eq!(scopes[0]["name"], "Locals", "{scopes:?}");
+    scopes[0]["variablesReference"].clone()
+}
+
+#[test]
+fn a_breakpoint_stop_shows_its_frame_and_variables() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    let breakpoints = breakpoints_from_the_entry(&mut client, &path, &[6]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    assert_eq!(breakpoints[0]["line"], 6, "{breakpoints:?}");
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(stopped["body"]["allThreadsStopped"], true, "{stopped}");
+    let threads = client.succeed("threads", json!({}));
+    assert_eq!(threads["threads"], json!([{ "id": 1, "name": "main" }]));
+
+    let frames = client.stack_frames(0, 0);
+    let top = &frames[0];
+    assert_eq!(top["id"], 1, "{top}");
+    assert_eq!(top["name"], "Stops>>main:args:", "{top}");
+    assert_eq!(top["line"], 6, "{top}");
+    assert_eq!(top["column"], 5, "{top}");
+    assert_eq!(top["source"]["name"], "Stops.ns", "{top}");
+    assert_eq!(top["source"]["path"], absolute(&path), "{top}");
+    assert!(top["source"].get("sourceReference").is_none(), "{top}");
+
+    let locals = locals_of(&mut client, top);
+    let variables = client.variables(&locals, None, None);
+    let count = variable(&variables, "count");
+    assert_eq!(count["value"], "3", "{count}");
+    assert_eq!(count["variablesReference"], 0, "{count}");
+    let elements = variable(&variables, "elements");
+    assert_ne!(elements["variablesReference"], 0, "{elements}");
+    assert_eq!(elements["indexedVariables"], 3, "{elements}");
+    let page = client.variables(&elements["variablesReference"], Some(1), Some(2));
+    let page: Vec<(Value, Value)> = page
+        .iter()
+        .map(|element| (element["name"].clone(), element["value"].clone()))
+        .collect();
+    assert_eq!(
+        page,
+        [(json!("[2]"), json!("20")), (json!("[3]"), json!("30"))]
+    );
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "3\n");
+}
+
+/// A root whose `main:args:` sends `report:` on a line that holds
+/// characters outside the Basic Multilingual Plane before the send.
+const NON_ASCII: &str = indoc! {"
+    class Wide = Object new () (
+      public main: platform args: arguments = (
+        | text |
+        text:: 'ü😀'. self report: text.
+      )
+      report: text = (
+        text size printString.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_frame_after_non_ascii_text_reports_its_line_and_column() {
+    let (_directory, path) = program("Wide", NON_ASCII);
+    let mut client = DapClient::connect_mode(&path);
+    let breakpoints = breakpoints_from_the_entry(&mut client, &path, &[7]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames[0]["name"], "Wide>>report:", "{frames:?}");
+    assert_eq!(frames[0]["line"], 7, "{frames:?}");
+    let caller = &frames[1];
+    let line = NON_ASCII.lines().nth(3).expect("the fourth line");
+    let before = &line[..line.find("report:").expect("the send")];
+    let column = before.encode_utf16().count() + 1;
+    assert_eq!(caller["line"], 4, "{caller}");
+    assert_eq!(caller["column"], column, "{caller}");
+    assert_eq!(caller["endLine"], 4, "{caller}");
+    assert_eq!(caller["endColumn"], column + "report:".len(), "{caller}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root whose first statement sends `do:` to an Array, a Kernel method.
+const WALKER: &str = indoc! {"
+    class Walker = Object new () (
+      public main: platform args: arguments = (
+        {1. 2} do: [:each | platform transcript show: each printString].
+        platform transcript newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_shipped_frame_is_shown_through_a_source_reference() {
+    let (_directory, path) = program("Walker", WALKER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "classes": [] }),
+    );
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    let source = frames[0]["source"].clone();
+    assert_eq!(source["name"], "Kernel.ns", "{source}");
+    assert!(source.get("path").is_none(), "{source}");
+    let reference = source["sourceReference"].clone();
+    assert!(reference.as_i64().is_some_and(|id| id > 0), "{source}");
+    let text = client.succeed("source", json!({ "sourceReference": reference }));
+    let kernel = std::fs::read_to_string(
+        common::repository_root().join("crates/ns-runtime/core-library/Kernel.ns"),
+    )
+    .expect("read Kernel.ns");
+    assert!(text["content"] == kernel.as_str(), "not Kernel.ns's text");
+
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(frames[0]["source"]["sourceReference"], reference);
+    let statistics = client.succeed("nsNext/statistics", json!({}));
+    assert_eq!(statistics, json!({ "moduleTexts": 1 }));
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "12\n");
+}
+
+/// A root whose loop passes line 6 five times.
+const LOOP: &str = indoc! {"
+    class Loop = Object new () (
+      public main: platform args: arguments = (
+        | total |
+        total:: 0.
+        1 to: 5 do: [:index |
+          total:: total + index.
+        ].
+        platform transcript show: total printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A breakpoint replaced while the program goes on to it: the stop that
+/// reaches it names, at most, the breakpoint that replaced it, whichever of
+/// the stop and the replacement the VM served first; and a variables
+/// reference of the earlier stop is refused.
+#[test]
+fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    let first = breakpoints_from_the_entry(&mut client, &path, &[6]);
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(stopped["body"]["hitBreakpointIds"], json!([first[0]["id"]]));
+    let frames = client.stack_frames(0, 0);
+    let stale = locals_of(&mut client, &frames[0]);
+
+    let continue_seq = client.connection.send("continue", json!({ "threadId": 1 }));
+    let replace_seq = client.connection.send(
+        "setBreakpoints",
+        json!({ "source": file_source(&path), "breakpoints": [{ "line": 6 }] }),
+    );
+    let continued = client.connection.response_to(continue_seq, "continue");
+    assert_eq!(continued["success"], true, "{continued}");
+    let replaced = client.connection.response_to(replace_seq, "setBreakpoints");
+    let second = &replaced["body"]["breakpoints"][0];
+    assert_ne!(second["id"], first[0]["id"], "{replaced}");
+    let stopped = client.stopped("breakpoint");
+    if let Some(ids) = stopped["body"].get("hitBreakpointIds") {
+        assert_eq!(ids, &json!([second["id"]]), "{stopped}");
+    }
+    let refused = client.request("variables", json!({ "variablesReference": stale }));
+    assert_eq!(refused["success"], false, "{refused}");
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+/// `STOPS` built, with the build's `options`, into an image in a scratch
+/// directory; answers the directory and the image's path.
+fn built_image(options: &[&str]) -> (ScratchDirectory, PathBuf) {
+    let (directory, path) = program("Stops", STOPS);
+    let image = directory.join("stops.nsi");
+    let mut arguments: Vec<&OsStr> = vec!["build".as_ref(), path.as_os_str(), image.as_os_str()];
+    arguments.extend(options.iter().map(OsStr::new));
+    let (built, _, error) = common::ns_next(&arguments);
+    assert!(built, "{error}");
+    (directory, image)
+}
+
+#[test]
+fn a_loaded_image_shows_its_modules_through_source_references() {
+    let (_directory, image) = built_image(&[]);
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    let frames = client.stack_frames(0, 0);
+    let source = frames[0]["source"].clone();
+    assert_eq!(source["name"], "Stops.ns", "{source}");
+    assert!(source.get("path").is_none(), "{source}");
+    let breakpoints = client.set_breakpoints(json!({ "name": source["name"] }), &[6]);
+    assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames[0]["line"], 6, "{frames:?}");
+    let text = client.succeed(
+        "source",
+        json!({ "sourceReference": frames[0]["source"]["sourceReference"] }),
+    );
+    assert_eq!(text["content"], STOPS);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+#[test]
+fn a_stripped_image_shows_frames_without_lines() {
+    let (_directory, image) = built_image(&["--strip-source"]);
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    // A body without metadata stops at its first safepoint rather than its
+    // first statement: here the push of `transcript`, shipped code.
+    let frames = client.stack_frames(0, 0);
+    let main = frames
+        .iter()
+        .find(|frame| frame["name"] == "Stops>>main:args:")
+        .unwrap_or_else(|| panic!("no frame of `main:args:`: {frames:?}"));
+    assert_eq!(main["line"], 0, "{main}");
+    assert_eq!(main["column"], 0, "{main}");
+    assert!(main.get("source").is_none(), "{main}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
 }

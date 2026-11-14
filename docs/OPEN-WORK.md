@@ -1898,6 +1898,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   ([debugger.md](design/debugger.md), "Open questions"). The plugin
   starts no image yet, so `load --debug` has no run configuration of
   the plugin's until it does.
+  - **A configuration request before `configurationDone` waits for the
+    first run** (2026-11-14): the VM serves a configuration command
+    between runs only as a run starts (`serve_between_runs`), and the
+    host, blocked in `HostLink::wait_for_configuration`, starts none
+    before `configurationDone`, so the response to a `setBreakpoints` or
+    `nsNext/setStepFilters` sent before it comes only after it -- a
+    client that waits for those responses before it sends
+    `configurationDone`, as DAP's sequence has it, waits forever. The
+    host has to serve configuration commands while it waits, which
+    needs a public way into `serve_between_runs`; until then the agent's
+    tests set breakpoints at the entry stop
+    ([debugger.md](design/debugger.md), "Launching, the start and the
+    end").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description

@@ -12,13 +12,21 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ns_runtime::{Command, DebugControl, Event, FrameDescription, StopReason};
+use std::collections::BTreeMap;
+
+use ns_runtime::{
+    BreakpointState, ClassName, Command, DebugControl, Event, LineBreakpoint, StopReason,
+    ValueDescription, Variable,
+};
+use ns_tooling::lines::LineIndex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::connection::{self, Token};
 use super::host::{HostStart, HostState, TERMINATED_LINE};
 use super::protocol::{self, THREAD_ID};
+use super::sources::Sources;
+use super::stopped::{self, Frames, Stop, Target};
 use super::wire;
 
 /// What the agent's thread is handed.
@@ -96,23 +104,66 @@ struct Client {
 
 /// Whom the VM's answer to a command goes to.
 enum Reply {
-    /// The response to a request of the connection numbered `connection`.
+    /// The response to a request of the connection numbered `connection`,
+    /// made of the answer by `conversion`.
     Request {
         connection: u64,
         request_seq: i64,
         command: String,
+        conversion: Conversion,
     },
     /// A command the agent sent of its own accord, whose answer it drops.
     Internal,
+    /// The stop's frames, asked at the stop `generation`, which the
+    /// requests waiting for them read.
+    Frames { generation: u64 },
+    /// A module's current text, which the requests waiting for it read.
+    Text { module: String },
+}
+
+/// How the VM's answer becomes a request's response body.
+enum Conversion {
+    /// No body.
+    Plain,
+    /// `continue`'s.
+    Continued,
+    /// A frame's variables or a value's children, asked at the stop
+    /// `generation`; a frame's are paged here, by `page`'s start and
+    /// count, since the VM answers all of them.
+    Variables {
+        generation: u64,
+        page: Option<(usize, usize)>,
+    },
+    /// `setBreakpoints`': the offset of each breakpoint asked for, in the
+    /// request's order, `None` for one on a line past the text's end, and
+    /// the text the offsets count in.
+    Breakpoints {
+        offsets: Vec<Option<u32>>,
+        text: String,
+    },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
 /// exactly once and in the order it serves them, but a stop's answers and
 /// a configuration command's may come apart, so an answer is matched to
-/// the first command it answers rather than the first sent.
+/// the first command it answers rather than the first sent; one that
+/// names a module, to the first naming that module.
 struct Pending {
     command: &'static str,
+    module: Option<String>,
     reply: Reply,
+}
+
+/// A response's body, or the message of an error response.
+type Outcome = Result<Option<Value>, String>;
+
+/// A request that reads what the VM has not answered yet -- the stop's
+/// frames, a module's text -- and is answered once it did.
+struct Waiting {
+    connection: u64,
+    request: protocol::Request,
+    /// The stop it was asked at.
+    generation: u64,
 }
 
 /// The agent's state; `run` drives it.
@@ -144,7 +195,16 @@ pub(crate) struct Agent {
     /// Every module a client set line breakpoints in, which a listening
     /// agent clears when the client leaves.
     breakpoint_modules: BTreeSet<String>,
+    /// The line breakpoints each module stands with, by the VM's latest
+    /// answer for it: a stop reports only these, never one the client
+    /// replaced meanwhile.
+    breakpoint_ids: BTreeMap<String, Vec<u32>>,
     exited: bool,
+    /// The modules and their texts.
+    sources: Sources,
+    /// The current stop's frames and references.
+    stop: Stop,
+    waiting: Vec<Waiting>,
 }
 
 impl Agent {
@@ -161,6 +221,7 @@ impl Agent {
         events_detached: Arc<AtomicBool>,
         host: Arc<HostState>,
         process_name: String,
+        sources: Sources,
     ) -> Agent {
         Agent {
             mode,
@@ -178,7 +239,11 @@ impl Agent {
             stopped: false,
             pending: VecDeque::new(),
             breakpoint_modules: BTreeSet::new(),
+            breakpoint_ids: BTreeMap::new(),
             exited: false,
+            sources,
+            stop: Stop::new(),
+            waiting: Vec::new(),
         }
     }
 
@@ -301,7 +366,18 @@ impl Agent {
             ),
             "pause" => self.pause(connection, &request),
             "continue" => self.forward(connection, &request, Command::Continue),
-            "stackTrace" => self.forward(connection, &request, Command::StackTrace),
+            // One statement until steps go by line.
+            "stepIn" => self.forward(connection, &request, Command::StepInto),
+            "stackTrace" => self.stack_trace(connection, &request),
+            "scopes" => self.scopes(connection, &request),
+            "variables" => self.variables(connection, &request),
+            "source" => self.source(connection, &request),
+            "setBreakpoints" => self.set_breakpoints(connection, &request),
+            "nsNext/setStepFilters" => self.set_step_filters(connection, &request),
+            "nsNext/statistics" => {
+                let statistics = json!({ "moduleTexts": self.sources.text_answers() });
+                self.respond(connection, &request, Some(statistics));
+            }
             "terminate" => self.terminate(connection, &request),
             "disconnect" => self.disconnect(connection, &request),
             command => {
@@ -394,20 +470,393 @@ impl Agent {
     /// Sends `command` to the VM, the request answered when the VM
     /// answers it.
     fn forward(&mut self, connection: u64, request: &protocol::Request, command: Command) {
-        // The program resumes once the VM serves a `Continue`; a `pause`
-        // that follows at once is asked of the running program, not
+        let conversion = if command == Command::Continue {
+            Conversion::Continued
+        } else {
+            Conversion::Plain
+        };
+        self.forward_converted(connection, request, command, conversion);
+    }
+
+    fn forward_converted(
+        &mut self,
+        connection: u64,
+        request: &protocol::Request,
+        command: Command,
+        conversion: Conversion,
+    ) {
+        // The program resumes once the VM serves a `Continue` or a step; a
+        // `pause` that follows at once is asked of the running program, not
         // dropped as one asked of a stopped one.
-        if command == Command::Continue {
-            self.stopped = false;
-        }
+        let goes_on = matches!(command, Command::Continue | Command::StepInto);
         let reply = Reply::Request {
             connection,
             request_seq: request.seq,
             command: request.command.clone(),
+            conversion,
         };
         if !self.command(command, reply) {
             self.respond_error(connection, request, "the debugger is detached");
+            return;
         }
+        if goes_on {
+            self.went_on();
+        }
+    }
+
+    /// The program goes on: nothing the stop handed out is valid any more,
+    /// and a request still waiting for the stop is answered by an error.
+    fn went_on(&mut self) {
+        self.stopped = false;
+        self.stop.end();
+        self.answer_waiting();
+    }
+
+    // ---- The stop ----
+
+    /// Whether the program stands at a stop; a request only a stop serves
+    /// is answered by an error otherwise, never sent to the VM.
+    fn at_stop(&mut self, connection: u64, request: &protocol::Request) -> bool {
+        if !self.stopped {
+            self.respond_error(connection, request, "the program is running");
+        }
+        self.stopped
+    }
+
+    fn stack_trace(&mut self, connection: u64, request: &protocol::Request) {
+        if self
+            .arguments::<protocol::StackTraceArguments>(connection, request)
+            .is_some()
+            && self.at_stop(connection, request)
+        {
+            self.wait(connection, request);
+        }
+    }
+
+    fn source(&mut self, connection: u64, request: &protocol::Request) {
+        if self
+            .arguments::<protocol::SourceArguments>(connection, request)
+            .is_some()
+        {
+            self.wait(connection, request);
+        }
+    }
+
+    /// Answers `request` once what it reads is there, asking the VM for it.
+    fn wait(&mut self, connection: u64, request: &protocol::Request) {
+        self.waiting.push(Waiting {
+            connection,
+            request: request.clone(),
+            generation: self.stop.generation(),
+        });
+        self.answer_waiting();
+    }
+
+    /// Answers every waiting request whose answer is there, or can never
+    /// come: the program went on since it was asked.
+    fn answer_waiting(&mut self) {
+        for waiting in std::mem::take(&mut self.waiting) {
+            let outcome = if waiting.generation == self.stop.generation() {
+                self.try_answer(&waiting.request)
+            } else {
+                Some(Err("the program went on".to_string()))
+            };
+            match outcome {
+                Some(outcome) => self.write_response(
+                    waiting.connection,
+                    waiting.request.seq,
+                    &waiting.request.command,
+                    outcome,
+                ),
+                None => self.waiting.push(waiting),
+            }
+        }
+    }
+
+    /// A waiting request's answer, `None` while the VM has not answered
+    /// what it reads.
+    fn try_answer(&mut self, request: &protocol::Request) -> Option<Outcome> {
+        if request.command == "stackTrace" {
+            self.try_stack_trace(request)
+        } else {
+            self.try_source(request)
+        }
+    }
+
+    fn try_stack_trace(&mut self, request: &protocol::Request) -> Option<Outcome> {
+        let arguments: protocol::StackTraceArguments =
+            serde_json::from_value(request.arguments.clone()).unwrap_or_default();
+        match self.stop.frames() {
+            Frames::Known(_) => {}
+            Frames::Asked => return None,
+            Frames::Refused(reason) => return Some(Err(reason.clone())),
+            Frames::Missing => {
+                let generation = self.stop.generation();
+                if !self.command(Command::StackTrace, Reply::Frames { generation }) {
+                    return Some(Err("the debugger is detached".to_string()));
+                }
+                self.stop.frames_asked();
+                return None;
+            }
+        }
+        let (total, page) = self.stop.page(
+            arguments.start_frame.unwrap_or(0),
+            arguments.levels.unwrap_or(0),
+        );
+        // Only the texts of the frames shown: a client that asks for the
+        // top frame first reads no other module's text.
+        let modules: BTreeSet<String> = page
+            .iter()
+            .filter_map(|(_, frame)| frame.location.as_ref())
+            .map(|location| location.module.clone())
+            .collect();
+        let mut complete = true;
+        for module in modules {
+            match self.read_text(&module) {
+                Ok(true) => {}
+                Ok(false) => complete = false,
+                Err(reason) => return Some(Err(reason)),
+            }
+        }
+        if !complete {
+            return None;
+        }
+        let frames: Vec<protocol::StackFrame> = page
+            .iter()
+            .map(|(index, frame)| stopped::stack_frame(*index, frame, &mut self.sources))
+            .collect();
+        Some(Ok(Some(
+            json!({ "stackFrames": frames, "totalFrames": total }),
+        )))
+    }
+
+    /// Whether `module`'s current text is there for this stop, asking the
+    /// VM for it, with the revision the agent holds, when it is not.
+    fn read_text(&mut self, module: &str) -> Result<bool, String> {
+        let generation = self.stop.generation();
+        if !self.stopped || !self.sources.needs_text(module, generation) {
+            return Ok(true);
+        }
+        if let Some(known_revision) = self.sources.ask(module, generation) {
+            let command = Command::ModuleText {
+                module: module.to_string(),
+                known_revision,
+            };
+            let reply = Reply::Text {
+                module: module.to_string(),
+            };
+            if !self.command(command, reply) {
+                self.sources.refused(module);
+                return Err("the debugger is detached".to_string());
+            }
+        }
+        Ok(false)
+    }
+
+    /// A `source` request's answer: the text of the module its reference
+    /// names, current at a stop; while the program runs, the text read at
+    /// the last stop.
+    fn try_source(&mut self, request: &protocol::Request) -> Option<Outcome> {
+        let arguments: protocol::SourceArguments =
+            serde_json::from_value(request.arguments.clone()).unwrap_or_default();
+        let reference = arguments
+            .source_reference
+            .filter(|reference| *reference > 0)
+            .or_else(|| arguments.source.and_then(|source| source.source_reference))
+            .unwrap_or_default();
+        let Some(module) = self
+            .sources
+            .module_of_reference(reference)
+            .map(str::to_string)
+        else {
+            return Some(Err("no source has that reference".to_string()));
+        };
+        match self.read_text(&module) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(reason) => return Some(Err(reason)),
+        }
+        Some(match self.sources.text(&module) {
+            Some(text) => Ok(Some(json!({ "content": text }))),
+            None => Err(format!("the module `{module}` has no text")),
+        })
+    }
+
+    fn scopes(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) = self.arguments::<protocol::ScopesArguments>(connection, request)
+        else {
+            return;
+        };
+        if !self.at_stop(connection, request) {
+            return;
+        }
+        let index = arguments
+            .frame_id
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| self.stop.has_frame(*index));
+        let Some(index) = index else {
+            self.respond_error(connection, request, "no frame of this stop has that id");
+            return;
+        };
+        let locals = self.stop.reference(Target::Frame(index));
+        let mut scopes = vec![protocol::Scope {
+            name: "Locals",
+            presentation_hint: Some("locals"),
+            variables_reference: locals,
+            expensive: false,
+        }];
+        if index == 0 {
+            if let Some(returned) = self.stop.returned().cloned() {
+                scopes.push(protocol::Scope {
+                    name: "Return value",
+                    presentation_hint: Some("returnValue"),
+                    variables_reference: self.stop.reference(Target::Returned(returned)),
+                    expensive: false,
+                });
+            }
+        }
+        self.respond(connection, request, Some(json!({ "scopes": scopes })));
+    }
+
+    fn variables(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) = self.arguments::<protocol::VariablesArguments>(connection, request)
+        else {
+            return;
+        };
+        if !self.at_stop(connection, request) {
+            return;
+        }
+        let Some(target) = self.stop.target(arguments.variables_reference) else {
+            self.respond_error(
+                connection,
+                request,
+                "no variables of this stop have that reference",
+            );
+            return;
+        };
+        let start = arguments.start.unwrap_or(0);
+        let count = arguments.count.filter(|count| *count > 0);
+        let generation = self.stop.generation();
+        match target {
+            Target::Frame(frame) => {
+                let page = Some((start, count.unwrap_or(usize::MAX)));
+                let conversion = Conversion::Variables { generation, page };
+                let command = Command::Variables { frame };
+                self.forward_converted(connection, request, command, conversion);
+            }
+            Target::Value {
+                id,
+                child_count,
+                indexed,
+            } => {
+                let wanted = match arguments.filter.as_deref() {
+                    Some("indexed") => indexed,
+                    Some("named") => !indexed,
+                    _ => true,
+                };
+                if !wanted {
+                    self.respond(connection, request, Some(json!({ "variables": [] })));
+                    return;
+                }
+                let command = Command::Children {
+                    value: id,
+                    start,
+                    count: count.unwrap_or(child_count.saturating_sub(start)),
+                };
+                let conversion = Conversion::Variables {
+                    generation,
+                    page: None,
+                };
+                self.forward_converted(connection, request, command, conversion);
+            }
+            Target::Returned(value) => {
+                let returned = Variable {
+                    name: "returned".to_string(),
+                    value: Some(value),
+                };
+                let variables = vec![self.stop.variable(&returned)];
+                self.respond(connection, request, Some(json!({ "variables": variables })));
+            }
+        }
+    }
+
+    // ---- Configuration ----
+
+    /// `setBreakpoints` by line: each at the start of its line in the text
+    /// the agent has for the module, the module's current text once a stop
+    /// read it, else the program's as loaded.
+    fn set_breakpoints(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) =
+            self.arguments::<protocol::SetBreakpointsArguments>(connection, request)
+        else {
+            return;
+        };
+        let unverified = |message: &str| {
+            let breakpoints: Vec<protocol::Breakpoint> = arguments
+                .breakpoints
+                .iter()
+                .map(|_| protocol::Breakpoint::unverified(message))
+                .collect();
+            json!({ "breakpoints": breakpoints })
+        };
+        let Some(module) = self.sources.module_named_by(&arguments.source) else {
+            let body = unverified("not a module of this program");
+            self.respond(connection, request, Some(body));
+            return;
+        };
+        let Some(text) = self.sources.text_for_positions(&module).map(str::to_string) else {
+            let body = unverified("the module's text is not known yet");
+            self.respond(connection, request, Some(body));
+            return;
+        };
+        let lines = LineIndex::new(&text);
+        let offsets: Vec<Option<u32>> = arguments
+            .breakpoints
+            .iter()
+            .map(|breakpoint| lines.line_start(breakpoint.line.checked_sub(1)?))
+            .collect();
+        let breakpoints = offsets
+            .iter()
+            .flatten()
+            .copied()
+            .map(LineBreakpoint::at)
+            .collect();
+        self.breakpoint_modules.insert(module.clone());
+        // Replaced from now on: a stop that names one of them was decided
+        // before the VM saw the replacement, and is reported without it.
+        self.breakpoint_ids.remove(&module);
+        let command = Command::SetBreakpoints {
+            module,
+            breakpoints,
+        };
+        let conversion = Conversion::Breakpoints { offsets, text };
+        self.forward_converted(connection, request, command, conversion);
+    }
+
+    fn set_step_filters(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) =
+            self.arguments::<protocol::SetStepFiltersArguments>(connection, request)
+        else {
+            return;
+        };
+        let mut classes = Vec::new();
+        for name in &arguments.classes {
+            let mut segments = name.split('.').map(str::to_string);
+            let module = segments.next().unwrap_or_default();
+            let path: Vec<String> = segments.collect();
+            if module.is_empty() || path.iter().any(String::is_empty) {
+                let message = format!("`{name}` names no class: write `Module.Path.To.Class`");
+                self.respond_error(connection, request, &message);
+                return;
+            }
+            classes.push(ClassName { module, path });
+        }
+        let command = Command::SetStepFilters {
+            shipped: arguments.shipped,
+            classes,
+        };
+        self.forward(connection, request, command);
     }
 
     fn terminate(&mut self, connection: u64, request: &protocol::Request) {
@@ -422,8 +871,8 @@ impl Agent {
         if let Some(control) = &self.control {
             control.send(Command::Terminate);
         }
-        self.stopped = false;
         self.entry_pending = false;
+        self.went_on();
     }
 
     fn disconnect(&mut self, connection: u64, request: &protocol::Request) {
@@ -471,6 +920,7 @@ impl Agent {
         };
         let _ = client.writer.shutdown(Shutdown::Both);
         let was_attached = client.attached;
+        self.waiting.clear();
         self.stop_on_entry = false;
         self.entry_pending = false;
         match &self.mode {
@@ -507,7 +957,7 @@ impl Agent {
         self.control = None;
         self.events_detached.store(true, Ordering::SeqCst);
         self.pending.clear();
-        self.stopped = false;
+        self.went_on();
     }
 
     /// Leaves the VM stopping nowhere, for the next client of a listening
@@ -550,7 +1000,7 @@ impl Agent {
     /// Lets a stopped program go on, nobody being there to see the stop.
     fn go_on(&mut self) {
         self.command(Command::Continue, Reply::Internal);
-        self.stopped = false;
+        self.went_on();
     }
 
     // ---- The VM ----
@@ -561,8 +1011,15 @@ impl Agent {
         let Some(control) = &self.control else {
             return false;
         };
+        let module = match &command {
+            Command::SetBreakpoints { module, .. } | Command::ModuleText { module, .. } => {
+                Some(module.clone())
+            }
+            _ => None,
+        };
         self.pending.push_back(Pending {
             command: command.name(),
+            module,
             reply,
         });
         control.send(command);
@@ -574,7 +1031,7 @@ impl Agent {
             return;
         }
         match event {
-            Event::Stopped { reason, .. } => self.stopped_at(&reason),
+            Event::Stopped { reason, returned } => self.stopped_at(&reason, returned),
             Event::Refused { command, .. } if command == Command::Terminate.name() => {
                 // A `Terminate` that met no run -- sent between two, or
                 // just before the next started -- is sent again, so that a
@@ -588,37 +1045,58 @@ impl Agent {
         }
     }
 
-    fn stopped_at(&mut self, reason: &StopReason) {
+    fn stopped_at(&mut self, reason: &StopReason, returned: Option<ValueDescription>) {
         self.stopped = true;
+        self.stop.begin(returned);
         if !self.is_attached() {
             self.go_on();
             return;
         }
-        let (reason, hit_breakpoint_ids, description) = match reason {
-            StopReason::Pause if self.entry_pending => ("entry", Vec::new(), None),
-            StopReason::Pause => ("pause", Vec::new(), None),
-            StopReason::Breakpoint { ids } => {
-                ("breakpoint", ids.iter().map(|id| id.0).collect(), None)
-            }
-            StopReason::Step => ("step", Vec::new(), None),
-            StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => (
-                "function breakpoint",
-                std::iter::once(id).chain(others).map(|id| id.0).collect(),
-                None,
-            ),
-            StopReason::Exception { description, .. } => {
-                ("exception", Vec::new(), Some(description.clone()))
-            }
-            StopReason::Halt { .. } => ("exception", Vec::new(), Some("halt".to_string())),
-        };
-        self.entry_pending = false;
-        let body = protocol::StoppedEventBody {
-            reason,
-            description,
+        let mut body = protocol::StoppedEventBody {
+            reason: "pause",
+            description: None,
+            text: None,
             thread_id: THREAD_ID,
             all_threads_stopped: true,
-            hit_breakpoint_ids,
+            hit_breakpoint_ids: Vec::new(),
         };
+        match reason {
+            StopReason::Pause if self.entry_pending => body.reason = "entry",
+            StopReason::Pause => {}
+            StopReason::Breakpoint { ids } => {
+                body.reason = "breakpoint";
+                body.hit_breakpoint_ids = ids
+                    .iter()
+                    .map(|id| id.0)
+                    .filter(|id| {
+                        self.breakpoint_ids
+                            .values()
+                            .flatten()
+                            .any(|known| known == id)
+                    })
+                    .collect();
+            }
+            StopReason::Step => body.reason = "step",
+            StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
+                body.reason = "function breakpoint";
+                body.hit_breakpoint_ids =
+                    std::iter::once(id).chain(others).map(|id| id.0).collect();
+            }
+            StopReason::Exception {
+                class_name,
+                description,
+                ..
+            } => {
+                body.reason = "exception";
+                body.text = Some(description.clone());
+                body.description = Some(class_name.clone());
+            }
+            StopReason::Halt { .. } => {
+                body.reason = "exception";
+                body.text = Some("halt".to_string());
+            }
+        }
+        self.entry_pending = false;
         self.event("stopped", Some(to_value(body)));
     }
 
@@ -627,10 +1105,21 @@ impl Agent {
         if matches!(event, Event::Continued) {
             self.stopped = false;
         }
+        if let Event::Breakpoints {
+            module,
+            breakpoints,
+        } = &event
+        {
+            let ids = breakpoints
+                .iter()
+                .map(|breakpoint| breakpoint.id.0)
+                .collect();
+            self.breakpoint_ids.insert(module.clone(), ids);
+        }
         let Some(index) = self
             .pending
             .iter()
-            .position(|pending| answers(&event, pending.command))
+            .position(|pending| answers(&event, pending))
         else {
             // Unasked: a pending breakpoint resolved, an install moved one.
             return;
@@ -638,21 +1127,67 @@ impl Agent {
         let Some(pending) = self.pending.remove(index) else {
             return;
         };
-        let Reply::Request {
-            connection,
-            request_seq,
-            command,
-        } = pending.reply
-        else {
-            return;
-        };
-        let outcome = match event {
-            Event::Refused { reason, .. } => Err(reason),
-            Event::Continued => Ok(Some(json!({ "allThreadsContinued": true }))),
-            Event::StackTrace(frames) => Ok(Some(stack_trace(&frames))),
+        match pending.reply {
+            Reply::Internal => {}
+            Reply::Frames { generation } => {
+                if generation == self.stop.generation() {
+                    match event {
+                        Event::StackTrace(frames) => self.stop.frames_answered(frames),
+                        Event::Refused { reason, .. } => self.stop.frames_refused(reason),
+                        _ => {}
+                    }
+                }
+                self.answer_waiting();
+            }
+            Reply::Text { module } => {
+                match event {
+                    Event::ModuleText { revision, text, .. } => {
+                        self.sources.answered(&module, revision, text);
+                    }
+                    _ => self.sources.refused(&module),
+                }
+                self.answer_waiting();
+            }
+            Reply::Request {
+                connection,
+                request_seq,
+                command,
+                conversion,
+            } => {
+                let outcome = self.convert(event, conversion);
+                self.write_response(connection, request_seq, &command, outcome);
+            }
+        }
+    }
+
+    /// A request's response, made of the VM's answer.
+    fn convert(&mut self, event: Event, conversion: Conversion) -> Outcome {
+        if let Event::Refused { reason, .. } = event {
+            return Err(reason);
+        }
+        match (event, conversion) {
+            (Event::Continued, Conversion::Continued) => {
+                Ok(Some(json!({ "allThreadsContinued": true })))
+            }
+            (Event::Variables(variables), Conversion::Variables { generation, page }) => {
+                // References of a stop the program left would name nothing.
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                let (start, count) = page.unwrap_or((0, usize::MAX));
+                let variables: Vec<protocol::Variable> = variables
+                    .iter()
+                    .skip(start)
+                    .take(count)
+                    .map(|variable| self.stop.variable(variable))
+                    .collect();
+                Ok(Some(json!({ "variables": variables })))
+            }
+            (Event::Breakpoints { breakpoints, .. }, Conversion::Breakpoints { offsets, text }) => {
+                Ok(Some(breakpoints_body(&breakpoints, &offsets, &text)))
+            }
             _ => Ok(None),
-        };
-        self.write_response(connection, request_seq, &command, outcome);
+        }
     }
 
     // ---- The host ----
@@ -701,11 +1236,20 @@ impl Agent {
                 self.serve(input);
             }
         }
+        for waiting in std::mem::take(&mut self.waiting) {
+            self.write_response(
+                waiting.connection,
+                waiting.request.seq,
+                &waiting.request.command,
+                Err("the program ended".to_string()),
+            );
+        }
         while let Some(pending) = self.pending.pop_front() {
             if let Reply::Request {
                 connection,
                 request_seq,
                 command,
+                ..
             } = pending.reply
             {
                 self.write_response(
@@ -789,8 +1333,9 @@ impl Agent {
     }
 }
 
-/// Whether `event` answers the command named `command`.
-fn answers(event: &Event, command: &str) -> bool {
+/// Whether `event` answers the command `pending` waits for.
+fn answers(event: &Event, pending: &Pending) -> bool {
+    let command = pending.command;
     match event {
         Event::Continued => matches!(
             command,
@@ -801,28 +1346,49 @@ fn answers(event: &Event, command: &str) -> bool {
         } => refused == command,
         Event::StackTrace(_) => command == "StackTrace",
         Event::Variables(_) => matches!(command, "Variables" | "Children"),
-        Event::Breakpoints { .. } => command == "SetBreakpoints",
+        Event::Breakpoints { module, .. } => {
+            command == "SetBreakpoints" && pending.module.as_ref() == Some(module)
+        }
         Event::StepFiltersSet => command == "SetStepFilters",
         Event::MethodBreakpoints(_) => command == "SetMethodBreakpoints",
         Event::ExceptionBreakpointsSet => command == "SetExceptionBreakpoints",
-        Event::ModuleText { .. } => command == "ModuleText",
+        Event::ModuleText { module, .. } => {
+            command == "ModuleText" && pending.module.as_ref() == Some(module)
+        }
         Event::Stopped { .. } => false,
     }
 }
 
-/// A `stackTrace` response's body: each frame by its name.
-fn stack_trace(frames: &[FrameDescription]) -> Value {
-    let frames: Vec<protocol::StackFrame> = frames
+/// A `setBreakpoints` response's body: for each breakpoint asked for, in
+/// the request's order, the VM's state of the one at its offset, its line
+/// and column those of the statement it stops at in `text`.
+fn breakpoints_body(states: &[BreakpointState], offsets: &[Option<u32>], text: &str) -> Value {
+    let lines = LineIndex::new(text);
+    let mut taken = vec![false; states.len()];
+    let breakpoints: Vec<protocol::Breakpoint> = offsets
         .iter()
-        .zip(0_i64..)
-        .map(|(frame, index)| protocol::StackFrame {
-            id: index,
-            name: frame.name.clone(),
-            line: 0,
-            column: 0,
+        .map(|offset| {
+            let index = offset.and_then(|offset| {
+                (0..states.len()).find(|index| !taken[*index] && states[*index].offset == offset)
+            });
+            let Some(index) = index else {
+                return protocol::Breakpoint::unverified("the module has no such line");
+            };
+            taken[index] = true;
+            let state = &states[index];
+            let position = state
+                .statement
+                .map(|statement| lines.position(text, statement.start));
+            protocol::Breakpoint {
+                id: Some(state.id.0),
+                verified: position.is_some(),
+                message: None,
+                line: position.map(|position| position.line + 1),
+                column: position.map(|position| position.column + 1),
+            }
         })
         .collect();
-    json!({ "stackFrames": frames, "totalFrames": frames.len() })
+    json!({ "breakpoints": breakpoints })
 }
 
 fn to_value(value: impl Serialize) -> Value {

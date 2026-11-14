@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) const THREAD_ID: i64 = 1;
 
 /// A request, as far as the agent reads it before it knows the command.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct Request {
     pub(crate) seq: i64,
     #[serde(rename = "type")]
@@ -145,6 +145,10 @@ pub(crate) struct StoppedEventBody {
     pub(crate) reason: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
+    /// An exception's stop: its text, as a client shows it beside the
+    /// reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<String>,
     pub(crate) thread_id: i64,
     pub(crate) all_threads_stopped: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -164,11 +168,167 @@ pub(crate) struct Thread {
     pub(crate) name: &'static str,
 }
 
-/// One frame of a `stackTrace` response.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct StackTraceArguments {
+    pub(crate) start_frame: Option<usize>,
+    /// `None` or 0: every frame from `start_frame`.
+    pub(crate) levels: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ScopesArguments {
+    pub(crate) frame_id: i64,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct VariablesArguments {
+    pub(crate) variables_reference: i64,
+    /// `indexed` or `named`: only the children of that kind.
+    pub(crate) filter: Option<String>,
+    pub(crate) start: Option<usize>,
+    /// `None` or 0: every child from `start`.
+    pub(crate) count: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SourceArguments {
+    /// The reference, which `source.sourceReference` repeats in a client
+    /// that sends both.
+    pub(crate) source_reference: Option<i64>,
+    pub(crate) source: Option<SourceArgument>,
+}
+
+/// A source as a client names it: by the path of a program's file, or by
+/// the name and the reference the agent gave it.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SourceArgument {
+    pub(crate) name: Option<String>,
+    pub(crate) path: Option<String>,
+    pub(crate) source_reference: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SetBreakpointsArguments {
+    pub(crate) source: SourceArgument,
+    pub(crate) breakpoints: Vec<SourceBreakpoint>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SourceBreakpoint {
+    pub(crate) line: u32,
+}
+
+/// `nsNext/setStepFilters`, a request of ns-next's own: whether a step
+/// passes the shipped modules' code, and the classes, each
+/// `Module.Path.To.Class`, whose code it passes too.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetStepFiltersArguments {
+    #[serde(default = "filter_the_shipped_modules")]
+    pub(crate) shipped: bool,
+    #[serde(default)]
+    pub(crate) classes: Vec<String>,
+}
+
+/// The VM's default, which a request that leaves `shipped` out keeps.
+fn filter_the_shipped_modules() -> bool {
+    true
+}
+
+impl Default for SetStepFiltersArguments {
+    fn default() -> SetStepFiltersArguments {
+        SetStepFiltersArguments {
+            shipped: filter_the_shipped_modules(),
+            classes: Vec::new(),
+        }
+    }
+}
+
+/// A source as the agent shows it: a program's file by its path, any
+/// other module by a reference whose text the `source` request answers.
+#[derive(Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Source {
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_reference: Option<i64>,
+}
+
+/// One frame of a `stackTrace` response; a frame without a location has
+/// no source and line 0.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StackFrame {
     pub(crate) id: i64,
     pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<Source>,
     pub(crate) line: u32,
     pub(crate) column: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) end_column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) presentation_hint: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Scope {
+    pub(crate) name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) presentation_hint: Option<&'static str>,
+    pub(crate) variables_reference: i64,
+    pub(crate) expensive: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Variable {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(crate) class_name: Option<String>,
+    /// 0 for a value without children.
+    pub(crate) variables_reference: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) indexed_variables: Option<usize>,
+}
+
+/// One breakpoint of a `setBreakpoints` response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Breakpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<u32>,
+    pub(crate) verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) column: Option<u32>,
+}
+
+impl Breakpoint {
+    /// A breakpoint the VM does not stand with, for `message`.
+    pub(crate) fn unverified(message: &str) -> Breakpoint {
+        Breakpoint {
+            id: None,
+            verified: false,
+            message: Some(message.to_string()),
+            line: None,
+            column: None,
+        }
+    }
 }

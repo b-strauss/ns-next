@@ -13,6 +13,8 @@ mod agent;
 mod connection;
 mod host;
 mod protocol;
+mod sources;
+mod stopped;
 mod wire;
 
 use std::net::TcpStream;
@@ -23,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) use host::{report_terminated, status_of, terminated_before_run, HostLink, HostStart};
+pub(crate) use sources::ProgramModule;
 
 /// How the agent opens its connection.
 pub(crate) enum DebugOptions {
@@ -47,11 +50,14 @@ impl DebugOptions {
 /// Opens the agent's connection, attaches the debugger to `interpreter`
 /// and starts the agent, before the first host run. The listening mode
 /// prints its line on the standard error here, before the program writes
-/// anything. `program` names the program in the `process` event.
+/// anything. `program` names the program in the `process` event, and
+/// `modules` are its modules as the host loaded them, which a stop shows
+/// by their files' paths.
 pub(crate) fn start(
     options: &DebugOptions,
     interpreter: &mut ns_runtime::Interpreter,
     program: String,
+    modules: Vec<ProgramModule>,
 ) -> Result<HostLink, ExitCode> {
     let (inputs, received) = mpsc::channel();
     let (mode, connected) = match options {
@@ -112,6 +118,7 @@ pub(crate) fn start(
         events_detached,
         Arc::clone(&state),
         program,
+        sources::Sources::new(modules),
     );
     std::thread::Builder::new()
         .name("ns-next debugger agent".to_string())

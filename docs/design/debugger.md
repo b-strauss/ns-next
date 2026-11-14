@@ -3292,8 +3292,31 @@ writer to the socket, and the host's link (`host.rs`). The session:
 `initialize` (its capabilities in `protocol.rs`), `attach` (the token,
 `stopOnEntry`), the `process` and `initialized` events, the client's
 configuration, then `configurationDone`, which starts the host; `pause`,
-`continue`, `threads`, a `stackTrace` of the frames' names, `terminate`
-and `disconnect`. The host waits for the configuration before its first
+`continue`, `terminate` and `disconnect`. A stop (`stopped.rs`,
+`sources.rs`) shows one thread, `main`; its frames, each `id` its index
+plus 1, placed at the selector of the send it waits on or else its
+statement, in lines and UTF-16 columns of its module's current text,
+which the agent asks of the VM (`Command::ModuleText`) only for the
+frames a `stackTrace` page shows and keeps by revision, so that a later
+stop asks only whether it changed; a frame without a location shows no
+source and line 0. A program module whose current text is its file's as
+loaded is shown by the file's path, every other module -- a shipped
+one, an image's, one an install changed -- by a `sourceReference`,
+stable per module for the session, whose `source` request answers the
+text. `scopes` gives a frame's `Locals` and, at a step's stop, the top
+frame's `Return value`; `variables` pages a frame's variables and a
+value's children, an `Array`'s as indexed ones; every
+`variablesReference` is valid until the program goes on, and the ids
+continue across stops, so that a stale one is refused rather than
+naming another value. A stop's `hitBreakpointIds` name only the
+breakpoints the VM's latest answer for their module stands with:
+a `setBreakpoints` replaces its module's ids when it is sent. Requests
+only a stop serves -- `stackTrace`, `scopes`, `variables` -- are
+answered by an error while the program runs, never sent to the VM.
+`setBreakpoints` sets each breakpoint at its line's start, and
+`stepIn` steps one statement; `nsNext/setStepFilters` and
+`nsNext/statistics` (the number of texts the VM sent, for tests) are
+requests of ns-next's own. The host waits for the configuration before its first
 run; with `stopOnEntry` the agent pauses the remote when the host
 announces `main:args:`, which stops `main:args:` at its first statement
 ("Commands while the program runs"), and reports that pause's stop as

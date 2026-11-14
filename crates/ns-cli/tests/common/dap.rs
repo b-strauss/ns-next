@@ -192,6 +192,14 @@ impl Connection {
     }
 }
 
+/// The elements of `value`, which must be an array.
+pub fn array(value: &Value) -> Vec<Value> {
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("not an array: {value}"))
+        .clone()
+}
+
 /// A DAP message off `reader`: `None` at the end of the stream, or at a
 /// frame that is no DAP message, which a test then reports as a closed
 /// connection.
@@ -396,6 +404,60 @@ impl DapClient {
         self.initialize();
         self.attach(stop_on_entry);
         self.configuration_done();
+    }
+
+    /// A request that must succeed; answers its response's body.
+    pub fn succeed(&mut self, command: &str, arguments: Value) -> Value {
+        let response = self.request(command, arguments);
+        assert_eq!(response["success"], true, "{response}");
+        response["body"].clone()
+    }
+
+    /// `setBreakpoints` at the start of each of `lines` of `source`;
+    /// answers the response's breakpoints.
+    pub fn set_breakpoints(&mut self, source: Value, lines: &[u32]) -> Vec<Value> {
+        let breakpoints: Vec<Value> = lines.iter().map(|line| json!({ "line": line })).collect();
+        let body = self.succeed(
+            "setBreakpoints",
+            json!({ "source": source, "breakpoints": breakpoints }),
+        );
+        array(&body["breakpoints"])
+    }
+
+    /// The next `stopped` event, asserting its reason.
+    pub fn stopped(&mut self, reason: &str) -> Value {
+        let stopped = self.event("stopped");
+        assert_eq!(stopped["body"]["reason"], reason, "{stopped}");
+        stopped
+    }
+
+    /// The stopped program's frames, `levels` of them from `start_frame`,
+    /// every one for `levels` 0.
+    pub fn stack_frames(&mut self, start_frame: usize, levels: usize) -> Vec<Value> {
+        let body = self.succeed(
+            "stackTrace",
+            json!({ "threadId": 1, "startFrame": start_frame, "levels": levels }),
+        );
+        array(&body["stackFrames"])
+    }
+
+    /// The variables of the reference `reference`, paged by `start` and
+    /// `count` when given.
+    pub fn variables(
+        &mut self,
+        reference: &Value,
+        start: Option<u64>,
+        count: Option<u64>,
+    ) -> Vec<Value> {
+        let mut arguments = json!({ "variablesReference": reference });
+        if let Some(start) = start {
+            arguments["start"] = json!(start);
+        }
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        let body = self.succeed("variables", arguments);
+        array(&body["variables"])
     }
 
     /// What the program wrote to its standard output so far.

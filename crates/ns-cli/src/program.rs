@@ -126,6 +126,25 @@ pub(crate) fn entry_arguments(
     Ok(script_arguments.iter().chain(arguments).cloned().collect())
 }
 
+/// The program's modules as a debugger shows them: each by its root
+/// class's name, with the file it was read from and its text as read.
+pub(crate) fn debug_modules(program: &Program) -> Vec<debug::ProgramModule> {
+    program
+        .sources
+        .iter()
+        .map(|loaded| debug::ProgramModule {
+            name: declared_name(loaded).to_string(),
+            path: match &loaded.origin {
+                ns_runtime::SourceOrigin::File(path) => {
+                    Some(std::path::absolute(path).unwrap_or_else(|_| path.clone()))
+                }
+                ns_runtime::SourceOrigin::Embedded(_) => None,
+            },
+            text: Some(loaded.source.clone()),
+        })
+        .collect()
+}
+
 fn declared_name(loaded: &source::LoadedSource) -> &str {
     &loaded.resolved.module.root_class.name.name
 }

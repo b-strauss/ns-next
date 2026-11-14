@@ -65,10 +65,21 @@ pub(crate) fn execute(
             None,
         ));
     };
+    // An image's modules have no files: a stop shows each by a reference.
+    let modules = loaded
+        .modules
+        .iter()
+        .map(|module| debug::ProgramModule {
+            name: module.declaration.name.as_str().to_string(),
+            path: None,
+            text: module.source.as_deref().map(str::to_string),
+        })
+        .collect();
     let link = match debug::start(
         &options,
         &mut loaded.interpreter,
         image.display().to_string(),
+        modules,
     ) {
         Ok(link) => link,
         Err(code) => return code,

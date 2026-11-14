@@ -38,7 +38,9 @@ pub(crate) fn execute(
     entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
     let link = match &debug {
         Some(options) => {
-            match debug::start(options, &mut loaded.interpreter, file.display().to_string()) {
+            let modules = program::debug_modules(&program);
+            let name = file.display().to_string();
+            match debug::start(options, &mut loaded.interpreter, name, modules) {
                 Ok(link) => Some(link),
                 Err(code) => return code,
             }
