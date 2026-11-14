@@ -109,28 +109,33 @@ val binaryBuildSettings: FileCollection = files(
     fileTree(repositoryRoot.resolve("crates")) { include("*/Cargo.toml", "*/build.rs") },
 )
 
+/** The tests that start a workspace binary, each run by a task of its own with inputs of its own. */
+val LEXER_COMPARISON_TEST = "io.github.bstrauss.newspeak.lexer.LexerComparisonTest"
+val DAP_SESSION_TEST = "io.github.bstrauss.newspeak.debugger.DapSessionTest"
+
 tasks.test {
     description = "Runs the plugin's tests that start no workspace binary."
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
-    // Its own task, with inputs of its own: see `lexerComparisonTest`.
-    filter { excludeTestsMatching("io.github.bstrauss.newspeak.lexer.LexerComparisonTest") }
+    // See `lexerComparisonTest` and `dapSessionTest`.
+    filter {
+        excludeTestsMatching(LEXER_COMPARISON_TEST)
+        excludeTestsMatching(DAP_SESSION_TEST)
+    }
     // The directories `NewspeakDocCommentAgreementTest`, `LexerRestartTest`
     // and `NewspeakHighlightingLexerTest` walk.
     readsNewspeakSources("goldens", "crates/ns-runtime/core-library", "benchmarks")
 }
 
 /**
- * The lexer comparison, the one test that starts `ns-next-analyzer`, as a
- * task of its own: its inputs are what `dump-tokens` answers derive from,
- * so a runtime change leaves it up to date while a change to the Rust
- * lexer reruns it. It runs on the classpath, JVM and sandbox the platform
- * plugin gives `test`, and after it, since the two share that sandbox.
- * The copy mirrors what version 2.19.0 of the IntelliJ Platform Gradle
- * plugin (`plugins` above) configures `test` with (its `TestIdeTask`
- * configuration and `PrepareTestTask`): an upgrade re-checks it.
+ * Configures a test task of its own to run as `test` runs: on the
+ * classpath, JVM and sandbox the platform plugin gives `test`, and after
+ * it, since the two share that sandbox. The copy mirrors what version
+ * 2.19.0 of the IntelliJ Platform Gradle plugin (`plugins` above)
+ * configures `test` with (its `TestIdeTask` configuration and
+ * `PrepareTestTask`): an upgrade re-checks it. `testClass` is the one
+ * class the task runs, which `test` leaves out.
  */
-val lexerComparisonTest = tasks.register<Test>("lexerComparisonTest") {
-    description = "Compares the Kotlin lexer with ns-syntax's, through ns-next-analyzer dump-tokens."
+fun Test.runsLikeUnitTests(testClass: String) {
     group = "verification"
     val unitTests = tasks.test.get()
     testClassesDirs = unitTests.testClassesDirs
@@ -157,7 +162,18 @@ val lexerComparisonTest = tasks.register<Test>("lexerComparisonTest") {
     enableAssertions = unitTests.enableAssertions
     setDependsOn(unitTests.dependsOn)
     mustRunAfter(unitTests)
-    filter { includeTestsMatching("io.github.bstrauss.newspeak.lexer.LexerComparisonTest") }
+    filter { includeTestsMatching(testClass) }
+}
+
+/**
+ * The lexer comparison, the one test that starts `ns-next-analyzer`, as a
+ * task of its own: its inputs are what `dump-tokens` answers derive from,
+ * so a runtime change leaves it up to date while a change to the Rust
+ * lexer reruns it.
+ */
+val lexerComparisonTest = tasks.register<Test>("lexerComparisonTest") {
+    description = "Compares the Kotlin lexer with ns-syntax's, through ns-next-analyzer dump-tokens."
+    runsLikeUnitTests(LEXER_COMPARISON_TEST)
 
     dependsOn(buildLanguageServerDebug)
     systemProperty(
@@ -190,8 +206,48 @@ val lexerComparisonTest = tasks.register<Test>("lexerComparisonTest") {
     readsNewspeakSources("corpus/modules", "goldens", "crates/ns-runtime/core-library", "benchmarks")
 }
 
+/** The runtime the DAP session test debugs, a debug build for the reason the server's is. */
+val buildRuntimeDebug = tasks.register<Exec>("buildRuntimeDebug") {
+    description = "Builds ns-next (debug) with Cargo for the tests."
+    workingDir = repositoryRoot
+    commandLine("cargo", "build", "-p", "ns-cli")
+}
+
+/**
+ * The DAP client against the real agent, as a task of its own: it starts
+ * `ns-next run --debug-connect`, whose answers run through the whole
+ * runtime -- the agent in `ns-cli`, the debugging API, the VM and the
+ * shipped modules -- so every change to the runtime's sources reruns it,
+ * while a change to the analyzer alone leaves it up to date.
+ */
+val dapSessionTest = tasks.register<Test>("dapSessionTest") {
+    description = "Debugs a program with ns-next through the plugin's DAP client."
+    runsLikeUnitTests(DAP_SESSION_TEST)
+
+    dependsOn(buildRuntimeDebug)
+    systemProperty(
+        "nsNext.runtime",
+        repositoryRoot.resolve("target/debug/ns-next$executableSuffix").absolutePath,
+    )
+    readsRustSources(
+        "runtimeSources",
+        files(
+            listOf(
+                "crates/ns-cli/src",
+                "crates/ns-runtime/src",
+                "crates/ns-runtime/core-library",
+                "crates/ns-tooling/src",
+                "crates/ns-syntax/src",
+                "crates/ns-memory/src",
+                "crates/ns-assembler/src",
+            ).map { directory -> fileTree(repositoryRoot.resolve(directory)) },
+        ),
+    )
+    readsRustSources("binaryBuildSettings", binaryBuildSettings)
+}
+
 tasks.check {
-    dependsOn(lexerComparisonTest)
+    dependsOn(lexerComparisonTest, dapSessionTest)
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {

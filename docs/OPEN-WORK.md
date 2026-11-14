@@ -28,7 +28,7 @@ paged `variables`, `source` for the embedded modules, `terminate`,
 implements IntelliJ's debugger over a DAP client of its own, from the
 existing run configurations; from here the debugger is usable in the
 IDE ([debugger.md](design/debugger.md), decision 6, "Launching, the
-start and the end", "Planned: the JetBrains plugin", "Planned: the
+start and the end", "The JetBrains plugin", "Planned: the
 order of building it"). Stages 1 to 3 are built (2026-11-11 to
 2026-11-13; "The debugging API at the safepoint", "Compiling the
 metadata again", decisions 2, 3, 16 and 17). Stage 4 needs a plan of

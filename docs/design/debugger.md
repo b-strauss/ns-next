@@ -58,7 +58,8 @@
 > `load` take `--debug` and `--debug-connect`, and the agent shows a
 > stop's stack, variables and sources, sets line, function and exception
 > breakpoints, steps by line or statement, runs to a cursor and pauses
-> ("Launching, the start and the end").
+> ("Launching, the start and the end"). The plugin's DAP client is
+> built ("The JetBrains plugin").
 > Everything else is planned: the rest of the DAP agent and the plugin
 > (stage 4, next), evaluation, conditional breakpoints and logpoints, smart step
 > into, restart frame and force return (stage 5), hot swap and
@@ -3493,10 +3494,27 @@ The proposal is a proposal.
   to an `ns-next` already running. Proposal: the memory view and folding
   in stage 5, attaching after stage 6.
 
-## Planned: the JetBrains plugin
+## The JetBrains plugin
 
-The plugin will implement IntelliJ's debugger API over a DAP client of its
-own:
+The plugin speaks DAP through a client of its own
+(`editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/debugger/dap/`),
+on the Gson the IntelliJ Platform bundles, so it takes no dependency:
+`DapConnection` frames each message with its `Content-Length` in UTF-8
+bytes, bounds a frame before it reads it as the agent does, and reads on a
+thread of its own; `DapConnection.accept` takes the connection of an
+`ns-next run --debug-connect` from the socket the plugin listens on.
+`DapClient` numbers the requests, answers each with a `CompletableFuture`
+of its response's body, failed with the response's `message` when it
+reports a failure, and hands each event's body to the listeners of its
+name; a close, by either side, fails every request still unanswered.
+Every future completes and every listener runs on the reader thread, in
+the order the agent sent them, so the debug process hops to the thread
+its work needs. `DapTypes.kt` reads the bodies the plugin uses. A test
+debugs a program with the real runtime through it (`DapSessionTest`,
+[editor-support.md](editor-support.md), "Plugin testing and gates").
+
+Planned: the plugin will implement IntelliJ's debugger API over that
+client:
 
 - an `XDebugProcess` started by a `ProgramRunner` for the Debug executor
   from the existing run configurations, which run `ns-next run --debug`;
