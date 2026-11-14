@@ -3548,7 +3548,14 @@ and reports that pause's stop as the entry's. At the program's end the
 agent has the pump hand over every event the VM sent before it, answers
 each request they answer, and answers every request still waiting with an
 error, before it sends `exited` and `terminated`: the host's word comes on
-another path than the VM's events. A listening agent gives a connection 10
+another path than the VM's events. It then answers every request the
+client sends until the client disconnects or closes the connection, or
+is silent for 2 s, which bounds how long the process outlives its
+program: a request sent before the client heard of the end -- a
+`terminate` racing it -- is answered like any other, `terminate` and
+`disconnect` with success, the program having ended, and every other
+request with an error
+(`a_request_after_the_program_ended_is_answered`). A listening agent gives a connection 10
 s from its acceptance to present the token in a good `attach`, a deadline
 for the whole exchange rather than a read timeout, so that neither a
 silent nor a trickling peer holds the one connection it serves, while an

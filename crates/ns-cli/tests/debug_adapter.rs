@@ -38,13 +38,17 @@ const LOOPER: &str = indoc! {"
     ) : ()
 "};
 
-/// A project's root whose initializer runs a while before `main:args:`.
+/// A project's root whose initializer runs a while before `main:args:`:
+/// longer than any machine takes to deliver a `terminate` sent right after
+/// `configurationDone`, which machine code would outrun with a short loop,
+/// and no longer than that, since the terminate ends the run at its next
+/// safepoint, or the host's check ends the program before the next run.
 const SLOW_START: &str = indoc! {"
     class SlowStart packageUsing: manifest = Object new (
       |
         count ::= 0.
       |
-      1 to: 200000 do: [:index | count:: count + 1].
+      1 to: 1000000000 do: [:index | count:: count + 1].
     ) (
       public main: platform args: arguments = (
         platform transcript show: 'main ran'; newLine.
@@ -114,6 +118,31 @@ fn a_session_runs_the_program_to_its_end() {
     assert_eq!(finished.status, Some(0), "{}", finished.stderr);
     assert_eq!(finished.stdout, "hi\n");
     assert_eq!(finished.stderr, "");
+}
+
+/// Every request the agent receives is answered, the ones that arrive
+/// after the program ended included -- as a `terminate` sent just before
+/// the end may: the agent stays to answer until the client disconnects.
+/// A `terminate` then succeeds, the program having ended, and a request
+/// that needs the program is refused.
+#[test]
+fn a_request_after_the_program_ended_is_answered() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(false);
+    let exited = client.event("exited");
+    assert_eq!(exited["body"]["exitCode"], 0, "{exited}");
+    client.event("terminated");
+    let terminated = client.request("terminate", json!({}));
+    assert_eq!(terminated["success"], true, "{terminated}");
+    let threads = client.request("stackTrace", json!({ "threadId": 1 }));
+    assert_eq!(threads["success"], false, "{threads}");
+    let disconnected = client.request("disconnect", json!({}));
+    assert_eq!(disconnected["success"], true, "{disconnected}");
+    client.connection.expect_closed();
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
 }
 
 #[test]

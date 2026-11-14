@@ -195,10 +195,18 @@ impl Connection {
     }
 
     /// Every event that arrives until the agent closes the connection.
+    /// A `terminated` event is answered with a `disconnect`, as a DAP
+    /// client answers it, after which the agent closes the connection.
     pub fn events_until_closed(&mut self) -> Vec<Value> {
         let mut events: Vec<Value> = self.events.drain(..).collect();
+        if events.iter().any(|event| event["event"] == "terminated") {
+            let _ = self.try_send("disconnect", json!({}));
+        }
         while let Some(message) = self.next_message("the connection's end") {
             if message["type"] == "event" {
+                if message["event"] == "terminated" {
+                    let _ = self.try_send("disconnect", json!({}));
+                }
                 events.push(message);
             }
         }

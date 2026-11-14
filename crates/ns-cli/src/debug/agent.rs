@@ -84,6 +84,12 @@ const WRITE_BOUND: Duration = Duration::from_secs(30);
 #[cfg(debug_assertions)]
 const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 
+/// How long the agent waits, after `terminated`, for the client's next
+/// request or its disconnect before the process ends anyway: a client
+/// answers `terminated` at once, with its `disconnect`, and one that does
+/// not delays the process's end by no more than this.
+const ENDED_LINGER: Duration = Duration::from_secs(2);
+
 /// The bound of one write to an attached client.
 fn write_bound() -> Duration {
     #[cfg(debug_assertions)]
@@ -1273,6 +1279,7 @@ impl Agent {
                     };
                     self.event("exited", Some(to_value(exited)));
                     self.event("terminated", None);
+                    self.answer_until_disconnected();
                 }
                 // Written before the host goes on to end the process,
                 // within the writer's bound.
@@ -1280,6 +1287,53 @@ impl Agent {
                     client.writer.finish();
                 }
                 let _ = done.send(());
+            }
+        }
+    }
+
+    /// After `terminated`, every request the client sends is still
+    /// answered -- one it sent before it heard of the end, a `terminate`
+    /// racing the program's end among them, which DAP answers like any
+    /// other -- until it disconnects, closes the connection, or is silent
+    /// for `ENDED_LINGER`, which bounds how long the process outlives its
+    /// program for a client that never disconnects. A `terminate` or a
+    /// `disconnect` succeeds, the program having ended; any other request
+    /// is refused, nothing being left to serve it.
+    fn answer_until_disconnected(&mut self) {
+        loop {
+            let Some(connection) = self.client.as_ref().map(|client| client.connection) else {
+                return;
+            };
+            let input = match self.received.recv_timeout(ENDED_LINGER) {
+                Ok(input) => input,
+                Err(_) => return,
+            };
+            match input {
+                Input::Request {
+                    connection: from,
+                    message,
+                } if from == connection => {
+                    let Ok(request) = serde_json::from_value::<protocol::Request>(message) else {
+                        continue;
+                    };
+                    if request.kind != "request" {
+                        continue;
+                    }
+                    match request.command.as_str() {
+                        "disconnect" => {
+                            self.respond(connection, &request, None);
+                            return;
+                        }
+                        "terminate" => self.respond(connection, &request, None),
+                        _ => self.respond_error(connection, &request, "the program ended"),
+                    }
+                }
+                Input::Closed { connection: from } if from == connection => return,
+                Input::Connected(stream) => {
+                    // The one client is served to its end; nobody else is.
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+                _ => {}
             }
         }
     }
