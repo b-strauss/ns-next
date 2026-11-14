@@ -41,14 +41,18 @@ fn system_info() -> SYSTEM_INFO {
     information
 }
 
+/// Read once: a constant of the process, which every full collection asks
+/// for several times (each reservation's shrink), a system call each time.
 pub(crate) fn page_size() -> usize {
-    system_info().dwPageSize as usize
+    static PAGE_SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| system_info().dwPageSize as usize)
 }
 
 /// A reservation's base and size are multiples of this, 64 KiB on every
-/// current Windows, larger than a page.
+/// current Windows, larger than a page. Read once, as the page size is.
 pub(crate) fn reservation_granularity() -> usize {
-    system_info().dwAllocationGranularity as usize
+    static GRANULARITY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *GRANULARITY.get_or_init(|| system_info().dwAllocationGranularity as usize)
 }
 
 fn last_error() -> i32 {
