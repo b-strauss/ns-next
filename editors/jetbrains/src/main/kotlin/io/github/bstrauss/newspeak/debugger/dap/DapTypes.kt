@@ -45,11 +45,12 @@ data class DapStackFrame(
     }
 }
 
-/** One scope of a `scopes` response. */
-data class DapScope(val name: String, val variablesReference: Int, val expensive: Boolean) {
+/** One scope of a `scopes` response; [presentationHint] `locals`, or `returnValue` for a step's return value. */
+data class DapScope(val name: String, val presentationHint: String?, val variablesReference: Int, val expensive: Boolean) {
     companion object {
         fun from(json: JsonObject) = DapScope(
             name = json.stringOrNull("name").orEmpty(),
+            presentationHint = json.stringOrNull("presentationHint"),
             variablesReference = json.intOrNull("variablesReference") ?: 0,
             expensive = json.booleanOrNull("expensive") ?: false,
         )

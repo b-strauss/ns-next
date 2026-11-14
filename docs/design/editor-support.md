@@ -1741,7 +1741,7 @@ a `.ns` module.
   each run `cargo build -p ns-analyzer` at the repository root, debug and `--release`
   respectively; the lexer comparison depends on the debug build and points
   its test at it, and `buildRuntimeDebug` builds `ns-next` (debug) for the
-  DAP session test. Every sandbox an IDE starts from depends on the release build and gets
+  DAP session test and the debug process test. Every sandbox an IDE starts from depends on the release build and gets
   the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
   `platform-directories.properties` names for it (a host the file does not
   name fails the sandbox task rather than bundling a server the plugin would
@@ -1852,8 +1852,29 @@ The server's own tests are described under its section, above ("Testing").
   and `binaryBuildSettings`: every change to the runtime reruns it, while
   a change to the analyzer alone leaves it up to date; its framing and bookkeeping, piped to a scripted
   peer instead, are `DapConnectionTest`'s, in plain JUnit under `test`
-  (UTF-8 byte counts, a failed response failing its future, events by
-  name, a close or the stream's end failing every pending request);
+  (UTF-8 byte counts, header names in any case beside other headers, a
+  body arriving in pieces, a failed response failing its future, events
+  by name, a close or the stream's end failing every pending request, a
+  peer closing inside a body, an oversized `Content-Length` and malformed
+  JSON ending the connection, an `Error` a listener throws closing the
+  client, a failing close listener leaving the others called);
+- the debug process in the platform's debugger
+  (`NewspeakDebugProcessTest`, on `BasePlatformTestCase` run off the event
+  dispatch thread, so that it can wait while the platform updates the
+  session there) -- Debug on a Newspeak run configuration through the
+  plugin's runner, against the same debug build of `ns-next`: a line
+  breakpoint toggled through `XDebuggerUtil` stops the program, the
+  session's position is its line and the top frame's locals and an
+  `Array`'s elements read through the value tree; Step Over moves to the
+  next line; the first Stop of a program inside one long leaf terminates
+  through the agent and leaves the process running, the second kills it;
+  and a fake agent reporting another process's id ends the session with
+  the error and kills the process, before any configuration is sent.
+  Every listener is registered as the platform creates the debug process
+  (`XDebuggerManager.TOPIC`), before it connects, and every wait is
+  bounded. A task of its own, `debugProcessTest`, with
+  `dapSessionTest`'s inputs (`debugsWithTheRuntime` in
+  `build.gradle.kts`), which `check` depends on;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`

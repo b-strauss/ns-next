@@ -5,6 +5,7 @@ import com.google.gson.JsonParser
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
+import io.github.bstrauss.newspeak.debugger.dap.DapProtocolException
 import io.github.bstrauss.newspeak.debugger.dap.DapRequestFailedException
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -16,6 +17,7 @@ import java.io.ByteArrayOutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -153,6 +155,131 @@ class DapConnectionTest {
         agentSide.close()
         closed.get(WAIT_SECONDS, TimeUnit.SECONDS)
         assertTrue(failureOf(pending) is DapConnectionClosedException)
+    }
+
+    /** A connection reading what the test writes, byte by byte as it chooses, onto `writer`. */
+    private class RawPeer(val connection: DapConnection, val writer: PipedOutputStream) {
+        fun write(text: String) = write(text.toByteArray(Charsets.UTF_8))
+
+        fun write(bytes: ByteArray) {
+            writer.write(bytes)
+            writer.flush()
+        }
+    }
+
+    private fun rawPeer(): RawPeer {
+        val writer = PipedOutputStream()
+        val connection = DapConnection(PipedInputStream(writer, PIPE_SIZE), ByteArrayOutputStream())
+        opened.add(connection)
+        opened.add(writer)
+        return RawPeer(connection, writer)
+    }
+
+    /** What the connection read: its messages, and how it ended once it did. */
+    private class Reading {
+        val messages = CopyOnWriteArrayList<JsonObject>()
+        val ended = CompletableFuture<Throwable?>()
+    }
+
+    private fun reading(connection: DapConnection): Reading {
+        val reading = Reading()
+        connection.start({ message -> reading.messages.add(message) }, { cause -> reading.ended.complete(cause) })
+        return reading
+    }
+
+    @Test
+    fun headerNamesAreReadInAnyCaseAndOtherHeadersIgnored() {
+        val peer = rawPeer()
+        val reading = reading(peer.connection)
+        val body = """{"seq":1,"type":"event","event":"initialized"}"""
+        peer.write("content-LENGTH: ${body.length}\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n$body")
+        peer.write("CONTENT-LENGTH:${body.length}\r\n\r\n$body")
+        peer.writer.close()
+        assertEquals(null, reading.ended.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertEquals(2, reading.messages.size)
+        assertEquals("initialized", reading.messages[1].get("event").asString)
+    }
+
+    @Test
+    fun aBodyDeliveredInPiecesIsOneMessage() {
+        val peer = rawPeer()
+        val reading = reading(peer.connection)
+        val body = """{"seq":1,"type":"event","event":"output","body":{"output":"Grüße"}}""".toByteArray(Charsets.UTF_8)
+        peer.write("Content-Length: ${body.size}\r")
+        peer.write("\n\r\n")
+        // Split inside the two bytes of `ü`, so that no piece decodes alone.
+        val split = body.indexOfFirst { byte -> byte.toInt() and 0x80 != 0 } + 1
+        peer.write(body.copyOfRange(0, split))
+        peer.write(body.copyOfRange(split, body.size))
+        peer.writer.close()
+        assertEquals(null, reading.ended.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertEquals(1, reading.messages.size)
+        assertEquals("Grüße", reading.messages[0].getAsJsonObject("body").get("output").asString)
+    }
+
+    @Test
+    fun aPeerClosingInsideABodyEndsTheConnectionWithItsCause() {
+        val peer = rawPeer()
+        val reading = reading(peer.connection)
+        peer.write("Content-Length: 100\r\n\r\n{\"seq\":1,")
+        peer.writer.close()
+        assertTrue(reading.ended.get(WAIT_SECONDS, TimeUnit.SECONDS) is DapProtocolException)
+        assertTrue(reading.messages.isEmpty())
+    }
+
+    @Test
+    fun anOversizedLengthIsRefusedBeforeItIsRead() {
+        val peer = rawPeer()
+        val reading = reading(peer.connection)
+        // Nothing follows the header: a reader that tried to read the body would wait for ever.
+        peer.write("Content-Length: ${64 * 1024 * 1024 + 1}\r\n\r\n")
+        val cause = reading.ended.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(cause.toString(), cause is DapProtocolException && cause.message!!.contains("longer than"))
+    }
+
+    @Test
+    fun malformedJsonEndsTheConnection() {
+        val peer = rawPeer()
+        val reading = reading(peer.connection)
+        val body = """{"seq":1,"type":"""
+        peer.write("Content-Length: ${body.length}\r\n\r\n$body")
+        val cause = reading.ended.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(cause.toString(), cause is DapProtocolException && cause.message!!.contains("no JSON"))
+    }
+
+    @Test
+    fun aMalformedFrameClosesTheClientAndFailsWhatIsPending() {
+        val peer = rawPeer()
+        val client = DapClient(peer.connection).also { client -> opened.add(AutoCloseable(client::close)) }
+        val closed = CompletableFuture<Unit>()
+        client.onClose { closed.complete(Unit) }
+        val pending = client.request("threads")
+        peer.write("Content-Length: 3\r\n\r\n[1]")
+        closed.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(failureOf(pending) is DapConnectionClosedException)
+    }
+
+    @Test
+    fun anErrorAListenerThrowsStillClosesTheClient() {
+        val (clientSide, agentSide) = joinedPair()
+        val client = DapClient(clientSide).also { client -> opened.add(AutoCloseable(client::close)) }
+        val closed = CompletableFuture<Unit>()
+        client.onClose { closed.complete(Unit) }
+        client.onEvent("stopped") { _ -> throw AssertionError("a listener's own failure") }
+        val pending = client.request("threads")
+        agentSide.send(JsonParser.parseString("""{"seq":1,"type":"event","event":"stopped","body":{}}""").asJsonObject)
+        closed.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(failureOf(pending) is DapConnectionClosedException)
+    }
+
+    @Test
+    fun aCloseListenerThatThrowsLeavesTheOthersCalled() {
+        val client = clientAgainst { _ -> null }
+        val later = AtomicInteger()
+        client.onClose { throw IllegalStateException("a close listener's own failure") }
+        client.onClose { later.incrementAndGet() }
+        client.close()
+        assertEquals(1, later.get())
     }
 
     private fun failureOf(future: CompletableFuture<JsonObject>): Throwable {

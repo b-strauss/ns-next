@@ -112,14 +112,16 @@ val binaryBuildSettings: FileCollection = files(
 /** The tests that start a workspace binary, each run by a task of its own with inputs of its own. */
 val LEXER_COMPARISON_TEST = "io.github.bstrauss.newspeak.lexer.LexerComparisonTest"
 val DAP_SESSION_TEST = "io.github.bstrauss.newspeak.debugger.DapSessionTest"
+val DEBUG_PROCESS_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakDebugProcessTest"
 
 tasks.test {
     description = "Runs the plugin's tests that start no workspace binary."
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
-    // See `lexerComparisonTest` and `dapSessionTest`.
+    // See `lexerComparisonTest`, `dapSessionTest` and `debugProcessTest`.
     filter {
         excludeTestsMatching(LEXER_COMPARISON_TEST)
         excludeTestsMatching(DAP_SESSION_TEST)
+        excludeTestsMatching(DEBUG_PROCESS_TEST)
     }
     // The directories `NewspeakDocCommentAgreementTest`, `LexerRestartTest`
     // and `NewspeakHighlightingLexerTest` walk.
@@ -214,16 +216,14 @@ val buildRuntimeDebug = tasks.register<Exec>("buildRuntimeDebug") {
 }
 
 /**
- * The DAP client against the real agent, as a task of its own: it starts
- * `ns-next run --debug-connect`, whose answers run through the whole
- * runtime -- the agent in `ns-cli`, the debugging API, the VM and the
- * shipped modules -- so every change to the runtime's sources reruns it,
- * while a change to the analyzer alone leaves it up to date.
+ * Gives a test task the debug build of `ns-next`, named by the system
+ * property `nsNext.runtime`, and declares as its inputs what the answers of
+ * `ns-next run --debug-connect` run through: the whole runtime -- the agent
+ * in `ns-cli`, the debugging API, the VM and the shipped modules -- so every
+ * change to the runtime's sources reruns it, while a change to the analyzer
+ * alone leaves it up to date.
  */
-val dapSessionTest = tasks.register<Test>("dapSessionTest") {
-    description = "Debugs a program with ns-next through the plugin's DAP client."
-    runsLikeUnitTests(DAP_SESSION_TEST)
-
+fun Test.debugsWithTheRuntime() {
     dependsOn(buildRuntimeDebug)
     systemProperty(
         "nsNext.runtime",
@@ -246,8 +246,24 @@ val dapSessionTest = tasks.register<Test>("dapSessionTest") {
     readsRustSources("binaryBuildSettings", binaryBuildSettings)
 }
 
+/** The DAP client against the real agent, as a task of its own. */
+val dapSessionTest = tasks.register<Test>("dapSessionTest") {
+    description = "Debugs a program with ns-next through the plugin's DAP client."
+    runsLikeUnitTests(DAP_SESSION_TEST)
+    debugsWithTheRuntime()
+}
+
+/** The platform's debugger over the debug process, against the real agent, as a task of its own. */
+val debugProcessTest = tasks.register<Test>("debugProcessTest") {
+    description = "Debugs a Newspeak run configuration with ns-next through the platform's debugger."
+    runsLikeUnitTests(DEBUG_PROCESS_TEST)
+    debugsWithTheRuntime()
+    // The test tasks share one sandbox, which `runsLikeUnitTests` orders after `test` only.
+    mustRunAfter(lexerComparisonTest, dapSessionTest)
+}
+
 tasks.check {
-    dependsOn(lexerComparisonTest, dapSessionTest)
+    dependsOn(lexerComparisonTest, dapSessionTest, debugProcessTest)
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {

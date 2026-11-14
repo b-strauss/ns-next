@@ -59,7 +59,9 @@
 > stop's stack, variables and sources, sets line, function and exception
 > breakpoints, steps by line or statement, runs to a cursor and pauses
 > ("Launching, the start and the end"). The plugin's DAP client is
-> built ("The JetBrains plugin").
+> built, and Debug on a Newspeak run configuration shows the stops,
+> frames and variables in IntelliJ's debugger and carries its steps
+> ("The JetBrains plugin").
 > Everything else is planned: the rest of the DAP agent and the plugin
 > (stage 4, next), evaluation, conditional breakpoints and logpoints, smart step
 > into, restart frame and force return (stage 5), hot swap and
@@ -306,7 +308,8 @@ debugging API at the safepoint". What it and the later stages build on:
   (`newspeak-spec.pdf` p. 26), never skipping the element expressions,
   which are ordinary statements' parts here.
 - **The JetBrains plugin** runs a project or a module through its run
-  configurations and talks to `ns-next-analyzer lsp` through the platform's
+  configurations, debugs one through IntelliJ's debugger ("The JetBrains
+  plugin"), and talks to `ns-next-analyzer lsp` through the platform's
   LSP API ([editor-support.md](editor-support.md)).
 
 ## The debugging API at the safepoint
@@ -3506,28 +3509,81 @@ thread of its own; `DapConnection.accept` takes the connection of an
 `DapClient` numbers the requests, answers each with a `CompletableFuture`
 of its response's body, failed with the response's `message` when it
 reports a failure, and hands each event's body to the listeners of its
-name; a close, by either side, fails every request still unanswered.
-Every future completes and every listener runs on the reader thread, in
+name; a close, by either side, fails every request still unanswered and
+tells every close listener, one that fails keeping none of the others
+from it. Whatever ends the reader -- a malformed frame, the stream's end,
+an `Error` a listener throws -- closes the client, so no request waits
+for ever. Every future completes and every listener runs on the reader thread, in
 the order the agent sent them, so the debug process hops to the thread
 its work needs. `DapTypes.kt` reads the bodies the plugin uses. A test
 debugs a program with the real runtime through it (`DapSessionTest`,
 [editor-support.md](editor-support.md), "Plugin testing and gates").
 
-Planned: the plugin will implement IntelliJ's debugger API over that
-client:
+Debug on a Newspeak run configuration that runs a program
+(`debugger/NewspeakDebugRunner.kt`; a benchmark is not debugged) binds
+127.0.0.1 on a port the system chooses and starts `ns-next run
+--debug-connect=127.0.0.1:<port>`, the runtime connecting to the plugin
+("Launching, the start and the end"), through
+`NewspeakDebuggeeProcessHandler`, a `KillableProcessHandler`. The debug
+process (`NewspeakDebugProcess.kt`) takes the connection within 30 s,
+initializes and attaches, and checks that the `process` event's
+`systemProcessId` is the PID of the process it started; on a mismatch --
+another process connected to the port first -- it reports the error, kills
+the process and the session ends. At the `initialized` event it sends
+every line breakpoint the session registered, a file's set at a time, and
+`configurationDone` once the agent answered them. The platform's Stop
+destroys the process: while the agent is attached the handler asks it to
+`terminate` instead, so the program ends as its own `terminate…` would,
+and the platform's second Stop, on a process still terminating, kills it
+(`KillableProcess.killProcess`), which ends a program inside one long
+leaf at once; `XDebugProcess.stop()` sends `terminate` too, for a session
+ended otherwise. The process's console is the program's own, the agent's
+`output` events printed into it.
 
-- an `XDebugProcess` started by a `ProgramRunner` for the Debug executor
-  from the existing run configurations, which run `ns-next run --debug`;
+A `stopped` event reads the first page of the stack (50 frames) before the
+stop is shown, so that the top frame is at hand: a `NewspeakSuspendContext`
+holds one `NewspeakExecutionStack`, the thread `main`, which reads the
+rest a page at a time when the frames view asks. A stop with
+`hitBreakpointIds` is shown through `breakpointReached` for the first
+breakpoint they name, every other through `positionReached`. A
+`NewspeakStackFrame` is placed through `NewspeakSources`: a program
+module's file by its path, any other module -- a shipped one, an image's,
+one an install changed -- as a read-only `LightVirtualFile` named
+`<Module>.ns` holding the `source` request's answer, one per reference for
+the session; a hidden frame (`presentationHint: "subtle"`) stays listed,
+drawn greyed. Its children are the `Return value` scope's value, at a
+step's stop, above the `Locals`; a `NewspeakValue` shows the agent's text
+and class of a value and pages its children by 100, the tree offering the
+next page (`tooManyChildren`) -- an indexed value's count known, a named
+value's until a page comes back short. Resume is `continue`; Step Over,
+Step Into and Step Out are `next`, `stepIn` and `stepOut` with
+`granularity: "line"`; Run to Cursor is `nsNext/runToPosition`, Pause
+`pause`. A step or a resume the agent refuses leaves it at its stop,
+which the debug process shows again with the refusal.
+
+Every event reaches the client's reader thread, which must never wait for
+an answer; the debug process hands each on at once to a thread of the
+session's own, which takes them one at a time in the agent's order and
+waits, bounded, for the answers a stop needs before it tells the platform,
+which allows that from any thread. The value tree's and the frames view's
+requests complete their nodes from the reader thread, as the nodes allow;
+nothing waits for an answer on the event dispatch thread.
+
+A line breakpoint (`NewspeakLineBreakpointType`) can be put on any line of
+a `.ns` file on disk, and `NewspeakLineBreakpointHandler` marks each
+verified or invalid with the agent's message as its answer and every later
+`breakpoint` event say. A test debugs programs with the real runtime
+through the platform's debugger (`NewspeakDebugProcessTest`,
+[editor-support.md](editor-support.md), "Plugin testing and gates").
+
+Planned: the plugin will add, over that client:
+
 - an `XLineBreakpointType` whose `canPutAt` and variants come from
-  `breakpointLocations`, an `XBreakpointHandler`, a method breakpoint type,
-  and a breakpoint type for exceptions;
-- `XSuspendContext`, `XExecutionStack`, `XStackFrame` and `XValue` over
-  `stackTrace`, `scopes` and paged `variables`;
+  `breakpointLocations`, a method breakpoint type, and a breakpoint type
+  for exceptions, with their `XBreakpointHandler`s;
 - an `XDebuggerEvaluator`, an `XSmartStepIntoHandler` over `stepInTargets`,
-  run to cursor through `runToPosition`, restart frame, force return and a
-  hot-swap action on the agent's own requests, and inline values and step
-  times;
-- the core library's modules opened from `source` requests.
+  restart frame, force return and a hot-swap action on the agent's own
+  requests, and inline values and step times.
 
 ## Planned: the order of building it
 

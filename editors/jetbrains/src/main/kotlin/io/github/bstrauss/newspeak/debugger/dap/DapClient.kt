@@ -86,6 +86,9 @@ class DapClient(private val connection: DapConnection) {
         if (closeListenersCalled.get() && closeListeners.remove(listener)) listener()
     }
 
+    /** Whether the connection has closed, by either side: a request now fails at once. */
+    val isClosed: Boolean get() = closed.get()
+
     /** Closes the connection and fails every request still unanswered. */
     fun close() {
         connection.close()
@@ -155,7 +158,13 @@ class DapClient(private val connection: DapConnection) {
         }
         closeListenersCalled.set(true)
         for (listener in closeListeners.toList()) {
-            if (closeListeners.remove(listener)) listener()
+            if (!closeListeners.remove(listener)) continue
+            // As with the events: one faulty listener must not keep the others from learning of the close.
+            try {
+                listener()
+            } catch (exception: RuntimeException) {
+                LOG.warn("a listener of the DAP connection's close failed", exception)
+            }
         }
     }
 

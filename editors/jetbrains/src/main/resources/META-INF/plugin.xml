@@ -29,6 +29,11 @@
           "Newspeak" run configuration starting <code>ns-next run</code> or <code>ns-next bench</code>.</li>
       <li>Running and benchmarking a single module: a play button beside <code>main:args:</code>
           of a module whose root class is created with <code>new</code>, and Run in its context menu.</li>
+      <li>Debugging a program: Debug on a Newspeak run configuration starts <code>ns-next run</code>
+          connected to the IDE's debugger, which shows its stops, stack and variables, the core
+          library's modules among them, with line breakpoints, stepping by line, run to cursor and
+          pause. The first Stop ends the program as its own <code>terminate</code> would; a second
+          one kills it.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
@@ -44,7 +49,7 @@
     structure view with breadcrumbs. Completion and validation in <code>newspeak.json</code>
     from the project file's schema. Running and benchmarking a project from its
     <code>newspeak.json</code>, with the ns-next path setting. Running and benchmarking a single
-    module from its <code>main:args:</code>.</p>
+    module from its <code>main:args:</code>. Debugging a program from its run configuration.</p>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
@@ -102,6 +107,9 @@
         <!-- Reads the language server's symbols, no JSON PSI, so it is here and not in newspeak-json.xml. -->
         <runLineMarkerContributor language="Newspeak" implementationClass="io.github.bstrauss.newspeak.run.NewspeakModuleRunLineMarkerContributor"/>
         <runConfigurationProducer implementation="io.github.bstrauss.newspeak.run.NewspeakModuleRunConfigurationProducer"/>
+        <!-- Debug on a Newspeak run configuration; the debugger is the platform's XDebugger, so no <depends>. -->
+        <programRunner implementation="io.github.bstrauss.newspeak.debugger.NewspeakDebugRunner"/>
+        <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointType"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

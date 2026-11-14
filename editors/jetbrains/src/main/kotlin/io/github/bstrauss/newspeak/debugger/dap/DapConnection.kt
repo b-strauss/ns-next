@@ -51,21 +51,26 @@ class DapConnection(
      * [onMessage], in order, and calls [onEnd] once when the stream ends --
      * with null at a clean end between frames, otherwise with what went
      * wrong, a malformed frame among it, after which nothing more is read.
-     * An exception [onMessage] throws ends the connection the same way.
+     * Anything [onMessage] throws, an `Error` included, ends the connection
+     * the same way.
      */
     fun start(onMessage: (JsonObject) -> Unit, onEnd: (Throwable?) -> Unit) {
         check(started.compareAndSet(false, true)) { "the connection is already read" }
         val reader = Thread({
-            val failure = try {
+            var failure: Throwable? = null
+            try {
                 while (true) {
                     val message = readMessage() ?: break
                     onMessage(message)
                 }
-                null
-            } catch (exception: Exception) {
-                exception
+            } catch (throwable: Throwable) {
+                // An `Error` too -- a listener's failed assertion, say -- or
+                // the client would never learn that nothing reads any more,
+                // and its requests would wait for ever.
+                failure = throwable
+            } finally {
+                onEnd(if (closed.get()) null else failure)
             }
-            onEnd(if (closed.get()) null else failure)
         }, "Newspeak DAP reader")
         reader.isDaemon = true
         reader.start()
