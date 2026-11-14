@@ -25,6 +25,7 @@ mod stack;
 pub(crate) mod stepping;
 mod values;
 
+pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,

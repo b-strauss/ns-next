@@ -7595,3 +7595,109 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answered(&mut interpreter, result), 2);
     }
 }
+
+/// A module whose statements are of every kind a breakpoint stands at: a
+/// superclass clause, a slot initializer, a method's statements, an
+/// inlined block's and a closure's, the last two on one line.
+const BREAKABLE: &str = indoc! {"
+    class Breakable = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        count:: count + 1.
+        count > 0 ifTrue: [count:: count + 2. count:: count + 3]. {4. 5} do: [:each | count:: count + each].
+        ^count
+      )
+    ) : ()
+"};
+
+/// Each breakable statement of `source` under `lowering`, its text and
+/// the text of the block it is the first statement of.
+fn breakable_texts(source: &str, lowering: Lowering) -> Vec<(String, Option<String>)> {
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    interpreter
+        .breakable_statements(&resolved_module(source))
+        .into_iter()
+        .map(|breakable| {
+            (
+                breakable.statement.text(source).to_string(),
+                breakable.block.map(|block| block.text(source).to_string()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn breakable_statements_name_every_statement_start() {
+    let expected: Vec<(String, Option<String>)> = [
+        ("Object new", None),
+        ("count ::= 0.", None),
+        ("count:: count + 1", None),
+        (
+            "count > 0 ifTrue: [count:: count + 2. count:: count + 3]",
+            None,
+        ),
+        (
+            "count:: count + 2",
+            Some("[count:: count + 2. count:: count + 3]"),
+        ),
+        ("count:: count + 3", None),
+        ("{4. 5} do: [:each | count:: count + each]", None),
+        (
+            "count:: count + each",
+            Some("[:each | count:: count + each]"),
+        ),
+        ("^count", None),
+    ]
+    .into_iter()
+    .map(|(statement, block)| (statement.to_string(), block.map(str::to_string)))
+    .collect();
+    let optimized = breakable_texts(BREAKABLE, Lowering::Optimized);
+    assert_eq!(optimized, expected);
+    assert_eq!(
+        breakable_texts(BREAKABLE, Lowering::Reference),
+        optimized,
+        "both lowerings answer the same"
+    );
+}
+
+ns_runtime::for_each_lowering! {
+    /// Asking for a module's breakable statements leaves nothing behind:
+    /// two calls answer alike, a breakpoint in the module asked about is
+    /// pending until it is loaded, and loaded, the module runs to the
+    /// answer it has in an interpreter never asked.
+    fn breakable_statements_leave_the_interpreter_as_it_was(lowering) {
+        let (mut interpreter, class) = interpreted(THREE_STATEMENTS, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let breakable = resolved_module(BREAKABLE);
+        let first = interpreter.breakable_statements(&breakable);
+        let second = interpreter.breakable_statements(&breakable);
+        assert!(!first.is_empty());
+        assert_eq!(first, second, "two calls answer alike");
+        let offset = line_start(BREAKABLE, "count:: count + 1.");
+        let (states, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| {
+                set_breakpoints(remote, "Breakable", vec![offset]);
+                set_breakpoints(remote, "Breakable", Vec::new());
+            },
+            |remote| {
+                let states = expect_breakpoints(remote, "Breakable");
+                assert!(expect_breakpoints(remote, "Breakable").is_empty());
+                states
+            },
+        );
+        pending(&states);
+        expect_ok(result, "run");
+        let loaded = interpreter.load_module(&breakable);
+        let loaded = expect_ok(interpreter.instantiate(&loaded, &[]), "instantiate");
+        let after = run(&mut interpreter, &loaded);
+        let (mut fresh, fresh_instance) = instance_of(BREAKABLE, lowering);
+        let without = run(&mut fresh, &fresh_instance);
+        assert_eq!(
+            answered(&mut interpreter, after),
+            answered(&mut fresh, without)
+        );
+    }
+}

@@ -2489,9 +2489,10 @@ once the last is removed, without exits.
 
 ### A breakpoint names a source position
 
-**Built** in the VM (`Command::SetBreakpoints`, `debugger/breakpoints.rs`);
-the agent's line to offset and the breakable places before a session are
-planned.
+**Built** in the VM (`Command::SetBreakpoints`, `debugger/breakpoints.rs`),
+and the runtime's answer of the breakable places before a session
+(`Interpreter::breakable_statements`, `debugger/metadata/breakable.rs`);
+the agent's line to offset and the analyzer's request are planned.
 
 The IDE sets a breakpoint at a file and line; the agent, stage 4's, turns
 the line into a byte offset into the module's current text and sends
@@ -2543,10 +2544,27 @@ IntelliJ asks `canPutAt` and the variants while breakpoints are set before
 a launch; `breakpointLocations` answers only within a session. So the
 places come from `ns-next-analyzer` (decided with the user on
 2026-11-14), through a request of the language server of its own: it
-parses, resolves and compiles the document's module through the
-metadata's collector, which `ns-runtime` makes public for it, runs
-nothing, and answers the lines a statement starts on and, for each, the
-block bodies that begin on it, the line breakpoint's variants. The
+parses and resolves the document's module and asks
+`Interpreter::breakable_statements`, and answers the lines a statement
+starts on and, for each, the block bodies that begin on it, the line
+breakpoint's variants. `breakable_statements` compiles every level of
+the module, both sides, through the metadata's collector by the
+function a loaded level is compiled again with
+(`again::compile_unloaded_level` over `Mutator::mixin_level`), which
+registers nothing -- no mixin, code id, module or class -- and runs
+nothing, and answers each statement that compiled to an instruction,
+as `SetBreakpoints` resolves an offset: of two starting together only
+the outer, an inlined block's two copies once, sorted by start, each
+with the block literal it is the first breakable statement of, a
+closure's and an inlined block's alike. It compiles under the optimized
+lowering, whatever the interpreter's, since the answer comes before any
+session and cannot depend on the lowering one chooses: the reference
+lowering compiles a few statements to an instruction the optimized one
+compiles to none -- a block's last statement that only names a
+variable -- which the answer leaves out, and a breakpoint a session
+under it resolves to one is reported moved. `ns-cli`'s `debug_metadata` holds the answer, for every golden
+of `goldens/language/`, to where `SetBreakpoints` lands under each
+lowering. The
 plugin keeps the answer per document version and allows every line of a
 document that does not parse. The session verifies what was set before
 it: the VM resolves each breakpoint as above and the agent reports one

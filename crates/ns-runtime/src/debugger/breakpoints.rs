@@ -1509,7 +1509,9 @@ fn slots_of(bodies: &PairedBodies, statement: Span) -> Vec<(Rc<CompiledCode>, us
 /// Every statement of `bodies` a breakpoint can stand at -- one that
 /// compiled to an instruction of its body -- with its body, its span and
 /// its first instruction's index. A body without metadata has none.
-fn breakable(bodies: &PairedBodies) -> impl Iterator<Item = (&Rc<CompiledCode>, Span, usize)> {
+pub(crate) fn breakable(
+    bodies: &PairedBodies,
+) -> impl Iterator<Item = (&Rc<CompiledCode>, Span, usize)> {
     bodies.iter().flat_map(|(code, metadata)| {
         metadata
             .iter()
