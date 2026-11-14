@@ -3414,16 +3414,17 @@ to a client that listens; the plugin always starts its programs this way,
 as IntelliJ starts a JVM with `server=n` and an address it listens at, so
 no port of the program is open to another process, nothing is read out of
 the program's standard error, and the plugin checks that the `process`
-event's `systemProcessId` is the process it started. The connecting mode
-returns in that event, as `nsNextSecret`, a field of ns-next's own, the
-one-time secret its launcher handed it in the variable
-`NS_NEXT_DEBUG_SECRET`, so that a launcher can tell its process from
-another that connected to its port first -- a process id is no secret; it
-sends none when it was given none, and the listening mode, whose client
-presents a token, never sends one. `ns-next load` takes both options too:
-a program loaded from an image shows its modules through `source` requests
-on the image's text, and an image built with `--strip-source` shows frames
-without lines, a line breakpoint in it unverified.
+event names the process it started: its `systemProcessId`, and
+`nsNextSecret`, a field of ns-next's own, in which the connecting mode
+returns the one-time secret its launcher handed it in the variable
+`NS_NEXT_DEBUG_SECRET` -- a process id is no secret, and another process
+that connected to the plugin's port first could name it. The connecting
+mode sends none when it was given none, and the listening mode, whose
+client presents a token, never sends one. `ns-next load` takes both
+options too: a program loaded from an image shows its modules through
+`source` requests on the image's text, and an image built with
+`--strip-source` shows frames without lines, a line breakpoint in it
+unverified.
 
 The token guards the listening socket, since a client that connects can
 run code in the program through evaluation, as the user who started it,
@@ -3710,16 +3711,21 @@ Debug on a Newspeak run configuration that runs a program
 `NewspeakDebuggeeProcessHandler`, a `KillableProcessHandler`. The debug
 process (`NewspeakDebugProcess.kt`) takes the connection within 30 s,
 initializes and attaches, and checks that the `process` event's
-`systemProcessId` is the PID of the process it started; on a mismatch --
-another process connected to the port first -- it reports the error, kills
-the process and the session ends. Nothing else the connection says is
-acted on before a matching `process` event: an `initialized`, `stopped`,
-`breakpoint`, `output` or `terminated` event ahead of it, or the
-connection's close, ends the session the same way, since the agent sends
-that event first and only another peer would not. At the `initialized`
-event it sends every breakpoint the session registered -- the line
-breakpoints a file's set at a time, the method breakpoints and the
-exception breakpoints, the last two even when empty -- and
+`systemProcessId` is the PID of the process it started and its
+`nsNextSecret` the secret the runner made for that process -- 128 bits of
+`SecureRandom`, handed to it in `NS_NEXT_DEBUG_SECRET`, in its environment
+rather than on its command line, which other processes can read --
+compared in constant time; an event without the secret fails the check,
+since the plugin's own process always has it. On a mismatch -- another
+process connected to the port first -- it reports what it compared and
+what the event named, kills the process and the session ends. Nothing else
+the connection says is acted on before a matching `process` event: an
+`initialized`, `stopped`, `breakpoint`, `output` or `terminated` event
+ahead of it, or the connection's close, ends the session the same way,
+since the agent sends that event first and only another peer would not. At
+the `initialized` event it sends every breakpoint the session registered
+-- the line breakpoints a file's set at a time, the method breakpoints and
+the exception breakpoints, the last two even when empty -- and
 `configurationDone` once the agent answered them. The platform's Stop
 destroys the process: while the agent is attached the handler asks it to
 `terminate` instead, so the program ends as its own `terminate…` would,
@@ -3738,11 +3744,17 @@ stop is shown, so that the top frame is at hand: a
 `main`, which reads the rest a page at a time when the frames view asks. A
 stop with `hitBreakpointIds` is shown through `breakpointReached` for the
 first line or method breakpoint they name, every other through
-`positionReached`. A `NewspeakStackFrame` is placed through
-`NewspeakSources`: a program module's file by its path, any other module
--- a shipped one, an image's, one an install changed -- as a read-only
-`LightVirtualFile` named `<Module>.ns` holding the `source` request's
-answer, one per reference for the session; a hidden frame
+`positionReached`. An exception's stop (`reason: "exception"`) also tells
+the user which exception stopped it, the event's `description` and `text`
+-- `ZeroDivide: division by zero` -- or that a halt did, as the debugger's
+balloon (`XDebugSession.reportMessage`, a warning), which the platform
+shows whichever of the session's tabs is in front, where the console holds
+the program's own streams and would mix the message into them
+(`testAnExceptionStopSaysWhichException`). A `NewspeakStackFrame` is
+placed through `NewspeakSources`: a program module's file by its path, any
+other module -- a shipped one, an image's, one an install changed -- as a
+read-only `LightVirtualFile` named `<Module>.ns` holding the `source`
+request's answer, one per reference for the session; a hidden frame
 (`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
 are the `Return value` scope's value, at a step's stop, above the
 `Locals`; a `NewspeakValue` shows the agent's text and class of a value

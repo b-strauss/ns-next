@@ -140,11 +140,12 @@ data class DapExitedEvent(val exitCode: Int) {
 }
 
 /** The body of a `process` event: the runtime's process, which the plugin may end itself. */
-data class DapProcessEvent(val name: String?, val systemProcessId: Long?) {
+data class DapProcessEvent(val name: String?, val systemProcessId: Long?, val secret: String?) {
     companion object {
         fun from(json: JsonObject) = DapProcessEvent(
             name = json.stringOrNull("name"),
             systemProcessId = json.get("systemProcessId")?.takeIf { element -> element.isJsonPrimitive }?.asLong,
+            secret = json.stringOrNull("nsNextSecret"),
         )
     }
 }

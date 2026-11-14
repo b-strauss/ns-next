@@ -37,15 +37,17 @@ import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
+import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
  * A debug session of one `ns-next run --debug-connect`, over the plugin's
  * DAP client: the runtime connects to [serverSocket], the session checks
- * that the connection is the process it started, sets the breakpoints and
- * lets the program start; then it shows each stop and carries the user's
- * steps to the agent.
+ * that the connection is the process it started -- its process id, and
+ * [secret], which the runner handed that process alone -- sets the
+ * breakpoints and lets the program start; then it shows each stop and
+ * carries the user's steps to the agent.
  *
  * Threads: the client hands every event and answer to its reader thread,
  * which must never wait for another answer. Every event is therefore
@@ -62,6 +64,7 @@ class NewspeakDebugProcess(
     private val serverSocket: ServerSocket,
     private val handler: NewspeakDebuggeeProcessHandler,
     private val console: ExecutionConsole?,
+    private val secret: String,
 ) : XDebugProcess(session) {
     private val work = AppExecutorUtil.createBoundedApplicationPoolExecutor("Newspeak debugger", 1)
     private val lineBreakpoints = NewspeakLineBreakpointHandler(session)
@@ -155,13 +158,23 @@ class NewspeakDebugProcess(
 
     /**
      * Whether the connection is the process this session started: another
-     * process on the machine could have connected to the port first.
+     * process on the machine could have connected to the port first. A
+     * process id is no secret, so the event must return [secret] too,
+     * which only the started process was given; the runtime returns none
+     * when it was given none, which this session's process always is.
      */
     private fun checkProcess(event: DapProcessEvent) {
         if (ended) return
         val started = handler.process.pid()
         if (event.systemProcessId != started) {
             fail(NewspeakBundle.message("debugger.error.wrong.process", event.systemProcessId?.toString() ?: "?", started.toString()))
+            return
+        }
+        val returned = event.secret
+        // Compared in constant time, so that how long a refusal takes says nothing of a guess.
+        if (returned == null || !MessageDigest.isEqual(returned.toByteArray(Charsets.UTF_8), secret.toByteArray(Charsets.UTF_8))) {
+            val what = NewspeakBundle.message(if (returned == null) "debugger.error.secret.missing" else "debugger.error.secret.wrong")
+            fail(NewspeakBundle.message("debugger.error.wrong.secret", started.toString(), what))
             return
         }
         verified = true
@@ -207,6 +220,26 @@ class NewspeakDebugProcess(
         } else if (!session.breakpointReached(breakpoint, null, context)) {
             // The platform's own decision not to suspend there, as a logging breakpoint's.
             resume(context)
+            return
+        }
+        exceptionMessage(event)?.let { message -> session.reportMessage(message, MessageType.WARNING) }
+    }
+
+    /**
+     * What an exception's stop tells the user: the exception's class and
+     * text, or that a `halt` stopped it; null for any other stop. Shown as
+     * the debugger's balloon, which the platform shows whichever of the
+     * session's tabs is in front, where the console holds the program's own
+     * streams and would mix it into them.
+     */
+    private fun exceptionMessage(event: DapStoppedEvent): String? {
+        if (event.reason != "exception") return null
+        val description = event.description
+        val text = event.text.orEmpty()
+        return when {
+            description != null -> NewspeakBundle.message("debugger.stopped.exception", description, text)
+            text == "halt" -> NewspeakBundle.message("debugger.stopped.halt")
+            else -> NewspeakBundle.message("debugger.stopped.exception.unnamed", text)
         }
     }
 

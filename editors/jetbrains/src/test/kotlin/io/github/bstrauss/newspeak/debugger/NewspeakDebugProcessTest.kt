@@ -174,7 +174,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val faked = fakeSession()
         val otherProcess = ProcessHandle.current().pid()
         val agent = FakeAgent(faked.port, onAttach = {
-            event("process", JsonObject().apply { addProperty("systemProcessId", otherProcess) })
+            event("process", processBody(otherProcess, SECRET))
             event("initialized")
         })
         assertEquals(
@@ -184,6 +184,59 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
         faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
         assertEquals(listOf("initialize", "attach"), agent.commands())
+    }
+
+    /**
+     * A peer that names the started process's id, which is no secret, but
+     * returns no secret or another is no more trusted than one that names
+     * another process: the session ends, saying what was compared.
+     */
+    fun testAPeerWithoutTheSecretEndsTheSession() {
+        for ((returned, what) in listOf(null to "debugger.error.secret.missing", "0".repeat(32) to "debugger.error.secret.wrong")) {
+            val reported = notifications()
+            val faked = fakeSession()
+            val agent = FakeAgent(faked.port, onAttach = {
+                event("process", processBody(faked.handler.process.pid(), returned))
+                event("initialized")
+            })
+            assertEquals(
+                NewspeakBundle.message("debugger.error.wrong.secret", faked.handler.process.pid().toString(), NewspeakBundle.message(what)),
+                reported.get(WAIT_SECONDS, TimeUnit.SECONDS),
+            )
+            assertTrue("the process started is ended", faked.handler.waitFor(WAIT_MILLISECONDS))
+            faked.debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            assertEquals(listOf("initialize", "attach"), agent.commands())
+        }
+    }
+
+    /** An exception's stop tells the user which exception stopped it, and a halt's that a halt did. */
+    fun testAnExceptionStopSaysWhichException() {
+        val stops = listOf(
+            JsonObject().apply {
+                addProperty("reason", "exception")
+                addProperty("description", "ZeroDivide")
+                addProperty("text", "division by zero")
+            } to NewspeakBundle.message("debugger.stopped.exception", "ZeroDivide", "division by zero"),
+            JsonObject().apply {
+                addProperty("reason", "exception")
+                addProperty("text", "halt")
+            } to NewspeakBundle.message("debugger.stopped.halt"),
+        )
+        for ((body, message) in stops) {
+            val reported = notifications()
+            val faked = fakeSession()
+            val agent = identifiedAgent(faked) { command, _ ->
+                when (command) {
+                    "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                    "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                    else -> JsonObject()
+                }
+            }
+            agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            agent.event("stopped", body)
+            faked.debugging.nextPause()
+            assertEquals(message, reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        }
     }
 
     fun testAPeerThatNeverIdentifiesItsProcessEndsTheSession() {
@@ -348,7 +401,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 .newSessionBuilder(
                     object : XDebugProcessStarter() {
                         override fun start(session: XDebugSession): XDebugProcess =
-                            NewspeakDebugProcess(session, serverSocket, handler, null)
+                            NewspeakDebugProcess(session, serverSocket, handler, null, SECRET)
                     },
                 )
                 .sessionName("fake agent")
@@ -358,16 +411,22 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         return FakedSession(recorder.get(WAIT_SECONDS, TimeUnit.SECONDS), handler, serverSocket.localPort)
     }
 
-    /** A fake agent that names the session's own process, as `ns-next`'s does. */
+    /** A fake agent that names the session's own process and returns its secret, as `ns-next`'s does. */
     private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject): FakeAgent =
         FakeAgent(
             faked.port,
             onAttach = {
-                event("process", JsonObject().apply { addProperty("systemProcessId", faked.handler.process.pid()) })
+                event("process", processBody(faked.handler.process.pid(), SECRET))
                 event("initialized")
             },
             answer = answer,
         )
+
+    /** A `process` event's body naming [processId] and returning [secret], if any. */
+    private fun processBody(processId: Long, secret: String?) = JsonObject().apply {
+        addProperty("systemProcessId", processId)
+        secret?.let { returned -> addProperty("nsNextSecret", returned) }
+    }
 
     /**
      * A scripted agent in place of `ns-next`'s: it answers every request
@@ -709,6 +768,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     private companion object {
         const val WAIT_SECONDS = 30L
+
+        /** The secret the fake sessions' processes were given, which an identified fake agent returns. */
+        const val SECRET = "00112233445566778899aabbccddeeff"
         const val WAIT_MILLISECONDS = 30_000L
 
         /** How long a program inside one leaf must outlive the terminate: it would end at once otherwise. */

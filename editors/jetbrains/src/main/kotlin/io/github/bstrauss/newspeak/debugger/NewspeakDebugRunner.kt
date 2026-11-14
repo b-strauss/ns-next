@@ -20,6 +20,7 @@ import io.github.bstrauss.newspeak.run.NewspeakRunState
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.security.SecureRandom
 
 /**
  * Debug on a Newspeak run configuration that runs a program: the plugin
@@ -47,12 +48,14 @@ class NewspeakDebugRunner : GenericProgramRunner<RunnerSettings>() {
             throw ExecutionException(exception)
         }
         try {
+            val secret = newDebugSecret()
             runState.debugAddress = "127.0.0.1:${serverSocket.localPort}"
+            runState.debugSecret = secret
             val result = runState.execute(environment.executor, this)
             val handler = result.processHandler as NewspeakDebuggeeProcessHandler
             val starter = object : XDebugProcessStarter() {
                 override fun start(session: XDebugSession): XDebugProcess =
-                    NewspeakDebugProcess(session, serverSocket, handler, result.executionConsole)
+                    NewspeakDebugProcess(session, serverSocket, handler, result.executionConsole, secret)
             }
             return XDebuggerManager.getInstance(environment.project)
                 .newSessionBuilder(starter)
@@ -68,6 +71,21 @@ class NewspeakDebugRunner : GenericProgramRunner<RunnerSettings>() {
     private companion object {
         val LOOPBACK = byteArrayOf(127, 0, 0, 1)
     }
+}
+
+/** The bytes of a debug session's secret: 128 bits, as the listening mode's token has. */
+private const val SECRET_BYTES = 16
+
+/**
+ * A one-time secret for one debugged process, as lowercase hex digits: the
+ * runtime returns it in its `process` event, which tells the process the
+ * plugin started from any other that connects to its port first and names
+ * the started process's id, which is no secret.
+ */
+internal fun newDebugSecret(): String {
+    val bytes = ByteArray(SECRET_BYTES)
+    SecureRandom().nextBytes(bytes)
+    return bytes.joinToString("") { byte -> "%02x".format(byte) }
 }
 
 /**

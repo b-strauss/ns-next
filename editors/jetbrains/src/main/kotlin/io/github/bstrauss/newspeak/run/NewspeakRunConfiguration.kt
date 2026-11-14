@@ -143,8 +143,9 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
 
 /**
  * What a Newspeak run configuration starts: ns-next, and under the Debug
- * executor ns-next connecting to the debugger at [debugAddress], which the
- * debug runner sets before it starts the process.
+ * executor ns-next connecting to the debugger at [debugAddress] and handed
+ * [debugSecret], both of which the debug runner sets before it starts the
+ * process.
  */
 class NewspeakRunState(
     environment: ExecutionEnvironment,
@@ -154,13 +155,25 @@ class NewspeakRunState(
     /** The `host:port` the debugger listens at; null for a run without it. */
     var debugAddress: String? = null
 
+    /**
+     * The one-time secret the runtime returns in its `process` event, so
+     * that the debugger can tell its process from another that connected
+     * first; handed over in the environment, never on the command line,
+     * which other processes on the machine can read.
+     */
+    var debugSecret: String? = null
+
     override fun startProcess(): ProcessHandler {
         val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress)
+        debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
         val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
         ProcessTerminatedListener.attach(handler)
         return handler
     }
 }
+
+/** `crates/ns-cli/src/debug/agent.rs`'s `SECRET_VARIABLE`: where ns-next --debug-connect takes the secret it returns. */
+const val DEBUG_SECRET_VARIABLE = "NS_NEXT_DEBUG_SECRET"
 
 /** `crates/ns-cli/src/project.rs`'s `PROJECT_FILE_NAME`: the name ns-next recognises a project file by. */
 const val PROJECT_FILE_NAME = "newspeak.json"
