@@ -116,12 +116,16 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             let traced_size = self.world.traced_size();
-            if let Some(due) = self
-                .stress_pause
-                .as_mut()
-                .map(|stress| stress.due(traced_size))
-            {
-                if due {
+            if self.stress_pause.is_some() {
+                // A stop reads every frame of the stack: its schedule is fed
+                // the stack's words beside the traced size.
+                let stack_words = self.enter(|mutator| mutator.heap.activation_stack_top());
+                let paced_size = size_with_stack(traced_size, stack_words, PAUSE_STACK_WEIGHT);
+                if self
+                    .stress_pause
+                    .as_mut()
+                    .is_some_and(|stress| stress.due(paced_size))
+                {
                     self.stop_for_stress(floor);
                 }
                 stressed = true;
@@ -348,23 +352,79 @@ pub(crate) fn global_cache_entries_from_env() -> Option<usize> {
         .filter(|entries| entries.is_multiple_of(2) && (entries / 2).is_power_of_two())
 }
 
-/// How much move work the stress mode spends per safepoint, on average: it
-/// moves at every safepoint while the traced size is at most this, and
-/// otherwise once the safepoints since the last move reach the traced size
-/// over this, rounded up. A move rewrites work proportional to the traced
-/// size, so moving at literally every safepoint is quadratic in a deep
-/// recursion; pacing by size is what a real collector's allocation-driven
-/// trigger does, and every small program keeps a move at every safepoint.
-/// Fixed-frequency stress modes (HotSpot's `ScavengeALotInterval`,
-/// SpiderMonkey's `JS_GC_ZEAL` frequency) would take coverage from small
-/// programs to spare large ones. `StressSchedule` paces collections and
-/// scavenges by the same constant, for the same reason: a collection's
-/// compaction is proportional to the traced size too, and so is the walk of
-/// the old space that verifies the remembered set before each scavenge.
+/// How a stress schedule spreads its work over the safepoints: at every
+/// safepoint while the size it is fed is at most `floor`, and above it once
+/// the safepoints since the schedule last fired reach the size over
+/// `budget`, rounded up -- about `budget` units of work per safepoint on
+/// average. A mode's work at a firing is proportional to the traced size
+/// (a move, a collection's compaction, the remembered set's verification)
+/// or to the stack (a stop's reading), so firing at literally every
+/// safepoint is quadratic in a deep recursion; pacing by size is what a
+/// real collector's allocation-driven trigger does. Fixed-frequency
+/// stress modes (HotSpot's `ScavengeALotInterval`, SpiderMonkey's
+/// `JS_GC_ZEAL` frequency) would take coverage from small programs to spare
+/// large ones (`docs/design/memory.md`, "The move stress mode").
 #[cfg(debug_assertions)]
-pub(crate) const STRESS_MOVE_BUDGET: usize = 1_000;
+#[derive(Clone, Copy)]
+pub(crate) struct Pacing {
+    /// The size up to which every safepoint fires.
+    pub(crate) floor: usize,
+    /// The work spent per safepoint, on average, above the floor.
+    pub(crate) budget: usize,
+}
 
-/// The stress mode's schedule.
+#[cfg(debug_assertions)]
+impl Pacing {
+    /// The move and the scavenge stress modes': every safepoint up to a
+    /// traced size of 2,000, which a program that allocated little stays
+    /// within -- the shipped world alone traces about 1,000 -- and above it
+    /// a budget of 250. Measured over the goldens, 427 of 529 are then
+    /// stressed at nine safepoints in ten or more, where a floor and budget
+    /// of 1,000 stressed 21 so, at 0.44 of that schedule's work: the floor
+    /// decoupled from the budget keeps every small program's coverage
+    /// whole and takes a quarter of a large program's.
+    pub(crate) const HEAP_WALK: Pacing = Pacing {
+        floor: 2_000,
+        budget: 250,
+    };
+
+    /// Every other paced mode's -- the collect, suspend, zone, pause and
+    /// step stress modes': floor and budget alike, 1,000. The zone stress
+    /// mode must not take the move's floor: its compaction costs the
+    /// cells' and the bodies' count, not the traced size, and a loop that
+    /// allocates nothing would compact at every one of its safepoints.
+    pub(crate) const STANDARD: Pacing = Pacing {
+        floor: 1_000,
+        budget: 1_000,
+    };
+
+    /// Whether a schedule `safepoints_since_fired` safepoints after its last
+    /// firing, this one counted, fires for a size of `size`.
+    pub(crate) fn due(self, safepoints_since_fired: usize, size: usize) -> bool {
+        size <= self.floor || safepoints_since_fired.saturating_mul(self.budget) >= size
+    }
+}
+
+/// How many times the pause stress mode's schedule counts each word of the
+/// stack beside the traced size (`size_with_stack`): a stop reads every
+/// frame's variables and their values' first children, measured at 70 to
+/// 180 ns per stack word in a debug build, several times a move's cost per
+/// traced unit, while the traced size counts a stack word once.
+#[cfg(debug_assertions)]
+pub(crate) const PAUSE_STACK_WEIGHT: usize = 8;
+
+/// The size a schedule of stops is fed: the traced size, with the stack's
+/// `stack_words` counted `weight` times more, since every stop reads the
+/// whole stack -- the pause stress mode's (`PAUSE_STACK_WEIGHT`) and the
+/// step stress mode's, whose burst reads it at each of its steps
+/// (`debugger::STEP_STRESS_BURST`). A deep stack's stops come as much
+/// rarer as they cost more; a shallow program's are paced by its heap.
+#[cfg(debug_assertions)]
+pub(crate) fn size_with_stack(traced_size: usize, stack_words: usize, weight: usize) -> usize {
+    traced_size.saturating_add(weight.saturating_mul(stack_words))
+}
+
+/// The move stress mode's schedule, paced by `Pacing::HEAP_WALK`.
 #[cfg(debug_assertions)]
 #[derive(Default)]
 pub(crate) struct StressMoves {
@@ -380,11 +440,7 @@ impl StressMoves {
     fn due(&mut self, traced_size: usize) -> bool {
         self.safepoints += 1;
         self.safepoints_since_move += 1;
-        if self
-            .safepoints_since_move
-            .saturating_mul(STRESS_MOVE_BUDGET)
-            < traced_size
-        {
+        if !Pacing::HEAP_WALK.due(self.safepoints_since_move, traced_size) {
             return false;
         }
         self.safepoints_since_move = 0;
@@ -401,13 +457,13 @@ impl StressMoves {
 }
 
 /// The schedule of the collect, the scavenge, the suspend, the zone, the
-/// pause and the step stress modes: their work at every safepoint while the traced
-/// size is within `STRESS_MOVE_BUDGET`, and above it once per
-/// size-over-budget safepoints -- the pacing `StressMoves` uses, for the
-/// same reason.
+/// pause and the step stress modes, each by its `Pacing`: the scavenge
+/// stress mode's `Pacing::HEAP_WALK`, since the walk of the old space that
+/// verifies the remembered set before each scavenge is proportional to the
+/// traced size as a move is, and the others' `Pacing::STANDARD`.
 #[cfg(debug_assertions)]
-#[derive(Default)]
 pub(crate) struct StressSchedule {
+    pacing: Pacing,
     safepoints_since_fired: usize,
     /// How many times this schedule has actually fired since the mode was
     /// turned on -- incremented only when `due` answers `true`, never
@@ -422,14 +478,28 @@ pub(crate) struct StressSchedule {
 }
 
 #[cfg(debug_assertions)]
+impl Default for StressSchedule {
+    fn default() -> StressSchedule {
+        StressSchedule::paced(Pacing::STANDARD)
+    }
+}
+
+#[cfg(debug_assertions)]
 impl StressSchedule {
-    pub(crate) fn due(&mut self, traced_size: usize) -> bool {
+    /// A schedule that has not fired yet, paced by `pacing`.
+    pub(crate) fn paced(pacing: Pacing) -> StressSchedule {
+        StressSchedule {
+            pacing,
+            safepoints_since_fired: 0,
+            fired: 0,
+        }
+    }
+
+    /// Counts one safepoint and answers whether the schedule fires there,
+    /// fed `size`.
+    pub(crate) fn due(&mut self, size: usize) -> bool {
         self.safepoints_since_fired += 1;
-        if self
-            .safepoints_since_fired
-            .saturating_mul(STRESS_MOVE_BUDGET)
-            < traced_size
-        {
+        if !self.pacing.due(self.safepoints_since_fired, size) {
             return false;
         }
         self.safepoints_since_fired = 0;
@@ -438,11 +508,17 @@ impl StressSchedule {
     }
 
     /// Whether the environment variable `variable` asks for the mode: set,
-    /// and neither empty nor `0`.
+    /// and neither empty nor `0`. Paced by `Pacing::STANDARD`, which
+    /// `with_pacing` changes.
     pub(crate) fn from_env(variable: &str) -> Option<StressSchedule> {
         let requested =
             std::env::var_os(variable).is_some_and(|value| !value.is_empty() && value != "0");
         requested.then(StressSchedule::default)
+    }
+
+    /// The schedule, paced by `pacing` instead.
+    pub(crate) fn with_pacing(self, pacing: Pacing) -> StressSchedule {
+        StressSchedule { pacing, ..self }
     }
 }
 
@@ -564,7 +640,7 @@ impl Interpreter {
     /// safepoint request set while any other stress mode is on
     /// (`hold_safepoints_for_stress`).
     pub fn set_stress_scavenge(&mut self, enabled: bool) {
-        self.stress_scavenge = enabled.then(StressSchedule::default);
+        self.stress_scavenge = enabled.then(|| StressSchedule::paced(Pacing::HEAP_WALK));
         self.hold_safepoints_for_stress();
     }
 
@@ -736,23 +812,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_heap_within_the_budget_moves_at_every_safepoint() {
+    fn a_heap_within_the_floor_moves_at_every_safepoint() {
         let mut stress = StressMoves::default();
         for _ in 0..10 {
-            assert!(stress.due(STRESS_MOVE_BUDGET));
+            assert!(stress.due(Pacing::HEAP_WALK.floor));
         }
     }
 
-    /// Above the budget, a move comes once the safepoints since the last one
-    /// reach the traced size over the budget, rounded up -- 11 for a size of
-    /// ten budgets and one -- so a move's cost, proportional to the size, is
-    /// spread over as many safepoints.
+    /// Past the floor, a move comes once the safepoints since the last one
+    /// reach the traced size over the budget, rounded up -- 9 for a size of
+    /// the floor and one, 11 for ten budgets and one past the floor -- so
+    /// a move's cost, proportional to the size, is spread over as many
+    /// safepoints.
     #[test]
-    fn a_heap_past_the_budget_moves_once_per_its_size_over_the_budget() {
+    fn a_heap_past_the_floor_moves_once_per_its_size_over_the_budget() {
         let mut stress = StressMoves::default();
-        let size = 10 * STRESS_MOVE_BUDGET + 1;
+        let size = Pacing::HEAP_WALK.floor + 1;
+        let due: Vec<bool> = (0..18).map(|_| stress.due(size)).collect();
+        assert_eq!(due.iter().filter(|due| **due).count(), 2);
+        assert!(due[8] && due[17]);
+        let mut stress = StressMoves::default();
+        let size = 10 * Pacing::HEAP_WALK.budget + 1;
         let due: Vec<bool> = (0..22).map(|_| stress.due(size)).collect();
         assert_eq!(due.iter().filter(|due| **due).count(), 2);
         assert!(due[10] && due[21]);
+    }
+
+    /// The floor and the budget are two numbers: below the floor every
+    /// safepoint fires whatever the budget, and the standard pacing keeps
+    /// both at 1,000, so that a size between them fires at every
+    /// safepoint under the heap walk's pacing and at every second under
+    /// the standard one.
+    #[test]
+    fn the_floor_and_the_budget_pace_apart() {
+        let mut heap_walk = StressSchedule::paced(Pacing::HEAP_WALK);
+        let mut standard = StressSchedule::default();
+        let size = 1_500;
+        let heap_walk_fired = (0..10).filter(|_| heap_walk.due(size)).count();
+        let standard_fired = (0..10).filter(|_| standard.due(size)).count();
+        assert_eq!((heap_walk_fired, standard_fired), (10, 5));
+        assert_eq!((heap_walk.fired, standard.fired), (10, 5));
+        let mut standard = StressSchedule::default();
+        assert!((0..10).all(|_| standard.due(Pacing::STANDARD.floor)));
+    }
+
+    /// A stop's schedule is fed the stack's words, weighted, beside the
+    /// traced size: a deep stack's stops come rarer than its heap alone
+    /// would pace them.
+    #[test]
+    fn a_deep_stack_spaces_the_stops_out() {
+        assert_eq!(size_with_stack(1_000, 0, PAUSE_STACK_WEIGHT), 1_000);
+        let size = size_with_stack(1_000, 1_000, PAUSE_STACK_WEIGHT);
+        assert_eq!(size, 9_000);
+        let mut schedule = StressSchedule::default();
+        let fired = (0..18).filter(|_| schedule.due(size)).count();
+        assert_eq!(fired, 2);
+        assert_eq!(
+            size_with_stack(usize::MAX, 1, PAUSE_STACK_WEIGHT),
+            usize::MAX
+        );
     }
 }

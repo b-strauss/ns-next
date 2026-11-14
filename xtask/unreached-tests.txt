@@ -1006,8 +1006,10 @@ ns-runtime interpreter::literals::tests::an_out_of_range_radix_is_rejected_hones
 ns-runtime interpreter::literals::tests::plain_decimal_literals_still_parse
 ns-runtime interpreter::literals::tests::radix_literals_parse_in_every_accepted_shape
 ns-runtime interpreter::mirror::tests::every_mirror_selector_is_unique_ends_in_if_fail_and_takes_two_more_arguments
-ns-runtime interpreter::safepoint::tests::a_heap_past_the_budget_moves_once_per_its_size_over_the_budget
-ns-runtime interpreter::safepoint::tests::a_heap_within_the_budget_moves_at_every_safepoint
+ns-runtime interpreter::safepoint::tests::a_deep_stack_spaces_the_stops_out
+ns-runtime interpreter::safepoint::tests::a_heap_past_the_floor_moves_once_per_its_size_over_the_budget
+ns-runtime interpreter::safepoint::tests::a_heap_within_the_floor_moves_at_every_safepoint
+ns-runtime interpreter::safepoint::tests::the_floor_and_the_budget_pace_apart
 ns-runtime interpreter::tests::a_decision_stays_the_size_it_has_in_a_debug_build
 ns-runtime interpreter::tests::a_lookup_stays_the_size_the_hot_path_was_measured_at
 ns-runtime interpreter::unwind::tests::an_activation_that_has_returned_is_refused_as_a_cannot_return

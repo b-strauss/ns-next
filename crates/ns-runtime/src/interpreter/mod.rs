@@ -748,7 +748,8 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_collect: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_COLLECT"),
             #[cfg(debug_assertions)]
-            stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE"),
+            stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE")
+                .map(|schedule| schedule.with_pacing(safepoint::Pacing::HEAP_WALK)),
             #[cfg(debug_assertions)]
             stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
             #[cfg(debug_assertions)]

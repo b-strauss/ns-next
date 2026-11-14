@@ -1085,13 +1085,22 @@ the canonical symbol table and the host roots
 (`Heap::traced_size`) — so moving at every
 safepoint is quadratic in a deep recursion: the tests and goldens that recurse
 to 100,000 activations, and the `bench_*` fixtures, would take hours per suite
-run in a debug build. So while the traced size is at most
-`STRESS_MOVE_BUDGET`, 1,000, every safepoint moves; above it, a safepoint moves
-once the safepoints since the last move reach the traced size over the budget,
-rounded up (`StressMoves::due`, `interpreter/safepoint.rs`). That spends about
-1,000 handle rewrites per safepoint on average, the size-proportional pacing a
-collector's allocation-driven trigger has, and every small program keeps a
-move at every safepoint. The prior art uses a fixed frequency instead:
+run in a debug build. So while the traced size is at most a floor of 2,000,
+every safepoint moves; above it, a safepoint moves once the safepoints since
+the last move reach the traced size over a budget of 250, rounded up
+(`Pacing::HEAP_WALK`, `StressMoves::due`, `interpreter/safepoint.rs`). That
+spends about 250 handle rewrites per safepoint on average above the floor,
+the size-proportional pacing a collector's allocation-driven trigger has. The
+floor and the budget are two numbers because they decide two things: the
+shipped world alone traces about 1,000, so a floor at the budget's 1,000
+left almost no program within it -- measured over the 529 goldens that reach
+a safepoint, 21 were moved at nine safepoints in ten or more -- while with a
+floor of 2,000 and a budget of 250, 427 are, at 0.44 of the work: a program
+that allocates little is moved at every safepoint, and a large one at a
+quarter of the rate a budget of 1,000 gave it. The scavenge stress mode's
+schedule is paced alike, since the verification of the remembered set
+before each scavenge walks the old space. The prior art uses a fixed
+frequency instead:
 HotSpot's `ScavengeALotInterval`, SpiderMonkey's `JS_GC_ZEAL=mode,N`, V8's
 `--gc-interval`. A fixed interval of one is the quadratic case, and any larger
 one takes coverage from the small tests to spare the large ones, so pacing by
@@ -2382,9 +2391,10 @@ before it installs what was requested since
 ([execution.md](execution.md), "Speculation", "Verification").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
-than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
-(`StressSchedule`, `interpreter/safepoint.rs`), since collecting at
-literally every safepoint is quadratic in a deep recursion. Under it every
+than at a limit, paced by heap size like the move stress mode but with floor
+and budget alike at 1,000 (`Pacing::STANDARD`, `StressSchedule`,
+`interpreter/safepoint.rs`), since collecting at literally every safepoint is
+quadratic in a deep recursion. Under it every
 golden and every corpus module runs at the highest collection frequency there
 is, so a missed root kills its object at the earliest possible moment and the
 recorded outputs catch the difference. `NS_NEXT_STRESS_SCAVENGE=1` does the
@@ -3371,8 +3381,10 @@ and the graph pass then allocates old, its stores old-to-old (decision 4;
 
 `NS_NEXT_STRESS_SCAVENGE`, the fifth stress mode, scavenges at the
 safepoints its schedule picks -- every safepoint while the traced size is
-within `STRESS_MOVE_BUDGET`, as the move and the collect modes are paced
-(`StressSchedule`, `interpreter/safepoint.rs`) -- and verifies the
+within 2,000, and above it once per traced size over 250 safepoints, as the
+move stress mode is paced (`Pacing::HEAP_WALK`, `StressSchedule`,
+`interpreter/safepoint.rs`), since the verification walks the old space as
+a move walks everything -- and verifies the
 remembered set before each of them (`Heap::verify_remembered_set`): a walk
 of the old space asserting that the set holds no offset twice, that every
 entry is the header of an old object carrying the remembered bit, that
@@ -3687,9 +3699,10 @@ moved".
   stress mode decided and built before the collector existed, because the
   brand cannot see a handle stored somewhere the tracer does not know about.
 - **The stress mode moves on a budget paced by heap size**, not at literally
-  every safepoint (decided with the user on 2026-09-13): at every safepoint
-  while the traced size is within `STRESS_MOVE_BUDGET`, and above it once per
-  size-over-budget safepoints. A move at every safepoint is quadratic in a deep
+  every safepoint (decided with the user on 2026-09-13, its floor and budget
+  set apart on 2026-11-14): at every safepoint while the traced size is
+  within a floor of 2,000, and above it once per traced size over a budget
+  of 250 safepoints. A move at every safepoint is quadratic in a deep
   recursion, and a fixed interval, as HotSpot, SpiderMonkey and V8 use, would
   take coverage from small programs to spare large ones.
 - **A host keeps values across runs only as `Root`s**, slots it shares with the

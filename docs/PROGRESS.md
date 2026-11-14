@@ -1150,9 +1150,10 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
 1. **The stress mode moves on a budget, not at literally every safepoint.**
    A move costs work proportional to the heap and the stack, so every
    safepoint is quadratic in the recursions to 100,000 activations — hours
-   per suite run. Every safepoint moves while the traced size is at most
-   `STRESS_MOVE_BUDGET` (1,000), and above it once per size-over-budget
-   safepoints: the pacing a collector's allocation-driven trigger has, where
+   per suite run. Every safepoint moves while the traced size is within a
+   floor, and above it once per traced size over a budget of safepoints
+   (`Pacing::HEAP_WALK`, a floor of 2,000 and a budget of 250 since
+   2026-11-14): the pacing a collector's allocation-driven trigger has, where
    the prior art's fixed intervals would take coverage from small tests.
 2. **`ClosureData` is inline in the closure object**, and everything else that
    needs a closure names the object; the native loops' state was a
