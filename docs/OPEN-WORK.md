@@ -1705,42 +1705,38 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   level's own slots and a link) would keep it linear. Noted 2026-10-22.
   [object-model.md](design/object-model.md), "Instantiation".
 - **The stress gate's time** (noted with the user on 2026-11-01). The
-  stress step of `cargo xtask gates end-of-batch` takes about 1,038 s
-  with its sixteen suites at once (2026-11-13, beside another build on
-  the machine; 1,233 s before the tests no switch reaches were left out,
-  1,642 s on the whole suite): OPTIMIZE ends after 802 s, most modes
-  after 830 to 960 s, COLLECT, PAUSE and MOVES after 1,005 to 1,033 s.
-  The suites share the cores, so the gate is bound by the work of all of
-  them. Each mode leaves out the 2,273 tests measured to reach no switch
-  (WIDE keeps the 344 of them that compile; `docs/design/README.md`,
+  stress step of `cargo xtask gates end-of-batch` takes about 662 s with
+  its sixteen suites at once (2026-11-14; 1,038 s before the move and
+  scavenge modes took a floor of 2,000 and a budget of 250, the pause
+  mode weighed the stack and a full collection's fixed costs were cut,
+  1,233 s before the tests no switch reaches were left out, 1,642 s on
+  the whole suite): every mode ends after 551 to 642 s, COLLECT the
+  last. The suites share the cores, so the gate is bound by the work of
+  all of them. Each mode leaves out the tests measured to reach no
+  switch (WIDE keeps those of them that compile; `docs/design/README.md`,
   "The tests a gate leaves out"), runs `debug_metadata` only under WIDE
-  and starts the tests that ended a run alone first (the
-  slowest under the whole suite: `runtime/optimizer/inlined_block_returns_from_its_home`
-  708 s under MOVES, `runtime/jit/closure_recursion_overflow` 500 s under
-  PAUSE, `runtime/jit/counting_loop` 456 s under COLLECT). Of the work
-  measured before it, `ns-runtime`'s library unit tests were 21%, many of
-  them compiling only; 791 of them reach no switch and are left out now.
-  The dev profile already builds at `opt-level = 1`,
-  so a profile of `opt-level = 2` with debug assertions would gain less
-  than an unoptimized build would suggest; unmeasured. The candidates
-  left, none built:
-  - *`NS_NEXT_STRESS_COLLECT` is among the slowest modes* (about 555 s against
-    350 to 415 s for the others, measured 2026-11-01; 675 s against 404
-    to 549 s on 2026-11-06; on 2026-11-07, with INVALIDATE beside it,
-    MOVES the slowest at 954 s, COLLECT 891 s and SCAVENGE 815 s against
-    419 to 665 s for the others). A full collection still has fixed costs
-    independent of the heap's size: the tables' reclamation
-    (`Mutator::reclaim_ids`, `Heap::held_mixin_ids`,
-    `Heap::module_trees`, hash maps built afresh at each collection) and
-    the marking came to about 20% of a profile of
-    `runtime/jit/counting_loop` under the reference lowering, which still
-    takes about 160 s alone and may hold up the end of the mode. This one
-    would also make every program's full collection cheaper, though full
-    collections are rare in real programs (none in most of the
-    benchmarks), so it is mainly a gain for the gate.
-  - *The cell verification under `NS_NEXT_STRESS_SCAVENGE`*, paced by the
-    cells checked ("What stage 3's reviews left", "The stress
-    verification's cost", above). A gain for the gate only.
+  and starts the tests that ended a run alone first. The slowest tests
+  now, under the sixteen suites at once: `runtime/jit/counting_loop`
+  232 s under COLLECT, 168 s under SCAVENGE and 146 s under MOVES (it
+  traces about 1,000 units over 10 million safepoints, so the floor
+  moves and scavenges it at every one; under SCAVENGE most of it is the
+  remembered set's verification walking the old space), the
+  `the_depth_limit_counts_suspended_activations` test 265 s under PAUSE
+  and `runtime/optimizer/inlined_block_returns_from_its_home` 220 s under
+  MOVES. The dev profile already builds at `opt-level = 1`, so a profile
+  of `opt-level = 2` with debug assertions would gain less than an
+  unoptimized build would suggest; unmeasured. The candidates left, none
+  built:
+  - *The remembered set's verification under `NS_NEXT_STRESS_SCAVENGE`*,
+    a walk of the old space at every scavenge, which the floor runs at
+    every safepoint of a small loop; and the cell verification beside
+    it, paced by the cells checked ("What stage 3's reviews left", "The
+    stress verification's cost", above). A gain for the gate only.
+  - *A full collection's remaining fixed costs*: `Heap::applied_mixin_ids`
+    is built afresh whenever the tree walk runs (the walk is skipped
+    while the last walk's witnesses stand, `object-model.md`), and
+    marking's roots outside the heap are visited in full at each
+    collection. Both are small beside the marking of a real heap.
 
 ## Planned: language and library
 

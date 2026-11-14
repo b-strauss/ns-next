@@ -216,7 +216,7 @@ impl Mutator<'_> {
             #[cfg(debug_assertions)]
             {
                 memo.skips += 1;
-                if memo.skips.is_multiple_of(MIXIN_MEMO_CHECK_PERIOD) {
+                if checked_at(memo.skips) {
                     let applied = self.heap.applied_mixin_ids();
                     assert!(
                         memo.trees.iter().all(|tree| tree.iter().any(|id| {
@@ -316,8 +316,8 @@ impl Mutator<'_> {
     /// mutator: the one kept, while the tables and the metaclass memo are
     /// at the generations it was derived at, and otherwise derived
     /// afresh. A debug build holds a kept one to the tables' lengths at
-    /// every collection, and to a memo derived afresh at every
-    /// `MIXIN_MEMO_CHECK_PERIOD`th, so that a change that raised no
+    /// every collection, and to a memo derived afresh at its first reuse
+    /// and every `MIXIN_MEMO_CHECK_PERIOD`th, so that a change that raised no
     /// generation is found under the collect stress mode.
     fn current_mixin_memo(&mut self) -> MixinReclaimMemo {
         let generation = self.mixin_generations();
@@ -335,7 +335,7 @@ impl Mutator<'_> {
                     "internal: the mixin tables changed without raising their generation"
                 );
                 memo.reuses += 1;
-                if memo.reuses.is_multiple_of(MIXIN_MEMO_CHECK_PERIOD) {
+                if checked_at(memo.reuses) {
                     let trees = self.heap.module_trees();
                     let counts = self.heap.inside_counts(&trees, &self.metaclass_mixins);
                     assert!(
@@ -432,6 +432,16 @@ struct Witnesses {
 /// eighth plenty.
 #[cfg(debug_assertions)]
 const MIXIN_MEMO_CHECK_PERIOD: u64 = 8;
+
+/// Whether a debug build checks the `count`th reuse or skip of a kept
+/// memo: the first, since the reuses count afresh whenever the memo is
+/// derived, so a program whose tables change every few collections would
+/// otherwise never have a kept memo checked, and every
+/// `MIXIN_MEMO_CHECK_PERIOD`th.
+#[cfg(debug_assertions)]
+fn checked_at(count: u64) -> bool {
+    count == 1 || count.is_multiple_of(MIXIN_MEMO_CHECK_PERIOD)
+}
 
 /// The row of the application table a `GatheredIds` bit stands for.
 fn row_number(row: usize) -> u32 {

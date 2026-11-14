@@ -2349,7 +2349,8 @@ one nothing reaches is dropped, since nothing can compare it any more.
    then decides which versions are held by one pass of
    `Rc::strong_count` against the counts. A debug build holds a kept memo
    to the tables' lengths at every collection and to one derived afresh at
-   every eighth, which the collect stress mode turns into a check at
+   its first reuse and every eighth (the reuses count afresh whenever the
+   memo is derived), which the collect stress mode turns into a check at
    millions of collections. The trees are not walked at all while every
    witness of the last walk stands (`Witnesses`): the two generations
    unchanged since, no application freed by step 1, and every id the

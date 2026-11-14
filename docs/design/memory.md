@@ -2402,7 +2402,8 @@ same with a scavenge, after a check of the remembered set, and is what finds
 a store that missed the write barrier.
 
 `NS_NEXT_STRESS_SUSPEND=1` suspends every activation of the run into its
-frame at the safepoints its own schedule picks, paced the same way, and
+frame at the safepoints its own schedule picks, paced as the collect mode
+is (`Pacing::STANDARD`), and
 resumes the top one, so every program runs on from suspended frames, the
 path a deoptimized frame will take ([execution.md](execution.md),
 "Suspending and resuming"). For the collector it moves the run's values
