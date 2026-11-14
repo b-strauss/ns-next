@@ -3,10 +3,18 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::debug::{self, DebugOptions, HostLink, HostStart};
 use crate::{entry, program};
 
 /// `ns-next run`: read the program, compile every module, assemble the
-/// application, send it `main: platform args:`, report.
+/// application, send it `main: platform args:`, report. Under a debugger
+/// (`debug`), the agent is started once every module is compiled, the
+/// application is assembled only once the client configured the session,
+/// and the client hears the exit status.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one per option of the command, each passed straight through"
+)]
 pub(crate) fn execute(
     file: &Path,
     lowering: ns_runtime::Lowering,
@@ -14,6 +22,7 @@ pub(crate) fn execute(
     collector_statistics: bool,
     jit_statistics: bool,
     script: Option<&str>,
+    debug: Option<DebugOptions>,
     program_arguments: &[String],
 ) -> ExitCode {
     let program = match program::read_program(file) {
@@ -27,20 +36,70 @@ pub(crate) fn execute(
     let mut loaded = program::load_program(&program, lowering);
     entry::report_jit_unavailable(&loaded.interpreter);
     entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
-    let application = match program::instantiate_application(&program, &mut loaded) {
+    let link = match &debug {
+        Some(options) => {
+            match debug::start(options, &mut loaded.interpreter, file.display().to_string()) {
+                Ok(link) => Some(link),
+                Err(code) => return code,
+            }
+        }
+        None => None,
+    };
+    let code = run_loaded(
+        &program,
+        &mut loaded,
+        link.as_ref(),
+        &arguments,
+        Statistics {
+            cache: cache_statistics,
+            collector: collector_statistics,
+            jit: jit_statistics,
+        },
+    );
+    if let Some(link) = &link {
+        link.exited(debug::status_of(code));
+    }
+    code
+}
+
+/// Which statistics to print after the run.
+struct Statistics {
+    cache: bool,
+    collector: bool,
+    jit: bool,
+}
+
+/// The host runs of a loaded program: the application's assembly, then
+/// `main:args:`, each started only while no `terminate` arrived.
+fn run_loaded(
+    program: &program::Program,
+    loaded: &mut program::Loaded,
+    link: Option<&HostLink>,
+    arguments: &[String],
+    statistics: Statistics,
+) -> ExitCode {
+    if let Some(link) = link {
+        if link.wait_for_configuration() == HostStart::Terminate {
+            return debug::report_terminated();
+        }
+    }
+    let application = match program::instantiate_application(program, loaded, link) {
         Ok(application) => application,
         Err(code) => return code,
     };
-    let result = entry::send_main(&mut loaded.interpreter, &application, &arguments);
+    if debug::terminated_before_run(link) {
+        return debug::report_terminated();
+    }
+    let result = entry::send_main(&mut loaded.interpreter, &application, arguments, link);
     // To stderr, after the answer is decided: no fixture or golden reads
     // stdout any differently for it.
-    if cache_statistics {
+    if statistics.cache {
         entry::print_cache_statistics(&loaded.interpreter.cache_statistics());
     }
-    if collector_statistics {
+    if statistics.collector {
         entry::print_collector_statistics(&loaded.interpreter.collector_statistics());
     }
-    if jit_statistics {
+    if statistics.jit {
         entry::print_jit_statistics(&loaded.interpreter.jit_statistics());
     }
     entry::report_entry_send(result)

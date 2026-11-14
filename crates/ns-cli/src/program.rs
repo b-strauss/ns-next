@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use ns_tooling::source;
 
+use crate::debug::{self, HostLink};
 use crate::project;
 
 pub(crate) enum Assembly {
@@ -153,10 +154,12 @@ pub(crate) fn load_program(program: &Program, lowering: ns_runtime::Lowering) ->
 /// The application: the root sent `new`, or `packageUsing:` a manifest of
 /// every other module but the manifest's own. A root whose factory is not
 /// the one its assembly sends is refused before anything runs, naming the
-/// factory it has.
+/// factory it has. Under a debugger, `link` ends the program before either
+/// host run once a `terminate` arrived.
 pub(crate) fn instantiate_application(
     program: &Program,
     loaded: &mut Loaded,
+    link: Option<&HostLink>,
 ) -> Result<ns_runtime::Root, ExitCode> {
     let root = &program.sources[0];
     let name = declared_name(root);
@@ -177,7 +180,7 @@ pub(crate) fn instantiate_application(
             );
             return Err(ExitCode::FAILURE);
         }
-        (Assembly::Package, Some("packageUsing:")) => vec![build_manifest(program, loaded)?],
+        (Assembly::Package, Some("packageUsing:")) => vec![build_manifest(program, loaded, link)?],
         (Assembly::Package, other) => {
             eprintln!(
                 "error: cannot start `{name}`: its primary factory is `{}`, and a project's root \
@@ -187,6 +190,9 @@ pub(crate) fn instantiate_application(
             return Err(ExitCode::FAILURE);
         }
     };
+    if debug::terminated_before_run(link) {
+        return Err(debug::report_terminated());
+    }
     loaded
         .interpreter
         .instantiate(&loaded.classes[0], &arguments)
@@ -208,7 +214,11 @@ pub(crate) fn selector_of(pattern: &ns_syntax::ast::MessagePattern) -> String {
 /// the manifest itself -- refused when a module's name is one of `Object`'s
 /// public members, which would answer the send before the manifest's
 /// `doesNotUnderstand:` could.
-fn build_manifest(program: &Program, loaded: &mut Loaded) -> Result<ns_runtime::Root, ExitCode> {
+fn build_manifest(
+    program: &Program,
+    loaded: &mut Loaded,
+    link: Option<&HostLink>,
+) -> Result<ns_runtime::Root, ExitCode> {
     let last = program.sources.len() - 1;
     let modules: Vec<(ns_runtime::Symbol, ns_runtime::Root)> = (1..last)
         .map(|index| {
@@ -234,6 +244,9 @@ fn build_manifest(program: &Program, loaded: &mut Loaded) -> Result<ns_runtime::
             mutator.stash(ns_runtime::Value::object(definitions)),
         )
     });
+    if debug::terminated_before_run(link) {
+        return Err(debug::report_terminated());
+    }
     let manifest = loaded
         .interpreter
         .instantiate(&loaded.classes[last], &[names, definitions])

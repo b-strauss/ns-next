@@ -54,8 +54,11 @@
 > stress mode"); and the step stress mode stops every program at the
 > safepoints its schedule picks and takes a burst of steps from there,
 > reading the stack at every stop ("The step stress mode").
-> Everything else is planned: the DAP agent and the plugin (stage 4,
-> next), evaluation, conditional breakpoints and logpoints, smart step
+> The DAP agent's connection and session are built: `ns-next run` and
+> `load` take `--debug` and `--debug-connect` ("Launching, the start and
+> the end").
+> Everything else is planned: the rest of the DAP agent and the plugin
+> (stage 4, next), evaluation, conditional breakpoints and logpoints, smart step
 > into, restart frame and force return (stage 5), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
@@ -312,10 +315,11 @@ pausing, reading and ending a run need; the metadata of decisions 4,
 named variables ("Reading the stack at a stop", "Compiling the metadata
 again"); and the breakpoints and steps of decisions 2, 3, 16 and 17.
 It lives in `crates/ns-runtime/src/debugger/`
-and is reached through `Interpreter::attach_debugger`; its only clients
-today are the test suite (`crates/ns-runtime/tests/debugger.rs`) and the
-pause, breakpoint and step stress modes, since the DAP agent in `ns-cli`
-is stage 4's. A program stops for a pause, at a line breakpoint, a run
+and is reached through `Interpreter::attach_debugger`; its clients are
+the test suite (`crates/ns-runtime/tests/debugger.rs`), the pause,
+breakpoint and step stress modes, and the DAP agent in `ns-cli`, whose
+connection and session stage 4 has built so far ("Launching, the start
+and the end"). A program stops for a pause, at a line breakpoint, a run
 to cursor's target or a method breakpoint's entry or exit ("Stopping at
 and going past a breakpoint", "Method breakpoints"), where a step arrives
 ("Step over in recursion and blocks"), and at an exception an exception
@@ -360,6 +364,15 @@ The remote is served from another thread than the one running the
 interpreter: a stop blocks the running thread until a `Continue` or a
 `Terminate` arrives, so a host that pauses and then runs the program on
 one thread waits in the stop forever.
+
+An agent that hears the VM on one thread while another commands it
+splits the remote (`DebugRemote::into_parts`) into its two halves: a
+`DebugControl`, which pauses and queues commands and is `Clone`, `Send`
+and `Sync`, so that several threads command the VM each through its own
+handle, and a `DebugEvents`, which moves to the thread that waits for the
+VM's events. The VM notices that every control is gone where it next
+takes commands -- a drain or a stop -- and that the events are gone at
+the next event it cannot send; either detaches the debugger.
 
 Attaching again replaces the debugger: the earlier one's channels go with
 it, the commands still queued in them included, its pause and commands
@@ -653,18 +666,27 @@ reason that no run executes, so that every command the debugging API
 takes has exactly one answer, as every DAP request has one response and
 JDWP answers a command it cannot serve with an error (`VM_DEAD`,
 `THREAD_NOT_SUSPENDED`; `a_command_queued_between_runs_is_refused`).
-Planned for stage 4 (decided with the user on 2026-11-14): `ns-next run`
-is several host runs -- a project's manifest instantiated, the root
-module, then `main:args:` (`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
-two of them, where the drop would let the program go on. The DAP agent
-records a `terminate` in `ns-cli` as well as queuing it, and the host
-checks the record before each run it starts and ends the program as a
-terminated one, `exited` sent with its status; the VM's drop and its two
-tests stand, since only the host knows which runs are one program. The
-agent sends a command that acts only at a stop -- `StackTrace`,
-`Variables`, `Children`, the steps, `RunToPosition`, `Continue` -- only
-while the program stands at one, and answers such a DAP request itself,
-with an error, while the program runs.
+
+`ns-next run` is several host runs -- a project's manifest instantiated,
+the root module, then `main:args:` (`crates/ns-cli/src/program.rs`) -- so
+a `terminate` can arrive between two of them, where the drop would let
+the program go on (decided with the user on 2026-11-14). The DAP agent
+records a `terminate` in `ns-cli` as well as queuing it
+(`crates/ns-cli/src/debug/host.rs`), and the host checks the record
+before each run it starts and ends the program as a terminated one, with
+the line and the status a terminated run reports, `exited` sent with it
+(`a_terminate_between_runs_ends_the_program_before_main`). A `Terminate`
+the VM refuses because no run executes is sent again while the record
+stands, so that one that reached the queue just after the host's check,
+and that the start of the run then dropped, still ends that run; once no
+run follows, it waits in the queue unserved. The VM's drop and its two
+tests stand, since only the host knows which runs are one program.
+Planned (stage 4, decided with the user on 2026-11-14): the agent sends a
+command that acts only at a stop -- `StackTrace`, `Variables`,
+`Children`, the steps, `RunToPosition`, `Continue` -- only while the
+program stands at one, and answers such a DAP request itself, with an
+error, while the program runs; today it forwards each, and the VM
+refuses it.
 
 Once the queue is drained, `serve_debugger` reads the pause bit again;
 if it is set, it is cleared, under the arming lock, and the program stops
@@ -3245,6 +3267,33 @@ its exit status. The program's standard streams stay its own: when the
 IDE launched the process it shows them itself, and the agent sends
 `output` events only for logpoints and its own messages, so no line is
 shown twice.
+
+Built so far (`crates/ns-cli/src/debug/`; its tests
+`crates/ns-cli/tests/debug_adapter.rs`, through the test client
+`crates/ns-cli/tests/common/dap.rs`): the framing (`wire.rs`, bounding
+a header and a message's length before it reads them, since the listening
+socket answers whoever connects), the connection in either direction with
+the token compared in constant time (`connection.rs`), the agent's thread
+(`agent.rs`), which every input reaches on one channel -- a connection, a
+request a reader thread read, a connection's end, an event a pump thread
+took off `DebugEvents`, a word of the host -- so that it is the only
+writer to the socket, and the host's link (`host.rs`). The session:
+`initialize` (its capabilities in `protocol.rs`), `attach` (the token,
+`stopOnEntry`), the `process` and `initialized` events, the client's
+configuration, then `configurationDone`, which starts the host; `pause`,
+`continue`, `threads`, a `stackTrace` of the frames' names, `terminate`
+and `disconnect`. The host waits for the configuration before its first
+run; with `stopOnEntry` the agent pauses the remote when the host
+announces `main:args:`, and reports that pause's stop as the entry's.
+A client of the connecting mode that leaves detaches the debugger: both
+halves of the remote are dropped and the program runs on, a host still
+waiting for the configuration starting it. A client of the listening mode
+that leaves, once attached, has the VM reset -- no line, method or
+exception breakpoint, since nobody would be there to go on from a stop,
+the default step filters, a stopped program going on -- and the next
+client is accepted; a host still waiting for the configuration waits for
+that client's, as it waited for the first. A stop that arrives while no
+client is attached goes on at once.
 
 ### Threads
 

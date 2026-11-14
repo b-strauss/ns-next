@@ -20,7 +20,7 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let mut loaded = program::load_program(&program, lowering);
-    let application = match program::instantiate_application(&program, &mut loaded) {
+    let application = match program::instantiate_application(&program, &mut loaded, None) {
         Ok(application) => application,
         Err(code) => return code,
     };

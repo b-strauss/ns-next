@@ -3,12 +3,21 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::debug::{self, DebugOptions, HostStart};
+
 /// `ns-next load`: decode an image `build` wrote and start it -- send its
 /// one root `main: platform args:` with this interpreter's platform, which
 /// is the first the application ever sees. An image that was not packaged
 /// for a start (an `image::snapshot` a host wrote) is refused, since there
 /// is nothing to start. A malformed image is a message, never a panic.
-pub(crate) fn execute(image: &Path, print_source: bool, program_arguments: &[String]) -> ExitCode {
+/// Under a debugger (`debug`), as `run`: `main:args:` is sent once the
+/// client configured the session, and the client hears the exit status.
+pub(crate) fn execute(
+    image: &Path,
+    print_source: bool,
+    debug: Option<DebugOptions>,
+    program_arguments: &[String],
+) -> ExitCode {
     let bytes = match std::fs::read(image) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -48,9 +57,33 @@ pub(crate) fn execute(image: &Path, print_source: bool, program_arguments: &[Str
     }
     crate::entry::report_jit_unavailable(&loaded.interpreter);
     let application = loaded.roots[0].clone();
-    crate::entry::report_entry_send(crate::entry::send_main(
+    let Some(options) = debug else {
+        return crate::entry::report_entry_send(crate::entry::send_main(
+            &mut loaded.interpreter,
+            &application,
+            program_arguments,
+            None,
+        ));
+    };
+    let link = match debug::start(
+        &options,
         &mut loaded.interpreter,
-        &application,
-        program_arguments,
-    ))
+        image.display().to_string(),
+    ) {
+        Ok(link) => link,
+        Err(code) => return code,
+    };
+    let code =
+        if link.wait_for_configuration() == HostStart::Terminate || link.terminate_requested() {
+            debug::report_terminated()
+        } else {
+            crate::entry::report_entry_send(crate::entry::send_main(
+                &mut loaded.interpreter,
+                &application,
+                program_arguments,
+                Some(&link),
+            ))
+        };
+    link.exited(debug::status_of(code));
+    code
 }

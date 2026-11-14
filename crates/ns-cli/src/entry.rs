@@ -169,13 +169,19 @@ pub(crate) fn main_arguments(
 }
 
 /// The one entry send every started program receives: `main: platform
-/// args: arguments`, the only way the platform reaches a program.
+/// args: arguments`, the only way the platform reaches a program. Under a
+/// debugger, `link` hears of it just before the send, once its arguments
+/// are made, so that a stop on entry stops in `main:args:` itself.
 pub(crate) fn send_main(
     interpreter: &mut ns_runtime::Interpreter,
     application: &ns_runtime::Root,
     program_arguments: &[String],
+    link: Option<&crate::debug::HostLink>,
 ) -> ns_runtime::HostResult {
     let arguments = main_arguments(interpreter, program_arguments);
+    if let Some(link) = link {
+        link.about_to_run_main();
+    }
     interpreter.send(application, ns_runtime::Symbol::MAIN_ARGUMENTS, &arguments)
 }
 

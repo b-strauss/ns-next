@@ -53,7 +53,7 @@ fn timed_send(
     loaded: &mut Loaded,
     arguments: &[ns_runtime::Root],
 ) -> Result<std::time::Duration, ExitCode> {
-    let application = program::instantiate_application(program, loaded)?;
+    let application = program::instantiate_application(program, loaded, None)?;
     let start = std::time::Instant::now();
     let outcome =
         loaded
