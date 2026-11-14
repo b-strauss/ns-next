@@ -1760,11 +1760,21 @@ The server's own tests are described under its section, above ("Testing").
   and comment tokens must fill exactly the gaps between the Rust tokens.
   `dump-tokens` runs in batches of 100 files, which keeps each command line
   under Windows' length limit over the repository's more than 600 `.ns` files.
-  The test task declares the debug server and those `.ns` files -- not a
-  golden's `.toml`, which the comparison does not read -- as inputs, so a
-  change to any of them — the Rust lexer reaches it through the rebuilt
-  server — reruns the comparison rather than leaving
-  `check` up to date;
+  It is a test task of its own, `lexerComparisonTest`, which `check`
+  depends on beside `test`: its inputs are those `.ns` files -- not a
+  golden's `.toml`, which the comparison does not read -- and what
+  `dump-tokens` answers derive from, `ns-syntax`'s sources, the analyzer's
+  `main`, its dispatch and `token_dump.rs`, the processor check and the
+  reach record `main` runs first, and the workspace's build settings (the
+  toolchain, the compiler flags, `Cargo.lock` and every manifest), so a
+  change to the Rust lexer reruns it rather than leaving `check` up to
+  date. The debug server is built before it, but its bytes are no input:
+  it is relinked whenever `ns-runtime` changes, and the gates' own builds
+  relink it at every run, which would rerun the comparison on every runtime
+  commit though nothing it reads changed. A later test that starts a
+  workspace binary takes a task of its own the same way, declaring the
+  sources its answers run through and `binaryBuildSettings`
+  (`editors/jetbrains/build.gradle.kts`);
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -1892,7 +1902,8 @@ stress mode the analyzer's subprocess compiles every instruction wide, so they
 also check that disassembly and decoding do not depend on the form. Which
 gate runs when is the table "The gates" in `CLAUDE.md`: for the editor, the
 plugin's `check` on every commit (Gradle reruns its tests only when the
-plugin, the analyzer binary or a source its lexer comparison reads changed),
+plugin, a source they read or, for the lexer comparison, the Rust sources
+`dump-tokens` runs or the build settings changed),
 the hints' behaviour oracle for a commit touching `crates/ns-analyzer/`
 ("Hints"), and `verifyPlugin buildPlugin`, which downloads several IDEs, at
 the end of a batch that touched `editors/jetbrains/`. A change to
