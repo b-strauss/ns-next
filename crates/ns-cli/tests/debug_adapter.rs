@@ -482,12 +482,7 @@ fn a_peer_that_never_reads_is_closed_at_the_deadline() {
     let mut unread = client.connect_unread();
     let frame = |seq: usize| {
         let body = json!({ "seq": seq, "type": "request", "command": "initialize" }).to_string();
-        format!(
-            "Content-Length: {}
-
-{body}",
-            body.len()
-        )
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
     };
     // Far more answers than any socket buffers: the agent's writes block
     // unless it bounds them.
@@ -498,6 +493,59 @@ fn a_peer_that_never_reads_is_closed_at_the_deadline() {
     client.configuration_done();
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().status, Some(0));
+    drop(unread);
+}
+
+/// An attached client that stops reading cannot wedge the agent: its
+/// writes are bounded and its queue is, so the agent ends its session as a
+/// disconnect does -- in the listening mode, the VM reset and the next
+/// client accepted -- and the next client runs the program to its end.
+/// The client here attaches, presenting the token, then floods the agent
+/// with requests and reads nothing at all.
+#[cfg(debug_assertions)]
+#[test]
+fn an_attached_client_that_stops_reading_is_dropped() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode_with(
+        "run",
+        &path,
+        &[
+            ("NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS", "5000"),
+            ("NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS", "500"),
+        ],
+    );
+    client.connection.close();
+    let mut unread = client.connect_unread();
+    let frame = |seq: usize, command: &str, arguments: Value| {
+        let body = json!({
+            "seq": seq,
+            "type": "request",
+            "command": command,
+            "arguments": arguments,
+        })
+        .to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+    let mut requests = frame(1, "attach", json!({ "token": client.token() }));
+    // Far more answers than the socket's buffers and the agent's queue
+    // hold.
+    for seq in 2..=20_000 {
+        requests.push_str(&frame(seq, "threads", json!({})));
+    }
+    let started = std::time::Instant::now();
+    let _ = std::io::Write::write_all(&mut unread, requests.as_bytes());
+    client.reconnect();
+    client.attach_racing_the_deadline(ATTACH_ATTEMPTS);
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "the next client waited {:?}",
+        started.elapsed()
+    );
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
     drop(unread);
 }
 
@@ -870,11 +918,7 @@ fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
-    assert_eq!(
-        client.finish().stdout,
-        "12
-"
-    );
+    assert_eq!(client.finish().stdout, "12\n");
 }
 
 /// A root with a class of its own named `Array`, whose instance holds two

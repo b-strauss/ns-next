@@ -3552,11 +3552,20 @@ another path than the VM's events. A listening agent gives a connection 10
 s from its acceptance to present the token in a good `attach`, a deadline
 for the whole exchange rather than a read timeout, so that neither a
 silent nor a trickling peer holds the one connection it serves, while an
-attached client may stay silent as long as it likes; every write to a client
-that has not attached is bounded by the same deadline, so that a peer
-that never reads cannot block the agent in a write and the deadline with
-it; it refuses a
-connection it cannot start a reader for. A client of the connecting mode
+attached client may stay silent as long as it likes. The agent never
+writes to the socket itself: it queues each message for the
+connection's writer thread (`connection::Writer`), so that a client that
+does not read never blocks it, and with it the VM's events, the host's
+word, a pause or a terminate. The writer bounds every write -- by the
+time left to the attach deadline until the client attached, by 30 s
+after -- and its queue holds 1,024 messages; a write past its bound, or
+a full queue, ends the session as a disconnect does: the connecting
+mode detaches, the listening mode resets the VM and accepts the next
+client (`a_peer_that_never_reads_is_closed_at_the_deadline`,
+`an_attached_client_that_stops_reading_is_dropped`). A debug build
+reads both bounds from variables, so that their tests take a fraction
+of a second. The agent refuses a connection it cannot start a reader,
+a deadline or a writer for. A client of the connecting mode
 that leaves detaches the debugger: both halves of the remote are dropped
 and the program runs on, a host still waiting for the configuration
 starting it. A client of the listening mode that leaves, once attached,

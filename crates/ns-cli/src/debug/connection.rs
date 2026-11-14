@@ -6,7 +6,10 @@
 
 use std::io::BufReader;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::agent::Input;
 use super::wire;
@@ -126,6 +129,89 @@ pub(crate) fn spawn_attach_deadline(
             let _ = inputs.send(Input::AttachDeadline { connection });
         })
         .map(drop)
+}
+
+/// How many messages may wait for a client to read them before the agent
+/// gives the client up: far more than a session's burst of events and
+/// answers, so that only a client that stopped reading fills it.
+const WRITE_QUEUE: usize = 1024;
+
+/// The agent's end of a connection's writer thread, which writes every
+/// message the agent queues, in order, so that the agent never waits on
+/// the socket. Each write is bounded: by the time left to the attach
+/// deadline while the client has not attached, by the write bound once it
+/// has. A write that runs out of its bound, or fails, ends the connection
+/// and tells the agent the client left. Dropping this end lets the thread
+/// write what is queued and then shut the connection down.
+pub(crate) struct Writer {
+    queue: SyncSender<serde_json::Value>,
+    attached: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Writer {
+    /// Queues `message`; `false` when the queue is full -- the client has
+    /// not read for that long -- or the writer gave up.
+    pub(crate) fn send(&self, message: serde_json::Value) -> bool {
+        self.queue.try_send(message).is_ok()
+    }
+
+    /// The client attached: its writes are bounded by the write bound from
+    /// here on, not by the attach deadline.
+    pub(crate) fn mark_attached(&self) {
+        self.attached.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits until what is queued is written, or the bound ran out, and
+    /// the connection is shut down.
+    pub(crate) fn finish(self) {
+        drop(self.queue);
+        let _ = self.thread.join();
+    }
+}
+
+/// Starts the writer of the connection numbered `connection`.
+pub(crate) fn spawn_writer(
+    mut stream: TcpStream,
+    connection: u64,
+    inputs: Sender<Input>,
+    attach_by: Option<Instant>,
+    bound: Duration,
+) -> std::io::Result<Writer> {
+    let (queue, queued) = std::sync::mpsc::sync_channel::<serde_json::Value>(WRITE_QUEUE);
+    let attached = Arc::new(AtomicBool::new(false));
+    let attached_here = Arc::clone(&attached);
+    let thread = std::thread::Builder::new()
+        .name("ns-next debugger writer".to_string())
+        .spawn(move || {
+            let mut failed = false;
+            for message in queued {
+                let limit = match attach_by {
+                    Some(attach_by) if !attached_here.load(Ordering::SeqCst) => {
+                        attach_by.saturating_duration_since(Instant::now())
+                    }
+                    _ => bound,
+                };
+                // A zero timeout is refused by the socket, and would mean
+                // none.
+                if limit.is_zero()
+                    || stream.set_write_timeout(Some(limit)).is_err()
+                    || wire::write_message(&mut stream, &message).is_err()
+                {
+                    failed = true;
+                    break;
+                }
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            if failed {
+                let _ = inputs.send(Input::Closed { connection });
+            }
+        })?;
+    Ok(Writer {
+        queue,
+        attached,
+        thread,
+    })
 }
 
 #[cfg(test)]

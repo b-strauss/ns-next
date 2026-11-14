@@ -2,8 +2,10 @@
 //! API to the VM (`docs/design/debugger.md`, decisions 1 and 6). Everything
 //! reaches it as an `Input` on one channel -- a connection accepted, a
 //! request read, a connection's end, an event of the VM, a word from the
-//! host -- so that it is the only writer to the socket and numbers every
-//! message it writes in the order it writes them.
+//! host -- so that it alone decides what the client is sent, numbering
+//! every message in the order it queues them for the connection's writer
+//! thread, which writes them in that order (`connection::Writer`), so that
+//! the agent never waits on a client that does not read.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::{Shutdown, TcpStream};
@@ -23,7 +25,6 @@ use super::protocol::{self, THREAD_ID};
 use super::sources::Sources;
 use super::stepping::{LineStep, Phase};
 use super::stopped::{self, Frames, Stop, Target};
-use super::wire;
 
 /// What the agent's thread is handed.
 pub(crate) enum Input {
@@ -66,13 +67,40 @@ const ATTACH_DEADLINE_VARIABLE: &str = "NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECON
 /// The deadline a connection has to attach.
 fn attach_deadline() -> Duration {
     #[cfg(debug_assertions)]
-    if let Some(milliseconds) = std::env::var(ATTACH_DEADLINE_VARIABLE)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        return Duration::from_millis(milliseconds);
+    if let Some(shortened) = debug_override(ATTACH_DEADLINE_VARIABLE) {
+        return shortened;
     }
     ATTACH_DEADLINE
+}
+
+/// How long one write to an attached client may wait for the client to
+/// read: a client that stops reading -- a frozen IDE -- is then dropped as
+/// one that disconnected, rather than holding the agent, and with it the
+/// program's stops, events and end, for as long as it does not read.
+const WRITE_BOUND: Duration = Duration::from_secs(30);
+
+/// The variable a debug build reads `WRITE_BOUND` from, in milliseconds,
+/// as `ATTACH_DEADLINE_VARIABLE`.
+#[cfg(debug_assertions)]
+const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
+
+/// The bound of one write to an attached client.
+fn write_bound() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(shortened) = debug_override(WRITE_BOUND_VARIABLE) {
+        return shortened;
+    }
+    WRITE_BOUND
+}
+
+/// A duration a debug build's test sets in milliseconds through
+/// `variable`.
+#[cfg(debug_assertions)]
+fn debug_override(variable: &str) -> Option<Duration> {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
 }
 
 /// Which way the connection was opened.
@@ -91,14 +119,11 @@ pub(crate) enum Mode {
 /// The connected client.
 struct Client {
     connection: u64,
-    writer: TcpStream,
+    writer: connection::Writer,
     next_seq: i64,
     /// Whether its `attach` succeeded: in the listening mode, whether it
     /// presented the token.
     attached: bool,
-    /// The listening mode's deadline to attach, which bounds every write
-    /// to the client until it attached (`Agent::write`).
-    attach_by: Option<Instant>,
 }
 
 /// Whom the VM's answer to a command goes to.
@@ -311,19 +336,30 @@ impl Agent {
         } else {
             Ok(())
         };
-        if reader.is_err() || deadline.is_err() {
-            // A connection the agent cannot read is refused, never a panic
-            // of the agent's that would leave the host waiting.
+        let writer = match (reader, deadline) {
+            (Ok(()), Ok(())) => stream.try_clone().and_then(|stream| {
+                connection::spawn_writer(
+                    stream,
+                    connection,
+                    self.inputs.clone(),
+                    attach_by,
+                    write_bound(),
+                )
+            }),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        };
+        let Ok(writer) = writer else {
+            // A connection the agent cannot read or write is refused, never
+            // a panic of the agent's that would leave the host waiting.
             let _ = stream.shutdown(Shutdown::Both);
             self.next_connection();
             return;
-        }
+        };
         self.client = Some(Client {
             connection,
-            writer: stream,
+            writer,
             next_seq: 1,
             attached: false,
-            attach_by,
         });
     }
 
@@ -449,9 +485,7 @@ impl Agent {
         }
         if let Some(client) = &mut self.client {
             client.attached = true;
-            // An attached client's writes wait as long as the client
-            // takes to read them.
-            let _ = client.writer.set_write_timeout(None);
+            client.writer.mark_attached();
         }
         self.stop_on_entry = arguments.stop_on_entry;
         self.respond(connection, request, None);
@@ -862,7 +896,11 @@ impl Agent {
         self.respond(connection, request, None);
         if arguments.terminate_debuggee {
             // At once, from this thread, for a program that reaches no
-            // safepoint: no `ensure:` block runs.
+            // safepoint: no `ensure:` block runs. The response is written
+            // first, within the writer's bound.
+            if let Some(client) = self.client.take() {
+                client.writer.finish();
+            }
             eprintln!("{TERMINATED_LINE}");
             std::process::exit(1);
         }
@@ -895,7 +933,9 @@ impl Agent {
         let Some(client) = self.client.take() else {
             return;
         };
-        let _ = client.writer.shutdown(Shutdown::Both);
+        // The writer writes what is queued, within its bound, then shuts
+        // the connection down; the agent waits for none of it.
+        drop(client.writer);
         let was_attached = client.attached;
         self.waiting.clear();
         self.line_step = None;
@@ -1234,8 +1274,10 @@ impl Agent {
                     self.event("exited", Some(to_value(exited)));
                     self.event("terminated", None);
                 }
+                // Written before the host goes on to end the process,
+                // within the writer's bound.
                 if let Some(client) = self.client.take() {
-                    let _ = client.writer.shutdown(Shutdown::Both);
+                    client.writer.finish();
                 }
                 let _ = done.send(());
             }
@@ -1350,33 +1392,19 @@ impl Agent {
         });
     }
 
-    /// Writes the message `build` makes of the next sequence number; a
-    /// client that cannot be written to has left.
-    ///
-    /// A write to a client that has not attached yet is bounded by its
-    /// deadline: a peer that never reads would otherwise fill the socket's
-    /// buffers and block this thread in the write, the deadline's input
-    /// waiting behind it unserved, and with it the next client.
+    /// Queues the message `build` makes of the next sequence number for
+    /// the client's writer, so that this thread never waits on the socket:
+    /// a client that stops reading would otherwise block it in a write,
+    /// and with it every event, the host's word and the deadline. A client
+    /// whose queue is full, or whose writer gave up (`connection::Writer`),
+    /// has left.
     fn write(&mut self, build: impl FnOnce(i64) -> Value) {
         let Some(client) = &mut self.client else {
             return;
         };
-        if let (false, Some(attach_by)) = (client.attached, client.attach_by) {
-            let remaining = attach_by.saturating_duration_since(Instant::now());
-            // A zero timeout is refused by the socket, and would mean none.
-            let bounded = !remaining.is_zero()
-                && client
-                    .writer
-                    .set_write_timeout(Some(remaining.max(Duration::from_millis(1))))
-                    .is_ok();
-            if !bounded {
-                self.leave();
-                return;
-            }
-        }
         let message = build(client.next_seq);
         client.next_seq += 1;
-        if wire::write_message(&mut client.writer, &message).is_err() {
+        if !client.writer.send(message) {
             self.leave();
         }
     }
