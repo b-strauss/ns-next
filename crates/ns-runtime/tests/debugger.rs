@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -188,6 +189,47 @@ fn a_pause_before_the_run_stops_it_and_continue_finishes_it() {
     let count = expect_ok(run(&mut interpreter, &instance), "run");
     agent.join().expect("the remote's thread");
     assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
+}
+
+/// The two halves of a remote serve from two threads: one pumps the events
+/// into a channel while the test thread pauses and continues through the
+/// control, a clone of it for the second command.
+#[test]
+fn a_remote_split_in_two_serves_from_two_threads() {
+    let (mut interpreter, instance) = instance_of(COUNTING, Lowering::Optimized);
+    let (control, events) = interpreter.attach_debugger().into_parts();
+    let (forwarded, received) = mpsc::channel();
+    let pump = thread::spawn(move || {
+        while let Some(event) = events.recv() {
+            if forwarded.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    control.pause();
+    let continuing = control.clone();
+    let agent = thread::spawn(move || {
+        match received.recv_timeout(EVENT_TIMEOUT) {
+            Ok(Event::Stopped {
+                reason: StopReason::Pause,
+                returned: None,
+            }) => {}
+            other => panic!("a stop for the pause was expected, not {other:?}"),
+        }
+        continuing.send(Command::Continue);
+        match received.recv_timeout(EVENT_TIMEOUT) {
+            Ok(Event::Continued) => {}
+            other => panic!("the confirmation of the continue was expected, not {other:?}"),
+        }
+        // Held until the run ended, so that its end is not taken for the
+        // control's departure.
+        continuing
+    });
+    let count = expect_ok(run(&mut interpreter, &instance), "run");
+    let control = agent.join().expect("the agent's thread");
+    assert_eq!(small_integer(&mut interpreter, &count), 1_000_000);
+    drop((control, interpreter));
+    pump.join().expect("the pumping thread");
 }
 
 #[test]

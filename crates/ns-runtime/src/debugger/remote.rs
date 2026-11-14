@@ -477,10 +477,25 @@ pub struct ValueDescription {
 /// It is served from another thread than the one running the interpreter:
 /// a stop blocks the running thread until a `Continue` or a `Terminate`
 /// arrives, so a host that pauses and then runs the program on one thread
-/// waits in the stop forever.
+/// waits in the stop forever. An agent that pumps events on a thread of its
+/// own while another sends commands splits it (`DebugRemote::into_parts`).
 pub struct DebugRemote {
+    control: DebugControl,
+    events: DebugEvents,
+}
+
+/// The half of a remote that speaks to the VM: it pauses the program and
+/// queues commands. It is `Clone`, `Send` and `Sync`, so that several
+/// threads of an agent command the VM at once, each through its own handle.
+///
+/// The VM notices that every handle is gone where it next takes commands:
+/// at a safepoint that finds the commands bit, or at a stop, whose wait for
+/// a command ends. Dropping the control alone therefore detaches the
+/// debugger at the next stop or drain, and dropping `DebugEvents` alone at
+/// the next event the VM cannot send.
+#[derive(Clone)]
+pub struct DebugControl {
     commands: Sender<Command>,
-    events: Receiver<Event>,
     words: MachineWords,
     /// The interpreter's arming lock: held across the two writes that arm
     /// the poll, so that the VM's clearing of a bit cannot fall between
@@ -489,6 +504,13 @@ pub struct DebugRemote {
     /// The number of the attachment that handed this remote out, which
     /// arms only while it is current.
     attachment: u64,
+}
+
+/// The half of a remote that listens to the VM: its events, in order. It
+/// moves to a thread of its own, so that a stop is heard while another
+/// thread waits to send.
+pub struct DebugEvents {
+    events: Receiver<Event>,
 }
 
 impl DebugRemote {
@@ -500,14 +522,39 @@ impl DebugRemote {
         attachment: u64,
     ) -> DebugRemote {
         DebugRemote {
-            commands,
-            events,
-            words,
-            arming,
-            attachment,
+            control: DebugControl {
+                commands,
+                words,
+                arming,
+                attachment,
+            },
+            events: DebugEvents { events },
         }
     }
 
+    /// Splits the remote into the half that commands the VM and the half
+    /// that hears it.
+    pub fn into_parts(self) -> (DebugControl, DebugEvents) {
+        (self.control, self.events)
+    }
+
+    /// As `DebugControl::pause`.
+    pub fn pause(&self) {
+        self.control.pause();
+    }
+
+    /// As `DebugControl::send`.
+    pub fn send(&self, command: Command) {
+        self.control.send(command);
+    }
+
+    /// As `DebugEvents::next_event`.
+    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
+        self.events.next_event(timeout)
+    }
+}
+
+impl DebugControl {
     /// Asks the program to stop at its next safepoint, interpreted or in
     /// machine code, a push or a loop's head; the VM answers
     /// `Event::Stopped`. A pause asked while no run executes stops the
@@ -528,12 +575,6 @@ impl DebugRemote {
         }
     }
 
-    /// The VM's next event, waiting for at most `timeout`; `None` once it
-    /// passed, or once the VM is gone.
-    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
-        self.events.recv_timeout(timeout).ok()
-    }
-
     /// Sets `bit` in the request word and lowers the depth limit, so that
     /// the next poll anywhere takes the safepoint -- a compiled callee's
     /// prologue compares the limit alone. Both writes sequentially
@@ -550,6 +591,20 @@ impl DebugRemote {
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+}
+
+impl DebugEvents {
+    /// The VM's next event, waiting for at most `timeout`; `None` once it
+    /// passed, or once the VM is gone.
+    pub fn next_event(&self, timeout: Duration) -> Option<Event> {
+        self.events.recv_timeout(timeout).ok()
+    }
+
+    /// The VM's next event, waiting as long as it takes; `None` once the VM
+    /// is gone, which ends an agent's pumping loop.
+    pub fn recv(&self) -> Option<Event> {
+        self.events.recv().ok()
     }
 }
 

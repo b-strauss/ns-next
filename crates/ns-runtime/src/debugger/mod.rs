@@ -26,10 +26,10 @@ pub(crate) mod stepping;
 mod values;
 
 pub use remote::{
-    BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
-    FrameKind, FrameLocation, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason, ValueDescription, ValueId,
-    Variable,
+    BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
+    Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
+    MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
+    ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
