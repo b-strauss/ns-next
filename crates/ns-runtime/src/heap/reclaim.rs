@@ -117,7 +117,7 @@ fn row_of(number: i64) -> Option<u32> {
 }
 
 /// A growable set of `u32` rows, a word per 64.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct BitSet {
     words: Vec<u64>,
 }
@@ -135,6 +135,14 @@ impl BitSet {
         self.words
             .get((index / 64) as usize)
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+
+    /// Whether every row `other` holds is in this set too.
+    pub(crate) fn contains_all(&self, other: &BitSet) -> bool {
+        other.words.iter().enumerate().all(|(index, word)| {
+            let mine = self.words.get(index).copied().unwrap_or(0);
+            word & !mine == 0
+        })
     }
 }
 

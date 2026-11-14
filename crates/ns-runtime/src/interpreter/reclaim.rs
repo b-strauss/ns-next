@@ -162,7 +162,7 @@ impl Mutator<'_> {
         }
         drop(dropped);
         self.heap.truncate_application_rows();
-        self.reclaim_mixins(&gathered);
+        self.reclaim_mixins(&gathered, !freed.applications.is_empty());
         // Step 4: codes. The marked closures and frames and the running
         // activations, with the live copies of optimized code, are every
         // holder of one.
@@ -190,11 +190,51 @@ impl Mutator<'_> {
     /// from the tables and the metaclass memo alone, so they are kept
     /// across collections while neither changes (`MixinReclaimMemo`);
     /// only the counts of the versions' holders are read afresh.
-    fn reclaim_mixins(&mut self, gathered: &GatheredIds) {
-        let memo = self.current_mixin_memo();
-        let applied = self.heap.applied_mixin_ids();
+    ///
+    /// Nothing is freed, and the trees are not walked, when every witness
+    /// of the last walk still stands (`Witnesses`): the tables and the
+    /// metaclass memo unchanged since, no application freed by step 1, and
+    /// every id the gathered applied clauses, the surviving reified mixins
+    /// and the held versions named then named again -- so every tree that
+    /// lived then lives by the same id now. `applications_freed` is
+    /// whether step 1 freed any.
+    fn reclaim_mixins(&mut self, gathered: &GatheredIds, applications_freed: bool) {
+        let mut memo = self.current_mixin_memo();
         let reified = self.heap.reified_mixin_ids();
         let held = self.heap.held_mixin_ids(&memo.counts);
+        let generation = self.mixin_generations();
+        let witnessed = !applications_freed
+            && memo.witnesses.as_ref().is_some_and(|witnesses| {
+                witnesses.generation == generation
+                    && gathered
+                        .applied_clauses
+                        .contains_all(&witnesses.applied_clauses)
+                    && reified.contains_all(&witnesses.reified)
+                    && held.contains_all(&witnesses.held)
+            });
+        if witnessed {
+            #[cfg(debug_assertions)]
+            {
+                memo.skips += 1;
+                if memo.skips.is_multiple_of(MIXIN_MEMO_CHECK_PERIOD) {
+                    let applied = self.heap.applied_mixin_ids();
+                    assert!(
+                        memo.trees.iter().all(|tree| tree.iter().any(|id| {
+                            let row = mixin_row_number(*id);
+                            applied.contains(row)
+                                || gathered.applied_clauses.contains(row)
+                                || reified.contains(row)
+                                || held.contains(row)
+                        })),
+                        "internal: a collection skipped the mixin trees while one of them died"
+                    );
+                }
+            }
+            self.drop_superseded_versions(gathered);
+            self.mixin_reclaim = memo;
+            return;
+        }
+        let applied = self.heap.applied_mixin_ids();
         let mut freed = BitSet::default();
         let mut any_freed = false;
         for tree in &memo.trees {
@@ -237,17 +277,39 @@ impl Mutator<'_> {
                 "internal: a freed mixin is held outside the tables"
             );
         }
-        // Before step 4 frees the code ids that say which bodies run. A
-        // program that never installed an edit has no superseded version,
-        // and nothing to drop: the set of running bodies is not built.
+        self.drop_superseded_versions(gathered);
+        self.heap.truncate_mixin_rows();
+        // Every tree left lived by an id of these sets, at the tables as
+        // they are now.
+        memo.witnesses = Some(Witnesses {
+            generation: self.mixin_generations(),
+            applied_clauses: gathered.applied_clauses.clone(),
+            reified,
+            held,
+        });
+        // Kept whatever changed above: its generation says whether the
+        // next collection may read it.
+        self.mixin_reclaim = memo;
+    }
+
+    /// The superseded versions only the table holds and no running body
+    /// was compiled in, dropped (`Heap::drop_superseded`) -- before step 4
+    /// frees the code ids that say which bodies run. A program that never
+    /// installed an edit has no superseded version, and nothing to drop:
+    /// the set of running bodies is not built.
+    fn drop_superseded_versions(&mut self, gathered: &GatheredIds) {
         if self.heap.has_superseded() {
             let running = self.heap.running_bodies(&gathered.codes);
             self.heap.drop_superseded(&running);
         }
-        self.heap.truncate_mixin_rows();
-        // Kept whatever changed above: its generation says whether the
-        // next collection may read it.
-        self.mixin_reclaim = memo;
+    }
+
+    /// The mixin tables' generation and the metaclass memo's.
+    fn mixin_generations(&self) -> (u64, u64) {
+        (
+            self.heap.mixin_generation(),
+            self.metaclass_mixins.generation(),
+        )
     }
 
     /// The memo of the trees and the inside counts, taken out of the
@@ -258,10 +320,7 @@ impl Mutator<'_> {
     /// `MIXIN_MEMO_CHECK_PERIOD`th, so that a change that raised no
     /// generation is found under the collect stress mode.
     fn current_mixin_memo(&mut self) -> MixinReclaimMemo {
-        let generation = (
-            self.heap.mixin_generation(),
-            self.metaclass_mixins.generation(),
-        );
+        let generation = self.mixin_generations();
         let mut memo = std::mem::take(&mut self.mixin_reclaim);
         if memo.generation == Some(generation) {
             #[cfg(debug_assertions)]
@@ -289,10 +348,15 @@ impl Mutator<'_> {
             generation: Some(generation),
             trees,
             counts,
+            // Recorded at a generation of their own, which they are
+            // compared at.
+            witnesses: memo.witnesses,
             #[cfg(debug_assertions)]
             lengths: self.heap.mixin_table_lengths(),
             #[cfg(debug_assertions)]
             reuses: 0,
+            #[cfg(debug_assertions)]
+            skips: memo.skips,
         }
     }
 }
@@ -330,6 +394,9 @@ pub(crate) struct MixinReclaimMemo {
     generation: Option<(u64, u64)>,
     trees: Vec<Vec<MixinId>>,
     counts: InsideCounts,
+    /// What the last walk of the trees found every surviving tree live
+    /// by; `None` before the first.
+    witnesses: Option<Witnesses>,
     /// The tables' lengths it was derived at (`Heap::mixin_table_lengths`),
     /// which every change between two collections alters.
     #[cfg(debug_assertions)]
@@ -337,6 +404,22 @@ pub(crate) struct MixinReclaimMemo {
     /// The collections that have read it since it was derived.
     #[cfg(debug_assertions)]
     reuses: u64,
+    /// The collections that skipped the walk of the trees.
+    #[cfg(debug_assertions)]
+    skips: u64,
+}
+
+/// What the last full walk of the mixin trees found the surviving trees
+/// live by (`Mutator::reclaim_mixins`): the generations of the tables and
+/// the metaclass memo after it, and the ids the gathered applied clauses,
+/// the surviving reified mixins and the held versions named. The ids live
+/// applications named are not kept: only step 1 frees an application, so
+/// while it frees none, every id they named they still name.
+struct Witnesses {
+    generation: (u64, u64),
+    applied_clauses: BitSet,
+    reified: BitSet,
+    held: BitSet,
 }
 
 /// How often a debug build derives a kept `MixinReclaimMemo` afresh to

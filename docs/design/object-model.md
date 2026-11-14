@@ -2350,7 +2350,12 @@ one nothing reaches is dropped, since nothing can compare it any more.
    `Rc::strong_count` against the counts. A debug build holds a kept memo
    to the tables' lengths at every collection and to one derived afresh at
    every eighth, which the collect stress mode turns into a check at
-   millions of collections. A tree dies
+   millions of collections. The trees are not walked at all while every
+   witness of the last walk stands (`Witnesses`): the two generations
+   unchanged since, no application freed by step 1, and every id the
+   gathered applied clauses, the surviving reified mixins and the held
+   versions named then named again, so that every tree that lived then
+   lives by the same id now. A tree dies
    whole because a live mixin names the ids of the mixins it is declared
    in and of those declared in it, and a holder that presents a version
    again must find it under the id it had, so a version a host holds
