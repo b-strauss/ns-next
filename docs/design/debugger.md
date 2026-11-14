@@ -3507,7 +3507,12 @@ by its name -- since the VM sets a set afresh under new ids at every
 replacement, which an IDE sends at every change; the VM's ids of each
 set's latest answer map to them, and a stop's `hitBreakpointIds` name only
 ids the client's latest request for their set holds, never one it replaced
-since the VM decided the stop. An `Event::Breakpoints` or
+since the VM decided the stop: before it reports a stop, the agent serves
+every `setBreakpoints` and `setFunctionBreakpoints` that has reached it,
+the client having sent it before it could see the stop, and keeps every
+other input's order; one still on the wire then crosses the stop, as DAP
+allows (`a_stop_naming_a_replaced_breakpoint_is_reported_without_it`,
+`a_pending_replacement_hides_the_ids_it_replaces`). An `Event::Breakpoints` or
 `Event::MethodBreakpoints` the VM sends unasked -- a pending breakpoint
 resolved as its module was built, an install that moved one -- is told
 from an answer by its ids: the VM numbers every breakpoint from one

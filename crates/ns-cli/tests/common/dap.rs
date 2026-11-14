@@ -86,6 +86,32 @@ impl Connection {
     /// Sends a request and answers its sequence number, or the error of a
     /// connection the agent may have closed.
     pub fn try_send(&mut self, command: &str, arguments: Value) -> std::io::Result<i64> {
+        let (seq, frame) = self.frame(command, arguments);
+        self.writer
+            .write_all(&frame)
+            .and_then(|()| self.writer.flush())?;
+        Ok(seq)
+    }
+
+    /// Sends the requests in one write, so that they reach the agent
+    /// together, and answers their sequence numbers.
+    pub fn send_together(&mut self, requests: &[(&str, Value)]) -> Vec<i64> {
+        let mut bytes = Vec::new();
+        let mut seqs = Vec::new();
+        for (command, arguments) in requests {
+            let (seq, frame) = self.frame(command, arguments.clone());
+            bytes.extend(frame);
+            seqs.push(seq);
+        }
+        self.writer
+            .write_all(&bytes)
+            .and_then(|()| self.writer.flush())
+            .unwrap_or_else(|error| panic!("sending requests: {error}"));
+        seqs
+    }
+
+    /// The next request's sequence number and its frame.
+    fn frame(&mut self, command: &str, arguments: Value) -> (i64, Vec<u8>) {
         let seq = self.next_seq;
         self.next_seq += 1;
         let message = json!({
@@ -95,12 +121,9 @@ impl Connection {
             "arguments": arguments,
         });
         let body = serde_json::to_vec(&message).expect("serialize a request");
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        self.writer
-            .write_all(header.as_bytes())
-            .and_then(|()| self.writer.write_all(&body))
-            .and_then(|()| self.writer.flush())?;
-        Ok(seq)
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend(body);
+        (seq, frame)
     }
 
     /// Closes the connection, as a client that leaves without a word.

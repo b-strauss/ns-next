@@ -804,27 +804,40 @@ fn a_stop_naming_a_replaced_breakpoint_is_reported_without_it() {
     let again = client.set_breakpoints(file_source(&path), &[6]);
     assert_eq!(again[0]["id"], first[0]["id"], "{again:?}");
 
-    let continue_seq = client.connection.send("continue", json!({ "threadId": 1 }));
-    let replace_seq = client.connection.send(
-        "setBreakpoints",
-        json!({ "source": file_source(&path), "breakpoints": [{ "line": 8 }] }),
-    );
-    let continued = client.connection.response_to(continue_seq, "continue");
+    // Sent together, so that the replacement reaches the agent before any
+    // stop the `continue` makes: a request still on the wire when the
+    // stop is reported is one DAP lets cross it.
+    let seqs = client.connection.send_together(&[
+        ("continue", json!({ "threadId": 1 })),
+        (
+            "setBreakpoints",
+            json!({ "source": file_source(&path), "breakpoints": [{ "line": 8 }] }),
+        ),
+    ]);
+    let continued = client.connection.response_to(seqs[0], "continue");
     assert_eq!(continued["success"], true, "{continued}");
-    let replaced = client.connection.response_to(replace_seq, "setBreakpoints");
+    let replaced = client.connection.response_to(seqs[1], "setBreakpoints");
     let second = &replaced["body"]["breakpoints"][0];
     assert_ne!(second["id"], first[0]["id"], "{replaced}");
     let stopped = client.stopped("breakpoint");
-    if let Some(ids) = stopped["body"].get("hitBreakpointIds") {
-        assert_eq!(ids, &json!([second["id"]]), "{stopped}");
-    }
     let refused = client.request("variables", json!({ "variablesReference": stale }));
     assert_eq!(refused["success"], false, "{refused}");
     // A stop the VM decided before it served the replacement stands on
-    // line 6; the replacement's on line 8 follows it.
+    // line 6 and names no breakpoint, the client having replaced line 6's;
+    // the replacement's on line 8 follows it.
     if top_frame(&mut client).1 == 6 {
+        assert!(
+            stopped["body"].get("hitBreakpointIds").is_none(),
+            "{stopped}"
+        );
         client.succeed("continue", json!({ "threadId": 1 }));
         let stopped = client.stopped("breakpoint");
+        assert_eq!(
+            stopped["body"]["hitBreakpointIds"],
+            json!([second["id"]]),
+            "{stopped}"
+        );
+    } else {
         assert_eq!(
             stopped["body"]["hitBreakpointIds"],
             json!([second["id"]]),

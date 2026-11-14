@@ -210,6 +210,9 @@ pub(crate) struct Agent {
     inputs: Sender<Input>,
     /// What the agent serves, in order.
     received: Receiver<Input>,
+    /// Inputs taken off `received` ahead of their turn, served before it
+    /// (`serve_replacements_received`).
+    deferred: VecDeque<Input>,
     /// Asks the pump of the VM's events to hand over every event the VM
     /// sent so far, and to end: the host's `Exited` reaches the agent on
     /// another path than the events, which may still be on their way.
@@ -268,6 +271,7 @@ impl Agent {
             mode,
             inputs,
             received,
+            deferred: VecDeque::new(),
             drain,
             control: Some(control),
             events_detached,
@@ -291,7 +295,11 @@ impl Agent {
 
     /// Serves every input until the process ends.
     pub(crate) fn run(mut self) {
-        while let Ok(input) = self.received.recv() {
+        while let Some(input) = self
+            .deferred
+            .pop_front()
+            .or_else(|| self.received.recv().ok())
+        {
             self.serve(input);
         }
     }
@@ -1069,7 +1077,10 @@ impl Agent {
             return;
         }
         match event {
-            Event::Stopped { reason, returned } => self.stopped_at(&reason, returned),
+            Event::Stopped { reason, returned } => {
+                self.serve_replacements_received();
+                self.stopped_at(&reason, returned);
+            }
             Event::Refused { command, .. } if command == Command::Terminate.name() => {
                 // A `Terminate` that met no run -- sent between two, or
                 // just before the next started -- is sent again, so that a
@@ -1095,6 +1106,25 @@ impl Agent {
             return;
         }
         self.report_stop(reason);
+    }
+
+    /// Serves, before a stop is reported, every request that replaces a
+    /// breakpoint set and has reached the agent: the client sent it before
+    /// it could see the stop, so the breakpoints it replaces are replaced
+    /// for the client, and the stop must not name them. The VM decided
+    /// the stop before it served the replacement, so only the agent can
+    /// leave them out. Every other input keeps its order, served after.
+    /// A request still on its way to the agent is not seen; DAP lets a
+    /// stop and a request cross, and a client ignores an id it no longer
+    /// holds.
+    fn serve_replacements_received(&mut self) {
+        while let Ok(input) = self.received.try_recv() {
+            if replaces_breakpoints(&input) {
+                self.serve(input);
+            } else {
+                self.deferred.push_back(input);
+            }
+        }
     }
 
     /// Shows the client the stop the program stands at, for `reason`.
@@ -1304,9 +1334,12 @@ impl Agent {
             let Some(connection) = self.client.as_ref().map(|client| client.connection) else {
                 return;
             };
-            let input = match self.received.recv_timeout(ENDED_LINGER) {
-                Ok(input) => input,
-                Err(_) => return,
+            let input = match self.deferred.pop_front() {
+                Some(input) => input,
+                None => match self.received.recv_timeout(ENDED_LINGER) {
+                    Ok(input) => input,
+                    Err(_) => return,
+                },
             };
             match input {
                 Input::Request {
@@ -1349,7 +1382,11 @@ impl Agent {
             && self.drain.send(handed_over).is_ok()
             && all_handed_over.recv().is_ok()
         {
-            while let Ok(input) = self.received.try_recv() {
+            while let Some(input) = self
+                .deferred
+                .pop_front()
+                .or_else(|| self.received.try_recv().ok())
+            {
                 self.serve(input);
             }
         }
@@ -1462,6 +1499,17 @@ impl Agent {
             self.leave();
         }
     }
+}
+
+/// Whether `input` is a request that replaces a breakpoint set.
+fn replaces_breakpoints(input: &Input) -> bool {
+    let Input::Request { message, .. } = input else {
+        return false;
+    };
+    matches!(
+        message.get("command").and_then(Value::as_str),
+        Some("setBreakpoints" | "setFunctionBreakpoints")
+    )
 }
 
 /// Whether the command named `name` (`Command::name`) makes the stopped
@@ -1577,6 +1625,25 @@ mod tests {
         };
         let body = to_value(stopped_body(&standing, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[1]]));
+    }
+
+    #[test]
+    fn a_pending_replacement_hides_the_ids_it_replaces() {
+        let mut known = Breakpoints::default();
+        let ids = known.request_lines("Loop", vec![10]);
+        known.answered_lines("Loop", &[(1, ids[0])]);
+        let stop = StopReason::Breakpoint {
+            ids: vec![BreakpointId(1)],
+        };
+        // Sent again, unanswered: the client still holds the breakpoint.
+        known.request_lines("Loop", vec![10]);
+        let body = to_value(stopped_body(&stop, false, &known));
+        assert_eq!(body["hitBreakpointIds"], json!([ids[0]]));
+        // Replaced by another line, unanswered: the stop names nothing.
+        known.request_lines("Loop", vec![30]);
+        let body = to_value(stopped_body(&stop, false, &known));
+        assert_eq!(body["reason"], "breakpoint");
+        assert!(body.get("hitBreakpointIds").is_none(), "{body}");
     }
 
     #[test]
