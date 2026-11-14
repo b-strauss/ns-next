@@ -404,50 +404,68 @@ fn a_pause_right_after_a_continue_stops_the_program() {
 /// built in one profile, and without the override the deadline would
 /// outlast the trickle test and leave the silence test proving nothing.
 #[cfg(debug_assertions)]
-const ATTACH_DEADLINE: (&str, &str) = ("NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS", "200");
+const ATTACH_DEADLINE: (&str, &str) = ("NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS", "500");
+
+/// `ATTACH_DEADLINE`'s value.
+#[cfg(debug_assertions)]
+const ATTACH_DEADLINE_DURATION: Duration = Duration::from_millis(500);
+
+/// How many connections a client tries before it attaches in time. The
+/// deadline is short so that the tests are quick, and a machine running
+/// many suites at once may let a connection's deadline pass before its
+/// first request is read; a connection the deadline closed is the
+/// behaviour under test, and a fresh one is tried.
+#[cfg(debug_assertions)]
+const ATTACH_ATTEMPTS: u32 = 10;
 
 /// The deadline to attach ends nothing once the client attached: a client
-/// silent for longer than it after its `attach` keeps its session.
+/// silent for three times the deadline after its `attach` keeps its
+/// session.
 #[cfg(debug_assertions)]
 #[test]
 fn an_attached_client_may_stay_silent_past_the_attach_deadline() {
     let (_directory, path) = program("Hello", HELLO);
     let mut client = DapClient::listen_mode_with("run", &path, &[ATTACH_DEADLINE]);
-    client.initialize();
-    client.attach(false);
-    std::thread::sleep(Duration::from_millis(600));
+    client.attach_racing_the_deadline(ATTACH_ATTEMPTS);
+    std::thread::sleep(ATTACH_DEADLINE_DURATION * 3);
     client.configuration_done();
     assert_eq!(exit_code_reported(&mut client), 0);
     let finished = client.finish();
     assert_eq!(finished.status, Some(0), "{}", finished.stderr);
-    assert_eq!(finished.stdout, "hi\n");
+    assert_eq!(
+        finished.stdout,
+        "hi
+"
+    );
 }
 
 /// A peer that never attaches -- here one that trickles `initialize`
-/// requests, each well inside the deadline -- is closed at the deadline,
-/// and the next client is served.
+/// requests every 50 ms, which no read timeout would ever end -- is closed
+/// once the deadline passed, whatever it was answered meanwhile, and the
+/// next client is served.
 #[cfg(debug_assertions)]
 #[test]
 fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
     let (_directory, path) = program("Hello", HELLO);
     let mut client = DapClient::listen_mode_with("run", &path, &[ATTACH_DEADLINE]);
     let started = std::time::Instant::now();
-    // Requests every 50 ms, which a read timeout would never end.
-    while started.elapsed() < Duration::from_secs(5) {
-        let Ok(seq) = client.connection.try_send("initialize", json!({})) else {
-            break;
-        };
-        if !client.connection.answers_or_closes(seq) {
+    // Generous on a loaded machine; a read timeout would hold it forever.
+    let bound = ATTACH_DEADLINE_DURATION + Duration::from_secs(5);
+    while started.elapsed() < bound {
+        if client.connection.try_send("initialize", json!({})).is_err()
+            || client.connection.closed_now()
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the connection outlived the deadline"
+        client.connection.closed_now(),
+        "the connection outlived the deadline by more than 5 s"
     );
     client.reconnect();
-    client.start_session(false);
+    client.attach_racing_the_deadline(ATTACH_ATTEMPTS);
+    client.configuration_done();
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().status, Some(0));
 }

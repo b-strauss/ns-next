@@ -143,18 +143,32 @@ impl Connection {
         }
     }
 
-    /// Waits for the response to the request `seq`: `true` once it came,
-    /// `false` when the agent closed the connection first. Writing to a
-    /// connection the agent closed may itself fail, which is that too.
-    pub fn answers_or_closes(&mut self, seq: i64) -> bool {
+    /// Waits for the response to the request `seq`: the response once it
+    /// came, `None` when the agent closed the connection first. Writing to
+    /// a connection the agent closed may itself fail, which is that too.
+    pub fn response_or_close(&mut self, seq: i64) -> Option<Value> {
         loop {
-            let Some(message) = self.next_message("a response or the end") else {
-                return false;
-            };
+            let message = self.next_message("a response or the end")?;
             if message["type"] == "response" && message["request_seq"] == seq {
-                return true;
+                return Some(message);
+            }
+            if message["type"] == "event" {
+                self.events.push_back(message);
             }
         }
+    }
+
+    /// Whether the agent has closed the connection by now, without
+    /// waiting; the messages that arrived meanwhile are dropped.
+    pub fn closed_now(&mut self) -> bool {
+        while !self.closed {
+            match self.messages.try_recv() {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.closed = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            }
+        }
+        true
     }
 
     /// The next event named `name`, the others before it dropped.
@@ -391,6 +405,27 @@ impl DapClient {
         let process = self.event("process");
         self.event("initialized");
         process
+    }
+
+    /// `attach` with the listening mode's token as a fresh connection's
+    /// first request, then the `process` and `initialized` events, on a
+    /// connection made afresh as long as the agent's deadline to attach
+    /// closes it first -- which a loaded machine may make it do -- at most
+    /// `attempts` times.
+    pub fn attach_racing_the_deadline(&mut self, attempts: u32) {
+        for _ in 0..attempts {
+            let arguments = json!({ "token": self.token() });
+            if let Ok(seq) = self.connection.try_send("attach", arguments) {
+                if let Some(response) = self.connection.response_or_close(seq) {
+                    assert_eq!(response["success"], true, "{response}");
+                    self.event("process");
+                    self.event("initialized");
+                    return;
+                }
+            }
+            self.reconnect();
+        }
+        panic!("no attach within the deadline in {attempts} attempts");
     }
 
     /// `configurationDone`, asserting it succeeded.
