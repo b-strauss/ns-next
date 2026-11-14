@@ -286,11 +286,7 @@ fn a_second_client_meets_none_of_the_first_s_breakpoints() {
     client.reconnect();
     client.start_session(false);
     assert_eq!(exit_code_reported(&mut client), 0);
-    assert_eq!(
-        client.finish().stdout,
-        "hi
-"
-    );
+    assert_eq!(client.finish().stdout, "hi\n");
 }
 
 #[test]
@@ -432,11 +428,7 @@ fn an_attached_client_may_stay_silent_past_the_attach_deadline() {
     assert_eq!(exit_code_reported(&mut client), 0);
     let finished = client.finish();
     assert_eq!(finished.status, Some(0), "{}", finished.stderr);
-    assert_eq!(
-        finished.stdout,
-        "hi
-"
-    );
+    assert_eq!(finished.stdout, "hi\n");
 }
 
 /// A peer that never attaches -- here one that trickles `initialize`
@@ -458,6 +450,11 @@ fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+    // A write may fail at the close before the reader has seen it: the
+    // closed state is waited for, as long again.
+    while !client.connection.closed_now() && started.elapsed() < bound * 2 {
+        std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
         client.connection.closed_now(),
@@ -802,11 +799,7 @@ fn a_breakpoint_set_before_configuration_done_is_answered_and_stops() {
     assert_eq!(client.stdout(), "");
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
-    assert_eq!(
-        client.finish().stdout,
-        "hi
-"
-    );
+    assert_eq!(client.finish().stdout, "hi\n");
 }
 
 #[test]
