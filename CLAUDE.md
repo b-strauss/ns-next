@@ -202,7 +202,7 @@ Rust 1.98.0, edition 2021, seven crates:
   by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
   holds the reader to and the JetBrains plugin bundles. `run` and `load`
   take `--debug`, which listens on 127.0.0.1 behind a token from the
-  operating system's random source, and `--debug-connect=<address>`,
+  operating system's random source, and `--debug-connect <address>`,
   which connects to a client that listens, as the plugin's does: the DAP
   agent in `debug/`, a thread of its own over the remote's two halves,
   the only writer to the socket, writing nothing to the program's
