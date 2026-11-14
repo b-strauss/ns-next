@@ -63,10 +63,6 @@ pub(in crate::heap) const CLASS: usize = 1;
 /// Where a block's fields start: field `index` is word `FIELDS + index`.
 pub(in crate::heap) const FIELDS: usize = 2;
 
-/// How many ranges `pointer_ranges` answers: the class word's, then at
-/// most one per pointer field of a class object, the format with the most.
-pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len();
-
 /// The indices of every word of `block` that holds a stored `Word`, as
 /// ranges relative to the block's start, decided by the header's format
 /// alone: the class word always; every field of `FixedPointers`,
@@ -82,14 +78,79 @@ pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len(
 /// weak object by way of `strong_pointer_ranges`, which leaves out only
 /// weak words -- and forwarding rewrites them through `trace_block`,
 /// so a field one of the two must reach cannot be missed by the other
-/// (`docs/design/memory.md`, "What the collector traces"). Unused entries
-/// are empty, and every range is clamped to the block, so a block shorter
-/// than its format expects yields empty ranges rather than a panic.
-pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>; POINTER_RANGES] {
+/// (`docs/design/memory.md`, "What the collector traces"). Every range is
+/// clamped to the block, so a block shorter than its format expects yields
+/// empty ranges rather than a panic.
+pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> PointerRanges {
     let Some(&header) = block.get(HEADER) else {
-        return Default::default();
+        return PointerRanges::new(Shape::ClassWord, 0);
     };
     pointer_ranges_of(Header(header).format(), block)
+}
+
+/// The ranges `pointer_ranges_of` decided for one block, answered one at a
+/// time: the class word's, then the format's own. A value of a few words
+/// rather than an array of every range a class object could have, which
+/// every walk of the collector built and copied for every object it
+/// visited -- in a debug build a call to `memcpy` each time, a quarter of
+/// a move.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(in crate::heap) struct PointerRanges {
+    shape: Shape,
+    /// The block's length, which every range is clamped to.
+    length: usize,
+    /// How many ranges have been answered.
+    answered: usize,
+}
+
+/// Which words past the class word a block's format names: what
+/// `pointer_ranges_of` decides, already clamped but for a class object's,
+/// which `PointerRanges` clamps one field at a time.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Shape {
+    /// The class word alone.
+    ClassWord,
+    /// One range besides.
+    Fields(std::ops::Range<usize>),
+    /// Two ranges besides: a closure's captured frame and its copied values.
+    TwoRanges(std::ops::Range<usize>, std::ops::Range<usize>),
+    /// A class object's pointer fields, `class_field::POINTERS`, one word
+    /// each.
+    ClassFields,
+}
+
+impl PointerRanges {
+    fn new(shape: Shape, length: usize) -> PointerRanges {
+        PointerRanges {
+            shape,
+            length,
+            answered: 0,
+        }
+    }
+}
+
+impl Iterator for PointerRanges {
+    type Item = std::ops::Range<usize>;
+
+    fn next(&mut self) -> Option<std::ops::Range<usize>> {
+        let length = self.length;
+        let clamped = |start: usize, end: usize| start.min(length)..end.min(length);
+        let index = self.answered;
+        self.answered += 1;
+        match (index, &self.shape) {
+            (0, _) => Some(clamped(CLASS, CLASS + 1)),
+            (1, Shape::Fields(range) | Shape::TwoRanges(range, _))
+            | (2, Shape::TwoRanges(_, range)) => Some(range.clone()),
+            (index, Shape::ClassFields) => class_field::POINTERS
+                .get(index - 1)
+                .map(|field| clamped(FIELDS + field, FIELDS + field + 1)),
+            _ => {
+                // Answered out: stay so however often asked.
+                self.answered = index;
+                None
+            }
+        }
+    }
 }
 
 /// `pointer_ranges` for a block whose header the caller has already
@@ -98,19 +159,15 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
 /// to choose between this and the weak path, so that an ordinary object
 /// pays no second read of its header. The same contract: ranges clamped
 /// to the block, an empty or short block answering empty ranges.
-pub(in crate::heap) fn pointer_ranges_of(
-    format: Format,
-    block: &[u64],
-) -> [std::ops::Range<usize>; POINTER_RANGES] {
-    let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
+pub(in crate::heap) fn pointer_ranges_of(format: Format, block: &[u64]) -> PointerRanges {
     let length = block.len();
     let clamped = |start: usize, end: usize| start.min(length)..end.min(length);
-    ranges[0] = clamped(CLASS, CLASS + 1);
-    match format {
+    // The class word always, which `PointerRanges` answers first.
+    let shape = match format {
         Format::FixedPointers
         | Format::IndexablePointers
         | Format::WeakPointers
-        | Format::Ephemeron => ranges[1] = clamped(FIELDS, length),
+        | Format::Ephemeron => Shape::Fields(clamped(FIELDS, length)),
         // A married frame's registers are its stack frame's, traced with
         // the stack; its own stay nil until the divorce copies them in, so
         // they are skipped rather than walked for nothing. A suspended
@@ -125,26 +182,25 @@ pub(in crate::heap) fn pointer_ranges_of(
             } else {
                 length
             };
-            ranges[1] = clamped(FIELDS, end);
+            Shape::Fields(clamped(FIELDS, end))
         }
         // A closure's code id and feedback base are numbers; its captured
         // frame and its copied values are the pointers.
         Format::Closure => {
             let frame = FIELDS + closure_field::CAPTURED_FRAME;
-            ranges[1] = clamped(frame, frame + 1);
-            ranges[2] = clamped(FIELDS + closure_field::COUNT, length);
+            Shape::TwoRanges(
+                clamped(frame, frame + 1),
+                clamped(FIELDS + closure_field::COUNT, length),
+            )
         }
         // A class object's builtin, applied clause and application are
-        // numbers; the rest are objects or nil.
-        Format::Class => {
-            for (range, field) in ranges[1..].iter_mut().zip(class_field::POINTERS) {
-                *range = clamped(FIELDS + field, FIELDS + field + 1);
-            }
-        }
+        // numbers; the rest -- `class_field::POINTERS` -- are objects or
+        // nil.
+        Format::Class => Shape::ClassFields,
         // Digits, code points and bytes store no words. A forwarder -- the
         // corpse a bulk forward leaves, garbage in the old space until a
         // full collection -- keeps the old object's fields, which nothing
-        // reads any more; only its class word, `ranges[0]`, names its
+        // reads any more; only its class word, the first range, names its
         // replacement, and tracing that word is what keeps the young
         // replacement of a remembered forwarder alive and rewritten until
         // it is tenured. A free block holds nothing.
@@ -153,9 +209,9 @@ pub(in crate::heap) fn pointer_ranges_of(
         | Format::ThirtyTwoBit
         | Format::AlignedBytes
         | Format::Forwarded
-        | Format::Free => {}
-    }
-    ranges
+        | Format::Free => Shape::ClassWord,
+    };
+    PointerRanges::new(shape, length)
 }
 
 /// The words of `block`, its header decoded to `format`, that keep what
@@ -176,12 +232,8 @@ pub(in crate::heap) fn strong_pointer_ranges(
     format: Format,
     block: &[u64],
     key_survives: impl FnOnce(u64) -> bool,
-) -> [std::ops::Range<usize>; POINTER_RANGES] {
-    let class_word_only = || {
-        let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
-        ranges[0] = CLASS.min(block.len())..(CLASS + 1).min(block.len());
-        ranges
-    };
+) -> PointerRanges {
+    let class_word_only = || PointerRanges::new(Shape::ClassWord, block.len());
     match format {
         Format::WeakPointers => class_word_only(),
         Format::Ephemeron => match block.get(FIELDS) {
@@ -851,8 +903,7 @@ mod tests {
             words[HEADER] = Header::new(DispatchId::NONE, format, 0, 1 + fields).0;
             words
         };
-        let covered =
-            |words: &[u64]| -> Vec<usize> { pointer_ranges(words).into_iter().flatten().collect() };
+        let covered = |words: &[u64]| -> Vec<usize> { pointer_ranges(words).flatten().collect() };
         assert_eq!(covered(&block(Format::FixedPointers, 2)), vec![CLASS, 2, 3]);
         // Forwarding reads every weak word.
         assert_eq!(covered(&block(Format::WeakPointers, 2)), vec![CLASS, 2, 3]);
@@ -915,7 +966,6 @@ mod tests {
         };
         let strong = |words: &[u64], survives: bool| -> Vec<usize> {
             strong_pointer_ranges(Header(words[HEADER]).format(), words, |_| survives)
-                .into_iter()
                 .flatten()
                 .collect()
         };
@@ -970,8 +1020,6 @@ mod tests {
             }
         }
         // A block without a header has no pointer words in any format.
-        assert!(pointer_ranges_of(Format::FixedPointers, &[])
-            .iter()
-            .all(|range| range.is_empty()));
+        assert!(pointer_ranges_of(Format::FixedPointers, &[]).all(|range| range.is_empty()));
     }
 }

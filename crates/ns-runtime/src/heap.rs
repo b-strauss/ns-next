@@ -11293,17 +11293,15 @@ impl<'gc> Heap<'gc> {
         while position < old.top / 8 {
             let (header, next) = object_at(words, position);
             let block = block_range(words, header);
-            let names_young = object::pointer_ranges(&words[block.clone()])
-                .into_iter()
-                .any(|range| {
-                    words[range.start + block.start..range.end + block.start]
-                        .iter()
-                        .any(|bits| {
-                            Word::from_bits(*bits)
-                                .object_offset()
-                                .is_some_and(space::is_young)
-                        })
-                });
+            let names_young = object::pointer_ranges(&words[block.clone()]).any(|range| {
+                words[range.start + block.start..range.end + block.start]
+                    .iter()
+                    .any(|bits| {
+                        Word::from_bits(*bits)
+                            .object_offset()
+                            .is_some_and(space::is_young)
+                    })
+            });
             let remembered = Header(words[header]).remembered();
             assert!(
                 !names_young || remembered,
