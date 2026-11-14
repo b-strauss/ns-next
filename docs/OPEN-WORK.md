@@ -2085,8 +2085,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     - *Tests*: the real `newspeak/breakableLines` round trip through the
       platform's LSP client (the breakpoint types' test replaces the
       fetcher), a breakpoint in a shipped module's read-only file, the
-      turning off and on that carries an edited pass count to a running
-      session, and a `pause` during a line step's first repetition have
+      turning off and on that carries an edited pass count or exception
+      box to a running session, and a `pause` during a line step's first
+      repetition have
       none ([editor-support.md](design/editor-support.md), "Known gaps",
       "Plugin testing and gates").
 - **Reflection beyond road step 5b2a**: a class declared from source with

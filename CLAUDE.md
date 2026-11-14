@@ -204,10 +204,13 @@ Rust 1.98.0, edition 2021, seven crates:
   take `--debug`, which listens on 127.0.0.1 behind a token from the
   operating system's random source, and `--debug-connect <address>`,
   which connects to a client that listens, as the plugin's does: the DAP
-  agent in `debug/`, a thread of its own over the remote's two halves,
-  the only writer to the socket, writing nothing to the program's
-  standard streams but the listening line and the line a terminated run
-  prints (`debugger.md`, "Launching, the start and the end"; tests
+  agent in `debug/`, one thread over the remote's two halves that every
+  input reaches on one channel, which writes to the socket only through
+  the connection's writer thread, every write and its queue bounded, and
+  writes nothing to the program's standard streams but the listening
+  line and the line a terminated run prints; the connecting mode returns
+  the secret its launcher hands it in `NS_NEXT_DEBUG_SECRET`
+  (`debugger.md`, "Launching, the start and the end"; tests
   `tests/debug_adapter.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
@@ -280,7 +283,8 @@ own over the server's document symbols, and the debugger (`debugger/`): a
 DAP client of its own (`dap/`, on the platform's Gson), Debug on a run
 configuration through an `XDebugProcess` that starts `ns-next run
 --debug-connect` against a socket it listens on and acts only on the
-process it started, and three breakpoint types -- line breakpoints on the
+process it started, named by its PID and a one-time secret, and three
+breakpoint types -- line breakpoints on the
 server's breakable lines with block variants and pass counts, method
 and exception breakpoints (`debugger.md`, "The JetBrains plugin").
 

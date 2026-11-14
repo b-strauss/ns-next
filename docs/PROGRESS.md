@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, and the plugin's DAP client, `XDebugProcess` and line, method and exception breakpoints | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md) |
+| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md) |
 
 ## Notes
 
@@ -7680,23 +7680,39 @@ source (`random.rs`), and `ns-tooling`'s `lines.rs` counts lines and
 UTF-16 columns for the language server and the agent alike.
 
 The agent (`crates/ns-cli/src/debug/`) is one thread that every input
-reaches on one channel and the only writer to the socket: the framing
-bounded before it reads, the token compared in constant time and a
-deadline for an unattached connection, the session from `initialize` to
+reaches on one channel, so that it alone decides what the client is sent
+and in which order, and it writes through a writer thread of each
+connection's, so that a client that stops reading never blocks it: the
+framing bounded before it reads, to 64 KiB until a peer attached and
+64 MiB after; the token compared in constant time and a deadline of
+10 s for an unattached connection's whole exchange, kept by the agent's
+loop; each message's whole write bounded, by that deadline before the
+attach and by 30 s after, the writer's queue by 1,024 messages and its
+last words as a session ends by one 30 s deadline, a write past its
+bound or a full queue ending the session as a disconnect does; the
+session from `initialize` to
 `exited` and `terminated`, a stop's stack, scopes, paged variables and
 sources -- a program module by its file's path while its text is the
 file's, every other module by a stable `sourceReference` -- line
 breakpoints with block variants and hit conditions under ids the client
 keeps, function and exception breakpoints, steps by line or by
 statement, run to cursor (`nsNext/runToPosition`), pause, terminate and
-disconnect; a listening agent resets the VM for the next client. The
+disconnect; every replacement of a breakpoint set that reached the agent
+served before it reports a stop, so that a stop names no breakpoint the
+client replaced; every request answered after the program ended too,
+for at most 2 s past `terminated`; a client's path naming a module's
+file when both resolve to one canonical path, on Windows without the
+verbatim prefix; and a listening agent resets the VM for the next
+client. The
 language server answers `newspeak/breakableLines` from a worker thread
 of 64 MiB that bootstraps one interpreter, and answers `null` for a
 module nesting more than 20,000 sends until the compiler walks chains
 link by link. The plugin speaks DAP through a client of its own on the
 platform's Gson, debugs a Newspeak run configuration through an
 `XDebugProcess` that acts only on a connection whose `process` event
-names the process it started, and sets line breakpoints on the server's
+names the process it started -- its PID and the one-time secret the
+runner handed it in `NS_NEXT_DEBUG_SECRET` -- names the exception an
+exception's stop is for, and sets line breakpoints on the server's
 breakable lines with their block variants and pass counts, method
 breakpoints by name and exception breakpoints by filter and class. Its
 tests that start a binary run as Gradle tasks of their own --
@@ -7710,10 +7726,19 @@ over the sixteen Are We Fast Yet programs is +0.04%, every program
 within -0.44% and +0.65%, nothing separated from noise; the clone of
 the exception breakpoints' settings at every reported exception does
 not show over 200,000 caught signals, and the connection and handshake
-cost 17 to 32 ms a process ("What stage 4 moved").
+cost 17 to 32 ms a process ("What stage 4 moved"); the tree measured
+was `f45b4f0b`, before the agent's writes moved to the writer thread.
 
 The commit gates passed on every commit (`commit`, and `memory`,
-`analyzer` and `codegen` where their files changed).
+`analyzer` and `codegen` where their files changed). The end-of-batch
+gates passed on the final tree, `d3786f5f`: `images`, `caches`,
+`benchmarks`, `release-checks`, `codegen`, `stress` -- the suite under
+the fifteen stress modes and with `NS_NEXT_NO_JIT=1`, 3,235 tests each
+(WIDE 5,009), and `run-corpus` "ran 6, failed 0, skipped 205" plain and
+under each mode -- `linux`, `aarch64`, whose suite took 385.7 s, and
+`plugin-verification`. The final review of the whole branch found
+nothing Critical; its findings were fixed in the last wave of fixes
+below and reviewed again, but for two it deferred to the open work.
 
 - `687c7d65`, `c1367429` -- stage 4's questions decided and the plan
   (`docs/superpowers/plans/2026-11-14-1235-debugger-stage-4.md`).
@@ -7741,6 +7766,25 @@ The commit gates passed on every commit (`commit`, and `memory`,
 - `dc414e22`, `f45b4f0b` -- the plugin's line, method and exception
   breakpoints.
 - `7b047d21` -- the stage's deferred polish.
+- `a05e10a8`, `5380cfcf` -- the documents brought to the stage.
+- `5275e320`, `92979b80`, `b7d7289a`, `bd7f5bdd` -- the deadline, the
+  breakable lines' and the racing tests hold on a loaded machine and on
+  every platform.
+- `09d49ecc`, `39b81c4e` -- a peer or client that never reads cannot
+  hold off the attach deadline nor wedge the agent: the writer thread,
+  its bounded writes and queue.
+- `81b552ea` -- every request answered, the program's end included.
+- `26555e18` -- a stop names no breakpoint the client has replaced.
+- `9435eb6d` -- the agent bounds what a peer and a client hold: frames
+  bounded before the attach, the attach deadline kept by the agent's
+  loop, each message's whole write bounded, the linger a deadline from
+  `terminated`, canonical path comparison, and the launcher's secret
+  returned in the `process` event.
+- `7ac80b41` -- the plugin trusts only its own process, by its PID and
+  a one-time secret, and names the exception at its stop.
+- `68382d21` -- the open work the final review deferred.
+- `0da6a9d2`, `d3786f5f` -- the writer's last words within one deadline,
+  and Windows' verbatim and UNC prefixes in the path comparison.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 5:
 evaluation, conditional breakpoints and logpoints, watches and setting

@@ -131,10 +131,12 @@
 > (`jit::free_for_patch`, `jit/baseline.rs`, `jit/optimizing/`,
 > `jit/cut.rs`), and the handler search's two rows, a leaf and an exit
 > (`Kernel.ns`, `builtins/activation.rs`). The DAP agent is
-> `crates/ns-cli/src/debug/` (`wire.rs`, `connection.rs`, `agent.rs`,
-> `host.rs`, `protocol.rs`, `stopped.rs`, `sources.rs`, `breakpoints.rs`,
-> `stepping.rs`), its token drawn by `ns-memory`'s `random.rs` and its
-> lines and columns counted by `ns-tooling`'s `lines.rs`; the breakable
+> `crates/ns-cli/src/debug/` (`mod.rs`, its start and the event pump;
+> `wire.rs`; `connection.rs`, the connection and its writer thread;
+> `agent.rs`, `host.rs`, `protocol.rs`, `stopped.rs`, `sources.rs`,
+> `breakpoints.rs`, `stepping.rs`), its token drawn by `ns-memory`'s
+> `random.rs` and its lines and columns counted by `ns-tooling`'s
+> `lines.rs`; the breakable
 > lines are `crates/ns-analyzer/src/breakable.rs`; and the plugin's
 > debugger is
 > `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/debugger/`
@@ -1615,7 +1617,14 @@ tests do not.
   run to its end; the listening mode's line, its token required, an
   `initialize` counting from 0 and a request before the `attach`
   refused, a peer that never attaches closed at the deadline and an
-  attached one silent past it kept; `stopOnEntry` stopping at
+  attached one silent past it kept, a peer that never reads closed at
+  the deadline, an attached client that stops reading dropped, and an
+  unattached peer's long frame closing its connection; the connecting
+  mode's `process` event returning its launcher's secret; a request after
+  the program ended answered, and a client that never disconnects
+  keeping the ended program's process no longer than its 2 s; a module
+  named through `..` and a program started through a link taking a
+  breakpoint by the plain and the real path; `stopOnEntry` stopping at
   `main:args:`; `terminate` running the `ensure:` blocks, also between
   runs, before `main:args:`; `disconnect` with `terminateDebuggee`
   killing a program inside a long leaf, and without it letting a stopped
@@ -1634,7 +1643,12 @@ tests do not.
   refused; and a pending breakpoint reported once its module is built.
   The unit tests hold the parsing of hit conditions, method names and
   class lists, a breakpoint's id kept while the client sends it, the
-  unasked events told from answers, a module's source and reference,
+  unasked events told from answers, a stop naming only the breakpoints
+  the agent knows and a pending replacement hiding the ids it replaces,
+  a module's source and reference, a canonical and a spelled path of one
+  file agreeing and a module whose file is gone still named by its path,
+  a message's whole write bounded however the peer reads and the
+  writer's `finish` ending within its deadline, the framing's bounds,
   and when a line step goes on.
 - **The breakable statements' tests**:
   `crates/ns-cli/tests/debug_metadata.rs` holds `breakable_statements`
@@ -1659,6 +1673,13 @@ tests do not.
   `release-checks`, `codegen`, `stress` -- the suite under the fifteen
   modes and with `NS_NEXT_NO_JIT=1`, 1,642 s, and `run-corpus` under
   each -- `linux` and `aarch64`, whose suite took 688 s.
+- **Stage 4's end-of-batch gates** passed on its final tree
+  (`d3786f5f`, 2026-11-14): `images`, `caches`, `benchmarks`,
+  `release-checks`, `codegen`, `stress` -- the suite under the fifteen
+  modes and with `NS_NEXT_NO_JIT=1`, 3,235 tests each (WIDE 5,009), and
+  `run-corpus` "ran 6, failed 0, skipped 205" plain and under each mode
+  -- `linux`, `aarch64`, whose suite took 385.7 s, and
+  `plugin-verification`.
 - **The `codegen` gate** holds the run loop with the `Cell` slots and
   the `Breakpoint` arm to its budgets: the arm shares the out-of-line arm
   of the simultaneous slot clauses, since an arm of its own grew
@@ -1777,7 +1798,7 @@ code beyond what `bench_signal` exercises.
 Stage 4 adds nothing to a program run without `--debug`: the hit counts
 are read only in `interpreter/breakpoint.rs`'s cold decision, and no
 instruction, golden, `run-corpus` outcome or image changed. What it
-adds to a program run with a debugger attached is the agent's thread
+adds to a program run with a debugger attached is the agent's threads
 and, at every exception the handler search reports, a clone of the
 exception breakpoints' settings. So stage 4 was measured as an attached
 debugger against none, on one binary, in one sitting on 2026-11-14, on
@@ -1811,7 +1832,11 @@ Not covered: a third build; the listening mode (`--debug`) and
 breakpoints, filters, steps and pauses; uncaught exceptions,
 `doesNotUnderstand:`, errors the VM raises, and resumed or retried
 exceptions; `ns-next bench`, and of the microbenchmarks only
-`bench_signal`'s signal; Linux, AArch64 and Windows on ARM.
+`bench_signal`'s signal; Linux, AArch64 and Windows on ARM; and the
+agent as the batch ended, measured at `f45b4f0b` before its writes moved
+to the connection's writer thread and were bounded, which adds a thread
+and a queued message per answer to an attached run, nothing to a
+program's own thread.
 
 ## The decisions
 

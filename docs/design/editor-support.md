@@ -1913,9 +1913,11 @@ The server's own tests are described under its section, above ("Testing").
   through the agent and leaves the process running, the second kills it;
   and, against a fake agent over the same harness (a session over an
   undebugged `ns-next` process of the test's own): an agent reporting
-  another process's id, and one sending `initialized` and `stopped`
-  without any `process` event, ends the session with the error and kills
-  the process before any configuration is sent; `stop()` keeps the
+  another process's id, one whose `process` event lacks the runner's
+  secret, and one sending `initialized` and `stopped` without any
+  `process` event, ends the session with the error and kills the process
+  before any configuration is sent; an exception's stop says which
+  exception stopped it in the debugger's balloon; `stop()` keeps the
   connection until `terminate` is answered; a module shown by reference
   is one read-only `LightVirtualFile` across two stops, asked for once;
   a hidden frame is drawn greyed and the program's frame not; and an
@@ -2059,7 +2061,8 @@ The server's own tests are described under its section, above ("Testing").
   server has answered; the context menu's "Run" from the file and from inside a
   method, named `<file>.ns` and recognised from the gutter's
   configuration, none for a module that cannot run, and off the EDT asking
-  the server itself). No test starts `ns-next`.
+  the server itself). None of these starts `ns-next`; only the
+  debugger's three tasks above do.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
 `ns-analyzer`'s tests, the hints' behaviour oracle aside ("Hints"), before
@@ -2072,7 +2075,8 @@ also check that disassembly and decoding do not depend on the form. Which
 gate runs when is the table "The gates" in `CLAUDE.md`: for the editor, the
 plugin's `check` on every commit (Gradle reruns its tests only when the
 plugin, a source they read or, for the lexer comparison, the Rust sources
-`dump-tokens` runs or the build settings changed),
+`dump-tokens` runs or the build settings changed, and, for the debugger's
+three tasks, the runtime's sources or the build settings),
 the hints' behaviour oracle for a commit touching `crates/ns-analyzer/`
 ("Hints"), and `verifyPlugin buildPlugin`, which downloads several IDEs, at
 the end of a batch that touched `editors/jetbrains/`. A change to
