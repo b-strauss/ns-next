@@ -29,6 +29,7 @@ mod code_zone;
 pub mod native_stack;
 mod page_map;
 mod platform;
+pub mod reach;
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -196,6 +197,7 @@ pub struct Reservation {
 impl Reservation {
     /// The page size: commit, decommit and protect work on multiples of it.
     pub fn page_size() -> usize {
+        reach::record(reach::Reach::Platform);
         platform::page_size()
     }
 
@@ -206,6 +208,7 @@ impl Reservation {
     /// bytes, so bounding the reservation once is what lets every lending
     /// below skip that comparison.
     pub fn reserve(bytes: usize) -> Result<Reservation, MemoryError> {
+        reach::record(reach::Reach::Platform);
         if bytes == 0 {
             return Err(MemoryError::InvalidRange);
         }

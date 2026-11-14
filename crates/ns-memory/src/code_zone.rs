@@ -118,6 +118,7 @@ impl CodeZone {
     /// `Unsupported` on a system that lacks what a zone needs -- here, at
     /// the zone's making, and never later.
     pub fn reserve(bytes: usize) -> Result<CodeWriter, MemoryError> {
+        crate::reach::record(crate::reach::Reach::Platform);
         if bytes == 0 || bytes > Self::MAXIMUM_BYTES {
             return Err(MemoryError::InvalidRange);
         }
@@ -162,6 +163,7 @@ impl CodeZone {
     /// The unit in which a zone commits and gives its memory back: a
     /// page, or on Windows a chunk of 1 MiB (`CodeWriter::decommit_above`).
     pub fn commit_granularity() -> usize {
+        crate::reach::record(crate::reach::Reach::Platform);
         platform::code_commit_granularity()
     }
 

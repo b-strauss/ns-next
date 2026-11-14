@@ -2339,7 +2339,24 @@ one nothing reaches is dropped, since nothing can compare it any more.
    structurally rather than listed: a version's row or its place in
    `superseded`, the `class_side` of a version of the same tree, and the
    `metaclass_mixins` memo's entry for a synthesized class side of the
-   same tree; a holder in another tree counts as one outside. A tree dies
+   same tree; a holder in another tree counts as one outside. The trees
+   and each version's count of holders inside (`Heap::inside_counts`)
+   derive from the tables and the memo alone, so they are kept across
+   collections (`MixinReclaimMemo`, `interpreter/reclaim.rs`) while the
+   tables' generation (`Tables::mixins_changed`, raised by every
+   registration, replacement, free, drop and truncation) and the memo's
+   (`MetaclassMixins`, through which alone it changes) stay; a collection
+   then decides which versions are held by one pass of
+   `Rc::strong_count` against the counts. A debug build holds a kept memo
+   to the tables' lengths at every collection and to one derived afresh at
+   its first reuse and every eighth (the reuses count afresh whenever the
+   memo is derived), which the collect stress mode turns into a check at
+   millions of collections. The trees are not walked at all while every
+   witness of the last walk stands (`Witnesses`): the two generations
+   unchanged since, no application freed by step 1, and every id the
+   gathered applied clauses, the surviving reified mixins and the held
+   versions named then named again, so that every tree that lived then
+   lives by the same id now. A tree dies
    whole because a live mixin names the ids of the mixins it is declared
    in and of those declared in it, and a holder that presents a version
    again must find it under the id it had, so a version a host holds

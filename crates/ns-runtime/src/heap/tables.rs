@@ -192,4 +192,20 @@ pub(crate) struct Tables {
     pub(crate) free_codes: FreeIndices,
     /// The address of every body the table holds to its id.
     pub(crate) code_ids: IdentityMap<usize, CodeId>,
+    /// Raised by every change to `mixins`, `mixin_ids` or `superseded`
+    /// (`Tables::mixins_changed`): a full collection's reclamation keeps
+    /// what it derives from them -- the module trees and each version's
+    /// holders inside the tables -- across collections while this stays
+    /// (`interpreter::reclaim`, `MixinReclaimMemo`).
+    pub(crate) mixin_generation: u64,
+}
+
+impl Tables {
+    /// Marks a change to the mixin rows, their ids or the superseded
+    /// versions. A change that does not raise it leaves the next
+    /// collection reading trees and counts the tables no longer have, and
+    /// it may free a tree a version is still held of.
+    pub(crate) fn mixins_changed(&mut self) {
+        self.mixin_generation = self.mixin_generation.wrapping_add(1);
+    }
 }

@@ -325,6 +325,9 @@ impl Roles {
     /// under x64 they share here, and no other. `x24` to `x29` take no
     /// role; the encoder keeps `x16` to `x18` and `x30` for itself.
     pub(crate) fn of(abi: Abi) -> Roles {
+        // Every machine code a test builds takes its roles here, mostly
+        // the host's convention's: code that differs by platform.
+        crate::reach::record(crate::reach::Reach::Platform);
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {
                 frame: RBX,

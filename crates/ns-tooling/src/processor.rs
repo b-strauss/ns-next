@@ -51,6 +51,7 @@ fn missing_from(table: &[(u32, &'static str)], ecx: u32) -> Vec<&'static str> {
 /// that has them all, and on every architecture but x86_64, which the flag
 /// does not touch.
 pub fn missing_processor_features() -> Vec<&'static str> {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     #[cfg(target_arch = "x86_64")]
     {
         // CPUID exists on every x86_64 processor, and so does leaf

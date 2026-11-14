@@ -276,8 +276,9 @@ const STEP_STRESS_GRACE_SAFEPOINTS: usize = 64;
 #[derive(Default)]
 pub(crate) struct StepStress {
     /// Picks the safepoints a burst begins at, paced by the traced size
-    /// as the pause stress mode is, the stack counted once more for each
-    /// step of a burst (`Interpreter::step_for_stress`).
+    /// and the stack as the pause stress mode is, the stack counted once
+    /// more for each step of a burst rather than the pause's eight times
+    /// (`Interpreter::step_for_stress`).
     schedule: crate::interpreter::safepoint::StressSchedule,
     /// The steps the burst under way has still to take.
     left: usize,
@@ -571,9 +572,9 @@ impl Interpreter {
     /// reader as the agent, which begins the burst's first step. The
     /// schedule is fed the traced size with the stack counted once more
     /// for each step of a burst, since every stop of a burst reads the
-    /// whole stack: a deep stack's bursts come as much rarer as they cost
-    /// more, and a shallow program's are paced as the pause stress mode's
-    /// stops. A step still in progress -- a step out of the run's first
+    /// whole stack (`safepoint::size_with_stack`): a deep stack's bursts
+    /// come as much rarer as they cost more, and a shallow program's are
+    /// paced about as the pause stress mode's stops. A step still in progress -- a step out of the run's first
     /// frame, which returns to the host, or a step over a long call -- is
     /// given `STEP_STRESS_GRACE` periods of the schedule more, and at least
     /// `STEP_STRESS_GRACE_SAFEPOINTS` safepoints, then ended
@@ -600,7 +601,11 @@ impl Interpreter {
         if stepping {
             stress.safepoints_in_step += 1;
         }
-        let paced_size = traced_size.saturating_add(STEP_STRESS_BURST.saturating_mul(stack_words));
+        let paced_size = crate::interpreter::safepoint::size_with_stack(
+            traced_size,
+            stack_words,
+            STEP_STRESS_BURST,
+        );
         if !stress.schedule.due(paced_size) {
             return;
         }

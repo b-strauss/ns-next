@@ -69,6 +69,7 @@ pub fn load_embedded(name: &str, source: &str) -> LoadedSource {
 /// the order the file system lists them; a directory that cannot be read
 /// contributes nothing.
 pub fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };

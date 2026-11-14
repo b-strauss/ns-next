@@ -51,7 +51,11 @@ Create a todo for each item.
    burst of steps into, over and out from there, the shipped filter on and
    off, reading the stack at every stop;
    beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the sixteen suites at once,
+   `NS_NEXT_NO_JIT=1`, the interpreter alone, each suite without the tests
+   `xtask/unreached-tests.txt` lists as reaching no switch (WIDE keeps
+   those that compile), and `linux` and `aarch64` run only the tests that
+   reach platform-dependent code or the runtime (`docs/design/README.md`,
+   "The tests a gate leaves out"). `stress` runs the sixteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,

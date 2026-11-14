@@ -133,7 +133,7 @@ impl World {
                 behavior_mixin: None,
                 metaclasses_ready: false,
                 applications: IdentityMap::default(),
-                metaclass_mixins: IdentityMap::default(),
+                metaclass_mixins: crate::interpreter::MetaclassMixins::default(),
                 #[cfg(debug_assertions)]
                 creations_in_progress: 0,
                 lowering,
@@ -150,6 +150,8 @@ impl World {
                 debug_metadata: crate::debugger::metadata::Cache::default(),
                 breakpoints: crate::debugger::breakpoints::Breakpoints::default(),
                 stepping: None,
+                mixin_reclaim: crate::interpreter::MixinReclaimMemo::default(),
+                reclaim_buffers: crate::interpreter::ReclaimBuffers::default(),
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();

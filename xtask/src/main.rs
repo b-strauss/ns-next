@@ -9,11 +9,14 @@
 //! there can be checked against the same budgets. Written in Rust rather than
 //! a shell script so that it runs alike on every platform and can grow the
 //! logic a script would make fragile -- choosing the groups from what a
-//! change touched, for one.
+//! change touched, for one. `unreached-tests` measures which tests no
+//! stress mode and no platform reaches, and `nextest-config` writes the
+//! profiles that leave them out (`unreached.rs`).
 
 #![forbid(unsafe_code)]
 
 mod codegen;
+mod unreached;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -23,20 +26,22 @@ const USAGE: &str = "\
 usage: cargo xtask gates <group>...
        cargo xtask shipped-code [--check]
        cargo xtask codegen [<tree>]
+       cargo xtask unreached-tests
+       cargo xtask nextest-config
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
-  commit               fmt, clippy, the suite, the doctests, parse-corpus, the plugin's check
+  commit               fmt, clippy, the suite with the reach record checked against the list of unreached tests, the doctests, parse-corpus, the plugin's check
   analyzer             the hints' behaviour oracle (profile hints)
   images               every golden through build then load (profile images)
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the suite under the fifteen stress modes and without the JIT, then run-corpus plain and under each mode
+  stress               the suite under the fifteen stress modes and without the JIT, the unreached tests left out, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  linux                in Docker: clippy, the suite, the doctests and the benchmark programs for x86_64-unknown-linux-gnu
-  aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the suite under the image's qemu-aarch64
+  linux                in Docker: clippy, the platform-dependent tests, the doctests and the Newspeak benchmark programs for x86_64-unknown-linux-gnu
+  aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the platform-dependent tests under the image's qemu-aarch64
   end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
@@ -73,6 +78,51 @@ fn stress_suite_runs() -> Vec<(String, String)> {
         .collect();
     runs.push((WITHOUT_JIT.0.to_string(), WITHOUT_JIT.1.to_string()));
     runs
+}
+
+/// The nextest arguments of the stress group's run named `mode`, with the
+/// generated config at `config`: the profile `stress` without every test
+/// the list of unreached tests names, or under WIDE, which changes what
+/// the compiler builds, without those of them that compile nothing
+/// (`unreached.rs`). `ns-cli`'s `debug_metadata` is left out too but under
+/// WIDE: it boots an interpreter, so the record does not list it, but runs
+/// no program -- only the boot every other test runs -- and only WIDE
+/// changes what it compiles.
+fn stress_suite_arguments(mode: &str, config: &Path) -> Vec<String> {
+    let profile = if mode == "WIDE" {
+        unreached::WIDE_PROFILE
+    } else {
+        unreached::STRESS_PROFILE
+    };
+    let config = config.display().to_string();
+    let mut arguments = vec![
+        "nextest",
+        "run",
+        "--workspace",
+        "--config-file",
+        &config,
+        "--profile",
+        profile,
+    ];
+    if mode != "WIDE" {
+        arguments.extend(["-E", "not binary(debug_metadata)"]);
+    }
+    arguments
+        .iter()
+        .map(|argument| argument.to_string())
+        .collect()
+}
+
+/// The command a Docker group runs its suite with, after `nextest_options`'
+/// target and threads: the generated config written in the container, then
+/// the profile that leaves out the listed tests no platform reaches.
+fn platform_suite(nextest_options: &str) -> String {
+    format!(
+        "cargo xtask nextest-config && cargo nextest run --workspace \
+         --config-file {WORKING_COPY}/{} --profile {} {nextest_options}",
+        unreached::GENERATED_CONFIG,
+        unreached::PLATFORM_PROFILE
+    )
 }
 
 /// Where `ns-runtime`'s `build.rs` looks for the shipped modules' compiled
@@ -351,6 +401,10 @@ impl Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Part {
     Steps(Vec<Step>),
+    /// The default profile's suite with the reach record on, then the
+    /// record checked against the list of unreached tests
+    /// (`unreached.rs`).
+    RecordedSuite,
     /// The suite under every stress mode, and without the JIT, at once
     /// (`stress_suite_runs`): each ends in a long tail of a few depth-limit
     /// tests that leaves most cores idle, and the tails overlap.
@@ -393,19 +447,19 @@ fn group(name: &str) -> Option<Vec<Part>> {
         "commit" => vec![
             Part::Steps(vec![Step::cargo("format", &["fmt", "--all"])]),
             Part::ShippedCode,
+            Part::Steps(vec![Step::cargo(
+                "lint",
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            )]),
+            Part::RecordedSuite,
             Part::Steps(vec![
-                Step::cargo(
-                    "lint",
-                    &[
-                        "clippy",
-                        "--workspace",
-                        "--all-targets",
-                        "--",
-                        "-D",
-                        "warnings",
-                    ],
-                ),
-                Step::cargo("suite", &["nextest", "run", "--workspace"]),
                 Step::cargo("doctests", &["test", "--workspace", "--doc"]),
                 Step::cargo(
                     "corpus parse",
@@ -512,14 +566,11 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "lint",
                     "cargo clippy --workspace --all-targets -- -D warnings",
                 ),
-                (
-                    "suite",
-                    "cargo nextest run --workspace --test-threads $(nproc)",
-                ),
+                ("suite", &platform_suite("--test-threads $(nproc)")),
                 ("doctests", "cargo test --workspace --doc"),
                 (
                     "benchmark programs",
-                    "cargo nextest run --workspace --profile benchmarks-verify",
+                    "cargo nextest run --workspace --profile benchmarks-newspeak",
                 ),
             ],
         )),
@@ -536,8 +587,7 @@ fn group(name: &str) -> Option<Vec<Part>> {
                 ),
                 (
                     "suite",
-                    "cargo nextest run --workspace \
-                     --target aarch64-unknown-linux-gnu --test-threads $(nproc)",
+                    &platform_suite("--target aarch64-unknown-linux-gnu --test-threads $(nproc)"),
                 ),
             ],
         )),
@@ -629,6 +679,15 @@ fn main() -> ExitCode {
             }
         };
     }
+    if task == "unreached-tests" && groups.is_empty() {
+        return report_outcome(unreached_tests(&repository_root()));
+    }
+    if task == "nextest-config" && groups.is_empty() {
+        return report_outcome(
+            unreached::write_generated_config(&repository_root())
+                .map(|path| println!("{}", path.display())),
+        );
+    }
     if task != "gates" || groups.is_empty() {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
@@ -652,6 +711,7 @@ fn main() -> ExitCode {
             Part::Steps(steps) => steps
                 .iter()
                 .try_for_each(|step| run(step, &root, &mut times)),
+            Part::RecordedSuite => run_recorded_suite(&root, &mut times),
             Part::StressSuites => run_stress_suites(&root, &mut times),
             Part::Codegen => run_codegen(&root, &mut times),
         };
@@ -664,6 +724,186 @@ fn main() -> ExitCode {
     report(&times);
     println!("\nevery gate passed");
     ExitCode::SUCCESS
+}
+
+/// A task's exit: success, or the failure named on stderr.
+fn report_outcome(outcome: Result<(), String>) -> ExitCode {
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failure) => {
+            eprintln!("\nFAILED: {failure}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The variables a recorded run of the suite clears, so that it measures
+/// what a test reaches in the default configuration, the one the list is
+/// held to.
+const RUNTIME_VARIABLES: [&str; 2] = ["NS_NEXT_STRESS_", "NS_NEXT_NO_JIT"];
+
+/// The default profile's suite run with the reach record on, into
+/// `RECORD_DIRECTORY` emptied first; the record it left.
+fn recorded_suite(
+    root: &Path,
+    label: &str,
+    times: &mut Vec<(String, Duration)>,
+) -> Result<unreached::Reaches, String> {
+    let directory = root.join(unreached::RECORD_DIRECTORY);
+    if directory.exists() {
+        std::fs::remove_dir_all(&directory)
+            .map_err(|error| format!("empty {}: {error}", directory.display()))?;
+    }
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let mut step = Step::cargo(label, &["nextest", "run", "--workspace"]);
+    step.environment.push((
+        ns_runtime::reach::VARIABLE.to_string(),
+        directory.display().to_string(),
+    ));
+    println!("\n==> {label}");
+    let started = Instant::now();
+    let mut command = command_of(&step, root);
+    for (name, _) in std::env::vars_os() {
+        let name = name.to_string_lossy();
+        if RUNTIME_VARIABLES
+            .iter()
+            .any(|variable| name.starts_with(variable))
+        {
+            command.env_remove(name.as_ref());
+        }
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("{label}: could not start: {error}"))?;
+    times.push((label.to_string(), started.elapsed()));
+    if !status.success() {
+        return Err(format!("{label} ({status})"));
+    }
+    unreached::read_record(&directory)
+}
+
+/// The tests of the default profile, as `nextest list` names them.
+fn default_tests(root: &Path) -> Result<Vec<unreached::TestId>, String> {
+    let output = Command::new(cargo())
+        .args([
+            "nextest",
+            "list",
+            "--workspace",
+            "--message-format",
+            "oneline",
+        ])
+        .current_dir(root)
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("nextest list: could not start: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("nextest list ({})", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(binary, name)| unreached::TestId::new(binary, name))
+        .collect())
+}
+
+/// The commit group's suite: the default profile with the reach record
+/// on, then the record held to the list of unreached tests, so that no
+/// gate leaves out a test a change made reachable: the sentinel over the
+/// tests that run a program, every listed test reaching no more than the
+/// list says, and no listed test missing from the run; the tests a
+/// measurement would add to the list are only named.
+fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
+    let record = recorded_suite(root, "suite", times)?;
+    let tests = default_tests(root)?;
+    unreached::sentinel(&tests, &record, |path| {
+        unreached::golden_exits_with_zero(root, path)
+    })?;
+    let text = std::fs::read_to_string(root.join(unreached::LIST))
+        .map_err(|error| format!("read {}: {error}", unreached::LIST))?;
+    let listed =
+        unreached::parse_list(&text).map_err(|error| format!("{}: {error}", unreached::LIST))?;
+    let addable = unreached::could_be_listed(&listed, &tests, &record);
+    if !addable.is_empty() {
+        println!(
+            "\n{} tests reach no runtime but are not listed in {}, so every gate runs \
+             them; `cargo xtask unreached-tests` would list them:",
+            addable.len(),
+            unreached::LIST
+        );
+        for test in &addable {
+            println!("  {} {}", test.binary, test.name);
+        }
+    }
+    let stale = unreached::stale(&listed, &record);
+    let dead = unreached::dead(&listed, &tests);
+    if stale.is_empty() && dead.is_empty() {
+        return Ok(());
+    }
+    let mut failures = Vec::new();
+    if !stale.is_empty() {
+        failures.push(format!(
+            "tests that now reach more than it says, which the stress and Docker groups \
+             would leave out:\n  {}",
+            stale.join("\n  ")
+        ));
+    }
+    if !dead.is_empty() {
+        failures.push(format!(
+            "tests that did not run, renamed or removed:\n  {}",
+            dead.join("\n  ")
+        ));
+    }
+    Err(format!(
+        "{} lists {}\nRun `cargo xtask unreached-tests`.",
+        unreached::LIST,
+        failures.join("\nand ")
+    ))
+}
+
+/// `cargo xtask unreached-tests`: the default profile's suite run with
+/// the reach record on, after the shipped code it tests against, and the
+/// list of unreached tests written from it, once the sentinel says the
+/// record saw the tests that run a program.
+fn unreached_tests(root: &Path) -> Result<(), String> {
+    let mut times = Vec::new();
+    run(&shipped_code_step(), root, &mut times)?;
+    let record = recorded_suite(root, "the suite, recorded", &mut times)?;
+    let tests = default_tests(root)?;
+    unreached::sentinel(&tests, &record, |path| {
+        unreached::golden_exits_with_zero(root, path)
+    })?;
+    let mut unwritable = Vec::new();
+    let unreached = unreached::unreached_of(&tests, &record, &mut unwritable);
+    let path = root.join(unreached::LIST);
+    std::fs::write(&path, unreached::format_list(&unreached))
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    for test in &unwritable {
+        println!(
+            "not listed, a name no filterset carries: {} {}",
+            test.binary, test.name
+        );
+    }
+    let count = |wanted: &[ns_runtime::reach::Reach]| {
+        unreached
+            .values()
+            .filter(|reaches| reaches.iter().copied().eq(wanted.iter().copied()))
+            .count()
+    };
+    use ns_runtime::reach::Reach;
+    println!(
+        "\n{} of {} tests listed in {}: {} reach nothing, {} the compiler only, \
+         {} platform-dependent code only, {} both",
+        unreached.len(),
+        tests.len(),
+        unreached::LIST,
+        count(&[]),
+        count(&[Reach::Compiler]),
+        count(&[Reach::Platform]),
+        count(&[Reach::Compiler, Reach::Platform]),
+    );
+    report(&times);
+    Ok(())
 }
 
 /// The gates build and test against the embedded shipped code, so it runs
@@ -778,6 +1018,7 @@ fn run_codegen(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), S
 fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
     let runs = stress_suite_runs();
     let names: Vec<&str> = runs.iter().map(|(name, _)| name.as_str()).collect();
+    let config = unreached::write_generated_config(root)?;
     println!("\n==> the suite under {}, at once", names.join(", "));
     let logs = root.join(".temp");
     std::fs::create_dir_all(&logs).map_err(|error| format!("create .temp/: {error}"))?;
@@ -790,8 +1031,9 @@ fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result
         let error_log = log
             .try_clone()
             .map_err(|error| format!("{}: {error}", log_path.display()))?;
-        let step =
-            Step::cargo("", &["nextest", "run", "--workspace"]).with_environment(variable, "1");
+        let arguments = stress_suite_arguments(mode, &config);
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let step = Step::cargo("", &arguments).with_environment(variable, "1");
         let child = command_of(&step, root)
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log))
@@ -863,7 +1105,9 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 Part::Steps(steps) => Some(steps.iter().map(|step| step.label.as_str())),
-                Part::StressSuites | Part::ShippedCode | Part::Codegen => None,
+                Part::RecordedSuite | Part::StressSuites | Part::ShippedCode | Part::Codegen => {
+                    None
+                }
             })
             .flatten()
             .collect();
@@ -893,6 +1137,7 @@ mod tests {
             .iter()
             .flat_map(|part| match part {
                 Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
+                Part::RecordedSuite => vec!["recorded suite"],
                 Part::StressSuites => vec!["stress suites"],
                 Part::ShippedCode => vec!["shipped code"],
                 Part::Codegen => vec!["codegen"],
@@ -1078,22 +1323,59 @@ mod tests {
         assert!(copy.ends_with("/checkout/ /work/"));
     }
 
-    /// `linux` also verifies the benchmark programs, as the host's
-    /// `benchmarks` group does, its image having a JDK and Python; `aarch64`
-    /// does not.
+    /// `linux` also verifies the Newspeak benchmark programs, as the
+    /// host's `benchmarks` group does, without their Java and Python
+    /// counterparts, which run nothing that differs by platform; `aarch64`
+    /// does not. Only `linux` runs the doctests: those of
+    /// `Interpreter::enter` boot an interpreter and reserve memory, and
+    /// `aarch64`'s `cargo test --doc` would build them for the host.
     #[test]
     fn only_linux_runs_the_benchmark_programs() {
-        let runs_benchmarks = |name: &str| {
+        let scripts = |name: &str| -> Vec<String> {
             let parts = group(name).expect("a group");
             let [Part::Steps(steps)] = parts.as_slice() else {
                 panic!("{name} is one run of steps");
             };
-            steps.iter().any(|step| {
-                script_of(step) == "cargo nextest run --workspace --profile benchmarks-verify"
+            steps
+                .iter()
+                .map(|step| script_of(step).to_string())
+                .collect()
+        };
+        let runs_benchmarks = |name: &str| {
+            scripts(name).iter().any(|script| {
+                script == "cargo nextest run --workspace --profile benchmarks-newspeak"
             })
         };
         assert!(runs_benchmarks("linux"));
         assert!(!runs_benchmarks("aarch64"));
+        let runs_doctests = |name: &str| {
+            scripts(name)
+                .iter()
+                .any(|script| script == "cargo test --workspace --doc")
+        };
+        assert!(runs_doctests("linux"));
+        assert!(!runs_doctests("aarch64"));
+    }
+
+    /// Each Docker group's suite runs the generated profile `platform`,
+    /// the config written in the container first.
+    #[test]
+    fn the_docker_suites_leave_out_what_no_platform_reaches() {
+        for name in ["linux", "aarch64"] {
+            let parts = group(name).expect("a group");
+            let [Part::Steps(steps)] = parts.as_slice() else {
+                panic!("{name} is one run of steps");
+            };
+            let suite = steps
+                .iter()
+                .find(|step| step.label == format!("{name} suite"))
+                .expect("a suite");
+            let script = script_of(suite);
+            assert!(script.contains(
+                "cargo xtask nextest-config && cargo nextest run --workspace \
+                 --config-file /work/target/xtask/nextest.toml --profile platform "
+            ));
+        }
     }
 
     /// The `aarch64` suite runs for its target, through the cross linker
@@ -1144,6 +1426,44 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             runs.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names.len(), runs.len(), "every run has a log of its own");
+    }
+
+    /// Every stress run takes a generated profile: WIDE the one that keeps
+    /// the listed tests that compile, every other mode the one without any
+    /// listed test, and without `debug_metadata`.
+    #[test]
+    fn every_stress_run_leaves_out_the_tests_it_cannot_reach_and_only_wide_checks_the_metadata() {
+        let config = Path::new("generated.toml");
+        for (mode, _) in stress_suite_runs() {
+            let arguments = stress_suite_arguments(&mode, config);
+            assert!(
+                arguments
+                    .windows(2)
+                    .any(|pair| pair == ["--config-file", "generated.toml"]),
+                "{mode} runs the generated config"
+            );
+            let profile = if mode == "WIDE" {
+                "stress-wide-reached"
+            } else {
+                "stress-reached"
+            };
+            assert!(
+                arguments
+                    .windows(2)
+                    .any(|pair| pair == ["--profile", profile]),
+                "{mode} runs {profile}"
+            );
+            let checks_metadata = !arguments.contains(&"not binary(debug_metadata)".to_string());
+            assert_eq!(checks_metadata, mode == "WIDE", "{mode}");
+        }
+    }
+
+    /// The commit group runs the suite with the reach record checked, in
+    /// the place of the plain suite.
+    #[test]
+    fn the_commit_group_checks_the_reach_record() {
+        let labels = labels_of(&group("commit").expect("a group")).join(",");
+        assert!(labels.contains("lint,recorded suite,doctests"), "{labels}");
     }
 
     #[test]

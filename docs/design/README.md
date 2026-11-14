@@ -425,15 +425,15 @@ regression. Which gate runs when -- every commit, a commit touching a given
 part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
 place it is kept; the suite there is every crate's, ns-analyzer's included,
 whose `disasm` and `inspect` tests guard the compiler's output and the image
-format. The stress modes run the whole suite again, each with one of the
+format. The stress modes run the suite again, each with one of the
 runtime's own stress switches set, and the stress gate runs it once more
 with the JIT off, the one run in which the interpreter runs every body:
 
 ```bash
 NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace    # moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace   # vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint, sliding the site ranges whenever one is free, every reservation given back down to a page above its high mark
-NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at every safepoint after a check of the remembered set
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at safepoints, sliding the site ranges whenever one is free, every reservation given back down to a page above its high mark
+NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at safepoints after a check of the remembered set
 NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in its wide form
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints
 NS_NEXT_STRESS_JIT=1 cargo nextest run --workspace      # every body compiled at its first entry, and entered at every push even when its machine code exits at once
@@ -449,22 +449,32 @@ NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every bod
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
 # `cargo xtask gates stress` runs the sixteen suites at once, each into its own
-# log, `.temp/stress-NO_JIT.log` the last's
+# log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
+# (`.config/nextest.toml`) without `ns-syntax`, `ns-assembler` and
+# `ns-memory`, which cannot reach the runtime, the tests that ended a measured
+# run alone started first, narrowed by a profile generated from it: every mode
+# but WIDE without the tests no switch reaches and `ns-cli`'s
+# `debug_metadata`, which boots an interpreter but runs no program, WIDE
+# without those of them that compile nothing (below, "The tests a gate
+# leaves out")
 ```
 
 How long the end of a batch takes, each group run alone with `cargo xtask
 gates <group>`, its builds included, on the development machine on
 2026-10-29: `images` 14 s, `caches` 4 s, `benchmarks` 70 s,
 `release-checks` 49 s, `codegen` 61 s (about 6 s of it the shipped-code
-step its build needed), and on 2026-11-13 `stress` about 1,650 s --
-1,642 s the suite under the fifteen modes it runs and with the JIT off
-at once, and `run-corpus` plain and under each mode a few seconds more
--- and on 2026-11-04, in Docker
-with a warm image and build directory, `linux` about two and a half
-minutes (the copy 4 s, the suite 47 s, the benchmark programs 86 s) and
-`aarch64` about 8.7 minutes (the suite under QEMU 521 s; 587 s on 2026-11-06,
-551 s on 2026-11-07, 688 s on 2026-11-13), so `end-of-batch` about
-forty-five minutes in all. A cold run builds the image
+step its build needed), and on 2026-11-13 `stress` about 1,050 s --
+1,038 s the suite under the fifteen modes it runs and with the JIT off
+at once, without the tests no switch reaches (1,233 s with them, 1,642 s
+on the whole suite), beside another build on the machine, and
+`run-corpus` plain and under each mode a few seconds more -- and on
+2026-11-13, in Docker with a warm image, `linux` about three and a half
+minutes (the copy 7 s, the suite step 80 s with its build, nextest's run
+29 s against 52 s for the whole suite, the doctests 1 s, the Newspeak
+benchmark programs 83 s, which the slowest Newspeak benchmarks bound as
+before) and `aarch64` about 8 minutes (the suite step 441 s, its build
+included, nextest's run under QEMU 377 s; the whole suite's 662 s the
+same day), so `end-of-batch` about forty minutes in all. A cold run builds the image
 first, about ten minutes on 2026-11-04, nearly all of it the downloads
 from the snapshot service (QEMU's build itself 50 s), and compiles the
 workspace once per target.
@@ -474,13 +484,88 @@ the image `xtask/docker/Dockerfile` describes, so that their environment
 is the repository's code: the checkout is mounted read-only and rsynced
 into a working copy in a named volume first, so uncommitted work is
 checked too: `linux` the suite for `x86_64-unknown-linux-gnu`, System V's
-convention and Linux's memory layer, and the benchmark programs with their
-Java and Python counterparts, and `aarch64` the suite cross-compiled for
-`aarch64-unknown-linux-gnu` and run through the image's own pinned
-`qemu-aarch64` as the target's runner, the only run of AArch64's machine
-code; what the host needs is `CLAUDE.md`'s, "Working in this repository",
-and [execution.md](execution.md), "Tests", has the image and why its QEMU
-is the one it is.
+convention and Linux's memory layer, and the Newspeak benchmark programs
+(the profile `benchmarks-newspeak`, without their Java and Python
+counterparts, which run nothing of ns-next's), and `aarch64` the suite
+cross-compiled for `aarch64-unknown-linux-gnu` and run through the image's
+own pinned `qemu-aarch64` as the target's runner, the only run of
+AArch64's machine code -- both suites without the tests that reach no
+platform-dependent code (below), and `linux` the doctests besides, since
+those of `Interpreter::enter` boot an interpreter and reserve memory
+(`aarch64` runs none: `cargo test --doc` would build them for the host);
+what the host needs is `CLAUDE.md`'s, "Working in this
+repository", and [execution.md](execution.md), "Tests", has the image and
+why its QEMU is the one it is.
+
+### The tests a gate leaves out
+
+A stress switch changes only what the runtime does once it runs, the wide
+encoding only what the compiler builds, and a platform only the code that
+asks it something, so a test that reaches none of these answers the same
+under every mode and in every container, and the stress and Docker groups
+leave it out. Which tests those are is measured, never judged by reading
+the test, since many reach an interpreter through a helper. In a debug
+build run with `NS_NEXT_RECORD_REACH=<directory>`, the first record of
+each kind in a process writes a marker there named after the test nextest
+says is running (`NEXTEST_BINARY_ID`, `NEXTEST_TEST_NAME`, which a child
+`ns-next` inherits; `ns_memory::reach`, re-exported as
+`ns_runtime::reach`): `runtime` when the process makes an interpreter
+(`Interpreter::with_kernel`) or reads a switch other than WIDE
+(`jit::stress_*_from_env`, `JitState::new`'s `NS_NEXT_NO_JIT`),
+`compiler` when it reads WIDE (`stress_wide_from_env`, which every body
+the compiler builds asks), and `platform` when it calls into the system
+through the memory layer (a reservation, the page size, the code zone, the
+native stack) or reaches the other code that differs by platform: the
+JIT's register roles (`Roles::of`, which every machine code built takes,
+mostly the host convention's), whether the build has a JIT, the cut's
+return address size, a project's paths (`ns-cli`'s `project.rs`:
+`locate_program`, `same_path`, `resolve_written_path`), the start of a
+binary through the target's runner (`target_runner.rs`'s
+`command_through`), the order a directory lists its files in
+(`ns-tooling`'s `collect_ns_files`), the formatter's replacing rename
+(`ns-analyzer`'s `fmt.rs`), a URI's path style (`file_uri.rs`) and the
+processor check (`ns-tooling`'s `processor.rs`). That the readers stay
+wired is held by `crates/ns-runtime/tests/reach_wiring.rs`: every string
+naming a switch in a crate's sources stands in a reader that records or
+is called only from `with_kernel`, after its record, and an
+`Interpreter` is built nowhere else.
+Each is one relaxed load after the first, where a body is compiled or
+memory reserved, never on the run loop's path, and nothing in a release
+build; a marker is written under a temporary name and renamed into
+place, so that a killed process leaves none half-written; after
+`runtime`, which decides alone, a process writes no further marker, so that most tests leave one file and the record costs the
+`commit` group's suite no measurable time.
+
+`cargo xtask unreached-tests` runs the default profile's suite with the
+record on and writes `xtask/unreached-tests.txt`: every test that recorded
+no `runtime`, under the heading of what it did record, but `ns-memory`'s,
+which is the platform layer itself. `cargo xtask nextest-config` appends
+three profiles to `.config/nextest.toml` in `target/xtask/nextest.toml`
+-- a file, since the filter would pass Windows' 32 KiB command line --
+each inheriting its parent's overrides and narrowing its filter:
+`stress-reached` (`stress` without every listed test, for every mode but
+WIDE), `stress-wide-reached` (`stress` without the listed tests that do
+not reach the compiler) and `platform` (`default` without the listed tests
+that reach no platform-dependent code, for `linux` and `aarch64`, which
+write it in the container). The `commit` group runs its suite with the
+record on and fails, naming them, when a listed test now reaches more than
+the list says or did not run (a renamed or removed test's entry), and
+when a golden trial of a program that runs to status 0 recorded no
+`runtime` -- the sentinel that the record still sees the child `ns-next`;
+it names, without failing, the tests that reach nothing but are not
+listed. A test the list does not name, a new one, runs everywhere.
+
+The list is measured on the development machine, Windows on x64, and the
+check runs there too. A test that exists only on another platform
+(`#[cfg(unix)]`, say) is in no list and runs everywhere, but a test whose
+reach differs by platform -- one that makes an interpreter or reaches
+platform-dependent code only on Linux or AArch64 -- is judged by its
+reach on Windows, and the Docker groups leave it out if that reach was
+none. The platform sites above are named, not proven complete: code that
+differs by platform only inside the standard library is not marked.
+`debug_metadata` is left out of every mode but WIDE besides: it boots an
+interpreter, so the record keeps it, but runs no program, only the boot
+every other test runs.
 
 A check that runs over many inputs is split into trials that nextest runs
 in parallel, not kept as one test that runs alone at the end of the suite

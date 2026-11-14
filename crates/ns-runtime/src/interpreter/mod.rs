@@ -36,6 +36,8 @@ use crate::heap::{
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
+pub(crate) use metaclass::MetaclassMixins;
+pub(crate) use reclaim::{MixinReclaimMemo, ReclaimBuffers};
 use unwind::WalkedActivation;
 
 // `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
@@ -530,7 +532,7 @@ pub struct Mutator<'gc> {
     /// a holder: a full collection that frees the tree drops its entries
     /// (`Mutator::reclaim_ids`), so a key never names another mixin minted
     /// at a freed id.
-    pub(crate) metaclass_mixins: IdentityMap<crate::heap::MixinId, Rc<crate::mixin::Mixin>>,
+    pub(crate) metaclass_mixins: MetaclassMixins,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's
@@ -606,6 +608,13 @@ pub struct Mutator<'gc> {
     /// activation stack name, and the value it recorded as a `Root`, so
     /// that nothing traces it.
     pub(crate) stepping: Option<Box<crate::debugger::stepping::Stepping>>,
+    /// What a full collection's reclamation of mixin ids derived from the
+    /// tables and kept for the next one (`reclaim::MixinReclaimMemo`). It
+    /// holds ids and counts, no handle and no `Rc`.
+    pub(crate) mixin_reclaim: reclaim::MixinReclaimMemo,
+    /// The applications' liveness buffers a full collection reuses
+    /// (`reclaim::ReclaimBuffers`).
+    pub(crate) reclaim_buffers: reclaim::ReclaimBuffers,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -729,6 +738,7 @@ impl Interpreter {
     /// no other shipped module booted. `bootstrap_on` goes on from here;
     /// a test stops here to see what the kernel phase alone built.
     pub(crate) fn with_kernel(lowering: Lowering, path: ShippedCodePath) -> Interpreter {
+        crate::reach::record(crate::reach::Reach::Runtime);
         // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(
             not(debug_assertions),
@@ -747,7 +757,8 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_collect: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_COLLECT"),
             #[cfg(debug_assertions)]
-            stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE"),
+            stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE")
+                .map(|schedule| schedule.with_pacing(safepoint::Pacing::HEAP_WALK)),
             #[cfg(debug_assertions)]
             stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
             #[cfg(debug_assertions)]
@@ -3675,7 +3686,7 @@ impl<'gc> Mutator<'gc> {
     ) -> Vec<Rc<crate::mixin::Mixin>> {
         let children = self.heap.replace_mixin(id, replacement);
         self.applications.retain(|(mixin, _), _| *mixin != id);
-        self.metaclass_mixins.remove(&id);
+        self.metaclass_mixins.remove(id);
         children
     }
 }

@@ -1054,9 +1054,17 @@ every evaluation does.
 The pause stress mode (`NS_NEXT_STRESS_PAUSE`, debug builds, one of the
 `stress` gate's fifteen modes; `Interpreter::set_stress_pause` for a
 test, `Interpreter::stress_pauses` the count of its stops) stops the run
-at the safepoints its schedule picks -- paced by the traced size as the
-collect and suspend modes are (`StressSchedule`,
-`interpreter/safepoint.rs`) -- exactly as a pause does: right after the
+at the safepoints its schedule picks -- paced as the collect and suspend
+modes are (`Pacing::STANDARD`, `StressSchedule`,
+`interpreter/safepoint.rs`), but fed the traced size plus eight times the
+stack's words (`size_with_stack`, `PAUSE_STACK_WEIGHT`), since a stop reads
+every frame and the cost of a stop grows with the stack: measured at 70 to
+180 ns per stack word in a debug build, several times a move's cost per
+traced unit, a golden recursing to the depth limit spends 99% of its run
+in the stops, so that the weight makes a deep stack's stops five to
+eight times rarer than counting a stack word once did, while a shallow
+program's, which cost little, are paced by its heap -- exactly as a pause
+does: right after the
 debugger is served, before anything else at the safepoint changes the
 stack or the heap, a frame its optimized code's poll left deoptimized
 first. No debugger need be attached: the stop takes its commands from a
@@ -1176,9 +1184,10 @@ handlers and the shipped frames the filter passes, while the schedule
 spreads the bursts over the whole run. Every stop of a burst reads the
 whole stack, so a burst costs seventeen readings of it where the pause
 stress mode's stop costs one: the schedule is fed the traced size plus
-sixteen times the stack's words, which leaves a shallow program's
-bursts paced as the pause stress mode's stops and makes a deep stack's
-as much rarer as they cost more. The schedule counts every safepoint, a
+sixteen times the stack's words (`size_with_stack`, the pause stress
+mode's with eight), which leaves a shallow program's bursts paced about
+as the pause stress mode's stops and makes a deep stack's as much rarer
+as they cost more. The schedule counts every safepoint, a
 step in progress included, and a burst is due only once no step is in
 progress: a step still in progress when the schedule has fallen due
 four times more (`STEP_STRESS_GRACE`), and after 64 safepoints at least

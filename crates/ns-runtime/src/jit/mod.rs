@@ -135,6 +135,7 @@ fn native_stack_has_room() -> bool {
 
 /// Whether this build can compile bodies to machine code.
 pub(crate) fn available() -> bool {
+    crate::reach::record(crate::reach::Reach::Platform);
     cfg!(ns_jit)
 }
 
@@ -1811,6 +1812,7 @@ fn stress_jit_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Runtime);
             std::env::var_os("NS_NEXT_STRESS_JIT")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
@@ -1825,6 +1827,7 @@ pub(crate) fn stress_exit_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Runtime);
             std::env::var_os("NS_NEXT_STRESS_EXIT")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
@@ -1840,6 +1843,7 @@ pub(crate) fn stress_zone_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Runtime);
             std::env::var_os("NS_NEXT_STRESS_ZONE")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
@@ -1860,6 +1864,7 @@ pub(crate) fn stress_optimize_from_env() -> bool {
         || stress_invalidate_from_env()
         || (cfg!(debug_assertions)
             && *REQUESTED.get_or_init(|| {
+                crate::reach::record(crate::reach::Reach::Runtime);
                 std::env::var_os("NS_NEXT_STRESS_OPTIMIZE")
                     .is_some_and(|value| !value.is_empty() && value != "0")
             }))
@@ -1877,6 +1882,7 @@ pub(crate) fn stress_deopt_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Runtime);
             std::env::var_os("NS_NEXT_STRESS_DEOPT")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
@@ -1895,6 +1901,7 @@ pub(crate) fn stress_invalidate_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
         && *REQUESTED.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Runtime);
             std::env::var_os("NS_NEXT_STRESS_INVALIDATE")
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
@@ -1982,6 +1989,7 @@ impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
     /// unless `NS_NEXT_NO_JIT=1` turns the JIT off.
     pub(crate) fn new() -> JitState {
+        crate::reach::record(crate::reach::Reach::Runtime);
         let stress_jit = stress_jit_from_env();
         let optimize_stress = stress_optimize_from_env();
         let stress =

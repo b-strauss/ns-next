@@ -745,8 +745,8 @@ below the run's floor that a sender walk would miss.
 **The suspend stress mode runs every program through it.** With
 `NS_NEXT_STRESS_SUSPEND` set to anything but empty or `0`, a debug build
 keeps the safepoint flag set, and at the safepoints its schedule picks --
-paced by the traced size as the collect and scavenge modes are
-(`StressSchedule`, `interpreter/safepoint.rs`; [memory.md](memory.md), "The
+paced by the traced size as the collect stress mode is (`Pacing::STANDARD`,
+`StressSchedule`, `interpreter/safepoint.rs`; [memory.md](memory.md), "The
 move stress mode") -- `Interpreter::safepoint` suspends every activation of
 the run, from the run's floor up, and resumes the top one at once, so that
 the loop always runs on a stack frame. It takes its turn after the other

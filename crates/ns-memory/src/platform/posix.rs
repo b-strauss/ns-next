@@ -20,10 +20,15 @@ fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// Read once: a constant of the process, which every full collection asks
+/// for several times (each reservation's shrink), a system call each time.
 pub(crate) fn page_size() -> usize {
-    // SAFETY: `sysconf` reads a system constant.
-    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    usize::try_from(size).unwrap_or(4096)
+    static PAGE_SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| {
+        // SAFETY: `sysconf` reads a system constant.
+        let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        usize::try_from(size).unwrap_or(4096)
+    })
 }
 
 pub(crate) fn reservation_granularity() -> usize {

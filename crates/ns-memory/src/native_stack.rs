@@ -28,8 +28,12 @@ thread_local! {
 /// more -- of a stack far larger than any need the JIT has. The stack
 /// grows down on every platform the code zone supports.
 pub fn remaining_bytes() -> Option<usize> {
-    let lowest = LOWEST_USABLE_ADDRESS
-        .with(|lowest| *lowest.get_or_init(platform::thread_stack_lowest_usable_address))?;
+    let lowest = LOWEST_USABLE_ADDRESS.with(|lowest| {
+        *lowest.get_or_init(|| {
+            crate::reach::record(crate::reach::Reach::Platform);
+            platform::thread_stack_lowest_usable_address()
+        })
+    })?;
     current_position().checked_sub(lowest)
 }
 

@@ -41,6 +41,7 @@ pub fn target_command(binary: impl AsRef<OsStr>) -> Command {
 /// first the program and the rest its leading arguments, as cargo splits
 /// the variable -- or directly when there is none.
 pub fn command_through(runner: Option<&str>, binary: impl AsRef<OsStr>) -> Command {
+    ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     let mut words = runner.unwrap_or_default().split_whitespace();
     let Some(program) = words.next() else {
         return Command::new(binary);
