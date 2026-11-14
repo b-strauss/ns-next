@@ -725,7 +725,11 @@ first that fails stops it. Every `cargo xtask gates` call runs
 `cargo xtask shipped-code` once, which writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
 `docs/design/core-library.md`, "The embedded shipped code") and refuses,
-failing the call, under `NS_NEXT_NO_PRIMITIVE_METHODS=1`: right after
+failing the call, under `NS_NEXT_NO_PRIMITIVE_METHODS=1` -- unless the
+artifact's header already carries the fingerprint of the sources as they
+are, which the call computes with `build.rs`'s own code
+(`shipped_code/fingerprint.rs`) before it builds anything, and then the
+step is that check alone: right after
 `cargo fmt --all` in the `commit` group, which is the only step that
 rewrites sources, and otherwise before the first group. "Every commit" is
 every commit that changes more than Markdown (check `git diff --stat`): a

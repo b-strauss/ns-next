@@ -3271,7 +3271,9 @@ xtask shipped-code` and the gates with a message rather than write it, and
 the embedded bytes to carrying the kernel's primitive methods.
 
 **The fingerprint.** `build.rs` computes two, FNV-1a over each file's
-workspace-relative path and its bytes. `SHIPPED_CODE_FINGERPRINT` covers
+workspace-relative path and its bytes, by the code of
+`shipped_code/fingerprint.rs`, which it includes by path and the gates
+call too. `SHIPPED_CODE_FINGERPRINT` covers
 everything that can change what the shipped modules compile to: the seven
 shipped modules' sources -- `Kernel.ns`, `PlatformFactory.ns` and every
 `.ns` under `platform/` -- `ns-runtime`'s and `ns-syntax`'s Rust sources,
@@ -3307,7 +3309,17 @@ fingerprint covers the Rust sources, so a checked-in artifact would be
 stale after nearly every commit, and a tree without one, a fresh clone,
 builds and runs from source. The gates run the task once per call
 (`CLAUDE.md`, "The gates"; `xtask/src/main.rs`'s `shipped_code_step` says
-why it runs as a build of its own). A release binary built without the
+why it runs as a build of its own), unless the artifact is current: the
+call computes the code fingerprint of the sources as they are, with the
+same code `build.rs` runs, before it builds anything, and leaves an
+artifact whose header carries it alone -- the boot's own judgement of the
+same bytes (`shipped_code::written_for`), and a judgement by the
+sources' contents, never by file times. A current artifact then costs the
+hashing alone, and an edit the generator links but the fingerprint does
+not cover -- `ns-memory`, `ns-assembler`, `xtask`, `Cargo.lock` -- no
+longer rebuilds the generator, about 5 s; an edit to the fingerprinted
+sources makes the artifact stale, and the task builds and writes it. A process whose generation would refuse runs the task all
+the same, so that the gate refuses with it. A release binary built without the
 artifact boots from source too, which a later packaging has to rule out
 ([OPEN-WORK.md](../OPEN-WORK.md), "A release binary without the embedded
 shipped code boots from source"). The tests in `shipped_code/mod.rs` run in

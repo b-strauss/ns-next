@@ -409,8 +409,9 @@ enum Part {
     /// (`stress_suite_runs`): each ends in a long tail of a few depth-limit
     /// tests that leaves most cores idle, and the tails overlap.
     StressSuites,
-    /// `cargo xtask shipped-code`. The shipped code's fingerprint covers
-    /// Rust sources, so it runs after the one step that rewrites them,
+    /// `cargo xtask shipped-code`, unless the artifact is current
+    /// (`run_shipped_code`). The shipped code's fingerprint covers Rust
+    /// sources, so it runs after the one step that rewrites them,
     /// `cargo fmt --all`, or else formatting would leave it stale.
     ShippedCode,
     /// The codegen budgets over this checkout (`codegen.rs`).
@@ -423,7 +424,9 @@ enum Part {
 /// one, and the running executable cannot be rebuilt in place on Windows. It
 /// builds `ns-runtime`, `ns-syntax` and their dependencies a second time in
 /// `target/shipped-code` (under the gitignored `/target`), cold on the first
-/// run and incrementally again whenever the sources changed.
+/// run and incrementally again whenever the sources changed, about 5 s
+/// after an edit to `ns-runtime`: `run_shipped_code` builds it only when
+/// the artifact is stale.
 fn shipped_code_step() -> Step {
     Step::cargo(
         "shipped code",
@@ -707,7 +710,7 @@ fn main() -> ExitCode {
     let mut times = Vec::new();
     for part in &parts {
         let outcome = match part {
-            Part::ShippedCode => run(&shipped_code_step(), &root, &mut times),
+            Part::ShippedCode => run_shipped_code(&root, &mut times),
             Part::Steps(steps) => steps
                 .iter()
                 .try_for_each(|step| run(step, &root, &mut times)),
@@ -867,7 +870,7 @@ fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Resul
 /// record saw the tests that run a program.
 fn unreached_tests(root: &Path) -> Result<(), String> {
     let mut times = Vec::new();
-    run(&shipped_code_step(), root, &mut times)?;
+    run_shipped_code(root, &mut times)?;
     let record = recorded_suite(root, "the suite, recorded", &mut times)?;
     let tests = default_tests(root)?;
     unreached::sentinel(&tests, &record, |path| {
@@ -916,6 +919,40 @@ fn place_shipped_code(parts: &mut Vec<Part>) {
     if !placed {
         parts.insert(0, Part::ShippedCode);
     }
+}
+
+/// The shipped-code step of a gate call: nothing but the check when the
+/// artifact's header carries the code fingerprint of the sources as they
+/// are now, computed here by `build.rs`'s own code, before anything is
+/// built -- the boot's judgement of the same bytes (`written_for`) -- and
+/// otherwise `cargo xtask shipped-code` as its own build
+/// (`shipped_code_step`), which writes it. A process whose generation would
+/// refuse runs the step anyway, so that the gate refuses with it.
+fn run_shipped_code(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
+    let step = shipped_code_step();
+    let started = Instant::now();
+    if ns_runtime::shipped_code::generation_refusal().is_none() && shipped_code_is_current(root) {
+        println!(
+            "
+==> {}",
+            step.label
+        );
+        println!("{SHIPPED_CODE} is current");
+        times.push((step.label, started.elapsed()));
+        return Ok(());
+    }
+    run(&step, root, times)
+}
+
+/// Whether the artifact under `root` was written for the sources there as
+/// they are now. A source that cannot be read answers `false`, leaving the
+/// judgement to the step, which reports it.
+fn shipped_code_is_current(root: &Path) -> bool {
+    let Ok(fingerprints) = ns_runtime::shipped_code::fingerprint::compute(root) else {
+        return false;
+    };
+    std::fs::read(root.join(SHIPPED_CODE))
+        .is_ok_and(|bytes| ns_runtime::shipped_code::written_for(&bytes, fingerprints.code))
 }
 
 /// Writes the shipped modules' compiled mixins where `ns-runtime`'s
