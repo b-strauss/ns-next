@@ -3636,7 +3636,10 @@ A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on
 again through its public setter, whose change events unregister and
 register it: the platform's own way to report a plugin's property is
-internal API.
+internal API. The cost is that one edit fires two change events, with or
+without a session running, and in a session sends the breakpoint's set
+several times -- once at each unregister and register -- of which the
+last is the one that counts.
 
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of

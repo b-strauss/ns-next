@@ -4,6 +4,8 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
@@ -42,8 +44,26 @@ class BreakableLinesCache(private val project: Project) {
 
     /** The kept answer when it is the current document's; never asks. */
     fun current(file: VirtualFile): BreakableLines? {
-        val (answer, stamp) = answers[file.url] ?: return null
-        return answer.takeIf { stamp == DocumentSymbolCache.documentStamp(file) }
+        val kept = answers[file.url] ?: return null
+        if (kept.second == DocumentSymbolCache.documentStamp(file)) return kept.first
+        // Older text's answer is never read again: only the current stamp's is kept.
+        answers.remove(file.url, kept)
+        return null
+    }
+
+    /** Whether an answer for [file] is kept; for the tests of the pruning. */
+    internal fun keeps(file: VirtualFile): Boolean = answers.containsKey(file.url)
+
+    init {
+        // A closed file's answer is asked again when it is opened; keeping it would hold every file ever opened.
+        project.messageBus.connect().subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : FileEditorManagerListener {
+                override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
+                    answers.remove(file.url)
+                }
+            },
+        )
     }
 
     /**

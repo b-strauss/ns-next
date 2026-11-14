@@ -57,11 +57,18 @@ class NewspeakMethodBreakpointType :
     override fun createCustomPropertiesPanel(project: Project): XBreakpointCustomPropertiesPanel<XBreakpoint<NewspeakMethodBreakpointProperties>> =
         PassCountPanel()
 
-    /** The dialog's own check: a class and a selector around `>>`. The agent decides the rest. */
-    private object MethodNameValidator : InputValidator {
+    /**
+     * The dialog's own check: a class and a selector around the first
+     * `>>`, as the agent splits the name -- a selector may be `>>` itself.
+     * The agent decides the rest.
+     */
+    internal object MethodNameValidator : InputValidator {
         override fun checkInput(inputString: String?): Boolean {
-            val (className, selector) = inputString?.split(">>")?.takeIf { parts -> parts.size == 2 } ?: return false
-            return className.isNotBlank() && selector.isNotBlank() && selector.trim().none(Char::isWhitespace)
+            val text = inputString ?: return false
+            val separator = text.indexOf(">>").takeIf { index -> index >= 0 } ?: return false
+            val className = text.substring(0, separator)
+            val selector = text.substring(separator + 2).trim()
+            return className.isNotBlank() && selector.isNotEmpty() && selector.none(Char::isWhitespace)
         }
 
         override fun canClose(inputString: String?): Boolean = checkInput(inputString)

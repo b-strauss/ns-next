@@ -73,7 +73,9 @@ class PassCountPanel<P, B : XBreakpoint<P>> : XBreakpointCustomPropertiesPanel<B
  * through its own setters, and the one way to report a plugin's property
  * -- `XBreakpointBase.fireBreakpointChanged` -- is internal API; turning
  * an enabled breakpoint off and on again goes through the public setter,
- * whose change events unregister and register it with the session.
+ * whose change events unregister and register it with the session. It
+ * fires two change events whether a session runs or not, and a session
+ * sends the breakpoint's set at each of them; the last send counts.
  */
 fun reportChanged(breakpoint: XBreakpoint<*>) {
     if (!breakpoint.isEnabled) return

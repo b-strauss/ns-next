@@ -71,11 +71,16 @@ class NewspeakExceptionBreakpointType :
         project: Project,
     ): XBreakpointCustomPropertiesPanel<XBreakpoint<NewspeakExceptionBreakpointProperties>> = ExceptionFiltersPanel()
 
-    /** A dotted name without blanks: the agent decides the rest. */
-    private object ClassNameValidator : InputValidator {
+    /**
+     * A dotted name without blanks or commas -- the agent reads a comma in
+     * a condition as the start of another class -- the agent decides the rest.
+     */
+    internal object ClassNameValidator : InputValidator {
         override fun checkInput(inputString: String?): Boolean {
             val name = inputString?.trim() ?: return false
-            return name.isNotEmpty() && name.none(Char::isWhitespace) && name.split('.').none(String::isEmpty)
+            return name.isNotEmpty() &&
+                name.none { character -> character.isWhitespace() || character == ',' } &&
+                name.split('.').none(String::isEmpty)
         }
 
         override fun canClose(inputString: String?): Boolean = checkInput(inputString)

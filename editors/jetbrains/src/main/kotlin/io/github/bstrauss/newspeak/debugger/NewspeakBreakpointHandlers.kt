@@ -57,7 +57,10 @@ abstract class NewspeakBreakpointHandler<B : XBreakpoint<*>>(
 
     override fun registerBreakpoint(breakpoint: B) {
         synchronized(lock) {
-            bySet.getOrPut(setOf(breakpoint)) { mutableListOf() }.add(breakpoint)
+            val breakpoints = bySet.getOrPut(setOf(breakpoint)) { mutableListOf() }
+            // Registered twice, it would be sent twice and answered under two ids.
+            if (breakpoint in breakpoints) return
+            breakpoints.add(breakpoint)
             sendSet(setOf(breakpoint))
         }
     }
@@ -104,7 +107,9 @@ abstract class NewspeakBreakpointHandler<B : XBreakpoint<*>>(
         idsBySet.remove(set)?.forEach(byId::remove)
         val ids = mutableListOf<Int>()
         for ((index, breakpoint) in breakpoints.withIndex()) {
-            val answer = answers.getOrNull(index) ?: continue
+            // An answer short of the set leaves none of them shown as an older answer said.
+            val answer = answers.getOrNull(index)
+                ?: DapBreakpoint(id = null, verified = false, message = NewspeakBundle.message("debugger.breakpoint.unanswered"), line = null, column = null)
             answer.id?.let { id ->
                 byId[id] = breakpoint
                 ids.add(id)

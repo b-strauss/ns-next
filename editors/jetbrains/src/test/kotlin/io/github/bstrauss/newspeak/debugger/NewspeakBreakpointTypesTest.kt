@@ -9,6 +9,8 @@ import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.command.CommandProcessor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
@@ -267,6 +269,63 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             JsonParser.parseString("""{"filters":["uncaught","caught","halt"],"filterOptions":[]}"""),
             agent.requests("setExceptionBreakpoints").last(),
         )
+    }
+
+    fun testTheMethodDialogSplitsAtTheFirstSelectorSeparatorAsTheAgentDoes() {
+        val validator = NewspeakMethodBreakpointType.MethodNameValidator
+        for (accepted in listOf("Module.Class>>>>", "Module.Class class>>>>", "Module.Inner>>at:put:", "Module.Class>>+")) {
+            assertTrue(accepted, validator.checkInput(accepted))
+        }
+        for (refused in listOf("Module.Class", ">>run", "Module.Class>>", "Module.Class>>at: put:")) {
+            assertFalse(refused, validator.checkInput(refused))
+        }
+    }
+
+    fun testTheExceptionDialogRefusesACommaTheAgentWouldReadAsTwoClasses() {
+        val validator = NewspeakExceptionBreakpointType.ClassNameValidator
+        assertTrue(validator.checkInput("Program.Failure"))
+        assertFalse(validator.checkInput("A.B,C.D"))
+        assertFalse(validator.checkInput("Program..Failure"))
+        assertFalse(validator.checkInput("Program. Failure"))
+    }
+
+    fun testABreakpointTheAgentDidNotAnswerIsInvalidAndOneRegisteredTwiceIsSentOnce() {
+        val file = program("Lines", LINES)
+        val first = addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties())
+        val second = addLineBreakpoint(file, 4, NewspeakLineBreakpointProperties())
+        val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true,"line":4}]}""").asJsonObject }
+        val session = RecordingSession()
+        val handler = NewspeakLineBreakpointHandler(session.proxy)
+        handler.registerBreakpoint(first)
+        handler.registerBreakpoint(first)
+        handler.registerBreakpoint(second)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        assertEquals(2, agent.requests("setBreakpoints").last().getAsJsonArray("breakpoints").size())
+        assertEquals(
+            listOf("setBreakpointVerified 4", "setBreakpointInvalid 5 " + NewspeakBundle.message("debugger.breakpoint.unanswered")),
+            session.calls,
+        )
+    }
+
+    fun testTheCacheKeepsOnlyTheCurrentAnswerOfAnOpenFile() {
+        val file = program("Lines", LINES)
+        cache.fetcher = { BreakableLines.of(listOf(BREAKABLE_LINE_3)) }
+        runInEdtAndWait { FileEditorManager.getInstance(project).openFile(file, false) }
+        assertNotNull(cache.fetch(file))
+        assertTrue(cache.keeps(file))
+        runInEdtAndWait { FileEditorManager.getInstance(project).closeFile(file) }
+        assertFalse("a closed file's answer is dropped", cache.keeps(file))
+
+        assertNotNull(cache.fetch(file))
+        runInEdtAndWait {
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
+            WriteAction.run<Throwable> {
+                CommandProcessor.getInstance().executeCommand(project, { document.insertString(0, " ") }, null, null)
+            }
+        }
+        assertNull(cache.current(file))
+        assertFalse("an older text's answer is dropped", cache.keeps(file))
     }
 
     // ---- Against the real runtime ----
