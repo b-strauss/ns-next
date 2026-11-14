@@ -3301,10 +3301,12 @@ the entry's. At the program's end the agent has the pump hand over every
 event the VM sent before it, answers each request they answer, and
 answers every request still waiting with an error, before it sends
 `exited` and `terminated`: the host's word comes on another path than
-the VM's events. A listening agent reads a client that has not presented
-the token with a timeout of 10 s, so that a silent peer cannot hold the
-one connection it serves, and refuses a connection it cannot start a
-reader for.
+the VM's events. A listening agent gives a connection 10 s from its
+acceptance to present the token in a good `attach`, a deadline for the
+whole exchange rather than a read timeout, so that neither a silent nor a
+trickling peer holds the one connection it serves, while an attached
+client may stay silent as long as it likes; it refuses a connection it
+cannot start a reader for.
 A client of the connecting mode that leaves detaches the debugger: both
 halves of the remote are dropped and the program runs on, a host still
 waiting for the configuration starting it. A client of the listening mode

@@ -368,3 +368,51 @@ fn a_pause_right_after_a_continue_stops_the_program() {
     assert_eq!(exit_code_reported(&mut client), 1);
     assert_eq!(client.finish().status, Some(1));
 }
+
+/// The variable a debug build of `ns-next` reads its deadline to attach
+/// from, in milliseconds; a release build keeps its 10 s.
+const ATTACH_DEADLINE: (&str, &str) = ("NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS", "200");
+
+/// The deadline to attach ends nothing once the client attached: a client
+/// silent for longer than it after its `attach` keeps its session.
+#[test]
+fn an_attached_client_may_stay_silent_past_the_attach_deadline() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode_with("run", &path, &[ATTACH_DEADLINE]);
+    client.initialize();
+    client.attach(false);
+    std::thread::sleep(Duration::from_millis(600));
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(0), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "hi\n");
+}
+
+/// A peer that never attaches -- here one that trickles `initialize`
+/// requests, each well inside the deadline -- is closed at the deadline,
+/// and the next client is served.
+#[test]
+fn a_peer_that_never_attaches_is_closed_at_the_deadline() {
+    let (_directory, path) = program("Hello", HELLO);
+    let mut client = DapClient::listen_mode_with("run", &path, &[ATTACH_DEADLINE]);
+    let started = std::time::Instant::now();
+    // Requests every 50 ms, which a read timeout would never end.
+    while started.elapsed() < Duration::from_secs(5) {
+        let Ok(seq) = client.connection.try_send("initialize", json!({})) else {
+            break;
+        };
+        if !client.connection.answers_or_closes(seq) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the connection outlived the deadline"
+    );
+    client.reconnect();
+    client.start_session(false);
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().status, Some(0));
+}

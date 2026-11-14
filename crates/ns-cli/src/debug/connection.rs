@@ -84,8 +84,8 @@ pub(crate) fn spawn_acceptor(listener: TcpListener, inputs: Sender<Input>, next:
 
 /// Reads the connection numbered `connection` until it ends, handing the
 /// agent each message; a frame that is no DAP message ends it too, since
-/// nothing after it can be framed, and so does a read that timed out.
-/// Fails when no thread can be started for it.
+/// nothing after it can be framed. Fails when no thread can be started
+/// for it.
 pub(crate) fn spawn_reader(
     stream: TcpStream,
     connection: u64,
@@ -107,6 +107,23 @@ pub(crate) fn spawn_reader(
                 }
             }
             let _ = inputs.send(Input::Closed { connection });
+        })
+        .map(drop)
+}
+
+/// Tells the agent, once `deadline` passed, that the connection numbered
+/// `connection` had that long to attach; the agent ends it unless it did.
+/// Fails when no thread can be started for it.
+pub(crate) fn spawn_attach_deadline(
+    deadline: std::time::Duration,
+    connection: u64,
+    inputs: Sender<Input>,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("ns-next debugger attach deadline".to_string())
+        .spawn(move || {
+            std::thread::sleep(deadline);
+            let _ = inputs.send(Input::AttachDeadline { connection });
         })
         .map(drop)
 }

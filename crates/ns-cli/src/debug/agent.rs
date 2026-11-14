@@ -30,6 +30,9 @@ pub(crate) enum Input {
     Request { connection: u64, message: Value },
     /// The connection numbered `connection` ended.
     Closed { connection: u64 },
+    /// The listening mode's deadline for the connection numbered
+    /// `connection` to present the token passed.
+    AttachDeadline { connection: u64 },
     /// An event of the VM.
     Event(Event),
     /// A word from the host, which waits for the agent to act on it.
@@ -43,10 +46,30 @@ pub(crate) enum HostMessage {
     Exited { status: u8, done: Sender<()> },
 }
 
-/// How long a listening agent waits for the next message of a client that
-/// has not presented the token yet: a peer that connects and stays silent
-/// would otherwise hold the one connection the agent serves.
-const UNATTACHED_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a listening agent gives a connection, from its acceptance, to
+/// present the token in a good `attach`: a peer that connects and stays
+/// silent, or trickles bytes, would otherwise hold the one connection the
+/// agent serves. A total deadline rather than a read timeout, so that it
+/// ends nothing once the client attached, however long it is silent then.
+const ATTACH_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The variable a debug build reads `ATTACH_DEADLINE` from, in
+/// milliseconds, so that the tests of the deadline take a fraction of a
+/// second; a release build never reads it.
+#[cfg(debug_assertions)]
+const ATTACH_DEADLINE_VARIABLE: &str = "NS_NEXT_DEBUG_ATTACH_DEADLINE_MILLISECONDS";
+
+/// The deadline a connection has to attach.
+fn attach_deadline() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(milliseconds) = std::env::var(ATTACH_DEADLINE_VARIABLE)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_millis(milliseconds);
+    }
+    ATTACH_DEADLINE
+}
 
 /// Which way the connection was opened.
 pub(crate) enum Mode {
@@ -178,6 +201,11 @@ impl Agent {
                     self.leave();
                 }
             }
+            Input::AttachDeadline { connection } => {
+                if self.is_current(connection) && !self.is_attached() {
+                    self.leave();
+                }
+            }
             Input::Event(event) => self.vm_event(event),
             Input::Host(message) => self.host_message(message),
         }
@@ -193,19 +221,16 @@ impl Agent {
         // Requests and responses are small and answer one another, which
         // Nagle's algorithm would hold back.
         let _ = stream.set_nodelay(true);
-        if self.listening()
-            && stream
-                .set_read_timeout(Some(UNATTACHED_READ_TIMEOUT))
-                .is_err()
-        {
-            let _ = stream.shutdown(Shutdown::Both);
-            self.next_connection();
-            return;
-        }
-        let reader = stream.try_clone().and_then(|reader| {
-            connection::spawn_reader(reader, self.connections + 1, self.inputs.clone())
-        });
-        if reader.is_err() {
+        let connection = self.connections + 1;
+        let reader = stream
+            .try_clone()
+            .and_then(|reader| connection::spawn_reader(reader, connection, self.inputs.clone()));
+        let deadline = if self.listening() && reader.is_ok() {
+            connection::spawn_attach_deadline(attach_deadline(), connection, self.inputs.clone())
+        } else {
+            Ok(())
+        };
+        if reader.is_err() || deadline.is_err() {
             // A connection the agent cannot read is refused, never a panic
             // of the agent's that would leave the host waiting.
             let _ = stream.shutdown(Shutdown::Both);
@@ -328,8 +353,6 @@ impl Agent {
         }
         if let Some(client) = &mut self.client {
             client.attached = true;
-            // An attached client may be silent as long as it likes.
-            let _ = client.writer.set_read_timeout(None);
         }
         self.stop_on_entry = arguments.stop_on_entry;
         self.respond(connection, request, None);

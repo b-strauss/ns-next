@@ -79,6 +79,13 @@ impl Connection {
 
     /// Sends a request and answers its sequence number.
     pub fn send(&mut self, command: &str, arguments: Value) -> i64 {
+        self.try_send(command, arguments)
+            .unwrap_or_else(|error| panic!("sending `{command}`: {error}"))
+    }
+
+    /// Sends a request and answers its sequence number, or the error of a
+    /// connection the agent may have closed.
+    pub fn try_send(&mut self, command: &str, arguments: Value) -> std::io::Result<i64> {
         let seq = self.next_seq;
         self.next_seq += 1;
         let message = json!({
@@ -92,9 +99,8 @@ impl Connection {
         self.writer
             .write_all(header.as_bytes())
             .and_then(|()| self.writer.write_all(&body))
-            .and_then(|()| self.writer.flush())
-            .unwrap_or_else(|error| panic!("sending `{command}`: {error}"));
-        seq
+            .and_then(|()| self.writer.flush())?;
+        Ok(seq)
     }
 
     /// The next message, or `None` once the agent closed the connection;
@@ -133,6 +139,20 @@ impl Connection {
                 self.events.push_back(message);
             } else if message["type"] == "response" {
                 self.responses.push(message);
+            }
+        }
+    }
+
+    /// Waits for the response to the request `seq`: `true` once it came,
+    /// `false` when the agent closed the connection first. Writing to a
+    /// connection the agent closed may itself fail, which is that too.
+    pub fn answers_or_closes(&mut self, seq: i64) -> bool {
+        loop {
+            let Some(message) = self.next_message("a response or the end") else {
+                return false;
+            };
+            if message["type"] == "response" && message["request_seq"] == seq {
+                return true;
             }
         }
     }
@@ -265,8 +285,19 @@ impl DapClient {
 
     /// `ns-next <subcommand> --debug <target>`, `run` or `load`.
     pub fn listen_mode_of(subcommand: &str, target: &Path) -> DapClient {
+        DapClient::listen_mode_with(subcommand, target, &[])
+    }
+
+    /// As `listen_mode_of`, the child given the environment `variables`
+    /// besides this process's.
+    pub fn listen_mode_with(
+        subcommand: &str,
+        target: &Path,
+        variables: &[(&str, &str)],
+    ) -> DapClient {
         let mut command = ns_next();
         command.arg(subcommand).arg("--debug").arg(target);
+        command.envs(variables.iter().copied());
         let (mut child, stdout, stderr) = start(command);
         let started = Instant::now();
         let (port, token) = loop {
