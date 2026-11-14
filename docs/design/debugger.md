@@ -3511,7 +3511,8 @@ started through a link, and an IDE names the file it resolved
 `a_program_started_through_a_link_takes_a_breakpoint_by_its_real_path`); a
 path that does not resolve is compared with its `.` and `..` resolved by
 their spelling, and on Windows every path without the verbatim prefix
-`\\?\` a canonical one has, so that a module's file deleted after the
+`\\?\` a canonical one has (`\\?\UNC\` read as `\\`), so that a module's
+file deleted after the
 program read it is still named by its path. A breakpoint is verified once
 the VM resolved it to a statement, whose line and column the response
 gives, so that one on a comment line shows on the next statement.
