@@ -27,8 +27,8 @@ mod values;
 
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugRemote, Event, FrameDescription,
-    FrameKind, FrameLocation, MethodBreakpoint, MethodBreakpointState, SendLocation, StopReason,
-    ValueDescription, ValueId, Variable,
+    FrameKind, FrameLocation, HitCondition, LineBreakpoint, MethodBreakpoint,
+    MethodBreakpointState, SendLocation, StopReason, ValueDescription, ValueId, Variable,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -715,9 +715,12 @@ impl Interpreter {
     /// program later and stops nothing itself, answering to `source`.
     fn configure(&mut self, source: &mut CommandSource, command: Command) {
         match command {
-            Command::SetBreakpoints { module, offsets } => {
+            Command::SetBreakpoints {
+                module,
+                breakpoints: requested,
+            } => {
                 let event = self
-                    .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, offsets));
+                    .enter(|mutator| breakpoints::set_line_breakpoints(mutator, module, requested));
                 self.answer(source, event);
             }
             Command::SetStepFilters { shipped, classes } => {

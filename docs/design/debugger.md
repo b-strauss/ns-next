@@ -400,11 +400,13 @@ The commands (`debugger::Command`):
 - `Children { value, start, count }` -- `count` children of a value the
   stop handed out, from the `start`th; answered by `Event::Variables`, or
   refused with "no value of this stop has that id".
-- `SetBreakpoints { module, offsets }` -- replaces every line breakpoint
-  of the module `module` names, its root class's name as
-  `FrameLocation::module` names it, by one at each byte offset into the
-  module's current text ("A breakpoint names a source position");
-  answered by `Event::Breakpoints`. A configuration command: served
+- `SetBreakpoints { module, breakpoints }` -- replaces every line
+  breakpoint of the module `module` names, its root class's name as
+  `FrameLocation::module` names it, by `breakpoints`, each a
+  `LineBreakpoint { offset, hit_condition }`: a byte offset into the
+  module's current text ("A breakpoint names a source position") and
+  which of its hits stop, every one for `None` ("Hit counts and
+  temporary breakpoints"); answered by `Event::Breakpoints`. A configuration command: served
   wherever commands are taken, at a stop, at a safepoint while the
   program runs, and at the start and the end of a run.
 - `SetStepFilters { shipped, classes }` -- replaces the step filters
@@ -420,7 +422,8 @@ The commands (`debugger::Command`):
 - `SetMethodBreakpoints(Vec<MethodBreakpoint>)` -- replaces every method
   breakpoint ("Method breakpoints"), each naming a method by its
   `class`, a `ClassName` as the step filters name a declaration, its
-  side (`class_side`) and its `selector`; answered by
+  side (`class_side`) and its `selector`, and its `hit_condition` as a
+  line breakpoint's, which counts each entry and each exit; answered by
   `Event::MethodBreakpoints`, a configuration command served as
   `SetBreakpoints` is.
 - `SetExceptionBreakpoints { uncaught, caught, halt, classes }` --
@@ -2400,8 +2403,8 @@ decides"), so the check would cost every send of every fast-path method.
 
 **Partial:** the stop and the going past are built for every patched
 slot -- a line breakpoint's, a method breakpoint's, a step's and run to
-cursor's one-shots, and the breakpoint stress mode's; conditions, hit
-counts and logpoints, and what a restart, a forced return,
+cursor's one-shots, and the breakpoint stress mode's -- and so are hit
+counts; conditions and logpoints, and what a restart, a forced return,
 edit-and-continue and an evaluation do with the token, are planned.
 
 A `Breakpoint` slot shares the run loop's out-of-line arm of the
@@ -2411,8 +2414,11 @@ arm of its own, one more target of the `match`'s jump table, grew
 nothing. That call hands the decision to `interpreter/` (`vm.rs` holds
 no dispatch logic): `interpreter::breakpoint::reached`, `#[cold]`, which
 answers `BreakpointDecision::Execute` with the slot's original or
-`BreakpointDecision::Stop`; planned, it also evaluates a condition,
-counts a hit or logs. Going on, the arm replaces the fetched slot by the
+`BreakpointDecision::Stop`, having counted a hit of each breakpoint
+standing there ("Hit counts and temporary breakpoints"); planned, it
+also evaluates a condition or logs. A slot it does not stop at it goes
+past as a resumed stop's token lets it past (`gone_past`), so that what
+a stop there would owe is owed all the same. Going on, the arm replaces the fetched slot by the
 original and re-enters the loop's `match` with it -- the `match` sits
 inside a dispatch loop that runs once per instruction unless the arm
 continues it with the original, which costs nothing until the arm is
@@ -2550,16 +2556,49 @@ statement compiled to an instruction.
 
 ### Hit counts and temporary breakpoints
 
+**Partial:** the VM's count is built (`HitCondition`,
+`Breakpoints::count_hits`, `interpreter/breakpoint.rs`); the agent's
+parsing of DAP's string is planned.
+
 Decided with the user on 2026-11-14 for stage 4. A breakpoint's hit
 condition -- DAP's `hitCondition`, IntelliJ's pass count -- is counted
-by the VM: `SetBreakpoints` carries it for each breakpoint, in the forms
-`n`, `=n`, `>n`, `>=n` and `%n`, which the agent parses from DAP's
-string, a malformed one answered as an unverified breakpoint with its
-message; the `Breakpoint` arm's decision (`interpreter/breakpoint.rs`)
-counts each hit and stops only where the condition holds, so a hit that
-does not stop costs a counter, not a stop and a round trip to the
-agent's thread. JDWP counts in-process the same way, its `Count`
-modifier decremented at each event and the event reported at zero
+by the VM: `SetBreakpoints` carries it for each line breakpoint
+(`LineBreakpoint::hit_condition`) and `SetMethodBreakpoints` for each
+method breakpoint (`MethodBreakpoint::hit_condition`), a `HitCondition`
+-- `Equal(n)`, `Greater(n)`, `GreaterOrEqual(n)` or `Multiple(n)`, the
+last holding at no hit for 0 -- or `None`, which stops at every hit.
+Planned, the agent parses it from DAP's string, in the forms `n`, `=n`,
+`>n`, `>=n` and `%n`, a malformed one answered as an unverified
+breakpoint with its message.
+
+The count lives on the breakpoint's record in the table
+(`debugger/breakpoints.rs`), starts at none when the breakpoint is set
+-- every `SetBreakpoints` and `SetMethodBreakpoints` sets its whole set
+afresh, under new ids, so sending a set again restarts every count of
+it -- and is counted only in the cold decisions of
+`interpreter/breakpoint.rs`, never on the run loop's path, so a run
+without breakpoints takes no new branch and a hit that does not stop
+costs a counter, not a stop and a round trip to the agent's thread. A
+hit is a reach of the breakpoint's slot by an activation: the
+`Breakpoint` arm's decision counts each line breakpoint, method entry
+and method exit standing there, the token a resumed stop set letting
+the frame past its slot once uncounted, as it does a re-executed
+instruction (`reexecuting`); a method's exit by an unwind is counted
+where the unwinder reports it (`left_by_unwind`, `returning_by_unwind`),
+and an exit at a non-local return counted at the return is not counted
+again where the return arrives, whether or not it stopped. For a slot
+that is both a method's entry and its exit, the entry is counted first
+and the exit, if the entry stopped, as the frame goes past the entry's
+stop. The arm stops only for the breakpoints whose condition holds,
+and only those are named by the stop's reason; a reach for which none
+holds and no step or run to cursor stops goes past the slot as a
+resumed stop's token lets it. A step's, a step into's or a run to
+cursor's stop at the same slot is made whatever the conditions say,
+and names only the breakpoints whose condition holds there: none makes
+it the step's (`StopReason::Step`).
+
+JDWP counts in-process the same way, its `Count` modifier decremented at
+each event and the event reported at zero
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/eventFilter.c:482-488`).
 Stage 5's condition is decided in the same place, before the count, as
 JDWP applies `Count` after the other filters. A temporary breakpoint

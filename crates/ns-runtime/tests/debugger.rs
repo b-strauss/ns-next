@@ -15,7 +15,8 @@ use std::time::Duration;
 use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
 use ns_runtime::debugger::{
-    BreakpointId, BreakpointState, ClassName, MethodBreakpoint, MethodBreakpointState,
+    BreakpointId, BreakpointState, ClassName, HitCondition, LineBreakpoint, MethodBreakpoint,
+    MethodBreakpointState,
 };
 use ns_runtime::JitStatistics;
 use ns_runtime::{
@@ -1673,11 +1674,18 @@ fn line_start(source: &str, text: &str) -> u32 {
     u32::try_from(start).expect("a test's source is small")
 }
 
-/// Sets the line breakpoints of `module` at `offsets`.
+/// Sets the line breakpoints of `module` at `offsets`, each stopping at
+/// every hit.
 fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
+    let breakpoints = offsets.into_iter().map(LineBreakpoint::at).collect();
+    set_line_breakpoints(remote, module, breakpoints);
+}
+
+/// Sets the line breakpoints of `module` to `breakpoints`.
+fn set_line_breakpoints(remote: &DebugRemote, module: &str, breakpoints: Vec<LineBreakpoint>) {
     remote.send(Command::SetBreakpoints {
         module: String::from(module),
-        offsets,
+        breakpoints,
     });
 }
 
@@ -4785,6 +4793,7 @@ fn method_breakpoint(
         },
         class_side,
         selector: String::from(selector),
+        hit_condition: None,
     }
 }
 
@@ -6906,5 +6915,208 @@ ns_runtime::for_each_lowering! {
             Err(HostSignal::Return) => panic!("a non-local return escaped"),
             Ok(_) => panic!("the run was expected to end with an error"),
         }
+    }
+}
+
+/// A loop that hands each of its five indexes to a method of its own.
+const SINKING: &str = indoc! {"
+    class Sinking = Object new (
+      | last ::= 0. |
+    ) (
+      public run = (
+        1 to: 5 do: [:index |
+          sink: index].
+        ^last
+      )
+      sink: value = (
+        last:: value
+      )
+    ) : ()
+"};
+
+/// The `index` of the loop's every stop at the line breakpoint `id`, the
+/// run continued after each, until the run ends; the run must stop for
+/// nothing else.
+fn indexes_at_stops(remote: &DebugRemote, id: BreakpointId) -> Vec<String> {
+    let mut indexes = Vec::new();
+    loop {
+        let ended = run_finished();
+        match remote.next_event(Duration::from_millis(10)) {
+            Some(Event::Stopped {
+                reason: StopReason::Breakpoint { ids },
+                returned: None,
+            }) => {
+                assert_eq!(ids, [id]);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                indexes.push(value_of(&variables, "index").label.clone());
+                continue_stopped(remote);
+            }
+            Some(other) => panic!("only stops at the breakpoint were expected, not {other:?}"),
+            None if ended => return indexes,
+            None => {}
+        }
+    }
+}
+
+/// The `index` of the loop's every stop at a line breakpoint on `sink:`
+/// whose hit condition is `condition`.
+fn indexes_stopped_at(lowering: Lowering, condition: HitCondition) -> Vec<String> {
+    let offset = line_start(SINKING, "sink: index].");
+    let (indexes, result) = debugged(
+        SINKING,
+        lowering,
+        move |remote| {
+            set_line_breakpoints(
+                remote,
+                "Sinking",
+                vec![LineBreakpoint {
+                    offset,
+                    hit_condition: Some(condition),
+                }],
+            );
+        },
+        |remote| {
+            let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+            indexes_at_stops(remote, id)
+        },
+    );
+    expect_ok(result, "run");
+    indexes
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint whose hit condition names one hit stops at that hit
+    /// only: the VM counts the others and goes past them.
+    fn a_breakpoint_with_a_count_stops_at_that_hit_only(lowering) {
+        assert_eq!(indexes_stopped_at(lowering, HitCondition::Equal(3)), ["3"]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint whose hit condition is a lower bound stops at that hit
+    /// and at every one after it.
+    fn a_breakpoint_greater_or_equal_stops_from_that_hit_on(lowering) {
+        assert_eq!(
+            indexes_stopped_at(lowering, HitCondition::GreaterOrEqual(4)),
+            ["4", "5"]
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A breakpoint whose hit condition is a multiple stops at every hit
+    /// whose number it divides.
+    fn a_breakpoint_multiple_stops_at_every_nth_hit(lowering) {
+        assert_eq!(
+            indexes_stopped_at(lowering, HitCondition::Multiple(2)),
+            ["2", "4"]
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Sending a module's breakpoints again sets each afresh, its count
+    /// back at none: the frame standing at the breakpoint goes past it
+    /// once, uncounted, so that the next hit is the first of the new count.
+    fn setting_breakpoints_again_restarts_their_count(lowering) {
+        let offset = line_start(SINKING, "sink: index].");
+        let breakpoints = vec![LineBreakpoint {
+            offset,
+            hit_condition: Some(HitCondition::Equal(2)),
+        }];
+        let configured = breakpoints.clone();
+        let ((first, second), result) = debugged(
+            SINKING,
+            lowering,
+            move |remote| set_line_breakpoints(remote, "Sinking", configured),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                let first = value_of(&variables, "index").label.clone();
+                set_line_breakpoints(remote, "Sinking", breakpoints);
+                let (again, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                continue_stopped(remote);
+                (first, indexes_at_stops(remote, again))
+            },
+        );
+        expect_ok(result, "run");
+        assert_eq!(first, "2");
+        assert_eq!(second, ["4"]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint counts each entry and each exit of its method
+    /// as a hit: the second is the first call's exit.
+    fn a_method_breakpoint_counts_entries_and_exits(lowering) {
+        let (mut interpreter, class) = interpreted(SINKING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let ((reason, value, later), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| {
+                let mut breakpoint = method_breakpoint("Sinking", &[], false, "sink:");
+                breakpoint.hit_condition = Some(HitCondition::Equal(2));
+                set_method_breakpoints(remote, vec![breakpoint]);
+            },
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let reason = expect_stop(remote);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                let value = value_of(&variables, "value").label.clone();
+                continue_stopped(remote);
+                ((reason, id), value, stops_until_the_end(remote))
+            },
+        );
+        let (reason, id) = reason;
+        assert_eq!(reason, StopReason::MethodExit { id, others: Vec::new() });
+        assert_eq!(value, "1");
+        assert_eq!(later, 0);
+        assert_eq!(answered(&mut interpreter, result), 5);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step's stop at a breakpoint's statement is the step's whatever
+    /// the breakpoint's hit condition says: the reach is counted, and a
+    /// condition that does not hold there neither suppresses the stop nor
+    /// is named by it.
+    fn a_step_stops_at_a_breakpoint_whose_condition_does_not_hold(lowering) {
+        let first = line_start(THREE_STATEMENTS, "count:: count + 1.");
+        let second = line_start(THREE_STATEMENTS, "count:: count + 10.");
+        let ((reason, statement), result) = debugged(
+            THREE_STATEMENTS,
+            lowering,
+            |remote| {
+                set_line_breakpoints(
+                    remote,
+                    "Lines",
+                    vec![
+                        LineBreakpoint::at(first),
+                        LineBreakpoint {
+                            offset: second,
+                            hit_condition: Some(HitCondition::Equal(2)),
+                        },
+                    ],
+                );
+            },
+            |remote| {
+                let breakpoints = expect_breakpoints(remote, "Lines");
+                assert_eq!(expect_breakpoint_stop(remote), [breakpoints[0].id]);
+                remote.send(Command::StepOver);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the step's confirmation was expected, not {other:?}"),
+                }
+                let reason = expect_stop(remote);
+                let statement = top_statement(remote, THREE_STATEMENTS);
+                continue_stopped(remote);
+                (reason, statement)
+            },
+        );
+        assert_eq!(reason, StopReason::Step);
+        assert_eq!(statement, "count:: count + 10");
+        expect_ok(result, "run");
     }
 }

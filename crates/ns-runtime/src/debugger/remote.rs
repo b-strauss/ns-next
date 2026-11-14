@@ -77,13 +77,18 @@ pub enum Command {
     },
     /// Replaces every line breakpoint of the module `module` names -- its
     /// root class's name, as `FrameLocation::module` names it, a shipped
-    /// module's too -- by one at each of `offsets`, byte offsets into the
+    /// module's too -- by `breakpoints`, each at a byte offset into the
     /// module's current text. Each resolves to the first statement start
     /// at or after its offset in any body of the module, and every body
     /// with a statement of that same span stops there: an inlined block's
-    /// copy in its home and its fallback closure alike. Answered by
+    /// copy in its home and its fallback closure alike. Each is set
+    /// afresh, under a new id and its hits counted from none, whether or
+    /// not the module's set held it before. Answered by
     /// `Event::Breakpoints`.
-    SetBreakpoints { module: String, offsets: Vec<u32> },
+    SetBreakpoints {
+        module: String,
+        breakpoints: Vec<LineBreakpoint>,
+    },
     /// Replaces the step filters: the frames no step stops in
     /// (`docs/design/debugger.md`, decision 16). `shipped` filters every
     /// body of the shipped modules, and `classes` the bodies of each class
@@ -137,6 +142,60 @@ pub struct MethodBreakpoint {
     /// Whether the method is the class side's.
     pub class_side: bool,
     pub selector: String,
+    /// Which of its hits stop: each entry and each exit of an activation
+    /// of the method is a hit, an exit by an unwind included, counted
+    /// while the debugger is attached from the moment the breakpoint is
+    /// set; `None` stops at every one.
+    pub hit_condition: Option<HitCondition>,
+}
+
+/// A line breakpoint as `Command::SetBreakpoints` asks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineBreakpoint {
+    /// A byte offset into its module's current text.
+    pub offset: u32,
+    /// Which of its hits stop: each time an activation reaches its
+    /// statement is a hit, counted while the debugger is attached from the
+    /// moment the breakpoint is set; `None` stops at every one.
+    pub hit_condition: Option<HitCondition>,
+}
+
+impl LineBreakpoint {
+    /// A breakpoint at `offset` that stops at every hit.
+    pub fn at(offset: u32) -> LineBreakpoint {
+        LineBreakpoint {
+            offset,
+            hit_condition: None,
+        }
+    }
+}
+
+/// Which hits of a breakpoint stop, by the hit's number, the first being
+/// 1: DAP's `hitCondition`, counted by the VM, so that a hit that does not
+/// stop costs a counter rather than a stop and a round trip to the agent
+/// (`docs/design/debugger.md`, "Hit counts and temporary breakpoints").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitCondition {
+    /// The hit numbered so, and no other.
+    Equal(u32),
+    /// Every hit after the one numbered so.
+    Greater(u32),
+    /// The hit numbered so and every one after it.
+    GreaterOrEqual(u32),
+    /// Every hit whose number is a multiple of this one; none for 0.
+    Multiple(u32),
+}
+
+impl HitCondition {
+    /// Whether the hit numbered `hits` stops.
+    pub fn holds(self, hits: u32) -> bool {
+        match self {
+            HitCondition::Equal(count) => hits == count,
+            HitCondition::Greater(count) => hits > count,
+            HitCondition::GreaterOrEqual(count) => hits >= count,
+            HitCondition::Multiple(count) => count != 0 && hits.is_multiple_of(count),
+        }
+    }
 }
 
 /// A class declaration of a module, as a step filter names it.
@@ -454,5 +513,33 @@ impl DebugRemote {
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HitCondition;
+
+    #[test]
+    fn hit_condition_holds() {
+        let table = [
+            (HitCondition::Equal(2), [false, false, true, false, false]),
+            (HitCondition::Equal(0), [true, false, false, false, false]),
+            (HitCondition::Greater(2), [false, false, false, true, true]),
+            (
+                HitCondition::GreaterOrEqual(2),
+                [false, false, true, true, true],
+            ),
+            (HitCondition::Multiple(2), [true, false, true, false, true]),
+            (HitCondition::Multiple(1), [true, true, true, true, true]),
+            (
+                HitCondition::Multiple(0),
+                [false, false, false, false, false],
+            ),
+        ];
+        for (condition, expected) in table {
+            let held: Vec<bool> = (0..=4).map(|hits| condition.holds(hits)).collect();
+            assert_eq!(held, expected, "{condition:?}");
+        }
     }
 }

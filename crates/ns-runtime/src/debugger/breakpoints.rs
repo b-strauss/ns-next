@@ -21,7 +21,8 @@ use super::exceptions::{ExceptionBreakpoints, PendingException};
 use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{
-    BreakpointId, BreakpointState, Event, MethodBreakpoint, MethodBreakpointState, StopReason,
+    BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, MethodBreakpoint,
+    MethodBreakpointState, StopReason,
 };
 use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
 use super::Attachments;
@@ -133,21 +134,27 @@ struct MethodBreakpointEntry {
     bodies: Vec<Rc<CompiledCode>>,
     /// Whether the method is declared now.
     verified: bool,
+    /// How many of its entries and exits were reached since it was set.
+    hits: u32,
 }
 
 /// The line breakpoints of one module.
 struct ModuleBreakpoints {
     /// The name of the module's root class.
     name: String,
-    lines: Vec<LineBreakpoint>,
+    lines: Vec<LineBreakpointRecord>,
 }
 
 /// One line breakpoint.
-struct LineBreakpoint {
+struct LineBreakpointRecord {
     id: BreakpointId,
     offset: u32,
     /// The statement it resolved to; `None` while pending.
     statement: Option<Span>,
+    hit_condition: Option<HitCondition>,
+    /// How many times an activation reached its statement since it was
+    /// set.
+    hits: u32,
 }
 
 /// A patched slot: its body, its index, and every breakpoint standing
@@ -523,6 +530,42 @@ impl Breakpoints {
         standing
     }
 
+    /// Counts a hit of each of `ids`, the breakpoints the debugger set
+    /// that a frame reached, and answers those whose hit condition holds
+    /// at it, the ones it stops for. Counted here, in the run loop's cold
+    /// decision, so that a hit that does not stop costs no stop and no
+    /// round trip to the agent (`docs/design/debugger.md`, "Hit counts and
+    /// temporary breakpoints").
+    pub(crate) fn count_hits(&mut self, ids: Vec<BreakpointId>) -> Vec<BreakpointId> {
+        ids.into_iter().filter(|id| self.count_hit(*id)).collect()
+    }
+
+    /// Counts a hit of the breakpoint `id`, and answers whether its hit
+    /// condition holds at it.
+    fn count_hit(&mut self, id: BreakpointId) -> bool {
+        let line = self
+            .modules
+            .iter_mut()
+            .flat_map(|module| module.lines.iter_mut())
+            .find(|line| line.id == id)
+            .map(|line| (line.hit_condition, &mut line.hits));
+        let counted = match line {
+            Some(found) => Some(found),
+            None => self
+                .methods
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .map(|entry| (entry.method.hit_condition, &mut entry.hits)),
+        };
+        // Every id a patch holds is one of the table's; one that is not
+        // stops, as a breakpoint without a condition does.
+        let Some((condition, hits)) = counted else {
+            return true;
+        };
+        *hits = hits.saturating_add(1);
+        condition.is_none_or(|condition| condition.holds(*hits))
+    }
+
     /// Whether any method breakpoint is set: the unwinder reports a
     /// method's exit only then.
     pub(crate) fn has_method_breakpoints(&self) -> bool {
@@ -811,16 +854,17 @@ impl Breakpoints {
     }
 }
 
-/// Replaces every line breakpoint of `module` by one at each of
-/// `offsets`, resolved against the module's bodies if it is built, and
-/// answers their states (`Command::SetBreakpoints`). Only the slots the
-/// two sets do not share change: a slot the old set and the new both
-/// patch stays patched, so that sending the same set again frees no
-/// machine code and switches no fast path.
+/// Replaces every line breakpoint of `module` by `requested`, each
+/// resolved against the module's bodies if it is built, under a new id
+/// and with no hit counted, and answers their states
+/// (`Command::SetBreakpoints`). Only the slots the two sets do not share
+/// change: a slot the old set and the new both patch stays patched, so
+/// that sending the same set again frees no machine code and switches no
+/// fast path.
 pub(crate) fn set_line_breakpoints(
     mutator: &mut Mutator<'_>,
     module: String,
-    offsets: Vec<u32>,
+    requested: Vec<LineBreakpoint>,
 ) -> Event {
     let table = &mut mutator.breakpoints;
     let position = match table.modules.iter().position(|held| held.name == module) {
@@ -843,12 +887,14 @@ pub(crate) fn set_line_breakpoints(
             table.modules.len() - 1
         }
     };
-    let mut lines = Vec::with_capacity(offsets.len());
-    for offset in offsets {
-        lines.push(LineBreakpoint {
+    let mut lines = Vec::with_capacity(requested.len());
+    for breakpoint in requested {
+        lines.push(LineBreakpointRecord {
             id: table.take_id(),
-            offset,
+            offset: breakpoint.offset,
             statement: None,
+            hit_condition: breakpoint.hit_condition,
+            hits: 0,
         });
     }
     let empty = lines.is_empty();
@@ -927,6 +973,7 @@ pub(crate) fn set_method_breakpoints(
             method,
             bodies: Vec::new(),
             verified: false,
+            hits: 0,
         })
         .collect();
     table.methods = methods;

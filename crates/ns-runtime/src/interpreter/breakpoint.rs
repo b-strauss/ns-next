@@ -36,12 +36,15 @@ pub(crate) enum BreakpointDecision {
 /// exit the slot really is -- a lazy slot's getter's first instruction
 /// once the slot is filled, a non-local return whose home still runs --
 /// the run to cursor, and a one-shot that stops in this activation; the
-/// breakpoint stress mode's patch only counts its hit. The
+/// breakpoint stress mode's patch only counts its hit. Each breakpoint
+/// the debugger set there counts the reach as a hit and stops only where
+/// its hit condition holds; a reach none stops for, and no step or run to
+/// cursor, goes past the slot as a resumed stop's token lets it. The
 /// token a resumed stop set lets the frame past the slot it stopped at
-/// once; this arm consumes it when it names this slot, and drops it
-/// otherwise, since the activation it names may be popped from here on
-/// and its offset reused. Going past a method's entry that is also its
-/// exit stops again for the exit first.
+/// once, uncounted; this arm consumes it when it names this slot, and
+/// drops it otherwise, since the activation it names may be popped from
+/// here on and its offset reused. Going past a method's entry that is
+/// also its exit stops again for the exit first, counted then.
 #[cold]
 #[inline(never)]
 pub(crate) fn reached(
@@ -90,7 +93,10 @@ pub(crate) fn reached(
     }
     let (hits, after) = hits_of(mutator, activation, &code, index, standing);
     if hits.only_a_step() && !step_stops {
-        return BreakpointDecision::Execute(code.original(index));
+        // What a stop would owe, owed all the same: a method's exit at a
+        // non-local return counted here is not counted again where the
+        // return arrives.
+        return gone_past(mutator, activation, &code, index, after);
     }
     mutator.breakpoints.request_stop(PendingStop {
         slot: PastOnce {
@@ -122,7 +128,7 @@ fn gone_past(
         AfterPast::ExitDue => {
             let standing = mutator.breakpoints.kinds_at(address(code), index);
             let exits = if exit_is_taken(mutator, activation, code, index) {
-                standing.exits
+                mutator.breakpoints.count_hits(standing.exits)
             } else {
                 Vec::new()
             };
@@ -155,10 +161,14 @@ fn gone_past(
 }
 
 /// The breakpoints the debugger set that `standing` at slot `index` of
-/// `code` makes the frame `activation` stop for, and what going past the
-/// stop owes: a method's exit is one only where the slot leaves the
-/// method (`exit_is_taken`), and one at the method's entry is reported by
-/// a stop of its own once the entry's is gone past.
+/// `code` makes the frame `activation` stop for -- each counts the reach
+/// as a hit, and only those whose hit condition holds stop -- and what
+/// going past the slot owes: a method's exit is one only where the slot
+/// leaves the method (`exit_is_taken`), and one at the method's entry the
+/// frame stops for is counted and reported by a stop of its own once the
+/// entry's is gone past; an exit at a non-local return, counted here,
+/// whether or not it stops, is not counted again where the return
+/// arrives.
 fn hits_of(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -173,6 +183,8 @@ fn hits_of(
         run_to,
         ..
     } = standing;
+    let lines = mutator.breakpoints.count_hits(lines);
+    let entries = mutator.breakpoints.count_hits(entries);
     let exits = if !exits.is_empty() && exit_is_taken(mutator, activation, code, index) {
         exits
     } else {
@@ -190,7 +202,7 @@ fn hits_of(
     let exits = if after == AfterPast::ExitDue {
         Vec::new()
     } else {
-        exits
+        mutator.breakpoints.count_hits(exits)
     };
     (
         Hits {
@@ -257,18 +269,23 @@ fn exits_of(mutator: &Mutator<'_>, activation: ActivationReference) -> Vec<Break
 }
 
 /// The unwinder popped a frame of the methods of the method breakpoints
-/// `ids` (`leaving_by_unwind`): their exit is reported where the program
+/// `ids` (`leaving_by_unwind`): each counts the exit as a hit, and the
+/// exit of those whose hit condition holds is reported where the program
 /// goes on (`stepping::method_left`).
 #[cold]
 #[inline(never)]
 pub(crate) fn left_by_unwind(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>) {
-    stepping::method_left(mutator, ids, Leaving::Popped);
+    let ids = mutator.breakpoints.count_hits(ids);
+    if !ids.is_empty() {
+        stepping::method_left(mutator, ids, Leaving::Popped);
+    }
 }
 
 /// A return's unwind arrived at `home`, the top frame, whose frame is
 /// `frame`, and returns from it to its caller: if a method breakpoint
-/// names its method, and no stop at the non-local return that began the
-/// unwind reported the exit already, the exit is reported where the
+/// names its method, and the non-local return that began the unwind did
+/// not count the exit already, each such breakpoint counts it as a hit,
+/// and the exit of those whose hit condition holds is reported where the
 /// program goes on, the caller's return point (`stepping::method_left`).
 pub(crate) fn returning_by_unwind<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -296,6 +313,7 @@ fn report_return<'gc>(
         return;
     }
     let ids = exits_of(mutator, home);
+    let ids = mutator.breakpoints.count_hits(ids);
     if !ids.is_empty() {
         stepping::method_left(mutator, ids, Leaving::Returning(home));
     }
@@ -304,7 +322,9 @@ fn report_return<'gc>(
 /// The breakpoints the debugger set that the top frame `activation`, a
 /// frame just pushed that stands at its first statement start, stops for
 /// there, where a step into stops it at the safepoint without running
-/// its slot; and what going past the stop owes.
+/// its slot, each counting the reach as a hit; and what going past the
+/// stop owes. The step's stop is made whatever the hit conditions say,
+/// and names only the breakpoints whose condition holds.
 pub(crate) fn standing_hits(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
