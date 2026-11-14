@@ -581,6 +581,7 @@ pub(crate) fn variables(
             .map(|(name, value)| Variable {
                 name,
                 value: value.map(|value| values.describe(mutator, value)),
+                not_computed: false,
             })
             .collect(),
     )

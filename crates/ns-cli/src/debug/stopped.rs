@@ -148,12 +148,19 @@ impl Stop {
     }
 
     /// A variable as a client shows it, a reference handed out for a value
-    /// with children.
+    /// with children. A field not computed yet says so in its value, with
+    /// no presentation hint: DAP's `lazy` hint promises a value fetched
+    /// through the variable's reference, and a stop computes none.
     pub(crate) fn variable(&mut self, variable: &Variable) -> protocol::Variable {
         let Some(value) = &variable.value else {
+            let shown = if variable.not_computed {
+                "<not computed yet>"
+            } else {
+                "not available"
+            };
             return protocol::Variable {
                 name: variable.name.clone(),
-                value: "not available".to_string(),
+                value: shown.to_string(),
                 class_name: None,
                 variables_reference: 0,
                 indexed_variables: None,

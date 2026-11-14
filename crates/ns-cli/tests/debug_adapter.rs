@@ -1197,7 +1197,98 @@ fn a_program_class_named_array_shows_named_variables() {
     assert!(value.get("indexedVariables").is_none(), "{value}");
     let fields = client.variables(&value["variablesReference"], None, None);
     let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
-    assert_eq!(names, [&json!("field 0"), &json!("field 1")]);
+    assert_eq!(names, [&json!("first"), &json!("second")]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root with slots and a nested class, which stops on line 8 before it
+/// has used its platform's `transcript`.
+const NAMED: &str = indoc! {"
+    class Named = Object new (
+      | n ::= 3. sum ::= 0. |
+    ) (
+      class KindA = Object new () ()
+      public main: platform args: arguments = (
+        KindA new.
+        sum:: n + 1.
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The `name` and `value` of each of `fields`.
+fn names_and_values(fields: &[Value]) -> Vec<(String, String)> {
+    fields
+        .iter()
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap_or_default().to_owned(),
+                field["value"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// An instance's fields are named by its slots and nested classes, and a
+/// lazy slot its program has not used yet says it is not computed, rather
+/// than showing `nil`.
+#[test]
+fn an_instance_s_fields_are_named_and_a_lazy_slot_not_computed_says_so() {
+    let (_directory, path) = program("Named", NAMED);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[8]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let receiver = variable(&variables, "self");
+    let fields = client.variables(&receiver["variablesReference"], None, None);
+    assert_eq!(
+        names_and_values(&fields),
+        [
+            ("n".to_owned(), "3".to_owned()),
+            ("sum".to_owned(), "4".to_owned()),
+            ("KindA".to_owned(), "the class KindA".to_owned()),
+        ]
+    );
+    let platform = variable(&variables, "platform");
+    let facets = client.variables(&platform["variablesReference"], None, None);
+    let transcript = variable(&facets, "transcript");
+    assert_eq!(transcript["value"], "<not computed yet>", "{transcript}");
+    assert_eq!(transcript["variablesReference"], 0, "{transcript}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "4\n");
+}
+
+/// Slot names are structure, not source text: an image built without its
+/// source still names an instance's fields.
+#[test]
+fn a_stripped_image_names_an_instance_s_fields() {
+    let (directory, path) = program("Named", NAMED);
+    let image = directory.join("named.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    let frames = client.stack_frames(0, 0);
+    let main = frames
+        .iter()
+        .find(|frame| frame["name"] == "Named>>main:args:")
+        .unwrap_or_else(|| panic!("no frame of `main:args:`: {frames:?}"));
+    let locals = locals_of(&mut client, main);
+    let variables = client.variables(&locals, None, None);
+    let receiver = variable(&variables, "self");
+    let fields = client.variables(&receiver["variablesReference"], None, None);
+    let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
+    assert_eq!(names, [&json!("n"), &json!("sum"), &json!("KindA")]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }

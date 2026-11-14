@@ -1144,8 +1144,8 @@ are elements, decided by the object's shape rather than its class's name,
 which a program's own class may share (`ValueDescription::indexed`).
 
 `Children` answers, from `start` and at most `count` of them: for an
-instance, its fields, named `field 0` up (`Heap::instance_field`;
-`an_instance_s_children_are_its_fields`); for an
+instance, its fields (`Heap::instance_field`), in field order, each
+named as the program declared it; for an
 `Array`, its elements, named `[1]` up as `at:` counts
 (`Heap::array_element`; `an_array_s_children_are_its_elements_paged`).
 Every other value has none: an immediate, a `ByteArray`, a `String`, and
@@ -1153,6 +1153,40 @@ a reified mixin, whose one field is an id that tells a reader nothing.
 Each child is described, and held, as every value is. The heap's accessors
 alone describe a value: no Newspeak code runs while the program is
 stopped.
+
+An instance's fields are named from the layout of its class's
+application (`values.rs`'s `field_labels`; `object-model.md`, "Mixin
+application"): each level of the chain, from the root, lays its own
+slots down at its slot base in declaration order, then one hidden slot
+per nested class it declares, so a field is named by its slot's name or
+by its nested class's (`KindA`), a superclass's slots included and a
+shipped class's alike (`an_instance_s_fields_are_named_by_its_slots_and_nested_classes`,
+`an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one`).
+The names are the mixins' structure, never their source, so an image
+built with `--strip-source` names them too
+(`a_stripped_image_names_an_instance_s_fields`). A name more than one
+level declares -- a superclass's private `x` under a subclass's `x`, a
+nested class declared again -- is the plain name on the level nearest
+the object's class, the one its own code reads, and `x (Base)` on each
+level above, the declaring mixin's name added, numbered `x (Base 2)`
+when one chain applies that mixin twice. A field no declaration names is
+`field <index>`, which only an instance whose class holds no
+application, or one with more fields than its application lays out,
+would show; neither happens to an instance the VM made. Paging counts
+the named fields as it counts elements (`named_fields_are_paged`).
+
+A field that holds no value yet is shown as not computed rather than as
+its word, `nil` (`Variable::not_computed`, its `value` `None`): a lazy
+slot (§6.3.3) its getter has not filled -- `nil` is what its getter reads
+as unfilled (`Instruction::ReturnSlotIfFilled`) -- and a nested class's
+hidden slot before its accessor built the class, or while it builds it.
+No stop computes one, since no Newspeak code runs at a stop; one that
+holds a value shows it (`a_lazy_slot_not_computed_yet_is_shown_so`:
+the platform's facets, of which only `transcript`, used, holds one). The
+agent shows such a field's value as `<not computed yet>`, without
+children and without DAP's `lazy` hint, which promises a value fetched
+through the variable's reference
+(`an_instance_s_fields_are_named_and_a_lazy_slot_not_computed_says_so`).
 
 Planned: an object the IDE pins outlives its stop, as JDWP's object ids
 and their `DisableCollection` do; a `ByteArray`'s and a `String`'s

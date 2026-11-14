@@ -3,10 +3,12 @@
 //! agent by a `ValueId`, described by the heap's accessors alone -- no
 //! Newspeak code runs while the program is stopped.
 
+use std::collections::HashMap;
+
 use super::remote::{ValueDescription, ValueId, Variable};
-use crate::heap::ObjectShape;
+use crate::heap::{ObjectReference, ObjectShape};
 use crate::interpreter::Mutator;
-use crate::{Root, Value, ValueKind};
+use crate::{Root, Symbol, Value, ValueKind};
 
 /// The values one stop handed out, by id. Its ids continue those of the
 /// stop before (`first`), so that an id of an earlier stop, whose table
@@ -76,29 +78,200 @@ impl StopValues {
             return Some(Vec::new());
         };
         let is_array = mutator.heap.object_shape(object) == ObjectShape::Array;
+        let mut labels = if is_array {
+            Vec::new()
+        } else {
+            field_labels(mutator, object, total)
+        };
         let mut children = Vec::new();
         for index in start..end {
-            let (name, child) = if is_array {
+            let (name, child, filling) = if is_array {
                 (
                     format!("[{}]", index + 1),
                     mutator.heap.array_element(object, index),
+                    Filling::Always,
                 )
             } else {
+                let label = labels
+                    .get_mut(index)
+                    .map(std::mem::take)
+                    .expect("internal: every field below the count is labelled");
                 (
-                    format!("field {index}"),
+                    label.name,
                     mutator.heap.instance_field(object, index),
+                    label.filling,
                 )
             };
             let Some(child) = child else {
                 unreachable!("internal: a child below the count is readable")
             };
-            children.push(Variable {
-                name,
-                value: Some(self.describe(mutator, child)),
+            children.push(if filling.is_unfilled(child) {
+                Variable {
+                    name,
+                    value: None,
+                    not_computed: true,
+                }
+            } else {
+                Variable {
+                    name,
+                    value: Some(self.describe(mutator, child)),
+                    not_computed: false,
+                }
             });
         }
         Some(children)
     }
+}
+
+/// How a field comes to hold its value, which says what its word means
+/// before it does.
+#[derive(Clone, Copy, Default)]
+enum Filling {
+    /// Filled by the initializer, or a word no declaration names: what it
+    /// holds is its value, `nil` included.
+    #[default]
+    Always,
+    /// A lazy slot (§6.3.3), filled by its getter's first send: `nil`
+    /// until then, which the getter reads as unfilled
+    /// (`Instruction::ReturnSlotIfFilled`).
+    Lazy,
+    /// A nested class's hidden slot, filled by its accessor: `nil` until
+    /// then, and a creation serial while the class is being built
+    /// (`interpreter/nested.rs`).
+    NestedClass,
+}
+
+impl Filling {
+    /// Whether `word` says the field holds no value yet.
+    fn is_unfilled(self, word: Value<'_>) -> bool {
+        match self {
+            Filling::Always => false,
+            Filling::Lazy => word.is_nil(),
+            Filling::NestedClass => word.is_nil() || word.as_small_integer().is_some(),
+        }
+    }
+}
+
+/// What one field of an instance is called and how it is filled.
+#[derive(Default)]
+struct FieldLabel {
+    name: String,
+    filling: Filling,
+}
+
+/// One field a declaration names: the name it was declared with, the
+/// mixin of the level that declared it and that level's place in the
+/// chain, counted from the root.
+struct Declared {
+    name: Symbol,
+    declarer: Symbol,
+    level: usize,
+    filling: Filling,
+}
+
+/// The names of `object`'s `field_count` fields, read off the layout of
+/// its class's application (`Mutator::apply_mixin`): each level, from the
+/// root, lays its own slots down at its `own_slot_base` in declaration
+/// order, then one hidden slot per nested class it declares
+/// (`MixinApplication::nested_slot`). A slot is named as it was declared,
+/// a hidden slot by its nested class's name -- both structure, which an
+/// image keeps without its source. A name declared on more than one
+/// level (a superclass's private `x` under a subclass's `x`, a nested
+/// class a subclass declares again) is the plain name only on the level
+/// nearest the object's class, which the program's own code there reads;
+/// each level above it is `x (Super)`, its declaring mixin's name added,
+/// and numbered, `x (Super 2)`, when one chain applies that mixin twice.
+/// A field no declaration names is `field <index>`: every field of an
+/// object whose application the layout came from has a name, so only an
+/// instance whose class holds no application, or one with more fields
+/// than its application lays out, shows one.
+fn field_labels<'gc>(
+    mutator: &Mutator<'gc>,
+    object: ObjectReference<'gc>,
+    field_count: usize,
+) -> Vec<FieldLabel> {
+    let heap = &mutator.heap;
+    let mut declared: Vec<Option<Declared>> = (0..field_count).map(|_| None).collect();
+    let mut levels = Vec::new();
+    let mut level = heap.class_application(heap.object_class(object));
+    while let Some(application) = level {
+        level = application.superclass.clone();
+        levels.push(application);
+    }
+    for (level, application) in levels.iter().rev().enumerate() {
+        let declarer = application.mixin.name;
+        let own_base = application.own_slot_base;
+        for (position, slot) in application.mixin.slots.iter().enumerate() {
+            if let Some(field) = declared.get_mut(own_base + position) {
+                *field = Some(Declared {
+                    name: slot.name,
+                    declarer,
+                    level,
+                    filling: if slot.lazy {
+                        Filling::Lazy
+                    } else {
+                        Filling::Always
+                    },
+                });
+            }
+        }
+        // This level's hidden slots follow its own slots; every entry
+        // below them is an inherited level's.
+        let nested_start = own_base + application.mixin.slots.len();
+        for (nested, index) in application.nested_slot.iter() {
+            let Some(field) = declared.get_mut(*index) else {
+                continue;
+            };
+            if *index < nested_start {
+                continue;
+            }
+            if let Some(nested) = heap.mixin(*nested) {
+                *field = Some(Declared {
+                    name: nested.name,
+                    declarer,
+                    level,
+                    filling: Filling::NestedClass,
+                });
+            }
+        }
+    }
+    let mut nearest: HashMap<Symbol, usize> = HashMap::new();
+    for field in declared.iter().flatten() {
+        let level = nearest.entry(field.name).or_insert(field.level);
+        *level = (*level).max(field.level);
+    }
+    // Numbered from the object's class upward, as the shadowed slots are
+    // met reading up the chain; fields lie in level order, so that is
+    // the reverse of field order.
+    let mut shadowed: HashMap<(Symbol, Symbol), u32> = HashMap::new();
+    let mut labels: Vec<FieldLabel> = Vec::with_capacity(field_count);
+    for (index, field) in declared.iter().enumerate().rev() {
+        let label = match field {
+            None => FieldLabel {
+                name: format!("field {index}"),
+                filling: Filling::Always,
+            },
+            Some(field) if nearest.get(&field.name) == Some(&field.level) => FieldLabel {
+                name: field.name.to_string(),
+                filling: field.filling,
+            },
+            Some(field) => {
+                let count = shadowed.entry((field.name, field.declarer)).or_insert(0);
+                *count += 1;
+                let name = match *count {
+                    1 => format!("{} ({})", field.name, field.declarer),
+                    count => format!("{} ({} {count})", field.name, field.declarer),
+                };
+                FieldLabel {
+                    name,
+                    filling: field.filling,
+                }
+            }
+        };
+        labels.push(label);
+    }
+    labels.reverse();
+    labels
 }
 
 /// Whether `value`'s children are elements, counted from 1, rather than

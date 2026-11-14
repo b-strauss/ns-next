@@ -822,12 +822,175 @@ fn an_instance_s_children_are_its_fields() {
     assert_eq!(receiver.child_count, 1);
     assert!(!receiver.indexed, "an instance's children are its fields");
     let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
-    assert_eq!(names, ["field 0"]);
+    assert_eq!(names, ["count"]);
     assert!(
         shown(&children[0]).label.parse::<u64>().is_ok(),
         "the count slot holds a number, not {}",
         shown(&children[0]).label
     );
+}
+
+/// A loop that never ends in an instance with slots, nested classes --
+/// one never used -- a subclass whose private slot shadows its
+/// superclass's, and the platform, whose `transcript` it used: its
+/// fields are named by the slots and nested classes that declare them.
+const FIELDS: &str = indoc! {"
+    class Fields = Object new (
+      | n ::= 50000. sum ::= 0. derived platform |
+    ) (
+      class KindA = Object new () ()
+      class Base = Object new (
+        | private x = 1. y = 2. |
+      ) ()
+      class Derived = Base new (
+        | private x = 3. z = 4. |
+      ) ()
+      class Unused = Object new () ()
+      public use: aPlatform = (
+        platform:: aPlatform
+      )
+      public run = (
+        KindA new.
+        derived:: Derived new.
+        platform transcript.
+        [true] whileTrue: [sum:: sum + 1].
+        ^derived
+      )
+    ) : ()
+"};
+
+/// `FIELDS` under `lowering`, handed the platform and stopped in its
+/// loop: answers `self`'s fields from `start`, at most `count` of them,
+/// those of its `derived` and those of its `platform`.
+fn fields_while_stopped(
+    lowering: Lowering,
+    start: usize,
+    count: usize,
+) -> (Vec<Variable>, Vec<Variable>, Vec<Variable>) {
+    let (mut interpreter, instance) = instance_of(FIELDS, lowering);
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+        "use:",
+    );
+    while_stopped_in(interpreter, &instance, PAUSE_DELAY, move |remote| {
+        let frame = stack_trace(remote)
+            .iter()
+            .position(|frame| frame.kind == method("run"))
+            .expect("the loop's method is on the stack");
+        let receiver = value_of(&variables(remote, Command::Variables { frame }), "self").clone();
+        let all = variables(
+            remote,
+            Command::Children {
+                value: receiver.id,
+                start: 0,
+                count: receiver.child_count,
+            },
+        );
+        let children_of = |name: &str| {
+            let value = value_of(&all, name);
+            variables(
+                remote,
+                Command::Children {
+                    value: value.id,
+                    start: 0,
+                    count: value.child_count,
+                },
+            )
+        };
+        let derived = children_of("derived");
+        let platform = children_of("platform");
+        let page = variables(
+            remote,
+            Command::Children {
+                value: receiver.id,
+                start,
+                count,
+            },
+        );
+        (page, derived, platform)
+    })
+    .0
+}
+
+#[test]
+fn an_instance_s_fields_are_named_by_its_slots_and_nested_classes() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (fields, _, _) = fields_while_stopped(lowering, 0, 16);
+        assert_eq!(
+            names(&fields),
+            ["n", "sum", "derived", "platform", "KindA", "Base", "Derived", "Unused"],
+            "{lowering:?}"
+        );
+        assert_eq!(value_of(&fields, "n").label, "50000", "{lowering:?}");
+        assert_eq!(
+            value_of(&fields, "KindA").label,
+            "the class KindA",
+            "{lowering:?}"
+        );
+        assert!(!named(&fields, "KindA").not_computed, "{lowering:?}");
+        let unused = named(&fields, "Unused");
+        assert!(
+            unused.not_computed && unused.value.is_none(),
+            "{lowering:?}: a nested class never used is not computed yet: {unused:?}"
+        );
+    }
+}
+
+#[test]
+fn an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (_, derived, _) = fields_while_stopped(lowering, 0, 0);
+        assert_eq!(names(&derived), ["x (Base)", "y", "x", "z"], "{lowering:?}");
+        let labels: Vec<&str> = derived
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["1", "2", "3", "4"], "{lowering:?}");
+    }
+}
+
+#[test]
+fn named_fields_are_paged() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (page, _, _) = fields_while_stopped(lowering, 1, 2);
+        assert_eq!(names(&page), ["sum", "derived"], "{lowering:?}");
+        let (past, _, _) = fields_while_stopped(lowering, 6, 5);
+        assert_eq!(names(&past), ["Derived", "Unused"], "{lowering:?}");
+    }
+}
+
+/// The platform is a shipped class's instance, named from the shipped
+/// mixin's slots; its facets are lazy slots, of which only the one the
+/// program used holds a value, and the others are not computed yet --
+/// not `nil`, which none of them would answer.
+#[test]
+fn a_lazy_slot_not_computed_yet_is_shown_so() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (_, _, platform) = fields_while_stopped(lowering, 0, 0);
+        assert_eq!(
+            names(&platform),
+            [
+                "transcript",
+                "collections",
+                "kernel",
+                "time",
+                "typedArrays",
+                "mirrors"
+            ],
+            "{lowering:?}"
+        );
+        let transcript = named(&platform, "transcript");
+        assert!(!transcript.not_computed, "{lowering:?}");
+        assert_eq!(shown(transcript).class_name, "Transcript", "{lowering:?}");
+        for facet in &platform[1..] {
+            assert!(
+                facet.not_computed && facet.value.is_none(),
+                "{lowering:?}: {} is not computed yet: {facet:?}",
+                facet.name
+            );
+        }
+    }
 }
 
 #[test]

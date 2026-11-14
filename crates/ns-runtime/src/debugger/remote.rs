@@ -456,8 +456,16 @@ pub struct Variable {
     pub name: String,
     /// `None` for a variable that lives nowhere any more: a block's outer
     /// variable whose activation returned without keeping its registers,
-    /// and that nothing captured (decision 10). A child always has one.
+    /// and that nothing captured (decision 10), and for a field not
+    /// computed yet (`not_computed`); every other child has one.
     pub value: Option<ValueDescription>,
+    /// Whether the variable is a field that holds no value yet: a lazy
+    /// slot whose getter has not filled it (§6.3.3), or a nested class's
+    /// hidden slot before its accessor built the class. Its word is `nil`,
+    /// but its value is not: it does not exist until the program asks for
+    /// it, and no Newspeak code runs at a stop to compute it. `value` is
+    /// `None` then.
+    pub not_computed: bool,
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its

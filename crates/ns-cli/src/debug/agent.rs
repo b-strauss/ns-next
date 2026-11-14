@@ -936,6 +936,7 @@ impl Agent {
                 let returned = Variable {
                     name: "returned".to_string(),
                     value: Some(value),
+                    not_computed: false,
                 };
                 let variables = vec![self.stop.variable(&returned)];
                 self.respond(connection, request, Some(json!({ "variables": variables })));
