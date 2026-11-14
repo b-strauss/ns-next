@@ -406,6 +406,11 @@ fn a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other() {
     assert_terminated(result);
     remote.pause();
     let agent = thread::spawn(move || {
+        // The dropped `Terminate` is answered before the next run stops.
+        match remote.next_event(EVENT_TIMEOUT) {
+            Some(Event::Refused { command, .. }) => assert_eq!(command, "Terminate"),
+            other => panic!("the refusal of the dropped terminate was expected, not {other:?}"),
+        }
         expect_paused(&remote);
         continue_stopped(&remote);
         remote
@@ -413,6 +418,29 @@ fn a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other() {
     let count = expect_ok(run(&mut interpreter, &instance), "the next run");
     drop(agent.join().expect("the remote's thread"));
     assert_eq!(small_integer(&mut interpreter, &count), 100_000);
+}
+
+/// Every command queued while no run executes has one answer: the drop
+/// of the ones no run serves is announced by a refusal, in the order the
+/// commands were sent, and the run that follows is not affected.
+#[test]
+fn a_command_queued_between_runs_is_refused() {
+    let (mut interpreter, instance) = instance_of(RUNS, Lowering::Optimized);
+    let remote = interpreter.attach_debugger();
+    remote.send(Command::StackTrace);
+    remote.send(Command::Terminate);
+    let count = expect_ok(run(&mut interpreter, &instance), "the run");
+    assert_eq!(small_integer(&mut interpreter, &count), 100_000);
+    for expected in ["StackTrace", "Terminate"] {
+        match remote.next_event(EVENT_TIMEOUT) {
+            Some(Event::Refused { command, reason }) => {
+                assert_eq!(command, expected);
+                assert_eq!(reason, "no run executes");
+            }
+            other => panic!("the refusal of {expected} was expected, not {other:?}"),
+        }
+    }
+    drop(remote);
 }
 
 /// A run that stops three sends deep, in a loop that never ends, with an

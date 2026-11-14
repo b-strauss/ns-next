@@ -987,7 +987,7 @@ impl Interpreter {
     /// Takes every command queued for a run that is over, or that has not
     /// begun, after clearing the commands bit under the arming lock: a
     /// configuration command, which stops nothing, is served, and every
-    /// other dropped. A command that acts on a run is served by the run it
+    /// other dropped and answered by `Event::Refused`. A command that acts on a run is served by the run it
     /// arrives during, and one left queued -- a `Terminate` sent after its
     /// run ended, or queued after the one that ended it -- would otherwise
     /// end the next run at its first safepoint, or be taken by its first
@@ -1017,7 +1017,7 @@ impl Interpreter {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 Ok(
-                    Command::Continue
+                    command @ (Command::Continue
                     | Command::StepOver
                     | Command::StepInto
                     | Command::StepOut
@@ -1025,8 +1025,12 @@ impl Interpreter {
                     | Command::Terminate
                     | Command::StackTrace
                     | Command::Variables { .. }
-                    | Command::Children { .. },
-                ) => {}
+                    | Command::Children { .. }),
+                ) => {
+                    // The drop stays, but never silent: every command has
+                    // exactly one answer, as every DAP request has one.
+                    self.refuse(&mut CommandSource::Remote, &command, "no run executes");
+                }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
                     self.detach_debugger();

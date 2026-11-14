@@ -643,12 +643,12 @@ taken by its first stop, a run nobody terminated
 pause is no command: one asked between runs stays, and stops the next run
 at its first safepoint.
 
-Planned for stage 4 (decided with the user on 2026-11-14): every command
-dropped between runs is answered by `Event::Refused`, its reason that no
-run executes, so that every command the debugging API takes has exactly
-one answer, as every DAP request has one response and JDWP answers a
-command it cannot serve with an error (`VM_DEAD`,
-`THREAD_NOT_SUSPENDED`). `ns-next run` is several host runs -- a
+Every command dropped between runs is answered by `Event::Refused`, its
+reason that no run executes, so that every command the debugging API
+takes has exactly one answer, as every DAP request has one response and
+JDWP answers a command it cannot serve with an error (`VM_DEAD`,
+`THREAD_NOT_SUSPENDED`; `a_command_queued_between_runs_is_refused`).
+Planned for stage 4 (decided with the user on 2026-11-14): `ns-next run` is several host runs -- a
 project's manifest instantiated, the root module, then `main:args:`
 (`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
 two of them, where the drop would let the program go on. The DAP agent
