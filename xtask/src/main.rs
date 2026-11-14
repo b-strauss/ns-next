@@ -932,11 +932,7 @@ fn run_shipped_code(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<
     let step = shipped_code_step();
     let started = Instant::now();
     if ns_runtime::shipped_code::generation_refusal().is_none() && shipped_code_is_current(root) {
-        println!(
-            "
-==> {}",
-            step.label
-        );
+        println!("\n==> {}", step.label);
         println!("{SHIPPED_CODE} is current");
         times.push((step.label, started.elapsed()));
         return Ok(());

@@ -3296,6 +3296,15 @@ same commit regenerates it with `regenerate_the_golden_fixture`, and only
 its fingerprint bytes change. `build.rs` names directories, not the artifact,
 in `cargo:rerun-if-changed`: Cargo reruns a script whose named file is
 missing on every build, and a directory's scan sees the artifact appear.
+What the fingerprint does not cover is every other input of the
+generator: `ns-memory` and `ns-assembler`, which `ns-runtime` links, the
+profiles, the compiler flags (`.cargo/config.toml`), `Cargo.lock` and
+the toolchain. None of them is meant to change what the shipped modules
+compile to, and the boot and the gates trust the header on that;
+`a_usable_embedded_artifact_is_what_generating_it_writes` holds them to
+it, comparing an embedded artifact the binary would decode byte for
+byte with what generating it now writes, so a change through one of
+them fails the suite rather than going unseen.
 
 **Generated, never checked in.** `cargo xtask shipped-code` writes the file
 only when its bytes changed, which keeps `build.rs` from rebuilding
@@ -3318,9 +3327,10 @@ sources' contents, never by file times. A current artifact then costs the
 hashing alone, and an edit the generator links but the fingerprint does
 not cover -- `ns-memory`, `ns-assembler`, `xtask`, `Cargo.lock` -- no
 longer rebuilds the generator, about 5 s; an edit to the fingerprinted
-sources makes the artifact stale, and the task builds and writes it. A process whose generation would refuse runs the task all
-the same, so that the gate refuses with it. A release binary built without the
-artifact boots from source too, which a later packaging has to rule out
+sources makes the artifact stale, and the task builds and writes it. A
+process whose generation would refuse runs the task all the same, so that
+the gate refuses with it. A release binary built without the artifact
+boots from source too, which a later packaging has to rule out
 ([OPEN-WORK.md](../OPEN-WORK.md), "A release binary without the embedded
 shipped code boots from source"). The tests in `shipped_code/mod.rs` run in
 the `commit` gate: `the_optimized_boot_decodes_the_embedded_code` fails

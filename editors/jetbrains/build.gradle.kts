@@ -125,6 +125,9 @@ tasks.test {
  * so a runtime change leaves it up to date while a change to the Rust
  * lexer reruns it. It runs on the classpath, JVM and sandbox the platform
  * plugin gives `test`, and after it, since the two share that sandbox.
+ * The copy mirrors what version 2.19.0 of the IntelliJ Platform Gradle
+ * plugin (`plugins` above) configures `test` with (its `TestIdeTask`
+ * configuration and `PrepareTestTask`): an upgrade re-checks it.
  */
 val lexerComparisonTest = tasks.register<Test>("lexerComparisonTest") {
     description = "Compares the Kotlin lexer with ns-syntax's, through ns-next-analyzer dump-tokens."

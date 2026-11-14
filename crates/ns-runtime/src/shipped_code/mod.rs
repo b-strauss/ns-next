@@ -329,15 +329,48 @@ mod tests {
     /// The gates judge the artifact by fingerprints they compute
     /// themselves: they must be the ones this binary was built with, or a
     /// current artifact would be rewritten at every call, or worse, a stale
-    /// one left alone.
+    /// one left alone. Generates nothing, so it runs under
+    /// `NS_NEXT_NO_PRIMITIVE_METHODS=1` too.
     #[test]
     fn the_fingerprints_the_gates_compute_are_the_binarys() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let fingerprints = fingerprint::compute(&workspace).expect("the sources are readable");
         assert_eq!(fingerprints.code, SHIPPED_CODE_FINGERPRINT);
         assert_eq!(fingerprints.library, CORE_LIBRARY_FINGERPRINT);
-        assert!(written_for(&generated(), fingerprints.code));
-        assert!(!written_for(&generated(), fingerprints.code ^ 1));
+        assert!(written_for(&header(fingerprints.code), fingerprints.code));
+        assert!(!written_for(
+            &header(fingerprints.code),
+            fingerprints.code ^ 1
+        ));
+    }
+
+    /// The gates leave an artifact alone when its header carries the
+    /// fingerprint, which covers the sources but not every input of the
+    /// generator -- `ns-memory`, `ns-assembler`, the profiles, the compiler
+    /// flags, the toolchain. An embedded artifact the binary would decode
+    /// must be, byte for byte, what generating it now writes, so that a
+    /// change through one of those shows here rather than nowhere.
+    #[test]
+    fn a_usable_embedded_artifact_is_what_generating_it_writes() {
+        if primitive_method::disabled() {
+            eprintln!(
+                "skipped: NS_NEXT_NO_PRIMITIVE_METHODS=1 is set, under which the shipped code \
+                 is not generated"
+            );
+            return;
+        }
+        if !usable(embedded()) {
+            eprintln!(
+                "skipped: the embedded shipped code is missing or stale, which \
+                 `the_optimized_boot_decodes_the_embedded_code` reports"
+            );
+            return;
+        }
+        assert!(
+            embedded() == generated().as_slice(),
+            "the embedded shipped code carries this binary's fingerprint but differs from \
+             what generating it writes: an input outside the fingerprint changed it"
+        );
     }
 
     #[test]
