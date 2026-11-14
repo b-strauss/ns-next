@@ -151,6 +151,7 @@ impl World {
                 breakpoints: crate::debugger::breakpoints::Breakpoints::default(),
                 stepping: None,
                 mixin_reclaim: crate::interpreter::MixinReclaimMemo::default(),
+                reclaim_buffers: crate::interpreter::ReclaimBuffers::default(),
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();

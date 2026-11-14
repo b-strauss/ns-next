@@ -290,6 +290,12 @@ impl Heap<'_> {
         application
     }
 
+    /// Whether any replaced application names a successor: none unless an
+    /// install replaced one.
+    pub(crate) fn has_successors(&self) -> bool {
+        !self.tables.successors.is_empty()
+    }
+
     /// Drops every successor entry whose replaced application `live` calls
     /// dead: its index is about to be freed, and an entry left under it
     /// would hand the next application minted there a successor of its own.

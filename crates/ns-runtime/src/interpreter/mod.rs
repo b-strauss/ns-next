@@ -37,7 +37,7 @@ use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
 use crate::Symbol;
 pub(crate) use metaclass::MetaclassMixins;
-pub(crate) use reclaim::MixinReclaimMemo;
+pub(crate) use reclaim::{MixinReclaimMemo, ReclaimBuffers};
 use unwind::WalkedActivation;
 
 // `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
@@ -612,6 +612,9 @@ pub struct Mutator<'gc> {
     /// tables and kept for the next one (`reclaim::MixinReclaimMemo`). It
     /// holds ids and counts, no handle and no `Rc`.
     pub(crate) mixin_reclaim: reclaim::MixinReclaimMemo,
+    /// The applications' liveness buffers a full collection reuses
+    /// (`reclaim::ReclaimBuffers`).
+    pub(crate) reclaim_buffers: reclaim::ReclaimBuffers,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only

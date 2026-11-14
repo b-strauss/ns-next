@@ -52,11 +52,18 @@ impl Mutator<'_> {
         // never meet the guard reused -- and, transitively, superclass
         // links and successors.
         let rows = self.heap.application_rows();
-        let mut live = vec![false; rows];
-        let mut work: Vec<ApplicationIndex> = (0..rows)
-            .filter(|row| gathered.applications.contains(row_number(*row)))
-            .map(application_index)
-            .collect();
+        // The buffers of the last collection, emptied: a collection at
+        // every safepoint, as the collect stress mode makes, would
+        // otherwise allocate both afresh each time.
+        let ReclaimBuffers { mut live, mut work } = std::mem::take(&mut self.reclaim_buffers);
+        live.clear();
+        live.resize(rows, false);
+        work.clear();
+        work.extend(
+            (0..rows)
+                .filter(|row| gathered.applications.contains(row_number(*row)))
+                .map(application_index),
+        );
         work.extend(
             stack
                 .entered_levels
@@ -96,8 +103,10 @@ impl Mutator<'_> {
                 work.push(successor);
             }
         }
-        self.heap
-            .retain_successors(|old| live.get(old.index()).copied().unwrap_or(false));
+        if self.heap.has_successors() {
+            self.heap
+                .retain_successors(|old| live.get(old.index()).copied().unwrap_or(false));
+        }
         let mut freed = FreedIds::default();
         let mut dropped = Vec::new();
         for (row, is_live) in live.iter().enumerate() {
@@ -114,6 +123,7 @@ impl Mutator<'_> {
             freed.applications.insert(index);
             dropped.push(application);
         }
+        self.reclaim_buffers = ReclaimBuffers { live, work };
         // Step 2: the caches, only when something was freed.
         if !freed.is_empty() {
             self.applications.retain(|(_, superclass), application| {
@@ -285,6 +295,19 @@ impl Mutator<'_> {
             reuses: 0,
         }
     }
+}
+
+/// The work buffers of a full collection's step 1, the applications'
+/// liveness (`Mutator::reclaim_ids`), kept for the next collection so that
+/// one at every safepoint allocates neither afresh. They hold indices and
+/// flags, no handle, and are empty between collections in all but their
+/// capacity.
+#[derive(Default)]
+pub(crate) struct ReclaimBuffers {
+    /// Per application row, whether it was found live.
+    live: Vec<bool>,
+    /// The rows still to be marked live.
+    work: Vec<ApplicationIndex>,
 }
 
 /// What a full collection's reclamation of mixin ids derives from the
