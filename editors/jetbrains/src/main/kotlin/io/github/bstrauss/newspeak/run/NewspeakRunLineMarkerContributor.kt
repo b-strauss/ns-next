@@ -19,7 +19,7 @@ class NewspeakRunLineMarkerContributor : RunLineMarkerContributor(), DumbAware {
         val script = (entry as? ProjectEntry.Script)?.name
         return Info(
             AllIcons.RunConfigurations.TestState.Run,
-            arrayOf(NewspeakRunAction(file, script, NewspeakCommand.RUN), NewspeakRunAction(file, script, NewspeakCommand.BENCH)),
+            playButtonActions(file, script),
         ) { _ -> if (script == null) {
             NewspeakBundle.message("run.marker.tooltip.project")
         } else {

@@ -19,9 +19,9 @@
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
 > syntax errors (Reformat Code leaves such a file alone). For a project's
-> `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
+> `newspeak.json`, completion and validation from the project file's schema, and play buttons that run, debug or benchmark the
 > project with the `ns-next` the settings name; for a module `ns-next` can
-> run from its source, a play button beside its `main:args:` that runs or
+> run from its source, a play button beside its `main:args:` that runs, debugs or
 > benchmarks the module ("The project file and running projects"). Debug
 > on a Newspeak run configuration debugs the program in the IDE's
 > debugger over a DAP client of the plugin's own (the `debugger`
@@ -1678,8 +1678,10 @@ beside the top-level `main` and beside each key of the top-level `scripts`
 object of a `newspeak.json`, and nowhere else. Its icon is the platform's
 run marker, `AllIcons.RunConfigurations.TestState.Run`, the one every
 language's play button uses through `RunLineMarkerContributor`, and clicking
-it opens a menu of two entries, "Run" (`AllIcons.Actions.Execute`) and
-"Benchmark" (`AllIcons.Gutter.RunInQueue`). `main`'s runs without a script, a
+it opens a menu of three entries, "Run" (`AllIcons.Actions.Execute`),
+"Debug" (the Debug executor's own text and icon) and "Benchmark"
+(`AllIcons.Gutter.RunInQueue`); a benchmark is never debugged, and "Run" and
+"Debug" name the same configuration and differ in the executor that starts it. `main`'s runs without a script, a
 script's with `--script=<name>`. Each entry creates the configuration, or
 reuses an equal one -- the same project file, compared system-independently
 and with the file system's case sensitivity, the same script and the same
@@ -1699,7 +1701,7 @@ whose key the caret is on (`NewspeakRunConfigurationProducer`).
 
 **The module's play button.** `NewspeakModuleRunLineMarkerContributor`, a
 `RunLineMarkerContributor` for the language `Newspeak`, puts the same play
-button, with the same "Run" and "Benchmark" (`NewspeakRunAction`), beside
+button, with the same "Run", "Debug" and "Benchmark" (`NewspeakRunAction`), beside
 `main:args:` of a module ns-next can run from its source, and nowhere else.
 `ns-next run <file>.ns` builds the root class with `new` and sends the
 instance `main:args:` as a public send (`crates/ns-cli/src/program.rs`,

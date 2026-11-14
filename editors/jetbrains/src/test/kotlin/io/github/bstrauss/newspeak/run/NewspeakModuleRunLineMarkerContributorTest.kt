@@ -82,7 +82,7 @@ class NewspeakModuleRunLineMarkerContributorTest : BasePlatformTestCase() {
             .associate { renderer ->
                 val entries = menuActions(renderer.popupMenuActions)
                     .filterIsInstance<NewspeakRunAction>()
-                    .map { action -> "${action.script}:${action.command}" }
+                    .map { action -> "${action.script}:${action.command}:${action.executor.id}" }
                 document.getLineNumber(renderer.lineMarkerInfo.startOffset) to entries
             }
     }
@@ -94,8 +94,8 @@ class NewspeakModuleRunLineMarkerContributorTest : BasePlatformTestCase() {
         else -> listOf(action)
     }
 
-    fun testARunnableModuleHasRunAndBenchmarkBesideMain() {
-        assertEquals(mapOf(2 to listOf("null:RUN", "null:BENCH")), buttons(runnable, module(runnable, "new", "public")))
+    fun testARunnableModuleHasRunDebugAndBenchmarkBesideMain() {
+        assertEquals(mapOf(2 to listOf("null:RUN:Run", "null:RUN:Debug", "null:BENCH:Run")), buttons(runnable, module(runnable, "new", "public")))
     }
 
     fun testAProtectedMainOrAnotherFactoryHasNone() {
@@ -123,7 +123,7 @@ class NewspeakModuleRunLineMarkerContributorTest : BasePlatformTestCase() {
     // A character outside the BMP takes two UTF-16 units; the button must still sit on `main:`.
     fun testColumnsPastAsciiStillFindMain() {
         val wide = runnable.replace("public main:", "(* \uD83D\uDE00 *) public main:")
-        assertEquals(mapOf(2 to listOf("null:RUN", "null:BENCH")), buttons(wide, module(wide, "new", "public")))
+        assertEquals(mapOf(2 to listOf("null:RUN:Run", "null:RUN:Debug", "null:BENCH:Run")), buttons(wide, module(wide, "new", "public")))
     }
 
     fun testRunnableMainReadsTheRootsFactoryAndItsPublicInstanceSideMain() {

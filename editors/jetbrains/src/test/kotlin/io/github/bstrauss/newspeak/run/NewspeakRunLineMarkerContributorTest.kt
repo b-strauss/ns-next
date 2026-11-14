@@ -1,7 +1,12 @@
 package io.github.bstrauss.newspeak.run
 
 import com.intellij.codeInsight.daemon.LineMarkerInfo
+import com.intellij.execution.Executor
 import com.intellij.execution.PsiLocation
+import com.intellij.execution.RunnerAndConfigurationSettings
+import com.intellij.execution.executors.DefaultDebugExecutor
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.execution.RunManager
 import com.intellij.execution.actions.ConfigurationContext
 import com.intellij.execution.actions.RunConfigurationProducer
@@ -80,7 +85,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
             .associate { renderer ->
                 val entries = menuActions(renderer.popupMenuActions)
                     .filterIsInstance<NewspeakRunAction>()
-                    .map { action -> "${action.script}:${action.command}" }
+                    .map { action -> "${action.script}:${action.command}:${action.executor.id}" }
                 document.getLineNumber(renderer.lineMarkerInfo.startOffset) to entries
             }
             .filterValues(List<String>::isNotEmpty)
@@ -89,8 +94,11 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
     fun testMainAndEachScriptCarryAPlayButtonAndNothingElse() {
         assertEquals(
             mapOf(
-                1 to listOf("null:RUN", "null:BENCH"),
-                3 to listOf("timed:RUN", "timed:BENCH", "sieve:RUN", "sieve:BENCH"),
+                1 to listOf("null:RUN:Run", "null:RUN:Debug", "null:BENCH:Run"),
+                3 to listOf(
+                    "timed:RUN:Run", "timed:RUN:Debug", "timed:BENCH:Run",
+                    "sieve:RUN:Run", "sieve:RUN:Debug", "sieve:BENCH:Run",
+                ),
             ),
             newspeakEntriesByLine("newspeak.json", projectJson),
         )
@@ -100,12 +108,29 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertEquals(emptyMap<Int, List<String>>(), newspeakEntriesByLine("package.json", projectJson))
     }
 
-    fun testTheMenuHoldsRunAndBenchmark() {
+    fun testTheMenuHoldsRunDebugAndBenchmark() {
         myFixture.configureByText("newspeak.json", projectJson)
         val document = myFixture.editor.document
         val mainButton = playButtons().single { renderer -> document.getLineNumber(renderer.lineMarkerInfo.startOffset) == 1 }
         val texts = menuActions(mainButton.popupMenuActions).map { action -> action.templatePresentation.text }
-        assertEquals(listOf("Run", "Benchmark"), texts)
+        assertEquals(listOf("Run", "Debug", "Benchmark"), texts)
+    }
+
+    fun testDebugExecutesTheConfigurationRunWouldWithTheDebugExecutor() {
+        myFixture.configureByText("newspeak.json", projectJson)
+        val file = myFixture.file.virtualFile
+        val launched = mutableListOf<Pair<RunnerAndConfigurationSettings, Executor>>()
+        val record = { settings: RunnerAndConfigurationSettings, executor: Executor -> launched.add(settings to executor); Unit }
+        val debug = NewspeakRunAction(file, "timed", NewspeakCommand.RUN, DefaultDebugExecutor.getDebugExecutorInstance(), record)
+        val run = NewspeakRunAction(file, "timed", NewspeakCommand.RUN, DefaultRunExecutor.getRunExecutorInstance(), record)
+        val event = TestActionEvent.createTestEvent(debug)
+        debug.actionPerformed(event)
+        run.actionPerformed(TestActionEvent.createTestEvent(run))
+        assertEquals(2, launched.size)
+        assertSame(DefaultDebugExecutor.getDebugExecutorInstance(), launched[0].second)
+        assertSame(DefaultRunExecutor.getRunExecutorInstance(), launched[1].second)
+        assertSame(launched[0].first, launched[1].first)
+        assertEquals(NewspeakCommand.RUN, (launched[0].first.configuration as NewspeakRunConfiguration).command)
     }
 
     fun testRunOnAScriptCreatesItsConfigurationWithoutStartingIt() {

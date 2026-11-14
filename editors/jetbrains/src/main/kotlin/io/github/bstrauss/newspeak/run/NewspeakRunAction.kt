@@ -1,8 +1,10 @@
 package io.github.bstrauss.newspeak.run
 
+import com.intellij.execution.Executor
 import com.intellij.execution.ProgramRunnerUtil
 import com.intellij.execution.RunManager
 import com.intellij.execution.RunnerAndConfigurationSettings
+import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.AnAction
@@ -12,20 +14,30 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import io.github.bstrauss.newspeak.NewspeakBundle
 
-/** One entry of the play button's menu: runs or benchmarks a project, one of its scripts, or a module. */
+/**
+ * One entry of the play button's menu: runs, debugs or benchmarks a project,
+ * one of its scripts, or a module. Run and Debug name the same configuration
+ * and differ in the executor; a benchmark is never debugged. The text and the
+ * icon of Run and Debug are the platform's own for its executors, `launch`
+ * the seam a test replaces to see what would start.
+ */
 class NewspeakRunAction(
     val programFile: VirtualFile,
     val script: String?,
     val command: NewspeakCommand,
+    val executor: Executor = DefaultRunExecutor.getRunExecutorInstance(),
+    private val launch: (RunnerAndConfigurationSettings, Executor) -> Unit = ProgramRunnerUtil::executeConfiguration,
 ) : AnAction(
-    when (command) {
-        NewspeakCommand.RUN -> NewspeakBundle.message("run.command.run")
-        NewspeakCommand.BENCH -> NewspeakBundle.message("run.command.benchmark")
+    when {
+        command == NewspeakCommand.BENCH -> NewspeakBundle.message("run.command.benchmark")
+        executor.id == DefaultDebugExecutor.EXECUTOR_ID -> executor.actionName
+        else -> NewspeakBundle.message("run.command.run")
     },
     null,
-    when (command) {
-        NewspeakCommand.RUN -> AllIcons.Actions.Execute
-        NewspeakCommand.BENCH -> AllIcons.Gutter.RunInQueue
+    when {
+        command == NewspeakCommand.BENCH -> AllIcons.Gutter.RunInQueue
+        executor.id == DefaultDebugExecutor.EXECUTOR_ID -> executor.icon
+        else -> AllIcons.Actions.Execute
     },
 ),
     DumbAware {
@@ -34,9 +46,16 @@ class NewspeakRunAction(
         val settings = createConfigurationFromGutter(project, programFile, script, command)
         // An invalid configuration -- no ns-next path, say -- takes the platform's own path:
         // its error, and the dialog to edit the configuration.
-        ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+        launch(settings, executor)
     }
 }
+
+/** The play button's entries for a program: Run, Debug and Benchmark, in that order. */
+fun playButtonActions(programFile: VirtualFile, script: String?): Array<AnAction> = arrayOf(
+    NewspeakRunAction(programFile, script, NewspeakCommand.RUN),
+    NewspeakRunAction(programFile, script, NewspeakCommand.RUN, DefaultDebugExecutor.getDebugExecutorInstance()),
+    NewspeakRunAction(programFile, script, NewspeakCommand.BENCH),
+)
 
 /** What the gutter names a configuration: a project by its directory, a module by its file; the script; whether it benchmarks. */
 fun gutterConfigurationName(programFile: VirtualFile, script: String?, command: NewspeakCommand): String {
