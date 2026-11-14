@@ -351,8 +351,8 @@ The remote has three operations:
   executes, or still queued when a run ends, is dropped and answered by
   `Event::Refused`, but a configuration command -- `SetBreakpoints`,
   `SetStepFilters` -- which the start or the end of a run serves
-  ("Commands while the program runs"). A remote
-  whose VM is gone queues it nowhere and arms nothing.
+  ("Commands while the program runs"). A remote whose VM is gone queues
+  it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
   timeout passed or the VM is gone.
 
@@ -463,11 +463,11 @@ its id and whether its method is declared (`verified`) -- in the order
 they were set, the answer to `SetMethodBreakpoints`, and sent unasked
 when a module's build or an install changes whether one is verified;
 and `ExceptionBreakpointsSet`, the answer to `SetExceptionBreakpoints`.
-`Continue`, the three steps, `RunToPosition`, `StackTrace`, `Variables` and `Children` are
-served only at a stop; one that arrives while the program runs is refused
-with "the program is running", and one queued between runs is dropped and
-refused with "no run executes". Every command a stop or a safepoint serves but
-`Terminate` is answered by one event, in the order the commands came. An
+`Continue`, the three steps, `RunToPosition`, `StackTrace`, `Variables`
+and `Children` are served only at a stop; one that arrives while the
+program runs is refused with "the program is running", and one queued
+between runs is dropped and refused with "no run executes". Every
+command a stop or a safepoint serves but `Terminate` is answered by one event, in the order the commands came. An
 agent therefore waits for `Stopped` before it sends a command only a stop
 serves: one sent right after `pause()` is refused or served depending on
 whether a safepoint drains the queue before the stop or the stop serves
@@ -616,17 +616,16 @@ With the commands bit set, the queue is drained
 (`serve_queued_commands`): the bit is cleared first, under the arming
 lock, then every queued command is taken without waiting (`try_recv`). A
 `Terminate` ends the run, and the commands queued after it are dropped
-but for a configuration command; a `SetBreakpoints` is served -- the
-breakpoints patched or restored, answered by `Event::Breakpoints` -- and
-so is every other configuration command, `SetStepFilters`,
-`SetMethodBreakpoints` and `SetExceptionBreakpoints`, and the program
-runs on; any other command is refused, "the program is
-running". The agent queues
-a command before it sets the bit, and the VM clears the bit before it
-drains the queue, so that a
-command queued while the queue is drained keeps its bit set for the next
-safepoint; the other order would lose it, a `Terminate` sent to a fully
-compiled loop included.
+at once, answered by `Event::Refused`, but for a configuration command;
+a `SetBreakpoints` is served -- the breakpoints patched or restored,
+answered by `Event::Breakpoints` -- and so is every other configuration
+command, `SetStepFilters`, `SetMethodBreakpoints` and
+`SetExceptionBreakpoints`, and the program runs on; any other command is
+refused, "the program is running". The agent queues a command before it
+sets the bit, and the VM clears the bit before it drains the queue, so
+that a command queued while the queue is drained keeps its bit set for
+the next safepoint; the other order would lose it, a `Terminate` sent to
+a fully compiled loop included.
 
 A command that acts on a run is served by the run it arrives during.
 `run_from_host` clears the commands bit, under the arming lock, and then
@@ -636,10 +635,10 @@ for its reason: a command the drain misses keeps its bit and is served,
 or dropped, at the next safepoint. A configuration command is served
 there, so that breakpoints an agent sets before the program runs, or
 between two runs, are set when the next run starts; every other command
-is dropped and answered by `Event::Refused`. Without the drop, a command left queued -- a
-`Terminate` sent after its run ended, or queued after the one that ended
-it -- would otherwise end the next run at its first safepoint, or be
-taken by its first stop, a run nobody terminated
+is dropped and answered by `Event::Refused`. Without the drop, a command
+left queued -- a `Terminate` sent after its run ended, or queued after
+the one that ended it -- would otherwise end the next run at its first
+safepoint, or be taken by its first stop, a run nobody terminated
 (`a_terminate_after_its_run_ended_does_not_end_the_next`,
 `a_terminate_queued_after_the_one_that_ended_the_run_ends_no_other`). A
 pause is no command: one asked between runs stays, and stops the next run
@@ -651,8 +650,8 @@ takes has exactly one answer, as every DAP request has one response and
 JDWP answers a command it cannot serve with an error (`VM_DEAD`,
 `THREAD_NOT_SUSPENDED`; `a_command_queued_between_runs_is_refused`).
 Planned for stage 4 (decided with the user on 2026-11-14): `ns-next run`
-is several host runs -- a project's manifest instantiated, the root module, then `main:args:`
-(`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
+is several host runs -- a project's manifest instantiated, the root
+module, then `main:args:` (`crates/ns-cli/src/program.rs`) -- so a `terminate` can arrive between
 two of them, where the drop would let the program go on. The DAP agent
 records a `terminate` in `ns-cli` as well as queuing it, and the host
 checks the record before each run it starts and ends the program as a

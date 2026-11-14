@@ -16,18 +16,19 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
 /// `StackTrace`, `Variables` and `Children` are served only while the
-/// program is stopped; one that
-/// arrives while it runs is refused (`Event::Refused`). `Terminate` is
-/// served either way. An agent waits for `Event::Stopped` before it sends
-/// a command only a stop serves: one sent right after
-/// `DebugRemote::pause` is refused or served depending on whether a
-/// safepoint drains the queue before the stop or the stop serves it. A
-/// command is served by the run it arrives during; one queued while no
-/// run executes, or still queued when a run ends, is dropped and answered
-/// by `Event::Refused`, its reason that no run executes. A configuration command -- `SetBreakpoints`, `SetMethodBreakpoints`,
-/// `SetStepFilters`, `SetExceptionBreakpoints` -- is served wherever
-/// commands are taken instead: at a safepoint while the program runs, at
-/// a stop, and when a run starts or ends, for one queued between runs.
+/// program is stopped; one that arrives while it runs is refused
+/// (`Event::Refused`). `Terminate` is served either way. An agent waits
+/// for `Event::Stopped` before it sends a command only a stop serves: one
+/// sent right after `DebugRemote::pause` is refused or served depending
+/// on whether a safepoint drains the queue before the stop or the stop
+/// serves it. A command is served by the run it arrives during; one
+/// queued while no run executes, or still queued when a run ends, is
+/// dropped and answered by `Event::Refused`, its reason that no run
+/// executes. A configuration command -- `SetBreakpoints`,
+/// `SetMethodBreakpoints`, `SetStepFilters`, `SetExceptionBreakpoints` --
+/// is served wherever commands are taken instead: at a safepoint while
+/// the program runs, at a stop, and when a run starts or ends, for one
+/// queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.

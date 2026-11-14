@@ -987,11 +987,12 @@ impl Interpreter {
     /// Takes every command queued for a run that is over, or that has not
     /// begun, after clearing the commands bit under the arming lock: a
     /// configuration command, which stops nothing, is served, and every
-    /// other dropped and answered by `Event::Refused`. A command that acts
-    /// on a run is served by the run it arrives during, and one left queued -- a `Terminate` sent after its
-    /// run ended, or queued after the one that ended it -- would otherwise
-    /// end the next run at its first safepoint, or be taken by its first
-    /// stop, a run nobody terminated. The bit is cleared before the queue
+    /// other command is dropped and answered by `Event::Refused`. A command
+    /// that acts on a run is served by the run it arrives during, and one
+    /// left queued -- a `Terminate` sent after its run ended, or queued
+    /// after the one that ended it -- would otherwise end the next run at
+    /// its first safepoint, or be taken by its first stop, a run nobody
+    /// terminated. The bit is cleared before the queue
     /// is drained, as `serve_queued_commands` clears it: the agent queues
     /// a command before it sets the bit, so a command the drain misses
     /// keeps its bit and is served, or dropped, at the next safepoint; the
