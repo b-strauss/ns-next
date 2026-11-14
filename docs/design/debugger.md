@@ -34,7 +34,8 @@
 > breakpoints for the stepping frame and a request bit a step into holds
 > until the next push, and report the value of the last call ("Step over
 > in recursion and blocks", "Step into's held request", "The return value
-> of the last call"); a step whose frame an unwind pops, or whose frame
+> of the last call"); a step out taken in a block a send took, inlined or
+> not, leaves that whole send (decision 17); a step whose frame an unwind pops, or whose frame
 > returns otherwise than to its caller's send, goes on as a step into from
 > the frame the program goes on in (decision 17); and no step lands in a
 > frame the step filters filter, by default the shipped modules' -- a stop
@@ -998,7 +999,13 @@ The metadata of decisions 4, 5 and 10 to 12 is built
 (`BodyMetadata`) are its statement starts (`StatementEntry`: the
 instructions one statement compiled to and its span), its sends
 (`SendEntry`: the index, the `CallSite`, the receiver's span and the
-selector tokens' spans), its named variables (`VariableEntry`: the name,
+selector tokens' spans), its sends that take block literals
+(`BlockSendEntry`: each block taken, a `TakenBlock` of its span and its
+place -- `BlockPlace::Inline`, the instructions it lowered to, or
+`BlockPlace::Called { send, closure }`, the send that runs its closure
+and the `MakeClosure` that made it, an index that names the running
+body's block where an install moved the spans -- whether the send is an
+inlined form, and the index after it), its named variables (`VariableEntry`: the name,
 the lexical depth in frame scopes, and the place, a `VariablePlace` --
 `Register`, `Outer { hops, register }` or `Vector { vector, slot }`, the
 vector held in a register of the frame or of one `hops` out), the body's
@@ -1342,7 +1349,8 @@ four times more (`STEP_STRESS_GRACE`), and after 64 safepoints at least
 shrinking with a heap the collect and scavenge stress modes keep small,
 and so the schedule's period with it -- a step out of the run's first
 frame, which returns to the host and stops nowhere, or out of a shipped
-`to:do:` looping long, stopped in with the shipped filter off -- is
+`to:do:` looping long, stopped in with the shipped filter off, or out of
+the block such a loop runs, which leaves the whole loop (decision 17) -- is
 ended there, as a debugger's pause ends a step, so that no step keeps
 the mode from its next burst; one whose frame has just returned to its
 caller, which stands at the step's return point it fetches next, is
@@ -1529,6 +1537,19 @@ tests do not.
   handler it found, at the handler block's first statement, and with the
   shipped filter off at the first statement of the kernel's `cull:` that
   runs the handler.
+  Of a step out of a block a send took (decision 17): out of a
+  `whileTrue:`'s body, in its first round and in its last, and out of
+  its condition, stopping after the loop; out of an `ifTrue:`'s block
+  stopping after the conditional; out of an `ifTrue:` nested in a loop's
+  body leaving one level, then the loop; out of a `do:`'s block stopping
+  after the `do:` with its answer; out of an `on:do:`'s protected block
+  and out of its handler block, each stopping where the `on:do:`
+  answered; a block kept and run by another send, and one whose home
+  returned, stepping out to their callers; and a `do:`'s block whose
+  next run returns non-locally from the home stopping at the home's
+  caller's return point. The agent's own test steps in from a loop's
+  line to its body and out to the line after the loop
+  (`crates/ns-cli/tests/debug_adapter.rs`).
   Of the step filters (decision 16): a step into a `do:` over an array
   landing in its block; a step over at the block's last statement
   landing in its next activation, and after the last element at the
@@ -1990,7 +2011,9 @@ planned.
   then goes on as a step into from the frame the program goes on in
   (decision 17).
 - **Step out** is the return point's one-shot breakpoint and the
-  reports of a frame left otherwise.
+  reports of a frame left otherwise; taken in a block a send took, it
+  leaves that send instead -- an inlined form's for the next statement
+  start after it, a real send's for its return point (decision 17).
 - **Step into** is a step over plus a safepoint request held until the next
   push, which the debugger's safepoint stops at, at the new body's first
   statement start. A send answered by a primitive or a leaf pushes
@@ -2053,6 +2076,13 @@ The metadata of a body lists:
   place a stop happens: a step out, and a step over that leaves its frame,
   stop there, mid-statement in the caller, as Java's step out stops at the
   bytecode after the call.
+- every **send that takes a block literal** as its receiver or an
+  argument, the compiler's inlined forms among them: where a frame of the
+  body stands while each of its blocks runs -- the instructions an inline
+  block lowered to, or the send that runs it as a closure and the
+  `MakeClosure` that made it -- whether the form is one the optimized
+  lowering inlines, and the index after the whole send: what a step out
+  taken in one of its blocks leaves (decision 17).
 
 The agent steps by line for IntelliJ, over statement starts until the line
 or the frame changes, as the JDWP agent steps by its line table
@@ -2337,8 +2367,11 @@ records no range.
   equal, and holds the tables to their invariants -- every statement
   start within the body and at the start of every
   `statement_program_counter` range, every send entry naming a send of
-  exactly its `CallSite`, every variable's register below `local_count`
-  and its range within the body, every span within the module's text;
+  exactly its `CallSite`, every block send going on within the body, its
+  inline blocks before that and its called ones run by a send of the body
+  and made by a `MakeClosure` before it, every variable's register below
+  `local_count` and its range within the body, every span within the
+  module's text;
   the shipped modules' bodies are checked once by a test of their own,
   not per golden; the `images` gate runs it through `build` and `load`,
   which checks the trial of the optimized lowering and then the
@@ -2535,26 +2568,61 @@ flooding the handler's frames on a throw (`PrepareStepOnThrow`,
 end of an `ensure:` block is a common place to step from; treating it as
 a resume loses the place the step was taken from.
 
-**Planned (decided with the user on 2026-11-14):** a step out taken in a
-block that was passed as an argument -- one the compiler lowered inline,
-`whileTrue:`'s, `ifTrue:`'s, `and:`'s, and a real closure alike, `do:`'s,
-`collect:`'s, `on:do:`'s -- leaves the whole send that took the block, not
-only the block: it stops at the place the block's home goes on at once
-that send has answered, its return point in the home frame, as a step
+**Built** for a step out taken in a block a send took as its receiver or
+an argument -- one the compiler lowered inline, `whileTrue:`'s,
+`ifTrue:`'s, `and:`'s, a mirror send's failure block, and a real closure
+alike, `do:`'s, `collect:`'s, `on:do:`'s protected and handler blocks,
+`ensure:`'s, a lexical send's (decided with the user on 2026-11-14): it
+leaves the whole send that took the block, not only the block, and stops
+where the block's home goes on once that send has answered, as a step
 over of that send would. A debugger steps through what the source shows,
 and the source shows a loop's body as part of the loop: stepping out of
 `whileTrue:`'s body stops after the loop, never at its condition's next
 evaluation, and stepping out of `do:`'s block stops after the `do:`,
-never at the next element. An inlined block has no frame of its own, so
-the step takes its extent and its enclosing send from the body's
-metadata; a real closure's step stops at the return point of the send in
-its home frame that took the block, as long as that send is still
-running. A block that outlived its home, or was handed on and run from
-elsewhere, has no such send and steps out as any frame does. Leaving only
-the block, as a frame would -- the next round's condition, the next
-element's block -- is rejected: it makes the user hold the control
-structures' implementation in mind. IntelliJ's Kotlin debugger steps out
-of an inline lambda past its call in the same way (not under `prior-art/`).
+never at the next element. Leaving only the block, as a frame would --
+the next round's condition, the next element's block -- is rejected: it
+makes the user hold the control structures' implementation in mind.
+IntelliJ's Kotlin debugger steps out of an inline lambda past its call in
+the same way (not under `prior-art/`).
+
+The send is found from the metadata's block sends ("Compiling the
+metadata again"; `stepping::send_left`), in the frame the step is taken
+in, before the step starts: first the innermost inlined form one of whose
+inline blocks holds the instruction the frame stands at, in its own body
+-- the smallest such block, since inlined forms nest, so that one step
+out leaves one block level; else, for a frame that runs a closure, the
+send its creator -- the frame its captured frame names, running or
+suspended -- stands at, when that send is one whose entry names the
+`MakeClosure` that made the closure's body and the creator is met
+walking down the closure's senders, so that the closure runs within that
+send. A frame of a method, a closure whose creator returned, and one its
+creator does not stand at the send that took it for -- kept and run by
+another send, or handed on in a variable rather than as a literal -- step
+out as any frame does. A frame at a loop's own statement start, before
+its first round, stands at no instruction of its blocks yet, and a step
+out there leaves the frame.
+
+An inlined form -- and its reference-lowered counterpart, a
+`SendInlinable` or the loop of `value` sends, and the optimized
+lowering's fallback send, which the form's entry names -- is left for the
+next statement start after it: the stepping frame is flooded as for a
+step over, but for the slots of the form's inline blocks and the bodies
+of its closures and of every block made inside its inline ones
+(`stepping::LeftBlocks`), so that the step stops at the first statement
+start the frame reaches once the form is done -- the statement after a
+loop, a loop's next condition when the form ended its body -- or at the
+stepping frame's return point when the frame returns first, exactly as a
+step over the whole form would, and the same under both lowerings. A
+real send is left for its return point in the creator, the index after
+it: a one-shot that stops and records there for the creator
+(`Stepping::after_send`), the send's answer reported, beside the stepping
+frame's return point; the step's frame is the creator's, so that it holds
+no handle of the closure's activations, which return to the send and are
+replaced by the next element's at the same offset. The creator leaving
+otherwise than by a return is reported as the step's frame is
+(`Stepping::has_left`): a non-local return out of the closure, an
+exception a handler below takes, an unwind, each going on where the
+program goes on.
 
 ## Planned: the mechanisms
 
@@ -2980,7 +3048,8 @@ frame whose inline code the block stands for (`stepping_frame`), so that
 a step over the block's last statement goes on at the creator's next
 statement start rather than in the receiver's `ifTrue:` or in a loop's
 `value` send; a creator that returned leaves the block a frame of its
-own. A block the body creates otherwise is a body of its own and not
+own. A step out taken in such a block leaves the form that took it, as
+one taken in its inline copy does (decision 17). A block the body creates otherwise is a body of its own and not
 flooded, so a step over a `do:` whose argument block contains a
 breakpoint stops only at that breakpoint, as IntelliJ's does.
 

@@ -1618,6 +1618,51 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     assert_eq!(client.finish().stdout, "42\n");
 }
 
+/// A root whose line 5 is a loop of two statements, followed on line 8 by
+/// the statement after it.
+const LOOPING: &str = indoc! {"
+    class Looping = Object new (
+      | count ::= 0. sum ::= 0. |
+    ) (
+      public main: platform args: arguments = (
+        [count < 3] whileTrue: [
+          sum:: sum + count.
+          count:: count + 1].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step in from the loop's line stops in its body; a step out of the
+/// body leaves the whole loop, which runs its remaining rounds, and stops
+/// at the line after it.
+#[test]
+fn a_step_out_of_a_loop_s_body_stops_after_the_loop() {
+    let (_directory, path) = program("Looping", LOOPING);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(5))
+    );
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(6))
+    );
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(8))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
 /// A step by line over a send whose callee holds a breakpoint ends at the
 /// breakpoint, reported as the breakpoint's stop.
 #[test]

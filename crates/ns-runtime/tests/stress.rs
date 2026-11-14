@@ -933,22 +933,23 @@ ns_runtime::for_each_lowering! {
             assert_eq!(stepped, plain, "the JIT on: {jit}");
             // Many whole bursts. The steps the mode ends itself are steps
             // out of the shipped `to:do:` looping 200 times, stopped in
-            // with the shipped filter off, and of `run`, which returns to
-            // the host. The test runs under every mode of the `stress`
-            // gate: measured under each of the fifteen and with the JIT
-            // off, the steps that stopped were at least 178 and at least
-            // 6.4 times those ended (the scavenge stress mode's optimized
-            // run with the JIT, the lowest of both), since the grace's
-            // floor of safepoints keeps it from shrinking with a heap
-            // the collect and scavenge stress modes keep small. The
-            // bounds lie more than a third below both.
+            // with the shipped filter off, and out of the block `run`
+            // hands it, which leave the whole loop (decision 17), and of
+            // `run`, which returns to the host. The test runs under every
+            // mode of the `stress` gate: measured under each of the
+            // fifteen and with the JIT off, the steps that stopped were at
+            // least 85 and at least 3.0 times those ended (the JIT stress
+            // mode's optimized run with the JIT, the lowest of both),
+            // since the grace's floor of safepoints keeps it from
+            // shrinking with a heap the collect and scavenge stress modes
+            // keep small. The bounds lie a third or more below both.
             let burst = Interpreter::stress_step_burst();
             assert!(
-                steps >= 6 * burst,
+                steps >= 3 * burst,
                 "the step stress mode's steps stopped {steps} times, the JIT on: {jit}"
             );
             assert!(
-                steps >= 4 * ended,
+                steps >= 2 * ended,
                 "{steps} steps stopped and {ended} were ended, the JIT on: {jit}"
             );
         }

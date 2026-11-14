@@ -19,8 +19,8 @@ use crate::bytecode::{
     Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::debugger::metadata::{
-    BodyMetadata, MetadataCollector, SendEntry, StatementEntry, VariableEntry, VariablePlace,
-    VectorHolder,
+    BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
+    TakenBlock, VariableEntry, VariablePlace, VectorHolder,
 };
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
@@ -119,6 +119,10 @@ struct Collected {
     names: Rc<[crate::Symbol]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
+    block_sends: Vec<BlockSendEntry>,
+    /// The index of the `MakeClosure` each block literal the body made a
+    /// closure of was made by, by the literal's span.
+    closures: Vec<(Span, u32)>,
     /// Every block the body creates, so that a body past a limit, which
     /// drops them, drops their tables too
     /// (`MetadataCollector::forget_family`).
@@ -481,6 +485,8 @@ impl<'a> Lowerer<'a> {
                     names,
                     statements: Vec::new(),
                     sends: Vec::new(),
+                    block_sends: Vec::new(),
+                    closures: Vec::new(),
                     blocks: Vec::new(),
                 };
                 (Some(collector), Some(collected))
@@ -1198,12 +1204,15 @@ impl<'a> Lowerer<'a> {
             collected.blocks.push(Rc::clone(&code));
         }
         let destination = self.target_register(into);
-        self.emit(Instruction::MakeClosure {
+        let index = self.emit(Instruction::MakeClosure {
             destination,
             parameters: Rc::new(parameters),
             code,
             copied,
         });
+        if let (Some(collected), Ok(index)) = (&mut self.collected, u32::try_from(index)) {
+            collected.closures.push((block.span, index));
+        }
         destination
     }
 
@@ -1899,6 +1908,7 @@ impl<'a> Lowerer<'a> {
             None,
             (None, std::slice::from_ref(&target.span)),
         );
+        self.record_taken_blocks(None, std::slice::from_ref(value), false);
         value_register
     }
 
@@ -1954,6 +1964,63 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    /// Records the send just emitted, the last instruction, as one that
+    /// takes the block literals among `receiver` and `arguments`, when the
+    /// metadata is collected and it takes any: the send runs them as
+    /// closures, and the body goes on at the next instruction once it has
+    /// answered.
+    fn record_taken_blocks(
+        &mut self,
+        receiver: Option<&Expression>,
+        arguments: &[Expression],
+        inlined: bool,
+    ) {
+        if self.collected.is_none() {
+            return;
+        }
+        let spans = taken_block_spans(receiver, arguments);
+        let Some(index) = self.here().checked_sub(1) else {
+            return;
+        };
+        let blocks = spans
+            .into_iter()
+            .filter_map(|span| self.called_block(span, index))
+            .collect();
+        self.record_block_send(blocks, index + 1, inlined);
+    }
+
+    /// The block literal of `span`, run as a closure by the send at
+    /// `send`, when the body made a closure of it.
+    fn called_block(&self, span: Span, send: u32) -> Option<TakenBlock> {
+        let collected = self.collected.as_ref()?;
+        let (_, closure) = collected
+            .closures
+            .iter()
+            .rev()
+            .find(|(made, _)| *made == span)?;
+        Some(TakenBlock {
+            span,
+            place: BlockPlace::Called {
+                send,
+                closure: *closure,
+            },
+        })
+    }
+
+    /// Records a send that takes `blocks`, which the body goes on from at
+    /// `after` once the send has answered, when the metadata is collected.
+    fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: u32, inlined: bool) {
+        if let Some(collected) = self.collected.as_mut() {
+            if !blocks.is_empty() {
+                collected.block_sends.push(BlockSendEntry {
+                    blocks: blocks.into(),
+                    inlined,
+                    after,
+                });
+            }
+        }
+    }
+
     fn emit_lexical_send(
         &mut self,
         depth: u16,
@@ -1988,7 +2055,7 @@ impl<'a> Lowerer<'a> {
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
         let spans = (receiver_span(receiver), &message.selector_spans[..]);
-        self.emit_send(into, spans, |destination, call_site| {
+        let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
                 receiver_register,
@@ -1997,7 +2064,13 @@ impl<'a> Lowerer<'a> {
                 destination,
                 call_site,
             }
-        })
+        });
+        // An inlined form's fallback send is recorded with the form, whose
+        // whole lowering a step out of its block leaves.
+        if !self.blocks_by_reference {
+            self.record_taken_blocks(Some(receiver), &message.arguments, false);
+        }
+        result
     }
 
     /// The real send an inlined conditional falls back to when its receiver
@@ -2148,14 +2221,16 @@ impl<'a> Lowerer<'a> {
                 let depth = *depth;
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_lexical_send(
+                let result = self.emit_lexical_send(
                     depth,
                     selector,
                     argument_base,
                     argument_sources,
                     into,
                     spans,
-                )
+                );
+                self.record_taken_blocks(None, &send.message.arguments, false);
+                result
             }
             binding => {
                 debug_assert!(
@@ -2164,7 +2239,7 @@ impl<'a> Lowerer<'a> {
                 );
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
-                self.emit_send(into, spans, |destination, call_site| {
+                let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector,
                         argument_base,
@@ -2172,7 +2247,9 @@ impl<'a> Lowerer<'a> {
                         destination,
                         call_site,
                     }
-                })
+                });
+                self.record_taken_blocks(None, &send.message.arguments, false);
+                result
             }
         }
     }
@@ -2259,6 +2336,26 @@ impl<'a> Lowerer<'a> {
             Some(register) => register,
             None => self.emit_nil(),
         }
+    }
+
+    /// `lower_inline_block_body`, the instructions the block lowered to
+    /// pushed onto `blocks` as an inline block of the inlined form being
+    /// lowered, when the metadata is collected.
+    fn lower_inline_block_measured(
+        &mut self,
+        block: &ast::BlockExpression,
+        use_: ValueUse,
+        blocks: &mut Vec<TakenBlock>,
+    ) -> u16 {
+        let start = self.here();
+        let result = self.lower_inline_block_body(block, use_);
+        if self.collected.is_some() {
+            blocks.push(TakenBlock {
+                span: block.span,
+                place: BlockPlace::Inline(start..self.here()),
+            });
+        }
+        result
     }
 
     /// The guard-failure path of an inlined loop: signals
@@ -2348,19 +2445,38 @@ impl<'a> Lowerer<'a> {
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
         let destination = self.target_register(into);
+        let mut true_blocks = Vec::new();
+        let mut false_blocks = Vec::new();
+        let mut fallback_index = 0;
         self.emit_guarded_branch(
             guard_register,
             destination,
             |lowerer| match true_block {
-                Some(block) => lowerer.lower_inline_block_body(block, use_),
+                Some(block) => lowerer.lower_inline_block_measured(block, use_, &mut true_blocks),
                 None => lowerer.emit_nil(),
             },
             |lowerer| match false_block {
-                Some(block) => lowerer.lower_inline_block_body(block, use_),
+                Some(block) => lowerer.lower_inline_block_measured(block, use_, &mut false_blocks),
                 None => lowerer.emit_nil(),
             },
-            |lowerer| lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message),
+            |lowerer| {
+                let result =
+                    lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message);
+                fallback_index = lowerer.here().saturating_sub(1);
+                result
+            },
         );
+        let mut blocks = true_blocks;
+        blocks.append(&mut false_blocks);
+        // The fallback send runs the same literals as closures.
+        blocks.extend(
+            true_block
+                .into_iter()
+                .chain(false_block)
+                .filter_map(|block| self.called_block(block.span, fallback_index)),
+        );
+        let after = self.here();
+        self.record_block_send(blocks, after, true);
         destination
     }
 
@@ -2500,13 +2616,15 @@ impl<'a> Lowerer<'a> {
         let after_send_jump = self.emit(Instruction::Jump { target: 0 });
         let failure_label = self.here();
         self.patch_target(failure_jump, failure_label);
-        let failure_result = self.lower_inline_block_body(block, use_);
+        let mut blocks = Vec::new();
+        let failure_result = self.lower_inline_block_measured(block, use_, &mut blocks);
         self.emit(Instruction::Move {
             destination,
             source: failure_result,
         });
         let end_label = self.here();
         self.patch_target(after_send_jump, end_label);
+        self.record_block_send(blocks, end_label, true);
         destination
     }
 
@@ -2525,9 +2643,14 @@ impl<'a> Lowerer<'a> {
     ) -> u16 {
         let guard_register = self.lower_expression(&send.receiver);
         let destination = self.target_register(into);
-        let evaluate = |lowerer: &mut Self| lowerer.lower_inline_block_body(block, use_);
+        let mut blocks = Vec::new();
+        let mut fallback_index = 0;
+        let evaluate =
+            |lowerer: &mut Self| lowerer.lower_inline_block_measured(block, use_, &mut blocks);
         let fallback = |lowerer: &mut Self| {
-            lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message)
+            let result = lowerer.lower_fallback_send(guard_register, &send.receiver, &send.message);
+            fallback_index = lowerer.here().saturating_sub(1);
+            result
         };
         if is_and {
             self.emit_guarded_branch(
@@ -2546,6 +2669,10 @@ impl<'a> Lowerer<'a> {
                 fallback,
             );
         }
+        // The fallback send runs the same literal as a closure.
+        blocks.extend(self.called_block(block.span, fallback_index));
+        let after = self.here();
+        self.record_block_send(blocks, after, true);
         destination
     }
 
@@ -2562,7 +2689,9 @@ impl<'a> Lowerer<'a> {
     ) -> u16 {
         let destination = self.emit_nil();
         let loop_start = self.here();
-        let guard_register = self.lower_inline_block_body(condition, ValueUse::Read);
+        let mut blocks = Vec::new();
+        let guard_register =
+            self.lower_inline_block_measured(condition, ValueUse::Read, &mut blocks);
         let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
             register: guard_register,
             target: 0,
@@ -2578,7 +2707,7 @@ impl<'a> Lowerer<'a> {
                 target: 0,
             })
         };
-        self.lower_inline_block_body(body, ValueUse::Discarded);
+        self.lower_inline_block_measured(body, ValueUse::Discarded, &mut blocks);
         self.emit(Instruction::Jump { target: loop_start });
         let fallback_label = self.here();
         self.patch_target(not_boolean_jump, fallback_label);
@@ -2588,6 +2717,7 @@ impl<'a> Lowerer<'a> {
         self.emit_signal_non_boolean(guard_register);
         let end_label = self.here();
         self.patch_target(exit_jump, end_label);
+        self.record_block_send(blocks, end_label, true);
         destination
     }
 
@@ -2607,6 +2737,7 @@ impl<'a> Lowerer<'a> {
             variables: self.collected_variables(&collected.names).into(),
             statements: collected.statements.into(),
             sends: collected.sends.into(),
+            block_sends: collected.block_sends.into(),
             factory_pattern: None,
         });
         // Control-flow inlining and the integer leaves' fast path are the two
@@ -2789,6 +2920,24 @@ pub(super) type SendSpans<'text> = (Option<Span>, &'text [Span]);
 /// parser made up.
 pub(super) fn receiver_span(receiver: &Expression) -> Option<Span> {
     (!receiver.synthesized).then_some(receiver.span)
+}
+
+/// The spans of the block literals among a send's `receiver` and
+/// `arguments` -- the `source` of the closure each one makes -- which the
+/// debugger's metadata records as the blocks the send takes
+/// (`docs/design/debugger.md`, decision 17).
+pub(super) fn taken_block_spans(
+    receiver: Option<&Expression>,
+    arguments: &[Expression],
+) -> Vec<Span> {
+    receiver
+        .into_iter()
+        .chain(arguments)
+        .filter_map(|expression| match &expression.kind {
+            ExpressionKind::Block(block) => Some(block.span),
+            _ => None,
+        })
+        .collect()
 }
 
 pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {

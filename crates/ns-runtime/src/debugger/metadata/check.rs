@@ -9,7 +9,7 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use super::again::{compile_level_again, BodyOrigin, Member};
-use super::{address, BodyMetadata, Cache, VariablePlace, VectorHolder};
+use super::{address, BlockPlace, BodyMetadata, Cache, VariablePlace, VectorHolder};
 use crate::bytecode::{CompiledCode, Instruction, Literal};
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
@@ -373,6 +373,53 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
         }
     }
 
+    // A step out of a block leaves its send for `after`, which every frame
+    // of the body must be able to reach: a block run inline lies before
+    // it, and a block run as a closure is one a `MakeClosure` of the body
+    // makes before a send of the body runs it.
+    for block_send in &metadata.block_sends {
+        let after = block_send.after;
+        if after >= length {
+            return Err(format!(
+                "a block send goes on at {after}, past the body's {length} instructions"
+            ));
+        }
+        if block_send.blocks.is_empty() {
+            return Err(format!("the block send ending at {after} takes no block"));
+        }
+        for taken in &block_send.blocks {
+            within_text(taken.span, "a taken block's span")?;
+            match taken.place {
+                BlockPlace::Inline(ref instructions) => {
+                    if instructions.start > instructions.end || instructions.end > after {
+                        return Err(format!(
+                            "the inline block {instructions:?} does not end before {after}"
+                        ));
+                    }
+                }
+                BlockPlace::Called { send, closure } => {
+                    let is_send =
+                        send < after && code.instruction(send as usize).call_site().is_some();
+                    if !is_send {
+                        return Err(format!(
+                            "the block called at {send} is called by no send before {after}"
+                        ));
+                    }
+                    let made = closure < send
+                        && matches!(
+                            code.instruction(closure as usize),
+                            Instruction::MakeClosure { .. }
+                        );
+                    if !made {
+                        return Err(format!(
+                            "the block called at {send} is made by no closure at {closure}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     let depth = body.enclosing.len();
     let outer_local_count = |hops: u16| -> Result<u16, String> {
         let position = usize::from(hops)
@@ -432,6 +479,7 @@ mod tests {
 
     use indoc::indoc;
 
+    use super::super::{BlockSendEntry, TakenBlock};
     use super::*;
     use crate::bytecode::CallSite;
 
@@ -530,6 +578,29 @@ mod tests {
                 hops_past_the_depth.variables[0].place =
                     VariablePlace::Outer { hops: 2, register: 0 };
                 broken.push(("an outer place past the lexical depth", hops_past_the_depth));
+
+                let taking = |place: BlockPlace, after: u32| {
+                    Box::new([BlockSendEntry {
+                        blocks: Box::new([TakenBlock {
+                            span: Span::new(0, 1),
+                            place,
+                        }]),
+                        inlined: true,
+                        after,
+                    }])
+                };
+                let mut block_send_past_the_body = metadata.clone();
+                block_send_past_the_body.block_sends = taking(BlockPlace::Inline(0..1), length);
+                broken.push(("a block send past the body", block_send_past_the_body));
+
+                let mut inline_block_past_its_end = metadata.clone();
+                inline_block_past_its_end.block_sends = taking(BlockPlace::Inline(0..2), 1);
+                broken.push(("an inline block past its end", inline_block_past_its_end));
+
+                let mut called_by_no_send = metadata.clone();
+                called_by_no_send.block_sends =
+                    taking(BlockPlace::Called { send: 0, closure: 0 }, 1);
+                broken.push(("a block called by no send", called_by_no_send));
 
                 let mut a_factory_pattern = metadata;
                 a_factory_pattern.factory_pattern = Some(Span::new(0, 1));

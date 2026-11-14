@@ -5,13 +5,14 @@
 //! statement start of it and of the blocks the compiler lowered inline in
 //! it -- with one-shot breakpoints for that frame, and sets one at its
 //! return point, the index after the instruction its caller stands at; a
-//! step out sets only the return point's; a step into is a step over
-//! whose request bit (`DEBUGGER_STEP`) every poll takes until a frame is
-//! pushed above the stepping one, which stops at its first statement
-//! start. The one-shots are a kind of the breakpoint table's, patched and
-//! restored as a line breakpoint is, so that their bodies lose their
-//! machine code for the step; the next stop, whatever made it, ends the
-//! step. No check enters the run loop: what the step does not patch runs
+//! step out sets only the return point's, and one taken in a block a send
+//! took leaves that whole send (decision 17, `send_left`); a step into is
+//! a step over whose request bit (`DEBUGGER_STEP`) every poll takes until
+//! a frame is pushed above the stepping one, which stops at its first
+//! statement start. The one-shots are a kind of the breakpoint table's,
+//! patched and restored as a line breakpoint is, so that their bodies lose
+//! their machine code for the step; the next stop, whatever made it, ends
+//! the step. No check enters the run loop: what the step does not patch runs
 //! at full speed. A step never lands in a frame the step filters filter
 //! -- by default the shipped modules' (decision 16): a stop it would make
 //! there goes on as a step into from the first unfiltered frame below,
@@ -22,12 +23,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::sync::PoisonError;
 
 use super::breakpoints::{address, settle, AfterPast, OneShot, PastOnce};
 use super::metadata::again::{declaration_path, BodyOrigin};
-use super::metadata::{BodyMetadata, Cache};
+use super::metadata::{BlockPlace, BlockSendEntry, BodyMetadata, Cache, TakenBlock};
 use super::remote::{BreakpointId, ClassName};
 use super::stack::{self, StackFrame};
 use crate::bytecode::{register_written, CompiledCode, Instruction};
@@ -152,6 +154,10 @@ pub(crate) struct Stepping {
     /// The caller and the index after the instruction it stands at, where
     /// the stepping frame's return goes on.
     return_point: Option<(Holder, usize)>,
+    /// Where a step out taken in a block a real send took goes on: the
+    /// frame that stands at the send, and the index after it, which stops
+    /// and records as the return point does (`send_left`).
+    after_send: Option<(Holder, usize)>,
     /// The value the stepping frame's last call answered, recorded at the
     /// return point after it (`record`).
     returned: Option<Root>,
@@ -179,6 +185,16 @@ pub(crate) struct Stepping {
 }
 
 impl Stepping {
+    /// Whether a frame the step goes on in left otherwise than by a
+    /// return to its caller's send: its own, its return point's caller, or
+    /// the frame whose send a step out of a block leaves.
+    fn has_left(&self) -> bool {
+        let left = |holder: Holder| holder.is(Holder::Left);
+        left(self.frame)
+            || self.return_point.is_some_and(|(caller, _)| left(caller))
+            || self.after_send.is_some_and(|(holder, _)| left(holder))
+    }
+
     /// A step of `action` whose frame is `Holder::Left`, `returned` the
     /// value recorded so far: one `start` is about to name its frame for,
     /// or one waiting for where the program goes on.
@@ -189,6 +205,7 @@ impl Stepping {
             between: Vec::new(),
             flooded: Vec::new(),
             return_point: None,
+            after_send: None,
             returned,
             suspended: Vec::new(),
             next_key: 0,
@@ -235,7 +252,28 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         .and_then(|frame| place_of(mutator, frame))
         .unwrap_or(Place::Running(top));
     let started_filtered = is_filtered(mutator, shown.unwrap_or(&StackFrame::Running(top)));
-    start(mutator, action, Place::Running(top), taken_in, None);
+    // A step out taken in a block leaves the send that took it, in the
+    // frame that send runs in (decision 17).
+    let left = match action {
+        StepAction::Out => send_left(mutator, taken_in),
+        StepAction::Over | StepAction::Into => None,
+    };
+    let step_from = left.as_ref().map_or(taken_in, SendLeft::frame);
+    let passed = match &left {
+        Some(SendLeft::Inlined { left, .. }) => Some(left),
+        Some(SendLeft::Called { .. }) | None => None,
+    };
+    start(
+        mutator,
+        action,
+        Place::Running(top),
+        step_from,
+        None,
+        passed,
+    );
+    if let Some(SendLeft::Called { frame, code, after }) = left {
+        stop_after_send(mutator, frame, &code, after);
+    }
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
     }
@@ -253,6 +291,272 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         after: AfterPast::Nothing,
     };
     mutator.breakpoints.go_past_once(standing);
+}
+
+/// The send a step out taken in a block leaves (decision 17), in `frame`,
+/// the frame that runs the send.
+enum SendLeft<'gc> {
+    /// A form the optimized lowering inlines, left for the next statement
+    /// start after it, as a step over of the whole form would leave it:
+    /// the stepping frame is flooded as for a step over, but for the
+    /// form's own blocks, which the flood passes over.
+    Inlined { frame: Place<'gc>, left: LeftBlocks },
+    /// A real send, left for its return point, `after` in `code`.
+    Called {
+        frame: Place<'gc>,
+        code: Rc<CompiledCode>,
+        after: usize,
+    },
+}
+
+impl<'gc> SendLeft<'gc> {
+    /// The frame that runs the send, which the step is taken in.
+    fn frame(&self) -> Place<'gc> {
+        match self {
+            SendLeft::Inlined { frame, .. } | SendLeft::Called { frame, .. } => *frame,
+        }
+    }
+}
+
+/// The blocks of an inlined form a step out leaves, which its flood passes
+/// over: the instructions of `body` the form's inline blocks were lowered
+/// to, and the bodies of the closures made of the form's block literals --
+/// its fallback closures, or the reference lowering's blocks -- and of
+/// every block literal inside its inline blocks.
+struct LeftBlocks {
+    body: Rc<CompiledCode>,
+    extents: Vec<Range<u32>>,
+    closures: Vec<Rc<CompiledCode>>,
+}
+
+impl LeftBlocks {
+    /// Whether the flood passes over slot `index` of `body`.
+    fn passes_over(&self, body: &Rc<CompiledCode>, index: usize) -> bool {
+        Rc::ptr_eq(body, &self.body)
+            && u32::try_from(index)
+                .is_ok_and(|index| self.extents.iter().any(|extent| extent.contains(&index)))
+    }
+
+    /// Whether the flood passes over the block `body`.
+    fn passes_over_block(&self, body: &Rc<CompiledCode>) -> bool {
+        self.closures
+            .iter()
+            .any(|closure| Rc::ptr_eq(closure, body))
+    }
+}
+
+/// The send a step out taken in `taken_in` leaves, when the frame runs a
+/// block a send took (decision 17): the innermost inlined form one of
+/// whose inline blocks holds the instruction the frame stands at, in its
+/// own body; or else, for a frame that runs a closure, the send of its
+/// creator that took the closure's block literal -- a real send, or an
+/// inlined form's fallback send or reference-lowered counterpart -- which
+/// the creator stands at, the frame above it on the stack, so that the
+/// closure runs within that send. `None` for every other frame -- a
+/// method, a block whose creator returned or waits on another send --
+/// which a step out leaves for its caller.
+fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<SendLeft<'gc>> {
+    let (code, _, metadata) = place_body(mutator, taken_in);
+    let standing = place_program_counter(mutator, taken_in);
+    if let Some(entry) = metadata
+        .as_deref()
+        .and_then(|metadata| inline_send_around(metadata, standing))
+    {
+        return Some(SendLeft::Inlined {
+            frame: taken_in,
+            left: left_blocks(&code, entry),
+        });
+    }
+    let creator = creator_of(mutator, taken_in)?;
+    let (creator_code, _, creator_metadata) = place_body(mutator, creator);
+    let creator_metadata = creator_metadata?;
+    let waiting_at = place_program_counter(mutator, creator);
+    let took_this_block = |taken: &TakenBlock| match taken.place {
+        BlockPlace::Called { send, closure } => {
+            usize::try_from(send) == Ok(waiting_at)
+                && made_by(&creator_code, closure).is_some_and(|made| Rc::ptr_eq(&made, &code))
+        }
+        BlockPlace::Inline(_) => false,
+    };
+    let entry = creator_metadata
+        .block_sends
+        .iter()
+        .find(|entry| entry.blocks.iter().any(took_this_block))?;
+    if !runs_within(mutator, taken_in, creator) {
+        return None;
+    }
+    if entry.inlined {
+        return Some(SendLeft::Inlined {
+            frame: creator,
+            left: left_blocks(&creator_code, entry),
+        });
+    }
+    let after = usize::try_from(entry.after)
+        .ok()
+        .filter(|after| *after < creator_code.instruction_count())?;
+    Some(SendLeft::Called {
+        frame: creator,
+        code: creator_code,
+        after,
+    })
+}
+
+/// The innermost inlined form of `metadata` one of whose inline blocks
+/// holds the instruction at `standing`: the one whose block spans the
+/// fewest instructions, since inlined forms nest.
+fn inline_send_around(metadata: &BodyMetadata, standing: usize) -> Option<&BlockSendEntry> {
+    let standing = u32::try_from(standing).ok()?;
+    metadata
+        .block_sends
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .blocks
+                .iter()
+                .filter_map(|taken| match &taken.place {
+                    BlockPlace::Inline(instructions) if instructions.contains(&standing) => {
+                        Some(instructions.end - instructions.start)
+                    }
+                    _ => None,
+                })
+                .min()
+                .map(|extent| (extent, entry))
+        })
+        .min_by_key(|(extent, _)| *extent)
+        .map(|(_, entry)| entry)
+}
+
+/// The blocks of the inlined form `entry` of `code`'s metadata, which a
+/// step out of one of them passes over.
+fn left_blocks(code: &Rc<CompiledCode>, entry: &BlockSendEntry) -> LeftBlocks {
+    let extents: Vec<Range<u32>> = entry
+        .blocks
+        .iter()
+        .filter_map(|taken| match &taken.place {
+            BlockPlace::Inline(instructions) => Some(instructions.clone()),
+            BlockPlace::Called { .. } => None,
+        })
+        .collect();
+    let mut closures: Vec<Rc<CompiledCode>> = entry
+        .blocks
+        .iter()
+        .filter_map(|taken| match taken.place {
+            BlockPlace::Called { closure, .. } => made_by(code, closure),
+            BlockPlace::Inline(_) => None,
+        })
+        .collect();
+    for (index, instruction) in code.instructions().iter().enumerate() {
+        let inside = u32::try_from(index)
+            .is_ok_and(|index| extents.iter().any(|extent| extent.contains(&index)));
+        if let (true, Instruction::MakeClosure { code: made, .. }) = (inside, instruction) {
+            closures.push(Rc::clone(made));
+        }
+    }
+    LeftBlocks {
+        body: Rc::clone(code),
+        extents,
+        closures,
+    }
+}
+
+/// The body of the block the `MakeClosure` at `index` of `code` makes.
+fn made_by(code: &CompiledCode, index: u32) -> Option<Rc<CompiledCode>> {
+    let index = usize::try_from(index).ok()?;
+    if index >= code.instruction_count() {
+        return None;
+    }
+    match code.instruction(index) {
+        Instruction::MakeClosure { code: made, .. } => Some(made),
+        _ => None,
+    }
+}
+
+/// Whether `creator` is met walking down the senders of `frame`, through
+/// the suspended ones: the frame runs within the send `creator` stands at.
+fn runs_within<'gc>(mutator: &Mutator<'gc>, frame: Place<'gc>, creator: Place<'gc>) -> bool {
+    let heap = &mutator.heap;
+    let below = |place: Place<'gc>| match place {
+        Place::Running(activation) => sender_of(mutator, activation),
+        Place::Suspended(frame) => heap.frame_sender(frame).map(Place::Suspended),
+    };
+    let mut next = below(frame);
+    while let Some(place) = next {
+        let met = match (place, creator) {
+            (Place::Running(running), Place::Running(creator)) => creator.names(running),
+            (Place::Suspended(suspended), Place::Suspended(creator)) => heap
+                .frame_object(suspended)
+                .same(heap.frame_object(creator)),
+            _ => false,
+        };
+        if met {
+            return true;
+        }
+        next = below(place);
+    }
+    false
+}
+
+/// The frame that created the closure `frame` runs, while it runs or is
+/// suspended; `None` for a frame that runs no closure, and for one whose
+/// creator returned.
+fn creator_of<'gc>(mutator: &Mutator<'gc>, frame: Place<'gc>) -> Option<Place<'gc>> {
+    let heap = &mutator.heap;
+    let captured = match frame {
+        Place::Running(activation) => heap.activation_captured(activation),
+        Place::Suspended(frame) => heap.frame_captured(frame),
+    }?;
+    match heap.frame_activation(captured) {
+        Some(creator) => Some(Place::Running(creator)),
+        None if heap.frame_is_suspended(captured) => Some(Place::Suspended(captured)),
+        None => None,
+    }
+}
+
+/// The body `place` runs, its declaration and its metadata
+/// (`stack::running_body`).
+fn place_body<'gc>(mutator: &mut Mutator<'gc>, place: Place<'gc>) -> FrameBody {
+    match place {
+        Place::Running(activation) => stack::running_body(mutator, activation),
+        Place::Suspended(frame) => {
+            let heap = &mutator.heap;
+            let root = heap.stash(Value::object(heap.frame_object(frame)));
+            stack::suspended_body(mutator, &root)
+        }
+    }
+}
+
+/// The index `place` stands at: the instruction it fetches next, or the
+/// send it waits on below the top.
+fn place_program_counter<'gc>(mutator: &Mutator<'gc>, place: Place<'gc>) -> usize {
+    match place {
+        Place::Running(activation) => mutator.heap.activation_program_counter(activation),
+        Place::Suspended(frame) => mutator.heap.frame_stored_program_counter(frame),
+    }
+}
+
+/// A step out leaves the send `frame` stands at for `after` in `code`,
+/// its return point: a one-shot that stops and records for the frame,
+/// beside the stepping frame's own return point, for a frame that returns
+/// before the send has answered.
+fn stop_after_send<'gc>(
+    mutator: &mut Mutator<'gc>,
+    frame: Place<'gc>,
+    code: &Rc<CompiledCode>,
+    after: usize,
+) {
+    let holder = match frame {
+        Place::Running(activation) => Holder::Running(activation),
+        Place::Suspended(frame) => Holder::Suspended(hold(mutator, frame)),
+    };
+    let one_shot = OneShot {
+        holder,
+        stops: true,
+        records: true,
+    };
+    patch(mutator, code, after, one_shot);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.after_send = Some((holder, after));
+    }
 }
 
 /// A host run starts while the debugger's pause is pending, `entry` its
@@ -274,6 +578,7 @@ pub(crate) fn stop_at_entry(mutator: &mut Mutator<'_>, entry: ActivationReferenc
         StepAction::Over,
         Place::Running(entry),
         Place::Running(entry),
+        None,
         None,
     );
     if let Some(stepping) = &mut mutator.stepping {
@@ -341,6 +646,11 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
             stepping.return_point = Some((Holder::Left, index));
         }
     }
+    if let Some((holder, index)) = stepping.after_send {
+        if gone(holder) {
+            stepping.after_send = Some((Holder::Left, index));
+        }
+    }
     stepping.between.retain(|(held, _)| !gone(*held));
     mutator.breakpoints.forget_one_shot_holders(gone);
 }
@@ -382,11 +692,7 @@ fn went_on(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
     let Some(stepping) = &mutator.stepping else {
         return;
     };
-    let left = stepping.frame.is(Holder::Left)
-        || stepping
-            .return_point
-            .is_some_and(|(caller, _)| caller.is(Holder::Left));
-    match (left, now_on_top) {
+    match (stepping.has_left(), now_on_top) {
         (true, Some(frame)) => continue_as_step_into(mutator, frame),
         #[cfg(debug_assertions)]
         (true, None) => {
@@ -417,7 +723,7 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
     if matches!(place, Place::Suspended(_)) {
         mutator.breakpoints.count_step_from_suspended();
     }
-    start(mutator, StepAction::Into, place, place, returned);
+    start(mutator, StepAction::Into, place, place, returned, None);
     keep_exits(mutator, exits);
     settle(mutator);
 }
@@ -437,10 +743,7 @@ pub(crate) fn handler_found<'gc>(mutator: &mut Mutator<'gc>, handler: FrameRefer
     let Some(stepping) = &mutator.stepping else {
         return;
     };
-    let left = stepping.frame.is(Holder::Left)
-        || stepping
-            .return_point
-            .is_some_and(|(caller, _)| caller.is(Holder::Left));
+    let left = stepping.has_left();
     let Some(top) = mutator.heap.top_activation() else {
         return;
     };
@@ -541,7 +844,7 @@ pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, lea
             let (returned, exits) = carried(mutator);
             mutator.breakpoints.remove_one_shots();
             let home = Place::Running(home);
-            start(mutator, StepAction::Out, home, home, returned);
+            start(mutator, StepAction::Out, home, home, returned, None);
             keep_exits(mutator, exits);
             settle(mutator);
         }
@@ -966,6 +1269,7 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
     named.push(stepping.frame);
     named.extend(stepping.between.iter().map(|(held, _)| *held));
     named.extend(stepping.return_point.map(|(caller, _)| caller));
+    named.extend(stepping.after_send.map(|(holder, _)| holder));
     // Walked over the live activations, which alone may be read: a handle
     // the step holds is compared, never read through.
     let mut next = mutator.heap.top_activation();
@@ -1065,22 +1369,29 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
                 stepping.return_point = Some((onto, index));
             }
         }
+        if let Some((holder, index)) = stepping.after_send {
+            if holder.is(from) {
+                stepping.after_send = Some((onto, index));
+            }
+        }
     }
     mutator.breakpoints.rename_one_shots(from, onto);
 }
 
 /// Starts the step of `action` taken in `taken_in`, at or below `top`,
 /// the frame on top, `returned` the value recorded so far: in the frame
-/// `stepping_frame` finds, flooded unless the step goes out, its return
-/// point set, and the request held for a step into; the frames from `top`
-/// down to it are there already, none of them a push of the step's. The
-/// caller settles the table.
+/// `stepping_frame` finds, flooded unless the step goes out -- or for a
+/// step out that leaves an inlined form, `passed`, flooded but for the
+/// form's own blocks -- its return point set, and the request held for a
+/// step into; the frames from `top` down to it are there already, none of
+/// them a push of the step's. The caller settles the table.
 fn start<'gc>(
     mutator: &mut Mutator<'gc>,
     action: StepAction,
     top: Place<'gc>,
     taken_in: Place<'gc>,
     returned: Option<Root>,
+    passed: Option<&LeftBlocks>,
 ) {
     // Its frame is named by `stepping_frame`, which may hold `taken_in` as
     // a suspended frame first.
@@ -1091,8 +1402,8 @@ fn start<'gc>(
         stepping.frame = frame;
         stepping.between = between;
     }
-    if action != StepAction::Out {
-        flood(mutator, frame, body);
+    if action != StepAction::Out || passed.is_some() {
+        flood(mutator, frame, body, passed);
     }
     set_return_point(mutator, frame);
     if action == StepAction::Into {
@@ -1212,9 +1523,10 @@ fn stepping_frame<'gc>(mutator: &mut Mutator<'gc>, top: Place<'gc>) -> (Holder, 
 /// Patches every statement start of the body of `frame` and of each block
 /// the compiler lowered inline in it -- its fallback closure -- with a
 /// one-shot for `frame`, and the index after each of their sends with a
-/// recording one (`record`). A body without metadata has no statement
-/// starts to flood.
-fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody) {
+/// recording one (`record`), but for the blocks of the inlined form a step
+/// out leaves, `passed`. A body without metadata has no statement starts
+/// to flood.
+fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Option<&LeftBlocks>) {
     let (code, origin, metadata) = body;
     let Some(origin) = origin else {
         return;
@@ -1236,19 +1548,22 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody) {
             continue;
         };
         let count = body.instruction_count();
+        let flooded = |index: &usize| {
+            *index < count && !passed.is_some_and(|passed| passed.passes_over(&body, *index))
+        };
         let stops: Vec<usize> = metadata
             .statements
             .iter()
             .filter(|entry| !entry.instructions.is_empty())
             .filter_map(|entry| usize::try_from(entry.instructions.start).ok())
-            .filter(|index| *index < count)
+            .filter(flooded)
             .collect();
         let returns: Vec<usize> = metadata
             .sends
             .iter()
             .filter_map(|send| usize::try_from(send.index).ok())
             .map(|index| index + 1)
-            .filter(|index| *index < count)
+            .filter(flooded)
             .collect();
         for index in stops {
             let one_shot = OneShot {
@@ -1267,6 +1582,9 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody) {
             patch(mutator, &body, index, one_shot);
         }
         for block in inlined_blocks(&body, &metadata) {
+            if passed.is_some_and(|passed| passed.passes_over_block(&block)) {
+                continue;
+            }
             let metadata = Cache::metadata(mutator, &block, &origin);
             pending.push((block, metadata));
         }

@@ -304,6 +304,7 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
         metadata: Rc::new(BodyMetadata {
             statements: Box::new([]),
             sends: Box::new([]),
+            block_sends: Box::new([]),
             variables,
             factory_pattern: Some(position),
         }),

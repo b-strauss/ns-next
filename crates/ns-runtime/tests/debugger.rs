@@ -3642,6 +3642,387 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// Blocks a send takes, inlined and not, and blocks run from elsewhere
+/// than that send: what a step out of a block leaves (decision 17).
+const LEAVING: &str = indoc! {"
+    class Leaving = Object new (
+      | kept |
+    ) (
+      public looping = (
+        | index total |
+        index:: 0.
+        total:: 0.
+        [index < 5] whileTrue: [
+          index:: index + 1.
+          total:: total + index].
+        ^total
+      )
+      public conditional = (
+        | x |
+        x:: 1.
+        x > 0 ifTrue: [
+          x:: x + 10.
+          x:: x + 100].
+        ^x
+      )
+      public nesting = (
+        | index hits |
+        index:: 0.
+        hits:: 0.
+        [index < 3] whileTrue: [
+          index:: index + 1.
+          index > 1 ifTrue: [
+            hits:: hits + 1.
+            hits:: hits + 2].
+          hits:: hits + 10].
+        ^hits
+      )
+      public iterating = (
+        | total |
+        total:: 0.
+        {1. 2. 3} do: [:each |
+          total:: total + each.
+          total:: total * 1].
+        ^total
+      )
+      public protecting = (
+        | answer |
+        answer:: [
+          self boom.
+          7] on: Error do: [:error |
+            | partial |
+            partial:: 3.
+            partial + 4].
+        ^answer + 1
+      )
+      public storing = (
+        | result |
+        self keep: [:value |
+          result:: value + 1.
+          result:: result * 2].
+        ^self later: 4
+      )
+      public returning = (
+        | block |
+        block:: self made.
+        ^block value: 4
+      )
+      public finding = (
+        | found |
+        found:: self find.
+        ^found + 1
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+      keep: block = (
+        kept:: block
+      )
+      later: value = (
+        | answer |
+        answer:: kept value: value.
+        ^answer
+      )
+      made = (
+        ^[:number |
+          number + 1.
+          number * 2]
+      )
+      find = (
+        {1. 2. 3} do: [:each |
+          each = 2 ifTrue: [^each * 10].
+          each yourself].
+        ^0
+      )
+    ) : ()
+"};
+
+/// Where a step stopped: the top frame's name and statement, and the
+/// value of the last call it reported.
+type SteppedTo = ((String, String), Option<String>);
+
+/// Sends `selector` to a `LEAVING` with a breakpoint at the line of
+/// `line`, continues past its first `hits - 1` stops, removes it and takes
+/// `commands`, one step after another: where each stopped, and the run's
+/// answer.
+fn leaving(
+    lowering: Lowering,
+    selector: &'static str,
+    line: &str,
+    hits: usize,
+    commands: Vec<Command>,
+) -> (Vec<SteppedTo>, i64) {
+    let offset = line_start(LEAVING, line);
+    stepped(
+        LEAVING,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, "Leaving", vec![offset]),
+        move |remote| {
+            let (id, _) = resolved(&expect_breakpoints(remote, "Leaving"));
+            for _ in 1..hits {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                continue_stopped(remote);
+            }
+            assert_eq!(expect_breakpoint_stop(remote), [id]);
+            // Only the steps stop from here.
+            set_breakpoints(remote, "Leaving", Vec::new());
+            assert_eq!(expect_breakpoints(remote, "Leaving"), []);
+            let mut stops = Vec::new();
+            for command in commands {
+                let returned = step(remote, command);
+                stops.push((
+                    standing(remote, LEAVING),
+                    returned.map(|returned| returned.label),
+                ));
+            }
+            continue_stopped(remote);
+            stops
+        },
+    )
+}
+
+/// A frame of `LEAVING` named `name`, standing at `statement`, with
+/// `returned` reported as the value of the last call.
+fn stood(name: &str, statement: &str, returned: Option<&str>) -> SteppedTo {
+    (
+        (String::from(name), String::from(statement)),
+        returned.map(String::from),
+    )
+}
+
+/// The statements `stops` stood at: what a step out of an inlined form
+/// is held to, since the reference lowering runs the form's blocks as
+/// frames of their own, which the optimized one lowers inline.
+fn statements(stops: &[SteppedTo]) -> Vec<&str> {
+    stops
+        .iter()
+        .map(|((_, statement), _)| statement.as_str())
+        .collect()
+}
+
+/// The text of `LEAVING`'s statement that begins with `start` and ends
+/// with `end`.
+fn leaving_statement(start: &str, end: &str) -> String {
+    let from = LEAVING.find(start).expect("the statement's start");
+    let until = LEAVING[from..].find(end).expect("the statement's end") + from + end.len();
+    String::from(&LEAVING[from..until])
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `whileTrue:`'s body leaves the whole loop, which
+    /// runs its remaining rounds, and stops after it, never at the
+    /// condition's next evaluation.
+    fn a_step_out_of_a_loop_s_body_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "index:: index + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>looping"), String::from("^total"))
+        );
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a loop's body in its last round, the loop ending
+    /// during the step, stops after the loop too.
+    fn a_step_out_of_a_loop_s_last_round_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "index:: index + 1.",
+            5,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>looping"), String::from("^total"))
+        );
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a loop's condition, where a step over the body's
+    /// last statement goes on, leaves the loop as well.
+    fn a_step_out_of_a_loop_s_condition_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "total:: total + index].",
+            1,
+            vec![Command::StepOver, Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["index < 5", "^total"]);
+        assert_eq!(stops[1].0 .0, "Leaving>>looping");
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ifTrue:`'s block stops after the conditional,
+    /// past the block's remaining statements.
+    fn a_step_out_of_an_if_true_s_block_stops_after_the_conditional(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "conditional",
+            "x:: x + 10.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^x"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>conditional");
+        assert_eq!(answer, 111);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block nested in another leaves one level: out of
+    /// the `ifTrue:` to the loop body's next statement, then out of the
+    /// loop.
+    fn a_step_out_of_nested_blocks_leaves_one_level_at_a_time(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nesting",
+            "hits:: hits + 1.",
+            1,
+            vec![Command::StepOut, Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["hits:: hits + 10", "^hits"]);
+        assert_eq!(stops[1].0 .0, "Leaving>>nesting");
+        assert_eq!(answer, 36);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `do:`'s block leaves the whole `do:`, past the
+    /// block's runs for the remaining elements, and stops after it in the
+    /// block's home, reporting what the `do:` answered.
+    fn a_step_out_of_a_do_s_block_stops_after_the_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "iterating",
+            "total:: total + each.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>iterating"), String::from("^total"))
+        );
+        assert!(stops[0].1.is_some(), "the do:'s answer is reported");
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `on:do:`'s protected block, whose error the
+    /// handler takes meanwhile, stops where the `on:do:` answered.
+    fn a_step_out_of_a_protected_block_stops_after_the_on_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "protecting",
+            "self boom.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("answer:: [", "partial + 4]");
+        assert_eq!(
+            stops,
+            [stood("Leaving>>protecting", &statement, Some("7"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `on:do:`'s handler block stops where the
+    /// `on:do:` answered, the handler's value.
+    fn a_step_out_of_a_handler_block_stops_after_the_on_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "protecting",
+            "partial:: 3.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("answer:: [", "partial + 4]");
+        assert_eq!(
+            stops,
+            [stood("Leaving>>protecting", &statement, Some("7"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block kept and run by another send than the one that took it,
+    /// its home still running, steps out as any frame does: to the return
+    /// point of its caller.
+    fn a_step_out_of_a_block_run_from_elsewhere_stops_in_its_caller(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "storing",
+            "result:: value + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>later:", "answer:: kept value: value", Some("10"))]
+        );
+        assert_eq!(answer, 10);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block whose home returned steps out as any frame does.
+    fn a_step_out_of_a_block_whose_home_returned_stops_in_its_caller(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "returning",
+            "number + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>returning", "^block value: 4", Some("8"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `do:`'s block whose next run returns non-locally
+    /// from the home, before the `do:` answers, stops where that return
+    /// goes on: the home's caller.
+    fn a_step_out_of_a_block_whose_send_a_non_local_return_leaves_stops_where_it_goes_on(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "finding",
+            "each yourself].",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>finding", "found:: self find", Some("20"))]
+        );
+        assert_eq!(answer, 21);
+    }
+}
+
 /// A fallback block whose receiver's `ifTrue:` runs it, then loops for
 /// good inside an `ensure:` that runs the block again, so that a step
 /// into taken in the block is still pending when the program is
@@ -3985,7 +4366,9 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the shipped filter off, the same step out stops in each of
-    /// the forcing's frames on its way to the frame that met the future.
+    /// the forcing's frames on its way to the frame that met the future
+    /// -- out of `resolve`'s block, the receiver of its `ifCurtailed:`,
+    /// past the whole `ifCurtailed:` into `resolve` (decision 17).
     fn with_the_shipped_filter_off_a_step_out_of_a_future_s_resolve_stops_in_its_frames(lowering) {
         let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, false);
         assert_eq!(
@@ -3993,7 +4376,6 @@ ns_runtime::for_each_lowering! {
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
-                "Closure>>ifCurtailed:",
                 "FutureImplementation>>resolve",
                 "Probe>>add:",
             ]
@@ -4295,7 +4677,8 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the shipped filter off, the same step out stops in each of
-    /// the forcing's frames first.
+    /// the forcing's frames first, out of `resolve`'s block past the
+    /// whole `ifCurtailed:` that took it.
     fn with_the_shipped_filter_off_a_step_out_into_a_slot_initializer_stops_in_the_forcing_s_frames(lowering) {
         let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, false);
         assert_eq!(
@@ -4303,7 +4686,6 @@ ns_runtime::for_each_lowering! {
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
-                "Closure>>ifCurtailed:",
                 "FutureImplementation>>resolve",
                 "Pair initializer",
             ]
@@ -6300,12 +6682,16 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A step out at a caught exception's stop goes out of the handler
-    /// block to where the `on:do:` returns: the statement after it.
+    /// block, past the whole `on:do:` that took it, to where the `on:do:`
+    /// returns: mid-statement, its answer yet to be assigned.
     fn a_step_out_from_a_caught_exception_stops_after_the_on_do(lowering) {
         let (stood, result) = stepped_from_a_catch(lowering, Command::StepOut);
+        let from = HANDLING.find("answer:: [").expect("the on:do:'s statement");
+        let until = HANDLING.find("^answer + 1").expect("the next statement");
+        let statement = HANDLING[from..until].trim_end().trim_end_matches('.');
         assert_eq!(
             stood,
-            (String::from("Handling>>run"), String::from("^answer + 1"))
+            (String::from("Handling>>run"), String::from(statement))
         );
         assert_eq!(result, Ok(8));
     }
