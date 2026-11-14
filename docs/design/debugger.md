@@ -2501,6 +2501,27 @@ flooding the handler's frames on a throw (`PrepareStepOnThrow`,
 end of an `ensure:` block is a common place to step from; treating it as
 a resume loses the place the step was taken from.
 
+**Planned (decided with the user on 2026-11-14):** a step out taken in a
+block that was passed as an argument -- one the compiler lowered inline,
+`whileTrue:`'s, `ifTrue:`'s, `and:`'s, and a real closure alike, `do:`'s,
+`collect:`'s, `on:do:`'s -- leaves the whole send that took the block, not
+only the block: it stops at the place the block's home goes on at once
+that send has answered, its return point in the home frame, as a step
+over of that send would. A debugger steps through what the source shows,
+and the source shows a loop's body as part of the loop: stepping out of
+`whileTrue:`'s body stops after the loop, never at its condition's next
+evaluation, and stepping out of `do:`'s block stops after the `do:`,
+never at the next element. An inlined block has no frame of its own, so
+the step takes its extent and its enclosing send from the body's
+metadata; a real closure's step stops at the return point of the send in
+its home frame that took the block, as long as that send is still
+running. A block that outlived its home, or was handed on and run from
+elsewhere, has no such send and steps out as any frame does. Leaving only
+the block, as a frame would -- the next round's condition, the next
+element's block -- is rejected: it makes the user hold the control
+structures' implementation in mind. IntelliJ's Kotlin debugger steps out
+of an inline lambda past its call in the same way (not under `prior-art/`).
+
 ## Planned: the mechanisms
 
 What building the decisions changes, found by checking them against the
