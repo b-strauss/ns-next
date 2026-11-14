@@ -1040,33 +1040,38 @@ fn a_breakpoint_on_a_comment_line_is_moved_to_the_next_statement() {
     assert_eq!(exit_code_reported(&mut client), 0);
 }
 
-/// A root whose line 4 holds three statements.
+/// A root whose line 4 holds two statements.
 const LINES: &str = indoc! {"
     class Lines = Object new () (
       public main: platform args: arguments = (
-        | first second third |
-        first:: 1. second:: 2. third:: 3.
-        platform transcript show: (first + second + third) printString; newLine.
+        | first second |
+        first:: 1. second:: 2.
+        platform transcript show: (first + second) printString; newLine.
       )
     ) : ()
 "};
 
+/// The column of `text` on line 4 of `LINES`, counted from 1.
+fn column_in_lines(text: &str) -> usize {
+    let line = LINES.lines().nth(3).expect("line 4");
+    line.find(text).expect("a statement") + 1
+}
+
+/// One `next` from the start of a line of two statements stops on the
+/// next line, past the line's second statement.
 #[test]
 fn next_by_line_steps_over_a_whole_line() {
     let (_directory, path) = program("Lines", LINES);
     let mut client = DapClient::connect_mode(&path);
     client.start_session(true);
     client.stopped("entry");
-    let line = LINES.lines().nth(3).expect("line 4");
-    let column_of = |text: &str| line.find(text).expect("a statement") + 1;
-    let frames = client.stack_frames(0, 1);
-    assert_eq!(frames[0]["column"], column_of("first::"), "{frames:?}");
-
-    client.succeed("next", json!({ "threadId": 1, "granularity": "statement" }));
-    client.stopped("step");
     let frames = client.stack_frames(0, 1);
     assert_eq!(frames[0]["line"], 4, "{frames:?}");
-    assert_eq!(frames[0]["column"], column_of("second::"), "{frames:?}");
+    assert_eq!(
+        frames[0]["column"],
+        column_in_lines("first::"),
+        "{frames:?}"
+    );
 
     client.succeed("next", json!({ "threadId": 1 }));
     client.stopped("step");
@@ -1075,7 +1080,68 @@ fn next_by_line_steps_over_a_whole_line() {
     assert_eq!(frames[0]["line"], 5, "{frames:?}");
     let locals = locals_of(&mut client, &frames[0]);
     let variables = client.variables(&locals, None, None);
-    assert_eq!(variable(&variables, "third")["value"], "3", "{variables:?}");
+    assert_eq!(
+        variable(&variables, "second")["value"],
+        "2",
+        "{variables:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+#[test]
+fn next_by_statement_stops_mid_line() {
+    let (_directory, path) = program("Lines", LINES);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.succeed("next", json!({ "threadId": 1, "granularity": "statement" }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 1);
+    assert_eq!(frames[0]["line"], 4, "{frames:?}");
+    assert_eq!(
+        frames[0]["column"],
+        column_in_lines("second::"),
+        "{frames:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root whose line 10 is a whole loop over a block that sends `sink:`.
+const ONE_LINE_LOOP: &str = indoc! {"
+    class OneLine = Object new (
+      |
+        total ::= 0.
+      |
+    ) (
+      sink: value = (
+        total:: total + value.
+      )
+      public main: platform args: arguments = (
+        1 to: 3 do: [:index | sink: index].
+        platform transcript show: total printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_line_step_over_a_one_line_loop_ends() {
+    let (_directory, path) = program("OneLine", ONE_LINE_LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("OneLine>>main:args:"), json!(10))
+    );
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("OneLine>>main:args:"), json!(11))
+    );
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "6\n");
@@ -1131,6 +1197,31 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     assert_eq!(client.finish().stdout, "42\n");
 }
 
+/// A step by line over a send whose callee holds a breakpoint ends at the
+/// breakpoint, reported as the breakpoint's stop.
+#[test]
+fn a_breakpoint_hit_mid_line_step_stops_there() {
+    let (_directory, path) = program("Calls", CALLS);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(true);
+    let breakpoints = client.set_breakpoints(file_source(&path), &[8]);
+    client.configuration_done();
+    client.stopped("entry");
+    client.succeed("next", json!({ "threadId": 1 }));
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client), (json!("Calls>>double:"), json!(8)));
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
 #[test]
 fn run_to_cursor_stops_at_the_line() {
     let (_directory, path) = program("Loop", LOOP);
@@ -1142,6 +1233,11 @@ fn run_to_cursor_stops_at_the_line() {
         json!({ "source": { "name": "Elsewhere.ns" }, "line": 1 }),
     );
     assert_eq!(refused["success"], false, "{refused}");
+    let past = client.request(
+        "nsNext/runToPosition",
+        json!({ "source": file_source(&path), "line": 999 }),
+    );
+    assert_eq!(past["message"], "the module has no such line", "{past}");
     client.succeed(
         "nsNext/runToPosition",
         json!({ "source": file_source(&path), "line": 8 }),

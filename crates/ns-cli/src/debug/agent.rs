@@ -477,8 +477,13 @@ impl Agent {
                 control.pause();
             }
         }
+        // A step by line still reading where it begins has not left the
+        // stop: the pause finds the program stopped, as without the step,
+        // and the step's own stop is reported as the step's.
         if let Some(step) = &mut self.line_step {
-            step.interrupted = true;
+            if !matches!(step.phase, Phase::Origin { .. }) {
+                step.interrupted = true;
+            }
         }
         self.respond(connection, request, None);
         // A step by line deciding at a stop the client has not seen
@@ -508,7 +513,7 @@ impl Agent {
         request: &protocol::Request,
         command: Command,
         conversion: Conversion,
-    ) {
+    ) -> bool {
         let goes_on = is_going_on(command.name());
         let reply = Reply::Request {
             connection,
@@ -518,7 +523,7 @@ impl Agent {
         };
         if !self.command(command, reply) {
             self.respond_error(connection, request, "the debugger is detached");
-            return;
+            return false;
         }
         // The stop ends when the VM answers `Event::Continued`; until then
         // the client's requests of the stop are refused, and a `pause` is
@@ -526,6 +531,7 @@ impl Agent {
         if goes_on {
             self.resuming = true;
         }
+        true
     }
 
     /// The program goes on: nothing the stop handed out is valid any more,

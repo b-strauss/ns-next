@@ -56,9 +56,20 @@ pub(crate) fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
     } else {
         None
     };
-    count.map(condition).ok_or_else(|| {
-        format!("`{text}` is no hit condition: write `n`, `=n`, `>n`, `>=n` or `%n`")
-    })
+    // A count of 0 for the hit numbered so, or for every nth, would be
+    // verified and never stop: hits count from 1, and no hit is a multiple
+    // of 0.
+    count
+        .map(condition)
+        .filter(|condition| {
+            !matches!(
+                condition,
+                HitCondition::Equal(0) | HitCondition::Multiple(0)
+            )
+        })
+        .ok_or_else(|| {
+            format!("`{text}` is no hit condition: write `n`, `=n`, `>n`, `>=n` or `%n`")
+        })
 }
 
 /// A class declaration named `Module.Path.To.Class`, as the step filters
@@ -147,23 +158,24 @@ impl<K> Default for Set<K> {
 }
 
 impl<K: PartialEq> Set<K> {
-    /// The DAP ids of `keys`, the client's new request: a key the previous
-    /// request held keeps its id, each at most once.
-    fn request(&mut self, keys: Vec<K>, last_id: &mut u32) -> Vec<u32> {
-        let mut previous = std::mem::take(&mut self.requested);
-        let mut ids = Vec::with_capacity(keys.len());
+    /// Each of `keys`, the client's new request, with its DAP id: a key the
+    /// previous request held keeps its id, each at most once. The set is
+    /// left as it was until the request reached the VM.
+    fn plan(&self, keys: Vec<K>, last_id: &mut u32) -> Vec<(K, u32)> {
+        let mut previous: Vec<(&K, u32)> =
+            self.requested.iter().map(|(key, id)| (key, *id)).collect();
+        let mut planned = Vec::with_capacity(keys.len());
         for key in keys {
-            let id = match previous.iter().position(|(held, _)| *held == key) {
+            let id = match previous.iter().position(|(held, _)| **held == key) {
                 Some(index) => previous.remove(index).1,
                 None => {
                     *last_id += 1;
                     *last_id
                 }
             };
-            self.requested.push((key, id));
-            ids.push(id);
+            planned.push((key, id));
         }
-        ids
+        planned
     }
 
     fn holds(&self, id: u32) -> bool {
@@ -186,17 +198,48 @@ pub(crate) struct Breakpoints {
 }
 
 impl Breakpoints {
-    /// The DAP ids of the line breakpoints at `offsets` of `module`.
-    pub(crate) fn request_lines(&mut self, module: &str, offsets: Vec<u32>) -> Vec<u32> {
-        self.lines
-            .entry(module.to_string())
-            .or_default()
-            .request(offsets, &mut self.last_id)
+    /// The line breakpoints at `offsets` of `module`, each with its DAP id.
+    pub(crate) fn plan_lines(&mut self, module: &str, offsets: Vec<u32>) -> Vec<(u32, u32)> {
+        match self.lines.get(module) {
+            Some(set) => set.plan(offsets, &mut self.last_id),
+            None => Set::default().plan(offsets, &mut self.last_id),
+        }
     }
 
-    /// The DAP ids of the function breakpoints named `names`.
+    /// The planned line breakpoints of `module` reached the VM: they are
+    /// the client's latest request for the module.
+    pub(crate) fn requested_lines(&mut self, module: &str, planned: Vec<(u32, u32)>) {
+        self.lines.entry(module.to_string()).or_default().requested = planned;
+    }
+
+    /// The function breakpoints named `names`, each with its DAP id.
+    pub(crate) fn plan_functions(&mut self, names: Vec<String>) -> Vec<(String, u32)> {
+        self.functions.plan(names, &mut self.last_id)
+    }
+
+    /// The planned function breakpoints reached the VM.
+    pub(crate) fn requested_functions(&mut self, planned: Vec<(String, u32)>) {
+        self.functions.requested = planned;
+    }
+
+    /// The DAP ids of the line breakpoints at `offsets` of `module`,
+    /// planned and requested at once.
+    #[cfg(test)]
+    pub(crate) fn request_lines(&mut self, module: &str, offsets: Vec<u32>) -> Vec<u32> {
+        let planned = self.plan_lines(module, offsets);
+        let ids = planned.iter().map(|(_, id)| *id).collect();
+        self.requested_lines(module, planned);
+        ids
+    }
+
+    /// The DAP ids of the function breakpoints named `names`, planned and
+    /// requested at once.
+    #[cfg(test)]
     pub(crate) fn request_functions(&mut self, names: Vec<String>) -> Vec<u32> {
-        self.functions.request(names, &mut self.last_id)
+        let planned = self.plan_functions(names);
+        let ids = planned.iter().map(|(_, id)| *id).collect();
+        self.requested_functions(planned);
+        ids
     }
 
     /// Every module the client set line breakpoints in.
@@ -397,13 +440,11 @@ impl Agent {
             })
             .collect();
         let sent: Vec<LineBreakpoint> = wanted.iter().flatten().cloned().collect();
-        let mut ids = self
-            .breakpoints
-            .request_lines(
-                &module,
-                sent.iter().map(|breakpoint| breakpoint.offset).collect(),
-            )
-            .into_iter();
+        let planned = self.breakpoints.plan_lines(
+            &module,
+            sent.iter().map(|breakpoint| breakpoint.offset).collect(),
+        );
+        let mut ids = planned.iter().map(|(_, id)| *id);
         let entries = wanted
             .into_iter()
             .map(|wanted| match wanted {
@@ -419,11 +460,13 @@ impl Agent {
             breakpoints: sent,
         };
         let conversion = Conversion::Breakpoints {
-            module,
+            module: module.clone(),
             entries,
             text,
         };
-        self.forward_converted(connection, request, command, conversion);
+        if self.forward_converted(connection, request, command, conversion) {
+            self.breakpoints.requested_lines(&module, planned);
+        }
     }
 
     /// `setFunctionBreakpoints`: a method breakpoint for each name.
@@ -453,7 +496,8 @@ impl Agent {
             .filter(|(_, wanted)| wanted.is_ok())
             .map(|(breakpoint, _)| breakpoint.name.trim().to_string())
             .collect();
-        let mut ids = self.breakpoints.request_functions(names).into_iter();
+        let planned = self.breakpoints.plan_functions(names);
+        let mut ids = planned.iter().map(|(_, id)| *id);
         let mut sent = Vec::new();
         let entries = wanted
             .into_iter()
@@ -467,7 +511,9 @@ impl Agent {
             .collect();
         let command = Command::SetMethodBreakpoints(sent);
         let conversion = Conversion::FunctionBreakpoints { entries };
-        self.forward_converted(connection, request, command, conversion);
+        if self.forward_converted(connection, request, command, conversion) {
+            self.breakpoints.requested_functions(planned);
+        }
     }
 
     /// `setExceptionBreakpoints`: the filters `uncaught`, `caught` and
@@ -598,6 +644,8 @@ mod tests {
             ("%2", HitCondition::Multiple(2)),
             ("> 4", HitCondition::Greater(4)),
             ("4294967295", HitCondition::Equal(u32::MAX)),
+            (">0", HitCondition::Greater(0)),
+            (">=0", HitCondition::GreaterOrEqual(0)),
         ];
         for (text, condition) in forms {
             assert_eq!(parse_hit_condition(text), Ok(condition), "{text}");
@@ -607,6 +655,10 @@ mod tests {
     #[test]
     fn a_malformed_hit_condition_is_refused() {
         for text in [
+            "0",
+            "=0",
+            "==0",
+            "%0",
             "",
             "x",
             "3 times",

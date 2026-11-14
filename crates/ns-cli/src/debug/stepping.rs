@@ -150,11 +150,11 @@ impl Agent {
             self.respond_error(connection, request, "not a module of this program");
             return;
         };
-        let offset = self
-            .sources
-            .text_for_positions(&module)
-            .and_then(|text| offset_of(text, arguments.line, arguments.column));
-        let Some(offset) = offset else {
+        let Some(text) = self.sources.text_for_positions(&module) else {
+            self.respond_error(connection, request, "the module's text is not known yet");
+            return;
+        };
+        let Some(offset) = offset_of(text, arguments.line, arguments.column) else {
             self.respond_error(connection, request, "the module has no such line");
             return;
         };
