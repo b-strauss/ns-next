@@ -40,6 +40,8 @@ use ns_syntax::Span;
 use crate::bytecode::{register_written, CompiledCode, Instruction};
 use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
 use crate::interpreter::Mutator;
+use crate::types::{ActivationKind, BuiltinClass};
+use crate::Symbol;
 use crate::{Root, Value};
 
 /// The frames no step stops in (`docs/design/debugger.md`, decision 16):
@@ -389,14 +391,7 @@ fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<Se
     let callee = callee_of(mutator, taken_in, creator)?;
     let (creator_code, _, creator_metadata) = place_body(mutator, creator);
     let waiting_at = place_program_counter(mutator, creator);
-    if !took_closure(
-        mutator,
-        creator,
-        &creator_code,
-        waiting_at,
-        callee,
-        taken_in,
-    ) {
+    if !took_closure(mutator, callee, taken_in) {
         return None;
     }
     // The send's literal entry, when the closure's block is the literal it
@@ -599,24 +594,23 @@ fn same_place<'gc>(mutator: &Mutator<'gc>, first: Place<'gc>, second: Place<'gc>
     }
 }
 
-/// Whether the send `creator` stands at, at `waiting_at` of `code`, took
-/// the closure `frame` runs, decided at the stop: `callee`, the send's
-/// callee, is the closure's own activation -- a `value` the send made --
-/// or the send's own receiver or one of its arguments is that very
-/// closure (`sent_registers`). The send decides, not its callee, so that
-/// whatever it delivers to takes the closure alike -- a method, a mirror
-/// leaf, a `doesNotUnderstand:` handler, which holds the closure only in
-/// its `Message`'s arguments. A closure handed on in a variable or
-/// computed by an expression is taken so as much as a literal; one run by
-/// another send -- a sibling closure, a slot's -- is not.
-fn took_closure<'gc>(
-    mutator: &Mutator<'gc>,
-    creator: Place<'gc>,
-    code: &CompiledCode,
-    waiting_at: usize,
-    callee: Place<'gc>,
-    frame: Place<'gc>,
-) -> bool {
+/// Whether the send whose callee is `callee` took the closure `frame`
+/// runs, decided at the stop from what the send delivered: the callee is
+/// the closure's own activation -- a `value` the send made -- or holds
+/// that very closure as its receiver or as one of its parameters, the
+/// registers below its body's argument count, which no body writes; or the
+/// callee is a `doesNotUnderstand:` handler, which the send delivered its
+/// arguments to as its `Message`'s, and the closure is one of them. The
+/// sender's registers do not decide: the run loop reads an argument where
+/// it stands and copies it into the send's slot only for a callee laid on
+/// the slots, so a slot may hold what an earlier send took, and the
+/// register a named local passed lives in is one an inlined form's
+/// fallback closure can assign while the send runs. What the callee holds
+/// is what it was given, but for a handler that stores into its own
+/// `Message`'s arguments. A closure handed on in a variable or computed by
+/// an expression is taken so as much as a literal; one run by another
+/// send -- a sibling closure, a slot's -- is not.
+fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'gc>) -> bool {
     if same_place(mutator, callee, frame) {
         return true;
     }
@@ -628,76 +622,49 @@ fn took_closure<'gc>(
     let Some(closure) = closure else {
         return false;
     };
-    sent_registers(code, waiting_at)
-        .into_iter()
-        .any(|register| {
-            let value = match creator {
-                Place::Running(activation) => heap.activation_local(activation, register),
-                Place::Suspended(suspended) => heap.frame_local(suspended, register),
-            };
-            value.as_object().is_some_and(|object| object.same(closure))
-        })
-}
-
-/// The registers of a frame waiting at the send at `waiting_at` of `code`
-/// that still hold what the send read as its receiver and arguments: the
-/// receiver's register -- a mirror send's subject's -- and each
-/// argument's source, the register the send read it from wherever it
-/// stands (`vm::argument_window`). The argument's slot is read only where
-/// it is that source: the run loop reads a single argument, or
-/// consecutive ones, where they stand and copies them into the slots only
-/// for a callee laid on them, so that a slot the send did not read still
-/// holds what an earlier instruction left there, which the leftover
-/// analysis calls clean but which is not this send's argument -- a
-/// `doesNotUnderstand:` handler's activation lands above the window and
-/// copies nothing into it. Only registers below the slots, and a slot
-/// that is its own source, are read: no callee's window covers the
-/// former, a callee laid on the slots takes the latter as its own
-/// arguments, which its body never writes, and each is one the send read,
-/// so that the leftover analysis finds it tainted by nothing before the
-/// send and the read never meets a dead register; a source in or above
-/// the slots but not its own slot, which neither lowering emits, is not
-/// read. While the send runs nothing writes those registers but a block
-/// of the creator's own that assigns the named local a source is: the
-/// registers answer what the send read unless such a block assigned the
-/// local meanwhile.
-fn sent_registers(code: &CompiledCode, waiting_at: usize) -> Vec<u16> {
-    let Ok(program_counter) = u32::try_from(waiting_at) else {
-        return Vec::new();
+    let is_closure =
+        |value: Value<'gc>| value.as_object().is_some_and(|object| object.same(closure));
+    let (receiver, parameters, kind) = match callee {
+        Place::Running(activation) => {
+            let count = heap.activation_code(activation).argument_count;
+            let parameters: Vec<Value<'gc>> = (0..count)
+                .map(|index| heap.activation_local(activation, index))
+                .collect();
+            (
+                heap.activation_receiver(activation),
+                parameters,
+                heap.activation_kind(activation),
+            )
+        }
+        Place::Suspended(suspended) => {
+            let count = heap
+                .frame_code(suspended)
+                .map_or(0, |code| code.argument_count);
+            let parameters: Vec<Value<'gc>> = (0..count)
+                .map(|index| heap.frame_local(suspended, index))
+                .collect();
+            (
+                heap.frame_receiver(suspended),
+                parameters,
+                heap.frame_kind(suspended).activation_kind(),
+            )
+        }
     };
-    if waiting_at >= code.instruction_count() {
-        return Vec::new();
+    if is_closure(receiver) || parameters.iter().copied().any(is_closure) {
+        return true;
     }
-    let instruction = code.instruction(waiting_at);
-    let Some((argument_base, sources)) = instruction.argument_slots() else {
-        return Vec::new();
-    };
-    let tainted = code.tainted_before(program_counter).to_vec();
-    let is_tainted = |register: u16| tainted.iter().any(|range| range.contains(&register));
-    let receiver = match &instruction {
-        Instruction::SendPublic {
-            receiver_register, ..
-        }
-        | Instruction::SendInlinable {
-            receiver_register, ..
-        }
-        | Instruction::SendMirror {
-            subject_register: receiver_register,
-            ..
-        } => Some(*receiver_register),
-        _ => None,
-    };
-    let below_the_slots = |register: &u16| *register < argument_base;
-    let arguments = sources.iter().enumerate().filter_map(|(offset, source)| {
-        let is_its_slot = usize::from(*source) == usize::from(argument_base) + offset;
-        (below_the_slots(source) || is_its_slot).then_some(*source)
-    });
-    receiver
-        .filter(below_the_slots)
-        .into_iter()
-        .chain(arguments)
-        .filter(|register| !is_tainted(*register))
-        .collect()
+    let handles_a_message = matches!(
+        kind,
+        ActivationKind::Method(selector) if selector == Symbol::DOES_NOT_UNDERSTAND
+    );
+    handles_a_message
+        && parameters
+            .first()
+            .and_then(|message| message.as_object())
+            .and_then(|message| mutator.kernel_slot(message, BuiltinClass::Message, "arguments"))
+            .and_then(|arguments| arguments.as_object())
+            .and_then(|arguments| heap.array_elements(arguments))
+            .is_some_and(|arguments| arguments.into_iter().any(is_closure))
 }
 
 /// The frame that created the closure `frame` runs, while it runs or is

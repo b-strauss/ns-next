@@ -4588,6 +4588,21 @@ const LEAVING: &str = indoc! {"
         public run: value = (
           ^kept value: value
         )
+        public runWith: setter = (
+          setter runKept.
+          ^kept value: 5
+        )
+      )
+      class Hoarder = (
+        | kept |
+      ) (
+        public ifTrue: block = (
+          kept:: block.
+          ^nil
+        )
+        public runKept = (
+          ^kept value
+        )
       )
       class Proxy on: subject = (
         | target = subject. |
@@ -4826,6 +4841,35 @@ const LEAVING: &str = indoc! {"
           total:: total + (each * 13).
           total:: total * 1].
         proxy run: x.
+        ^total
+      )
+      public reassigning = (
+        | runner total held hoarder counting |
+        total:: 0.
+        runner:: Runner new.
+        hoarder:: Hoarder new.
+        counting:: [:each |
+          total:: total + (each * 14).
+          total:: total * 1].
+        runner keep: counting.
+        held:: hoarder.
+        hoarder ifTrue: [held:: counting].
+        runner runWith: held.
+        ^total
+      )
+      public proxyReassigning = (
+        | runner total held hoarder counting proxy |
+        total:: 0.
+        runner:: Runner new.
+        proxy:: Proxy on: runner.
+        hoarder:: Hoarder new.
+        counting:: [:each |
+          total:: total + (each * 15).
+          total:: total * 1].
+        runner keep: counting.
+        held:: hoarder.
+        hoarder ifTrue: [held:: counting].
+        proxy runWith: held.
         ^total
       )
       public proxyInjecting = (
@@ -5276,6 +5320,33 @@ ns_runtime::for_each_lowering! {
                 "the JIT on: {jit}"
             );
             assert_eq!(answer, 13, "the JIT on: {jit}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A send handed one value is not taken for the send of a block its
+    /// callee runs because a block of the sender's own -- an inlined
+    /// form's fallback closure, which assigns the sender's local in its
+    /// register -- stored that block into the local the send read from
+    /// meanwhile: what the send delivered decides, its callee's parameter
+    /// or, for a `doesNotUnderstand:` handler, its `Message`'s arguments.
+    fn a_step_out_of_a_block_assigned_to_a_sent_local_meanwhile_stops_in_its_caller(lowering) {
+        for (selector, line, answer) in [
+            ("reassigning", "total:: total + (each * 14).", 70),
+            ("proxyReassigning", "total:: total + (each * 15).", 75),
+        ] {
+            for jit in [true, false] {
+                let (stops, answered) =
+                    leaving_with(lowering, jit, selector, line, 1, vec![Command::StepOut]);
+                assert_eq!(stops.len(), 1, "{selector}, the JIT on: {jit}");
+                assert_eq!(
+                    stops[0].0,
+                    (String::from("Runner>>runWith:"), String::from("^kept value: 5")),
+                    "{selector}, the JIT on: {jit}"
+                );
+                assert_eq!(answered, answer, "{selector}, the JIT on: {jit}");
+            }
         }
     }
 }

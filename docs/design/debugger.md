@@ -2710,40 +2710,31 @@ leaves one block level; else, for a frame that runs a closure, the send
 its creator -- the frame its captured frame names, running or suspended
 -- stands at, when that send took this very closure, which is decided at
 the stop from the frames themselves: walking down the closure's senders
-meets the creator, and either the frame just above it, the send's
-callee, is the closure's own activation -- a `value` the creator sent --
-or the creator's send itself holds the closure object the stopped frame
-runs (`Heap::activation_closure`, `Heap::frame_closure`) as its receiver
-or one of its arguments, read in the creator's frame
-(`stepping::took_closure`, `stepping::sent_registers`). The send decides,
-not its callee, so that whatever it delivers to takes the closure alike:
-a method, a mirror leaf, or a `doesNotUnderstand:` handler, which holds
-the closure only in its `Message`'s arguments -- a step out of the block
-a proxy's `do:` runs leaves the `do:`
-(`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`).
-The registers read are the window the send read: the receiver's and each
-argument's source, the register the send read it from where it stands
-(`vm::argument_window`), never a slot that is not its own source. The run
-loop reads a single argument, or consecutive ones, in place and copies
-them into the slots only for a callee laid on them, so a slot the send
-did not read still holds what an earlier instruction left there -- clean
-to the leftover analysis, but no argument of this send: a
-`doesNotUnderstand:` handler's activation lands above the window and
-copies nothing into it, and reading the slot would miss a block handed on
-in a variable and match a block an earlier send of the same slot took
+meets the creator, and the frame just above it, the send's callee, is
+the closure's own activation -- a `value` the creator sent -- or holds the
+closure object the stopped frame runs (`Heap::activation_closure`,
+`Heap::frame_closure`) as its receiver or in one of its parameters, the
+registers below its body's argument count, which no body writes; or the
+callee is a `doesNotUnderstand:` handler, to which the send delivered its
+arguments as its `Message`'s, and the closure is one of the `Message`'s
+`arguments`, read through the kernel's `Message` layout as `sendTo:`'s
+leaf reads it (`Mutator::kernel_slot`), no Newspeak code run
+(`stepping::took_closure`). What the send delivered decides, so that a
+proxy's `do:` leaves the `do:`
+(`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`),
+and the creator's registers never do: the run loop reads a single
+argument, or consecutive ones, where they stand and copies them into the
+send's slots only for a callee laid on them, so a slot the send did not
+read still holds what an earlier send of that slot took, and a named
+local the send read from lives in a register an inlined form's fallback
+closure assigns, which a callee can run while the send runs
 (`a_step_out_of_a_block_a_does_not_understand_takes_in_a_variable_stops_after_the_send`,
 `a_step_out_of_a_kept_block_a_does_not_understand_runs_stops_in_its_caller`,
-both run with the JIT off too, since machine code writes every argument
-into its slot). Only registers below the slots, and a slot that is its own
-source, are read: no callee's window covers the former, a callee laid on
-the slots takes the latter as its own arguments, which its body never
-writes, and the send read each, so that none is tainted before it and the
-read never meets a dead register ("A register a frame does not read
-before it writes it is dead", `CLAUDE.md`). While the send runs nothing
-writes them but a block of the creator's own that assigns the named local
-a source is; so a match means the send read that closure unless such a
-block stored the very closure that runs into that local meanwhile, and a
-block it assigned anything else is a miss, a frame's step out. A block literal, a parenthesized one, a closure
+`a_step_out_of_a_block_assigned_to_a_sent_local_meanwhile_stops_in_its_caller`,
+each with the JIT off too, since machine code writes every argument into
+its slot). The one thing the decision does not see is a handler that
+stores into its own `Message`'s `arguments` before the closure runs: it
+then answers what the array holds, not what the send delivered. A block literal, a parenthesized one, a closure
 handed on in a variable or computed by an expression are all taken
 alike; the creator's literal entry, when the closure's block is the
 literal the send took, only says whether the send is an inlined form.
