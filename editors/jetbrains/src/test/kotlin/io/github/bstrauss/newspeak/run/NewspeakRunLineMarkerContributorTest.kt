@@ -6,7 +6,6 @@ import com.intellij.execution.PsiLocation
 import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.execution.executors.DefaultRunExecutor
-import com.intellij.testFramework.TestActionEvent
 import com.intellij.execution.RunManager
 import com.intellij.execution.actions.ConfigurationContext
 import com.intellij.execution.actions.RunConfigurationProducer
@@ -19,6 +18,7 @@ import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.nio.file.Files
 import java.nio.file.Path
@@ -123,8 +123,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         val record = { settings: RunnerAndConfigurationSettings, executor: Executor -> launched.add(settings to executor); Unit }
         val debug = NewspeakRunAction(file, "timed", NewspeakCommand.RUN, DefaultDebugExecutor.getDebugExecutorInstance(), record)
         val run = NewspeakRunAction(file, "timed", NewspeakCommand.RUN, DefaultRunExecutor.getRunExecutorInstance(), record)
-        val event = TestActionEvent.createTestEvent(debug)
-        debug.actionPerformed(event)
+        debug.actionPerformed(TestActionEvent.createTestEvent(debug))
         run.actionPerformed(TestActionEvent.createTestEvent(run))
         assertEquals(2, launched.size)
         assertSame(DefaultDebugExecutor.getDebugExecutorInstance(), launched[0].second)

@@ -4498,7 +4498,7 @@ running projects", "Structure".
 
 A module `ns-next run <file>.ns` can start -- its root class built with
 `new`, written or omitted, and a public instance-side `main:args:` -- gets
-a play button beside `main:args:` opening Run and Benchmark, and "Run" in
+a play button beside `main:args:` opening Run, Debug and Benchmark, and "Run" in
 its context menu. The plugin reads that from the analyzer's document
 symbols, not from a parser of its own; the last answer per file and
 document stamp is kept by a project service, `DocumentSymbolCache`, which
@@ -7815,7 +7815,9 @@ with its test reproduced first.
   slot with its declaring mixin added -- `x (Base)`, numbered where one
   chain applies a mixin more than once, `x (M 2)`, and by its
   declaration's path from its module root where two different mixins of
-  one name collide, `x (Outer.Base)` -- and a lazy slot or nested class
+  one name collide, `x (Outer.Base)`, from the root's own name where
+  those are alike too, and by its place in the chain where even that is,
+  so that no two labels are alike -- and a lazy slot or nested class
   not computed yet shown as `<not computed yet>`, not `nil`
   (`VariableValue::NotComputed`). A layout naming a mixin the heap holds
   no id for names the fields by number rather than ending the program
@@ -7825,9 +7827,11 @@ with its test reproduced first.
   body, a step out ran the program to its end, since an inlined block
   has no frame. A step out taken in a block a send took -- inlined or a
   real closure, `do:`'s, `on:do:`'s, `ensure:`'s, passed as a literal, a
-  variable or an expression -- leaves that whole send and stops where a
-  step over of it would, under both lowerings, the metadata recording
-  each send that takes a block and where its blocks lie.
+  variable or an expression, whatever the send delivers it to, a proxy's
+  `doesNotUnderstand:` included -- leaves that whole send and stops where
+  a step over of it would, under both lowerings, the metadata recording
+  each send that takes a block and where its blocks lie; a stop after a
+  body's last statement stands at that statement.
 - **A step passes over the factory and goes on in the next host run.**
   A step over from a root's last slot initializer stopped nowhere, the
   run ending under it, and a step stopped in the factory, a frame
@@ -7836,7 +7840,8 @@ with its test reproduced first.
   (`stepping::run_ended`, `carry_into`); and no step stops in a factory,
   known by its frame's kind, with or without metadata, which every step
   passes over, so that every level's initializer is stepped in the order
-  §6.1 and §6.2 run them (decision 12).
+  §6.1 and §6.2 run them (decision 12); a pause asked between runs
+  reports the method exits the carried step would have.
 
 Every commit ran `cargo xtask gates commit` (and `codegen` where its
 files changed).
@@ -7854,9 +7859,16 @@ files changed).
   stepped into again, and a stripped image's factory passed over.
 - `af6aedad` -- shadowed fields of two same-named mixins named by their
   paths, and no panic from a debugger query.
+- `875a1f0a` -- the whole-branch review's findings: a step out decided by
+  the creator's own send, a proxy's `doesNotUnderstand:` included; a
+  stop at a body's tail standing at its last statement; carried exits
+  reported by a pause between runs; no two field labels alike; the
+  step stress mode's density restored.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
-(the time a step took, planned in no stage), and three tools planned on
-the command line first: a profiler, a view of what a method compiles to
-and a developer tool like V8's `d8` ("Planned: editor support and the
-analyzer").
+(the time a step took, planned in no stage), and four tools planned on
+the command line first: a command-line debugger client, which the
+debugger needs to meet that principle, a profiler, a view of what a
+method compiles to and a developer tool like V8's `d8` ("Planned: editor
+support and the analyzer"); the play button's Debug through the
+platform's own launcher is untested ("Missing tests").

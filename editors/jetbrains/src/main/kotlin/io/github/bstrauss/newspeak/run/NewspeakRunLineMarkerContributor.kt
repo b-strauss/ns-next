@@ -8,7 +8,7 @@ import io.github.bstrauss.newspeak.NewspeakBundle
 
 /**
  * The play button beside `main` and each script of a `newspeak.json`, opening
- * Run and Benchmark. Dumb-aware: it reads the file's own PSI, no index.
+ * Run, Debug and Benchmark. Dumb-aware: it reads the file's own PSI, no index.
  */
 class NewspeakRunLineMarkerContributor : RunLineMarkerContributor(), DumbAware {
     override fun getInfo(element: PsiElement): Info? {

@@ -2299,6 +2299,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Further `ns-next-analyzer` commands**, each looking without running: a
   heap dump and a deeper inspection of an image; what a method compiles
   to, machine code included, is the item below.
+- **A command-line debugger client** (decided with the user on
+  2026-11-15; not built): `ns-next debug <program>`, say, driven by
+  commands from a file or standard input -- `break <file>:<line>`, `run`,
+  `next`, `step`, `out`, `continue`, `stack`, `vars <frame>`,
+  `print <value>` and the like -- and printing every stop with its stack
+  and variables as plain text or JSON, a client of the same debugging API
+  the DAP agent serves (`DebugRemote`, [debugger.md](design/debugger.md),
+  "The debugging API at the safepoint"). It matters because the debugger
+  is today reachable only through DAP over a socket, which the IDE plugin
+  drives but an agent with only a shell cannot, so it does not meet the
+  principle that introspection is reachable from the command line first
+  ([design/README.md](design/README.md), "Principles"). First on the
+  command line; the plugin, which speaks DAP, is unaffected.
 - **A profiler** (asked for by the user on 2026-11-15; not designed yet):
   the time a program spends per method and per send site. It matters because
   a slow program today shows where its time goes only to a native sampling
@@ -3450,6 +3463,18 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **The play button's Debug through the platform's own launcher** (noted
+  2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
+  configuration through `ProgramRunnerUtil.executeConfiguration`, and its
+  test (`NewspeakRunLineMarkerContributorTest`) replaces that launcher with
+  a recording one, so that it shows the Debug executor and the
+  configuration Run starts handed over but not that the platform then
+  starts the debug session; no `runIde` check of the button's Debug is
+  recorded either. A check under `runIde` -- Debug from the play button
+  stopping at a line breakpoint -- recorded in
+  [editor-support.md](design/editor-support.md) beside the earlier ones,
+  or a test that runs the platform's launcher with a stand-in runner,
+  would close it.
 - **A model test of the poll words' ordering** (noted 2026-11-11, with
   the debugger's first stage). The debugger's agent sets its bit in the
   request word and then stores 0 into `DepthLimit`, both `SeqCst`, from

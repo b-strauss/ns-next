@@ -1761,7 +1761,8 @@ before.
 Decided with the user on 2026-10-05: the plugin runs a project with the
 `ns-next` the user chooses, and bundles none; a run configuration type
 "Newspeak", with the plugin's file icon, groups the configurations; a play
-button beside `main` and each script opens Run and Benchmark. Chosen beside
+button beside `main` and each script opens Run and Benchmark, and Debug
+since the debugger reached the IDE (2026-11-15). Chosen beside
 them: the platform's run marker as the gutter icon; temporary configurations
 from the gutter, named as above; the extra arguments as one field split as
 program parameters; the JSON plugin as an optional dependency. Decided with
