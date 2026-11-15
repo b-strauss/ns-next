@@ -16,6 +16,7 @@ use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
     FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
 };
+use super::stepping::RecordedCall;
 use super::values::StopValues;
 use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
@@ -595,6 +596,108 @@ fn location(
     })
 }
 
+/// How many characters the name of a returned value's call keeps; a
+/// longer call leaves out its middle (`one_line`).
+const CALL_NAME_LIMIT: usize = 60;
+
+/// The name of the call a step recorded the answer of, as the stop
+/// reports it (`ReturnedValue::call`): the send's source, sliced from the
+/// text its body's metadata was compiled from (`Cache::metadata_with_text`)
+/// -- a cascade's later message after its receiver's, in parentheses
+/// where the entry says so -- without its comments, on one line; or,
+/// where the body has no metadata -- an image built with
+/// `--strip-source` -- or the call is no send the source spells, what
+/// the instruction says (`Call::name`).
+pub(crate) fn call_name(mutator: &mut Mutator<'_>, call: RecordedCall) -> String {
+    let RecordedCall {
+        code,
+        index,
+        call,
+        origin,
+    } = call;
+    let spelled = origin.and_then(|origin| {
+        let (metadata, text) = Cache::metadata_with_text(mutator, &code, &origin)?;
+        let program_counter = u32::try_from(index).ok()?;
+        let found = metadata
+            .sends
+            .binary_search_by_key(&program_counter, |entry| entry.index)
+            .ok()?;
+        let entry = &metadata.sends[found];
+        let call = uncommented(text.get(entry.call.start as usize..entry.call.end as usize)?);
+        let receiver = entry
+            .receiver
+            .filter(|receiver| receiver.end <= entry.call.start);
+        let named = match receiver {
+            Some(receiver) => {
+                let receiver =
+                    uncommented(text.get(receiver.start as usize..receiver.end as usize)?);
+                if entry.parenthesize_receiver {
+                    format!("({receiver}) {call}")
+                } else {
+                    format!("{receiver} {call}")
+                }
+            }
+            None => call,
+        };
+        Some(one_line(&named))
+    });
+    spelled.unwrap_or_else(|| call.name())
+}
+
+/// `source`, a send's text, with every comment in it blanked out: a
+/// send's span starts and ends at a token, never inside a comment or a
+/// literal, so its text lexes alone as it does in its module.
+fn uncommented(source: &str) -> String {
+    let lexed = ns_syntax::lexer::Lexer::new(source).run_keeping_comments();
+    let mut text = String::with_capacity(source.len());
+    let mut from = 0;
+    for comment in &lexed.comments {
+        let (start, end) = (comment.span.start as usize, comment.span.end as usize);
+        if start < from || source.get(from..start).is_none() || source.get(start..end).is_none() {
+            continue;
+        }
+        text.push_str(&source[from..start]);
+        text.push(' ');
+        from = end;
+    }
+    text.push_str(source.get(from..).unwrap_or_default());
+    text
+}
+
+/// `text` on one line, each run of whitespace one space, its middle left
+/// out where it is longer than `CALL_NAME_LIMIT` characters: the start
+/// and the end are kept, each cut at a space where one is, so that the
+/// receiver and the last selector part stay readable.
+fn one_line(text: &str) -> String {
+    let spaced = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let characters: Vec<char> = spaced.chars().collect();
+    if characters.len() <= CALL_NAME_LIMIT {
+        return spaced;
+    }
+    let half = (CALL_NAME_LIMIT - 1) / 2;
+    let mut head = half;
+    if characters[head] != ' ' {
+        if let Some(space) = characters[..head]
+            .iter()
+            .rposition(|character| *character == ' ')
+        {
+            head = space;
+        }
+    }
+    let mut tail = characters.len() - half;
+    if characters[tail - 1] != ' ' {
+        if let Some(space) = characters[tail..]
+            .iter()
+            .position(|character| *character == ' ')
+        {
+            tail += space + 1;
+        }
+    }
+    let head: String = characters[..head].iter().collect();
+    let tail: String = characters[tail..].iter().collect();
+    format!("{} … {}", head.trim_end(), tail.trim_start())
+}
+
 /// The variables of the frame at index `frame` of the stack trace, `None`
 /// past the stack: `self`, then, with the body's metadata, each named
 /// variable once, the innermost of a name, read where it lives
@@ -778,5 +881,44 @@ fn numbered_variables<'gc>(reader: &Reader<'_, 'gc>, read: &mut Vec<(String, Opt
             format!("register {register}")
         };
         read.push((name, Some(value)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::one_line;
+
+    /// A call's text is shown on one line, each run of whitespace one
+    /// space, and a short one whole.
+    #[test]
+    fn a_call_is_named_on_one_line() {
+        assert_eq!(
+            one_line(
+                "self
+      first: answer
+	  second: 2"
+            ),
+            "self first: answer second: 2"
+        );
+        assert_eq!(
+            one_line("(kinds at: which) value"),
+            "(kinds at: which) value"
+        );
+    }
+
+    /// A call past the limit keeps its start and its end, cut at spaces,
+    /// and one with no space to cut at is cut where the limit falls.
+    #[test]
+    fn a_long_call_leaves_out_its_middle() {
+        let words = "receiver first: 1 second: 2 third: 3 fourth: 4 fifth: 5 sixth: 6 seventh: 7";
+        let named = one_line(words);
+        assert_eq!(
+            named,
+            "receiver first: 1 second: 2 … fifth: 5 sixth: 6 seventh: 7"
+        );
+        assert!(named.chars().count() <= 62, "{named}");
+        let unbroken = "x".repeat(100);
+        let named = one_line(&unbroken);
+        assert_eq!(named, format!("{} … {}", "x".repeat(29), "x".repeat(29)));
     }
 }

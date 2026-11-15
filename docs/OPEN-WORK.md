@@ -3487,14 +3487,25 @@ program's subclass of `String` as an argument, the error of a
 
 - **The core library as the IDE draws it** (noted 2026-11-15, with the
   header stops and the library). No `runIde` check was made of the
-  "Newspeak Core Library" node under External Libraries -- its folders,
-  its name, the files excluded that are not `.ns` -- nor of the library's
-  editors being read-only; the tests check the provider, the file index
-  and the files' writability on disk. A line breakpoint in a
+  "Newspeak Core Library" node under External Libraries -- its name, its
+  three modules and `platform/` directly under it -- nor of the library's
+  editors being read-only; the tests check the provider, the file index,
+  the project view's nodes and the files' writability on disk. A line breakpoint in a
   `LightVirtualFile`, the module a source shown by reference opens when no
   library file has its text, is untested as well. A check under `runIde`
   recorded in [editor-support.md](design/editor-support.md) beside the
   earlier ones would close the first two.
+- **The step filters as the IDE draws them** (noted 2026-11-15, with the
+  step filters' settings). No `runIde` check was made of the toggle "Step
+  Into Kernel and Platform Code" in the debug tool window's ⋮ | Debugger
+  Settings, shown for a Newspeak session and hidden for another
+  language's, of Newspeak's section on Debugger | Stepping, nor of the
+  page "Newspeak Step Filters": its chooser's tree of the project's and
+  the core library's files and classes, a node's expansion asking its
+  classes and the speed search, Add and Remove, and an invalid entry
+  drawn as one. The tests run the action, the configurables and the
+  chooser's model directly ([editor-support.md](design/editor-support.md),
+  "Plugin testing and gates").
 - **The play button's Debug through the platform's own launcher** (noted
   2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
   configuration through `ProgramRunnerUtil.executeConfiguration`, and its

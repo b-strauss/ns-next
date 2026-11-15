@@ -1835,9 +1835,14 @@ so that the event dispatch thread never waits for `ns-next` and no two
 looks write or prune at once; a failure -- no binary set, one that cannot
 be started, an older one without the command -- is logged and leaves the
 library out. `NewspeakCoreLibraryRootsProvider` shows the directory in
-`core-library/`'s layout, `platform/` a folder, its `fingerprint` and use
-marker excluded (`NewspeakCoreLibraryRoots`, a `SyntheticLibrary`); the
-files are read-only on disk, so their editors are. The language server
+`core-library/`'s layout (`NewspeakCoreLibraryRoots`, a
+`SyntheticLibrary`): the library's roots are the directory's entries the
+sources consist of -- `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`
+and the folder `platform/` -- so that the project view shows them directly
+under the library's node, as the platform draws a synthetic library's
+roots, with neither the fingerprint's directory nor its `fingerprint` and
+use marker, which stay in the directory, under no root, for the store and
+the agent; the files are read-only on disk, so their editors are. The language server
 answers the breakable lines of a shipped module's file as the shipped
 module's ("Breakable lines") -- provided the bundled analyzer and the
 settings' `ns-next` are the same build, since only then is the library's
@@ -2040,8 +2045,11 @@ The server's own tests are described under its section, above ("Testing").
   the agent shows by a library file's path opens that file;
   and, for the core library: the store writes a fingerprint's directory
   once, its files read-only and no staging left, and reuses it; the
-  library shown is the settings' binary's, `platform/` a folder, a module
-  the library's source and the `fingerprint` file not in the library; a
+  library shown is the settings' binary's, its roots the three modules
+  and `platform/`, a folder, the modules the library's source and the
+  `fingerprint`, the use marker and the fingerprint's directory not in
+  the library, and External Libraries' node of it (`ExternalLibrariesNode`)
+  has those four children and `platform/` its five modules; a
   project that is no Newspeak project shows none until its first debug
   session; the pruning keeps the directory an open project shows however
   long ago its use was recorded and deletes an unused one; a
@@ -2050,7 +2058,18 @@ The server's own tests are described under its section, above ("Testing").
   moved by the session's look before it is sent and stops in the new
   library's file, and one in its `Manifest.ns` stops a project's
   manifest as it answers a module;
-  a hidden frame is drawn greyed and the program's frame not; and an
+  a hidden frame is drawn greyed and the program's frame not; a frame
+  is the same across stops -- its equality object -- by its body, its
+  module and its depth, whatever the agent's ids and lines, its caller
+  and a recursive activation of its body others, and a step over in the
+  real runtime keeps the stepping frame the same; the session sends the
+  step filters -- the switch and the project's entries by their paths --
+  before `configurationDone` and again at a change of either, and, with
+  the real runtime, a step into `Helper new run` with the program's
+  `Helper` filtered stops at the next statement, and a step into
+  `{1. 2} do: [...]` stops in the block until the debug tool window's
+  toggle, shown for the Newspeak session, lets the next step into go
+  into a shipped module's file; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
   with `start` 100; an agent's `terminated` event or a close before any
   `process` event ends the session with the error and kills the process,
@@ -2088,6 +2107,25 @@ The server's own tests are described under its section, above ("Testing").
   new library's own is kept. `NewspeakProjectTest`: a project with a
   `.ns` file or a `newspeak.json` is a Newspeak project, one with neither
   is not;
+- the step filters' settings, under `test`, on `BasePlatformTestCase`:
+  `NewspeakSteppingConfigurableTest` -- the Stepping section has
+  Newspeak's configurable, which shows, applies and resets the switch;
+  the state the platform stores is read back as the same switch; and a
+  change is told to the sessions once, a change to the same switch not at
+  all, with the arguments `nsNext/setStepFilters` takes.
+  `NewspeakStepFiltersTest` -- a file offers the classes its root
+  nests, recursively; the chooser's tree has only the groups that have
+  files, asks nothing before a node expands and puts a file's classes
+  under it once the server answers, asking it once; a server that never
+  answers, deaf to the interrupt, leaves the file whole-module only after
+  the bound; a project's entries are stored and read back; a library
+  file's entry is its path below the fingerprint's directory and names
+  the file of the same path in another fingerprint's, and none without a
+  library; a project file's entry is relative to the project's directory,
+  one outside it absolute, and a session sends each by its file's path,
+  leaving out one whose file is gone; an entry whose path no file system
+  holds counts as gone; and the page lists, applies and resets the
+  entries and marks one whose file is gone;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -2256,8 +2294,18 @@ and resolves cleanly in a JetBrains IDE today.
   `newspeak/breakableLines` round trip through the platform's LSP client
   (the breakpoint types' test replaces the fetcher), a breakpoint in a
   module's read-only `LightVirtualFile`, the core library's node under
-  External Libraries as the project view draws it (the tests read the
-  provider and the file index), and the turning off and on that
+  External Libraries as the project view's tree draws it (the tests read
+  the provider, the file index and the nodes the project view builds),
+  the variables view's restore of the nodes expanded across a step (the
+  tests check the frames' equality objects it is keyed by), the toggle
+  "Step Into Kernel and Platform Code" in the debug tool window's ⋮ |
+  Debugger Settings and its absence for another language's session (the
+  tests run its `update` and `setSelected` over a data context of their
+  own), Newspeak's section on the Stepping page and the page "Newspeak
+  Step Filters" as the Settings dialog draws them, the chooser's tree
+  dialog -- a node's expansion asking its classes, the speed search --
+  and the page's Add and Remove (the tests read the choices, the
+  chooser's model and the page's model), and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

@@ -3,27 +3,40 @@ package io.github.bstrauss.newspeak.debugger
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.intellij.execution.KillableProcess
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
+import com.intellij.icons.AllIcons
+import com.intellij.ide.projectView.ViewSettings
+import com.intellij.ide.projectView.impl.nodes.ExternalLibrariesNode
+import com.intellij.ide.projectView.impl.nodes.PsiDirectoryNode
+import com.intellij.ide.projectView.impl.nodes.SyntheticLibraryElementNode
+import com.intellij.ide.util.treeView.AbstractTreeNode
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
-import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
+import com.intellij.psi.PsiFileSystemItem
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.ui.ColoredTextContainer
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugProcessStarter
 import com.intellij.xdebugger.XDebugSession
@@ -35,13 +48,11 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
-import com.intellij.ui.ColoredTextContainer
-import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.frame.XCompositeNode
-import com.intellij.xdebugger.frame.XExecutionStack
-import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XDebuggerTreeNodeHyperlink
+import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XFullValueEvaluator
+import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XValue
 import com.intellij.xdebugger.frame.XValueChildrenList
 import com.intellij.xdebugger.frame.XValueContainer
@@ -68,6 +79,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.Icon
 
 /**
@@ -92,6 +104,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         super.setUp()
         directory = Files.createTempDirectory("ns-next-debug-process")
         NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        NewspeakDebuggerSettings.getInstance().update(false)
+        NewspeakSkippedClasses.getInstance(project).update(emptyList())
     }
 
     override fun tearDown() {
@@ -114,6 +128,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) }
             }
             NewspeakSettings.getInstance().state.runtimePath = null
+            NewspeakDebuggerSettings.getInstance().update(false)
+            NewspeakSkippedClasses.getInstance(project).update(emptyList())
             // The store's files are read-only, which Windows refuses to delete otherwise.
             CoreLibraryStore.deleteRecursively(directory)
         } finally {
@@ -152,10 +168,13 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val debugging = debug(program)
         assertEquals(3, debugging.nextPause().line)
 
+        val before = checkNotNull(debugging.session.currentStackFrame).equalityObject
         onEdt { debugging.session.stepOver(false) }
         val stepped = debugging.nextPause()
         assertEquals(program, stepped.file)
         assertEquals("line 5, counted from 0 by the platform", 4, stepped.line)
+        // The platform keeps the variables view's expanded nodes for the frame it takes for the same.
+        assertEquals("the stepping frame is the same frame", before, checkNotNull(debugging.session.currentStackFrame).equalityObject)
 
         onEdt { debugging.session.resume() }
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
@@ -320,24 +339,66 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertEquals("no staging directory is left", listOf(first.directory), Files.list(store.root).use { stream -> stream.toList() })
     }
 
-    /** The library under External Libraries is the settings' binary's shipped sources, in `core-library/`'s layout. */
+    /**
+     * The library under External Libraries is the settings' binary's
+     * shipped sources, in `core-library/`'s layout: the modules and
+     * `platform/` directly under the library's node, neither the
+     * fingerprint's directory nor the store's own files.
+     */
     fun testTheLibraryShowsTheShippedSourcesOfTheSettingsBinary() {
         val library = libraryDirectory()
         assertEquals(NewspeakCoreLibrary.STORE.root.resolve(CoreLibraryStore(directory).fingerprintOf(runtime)), library)
         val provider = AdditionalLibraryRootsProvider.EP_NAME.findExtensionOrFail(NewspeakCoreLibraryRootsProvider::class.java)
         val shown = provider.getAdditionalProjectLibraries(project).single() as NewspeakCoreLibraryRoots
         assertEquals("Newspeak Core Library", shown.presentableText)
-        val root = shown.sourceRoots.single()
-        assertEquals(library, root.toNioPath())
-        val platform = checkNotNull(root.findChild("platform")) { "platform/ is a folder" }
+        assertEquals(
+            listOf("Kernel.ns", "Manifest.ns", "PlatformFactory.ns", "platform"),
+            shown.sourceRoots.map { root -> root.name },
+        )
+        assertTrue(shown.sourceRoots.all { root -> root.parent.toNioPath() == library })
+        val platform = shown.sourceRoots.single { root -> root.name == "platform" }
+        assertTrue("platform/ is a folder", platform.isDirectory)
         val time = checkNotNull(platform.findChild("TimeFactory.ns"))
-        val fingerprint = checkNotNull(root.findChild(CoreLibraryStore.FINGERPRINT_FILE))
+        val kernel = shown.sourceRoots.single { root -> root.name == "Kernel.ns" }
+        val folder = checkNotNull(LocalFileSystem.getInstance().findFileByNioFile(library))
+        val fingerprint = checkNotNull(folder.findChild(CoreLibraryStore.FINGERPRINT_FILE))
+        val marker = checkNotNull(folder.findChild(CoreLibraryStore.MARKER))
         val index = ProjectFileIndex.getInstance(project)
-        val (source, inLibrary) = ReadAction.computeBlocking<Pair<Boolean, Boolean>, RuntimeException> {
-            index.isInLibrarySource(time) to index.isInLibrary(fingerprint)
+        val inIndex = ReadAction.computeBlocking<List<Boolean>, RuntimeException> {
+            listOf(
+                index.isInLibrarySource(time),
+                index.isInLibrarySource(kernel),
+                index.isInLibrary(fingerprint),
+                index.isInLibrary(marker),
+                index.isInLibrary(folder),
+            )
         }
-        assertTrue("a module is the library's source", source)
-        assertFalse("the store's own files are not shown", inLibrary)
+        assertEquals("the modules are the library's source, the store's files and the fingerprint's directory not", listOf(true, true, false, false, false), inIndex)
+
+        // What the project view shows under External Libraries.
+        val tree = ReadAction.computeBlocking<Map<String, List<String>>, RuntimeException> {
+            val node = ExternalLibrariesNode(project, ViewSettings.DEFAULT).children
+                .single { child -> child is SyntheticLibraryElementNode && child.value == shown }
+            fun nameOf(node: AbstractTreeNode<*>): String = (node.value as PsiFileSystemItem).name
+            node.children.associate { child ->
+                nameOf(child) to if (child is PsiDirectoryNode) child.children.map(::nameOf).sorted() else emptyList()
+            }
+        }
+        assertEquals(
+            mapOf(
+                "Kernel.ns" to emptyList(),
+                "Manifest.ns" to emptyList(),
+                "PlatformFactory.ns" to emptyList(),
+                "platform" to listOf(
+                    "CollectionsFactory.ns",
+                    "MirrorsFactory.ns",
+                    "TimeFactory.ns",
+                    "TranscriptFactory.ns",
+                    "TypedArraysFactory.ns",
+                ),
+            ),
+            tree,
+        )
     }
 
     /**
@@ -472,6 +533,112 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * The session sends the settings' step filters before it lets the
+     * program start, and again, at once, whenever the settings change.
+     */
+    fun testTheSessionSendsTheStepFiltersAtItsStartAndAtEveryChange() {
+        val walker = program("Walker", WALKER)
+        val skipped = NewspeakSkippedClasses.getInstance(project)
+        NewspeakDebuggerSettings.getInstance().update(true)
+        skipped.update(listOf(skipped.entryFor(walker, listOf("Inner"), projectDirectory = null)))
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { _, _ -> JsonObject() }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        val commands = agent.commands()
+        assertTrue(commands.toString(), commands.indexOf("nsNext/setStepFilters") in 0 until commands.indexOf("configurationDone"))
+        val path = JsonPrimitive(walker.toNioPath().toString())
+        assertEquals(
+            listOf("""{"shipped":false,"entries":[{"source":{"path":$path},"classPath":["Inner"]}]}"""),
+            agent.requests("nsNext/setStepFilters").map(JsonObject::toString),
+        )
+
+        onEdt { NewspeakDebuggerSettings.getInstance().update(false) }
+        awaitRequests(agent, "nsNext/setStepFilters", 2)
+        onEdt { skipped.update(emptyList()) }
+        awaitRequests(agent, "nsNext/setStepFilters", 3)
+        assertEquals(
+            listOf(
+                """{"shipped":true,"entries":[{"source":{"path":$path},"classPath":["Inner"]}]}""",
+                """{"shipped":true,"entries":[]}""",
+            ),
+            agent.requests("nsNext/setStepFilters").drop(1).map(JsonObject::toString),
+        )
+    }
+
+    /**
+     * A class of the project's step filters keeps a step into from going
+     * into it: with `Helper` filtered, a step into `Helper new run` passes
+     * the factory and `run` and stops at the next statement of `main:args:`.
+     */
+    fun testAStepIntoPassesAFilteredProgramClass() {
+        val program = program("Helping", HELPING)
+        val skipped = NewspeakSkippedClasses.getInstance(project)
+        skipped.update(listOf(skipped.entryFor(program, listOf("Helper"), projectDirectory = null)))
+        toggleBreakpoint(program, line = 3)
+        val debugging = debug(program)
+        assertEquals(2, debugging.nextPause().line)
+
+        onEdt { debugging.session.stepInto() }
+        val stepped = debugging.nextPause()
+        assertEquals(program, stepped.file)
+        assertEquals("line 4, counted from 0 by the platform", 3, stepped.line)
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.output().contains("ran"))
+    }
+
+    /**
+     * The debug tool window's toggle, shown for a Newspeak session, lets a
+     * step into go into the shipped modules at once: with the filter on, a
+     * step into `{1. 2} do: [...]` stops in the block, with it off the
+     * next step into stops in a shipped module's file.
+     */
+    fun testTheToggleLetsAStepIntoGoIntoTheShippedModules() {
+        libraryDirectory()
+        val program = program("Walker", WALKER)
+        toggleBreakpoint(program, line = 3)
+        val debugging = debug(program)
+        assertEquals(2, debugging.nextPause().line)
+
+        val action = NewspeakStepIntoShippedAction()
+        val context = SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(XDebugSession.DATA_KEY, debugging.session)
+            .build()
+        val event = TestActionEvent.createTestEvent(action, context)
+        action.update(event)
+        assertTrue("shown for a Newspeak session", event.presentation.isEnabledAndVisible)
+        assertFalse("steps pass the shipped modules by default", action.isSelected(event))
+
+        onEdt { debugging.session.stepInto() }
+        val filtered = debugging.nextPause()
+        assertEquals("the block's first statement", program, filtered.file)
+
+        onEdt { action.setSelected(event, true) }
+        assertTrue(action.isSelected(event))
+        onEdt { debugging.session.stepInto() }
+        val shipped = debugging.nextPause()
+        assertTrue(shipped.file.path, shipped.file.name in SHIPPED_FILES.map { file -> file.substringAfterLast('/') })
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /** Waits, bounded, until [agent] received [count] requests [command]. */
+    private fun awaitRequests(agent: FakeAgent, command: String, count: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (agent.requests(command).size < count) {
+            if (System.nanoTime() > deadline) throw AssertionError("no $count `$command` within $WAIT_SECONDS s: ${agent.commands()}")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+    }
+
     /** The line, counted from 0, of `Array>>do:`'s loop body in [library]'s `Kernel.ns`. */
     private fun arrayDoBody(library: Path): Int {
         val lines = Files.readString(library.resolve("Kernel.ns")).lines()
@@ -578,6 +745,88 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             .filter { arguments -> arguments.get("variablesReference").asInt == ELEMENTS_REFERENCE }
             .map { arguments -> arguments.get("start").asInt to arguments.get("count").asInt }
         assertEquals(listOf(0 to 100, 100 to 100), pageRequests)
+    }
+
+    fun testTheReturnValueIsShownAboveTheLocalsNamedByItsCall() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, arguments ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "scopes" -> JsonParser.parseString(
+                    """{"scopes":[
+                        {"name":"Locals","presentationHint":"locals","variablesReference":$LOCALS_REFERENCE,"expensive":false},
+                        {"name":"Return value","presentationHint":"returnValue","variablesReference":$RETURNED_REFERENCE,"expensive":false}
+                    ]}""",
+                ).asJsonObject
+                "variables" -> if (arguments.get("variablesReference").asInt == RETURNED_REFERENCE) {
+                    JsonParser.parseString(
+                        """{"variables":[{"name":"(kinds at: which) value","value":"1","type":"Integer","variablesReference":0}]}""",
+                    ).asJsonObject
+                } else {
+                    variablesAnswer(arguments)
+                }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "step") })
+        faked.debugging.nextPause()
+
+        // As Java's, the value the last call returned comes first, named by the call, drawn with the platform's icon of a return value.
+        val children = childrenOf(checkNotNull(faked.debugging.session.currentStackFrame))
+        assertEquals(listOf("(kinds at: which) value", "elements"), children.keys.toList())
+        val returned = presentationOf(children.getValue("(kinds at: which) value"))
+        assertEquals(Presentation(AllIcons.Debugger.WatchLastReturnValue, "Integer", "1", false), returned)
+        assertNull("a local has no icon of its own", presentationOf(children.getValue("elements")).icon)
+    }
+
+    /**
+     * A frame is the same as one of an earlier stop -- the platform then
+     * keeps the nodes the user expanded -- when it runs the same body in
+     * the same module at the same depth, whatever the agent's frame ids
+     * and lines; a frame of another body, or of a recursive activation of
+     * the same body, deeper, is another.
+     */
+    fun testAFrameIsTheSameAcrossStopsByItsBodyAndDepth() {
+        // The frames' file, which a stop opens.
+        val path = JsonPrimitive(program("Counter", STOPS).path).toString()
+        val stacks = listOf(
+            """{"stackFrames":[
+              {"id":1,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":4,"column":5},
+              {"id":2,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":2}""",
+            """{"stackFrames":[
+              {"id":7,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":5,"column":5},
+              {"id":8,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":2}""",
+            """{"stackFrames":[
+              {"id":1,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":4,"column":5},
+              {"id":2,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":6,"column":5},
+              {"id":3,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":3}""",
+        )
+        val answered = AtomicInteger()
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(stacks[answered.getAndIncrement()]).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        val stops = stacks.indices.map { stop ->
+            if (stop > 0) onEdt { faked.debugging.session.resume() }
+            agent.event("stopped", JsonObject().apply { addProperty("reason", "step") })
+            faked.debugging.nextPause()
+            framesOf(faked.debugging.session).map { frame -> frame.equalityObject }
+        }
+        val (first, second, recursive) = stops
+        assertEquals("the same activation at the next line", first, second)
+        assertFalse("the caller is another frame", first[0] == first[1])
+        assertFalse("a recursive activation, deeper, is another frame", recursive[0] == first[0])
+        assertEquals("the activation it was called from is the earlier stop's", first[0], recursive[1])
+        assertEquals(first[1], recursive[2])
     }
 
     /** The agent's `variables` answer: one local, an `Array` of 150 elements, and its elements a page at a time. */
@@ -938,14 +1187,14 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         override fun setMessage(message: String, icon: Icon?, attributes: SimpleTextAttributes, link: XDebuggerTreeNodeHyperlink?) {}
     }
 
-    private data class Presentation(val type: String?, val value: String, val hasChildren: Boolean)
+    private data class Presentation(val icon: Icon?, val type: String?, val value: String, val hasChildren: Boolean)
 
     private fun presentationOf(value: XValue): Presentation {
         val presented = CompletableFuture<Presentation>()
         value.computePresentation(
             object : XValueNode {
                 override fun setPresentation(icon: Icon?, type: String?, value: String, hasChildren: Boolean) {
-                    presented.complete(Presentation(type, value, hasChildren))
+                    presented.complete(Presentation(icon, type, value, hasChildren))
                 }
 
                 override fun setPresentation(icon: Icon?, presentation: XValuePresentation, hasChildren: Boolean) {
@@ -963,7 +1212,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                             override fun renderError(error: String) { text.append(error) }
                         },
                     )
-                    presented.complete(Presentation(presentation.type, text.toString(), hasChildren))
+                    presented.complete(Presentation(icon, presentation.type, text.toString(), hasChildren))
                 }
 
                 override fun setFullValueEvaluator(fullValueEvaluator: XFullValueEvaluator) {}
@@ -997,6 +1246,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val SECRET = "00112233445566778899aabbccddeeff"
         const val WAIT_MILLISECONDS = 30_000L
 
+        /** How often a wait for what a fake agent received looks again. */
+        const val POLL_MILLISECONDS = 20L
+
         /** How long a program inside one leaf must outlive the terminate: it would end at once otherwise. */
         const val LEAF_OUTLIVES_MILLISECONDS = 1_000L
 
@@ -1004,6 +1256,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val LOCALS_REFERENCE = 100
         const val ELEMENTS_REFERENCE = 200
         const val ELEMENT_COUNT = 150
+
+        /** The fake agent's reference of a step's stop's "Return value" scope. */
+        const val RETURNED_REFERENCE = 300
 
         /** A shipped module's text, which the fake agent names by a reference only. */
         val KERNEL_TEXT = """
@@ -1021,6 +1276,21 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
               {"id":2,"name":"Program>>main:args:","line":0,"column":0}
             ],"totalFrames":2}
         """.trimIndent()
+
+        /** A root whose line 3 runs a method of its nested `Helper`, and whose line 4 prints. */
+        val HELPING = """
+            class Helping = Object new () (
+              public main: platform args: arguments = (
+                Helper new run.
+                platform transcript show: 'ran'; newLine.
+              )
+              class Helper = () (
+                public run = (
+                  ^42
+                )
+              )
+            ) : ()
+        """.trimIndent() + "\n"
 
         /** A fingerprint no binary has, an older library's in the tests. */
         const val OLDER_FINGERPRINT = "ffffffffffffffff"

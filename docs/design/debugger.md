@@ -520,9 +520,10 @@ and `StopReason::MethodExit { id, others }`, a method breakpoint's
 description, caught, exits }` and `StopReason::Halt { exits }`, an
 exception breakpoint's, `exits` the method breakpoints whose exit by an
 unwind it reports ("Exceptions", "Method breakpoints"); `returned`, at a
-step's stop, the value the stepping frame's last call answered, described
-as the stop's first value, and `None` at every other stop ("The return
-value of the last call"); `elsewhere`, at a step's stop, whether the
+step's stop, a `ReturnedValue`: the value the stepping frame's last call
+answered, described as the stop's first value, and the call that answered
+it as a reader names it, a `String`; `None` at every other stop ("The
+return value of the last call"); `elsewhere`, at a step's stop, whether the
 step went on as a step into from where the program went on rather than
 from the frame it was taken in, so that it stands in another activation
 (decision 4), and `false` at every other stop; `StackTrace`; `Variables`, the answer to both
@@ -1029,9 +1030,11 @@ The metadata of decisions 4, 5 and 10 to 12 is built
 (`crates/ns-runtime/src/debugger/metadata/`). A body's tables
 (`BodyMetadata`) are its statement starts (`StatementEntry`: the
 instructions one statement compiled to and its span), its sends
-(`SendEntry`: the index, the `CallSite`, the receiver's span and the
-selector tokens' spans), its sends that take block literals
-(`BlockSendEntry`: each block taken, a `TakenBlock` of its span and its
+(`SendEntry`: the index, the `CallSite`, the receiver's span, the
+selector tokens' spans, the call's span, whether a receiver spelled
+apart from it is named in parentheses and whether it is a setter
+assignment's), its sends that take block literals (`BlockSendEntry`:
+each block taken, a `TakenBlock` of its span and its
 place -- `BlockPlace::Inline`, the instructions it lowered to, or
 `BlockPlace::Called { send, closure }`, the send that runs its closure and
 the `MakeClosure` that made it, an index that names the running body's
@@ -1194,7 +1197,11 @@ named as the program declared it; for an
 (`Heap::array_element`; `an_array_s_children_are_its_elements_paged`).
 Every other value has none: an immediate, a `ByteArray`, a `String`, and
 a reified mixin, whose one field is an id that tells a reader nothing.
-Each child is described, and held, as every value is. The heap's accessors
+An instance whose class declares no slot and no nested class has no
+field and so no children, and the agent gives it no
+`variablesReference`, exactly as it gives one to every value with a
+child (`only_an_element_with_fields_expands`). Each child is described,
+and held, as every value is. The heap's accessors
 alone describe a value: no Newspeak code runs while the program is
 stopped.
 
@@ -2725,8 +2732,8 @@ to their default with its other contents at an attachment and a detach.
 A step never lands in a filtered frame: by default the shipped modules'
 bodies -- a body is shipped when its module's root is, as for its
 metadata ("Compiling the metadata again") -- and, beside them, the
-bodies of the program's class declarations a list the client sends
-names, IntelliJ's "Do not step into the classes"; the filter of the
+bodies of the class declarations a list the client sends names,
+IntelliJ's "Do not step into the classes"; the filter of the
 shipped modules can be switched off. A stop a step would make in a
 filtered frame -- a return point inside `Array>>do:` after a step over
 at a block's last statement, the first statement of a shipped method a
@@ -3932,6 +3939,68 @@ value recorded as `Stopped::returned`, the stop's first value; a stop in
 a frame a step into pushed, and every stop that is not a step's, report
 none.
 
+The value is named by the call that answered it. Where IntelliJ names
+Java's by the method's class and name (`MethodReturnValueDescriptorImpl`),
+this names it by the send in the caller, because a call is always the
+instruction before the one-shot's index in the frame it answered into,
+so that a step over's value and a step out's -- the callee's answer, at
+its return point in the caller -- are named alike, by the expression the
+user reads on the line the step stopped at, which tells two sends of one
+method on that line apart where the callee's `Class>>selector` would
+not. A setter assignment's send records nothing: its answer is the
+receiver, never the value the assignment answers, so the flood leaves
+out the index after it (`SendEntry::setter`) and the assigned value's
+call stays the last -- `count:: count + 1` reports `count + 1`, and an
+assignment of a literal reports none
+(`a_setter_s_answer_is_not_the_returned_value`). A step out that returns
+into one -- out of a setter method the program declares, or out of a
+block such an assignment handed its method -- records nothing either,
+its return point a one-shot that stops without recording
+(`stepping::answers_a_setter`), so that the value before stays: none,
+for a step out, which records nothing in the callee
+(`a_step_out_into_a_setter_assignment_records_nothing`).
+
+The one-shot notes only where the call stands, beside the value: its
+body, its index, the kind of call the instruction is (`stepping::Call`,
+decided by the one match that decides what a call is, `call_of`) and the
+declaration the body belongs to, taken again from the previous call of
+the same body (`stepping::RecordedCall`) -- no handle, so that it
+outlives a frame a step over its last statement leaves. The stop names
+it, once, rather than every call a step over a loop runs past
+(`stack::call_name`): through the body's metadata, whose send entry
+records the call's span (`SendEntry::call`, from the receiver -- or the
+selector, where the receiver is implicit -- to the last argument; a
+setter assignment's whole assignment), sliced from the text that
+metadata was compiled from, which the metadata cache keeps beside it,
+one text per module that every level of it compiled again shares
+(`Cache::module_text`), and clears with it at every install
+(`Cache::metadata_with_text`;
+`the_levels_of_a_module_share_its_text`), so
+that no text is assembled at a stop and a module is never looked up by
+a name two loaded modules may share
+(`a_call_is_named_from_its_own_module_s_text`). A cascade's later
+message, which the source spells apart from its receiver, is named by
+the receiver's text and its own, the receiver in parentheses where it is
+a binary or keyword send written without them
+(`SendEntry::parenthesize_receiver`): `platform transcript newLine`,
+`(3 + 4) min: 9`
+(`a_cascade_s_message_is_named_by_its_receiver_and_itself`). Its
+comments are left out -- the text of a send starts and ends at a token,
+so it lexes alone as in its module
+(`a_comment_inside_a_call_is_not_in_its_name`) -- and the name is put on
+one line, each run of whitespace one space; a call longer than 60
+characters keeps its start and its end, each cut at a space, its middle
+left out as ` … `: `(kinds at: which) value`. A body without metadata
+-- an image built with `--strip-source` -- names it by the instruction
+(`Call::name`): a send's selector, `super` before a super send's, a
+mirror send's mirror selector, and `future`, `initializer`, `superclass
+initializer` or `mixin initializer` for the other calls; so does a body
+with metadata for a call the source spells as no send, the superclass
+clause's initializer a step out of a superclass's initializer returns to
+(`a_stripped_image_names_the_return_value_by_its_selector`,
+`a_stripped_image_names_a_super_send_and_a_superclass_initializer`,
+`a_step_out_of_a_superclass_initializer_names_its_kind`).
+
 ### Launching, the start and the end
 
 **Built** (`crates/ns-cli/src/debug/`), but for the `output` events of
@@ -4054,17 +4123,21 @@ shows the program's text
 `a_core_library_of_another_fingerprint_is_ignored`,
 `a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
 A class name a client types -- a function breakpoint's, an exception
-filter's condition, a step filter -- names every module of its `Module`
-segment's name, the program's and the shipped one where both exist
+filter's condition -- names every module of its `Module` segment's name,
+the program's and the shipped one where both exist
 (`Sources::modules_of_class_name`), so that `Kernel.Error` reaches the
 shipped `Error` beside a program module `Kernel`, with no syntax of its
 own: a filter sends the VM a `ClassName` for each, and a function
 breakpoint one method breakpoint for each behind its one DAP id, verified
 while any of them is
 (`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
-`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
-`a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name`). `scopes` gives a frame's `Locals` and, at a
-step's stop, the top frame's `Return value`; `variables` pages a frame's
+`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`).
+A step filter types no name: it names its module by a file, as a
+breakpoint does (`nsNext/setStepFilters`, under "The steps" below).
+`scopes` gives a frame's `Locals` and, at a
+step's stop, the top frame's `Return value`, `presentationHint`
+`returnValue`, whose one variable is named by the call that returned it
+(`ReturnedValue::call`); `variables` pages a frame's
 variables and a value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
 `variablesReference` is valid until the program goes on, and the ids
@@ -4098,7 +4171,8 @@ function breakpoint takes a hit condition ("Hit counts and temporary
 breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
 `halt` on by its `filters` or `filterOptions`, and the conditions of its
 filter options, each a comma-separated list of classes
-`Module.Path.To.Class`, parsed as the step filters' are, together name the
+`Module.Path.To.Class`, each parsed as a function breakpoint's class is
+(`parse_class_name`), together name the
 classes both exception filters stop for, since the VM keeps one list
 ("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as long
 as the client sends the breakpoint again -- a line breakpoint by its
@@ -4144,6 +4218,32 @@ stop. Requests only a stop serves -- `stackTrace`, `scopes`,
 error while the program runs, never sent to the VM; `pause` sends the
 remote's pause. `nsNext/setStepFilters` and `nsNext/statistics` (the
 number of texts the VM sent, for tests) are requests of ns-next's own.
+`nsNext/setStepFilters` takes `shipped`, whether the shipped modules
+are filtered (on when left out), and `entries`, each a `source` naming a
+module as a breakpoint's does -- a program module's file, a file of the
+core library taken, or a reference -- and a `classPath` in it from the
+module's root down, the root's own name left out, empty for the whole
+module (`StepFilterEntry`); the agent sends `Command::SetStepFilters`
+with a `ClassName` for each entry it can take, and the others apply. An
+entry whose source names no module of the program is left out silently,
+since a client's list may name other programs' files -- a project's
+does. One whose path holds an empty or blank segment, or whose class the
+module's current text -- the VM's answer, else the text the program was
+loaded with, else the binary's -- does not declare
+(`Sources::declares_class`, parsed by `ns-syntax`), is left out and said
+in an `output` event, once for as long as the client sends the same
+filters, so that a client resending them at every change says nothing
+new, and again once what is left out changes; a text the agent does not
+have or cannot parse leaves the VM to decide, since the filter matches
+only the declarations it runs. A request that still names `classes`,
+the typed form `entries` replaced, is refused by an error that names the
+new form (`a_step_filter_request_with_typed_classes_is_refused`). A
+file names its module only, so
+a program module named like a shipped one -- a `Kernel` of its own --
+and the shipped module are filtered apart (`debug_adapter.rs`'s
+`a_step_filter_by_the_library_file_filters_only_the_shipped_module`,
+`a_step_filter_by_the_program_file_filters_only_the_program_module`,
+`an_unmappable_step_filter_entry_is_left_out_and_the_others_apply`).
 
 The host waits for the configuration before its first run, serving
 meanwhile every configuration command the agent queues
@@ -4316,8 +4416,8 @@ ahead of it, or the connection's close, ends the session the same way,
 since the agent sends that event first and only another peer would not. At
 the `initialized` event it sends every breakpoint the session registered
 -- the line breakpoints a file's set at a time, the method breakpoints and
-the exception breakpoints, the last two even when empty -- and
-`configurationDone` once the agent answered them. The platform's Stop
+the exception breakpoints, the last two even when empty -- and the step
+filters, then `configurationDone` once the agent answered them. The platform's Stop
 destroys the process: while the agent is attached the handler asks it to
 `terminate` instead, so the program ends as its own `terminate…` would,
 and the platform's second Stop, on a process still terminating, kills it
@@ -4352,9 +4452,20 @@ image's, one an install changed -- by the `source` request's answer, read
 once per reference for the session, as a read-only `LightVirtualFile` of
 the name `<Module>.ns` holding the answer, one per reference for the
 session; a hidden frame
-(`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
+(`presentationHint: "subtle"`) stays listed, drawn greyed. A frame's
+equality object (`XStackFrame.getEqualityObject`), by which the platform
+keeps the nodes the user expanded in the variables view and restores
+them at the next stop, is the body it runs -- the agent's name of it --
+its module's file or name and its depth, the frames below it counted,
+since the DAP frame's `id` is numbered afresh at every stop: a step
+within one body, or a loop's block activated again at the same depth,
+keeps what the user opened, as Java's frames do by their method, while a
+recursive activation, deeper, is another frame; the object is a data
+class, since the platform's front end compares it by its text. Its children
 are the `Return value` scope's value, at a step's stop, above the
-`Locals`; a `NewspeakValue` shows the agent's text and class of a value
+`Locals`, named by its call and drawn with the platform's icon of a
+returned value (`AllIcons.Debugger.WatchLastReturnValue`), as Java's is,
+whose name carries no other mark; a `NewspeakValue` shows the agent's text and class of a value
 and pages its children by 100, the tree offering the next page
 (`tooManyChildren`) -- an indexed value's count known, a named value's
 until a page comes back short. Resume is `continue`; Step Over, Step Into
@@ -4432,6 +4543,62 @@ time:
   caught exceptions is taken for uncaught ones too when another class
   breakpoint takes those, and "Any exception" taking uncaught or caught
   exceptions makes the class breakpoints' filters take every class.
+
+The step filters (decision 16) are two settings. Whether a step goes
+into the kernel's and the platform's code, which by default it passes,
+is application-wide, as Java's stepping switches are, kept among the
+platform's debugger settings (`NewspeakDebuggerSettings`, an
+`XDebuggerSettings` registered as `xdebugger.settings`) and edited in
+Newspeak's section of Settings | Build, Execution, Deployment | Debugger
+| Stepping (`NewspeakSteppingConfigurable`, the
+`DebuggerSettingsCategory.STEPPING` configurable) and by "Step Into
+Kernel and Platform Code" in the debug tool window's Debugger Settings
+(`NewspeakStepIntoShippedAction`, a toggle in the platform's group
+`XDebugger.Settings`, shown for a Newspeak session only), the same
+setting, as Java's switches there are its settings'. The classes not to
+step into, IntelliJ's "Do not step into the classes", are the project's
+(`NewspeakSkippedClasses`, a project service kept in the workspace, as
+the breakpoints are), on a page of their own under Debugger, "Newspeak
+Step Filters" (`NewspeakStepFiltersConfigurable`, a `projectConfigurable`
+whose parent is the debugger's page, as Java's Async Stack Traces is,
+since the Stepping section has no project, and registered for real
+projects only, `nonDefaultProject`, since the default project has no
+files to choose). An entry is never typed: Add lists the project's `.ns`
+files and the core library's at once, under a progress the user may
+cancel, as a tree with a speed search, each file a node for its whole
+module, and asks a file's classes -- those its root nests, as the
+language server's document symbols answer them -- only when its node is
+expanded, on a pooled thread, for at most 15 seconds, after which a file
+the server has not answered offers its whole module only; closing the
+dialog cancels every question still asked (`StepFilterChoices.kt`,
+`StepFilterTree`). The user chooses a file, for its whole module, or a
+class, for it and every class nested in it. An entry is a file and a class path in it, the root's name left
+out: a library file by its path below the library's directory --
+`platform/CollectionsFactory.ns`, never the fingerprint's -- so that it
+names the same file in a rebuilt binary's library, a project file by
+its path below the project's directory, one outside it by its own. The
+page marks an entry whose file is gone or whose file no longer declares
+its class, decided off the event dispatch thread; an entry whose path no
+file system holds -- a damaged workspace file -- counts as gone
+(`SkippedClass.resolvedAgainst`), so that it never stops a session's
+configuration. A session sends the
+filters as `nsNext/setStepFilters` -- `shipped` the negation of the
+switch, `entries` each entry whose file is there by its absolute path,
+a library file's under the library the project shows now, so that a
+library entry is not sent while the project shows no library -- the
+page marks it then, as it marks an entry whose file is gone -- and its
+`classPath` -- before `configurationDone`, and again whenever either
+setting changes: a change is told on the settings' topic, which each
+session hears from its start to its `stop()`, its subscription a child
+of the project's step filters service; it is sent at once, on the thread
+that changed them, which waits for no answer, so that a step started
+after a change is sent after it and runs under it, and the filters are
+read and their request queued under one lock, so that the configuration's
+send and a change's at the session's start reach the agent in the order
+they read the settings. The agent maps each entry's file as it maps a
+breakpoint's ("The agent's sources"), leaves out an entry of a file of
+no module of the program unsaid, and says one it cannot take otherwise
+in an `output` event, which the console shows.
 
 A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on

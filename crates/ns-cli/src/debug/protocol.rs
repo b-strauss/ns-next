@@ -295,15 +295,33 @@ pub(crate) struct BreakpointEventBody {
 }
 
 /// `nsNext/setStepFilters`, a request of ns-next's own: whether a step
-/// passes the shipped modules' code, and the classes, each
-/// `Module.Path.To.Class`, whose code it passes too.
+/// passes the shipped modules' code, and the entries, each a module's
+/// source and a class in it, whose code it passes too.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SetStepFiltersArguments {
     #[serde(default = "filter_the_shipped_modules")]
     pub(crate) shipped: bool,
     #[serde(default)]
-    pub(crate) classes: Vec<String>,
+    pub(crate) entries: Vec<StepFilterEntry>,
+    /// The typed class names `Module.Path.To.Class` the request once
+    /// took, which `entries` replaced: read only to refuse a client that
+    /// still sends them, rather than let its filters lapse unsaid.
+    #[serde(default)]
+    pub(crate) classes: Option<serde_json::Value>,
+}
+
+/// A step filter's entry: the module its `source` names, as a
+/// breakpoint's names it -- a program module's file, a file of the core
+/// library taken, or a reference -- and in it the class declaration
+/// `classPath` names from the module's root down, the root's own name
+/// left out, so that an empty path names the whole module; the entry
+/// filters that declaration and every one nested in it.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct StepFilterEntry {
+    pub(crate) source: SourceArgument,
+    pub(crate) class_path: Vec<String>,
 }
 
 /// The VM's default, which a request that leaves `shipped` out keeps.
@@ -315,7 +333,8 @@ impl Default for SetStepFiltersArguments {
     fn default() -> SetStepFiltersArguments {
         SetStepFiltersArguments {
             shipped: filter_the_shipped_modules(),
-            classes: Vec::new(),
+            entries: Vec::new(),
+            classes: None,
         }
     }
 }

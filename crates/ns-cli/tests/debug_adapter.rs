@@ -959,7 +959,7 @@ fn a_shipped_frame_is_shown_through_a_source_reference() {
     client.attach(true);
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": [] }),
+        json!({ "shipped": false, "entries": [] }),
     );
     client.configuration_done();
     client.stopped("entry");
@@ -1326,37 +1326,201 @@ fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
     assert_eq!(exit_code_reported(&mut client), 1);
 }
 
-/// A step filter's class name whose module the program declares too
-/// filters the shipped module's class as well: with the shipped filter
-/// off, `Kernel.Array` with a program module `Kernel` keeps a step into the
-/// `do:` out of the shipped `Array>>do:`, so that it lands in the block.
-#[test]
-fn a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
-    let (_directory, path) = program("Kernel", OWN_KERNEL);
+/// A session of [`OWN_KERNEL`], a program whose root is named `Kernel`
+/// like the shipped module, with the core library taken, the shipped
+/// filter off and the step filter entries `entries` answers for the
+/// program's file and the library's directory, standing at the `do:`
+/// statement on line 4 after a step from the entry; and the `output`
+/// events' text the agent sent by then.
+struct OwnKernel {
+    client: DapClient,
+    program: PathBuf,
+    library: PathBuf,
+    said: String,
+    _directories: (ScratchDirectory, ScratchDirectory),
+}
+
+fn own_kernel_filtered(entries: impl FnOnce(&Path, &Path) -> Value) -> OwnKernel {
+    let (directory, path) = program("Kernel", OWN_KERNEL);
+    let (library_directory, library) = core_library();
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(true);
+    client.attach_with(json!({ "stopOnEntry": true, "coreLibrary": absolute(&library) }));
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": ["Kernel.Array"] }),
+        json!({ "shipped": false, "entries": entries(&path, &library) }),
     );
+    // Said before the answer, which waits for the VM's.
+    let said = client
+        .buffered_events()
+        .iter()
+        .filter(|event| event["event"] == "output")
+        .filter_map(|event| event["body"]["output"].as_str())
+        .collect::<String>();
     client.configuration_done();
     client.stopped("entry");
     // The entry stands at the local's initializer on line 3.
-    let by_statement = json!({ "threadId": 1, "granularity": "statement" });
-    client.succeed("stepIn", by_statement.clone());
+    client.succeed("stepIn", by_statement());
     client.stopped("step");
     assert_eq!(
         top_frame(&mut client),
         (json!("Kernel>>main:args:"), json!(4))
     );
-    client.succeed("stepIn", by_statement);
+    OwnKernel {
+        client,
+        program: path,
+        library,
+        said,
+        _directories: (directory, library_directory),
+    }
+}
+
+fn by_statement() -> Value {
+    json!({ "threadId": 1, "granularity": "statement" })
+}
+
+/// A step filter's entry names its module by its file, as a breakpoint
+/// does: the library's `Kernel.ns` and the class path `Array` filter the
+/// shipped `Array` and not the program's module named `Kernel`, so that
+/// a step into the `do:` passes the shipped `Array>>do:` and lands in
+/// the program's block.
+#[test]
+fn a_step_filter_by_the_library_file_filters_only_the_shipped_module() {
+    let mut session = own_kernel_filtered(
+        |_, library| json!([{ "source": file_source(&library.join("Kernel.ns")), "classPath": ["Array"] }]),
+    );
+    assert_eq!(session.said, "");
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
     client.stopped("step");
     assert_eq!(
-        top_frame(&mut client),
+        top_frame(client),
         (json!("[] in Kernel>>main:args:"), json!(4))
     );
     client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(client), 0);
+}
+
+/// The program's own `Kernel.ns` with no class path filters the whole
+/// program module and not the shipped one: a step into the `do:` stops
+/// in the shipped `Array>>do:`, shown by the library's file, and a step
+/// into from there never lands in the program's block.
+#[test]
+fn a_step_filter_by_the_program_file_filters_only_the_program_module() {
+    let mut session = own_kernel_filtered(
+        |program, _| json!([{ "source": file_source(program), "classPath": [] }]),
+    );
+    let kernel = file_source(&session.library.join("Kernel.ns"));
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
+    client.stopped("step");
+    let (name, _, source) = top_placed(client);
+    assert_eq!(name, "Array>>do:");
+    assert_eq!(source["path"], kernel["path"], "{source}");
+    for _ in 0..3 {
+        client.succeed("stepIn", by_statement());
+        client.stopped("step");
+        let (name, _) = top_frame(client);
+        assert!(
+            !name
+                .as_str()
+                .unwrap_or_default()
+                .contains("in Kernel>>main:args:"),
+            "{name}"
+        );
+    }
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(client), 0);
+}
+
+/// The step filters' entries, among them three the agent cannot take: a
+/// file of no module of the program, a class its module does not
+/// declare and a malformed path.
+fn partly_unmappable(program: &Path, library: &Path) -> Value {
+    let elsewhere = program.with_file_name("Elsewhere.ns");
+    json!([
+        { "source": file_source(&elsewhere), "classPath": [] },
+        { "source": file_source(&library.join("Kernel.ns")), "classPath": ["NoSuchClass"] },
+        { "source": file_source(program), "classPath": [""] },
+        { "source": file_source(&library.join("Kernel.ns")), "classPath": ["Array"] },
+    ])
+}
+
+/// The output events among `events` that say a step filter was left out.
+fn left_out_said(events: &[Value]) -> String {
+    events
+        .iter()
+        .filter(|event| event["event"] == "output")
+        .filter_map(|event| event["body"]["output"].as_str())
+        .filter(|output| output.contains("a step filter is left out"))
+        .collect()
+}
+
+/// An entry the agent cannot take is left out and the others apply: one
+/// whose file is no module of the program silently, since a project's
+/// list may name other programs' files, and a class its module does not
+/// declare or a malformed path said in an `output` event -- once for as
+/// long as the client sends the same filters, and again when they
+/// change.
+#[test]
+fn an_unmappable_step_filter_entry_is_left_out_and_the_others_apply() {
+    let mut session = own_kernel_filtered(partly_unmappable);
+    let said = session.said.clone();
+    assert_eq!(
+        said.matches("a step filter is left out").count(),
+        2,
+        "{said}"
+    );
+    assert!(!said.contains("Elsewhere.ns"), "{said}");
+    assert!(said.contains("declares no class `NoSuchClass`"), "{said}");
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
+    client.stopped("step");
+    assert_eq!(
+        top_frame(client),
+        (json!("[] in Kernel>>main:args:"), json!(4))
+    );
+    let (program, library) = (session.program.clone(), session.library.clone());
+    let entries = partly_unmappable(&program, &library);
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "entries": entries }),
+    );
+    assert_eq!(left_out_said(&client.buffered_events()), "", "said once");
+    let mut changed = entries.as_array().cloned().unwrap_or_default();
+    changed.push(json!({ "source": file_source(&program), "classPath": ["Missing"] }));
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "entries": changed }),
+    );
+    let said = left_out_said(&client.buffered_events());
+    assert_eq!(
+        said.matches("a step filter is left out").count(),
+        3,
+        "said again once changed: {said}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(client), 0);
+}
+
+/// A request that still names typed `classes`, the form `entries`
+/// replaced, is refused by an error naming the new form, rather than
+/// leaving its filters unapplied unsaid.
+#[test]
+fn a_step_filter_request_with_typed_classes_is_refused() {
+    let (_directory, path) = program("Walker", WALKER);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let response = client.request(
+        "nsNext/setStepFilters",
+        json!({ "shipped": true, "classes": ["Walker"] }),
+    );
+    assert_eq!(response["success"], false, "{response}");
+    let message = response["message"].as_str().unwrap_or_default();
+    assert!(message.contains("entries"), "{response}");
+    assert!(message.contains("classPath"), "{response}");
+    client.configuration_done();
     assert_eq!(exit_code_reported(&mut client), 0);
 }
 
@@ -1401,7 +1565,7 @@ fn a_core_library_of_another_fingerprint_is_ignored() {
     assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": [] }),
+        json!({ "shipped": false, "entries": [] }),
     );
     client.configuration_done();
     client.stopped("entry");
@@ -2024,8 +2188,11 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
     let returned = &scopes["scopes"][1];
     assert_eq!(returned["name"], "Return value", "{scopes}");
+    assert_eq!(returned["presentationHint"], "returnValue", "{scopes}");
     let value = client.variables(&returned["variablesReference"], None, None);
     assert_eq!(value[0]["value"], "42", "{value:?}");
+    // Named by the send in the caller that the callee returned to.
+    assert_eq!(value[0]["name"], "self double: 21", "{value:?}");
 
     client.succeed("next", json!({ "threadId": 1 }));
     client.stopped("step");
@@ -2036,6 +2203,231 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A root whose line 14 sends `value` to an element of an `Array` of
+/// two instances: a `KindA`, which declares no slot, and a `Holder`,
+/// which declares one.
+const KINDS: &str = indoc! {"
+    class Kinds = Object new () (
+      class KindA = Object new () (
+        public value = (
+          ^1
+        )
+      )
+      class Holder = Object new (
+        | public contents ::= 5. |
+      ) ()
+      public main: platform args: arguments = (
+        | kinds which total |
+        kinds:: {KindA new. Holder new}.
+        which:: 1.
+        total:: (kinds at: which) value.
+        platform transcript show: total printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step over a line reports the value of its last call in the scope
+/// "Return value", the one variable there named by the call's source.
+#[test]
+fn a_step_over_names_the_return_value_by_its_call() {
+    let (_directory, path) = program("Kinds", KINDS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[14]);
+    client.stopped("breakpoint");
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Kinds>>main:args:"), json!(15))
+    );
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = &scopes["scopes"][1];
+    assert_eq!(returned["name"], "Return value", "{scopes}");
+    assert_eq!(returned["presentationHint"], "returnValue", "{scopes}");
+    let value = client.variables(&returned["variablesReference"], None, None);
+    assert_eq!(value.len(), 1, "{value:?}");
+    assert_eq!(value[0]["name"], "(kinds at: which) value", "{value:?}");
+    assert_eq!(value[0]["value"], "1", "{value:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "1\n");
+}
+
+/// An element is expandable exactly when it has fields: a `KindA`, which
+/// declares no slot, has no children and so no reference, and a
+/// `Holder` one, its slot.
+#[test]
+fn only_an_element_with_fields_expands() {
+    let (_directory, path) = program("Kinds", KINDS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[14]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let kinds = variable(&variables, "kinds");
+    assert_eq!(kinds["indexedVariables"], 2, "{kinds}");
+    let elements = client.variables(&kinds["variablesReference"], None, None);
+    let kind = variable(&elements, "[1]");
+    assert_eq!(kind["type"], "KindA", "{kind}");
+    assert_eq!(kind["variablesReference"], 0, "{kind}");
+    let holder = variable(&elements, "[2]");
+    assert_eq!(holder["type"], "Holder", "{holder}");
+    assert_ne!(holder["variablesReference"], 0, "{holder}");
+    let fields = client.variables(&holder["variablesReference"], None, None);
+    let fields: Vec<(Value, Value)> = fields
+        .iter()
+        .map(|field| (field["name"].clone(), field["value"].clone()))
+        .collect();
+    assert_eq!(fields, [(json!("contents"), json!("5"))]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// In an image built without its source, where no body has metadata, a
+/// step out names the value it reports by the selector of the send in
+/// the caller that the callee returned to.
+#[test]
+fn a_stripped_image_names_the_return_value_by_its_selector() {
+    let (directory, path) = program("Calls", CALLS);
+    let image = directory.join("calls.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Calls>>double:" }] }),
+    );
+    client.configuration_done();
+    client.stopped("function breakpoint");
+    assert_eq!(top_frame(&mut client).0, json!("Calls>>double:"));
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(top_frame(&mut client).0, json!("Calls>>main:args:"));
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = &scopes["scopes"][1];
+    assert_eq!(returned["name"], "Return value", "{scopes}");
+    let value = client.variables(&returned["variablesReference"], None, None);
+    assert_eq!(value[0]["name"], "double:", "{value:?}");
+    assert_eq!(value[0]["value"], "42", "{value:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A subclass whose superclass's slot initializer sends a method, and
+/// whose method sends its superclass's by `super`.
+const SUPERS: &str = indoc! {"
+    class Supers = Object new () (
+      class Base = Object new (
+        | public base ::= self seed. |
+      ) (
+        public seed = (
+          ^20
+        )
+        public value = (
+          ^41
+        )
+      )
+      class Derived = Base new (
+        | public derived ::= 1. |
+      ) (
+        public value = (
+          ^super value + derived
+        )
+      )
+      public main: platform args: arguments = (
+        | made |
+        made:: Derived new.
+        platform transcript show: (made value + made base) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The name and the value of the stop's return value, `None` when the
+/// stop reports none.
+fn returned_of(client: &mut DapClient) -> Option<(Value, Value)> {
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = scopes["scopes"]
+        .as_array()
+        .and_then(|scopes| scopes.iter().find(|scope| scope["name"] == "Return value"))?
+        .clone();
+    let value = client.variables(&returned["variablesReference"], None, None);
+    Some((value[0]["name"].clone(), value[0]["value"].clone()))
+}
+
+/// In an image built without its source, a step out names the value by
+/// the kind of call the caller stands at: `super` before a super send's
+/// selector, and the superclass initializer a subclass's level runs.
+#[test]
+fn a_stripped_image_names_a_super_send_and_a_superclass_initializer() {
+    let (directory, path) = program("Supers", SUPERS);
+    let image = directory.join("supers.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Supers.Base>>seed" }] }),
+    );
+    client.configuration_done();
+    client.stopped("function breakpoint");
+    // A method breakpoint stops at the method's exit too: each is
+    // replaced before the step out that leaves its method.
+    client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Supers.Base>>value" }] }),
+    );
+    let mut stops = Vec::new();
+    for _ in 0..2 {
+        client.succeed("stepOut", json!({ "threadId": 1 }));
+        client.stopped("step");
+        stops.push((top_frame(&mut client).0, returned_of(&mut client)));
+    }
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.stopped("function breakpoint");
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    stops.push((top_frame(&mut client).0, returned_of(&mut client)));
+    let named =
+        |frame: &str, call: &str, value: &str| (json!(frame), Some((json!(call), json!(value))));
+    assert_eq!(
+        stops,
+        [
+            named("Base initializer", "seed", "20"),
+            named(
+                "Derived initializer",
+                "superclass initializer",
+                "an instance of Derived"
+            ),
+            named("Derived>>value", "super value", "41"),
+        ]
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "62
+"
+    );
 }
 
 /// A root whose slot initializers, line 4 the last, run in its

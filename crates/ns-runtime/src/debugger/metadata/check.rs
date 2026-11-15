@@ -363,6 +363,21 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
         for selector in &send.selector {
             within_text(*selector, "a send's selector span")?;
         }
+        // The call names the value it answered, so that it spells the
+        // whole send: every selector token, and its receiver -- or, for a
+        // cascade's later message, which the source spells apart from
+        // the receiver, the receiver before it.
+        within_text(send.call, "a send's call span")?;
+        let holds = |span: Span| send.call.start <= span.start && span.end <= send.call.end;
+        let receiver_placed = send
+            .receiver
+            .is_none_or(|receiver| holds(receiver) || receiver.end <= send.call.start);
+        if !send.selector.iter().copied().all(holds) || !receiver_placed {
+            return Err(format!(
+                "the send entry {}'s call span does not hold its selector, or its receiver neither holds nor follows it",
+                send.index
+            ));
+        }
     }
     for index in 0..length {
         let instruction = code.instruction(index as usize);
@@ -582,6 +597,11 @@ mod tests {
                 let mut span_past_the_text = metadata.clone();
                 span_past_the_text.sends[0].selector = Box::new([Span::new(0, past_the_text)]);
                 broken.push(("a span past the text", span_past_the_text));
+
+                let mut call_without_its_selector = metadata.clone();
+                let selector_start = call_without_its_selector.sends[0].selector[0].start;
+                call_without_its_selector.sends[0].call = Span::new(0, selector_start);
+                broken.push(("a call span without its selector", call_without_its_selector));
 
                 let mut other_call_site = metadata.clone();
                 other_call_site.sends[0].call_site = Some(CallSite { number: 1_000 });

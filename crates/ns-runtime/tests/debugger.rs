@@ -22,7 +22,8 @@ use ns_runtime::debugger::{
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
-    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable, VariableValue,
+    MethodSide, ReturnedValue, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
+    VariableValue,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -3485,8 +3486,8 @@ fn stepped_with<T: Send + 'static>(
 
 /// Sends the step `command` to the stopped program and waits for its
 /// stop: the confirmation first, then the step's stop, whose returned
-/// value it answers.
-fn step(remote: &DebugRemote, command: Command) -> Option<ValueDescription> {
+/// value, with its call, it answers.
+fn step(remote: &DebugRemote, command: Command) -> Option<ReturnedValue> {
     remote.send(command);
     match remote.next_event(EVENT_TIMEOUT) {
         Some(Event::Continued) => {}
@@ -5368,7 +5369,10 @@ ns_runtime::for_each_lowering! {
                 String::from("^self compute + 1")
             )
         );
-        assert_eq!(returned.expect("the callee's answer").label, "14");
+        let returned = returned.expect("the callee's answer");
+        assert_eq!(returned.value.label, "14");
+        // Named by the send the callee returned to, in the caller.
+        assert_eq!(returned.call, "self compute");
         assert_eq!(answer, 15);
     }
 }
@@ -5391,8 +5395,9 @@ ns_runtime::for_each_lowering! {
             },
         );
         let returned = returned.expect("compute's answer");
-        assert_eq!(returned.label, "14");
-        assert_eq!(returned.class_name, "Integer");
+        assert_eq!(returned.value.label, "14");
+        assert_eq!(returned.value.class_name, "Integer");
+        assert_eq!(returned.call, "self compute");
     }
 }
 
@@ -5421,8 +5426,385 @@ ns_runtime::for_each_lowering! {
                 String::from("^self compute + 1")
             )
         );
-        assert_eq!(returned.expect("compute's answer").label, "14");
+        let returned = returned.expect("compute's answer");
+        assert_eq!(returned.value.label, "14");
+        assert_eq!(returned.call, "self compute");
         assert_eq!(answer, 15);
+    }
+}
+
+/// Statements whose last call is one of several sends, one a primitive
+/// answers, one written over several lines and one too long to show
+/// whole.
+const RETURNS_CALLED: &str = indoc! {"
+    class ReturnsCalled = Object new () (
+      public run = (
+        | answer |
+        answer:: (self compute + 1) max: 3.
+        answer:: answer + 4.
+        answer:: self
+          first: answer
+          second: 2.
+        answer:: self combineTheFirstArgument: 1000 withTheSecondArgument: 2000 andTheThird: answer.
+        ^answer
+      )
+      compute = (
+        ^6
+      )
+      first: first second: second = (
+        ^first + second
+      )
+      combineTheFirstArgument: first withTheSecondArgument: second andTheThird: third = (
+        ^first + second + third
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Each step over a statement names the value it reports by the
+    /// statement's last call: of several sends the last, a send a
+    /// primitive answered alike, a send written over several lines on one
+    /// line, and a long one with its middle left out.
+    fn a_step_over_names_the_returned_value_by_its_call(lowering) {
+        let offset = line_start(RETURNS_CALLED, "answer:: (self compute + 1) max: 3.");
+        let (returned, answer) = stepped(
+            RETURNS_CALLED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "ReturnsCalled", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "ReturnsCalled");
+                let returned: Vec<(String, String)> = (0..4)
+                    .map(|_| {
+                        let returned = step(remote, Command::StepOver)
+                            .expect("each statement's last call");
+                        (returned.call, returned.value.label)
+                    })
+                    .collect();
+                continue_stopped(remote);
+                returned
+            },
+        );
+        let expected = [
+            ("(self compute + 1) max: 3", "7"),
+            ("answer + 4", "11"),
+            ("self first: answer second: 2", "13"),
+            ("self combineTheFirstArgument: … 2000 andTheThird: answer", "3013"),
+        ];
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(call, label)| (String::from(*call), String::from(*label)))
+            .collect();
+        assert_eq!(returned, expected);
+        assert_eq!(answer, 3013);
+    }
+}
+
+/// The call and the value's label each of `steps` steps over reports,
+/// from the breakpoint at `line` of `source`'s module `module`, run by
+/// `selector`, and the run's answer.
+fn stepped_calls(
+    source: &'static str,
+    module: &'static str,
+    line: &str,
+    selector: &'static str,
+    lowering: Lowering,
+    steps: usize,
+) -> (Vec<Option<(String, String)>>, i64) {
+    let offset = line_start(source, line);
+    stepped(
+        source,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, module, vec![offset]),
+        move |remote| {
+            expect_first_stop(remote, module);
+            let calls = (0..steps)
+                .map(|_| {
+                    step(remote, Command::StepOver)
+                        .map(|returned| (returned.call, returned.value.label))
+                })
+                .collect();
+            continue_stopped(remote);
+            calls
+        },
+    )
+}
+
+/// `(call, label)` as `stepped_calls` reports it.
+fn called(call: &str, label: &str) -> Option<(String, String)> {
+    Some((String::from(call), String::from(label)))
+}
+
+/// A slot whose setter assignments take a send's answer and a literal.
+const SETTING: &str = indoc! {"
+    class Setting = Object new (
+      | count ::= 5. |
+    ) (
+      public run = (
+        count:: count + 1.
+        count:: 3.
+        ^count
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A setter's answer, the receiver, never replaces the value of the
+    /// last call: a step over a slot's assignment reports the assigned
+    /// send's answer, named by that send, and an assignment of a literal
+    /// reports none.
+    fn a_setter_s_answer_is_not_the_returned_value(lowering) {
+        let (calls, answer) =
+            stepped_calls(SETTING, "Setting", "count:: count + 1.", "run", lowering, 2);
+        // The warming runs left the slot at 3 before this run's 3 + 1.
+        assert_eq!(calls, [called("count + 1", "4"), None]);
+        assert_eq!(answer, 3);
+    }
+}
+
+/// A setter method of the program's own, which a setter assignment sends,
+/// and a block it runs, which a setter assignment hands it.
+const SETTER_METHOD: &str = indoc! {"
+    class SetterMethod = Object new (
+      | stored ::= 0. |
+    ) (
+      public run = (
+        | answer |
+        answer:: self compute.
+        count:: 5.
+        action:: [stored + 1].
+        ^stored
+      )
+      compute = (
+        ^2
+      )
+      count: value = (
+        stored:: value.
+      )
+      action: block = (
+        stored:: block value.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a setter method the program declares returns to a
+    /// setter assignment, whose answer is the receiver: it records
+    /// nothing, as a step over the assignment does, so the value before
+    /// stays -- none, for a step out, which records nothing in the
+    /// callee. A step out of a block a setter assignment handed its
+    /// method leaves that assignment alike.
+    fn a_step_out_into_a_setter_assignment_records_nothing(lowering) {
+        let offset = line_start(SETTER_METHOD, "    stored:: value.");
+        let (out_of_the_method, _) = stepped(
+            SETTER_METHOD,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "SetterMethod", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "SetterMethod");
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                let standing = standing(remote, SETTER_METHOD);
+                continue_stopped(remote);
+                (returned, standing)
+            },
+        );
+        assert_eq!(
+            out_of_the_method,
+            (
+                None,
+                (
+                    String::from("SetterMethod>>run"),
+                    String::from("action:: [stored + 1]")
+                )
+            )
+        );
+        let offset = line_start(SETTER_METHOD, "action:: [stored + 1].");
+        let (out_of_the_block, answer) = stepped(
+            SETTER_METHOD,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "SetterMethod", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "SetterMethod");
+                let mut stops = Vec::new();
+                for _ in 0..2 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, SETTER_METHOD));
+                }
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                stops.push(standing(remote, SETTER_METHOD));
+                continue_stopped(remote);
+                (returned, stops)
+            },
+        );
+        assert_eq!(out_of_the_block.0, None, "{:?}", out_of_the_block.1);
+        assert_eq!(
+            out_of_the_block.1.last(),
+            Some(&(String::from("SetterMethod>>run"), String::from("^stored")))
+        );
+        // The warming runs added their blocks' answers to the slot.
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a superclass's initializer returns to the clause
+    /// that ran it, which the source spells as no send: the value is
+    /// named by the kind of call, as in a body without metadata.
+    fn a_step_out_of_a_superclass_initializer_names_its_kind(lowering) {
+        let offset = line_start(HEADERS, "| public low ::= a. |");
+        let (returned, answer) = stepped(
+            HEADERS,
+            lowering,
+            "chain",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                let standing = standing(remote, HEADERS);
+                continue_stopped(remote);
+                (returned, standing)
+            },
+        );
+        assert_eq!(
+            returned,
+            (
+                called("superclass initializer", "an instance of Highest"),
+                (
+                    String::from("Middle initializer"),
+                    String::from("public middle ::= b.")
+                )
+            )
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+/// Cascades whose later messages go to a unary send's answer and to a
+/// binary send's.
+const CASCADING: &str = indoc! {"
+    class Cascading = Object new () (
+      public run = (
+        | answer |
+        answer:: self seven abs; negated.
+        answer:: 3 + 4 max: 2; min: 9.
+        ^answer
+      )
+      seven = (
+        ^7
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A cascade's later message is named by the cascade's receiver and
+    /// that message alone, a receiver that is a binary or keyword send in
+    /// parentheses.
+    fn a_cascade_s_message_is_named_by_its_receiver_and_itself(lowering) {
+        let (calls, answer) = stepped_calls(
+            CASCADING,
+            "Cascading",
+            "answer:: self seven abs; negated.",
+            "run",
+            lowering,
+            2,
+        );
+        assert_eq!(
+            calls,
+            [called("self seven negated", "-7"), called("(3 + 4) min: 9", "7")]
+        );
+        assert_eq!(answer, 7);
+    }
+}
+
+/// A send written over several lines with a comment between its parts.
+const COMMENTED: &str = indoc! {"
+    class Commented = Object new () (
+      public run = (
+        | answer |
+        answer:: self
+          first: 1 /// The first part.
+          second: 2.
+        ^answer
+      )
+      first: first second: second = (
+        ^first + second
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A comment inside a call is left out of its name.
+    fn a_comment_inside_a_call_is_not_in_its_name(lowering) {
+        let (calls, _) =
+            stepped_calls(COMMENTED, "Commented", "answer:: self", "run", lowering, 1);
+        assert_eq!(calls, [called("self first: 1 second: 2", "3")]);
+    }
+}
+
+/// Two modules of one root name, whose texts differ: the call is named
+/// from the text of the module whose body made it.
+const TWIN: &str = indoc! {"
+    class Twin = Object new () (
+      public run = (
+        | answer |
+        answer:: self compute.
+        ^answer
+      )
+      compute = (
+        ^6
+      )
+    ) : ()
+"};
+
+/// The second `Twin`, laid out differently.
+const SECOND_TWIN: &str = indoc! {"
+    class Twin = Object new () (
+      public run = (
+        | answer unused |
+        unused:: 0.
+        answer:: self twice: 3.
+        ^answer
+      )
+      twice: number = (
+        ^number * 2
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Of two loaded modules of one root name, the one whose body made a
+    /// call names it.
+    fn a_call_is_named_from_its_own_module_s_text(lowering) {
+        let (mut interpreter, _) = load(TWIN, lowering);
+        let module = ns_syntax::parse(SECOND_TWIN).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            SECOND_TWIN.into(),
+            ns_runtime::SourceOrigin::File("second.ns".into()),
+        )
+        .expect("resolve");
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(SECOND_TWIN, "answer:: self twice: 3.");
+        let (call, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Twin", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Twin");
+                let returned = step(remote, Command::StepOver).expect("twice:'s answer");
+                continue_stopped(remote);
+                (returned.call, returned.value.label)
+            },
+        );
+        expect_ok(result, "run");
+        assert_eq!(call, (String::from("self twice: 3"), String::from("6")));
     }
 }
 
@@ -5493,7 +5875,7 @@ ns_runtime::for_each_lowering! {
                     standing(remote, RECURSIVE),
                     factorial_frames(remote),
                     top_variable(remote, "n"),
-                    returned.map(|returned| returned.label),
+                    returned.map(|returned| returned.value.label),
                 );
                 set_breakpoints(remote, "Recursive", Vec::new());
                 expect_breakpoints(remote, "Recursive");
@@ -6112,7 +6494,7 @@ fn leaving_with(
                 let returned = step(remote, command);
                 stops.push((
                     standing(remote, LEAVING),
-                    returned.map(|returned| returned.label),
+                    returned.map(|returned| returned.value.label),
                 ));
             }
             continue_stopped(remote);
@@ -6990,7 +7372,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Unwinding>>ensuring"), String::from("x:: self home"))
         );
-        assert_eq!(returned.expect("the home's answer").label, "5");
+        assert_eq!(returned.expect("the home's answer").value.label, "5");
         assert_eq!(answer, 8);
     }
 }
@@ -7018,7 +7400,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Unwinding>>finding"), String::from("y:: self find"))
         );
-        assert_eq!(returned.expect("the home's answer").label, "20");
+        assert_eq!(returned.expect("the home's answer").value.label, "20");
         assert_eq!(answer, 21);
     }
 }
@@ -7066,7 +7448,7 @@ fn expect_step_filters_set(remote: &DebugRemote) {
 struct SteppedOut {
     names: Vec<String>,
     stood: (String, String),
-    returned: Option<ValueDescription>,
+    returned: Option<ReturnedValue>,
     answer: i64,
 }
 
@@ -7131,7 +7513,7 @@ ns_runtime::for_each_lowering! {
             out.stood,
             (String::from("Probe>>add:"), String::from("^sum * 10"))
         );
-        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
     }
 }
@@ -7156,7 +7538,7 @@ ns_runtime::for_each_lowering! {
             out.stood,
             (String::from("Probe>>add:"), String::from("^sum * 10"))
         );
-        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
     }
 }
@@ -8104,7 +8486,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Collecting>>run"), String::from("^total"))
         );
-        assert_eq!(returned.expect("do:'s answer").class_name, "Array");
+        assert_eq!(returned.expect("do:'s answer").value.class_name, "Array");
         assert_eq!(answer, 18);
     }
 }
@@ -8134,7 +8516,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Folding>>run"), String::from("^sum"))
         );
-        assert_eq!(returned.expect("inject:into:'s answer").label, "6");
+        assert_eq!(returned.expect("inject:into:'s answer").value.label, "6");
         assert_eq!(answer, 6);
     }
 }

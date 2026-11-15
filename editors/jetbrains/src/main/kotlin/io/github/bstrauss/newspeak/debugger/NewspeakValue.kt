@@ -9,15 +9,21 @@ import com.intellij.xdebugger.frame.XValuePlace
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapVariable
 import java.util.concurrent.CompletionException
+import javax.swing.Icon
 
 /**
  * A variable of a stopped frame, or a child of one's value, as the agent
  * describes it: its value's text and its class, and its children only once
- * the tree opens it, a page at a time.
+ * the tree opens it, a page at a time. [icon] marks a value the tree
+ * tells apart from the variables, as the value the last call returned.
  */
-class NewspeakValue(private val client: DapClient, private val variable: DapVariable) : XNamedValue(variable.name) {
+class NewspeakValue(
+    private val client: DapClient,
+    private val variable: DapVariable,
+    private val icon: Icon? = null,
+) : XNamedValue(variable.name) {
     override fun computePresentation(node: XValueNode, place: XValuePlace) {
-        node.setPresentation(null, variable.type, variable.value, variable.variablesReference > 0)
+        node.setPresentation(icon, variable.type, variable.value, variable.variablesReference > 0)
     }
 
     override fun computeChildren(node: XCompositeNode) {

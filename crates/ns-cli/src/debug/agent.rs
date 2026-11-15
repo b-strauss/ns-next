@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ns_runtime::{
-    Command, DebugControl, Event, ModuleName, StopReason, ValueDescription, Variable, VariableValue,
+    Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -271,6 +271,10 @@ pub(crate) struct Agent {
     /// The current stop's frames and references.
     pub(super) stop: Stop,
     waiting: Vec<Waiting>,
+    /// What the agent last said of the client's step filters it left
+    /// out, so that a client resending the same filters is told once
+    /// (`stepping.rs`, `set_step_filters`).
+    pub(super) step_filters_said: Vec<String>,
 }
 
 impl Agent {
@@ -312,6 +316,7 @@ impl Agent {
             sources,
             stop: Stop::new(),
             waiting: Vec::new(),
+            step_filters_said: Vec::new(),
         }
     }
 
@@ -941,10 +946,13 @@ impl Agent {
                 };
                 self.forward_converted(connection, request, command, conversion);
             }
-            Target::Returned(value) => {
+            Target::Returned(returned) => {
+                // Named by its call, as a reader tells it from the line
+                // it stepped over (`docs/design/debugger.md`, "The return
+                // value of the last call").
                 let returned = Variable {
-                    name: "returned".to_string(),
-                    value: VariableValue::Shown(value),
+                    name: returned.call,
+                    value: VariableValue::Shown(returned.value),
                 };
                 let variables = vec![self.stop.variable(&returned)];
                 self.respond(connection, request, Some(json!({ "variables": variables })));
@@ -1024,6 +1032,7 @@ impl Agent {
         let was_attached = client.attached;
         self.waiting.clear();
         self.line_step = None;
+        self.step_filters_said.clear();
         self.stop_on_entry = false;
         self.entry_pending = false;
         self.session_ended(was_attached);
@@ -1180,7 +1189,7 @@ impl Agent {
     fn stopped_at(
         &mut self,
         reason: &StopReason,
-        returned: Option<ValueDescription>,
+        returned: Option<ReturnedValue>,
         elsewhere: bool,
     ) {
         self.stopped = true;

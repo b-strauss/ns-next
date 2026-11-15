@@ -6,12 +6,14 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.execution.ui.ExecutionConsole
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.MessageType
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugSession
@@ -97,6 +99,29 @@ class NewspeakDebugProcess(
     @Volatile
     private var lastStop: NewspeakSuspendContext? = null
 
+    /**
+     * Whether the configuration sent the step filters: from then on every
+     * change of the settings sends them again, while before it the
+     * configuration sends them as they are by then.
+     */
+    @Volatile
+    private var stepFiltersSent = false
+
+    /**
+     * The settings' changes, heard while the session lasts: disposed at
+     * its `stop()`, and with the project's step filters at the latest.
+     */
+    private val stepFiltersSubscription = Disposer.newDisposable("Newspeak step filters of a debug session").also { subscription ->
+        Disposer.register(NewspeakSkippedClasses.getInstance(session.project), subscription)
+    }
+
+    /**
+     * Held while the filters are read and their request queued, so that
+     * two sends -- the configuration's and a change's -- reach the agent
+     * in the order they read the settings, the later read always last.
+     */
+    private val stepFiltersLock = Any()
+
     /** Completes when the agent answered the first `terminate`; for the tests of the Stop. */
     internal val terminateAnswered = CompletableFuture<Unit>()
 
@@ -110,6 +135,8 @@ class NewspeakDebugProcess(
     override fun createConsole(): ExecutionConsole = console ?: super.createConsole()
 
     override fun sessionInitialized() {
+        ApplicationManager.getApplication().messageBus.connect(stepFiltersSubscription)
+            .subscribe(NewspeakDebuggerSettings.TOPIC, StepFiltersListener { client?.let(::changeStepFilters) })
         // A use of the library, and a look at whether the binary's sources changed since the project opened, while the runtime starts.
         val library = NewspeakCoreLibrary.getInstance(session.project).refreshForDebugging()
         work.execute { connect(library) }
@@ -230,15 +257,39 @@ class NewspeakDebugProcess(
         return false
     }
 
-    /** The agent takes the configuration: the breakpoints of every kind, then the start. */
+    /** The agent takes the configuration: the breakpoints of every kind and the step filters, then the start. */
     private fun configure(client: DapClient) {
         if (ended) return
-        val answers = lineBreakpoints.sendAll(client) + methodBreakpoints.sendAll(client) + exceptionBreakpoints.sendAll(client)
+        stepFiltersSent = true
+        val answers = lineBreakpoints.sendAll(client) + methodBreakpoints.sendAll(client) + exceptionBreakpoints.sendAll(client) +
+            sendStepFilters(client)
         // The start waits for every answer, since DAP's order has the client configure before it.
         CompletableFuture.allOf(*answers.toTypedArray())
             .handle { _, _ -> client.request("configurationDone") }
             .thenCompose { done -> done }
             .whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
+    /**
+     * Sends the step filters (`nsNext/setStepFilters`): the settings'
+     * switch and the project's classes, by their files' paths. An entry
+     * the agent cannot take it leaves out and says in an `output` event,
+     * which the console shows; a refusal of the whole request is reported.
+     */
+    private fun sendStepFilters(client: DapClient): CompletableFuture<*> =
+        synchronized(stepFiltersLock) {
+            client.request("nsNext/setStepFilters", NewspeakDebuggerSettings.stepFilterArguments(session.project))
+        }.whenComplete { _, failure -> if (failure != null) refused(failure) }
+
+    /**
+     * The settings changed: a session configured sends the filters again
+     * at once, on the thread that changed them, which never waits for the
+     * answer -- so that a step the user starts after a change is sent
+     * after it, and runs under the filters it changed to.
+     */
+    private fun changeStepFilters(client: DapClient) {
+        if (ended || !stepFiltersSent) return
+        sendStepFilters(client)
     }
 
     // ---- Stops ----
@@ -304,15 +355,16 @@ class NewspeakDebugProcess(
             LOG.warn("the stack of a stop could not be read", exception)
             return emptyList<NewspeakStackFrame>() to start
         }
-        val frames = body.get("stackFrames")
+        val read = body.get("stackFrames")
             ?.takeIf { element -> element.isJsonArray }
             ?.asJsonArray
             ?.filter { element -> element.isJsonObject }
             ?.map { element -> DapStackFrame.from(element.asJsonObject) }
             .orEmpty()
-            .map { frame -> NewspeakStackFrame(client, frame, positionOf(frame)) }
-        val total = body.get("totalFrames")?.takeIf { element -> element.isJsonPrimitive }?.asInt ?: (start + frames.size)
-        return frames to maxOf(total, start + frames.size)
+        val answered = body.get("totalFrames")?.takeIf { element -> element.isJsonPrimitive }?.asInt ?: (start + read.size)
+        val total = maxOf(answered, start + read.size)
+        val frames = read.mapIndexed { index, frame -> NewspeakStackFrame(client, frame, positionOf(frame), total - 1 - (start + index)) }
+        return frames to total
     }
 
     private fun positionOf(frame: DapStackFrame): XSourcePosition? {
@@ -429,6 +481,7 @@ class NewspeakDebugProcess(
      */
     override fun stop() {
         ended = true
+        Disposer.dispose(stepFiltersSubscription)
         handler.terminateThroughDebugger = null
         serverSocket.close()
         val client = client ?: return

@@ -173,8 +173,8 @@ pub(crate) struct Stepping {
     /// and records as the return point does (`send_left`).
     after_send: Option<(Holder, usize)>,
     /// The value the stepping frame's last call answered, recorded at the
-    /// return point after it (`record`).
-    returned: Option<Root>,
+    /// return point after it, and where that call stands (`record`).
+    returned: Option<Returned>,
     /// The frame object of each suspended frame the step names, by its
     /// key (`Holder::Suspended`).
     suspended: Vec<(u32, Root)>,
@@ -240,7 +240,7 @@ impl Stepping {
     /// A step of `action` whose frame is `Holder::Left`, `returned` the
     /// value recorded so far: one `start` is about to name its frame for,
     /// or one waiting for where the program goes on.
-    fn new(action: StepAction, returned: Option<Root>) -> Stepping {
+    fn new(action: StepAction, returned: Option<Returned>) -> Stepping {
         Stepping {
             action,
             frame: Holder::Left,
@@ -805,13 +805,17 @@ fn place_program_counter<'gc>(mutator: &Mutator<'gc>, place: Place<'gc>) -> usiz
 /// A step out leaves the send `frame` stands at for `after` in `code`,
 /// its return point: a one-shot that stops and records for the frame,
 /// beside the stepping frame's own return point, for a frame that returns
-/// before the send has answered.
+/// before the send has answered -- but records nothing after a setter
+/// assignment's send, whose answer is the receiver (`answers_a_setter`).
 fn stop_after_send<'gc>(
     mutator: &mut Mutator<'gc>,
     frame: Place<'gc>,
     code: &Rc<CompiledCode>,
     after: usize,
 ) {
+    let records = !after
+        .checked_sub(1)
+        .is_some_and(|call| answers_a_setter(mutator, frame, code, call));
     let holder = match frame {
         Place::Running(activation) => Holder::Running(activation),
         Place::Suspended(frame) => Holder::Suspended(hold(mutator, frame)),
@@ -819,7 +823,7 @@ fn stop_after_send<'gc>(
     let one_shot = OneShot {
         holder,
         stops: true,
-        records: true,
+        records,
         leaves: false,
     };
     patch(mutator, code, after, one_shot);
@@ -898,7 +902,7 @@ fn place_of<'gc>(mutator: &Mutator<'gc>, frame: &StackFrame) -> Option<Place<'gc
 /// the last host run carried to the next (`run_ended`) ends too, so that
 /// whatever ends a step between runs -- a `Terminate`, a detach, a pause
 /// asked between them -- ends that one.
-pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Root> {
+pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Returned> {
     let stepping = mutator.stepping.take();
     mutator.breakpoints.take_carried_step();
     mutator.breakpoints.remove_one_shots();
@@ -1091,7 +1095,7 @@ fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
     if !steps_elsewhere {
         return;
     }
-    let Some((caller, code, point)) = return_slot(mutator, origin) else {
+    let Some((caller, code, point, _)) = return_slot(mutator, origin) else {
         return;
     };
     if let Some(stepping) = &mut mutator.stepping {
@@ -1213,7 +1217,7 @@ fn steps_at_or_above<'gc>(
 
 /// The step's value of the last call and the exits it reports, taken with
 /// the step, which a step that replaces it carries on.
-fn carried(mutator: &mut Mutator<'_>) -> (Option<Root>, Vec<BreakpointId>) {
+fn carried(mutator: &mut Mutator<'_>) -> (Option<Returned>, Vec<BreakpointId>) {
     mutator
         .stepping
         .take()
@@ -1941,7 +1945,8 @@ pub(crate) fn takes(mutator: &Mutator<'_>, holder: Holder, running: ActivationRe
 /// destination is live there: the value of the last call, which the
 /// step's stop reports. A register the leftover analysis finds tainted
 /// before `index` -- reached by a jump that skipped the call -- is not
-/// read.
+/// read. The call is noted beside the value, which names it at the
+/// stop.
 pub(crate) fn record(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1951,7 +1956,7 @@ pub(crate) fn record(
     let Some(previous) = index.checked_sub(1) else {
         return;
     };
-    let Some(register) = call_destination(&code.instruction(previous)) else {
+    let Some((register, call)) = call_of(&code.instruction(previous)) else {
         return;
     };
     let Ok(program_counter) = u32::try_from(index) else {
@@ -1964,11 +1969,55 @@ pub(crate) fn record(
     {
         return;
     }
+    // Only the call is noted here, as cheaply as the value: its name is
+    // read from the body's metadata at the stop, once, rather than at
+    // every call a step over a loop runs past. The declaration a body
+    // belongs to is the body's, so the previous call's is taken again for
+    // a call of the same body, every turn of a loop.
+    let code = mutator.heap.activation_code(activation);
+    let Some(stepping) = &mut mutator.stepping else {
+        return;
+    };
+    let same_body = stepping
+        .returned
+        .take()
+        .filter(|returned| Rc::ptr_eq(&returned.call.code, &code));
+    let origin = match same_body {
+        Some(returned) => returned.call.origin,
+        None => stack::origin(&mutator.heap, &StackFrame::Running(activation)),
+    };
     let value = mutator.heap.activation_local(activation, register);
     let root = mutator.heap.stash(value);
     if let Some(stepping) = &mut mutator.stepping {
-        stepping.returned = Some(root);
+        stepping.returned = Some(Returned {
+            value: root,
+            call: RecordedCall {
+                code,
+                index: previous,
+                call,
+                origin,
+            },
+        });
     }
+}
+
+/// The value a step recorded as its last call's answer
+/// (`Stepping::returned`), and the call.
+pub(crate) struct Returned {
+    pub(crate) value: Root,
+    pub(crate) call: RecordedCall,
+}
+
+/// Where the call a step recorded stands, which names it at the stop
+/// (`stack::call_name`): the body, the call instruction's index in it and
+/// its kind, and the declaration the body belongs to. It holds no
+/// handle, so that it outlives the frame it was recorded in, which a step
+/// over a method's last statement leaves before its stop.
+pub(crate) struct RecordedCall {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) index: usize,
+    pub(crate) call: Call,
+    pub(crate) origin: Option<BodyOrigin>,
 }
 
 /// The suspend stress mode is about to suspend every activation of the
@@ -2114,7 +2163,7 @@ fn start<'gc>(
     action: StepAction,
     top: Place<'gc>,
     taken_in: Place<'gc>,
-    returned: Option<Root>,
+    returned: Option<Returned>,
     passed: Option<&LeftBlocks>,
 ) {
     // Its frame is named by `stepping_frame`, which may hold `taken_in` as
@@ -2282,9 +2331,12 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
             .filter_map(|entry| usize::try_from(entry.instructions.start).ok())
             .filter(flooded)
             .collect();
+        // A setter's answer is its receiver, never the value its
+        // assignment answers: the assigned value's call stays the last.
         let returns: Vec<usize> = metadata
             .sends
             .iter()
+            .filter(|send| !send.setter)
             .filter_map(|send| usize::try_from(send.index).ok())
             .map(|index| index + 1)
             .filter(flooded)
@@ -2382,18 +2434,21 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
 /// Sets the return point of the stepping frame `frame`: a one-shot that
 /// stops and records at the index after the instruction its caller
 /// stands at, for the caller -- never at that instruction, which
-/// `resume_caller` reads again. A caller suspended into its frame is
+/// `resume_caller` reads again -- recording nothing where that call is a
+/// setter assignment's send, whose answer is the receiver, as a step
+/// over's flood records none (`answers_a_setter`). A caller suspended
+/// into its frame is
 /// resumed as an activation of its own once the frame returns to it,
 /// which the one-shot waits for (`resumed`). None for a frame without a
 /// caller.
 fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
-    let Some((caller, code, point)) = return_slot(mutator, frame) else {
+    let Some((caller, code, point, setter)) = return_slot(mutator, frame) else {
         return;
     };
     let one_shot = OneShot {
         holder: caller,
         stops: true,
-        records: true,
+        records: !setter,
         leaves: false,
     };
     patch(mutator, &code, point, one_shot);
@@ -2403,13 +2458,14 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
 }
 
 /// Where `frame`'s return goes on: its caller -- running, or suspended and
-/// held by the step -- that caller's body and the index after the call it
-/// stands at; `None` for a frame with no caller, or whose caller stands at
-/// no call.
-fn return_slot(
-    mutator: &mut Mutator<'_>,
+/// held by the step -- that caller's body, the index after the call it
+/// stands at and whether that call is a setter assignment's send
+/// (`answers_a_setter`); `None` for a frame with no caller, or whose
+/// caller stands at no call.
+fn return_slot<'gc>(
+    mutator: &mut Mutator<'gc>,
     frame: Holder,
-) -> Option<(Holder, Rc<CompiledCode>, usize)> {
+) -> Option<(Holder, Rc<CompiledCode>, usize, bool)> {
     let heap = &mutator.heap;
     let sender = match frame {
         Holder::Running(activation) => match heap.activation_suspended_sender(activation) {
@@ -2433,16 +2489,22 @@ fn return_slot(
         }
         Holder::Left => return None,
     };
-    let (caller, standing, code) = match sender {
+    let (caller, standing, code, place) = match sender {
         Ok(caller) => (
             Holder::Running(caller),
             heap.activation_program_counter(caller),
             heap.activation_code(caller),
+            Place::Running(caller),
         ),
         Err(suspended) => {
             let code = heap.frame_code(suspended)?;
             let standing = heap.frame_stored_program_counter(suspended);
-            (Holder::Suspended(hold(mutator, suspended)), standing, code)
+            (
+                Holder::Suspended(hold(mutator, suspended)),
+                standing,
+                code,
+                Place::Suspended(suspended),
+            )
         }
     };
     let point = standing + 1;
@@ -2450,7 +2512,37 @@ fn return_slot(
     {
         return None;
     }
-    Some((caller, code, point))
+    let setter = answers_a_setter(mutator, place, &code, standing);
+    Some((caller, code, point, setter))
+}
+
+/// Whether the call at `index` of `code`, a body `place` runs -- its own
+/// or a block lowered inline in it -- is a setter assignment's send
+/// (`SendEntry::setter`), whose answer, the receiver, is no value a step
+/// reports: a return into it records nothing, as the flood leaves the
+/// index after it out, so that the value before stays. A body without
+/// metadata records every call.
+fn answers_a_setter<'gc>(
+    mutator: &mut Mutator<'gc>,
+    place: Place<'gc>,
+    code: &Rc<CompiledCode>,
+    index: usize,
+) -> bool {
+    let Ok(index) = u32::try_from(index) else {
+        return false;
+    };
+    let (body, origin, metadata) = place_body(mutator, place);
+    let metadata = if Rc::ptr_eq(&body, code) {
+        metadata
+    } else {
+        origin.and_then(|origin| Cache::metadata(mutator, code, &origin))
+    };
+    metadata.is_some_and(|metadata| {
+        metadata
+            .sends
+            .binary_search_by_key(&index, |entry| entry.index)
+            .is_ok_and(|found| metadata.sends[found].setter)
+    })
 }
 
 /// Patches slot `index` of `code` with `one_shot`, giving the body a code
@@ -2461,22 +2553,89 @@ fn patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, index: usize, one_s
     mutator.heap.code_id(code);
 }
 
-/// The register a call writes its answer to: a send's, a
-/// `ResolveFuture`'s, an initializer invocation's or a `SendMirror`'s
-/// destination, where a caller stands while its callee runs; `None` for
+/// The register a call writes its answer to (`call_of`); `None` for
 /// every other instruction.
 fn call_destination(instruction: &Instruction) -> Option<u16> {
+    call_of(instruction).map(|(destination, _)| destination)
+}
+
+/// The register a call writes its answer to -- a send's, a
+/// `ResolveFuture`'s, an initializer invocation's or a `SendMirror`'s
+/// destination, where a caller stands while its callee runs -- and what
+/// kind of call it is, which names it where its body has no metadata:
+/// decided together, so that an instruction a step takes for a call is
+/// one it can name. `None` for every other instruction.
+fn call_of(instruction: &Instruction) -> Option<(u16, Call)> {
     match instruction {
-        Instruction::SendLexical { destination, .. }
-        | Instruction::SendPublic { destination, .. }
-        | Instruction::SendInlinable { destination, .. }
-        | Instruction::SendSuper { destination, .. }
-        | Instruction::SendMirror { destination, .. }
-        | Instruction::ResolveFuture { destination, .. }
-        | Instruction::InitializeInstance { destination, .. }
-        | Instruction::InitializeSuperclass { destination, .. }
-        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::SendLexical {
+            destination,
+            selector,
+            ..
+        }
+        | Instruction::SendPublic {
+            destination,
+            selector,
+            ..
+        }
+        | Instruction::SendInlinable {
+            destination,
+            selector,
+            ..
+        } => Some((*destination, Call::Send(*selector))),
+        Instruction::SendSuper {
+            destination,
+            selector,
+            ..
+        } => Some((*destination, Call::Super(*selector))),
+        Instruction::SendMirror {
+            destination,
+            primitive,
+            ..
+        } => Some((*destination, Call::Mirror(*primitive))),
+        Instruction::ResolveFuture { destination, .. } => Some((*destination, Call::Future)),
+        Instruction::InitializeInstance { destination, .. } => {
+            Some((*destination, Call::Initializer))
+        }
+        Instruction::InitializeSuperclass { destination, .. } => {
+            Some((*destination, Call::SuperclassInitializer))
+        }
+        Instruction::InitializeAppliedLevel { destination, .. } => {
+            Some((*destination, Call::MixinInitializer))
+        }
         _ => None,
+    }
+}
+
+/// The kind of a call a step recorded (`call_of`), which names it where
+/// its body has no metadata (`Call::name`).
+#[derive(Clone, Copy)]
+pub(crate) enum Call {
+    /// A send of the selector, lexical, public or inlinable.
+    Send(Symbol),
+    Super(Symbol),
+    Mirror(crate::builtins::primitive::MirrorPrimitive),
+    Future,
+    Initializer,
+    SuperclassInitializer,
+    MixinInitializer,
+}
+
+impl Call {
+    /// The call as the instruction names it: a send's selector, `super`
+    /// before a super send's, a mirror send's mirror selector, and the
+    /// kind of each other call.
+    pub(crate) fn name(self) -> String {
+        match self {
+            Call::Send(selector) => selector.to_string(),
+            Call::Super(selector) => format!("super {selector}"),
+            Call::Mirror(primitive) => {
+                String::from(crate::builtins::primitive::mirror_entry(primitive).selector)
+            }
+            Call::Future => String::from("future"),
+            Call::Initializer => String::from("initializer"),
+            Call::SuperclassInitializer => String::from("superclass initializer"),
+            Call::MixinInitializer => String::from("mixin initializer"),
+        }
     }
 }
 
