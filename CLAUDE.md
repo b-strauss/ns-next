@@ -228,7 +228,9 @@ Rust 1.98.0, edition 2021, seven crates:
   (`--check` only lists the files that would change). The server's own
   request `newspeak/breakableLines` answers the lines a line breakpoint
   can stand on, and their block variants, from
-  `Interpreter::breakable_statements` (`breakable.rs`), compiled on a
+  `Interpreter::breakable_statements` (`breakable.rs`), and for a shipped
+  module's exact text from `Interpreter::shipped_breakable_statements`,
+  compiled on a
   worker thread of 64 MiB that bootstraps an interpreter of its own, and
   answered `null`, uncompiled, for a module nesting more than 20,000
   sends -- the chain guard, until the compiler walks a chain link by link

@@ -4334,11 +4334,13 @@ time:
   breakpoint is sent with the `column` of that statement, the line's
   without one. A module's file on disk is named by its `path`, a module
   the session shows by reference -- a shipped one, as `<Module>.ns` --
-  and a file of the core library by its `name`, which is how the agent
-  knows a module that is no file of the program's: a shipped module, and
+  and a file of the core library the project shows by its `name`, which
+  is how the agent knows a module that is no file of the program's: a shipped module, and
   the program's embedded `Manifest`, which a project's run loads; in a
   run of one module, which loads no manifest, the agent answers a
-  `Manifest.ns` breakpoint unverified. The breakpoints in the library's
+  `Manifest.ns` breakpoint unverified. A file of any other fingerprint
+  directory -- an older binary's text, which a look that failed left
+  breakpoints in -- is not sent, its breakpoints left unverified. The breakpoints in the library's
   files are kept with the project and follow it to a new fingerprint
   ([editor-support.md](editor-support.md), "The core library"). Run to
   Cursor names a library file the same way. The pass count (`NewspeakLineBreakpointProperties`,
