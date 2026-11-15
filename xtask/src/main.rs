@@ -88,7 +88,7 @@ fn stress_suite_runs() -> Vec<(String, String)> {
 /// WIDE: it boots an interpreter, so the record does not list it, but runs
 /// no program -- only the boot every other test runs -- and only WIDE
 /// changes what it compiles.
-fn stress_suite_arguments(mode: &str, config: &Path) -> Vec<String> {
+fn stress_suite_arguments(mode: &str, config: &Path, threads: usize) -> Vec<String> {
     let profile = if mode == "WIDE" {
         unreached::WIDE_PROFILE
     } else {
@@ -107,10 +107,24 @@ fn stress_suite_arguments(mode: &str, config: &Path) -> Vec<String> {
     if mode != "WIDE" {
         arguments.extend(["-E", "not binary(debug_metadata)"]);
     }
+    let threads = threads.to_string();
+    arguments.extend(["--test-threads", &threads]);
     arguments
         .iter()
         .map(|argument| argument.to_string())
         .collect()
+}
+
+/// The test threads each of the stress group's `runs` suites takes: the
+/// machine's cores shared among them, at least one each. The suites run at
+/// once, so the profile's 18 threads apiece put sixteen suites' 288 test
+/// processes on 24 cores, and a test that waits on a process it started
+/// -- a debug agent's connection, a language server's answer -- stalled
+/// past its wall-clock bound; shared, the machine runs about as many test
+/// processes as it has cores.
+fn stress_threads_each(runs: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    cores.div_ceil(runs.max(1)).max(1)
 }
 
 /// The command a Docker group runs its suite with, after `nextest_options`'
@@ -1055,6 +1069,8 @@ fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result
     println!("\n==> the suite under {}, at once", names.join(", "));
     let logs = root.join(".temp");
     std::fs::create_dir_all(&logs).map_err(|error| format!("create .temp/: {error}"))?;
+    let threads = stress_threads_each(runs.len());
+    println!("    {threads} test threads each");
     let started = Instant::now();
     let mut children = Vec::new();
     for (mode, variable) in &runs {
@@ -1064,7 +1080,7 @@ fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result
         let error_log = log
             .try_clone()
             .map_err(|error| format!("{}: {error}", log_path.display()))?;
-        let arguments = stress_suite_arguments(mode, &config);
+        let arguments = stress_suite_arguments(mode, &config, threads);
         let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
         let step = Step::cargo("", &arguments).with_environment(variable, "1");
         let child = command_of(&step, root)
@@ -1461,6 +1477,24 @@ mod tests {
         assert_eq!(names.len(), runs.len(), "every run has a log of its own");
     }
 
+    /// The stress suites share the machine's cores, each taking at least
+    /// one test thread and passing its share to nextest.
+    #[test]
+    fn the_stress_suites_share_the_cores() {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let each = stress_threads_each(stress_suite_runs().len());
+        assert!(each >= 1);
+        assert!(each * stress_suite_runs().len() < cores + stress_suite_runs().len());
+        assert_eq!(stress_threads_each(0), cores.max(1));
+        let arguments = stress_suite_arguments("MOVES", Path::new("generated.toml"), 3);
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--test-threads", "3"]),
+            "{arguments:?}"
+        );
+    }
+
     /// Every stress run takes a generated profile: WIDE the one that keeps
     /// the listed tests that compile, every other mode the one without any
     /// listed test, and without `debug_metadata`.
@@ -1468,7 +1502,7 @@ mod tests {
     fn every_stress_run_leaves_out_the_tests_it_cannot_reach_and_only_wide_checks_the_metadata() {
         let config = Path::new("generated.toml");
         for (mode, _) in stress_suite_runs() {
-            let arguments = stress_suite_arguments(&mode, config);
+            let arguments = stress_suite_arguments(&mode, config, 2);
             assert!(
                 arguments
                     .windows(2)

@@ -464,8 +464,10 @@ NS_NEXT_STRESS_STEP=1 cargo nextest run --workspace     # stopping as for a paus
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
-# `cargo xtask gates stress` runs the sixteen suites at once, each into its own
-# log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
+# `cargo xtask gates stress` runs the sixteen suites at once, the machine's
+# cores shared among them (two test threads each on 24: at 18 each, 288 test
+# processes stalled tests that wait on a process they start past their
+# bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
 # (`.config/nextest.toml`) without `ns-syntax`, `ns-assembler` and
 # `ns-memory`, which cannot reach the runtime, the tests that ended a measured
 # run alone started first, narrowed by a profile generated from it: every mode
