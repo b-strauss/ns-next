@@ -18,6 +18,9 @@ use crate::types::*;
 /// and how modules are found").
 pub(crate) const KERNEL_SOURCE: &str = include_str!("../../core-library/Kernel.ns");
 
+/// `Kernel.ns`'s path below `core-library/`, beside its `include_str!`.
+pub(crate) const KERNEL_PATH: &str = "Kernel.ns";
+
 thread_local! {
     /// The kernel, parsed and resolved once per thread: the AST and its
     /// bindings are immutable, and the test suite bootstraps well over a

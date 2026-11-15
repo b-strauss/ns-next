@@ -1051,7 +1051,10 @@ fn expected_lines(statements: &[ns_runtime::BreakableStatement], text: &str) -> 
 /// writes, is the shipped module: no diagnostic is published for it, and
 /// its breakable lines are the statements the binary's own compile of the
 /// module stops at (`Interpreter::shipped_breakable_statements`), which
-/// `ns-cli`'s `debug_metadata` holds to where a breakpoint lands.
+/// `ns-cli`'s `debug_metadata` holds to where a breakpoint lands. The
+/// shipped and the program-side answers are equal today, so this pins the
+/// behaviour, not which path answers; `debug_metadata` and the `ModuleSource`
+/// the shipped compile takes tell the paths apart.
 #[test]
 fn a_shipped_module_s_text_is_the_shipped_module() {
     let (client, server_thread) = initialized_server();

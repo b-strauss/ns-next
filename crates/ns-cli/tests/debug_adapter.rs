@@ -1874,8 +1874,9 @@ fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
     let mut client = DapClient::connect_mode(&path);
     client.start_session(true);
     client.stopped("entry");
-    // The entry stands in `Punkt`'s superclass clause, which `Punkt x: 1 y: 2`
-    // evaluates first; two steps into reach `main:args:`'s statement.
+    // The entry stands at `main:args:`'s statement. Reading `Punkt` for the
+    // first time evaluates its superclass clause, `Basis`, which the first step
+    // into enters; the second returns to the statement, at the instantiation.
     step_to_top(&mut client, "stepIn");
     let frames = step_to_top(&mut client, "stepIn");
     assert_eq!(

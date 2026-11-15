@@ -37,9 +37,8 @@ pub(crate) const MIRRORS_FACTORY_SOURCE: &str =
 /// user module, holds no mirror, and may be carried by an image.
 pub const MANIFEST_SOURCE: &str = include_str!("../../core-library/Manifest.ns");
 
-/// `Kernel.ns`'s and `Manifest.ns`'s paths below `core-library/`, beside
-/// their `include_str!`s (`kernel::KERNEL_SOURCE`, `MANIFEST_SOURCE`).
-const KERNEL_PATH: &str = "Kernel.ns";
+/// `Manifest.ns`'s path below `core-library/`, beside its `include_str!`
+/// (`MANIFEST_SOURCE`); the `Kernel.ns`'s is `kernel::KERNEL_PATH`.
 const MANIFEST_PATH: &str = "Manifest.ns";
 
 /// One shipped module. Every entry here is shipped source; a user module
@@ -210,7 +209,7 @@ pub fn shipped_source_files() -> Vec<ShippedSourceFile> {
     let mut files = vec![
         ShippedSourceFile {
             name: KERNEL_MODULE,
-            path: KERNEL_PATH,
+            path: super::kernel::KERNEL_PATH,
             text: super::kernel::KERNEL_SOURCE,
         },
         ShippedSourceFile {

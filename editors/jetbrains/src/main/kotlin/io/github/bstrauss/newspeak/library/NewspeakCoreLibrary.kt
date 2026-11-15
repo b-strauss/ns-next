@@ -90,6 +90,7 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
                 if (decided) newspeak = true
                 refresh()
             }
+            .onError { error -> LOG.warn("the Newspeak core library is not refreshed: the project could not be examined", error) }
     }
 
     private fun refreshNow(): Path? {
