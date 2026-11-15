@@ -2759,7 +2759,7 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   Rust ([execution.md](execution.md), "The baseline JIT's foundation",
   "The entry at a send", "Executable memory"). The x64 Windows path
   runs in every gate, the Linux path, x64's and AArch64's, in the gate
-  groups `linux` and `aarch64` at the end of a batch, AArch64's under
+  groups `linux` and `aarch64`, run on demand, AArch64's under
   QEMU; the BSD and Apple AArch64 paths are checked by clippy alone (the
   `memory` gate). The bounds of the running thread's
   native stack are read there too (`native_stack.rs`), for the entry's

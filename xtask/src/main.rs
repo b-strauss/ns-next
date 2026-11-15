@@ -42,7 +42,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
   linux                in Docker: clippy, the platform-dependent tests, the doctests and the Newspeak benchmark programs for x86_64-unknown-linux-gnu
   aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the platform-dependent tests under the image's qemu-aarch64
-  end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
+  end-of-batch         images, caches, benchmarks, release-checks, codegen and stress, for a batch that changed the runtime; linux and aarch64 run on demand";
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
@@ -672,8 +672,6 @@ fn group(name: &str) -> Option<Vec<Part>> {
             "release-checks",
             "codegen",
             "stress",
-            "linux",
-            "aarch64",
         ]
         .iter()
         .flat_map(|name| group(name).expect("a group"))
@@ -1296,16 +1294,20 @@ mod tests {
         ));
     }
 
-    /// The Docker groups run after everything that runs on the host,
-    /// `aarch64` last, since the suite under emulation is the longest step
-    /// of all.
+    /// The end of a batch runs no Docker group: `linux` and `aarch64` run
+    /// on demand (decided with the user 2026-11-15), the stress runs last.
     #[test]
-    fn the_end_of_batch_runs_linux_and_aarch64_last() {
-        let mut expected = group("stress").expect("a group");
-        expected.extend(group("linux").expect("a group"));
-        expected.extend(group("aarch64").expect("a group"));
+    fn the_end_of_batch_runs_no_docker_group() {
         let parts = group("end-of-batch").expect("a group");
-        assert!(parts.ends_with(&expected));
+        assert!(parts.ends_with(&group("stress").expect("a group")));
+        for docker in ["linux", "aarch64"] {
+            for part in group(docker).expect("a group") {
+                assert!(
+                    !parts.contains(&part),
+                    "{docker} is not part of the end of a batch"
+                );
+            }
+        }
     }
 
     /// The script a Docker step runs, its last argument.
