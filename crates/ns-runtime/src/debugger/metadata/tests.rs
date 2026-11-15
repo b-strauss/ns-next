@@ -1272,6 +1272,45 @@ crate::for_each_lowering! {
     }
 }
 
+crate::for_each_lowering! {
+    /// Every level of a module compiled again keeps the one text of the
+    /// module the cache holds for its root, not a copy each; an install
+    /// clears it with the metadata.
+    fn the_levels_of_a_module_share_its_text(lowering) {
+        let source = indoc! {"
+            class Outer = Object new () (
+              class Inner = Object new () (
+                public inner = ( ^1 )
+              )
+              public top = ( ^2 )
+            ) : ()
+        "};
+        let (mut interpreter, outer) = loaded_under(source, lowering);
+        interpreter.enter(|mutator| {
+            let outer_mixin = applied_mixin(mutator, &outer);
+            let inner_mixin = nested_mixin(mutator, &outer_mixin, "Inner");
+            let texts: Vec<Rc<str>> = [(&outer_mixin, "top"), (&inner_mixin, "inner")]
+                .into_iter()
+                .map(|(mixin, selector)| {
+                    let code = method_code(mixin, selector);
+                    let (_, text) =
+                        Cache::metadata_with_text(mutator, &code, &method_origin(mixin, selector))
+                            .expect("the method's metadata");
+                    text
+                })
+                .collect();
+            assert_eq!(&*texts[0], source);
+            assert!(Rc::ptr_eq(&texts[0], &texts[1]), "one text for both levels");
+            mutator.debug_metadata.clear();
+            let code = method_code(&inner_mixin, "inner");
+            let (_, again) =
+                Cache::metadata_with_text(mutator, &code, &method_origin(&inner_mixin, "inner"))
+                    .expect("the method's metadata");
+            assert!(!Rc::ptr_eq(&texts[0], &again), "compiled afresh after a clear");
+        });
+    }
+}
+
 #[test]
 fn a_body_with_an_unwind_marker_compiles_again_alike() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {

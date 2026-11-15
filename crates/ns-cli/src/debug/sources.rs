@@ -337,7 +337,7 @@ impl Sources {
     }
 
     /// The modules the `Module` segment of a class name a client typed
-    /// names -- a step filter's, a method or an exception breakpoint's:
+    /// names -- a method or an exception breakpoint's:
     /// the program's module of that name when the program has one and the
     /// shipped module of that name when the binary has one -- both, for a
     /// program module named like a shipped one, so that a name reaches the

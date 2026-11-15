@@ -5563,6 +5563,128 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A setter method of the program's own, which a setter assignment sends,
+/// and a block it runs, which a setter assignment hands it.
+const SETTER_METHOD: &str = indoc! {"
+    class SetterMethod = Object new (
+      | stored ::= 0. |
+    ) (
+      public run = (
+        | answer |
+        answer:: self compute.
+        count:: 5.
+        action:: [stored + 1].
+        ^stored
+      )
+      compute = (
+        ^2
+      )
+      count: value = (
+        stored:: value.
+      )
+      action: block = (
+        stored:: block value.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a setter method the program declares returns to a
+    /// setter assignment, whose answer is the receiver: it records
+    /// nothing, as a step over the assignment does, so the value before
+    /// stays -- none, for a step out, which records nothing in the
+    /// callee. A step out of a block a setter assignment handed its
+    /// method leaves that assignment alike.
+    fn a_step_out_into_a_setter_assignment_records_nothing(lowering) {
+        let offset = line_start(SETTER_METHOD, "    stored:: value.");
+        let (out_of_the_method, _) = stepped(
+            SETTER_METHOD,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "SetterMethod", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "SetterMethod");
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                let standing = standing(remote, SETTER_METHOD);
+                continue_stopped(remote);
+                (returned, standing)
+            },
+        );
+        assert_eq!(
+            out_of_the_method,
+            (
+                None,
+                (
+                    String::from("SetterMethod>>run"),
+                    String::from("action:: [stored + 1]")
+                )
+            )
+        );
+        let offset = line_start(SETTER_METHOD, "action:: [stored + 1].");
+        let (out_of_the_block, answer) = stepped(
+            SETTER_METHOD,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "SetterMethod", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "SetterMethod");
+                let mut stops = Vec::new();
+                for _ in 0..2 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, SETTER_METHOD));
+                }
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                stops.push(standing(remote, SETTER_METHOD));
+                continue_stopped(remote);
+                (returned, stops)
+            },
+        );
+        assert_eq!(out_of_the_block.0, None, "{:?}", out_of_the_block.1);
+        assert_eq!(
+            out_of_the_block.1.last(),
+            Some(&(String::from("SetterMethod>>run"), String::from("^stored")))
+        );
+        // The warming runs added their blocks' answers to the slot.
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a superclass's initializer returns to the clause
+    /// that ran it, which the source spells as no send: the value is
+    /// named by the kind of call, as in a body without metadata.
+    fn a_step_out_of_a_superclass_initializer_names_its_kind(lowering) {
+        let offset = line_start(HEADERS, "| public low ::= a. |");
+        let (returned, answer) = stepped(
+            HEADERS,
+            lowering,
+            "chain",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let returned = step(remote, Command::StepOut)
+                    .map(|returned| (returned.call, returned.value.label));
+                let standing = standing(remote, HEADERS);
+                continue_stopped(remote);
+                (returned, standing)
+            },
+        );
+        assert_eq!(
+            returned,
+            (
+                called("superclass initializer", "an instance of Highest"),
+                (
+                    String::from("Middle initializer"),
+                    String::from("public middle ::= b.")
+                )
+            )
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
 /// Cascades whose later messages go to a unary send's answer and to a
 /// binary send's.
 const CASCADING: &str = indoc! {"

@@ -271,6 +271,10 @@ pub(crate) struct Agent {
     /// The current stop's frames and references.
     pub(super) stop: Stop,
     waiting: Vec<Waiting>,
+    /// What the agent last said of the client's step filters it left
+    /// out, so that a client resending the same filters is told once
+    /// (`stepping.rs`, `set_step_filters`).
+    pub(super) step_filters_said: Vec<String>,
 }
 
 impl Agent {
@@ -312,6 +316,7 @@ impl Agent {
             sources,
             stop: Stop::new(),
             waiting: Vec::new(),
+            step_filters_said: Vec::new(),
         }
     }
 
@@ -1027,6 +1032,7 @@ impl Agent {
         let was_attached = client.attached;
         self.waiting.clear();
         self.line_step = None;
+        self.step_filters_said.clear();
         self.stop_on_entry = false;
         self.entry_pending = false;
         self.session_ended(was_attached);

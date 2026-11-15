@@ -805,13 +805,17 @@ fn place_program_counter<'gc>(mutator: &Mutator<'gc>, place: Place<'gc>) -> usiz
 /// A step out leaves the send `frame` stands at for `after` in `code`,
 /// its return point: a one-shot that stops and records for the frame,
 /// beside the stepping frame's own return point, for a frame that returns
-/// before the send has answered.
+/// before the send has answered -- but records nothing after a setter
+/// assignment's send, whose answer is the receiver (`answers_a_setter`).
 fn stop_after_send<'gc>(
     mutator: &mut Mutator<'gc>,
     frame: Place<'gc>,
     code: &Rc<CompiledCode>,
     after: usize,
 ) {
+    let records = !after
+        .checked_sub(1)
+        .is_some_and(|call| answers_a_setter(mutator, frame, code, call));
     let holder = match frame {
         Place::Running(activation) => Holder::Running(activation),
         Place::Suspended(frame) => Holder::Suspended(hold(mutator, frame)),
@@ -819,7 +823,7 @@ fn stop_after_send<'gc>(
     let one_shot = OneShot {
         holder,
         stops: true,
-        records: true,
+        records,
         leaves: false,
     };
     patch(mutator, code, after, one_shot);
@@ -1091,7 +1095,7 @@ fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
     if !steps_elsewhere {
         return;
     }
-    let Some((caller, code, point)) = return_slot(mutator, origin) else {
+    let Some((caller, code, point, _)) = return_slot(mutator, origin) else {
         return;
     };
     if let Some(stepping) = &mut mutator.stepping {
@@ -2430,18 +2434,21 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
 /// Sets the return point of the stepping frame `frame`: a one-shot that
 /// stops and records at the index after the instruction its caller
 /// stands at, for the caller -- never at that instruction, which
-/// `resume_caller` reads again. A caller suspended into its frame is
+/// `resume_caller` reads again -- recording nothing where that call is a
+/// setter assignment's send, whose answer is the receiver, as a step
+/// over's flood records none (`answers_a_setter`). A caller suspended
+/// into its frame is
 /// resumed as an activation of its own once the frame returns to it,
 /// which the one-shot waits for (`resumed`). None for a frame without a
 /// caller.
 fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
-    let Some((caller, code, point)) = return_slot(mutator, frame) else {
+    let Some((caller, code, point, setter)) = return_slot(mutator, frame) else {
         return;
     };
     let one_shot = OneShot {
         holder: caller,
         stops: true,
-        records: true,
+        records: !setter,
         leaves: false,
     };
     patch(mutator, &code, point, one_shot);
@@ -2451,13 +2458,14 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
 }
 
 /// Where `frame`'s return goes on: its caller -- running, or suspended and
-/// held by the step -- that caller's body and the index after the call it
-/// stands at; `None` for a frame with no caller, or whose caller stands at
-/// no call.
-fn return_slot(
-    mutator: &mut Mutator<'_>,
+/// held by the step -- that caller's body, the index after the call it
+/// stands at and whether that call is a setter assignment's send
+/// (`answers_a_setter`); `None` for a frame with no caller, or whose
+/// caller stands at no call.
+fn return_slot<'gc>(
+    mutator: &mut Mutator<'gc>,
     frame: Holder,
-) -> Option<(Holder, Rc<CompiledCode>, usize)> {
+) -> Option<(Holder, Rc<CompiledCode>, usize, bool)> {
     let heap = &mutator.heap;
     let sender = match frame {
         Holder::Running(activation) => match heap.activation_suspended_sender(activation) {
@@ -2481,16 +2489,22 @@ fn return_slot(
         }
         Holder::Left => return None,
     };
-    let (caller, standing, code) = match sender {
+    let (caller, standing, code, place) = match sender {
         Ok(caller) => (
             Holder::Running(caller),
             heap.activation_program_counter(caller),
             heap.activation_code(caller),
+            Place::Running(caller),
         ),
         Err(suspended) => {
             let code = heap.frame_code(suspended)?;
             let standing = heap.frame_stored_program_counter(suspended);
-            (Holder::Suspended(hold(mutator, suspended)), standing, code)
+            (
+                Holder::Suspended(hold(mutator, suspended)),
+                standing,
+                code,
+                Place::Suspended(suspended),
+            )
         }
     };
     let point = standing + 1;
@@ -2498,7 +2512,37 @@ fn return_slot(
     {
         return None;
     }
-    Some((caller, code, point))
+    let setter = answers_a_setter(mutator, place, &code, standing);
+    Some((caller, code, point, setter))
+}
+
+/// Whether the call at `index` of `code`, a body `place` runs -- its own
+/// or a block lowered inline in it -- is a setter assignment's send
+/// (`SendEntry::setter`), whose answer, the receiver, is no value a step
+/// reports: a return into it records nothing, as the flood leaves the
+/// index after it out, so that the value before stays. A body without
+/// metadata records every call.
+fn answers_a_setter<'gc>(
+    mutator: &mut Mutator<'gc>,
+    place: Place<'gc>,
+    code: &Rc<CompiledCode>,
+    index: usize,
+) -> bool {
+    let Ok(index) = u32::try_from(index) else {
+        return false;
+    };
+    let (body, origin, metadata) = place_body(mutator, place);
+    let metadata = if Rc::ptr_eq(&body, code) {
+        metadata
+    } else {
+        origin.and_then(|origin| Cache::metadata(mutator, code, &origin))
+    };
+    metadata.is_some_and(|metadata| {
+        metadata
+            .sends
+            .binary_search_by_key(&index, |entry| entry.index)
+            .is_ok_and(|found| metadata.sends[found].setter)
+    })
 }
 
 /// Patches slot `index` of `code` with `one_shot`, giving the body a code

@@ -72,8 +72,8 @@ pub(crate) fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
         })
 }
 
-/// The class declarations named `Module.Path.To.Class`, as the step
-/// filters and the exception filters' conditions name one: one for each
+/// The class declarations named `Module.Path.To.Class`, as a function
+/// breakpoint and the exception filters' conditions name one: one for each
 /// module `named` takes `Module` for (`Sources::modules_of_class_name`) --
 /// the program's and the shipped module of a name both declare.
 pub(crate) fn parse_class_name(

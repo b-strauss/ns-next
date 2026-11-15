@@ -177,39 +177,55 @@ impl Agent {
     /// `nsNext/setStepFilters`, a request of ns-next's own: whether a step
     /// passes the shipped modules' code, and the entries, each a module
     /// named by its source as a breakpoint's is and a class path in it,
-    /// whose code it passes too. An entry the agent cannot take -- its
-    /// source names no module of this program, its path is malformed, or
-    /// the module's current text declares no such class -- is left out
-    /// and said in an `output` event, so that one stale entry never keeps
-    /// the others from applying.
+    /// whose code it passes too. An entry the agent cannot take is left
+    /// out, so that one stale entry never keeps the others from applying:
+    /// one whose source names no module of this program silently -- a
+    /// client's list may name the modules of other programs -- and one
+    /// whose path is malformed or whose module's current text declares no
+    /// such class said in an `output` event, once for as long as the
+    /// client sends the same, so that a resend at every change says
+    /// nothing new. A request that still names typed `classes`, the form
+    /// `entries` replaced, is refused.
     pub(super) fn set_step_filters(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) =
             self.arguments::<protocol::SetStepFiltersArguments>(connection, request)
         else {
             return;
         };
+        if arguments.classes.is_some() {
+            self.respond_error(
+                connection,
+                request,
+                "`classes` is no longer taken: name each class by `entries`,                  each `{ \"source\": <a breakpoint's source>, \"classPath\": [<names>] }`",
+            );
+            return;
+        }
         let mut classes = Vec::new();
         let mut skipped = Vec::new();
         for entry in &arguments.entries {
             match self.step_filter_class(entry) {
                 Ok(class) => classes.push(class),
-                Err(reason) => skipped.push(reason),
+                Err(Some(reason)) => skipped.push(reason),
+                Err(None) => {}
             }
         }
-        if !skipped.is_empty() {
-            let output = skipped
-                .iter()
-                .map(|reason| {
-                    format!(
-                        "a step filter is left out: {reason}
+        if skipped != self.step_filters_said {
+            if !skipped.is_empty() {
+                let output = skipped
+                    .iter()
+                    .map(|reason| {
+                        format!(
+                            "a step filter is left out: {reason}
 "
-                    )
-                })
-                .collect::<String>();
-            self.event(
-                "output",
-                Some(serde_json::json!({ "category": "console", "output": output })),
-            );
+                        )
+                    })
+                    .collect::<String>();
+                self.event(
+                    "output",
+                    Some(serde_json::json!({ "category": "console", "output": output })),
+                );
+            }
+            self.step_filters_said = skipped;
         }
         let command = Command::SetStepFilters {
             shipped: arguments.shipped,
@@ -218,21 +234,30 @@ impl Agent {
         self.forward(connection, request, command);
     }
 
-    /// The class a step filter's entry names, or why it names none.
-    fn step_filter_class(&self, entry: &protocol::StepFilterEntry) -> Result<ClassName, String> {
+    /// The class a step filter's entry names, or why it names none:
+    /// `None` for an entry of no module of this program, which is no
+    /// mistake to say.
+    fn step_filter_class(
+        &self,
+        entry: &protocol::StepFilterEntry,
+    ) -> Result<ClassName, Option<String>> {
+        let module = self.sources.module_named_by(&entry.source).ok_or(None)?;
         let source = describe_source(&entry.source);
-        let Some(module) = self.sources.module_named_by(&entry.source) else {
-            return Err(format!("{source} is no module of this program"));
-        };
         let path = &entry.class_path;
         if path
             .iter()
             .any(|segment| segment.is_empty() || segment.contains(char::is_whitespace))
         {
-            return Err(format!("`{}` in {source} names no class", path.join(".")));
+            return Err(Some(format!(
+                "`{}` in {source} names no class",
+                path.join(".")
+            )));
         }
         if self.sources.declares_class(&module, path) == Some(false) {
-            return Err(format!("{source} declares no class `{}`", path.join(".")));
+            return Err(Some(format!(
+                "{source} declares no class `{}`",
+                path.join(".")
+            )));
         }
         Ok(ClassName {
             module,

@@ -304,6 +304,11 @@ pub(crate) struct SetStepFiltersArguments {
     pub(crate) shipped: bool,
     #[serde(default)]
     pub(crate) entries: Vec<StepFilterEntry>,
+    /// The typed class names `Module.Path.To.Class` the request once
+    /// took, which `entries` replaced: read only to refuse a client that
+    /// still sends them, rather than let its filters lapse unsaid.
+    #[serde(default)]
+    pub(crate) classes: Option<serde_json::Value>,
 }
 
 /// A step filter's entry: the module its `source` names, as a
@@ -329,6 +334,7 @@ impl Default for SetStepFiltersArguments {
         SetStepFiltersArguments {
             shipped: filter_the_shipped_modules(),
             entries: Vec::new(),
+            classes: None,
         }
     }
 }

@@ -3952,7 +3952,13 @@ receiver, never the value the assignment answers, so the flood leaves
 out the index after it (`SendEntry::setter`) and the assigned value's
 call stays the last -- `count:: count + 1` reports `count + 1`, and an
 assignment of a literal reports none
-(`a_setter_s_answer_is_not_the_returned_value`).
+(`a_setter_s_answer_is_not_the_returned_value`). A step out that returns
+into one -- out of a setter method the program declares, or out of a
+block such an assignment handed its method -- records nothing either,
+its return point a one-shot that stops without recording
+(`stepping::answers_a_setter`), so that the value before stays: none,
+for a step out, which records nothing in the callee
+(`a_step_out_into_a_setter_assignment_records_nothing`).
 
 The one-shot notes only where the call stands, beside the value: its
 body, its index, the kind of call the instruction is (`stepping::Call`,
@@ -3965,8 +3971,11 @@ it, once, rather than every call a step over a loop runs past
 records the call's span (`SendEntry::call`, from the receiver -- or the
 selector, where the receiver is implicit -- to the last argument; a
 setter assignment's whole assignment), sliced from the text that
-metadata was compiled from, which the metadata cache keeps beside it
-and clears with it at every install (`Cache::metadata_with_text`), so
+metadata was compiled from, which the metadata cache keeps beside it,
+one text per module that every level of it compiled again shares
+(`Cache::module_text`), and clears with it at every install
+(`Cache::metadata_with_text`;
+`the_levels_of_a_module_share_its_text`), so
 that no text is assembled at a stop and a module is never looked up by
 a name two loaded modules may share
 (`a_call_is_named_from_its_own_module_s_text`). A cascade's later
@@ -3985,9 +3994,12 @@ left out as ` … `: `(kinds at: which) value`. A body without metadata
 -- an image built with `--strip-source` -- names it by the instruction
 (`Call::name`): a send's selector, `super` before a super send's, a
 mirror send's mirror selector, and `future`, `initializer`, `superclass
-initializer` or `mixin initializer` for the other calls
-(`a_step_over_names_the_returned_value_by_its_call`,
-`a_stripped_image_names_the_return_value_by_its_selector`).
+initializer` or `mixin initializer` for the other calls; so does a body
+with metadata for a call the source spells as no send, the superclass
+clause's initializer a step out of a superclass's initializer returns to
+(`a_stripped_image_names_the_return_value_by_its_selector`,
+`a_stripped_image_names_a_super_send_and_a_superclass_initializer`,
+`a_step_out_of_a_superclass_initializer_names_its_kind`).
 
 ### Launching, the start and the end
 
@@ -4111,16 +4123,18 @@ shows the program's text
 `a_core_library_of_another_fingerprint_is_ignored`,
 `a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
 A class name a client types -- a function breakpoint's, an exception
-filter's condition, a step filter -- names every module of its `Module`
-segment's name, the program's and the shipped one where both exist
+filter's condition -- names every module of its `Module` segment's name,
+the program's and the shipped one where both exist
 (`Sources::modules_of_class_name`), so that `Kernel.Error` reaches the
 shipped `Error` beside a program module `Kernel`, with no syntax of its
 own: a filter sends the VM a `ClassName` for each, and a function
 breakpoint one method breakpoint for each behind its one DAP id, verified
 while any of them is
 (`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
-`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
-`a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name`). `scopes` gives a frame's `Locals` and, at a
+`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`).
+A step filter types no name: it names its module by a file, as a
+breakpoint does (`nsNext/setStepFilters`, under "The steps" below).
+`scopes` gives a frame's `Locals` and, at a
 step's stop, the top frame's `Return value`, `presentationHint`
 `returnValue`, whose one variable is named by the call that returned it
 (`ReturnedValue::call`); `variables` pages a frame's
@@ -4157,7 +4171,8 @@ function breakpoint takes a hit condition ("Hit counts and temporary
 breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
 `halt` on by its `filters` or `filterOptions`, and the conditions of its
 filter options, each a comma-separated list of classes
-`Module.Path.To.Class`, parsed as the step filters' are, together name the
+`Module.Path.To.Class`, each parsed as a function breakpoint's class is
+(`parse_class_name`), together name the
 classes both exception filters stop for, since the VM keeps one list
 ("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as long
 as the client sends the breakpoint again -- a line breakpoint by its
@@ -4209,14 +4224,21 @@ module as a breakpoint's does -- a program module's file, a file of the
 core library taken, or a reference -- and a `classPath` in it from the
 module's root down, the root's own name left out, empty for the whole
 module (`StepFilterEntry`); the agent sends `Command::SetStepFilters`
-with a `ClassName` for each entry it can take. An entry whose source
-names no module of the program, whose path holds an empty or blank
-segment, or whose class the module's current text -- the VM's answer,
-else the text the program was loaded with, else the binary's -- does not
-declare (`Sources::declares_class`, parsed by `ns-syntax`) is left out
-and said in an `output` event, and the others apply; a text the agent
-does not have or cannot parse leaves the VM to decide, since the filter
-matches only the declarations it runs. A file names its module only, so
+with a `ClassName` for each entry it can take, and the others apply. An
+entry whose source names no module of the program is left out silently,
+since a client's list may name other programs' files -- a project's
+does. One whose path holds an empty or blank segment, or whose class the
+module's current text -- the VM's answer, else the text the program was
+loaded with, else the binary's -- does not declare
+(`Sources::declares_class`, parsed by `ns-syntax`), is left out and said
+in an `output` event, once for as long as the client sends the same
+filters, so that a client resending them at every change says nothing
+new, and again once what is left out changes; a text the agent does not
+have or cannot parse leaves the VM to decide, since the filter matches
+only the declarations it runs. A request that still names `classes`,
+the typed form `entries` replaced, is refused by an error that names the
+new form (`a_step_filter_request_with_typed_classes_is_refused`). A
+file names its module only, so
 a program module named like a shipped one -- a `Kernel` of its own --
 and the shipped module are filtered apart (`debug_adapter.rs`'s
 `a_step_filter_by_the_library_file_filters_only_the_shipped_module`,

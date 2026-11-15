@@ -10,14 +10,21 @@ use super::again::{compile_level, BodyOrigin, Member, PairedBodies};
 use super::{address, BodyMetadata};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
+use crate::heap::MixinId;
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;
 
 /// Each body's metadata, `None` for a body that pairs with none, keyed by
-/// the body's address.
+/// the body's address, and the text of each program module a level was
+/// compiled from, keyed by the module's root.
 #[derive(Default)]
 pub(crate) struct Cache {
     bodies: HashMap<usize, Entry>,
+    /// One text per module, which every level of it compiled again and
+    /// every entry of their bodies share, rather than a copy per level.
+    /// A shipped module's text is the binary's, shared already
+    /// (`shipped_module_text`).
+    texts: HashMap<MixinId, Rc<str>>,
 }
 
 /// One body's entry, its metadata beside the module's text the metadata
@@ -130,11 +137,27 @@ impl Cache {
             .collect()
     }
 
-    /// Forgets every body's metadata: an install changes the module's
-    /// text, which every span counts in, and may replace what the bodies
-    /// pair with.
+    /// Forgets every body's metadata and every module's text: an install
+    /// changes the module's text, which every span counts in, and may
+    /// replace what the bodies pair with.
     pub(crate) fn clear(&mut self) {
         self.bodies.clear();
+        self.texts.clear();
+    }
+
+    /// The text of the program module whose root is `root`, as the cache
+    /// shares it: the text kept for the root when it is `text`, else
+    /// `text`, kept from here on. Compared rather than trusted, since a
+    /// full collection may reclaim a root's id for another module.
+    pub(super) fn module_text(&mut self, root: MixinId, text: String) -> Rc<str> {
+        if let Some(kept) = self.texts.get(&root) {
+            if **kept == *text {
+                return Rc::clone(kept);
+            }
+        }
+        let text: Rc<str> = Rc::from(text);
+        self.texts.insert(root, Rc::clone(&text));
+        text
     }
 
     /// Records `pairs`, compiled from `text`, a body's tables never

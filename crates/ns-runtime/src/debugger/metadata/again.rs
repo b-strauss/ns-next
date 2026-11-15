@@ -119,7 +119,7 @@ pub(crate) fn compile_level(
     } else {
         let text = mutator.heap.module_source(module_root)?;
         let module = ns_syntax::parse(&text).ok()?;
-        let text: Rc<str> = Rc::from(text);
+        let text = mutator.debug_metadata.module_text(module_root, text);
         // Never `resolve_kernel`: only shipped source records mirror
         // sends.
         let resolved = crate::resolver::resolve(
