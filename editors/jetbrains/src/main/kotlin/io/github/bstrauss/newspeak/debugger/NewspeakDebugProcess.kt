@@ -70,7 +70,7 @@ class NewspeakDebugProcess(
     private val secret: String,
 ) : XDebugProcess(session) {
     private val work = AppExecutorUtil.createBoundedApplicationPoolExecutor("Newspeak debugger", 1)
-    private val lineBreakpoints = NewspeakLineBreakpointHandler(session)
+    private val lineBreakpoints = NewspeakLineBreakpointHandler(session, NewspeakCoreLibrary.getInstance(session.project))
     private val methodBreakpoints = NewspeakMethodBreakpointHandler(session)
     private val exceptionBreakpoints = NewspeakExceptionBreakpointHandler(session)
 
@@ -133,7 +133,8 @@ class NewspeakDebugProcess(
         awaitLibrary(library)
         val client = DapClient(connection)
         this.client = client
-        sources = NewspeakSources(client, NewspeakCoreLibrary.getInstance(session.project)::fileNamed)
+        val coreLibrary = NewspeakCoreLibrary.getInstance(session.project)
+        sources = NewspeakSources(client, coreLibrary::fileNamed, coreLibrary::sourceOf)
         if (ended) {
             client.close()
             return

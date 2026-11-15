@@ -62,6 +62,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
+import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
@@ -336,6 +338,46 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         }
         assertTrue("a module is the library's source", source)
         assertFalse("the store's own files are not shown", inLibrary)
+    }
+
+    /**
+     * A project that is no Newspeak project shows no library, though the
+     * settings name a binary; its first debug session makes it one, and
+     * shows it.
+     */
+    fun testAProjectThatIsNoNewspeakProjectShowsNoLibrary() {
+        val library = NewspeakCoreLibrary.getInstance(project)
+        library.forgetTheProjectIsNewspeak()
+        assertNull(library.refresh().get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertNull(library.directory)
+        val provider = AdditionalLibraryRootsProvider.EP_NAME.findExtensionOrFail(NewspeakCoreLibraryRootsProvider::class.java)
+        assertEquals(emptyList<Any>(), provider.getAdditionalProjectLibraries(project).toList())
+
+        assertNotNull(libraryDirectory())
+        assertEquals(1, provider.getAdditionalProjectLibraries(project).size)
+    }
+
+    /**
+     * The pruning keeps the directory an open project shows however long
+     * ago its use was recorded, and deletes one no project shows that has
+     * been unused as long.
+     */
+    fun testThePruningKeepsTheDirectoryAnOpenProjectShows() {
+        val library = libraryDirectory()
+        val unused = NewspeakCoreLibrary.STORE.root.resolve(OLDER_FINGERPRINT)
+        try {
+            Files.createDirectories(unused)
+            Files.writeString(unused.resolve(CoreLibraryStore.FINGERPRINT_FILE), "$OLDER_FINGERPRINT\n")
+            val longAgo = Instant.now().minus(Duration.ofDays(400))
+            NewspeakCoreLibrary.STORE.touch(unused, longAgo)
+            NewspeakCoreLibrary.STORE.touch(library, longAgo)
+            NewspeakCoreLibrary.pruneUnused(Instant.now())
+            assertTrue("the open project's directory is kept", Files.isDirectory(library))
+            assertFalse("the unused one is deleted", Files.exists(unused))
+        } finally {
+            NewspeakCoreLibrary.STORE.touch(library)
+            if (Files.exists(unused)) CoreLibraryStore.deleteRecursively(unused)
+        }
     }
 
     /** A shipped frame whose text is the library's file's opens that file, where its breakpoints stand. */

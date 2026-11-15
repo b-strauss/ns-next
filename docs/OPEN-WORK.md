@@ -3308,6 +3308,20 @@ program's subclass of `String` as an argument, the error of a
   The source a library file is sent as must name the shipped module
   unambiguously. [editor-support.md](design/editor-support.md), "The core
   library". Noted 2026-11-15.
+- **The core library's breakable lines need the analyzer and `ns-next` to
+  be one build.** The plugin bundles `ns-next-analyzer` and takes
+  `ns-next` from the settings; the library's files are the runtime's
+  shipped sources, and the analyzer answers a file as a shipped module
+  only when its text is, byte for byte, one of its own shipped texts. When
+  the two binaries are different builds whose shipped sources differ,
+  `Kernel.ns` and the others are answered as ordinary modules: their
+  breakable lines are approximate, a line breakpoint may be refused where
+  the runtime would take it, or offered where it moves. The analyzer
+  would need the runtime's shipped sources -- the fingerprint directory
+  the plugin shows, or the runtime's binary itself -- to compile a
+  library file as that build's shipped module.
+  [editor-support.md](design/editor-support.md), "Breakable lines", "The
+  core library". Noted 2026-11-15.
 - **A project the plugin once took for a Newspeak project keeps its
   core library.** `NewspeakCoreLibrary`'s `newspeak` flag is set when the
   project's files say so, or when a debug session starts, and never reset:

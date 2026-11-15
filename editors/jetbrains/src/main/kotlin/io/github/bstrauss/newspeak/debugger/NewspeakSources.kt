@@ -8,7 +8,9 @@ import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapSource
 import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
+import io.github.bstrauss.newspeak.library.LibrarySource
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
+import io.github.bstrauss.newspeak.library.librarySourceOf
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
@@ -31,6 +33,7 @@ import java.util.concurrent.TimeUnit
 class NewspeakSources(
     private val client: DapClient,
     private val libraryFile: (String) -> VirtualFile? = { null },
+    private val librarySource: (String) -> LibrarySource = { fileUrl -> librarySourceOf(fileUrl, null, NewspeakCoreLibrary.STORE) },
 ) {
     private val byReference = ConcurrentHashMap<Int, VirtualFile>()
 
@@ -54,10 +57,12 @@ class NewspeakSources(
 
     /**
      * How the agent names [file]: by its reference when this session showed
-     * it so, by its name when it is a core library's file, which is how the
-     * agent knows a shipped module, by its path when it is any other file on
-     * disk; null for any other -- a module's text an earlier session
-     * showed, say -- which the agent cannot name.
+     * it so, by its name when it is a file of the core library the project
+     * shows ([librarySource]), which is how the agent knows a shipped
+     * module, by its path when it is any other file on disk but one of
+     * another directory of shipped sources; null for any other -- a file of
+     * an older binary's shipped sources, a module's text an earlier session
+     * showed -- which the agent cannot name.
      */
     fun sourceOf(file: VirtualFile): JsonObject? {
         val reference = byReference.entries.firstOrNull { (_, shown) -> shown == file }?.key
@@ -68,8 +73,11 @@ class NewspeakSources(
             }
         }
         if (!file.isInLocalFileSystem) return null
-        NewspeakCoreLibrary.moduleSourceNameOf(file.url)?.let { name -> return JsonObject().apply { addProperty("name", name) } }
-        return JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
+        return when (val shipped = librarySource(file.url)) {
+            is LibrarySource.Module -> JsonObject().apply { addProperty("name", shipped.name) }
+            LibrarySource.Elsewhere -> null
+            LibrarySource.Outside -> JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
+        }
     }
 
     private fun fileForReference(reference: Int, name: String?): VirtualFile? {

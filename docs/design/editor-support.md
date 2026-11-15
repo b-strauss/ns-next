@@ -1160,7 +1160,14 @@ one, so no text a user writes is resolved as shipped code (`CLAUDE.md`,
 module's is an ordinary module. `ns-cli`'s `debug_metadata` holds every
 shipped module's answer to where `SetBreakpoints` lands in the built
 module, under both lowerings
-(`shipped_breakable_statements_agree_with_the_breakpoints`).
+(`shipped_breakable_statements_agree_with_the_breakpoints`). The
+comparison is against the analyzer's own shipped sources, so it holds
+only while the analyzer and the `ns-next` that runs are the same build:
+the plugin bundles the analyzer and takes `ns-next` from the settings,
+and when the two differ, the library's text -- the runtime's -- matches
+no shipped text of the analyzer's, `Kernel.ns` is answered as an
+ordinary module, and its breakable lines are only approximate
+(`docs/OPEN-WORK.md`).
 
 The answer is compiled on a worker thread of its own, which the server
 spawns at the first request and asks synchronously, handing it the
@@ -1832,7 +1839,11 @@ library out. `NewspeakCoreLibraryRootsProvider` shows the directory in
 marker excluded (`NewspeakCoreLibraryRoots`, a `SyntheticLibrary`); the
 files are read-only on disk, so their editors are. The language server
 answers the breakable lines of a shipped module's file as the shipped
-module's ("Breakable lines").
+module's ("Breakable lines") -- provided the bundled analyzer and the
+settings' `ns-next` are the same build, since only then is the library's
+text, the runtime's, one of the analyzer's shipped texts; a library of
+another build is answered as ordinary modules, its breakable lines
+approximate (`docs/OPEN-WORK.md`).
 
 **Pruning.** Every use of a fingerprint directory -- a look that shows
 it, a debug session against it -- sets the time of the marker
@@ -1858,8 +1869,14 @@ them only through internal API (`XBreakpointBase`,
 whether the line still takes one is the language server's and the agent's
 to say, as for any breakpoint. One whose file has no counterpart -- a
 module renamed or removed -- stays where it is and is logged. The
-debugger sends a library file's breakpoints by the module's name, so a
-program module named like a shipped one (a `Kernel` of its own) takes a
+debugger sends a library file's breakpoints by the module's name -- only
+those of the directory the project shows, the running binary's; a file of
+any other fingerprint directory, which a look that failed or timed out
+leaves breakpoints in, is not sent at all and its breakpoints stay
+unverified, since the agent would take it for the running binary's module
+of the name at the older text's lines, and two directories' `Kernel.ns`
+would replace each other's set (`LibrarySource`, `librarySourceOf`) -- so
+a program module named like a shipped one (a `Kernel` of its own) takes a
 breakpoint set in the library's file of that name (`docs/OPEN-WORK.md`);
 it opens
 the library's file for a stop in a shipped module whose text is its own
@@ -2025,6 +2042,9 @@ The server's own tests are described under its section, above ("Testing").
   once, its files read-only and no staging left, and reuses it; the
   library shown is the settings' binary's, `platform/` a folder, a module
   the library's source and the `fingerprint` file not in the library; a
+  project that is no Newspeak project shows none until its first debug
+  session; the pruning keeps the directory an open project shows however
+  long ago its use was recorded and deletes an unused one; a
   breakpoint in the library's `Kernel.ns`, in `Array>>do:`, stops the real
   runtime at each element, one in an older fingerprint's `Kernel.ns` is
   moved by the session's look before it is sent and stops in the new
@@ -2049,7 +2069,8 @@ The server's own tests are described under its section, above ("Testing").
   block's highlighted range and column the server's; and, through each
   handler over a scripted peer and a session that records what it is
   told: a pass count is sent as the `hitCondition` and a block variant's
-  column as the `column`, a breakpoint the agent moves says the line it
+  column as the `column`, a breakpoint in a directory of shipped sources
+  the project does not show is not sent, a breakpoint the agent moves says the line it
   stops at and one it refuses its reason, a method breakpoint is sent by
   its name and pass count, and the exception breakpoints as the filters
   and the classes' options, "Any exception" for uncaught ones taking
@@ -2061,7 +2082,9 @@ The server's own tests are described under its section, above ("Testing").
   writes) deletes a directory unused for 31 days, keeps one used 29 days
   ago, one in use however old and anything not the store's own, and a
   touch counts as a use; a file is placed by its fingerprint and its path
-  below it. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
+  below it; and only a module of the directory shown is named to the
+  agent, a file of another fingerprint directory not at all, any other
+  file by its path. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
   line breakpoints of an older fingerprint move to the same files of the
   new one with their settings, one without a counterpart stays, and the
   new library's own is kept. `NewspeakProjectTest`: a project with a

@@ -1,5 +1,7 @@
 package io.github.bstrauss.newspeak.library
 
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.VfsUtilCore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -74,12 +76,35 @@ class CoreLibraryStoreTest {
         assertNull("the directory itself", store.placeOf(root.resolve("00000000000000ab")))
     }
 
+    /**
+     * Only a file of the directory the project shows is named to the agent,
+     * by its module's name: one of any other fingerprint's -- an older
+     * binary's, left behind by a look that failed -- is no module the
+     * running binary has, and is not sent at all.
+     */
+    @Test fun onlyTheShownDirectorysFilesAreNamedToTheAgent() {
+        val shown = root.resolve("00000000000000ab")
+        val older = root.resolve("00000000000000cd")
+        fun sourceOf(path: Path, shownDirectory: Path?) = librarySourceOf(urlOf(path), shownDirectory, store)
+
+        assertEquals(LibrarySource.Module("Kernel.ns"), sourceOf(shown.resolve("Kernel.ns"), shown))
+        assertEquals(LibrarySource.Module("TimeFactory.ns"), sourceOf(shown.resolve("platform").resolve("TimeFactory.ns"), shown))
+        assertEquals(LibrarySource.Elsewhere, sourceOf(older.resolve("Kernel.ns"), shown))
+        assertEquals("nothing shown", LibrarySource.Elsewhere, sourceOf(shown.resolve("Kernel.ns"), null))
+        assertEquals("no module", LibrarySource.Elsewhere, sourceOf(shown.resolve(CoreLibraryStore.FINGERPRINT_FILE), shown))
+        assertEquals(LibrarySource.Outside, sourceOf(root.resolveSibling("Program.ns"), shown))
+        assertEquals(LibrarySource.Outside, librarySourceOf("temp:///Kernel.ns", shown, store))
+    }
+
     @Test fun aFingerprintIsSixteenLowercaseHexDigits() {
         assertTrue(CoreLibraryStore.isFingerprint("0123456789abcdef"))
         assertFalse(CoreLibraryStore.isFingerprint("0123456789ABCDEF"))
         assertFalse(CoreLibraryStore.isFingerprint("0123456789abcde"))
         assertFalse(CoreLibraryStore.isFingerprint("../../etc/passwd"))
     }
+
+    /** The file URL of [path], as a breakpoint holds it. */
+    private fun urlOf(path: Path): String = VfsUtilCore.pathToUrl(FileUtil.toSystemIndependentName(path.toString()))
 
     /** A directory as the store writes one, its files read-only, last used at [lastUsed]. */
     private fun fingerprintDirectory(fingerprint: String, lastUsed: Instant): Path {

@@ -116,7 +116,7 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
             LOG.warn("the use of ${ensured.directory} could not be recorded", exception)
         }
         val shown = show(ensured.directory)
-        STORE.prune(Instant.now(), IN_USE.values.toSet() + listOfNotNull(shown))
+        pruneUnused(Instant.now(), shown)
         return shown
     }
 
@@ -178,6 +178,11 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
         directory = null
     }
 
+    /** Takes the project for one that is no Newspeak project, until a debug session or [decideAndRefresh] says otherwise; for the tests. */
+    internal fun forgetTheProjectIsNewspeak() {
+        newspeak = false
+    }
+
     override fun dispose() {
         IN_USE.remove(project)
     }
@@ -200,21 +205,54 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
         fun getInstance(project: Project): NewspeakCoreLibrary = project.service()
 
         /**
-         * The name the agent knows the module in the library file at
-         * [fileUrl] by, `<Module>.ns`; null for a file outside every
-         * directory of shipped sources.
+         * Deletes the directories of shipped sources unused for long
+         * ([CoreLibraryStore.prune]) but every one an open project shows,
+         * and [shown], the one a look just showed.
          */
-        fun moduleSourceNameOf(fileUrl: String): String? {
-            if (!fileUrl.startsWith("file:")) return null
-            val path = try {
-                Path.of(VfsUtilCore.urlToPath(fileUrl))
-            } catch (_: InvalidPathException) {
-                return null
-            }
-            val place = STORE.placeOf(path) ?: return null
-            return place.relative.fileName.toString().takeIf { name -> name.endsWith(".ns") }
+        internal fun pruneUnused(now: Instant, shown: Path? = null) {
+            STORE.prune(now, IN_USE.values.toSet() + listOfNotNull(shown))
         }
     }
+
+    /** How the agent may know the file at [fileUrl], judged against the directory this project shows ([librarySourceOf]). */
+    fun sourceOf(fileUrl: String): LibrarySource = librarySourceOf(fileUrl, directory, STORE)
+}
+
+/** How the agent may know a file, as far as the core library decides it. */
+sealed interface LibrarySource {
+    /** A file outside every directory of shipped sources: the agent knows it by its path. */
+    data object Outside : LibrarySource
+
+    /** A module of the directory the project shows, the running binary's: the agent knows it by [name], `<Module>.ns`. */
+    data class Module(val name: String) : LibrarySource
+
+    /**
+     * A file of another directory of shipped sources -- an older binary's,
+     * which a look that failed or timed out left the project's breakpoints
+     * in -- or no module at all: the agent knows no such module, and its
+     * breakpoints are not sent, so that they neither stop at an older
+     * text's line numbers nor replace the shown file's set of the same name.
+     */
+    data object Elsewhere : LibrarySource
+}
+
+/**
+ * How the agent may know the file at [fileUrl] when the project shows
+ * [shown], a directory of [store], or nothing for null: a module of
+ * [shown] by its name, any other file of [store] not at all, and every
+ * file outside it by its path.
+ */
+internal fun librarySourceOf(fileUrl: String, shown: Path?, store: CoreLibraryStore): LibrarySource {
+    if (!fileUrl.startsWith("file:")) return LibrarySource.Outside
+    val path = try {
+        Path.of(VfsUtilCore.urlToPath(fileUrl))
+    } catch (_: InvalidPathException) {
+        return LibrarySource.Outside
+    }
+    val place = store.placeOf(path) ?: return LibrarySource.Outside
+    val name = place.relative.fileName.toString()
+    val inShown = shown != null && shown.toAbsolutePath().normalize() == store.root.resolve(place.fingerprint).toAbsolutePath().normalize()
+    return if (inShown && name.endsWith(".ns")) LibrarySource.Module(name) else LibrarySource.Elsewhere
 }
 
 /**
