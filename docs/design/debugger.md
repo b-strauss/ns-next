@@ -1804,7 +1804,8 @@ tests do not.
   and on a comment line; a stop naming a replaced breakpoint; steps by
   line and by statement, in and out, a line step over a one-line loop,
   one at a one-line block's statement stopping in its next activation
-  and one a breakpoint ends mid-line; run to cursor; a function
+  and one a breakpoint ends mid-line; a continue and a terminate at a
+  factory's stop; run to cursor; a function
   breakpoint; an uncaught exception's description; `pause` of a running
   loop and right after a `continue`; a stack trace while running
   refused; and a pending breakpoint reported once its module is built.
@@ -2465,7 +2466,17 @@ push -- the initializer has run nothing, and the factory's
 `InitializeInstance` decides and pushes it again once the program goes
 on -- and stops in the factory, at its `InitializeInstance`, the run
 loop reading the frame on top again (`stepping::rewound_into_factory`,
-`HeldStep::StopInFactory`, `Served::Rebuilt`); a factory the host sends,
+`HeldStep::StopInFactory`, `Served::Rebuilt`). Whatever goes on from
+that stop -- a step, a `Continue` with no step in progress, a
+`Terminate` -- goes on from the frame read again: a `Continue` runs the
+initializer pushed again once, a breakpoint at its first statement hit
+once and its hit count counted once, and a `Terminate` ends the run
+there
+(`a_continue_at_the_rewound_factory_stop_runs_the_initializer_once`,
+`a_hit_count_at_the_initializer_s_first_statement_counts_the_rewind_once`,
+`a_terminate_at_the_rewound_factory_stop_ends_the_run`; through the agent
+`a_continue_at_the_factory_stop_runs_the_program_to_its_end` and
+`a_terminate_at_the_factory_stop_ends_the_program`); a factory the host sends,
 the first activation of an instantiation's run, which a step the run
 before left goes on from (decision 17) or a pause asked before the run
 stops, stops at its first instruction through a one-shot
@@ -2542,7 +2553,12 @@ shipped: they keep the held request as a filtered frame does, and a
 stop in them goes on as one in a filtered frame
 (`stepping::passed_by_every_step`), so the header stops of a chain end
 at the last class that inherits from `Object` directly and an explicit
-`Object new` clause steps to the next statement. A shipped superclass
+`Object new` clause steps to the next statement. The rule is a guard no
+program reaches today: `Object`'s and `Top`'s levels need no
+initializer code and take no arguments, so the instantiation passes
+them without pushing their initializers (`instantiate::enter_or_pass`),
+and no step meets one; it keeps the decision should either level come
+to run code. A shipped superclass
 other than `Object` is filtered as any shipped code: its header stop
 comes only with the shipped filter off. Nothing of it is on the
 instantiation's path: the decision is the held step's, at the safepoint

@@ -1980,6 +1980,43 @@ fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
     );
 }
 
+/// A session of `POINTS` stopped by steps into at `Punkt`'s factory, which
+/// a step into from the sender reaches by undoing the initializer's push.
+fn at_the_factory_stop(path: &Path) -> DapClient {
+    let mut client = DapClient::connect_mode(path);
+    client.start_session(true);
+    client.stopped("entry");
+    step_to_top(&mut client, "stepIn");
+    step_to_top(&mut client, "stepIn");
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(frames[0]["name"], "Punkt class>>x:y:", "{frames:?}");
+    client
+}
+
+/// A `continue` at the factory's stop runs the program to its end, the
+/// initializer the factory pushes again run once.
+#[test]
+fn a_continue_at_the_factory_stop_runs_the_program_to_its_end() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = at_the_factory_stop(&path);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+/// A `terminate` at the factory's stop ends the program there.
+#[test]
+fn a_terminate_at_the_factory_stop_ends_the_program() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = at_the_factory_stop(&path);
+    client.succeed("terminate", json!({}));
+    assert_eq!(exit_code_reported(&mut client), 1);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(1), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "");
+    assert!(finished.stderr.contains(TERMINATED), "{}", finished.stderr);
+}
+
 /// A root whose line 5 is a loop of two statements, followed on line 8 by
 /// the statement after it.
 const LOOPING: &str = indoc! {"

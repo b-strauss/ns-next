@@ -4279,6 +4279,146 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `HEADERS`'s instance after two warming sends of `selector`, its
+/// debugger attached, and the remote.
+fn warmed_headers(lowering: Lowering, selector: &str) -> (Interpreter, Root, DebugRemote) {
+    let (mut interpreter, instance) = instance_of(HEADERS, lowering);
+    for _ in 0..2 {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern(selector), &[]),
+            "warm",
+        );
+    }
+    let remote = interpreter.attach_debugger();
+    (interpreter, instance, remote)
+}
+
+/// The ids of the breakpoints `Headers` was answered to have, in the
+/// order of their offsets.
+fn headers_breakpoint_ids(remote: &DebugRemote) -> Vec<BreakpointId> {
+    expect_breakpoints(remote, "Headers")
+        .iter()
+        .map(|state| state.id)
+        .collect()
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Terminate` at the factory's stop that a step into made by undoing
+    /// the initializer's push ends the run there, the initializer's frame
+    /// popped already; the interpreter runs the same send to its end
+    /// afterwards.
+    fn a_terminate_at_the_rewound_factory_stop_ends_the_run(lowering) {
+        let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let (mut interpreter, instance, remote) = warmed_headers(lowering, "point");
+        set_breakpoints(&remote, "Headers", vec![offset]);
+        let (top, result, remote) = debugged_by(
+            remote,
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                step(remote, Command::StepInto);
+                let top = stack_trace(remote)[0].name.clone();
+                remote.send(Command::Terminate);
+                top
+            },
+            || interpreter.send(&instance, Symbol::intern("point"), &[]),
+        );
+        assert_eq!(top, "Punkt class>>x:y:");
+        assert_terminated(result);
+        drop(remote);
+        let result = interpreter.send(&instance, Symbol::intern("point"), &[]);
+        assert_eq!(answered(&mut interpreter, result), 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Continue` at the rewound factory stop, no step in progress, goes
+    /// on into the initializer the factory pushes again, which runs once:
+    /// a breakpoint in it stops once, and the run answers as without the
+    /// debugger.
+    fn a_continue_at_the_rewound_factory_stop_runs_the_initializer_once(lowering) {
+        let sent = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let slot = line_start(HEADERS, "public x ::= ax.");
+        let (mut interpreter, instance, remote) = warmed_headers(lowering, "point");
+        set_breakpoints(&remote, "Headers", vec![sent, slot]);
+        let ((first, top, events, slot_id), result, _remote) = debugged_by(
+            remote,
+            |remote| {
+                let ids = headers_breakpoint_ids(remote);
+                let first = expect_breakpoint_stop(remote);
+                step(remote, Command::StepInto);
+                let top = stack_trace(remote)[0].name.clone();
+                continue_stopped(remote);
+                (first == [ids[0]], top, events_until_the_end(remote), ids[1])
+            },
+            || interpreter.send(&instance, Symbol::intern("point"), &[]),
+        );
+        assert!(first, "the first stop is the sender's breakpoint");
+        assert_eq!(top, "Punkt class>>x:y:");
+        let stops: Vec<_> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Stopped { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stops,
+            [StopReason::Breakpoint {
+                ids: vec![slot_id]
+            }]
+        );
+        assert_eq!(answered(&mut interpreter, result), 3);
+    }
+}
+
+/// The stops at a breakpoint at `Bare`'s initializer's first statement,
+/// its hit condition `condition`, once a step into stopped in `Bare`'s
+/// factory, by undoing the initializer's push, and the run continued.
+fn hits_after_the_rewind(lowering: Lowering, condition: HitCondition) -> usize {
+    let sent = line_start(HEADERS, "made:: Bare x: 3.");
+    let slot = line_start(HEADERS, "| public x ::= ax. |");
+    let (mut interpreter, instance, remote) = warmed_headers(lowering, "bare");
+    set_line_breakpoints(
+        &remote,
+        "Headers",
+        vec![
+            LineBreakpoint::at(sent),
+            LineBreakpoint {
+                offset: slot,
+                hit_condition: Some(condition),
+            },
+        ],
+    );
+    let (events, result, _remote) = debugged_by(
+        remote,
+        |remote| {
+            headers_breakpoint_ids(remote);
+            expect_breakpoint_stop(remote);
+            step(remote, Command::StepInto);
+            assert_eq!(stack_trace(remote)[0].name, "Bare class>>x:");
+            continue_stopped(remote);
+            events_until_the_end(remote)
+        },
+        || interpreter.send(&instance, Symbol::intern("bare"), &[]),
+    );
+    assert_eq!(answered(&mut interpreter, result), 3);
+    events
+        .iter()
+        .filter(|event| matches!(event, Event::Stopped { .. }))
+        .count()
+}
+
+ns_runtime::for_each_lowering! {
+    /// The initializer's push the rewind undid ran nothing, so its first
+    /// statement is hit once, by the push the factory makes again: a
+    /// breakpoint counting to its first hit stops, one counting to its
+    /// second does not.
+    fn a_hit_count_at_the_initializer_s_first_statement_counts_the_rewind_once(lowering) {
+        assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(1)), 1);
+        assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(2)), 0);
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A step over, and a step into, at the factory's stop goes on to the
     /// first statement of the class's initializer, which the factory
