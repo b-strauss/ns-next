@@ -465,9 +465,9 @@ NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every bod
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
 # `cargo xtask gates stress` runs the sixteen suites at once, the machine's
-# cores shared among them (two test threads each on 24: at 18 each, 288 test
-# processes stalled tests that wait on a process they start past their
-# bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
+# threads shared among them by each suite's measured length (32 on 24
+# cores, one to four a suite: at 18 each, 288 test processes stalled tests
+# that wait on a process they start past their bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
 # (`.config/nextest.toml`) without `ns-syntax`, `ns-assembler` and
 # `ns-memory`, which cannot reach the runtime, the tests that ended a measured
 # run alone started first, narrowed by a profile generated from it: every mode
@@ -485,7 +485,9 @@ step its build needed), and on 2026-11-13 `stress` about 1,050 s --
 1,038 s the suite under the fifteen modes it runs and with the JIT off
 at once, without the tests no switch reaches (1,233 s with them, 1,642 s
 on the whole suite), beside another build on the machine, and
-`run-corpus` plain and under each mode a few seconds more -- and on
+`run-corpus` plain and under each mode a few seconds more; on
+2026-11-15, the threads shared by the suites' lengths, the suites 782 s
+(at two threads each 1,323 s, COLLECT alone on in the end) -- and on
 2026-11-13, in Docker with a warm image, `linux` about three and a half
 minutes (the copy 7 s, the suite step 80 s with its build, nextest's run
 29 s against 52 s for the whole suite, the doctests 1 s, the Newspeak
