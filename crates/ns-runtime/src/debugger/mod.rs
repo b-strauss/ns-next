@@ -30,7 +30,7 @@ pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
     MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
-    ValueDescription, ValueId, Variable,
+    ValueDescription, ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -180,7 +180,7 @@ impl StressReader {
                         // to ask children of.
                         .extend(variables.iter().filter_map(|variable| {
                             Some(Command::Children {
-                                value: variable.value.as_ref()?.id,
+                                value: variable.value.shown()?.id,
                                 start: 0,
                                 count: StressReader::CHILDREN,
                             })
@@ -660,7 +660,7 @@ impl Interpreter {
 
     /// Whether anything takes a step's stop: an attached debugger, or, in
     /// a debug build, the step stress mode.
-    fn has_agent(&self) -> bool {
+    pub(crate) fn has_agent(&self) -> bool {
         #[cfg(debug_assertions)]
         if self.stress_step.is_some() {
             return true;
@@ -1040,23 +1040,28 @@ impl Interpreter {
     /// to run: the commands queued between runs (`serve_between_runs`),
     /// then a pause asked meanwhile, which stops the first activation at
     /// its first statement start (`stepping::stop_at_entry`) rather than at
-    /// the run's first safepoint. Cold: a run without a debugger tests one
-    /// option.
+    /// the run's first safepoint, or else a step the run before left in
+    /// progress, which goes on from the first activation
+    /// (`stepping::carry_into`) and stops it there too, a step's stop. A
+    /// pause's stop reports that step's method exits, which it ends.
+    /// Cold: a run without an agent tests one option.
     #[cold]
     pub(crate) fn serve_before_run(&mut self) {
-        if self.debugger.is_none() {
-            return;
-        }
         self.serve_between_runs();
-        if self.debugger.is_none() {
+        if !self.has_agent() {
             return;
         }
+        let debugged = self.debugger.is_some();
         self.enter(|mutator| {
-            if mutator.heap.debugger_bits() & DEBUGGER_PAUSE == 0 {
+            let paused = debugged && mutator.heap.debugger_bits() & DEBUGGER_PAUSE != 0;
+            let Some(entry) = mutator.heap.top_activation() else {
                 return;
-            }
-            if let Some(entry) = mutator.heap.top_activation() {
-                stepping::stop_at_entry(mutator, entry);
+            };
+            if paused {
+                let exits = mutator.breakpoints.take_carried_step();
+                stepping::stop_at_entry(mutator, entry, exits.unwrap_or_default());
+            } else if let Some(exits) = mutator.breakpoints.take_carried_step() {
+                stepping::carry_into(mutator, entry, exits);
             }
         });
     }
@@ -1106,6 +1111,12 @@ impl Interpreter {
                     | Command::Variables { .. }
                     | Command::Children { .. }),
                 ) => {
+                    // A `Terminate` ends the step the run before left in
+                    // progress, as it ends one in a run, though no run
+                    // executes for it to end.
+                    if command == Command::Terminate {
+                        self.enter(stepping::end);
+                    }
                     // The drop stays, but never silent: every command has
                     // exactly one answer, as every DAP request has one.
                     self.refuse(&mut CommandSource::Remote, &command, "no run executes");

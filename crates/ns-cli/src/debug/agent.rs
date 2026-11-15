@@ -14,7 +14,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ns_runtime::{Command, DebugControl, Event, StopReason, ValueDescription, Variable};
+use ns_runtime::{
+    Command, DebugControl, Event, StopReason, ValueDescription, Variable, VariableValue,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -935,7 +937,7 @@ impl Agent {
             Target::Returned(value) => {
                 let returned = Variable {
                     name: "returned".to_string(),
-                    value: Some(value),
+                    value: VariableValue::Shown(value),
                 };
                 let variables = vec![self.stop.variable(&returned)];
                 self.respond(connection, request, Some(json!({ "variables": variables })));

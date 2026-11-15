@@ -7796,6 +7796,16 @@ impl<'gc> Heap<'gc> {
             == Some(true)
     }
 
+    /// The closure `frame` runs, if it is a closure's: `activation_closure`
+    /// for a frame suspended into its object.
+    pub(crate) fn frame_closure(&self, frame: FrameReference<'gc>) -> Option<ObjectReference<'gc>> {
+        if !self.frame_runs_a_closure(frame) {
+            return None;
+        }
+        self.frame_field(frame, frame_field::KIND_OPERAND)
+            .as_object()
+    }
+
     /// `frame`'s `kind`, rebuilt from its kind tag, its kind operand and,
     /// for a method, its code id. Cloning a method's is cheap -- an `Rc` --
     /// and `image::decode` is the only caller that needs to match on the
@@ -10700,8 +10710,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The closure of `activation`, if it is a closure's and its closure
-    /// exists: an inlined block's waits for the exit to make it.
-    #[cfg(all(test, ns_jit))]
+    /// exists: an inlined block's waits for the exit to make it. What a
+    /// step out asks of a stopped block's frame, whose closure the send it
+    /// leaves must have taken (`debugger::stepping`).
     pub(crate) fn activation_closure(
         &self,
         activation: ActivationReference,

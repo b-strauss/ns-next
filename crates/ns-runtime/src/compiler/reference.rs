@@ -14,7 +14,9 @@ use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind}
 use ns_syntax::Span;
 
 use super::control_flow;
-use super::lower::{lower_literal, receiver_span, selector_of, Collecting, SendSpans};
+use super::lower::{
+    lower_literal, receiver_span, selector_of, taken_block_spans, Collecting, SendSpans,
+};
 use super::simultaneous;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
@@ -22,7 +24,8 @@ use crate::bytecode::{
     Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
 };
 use crate::debugger::metadata::{
-    BodyMetadata, MetadataCollector, SendEntry, StatementEntry, VariableEntry, VariablePlace,
+    BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
+    TakenBlock, VariableEntry, VariablePlace,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -277,6 +280,10 @@ struct Collected {
     names: Rc<[Symbol]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
+    block_sends: Vec<BlockSendEntry>,
+    /// The index of the `MakeClosure` each block literal the body made a
+    /// closure of was made by, by the literal's span.
+    closures: Vec<(Span, u32)>,
     /// Every block the body creates, so that a body past a limit, which
     /// drops them, drops their tables too
     /// (`MetadataCollector::forget_family`).
@@ -324,6 +331,8 @@ impl<'a> Body<'a> {
                     names,
                     statements: Vec::new(),
                     sends: Vec::new(),
+                    block_sends: Vec::new(),
+                    closures: Vec::new(),
                     blocks: Vec::new(),
                 };
                 (Some(collector), Some(collected))
@@ -806,6 +815,7 @@ impl<'a> Body<'a> {
                         call_site,
                     }
                 });
+                self.record_taken_blocks(None, std::slice::from_ref(value), false);
             }
             Some(Binding::SuperSend | Binding::MirrorSend | Binding::EnclosingObject { .. })
             | None => panic!(
@@ -830,7 +840,7 @@ impl<'a> Body<'a> {
             }
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
-                self.emit_send(into, spans, |destination, call_site| {
+                let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector,
                         argument_base,
@@ -838,11 +848,13 @@ impl<'a> Body<'a> {
                         destination,
                         call_site,
                     }
-                })
+                });
+                self.record_taken_blocks(None, &send.message.arguments, false);
+                result
             }
             Some(Binding::LexicalSend { depth }) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
-                self.emit_send(into, spans, |destination, call_site| {
+                let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendLexical {
                         depth,
                         selector,
@@ -851,7 +863,9 @@ impl<'a> Body<'a> {
                         destination,
                         call_site,
                     }
-                })
+                });
+                self.record_taken_blocks(None, &send.message.arguments, false);
+                result
             }
             // An ordinary send. The ones the optimized lowering inlines are
             // marked `SendInlinable`, which only the depth count reads
@@ -894,7 +908,7 @@ impl<'a> Body<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
         let spans = (receiver_span(receiver), &message.selector_spans[..]);
-        self.emit_send(into, spans, |destination, call_site| {
+        let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
                 receiver_register,
@@ -903,7 +917,9 @@ impl<'a> Body<'a> {
                 destination,
                 call_site,
             }
-        })
+        });
+        self.record_taken_blocks(Some(receiver), &message.arguments, false);
+        result
     }
 
     fn inlinable_send(
@@ -916,7 +932,7 @@ impl<'a> Body<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
         let spans = (receiver_span(receiver), &message.selector_spans[..]);
-        self.emit_send(into, spans, |destination, call_site| {
+        let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendInlinable {
                 selector,
                 receiver_register,
@@ -925,7 +941,9 @@ impl<'a> Body<'a> {
                 destination,
                 call_site,
             }
-        })
+        });
+        self.record_taken_blocks(Some(receiver), &message.arguments, true);
+        result
     }
 
     /// `[condition] whileTrue: [body]` (`while_true`) or `whileFalse:`,
@@ -956,6 +974,7 @@ impl<'a> Body<'a> {
             receiver_span(&send.receiver),
             &send.message.selector_spans[..],
         );
+        let condition_send = self.code.len();
         let condition_value = self.value_send(condition_register, spans);
         let not_boolean_jump = self.code.len();
         self.emit(Instruction::JumpIfNotBoolean {
@@ -974,6 +993,7 @@ impl<'a> Body<'a> {
                 target: 0,
             }
         });
+        let body_send = self.code.len();
         self.value_send(body_register, spans);
         self.emit(Instruction::Jump {
             target: Self::target(loop_start),
@@ -983,7 +1003,15 @@ impl<'a> Body<'a> {
             register: condition_value,
         });
         self.patch_target(exit_branch, self.code.len());
-        self.literal(BytecodeLiteral::Nil, into)
+        // A step out of either block leaves the whole loop, as it leaves
+        // the optimized lowering's inline copy, never at the next `value`.
+        let blocks = [(condition, condition_send), (body, body_send)]
+            .into_iter()
+            .filter_map(|(block, send)| self.called_block(block.span, Self::target(send)))
+            .collect();
+        let value = self.literal(BytecodeLiteral::Nil, into);
+        self.record_block_send(blocks, self.code.len(), true);
+        value
     }
 
     /// `value` sent to the closure in `receiver_register`, marked as the
@@ -1063,6 +1091,9 @@ impl<'a> Body<'a> {
         let code = Rc::new(code);
         if let Some(collected) = &mut self.collected {
             collected.blocks.push(Rc::clone(&code));
+            collected
+                .closures
+                .push((block.span, Self::target(self.code.len())));
         }
         let destination = self.target_register(into);
         self.emit(Instruction::MakeClosure {
@@ -1105,6 +1136,63 @@ impl<'a> Body<'a> {
             }
         }
         destination
+    }
+
+    /// Records the send just emitted, the last instruction, as one that
+    /// takes the block literals among `receiver` and `arguments`, when the
+    /// metadata is collected and it takes any: the send runs them as
+    /// closures, and the body goes on at the next instruction once it has
+    /// answered.
+    fn record_taken_blocks(
+        &mut self,
+        receiver: Option<&Expression>,
+        arguments: &[Expression],
+        inlined: bool,
+    ) {
+        if self.collected.is_none() {
+            return;
+        }
+        let spans = taken_block_spans(receiver, arguments);
+        let Some(index) = self.code.len().checked_sub(1) else {
+            return;
+        };
+        let blocks = spans
+            .into_iter()
+            .filter_map(|span| self.called_block(span, Self::target(index)))
+            .collect();
+        self.record_block_send(blocks, index + 1, inlined);
+    }
+
+    /// The block literal of `span`, run as a closure by the send at
+    /// `send`, when the body made a closure of it.
+    fn called_block(&self, span: Span, send: u32) -> Option<TakenBlock> {
+        let collected = self.collected.as_ref()?;
+        let (_, closure) = collected
+            .closures
+            .iter()
+            .rev()
+            .find(|(made, _)| *made == span)?;
+        Some(TakenBlock {
+            span,
+            place: BlockPlace::Called {
+                send,
+                closure: *closure,
+            },
+        })
+    }
+
+    /// Records a send that takes `blocks`, which the body goes on from at
+    /// `after` once the send has answered, when the metadata is collected.
+    fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: usize, inlined: bool) {
+        if let Some(collected) = self.collected.as_mut() {
+            if !blocks.is_empty() {
+                collected.block_sends.push(BlockSendEntry {
+                    blocks: blocks.into(),
+                    inlined,
+                    after: Self::target(after),
+                });
+            }
+        }
     }
 
     /// The variable table of the debugger's metadata: this body's own
@@ -1158,6 +1246,7 @@ impl<'a> Body<'a> {
             variables: self.collected_variables(&collected.names).into(),
             statements: collected.statements.into(),
             sends: collected.sends.into(),
+            block_sends: collected.block_sends.into(),
             factory_pattern: None,
         });
         if cfg!(debug_assertions) {

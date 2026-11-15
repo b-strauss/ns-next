@@ -13,7 +13,9 @@ use std::rc::Rc;
 
 use super::metadata::again::{module_name, BodyOrigin, Member};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
-use super::remote::{FrameDescription, FrameKind, FrameLocation, SendLocation, Variable};
+use super::remote::{
+    FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
+};
 use super::values::StopValues;
 use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
@@ -219,6 +221,13 @@ pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> 
 /// Whether `frame` is a block's activation.
 pub(crate) fn is_block(heap: &Heap<'_>, frame: &StackFrame) -> bool {
     matches!(frame.read(heap).kind(heap), ActivationKind::Closure(_))
+}
+
+/// Whether `frame` is a factory's activation, the stack trace's
+/// `FrameKind::Factory`: decided by the frame's kind, which every factory
+/// frame has, with metadata or without it.
+pub(crate) fn is_factory(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Factory(_))
 }
 
 /// The body `frame` runs.
@@ -513,15 +522,26 @@ fn location(
     let module = module_name(mutator, &origin.mixin)?;
     let program_counter = u32::try_from(program_counter).ok()?;
     // Inlined blocks' statements lie inside their statement's range: the
-    // narrowest that holds the program counter is the innermost.
+    // narrowest that holds the program counter is the innermost. A program
+    // counter no statement holds, but one ends at -- the return a body
+    // ends with, where a step out of a block its last statement's send
+    // took stops -- stands at the outermost statement it follows, the one
+    // the program just ran, rather than at the whole body.
     let statement = metadata.factory_pattern.or_else(|| {
-        metadata
+        let holding = metadata
             .statements
             .iter()
             .rev()
             .filter(|entry| entry.instructions.contains(&program_counter))
-            .min_by_key(|entry| entry.instructions.len())
-            .map(|entry| entry.span)
+            .min_by_key(|entry| entry.instructions.len());
+        let followed = || {
+            metadata
+                .statements
+                .iter()
+                .filter(|entry| entry.instructions.end == program_counter)
+                .max_by_key(|entry| entry.instructions.len())
+        };
+        holding.or_else(followed).map(|entry| entry.span)
     });
     let send = waiting
         .then(|| {
@@ -580,7 +600,9 @@ pub(crate) fn variables(
         read.into_iter()
             .map(|(name, value)| Variable {
                 name,
-                value: value.map(|value| values.describe(mutator, value)),
+                value: value.map_or(VariableValue::Unavailable, |value| {
+                    VariableValue::Shown(values.describe(mutator, value))
+                }),
             })
             .collect(),
     )

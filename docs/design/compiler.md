@@ -1254,8 +1254,11 @@ mixin's three initializer bodies -- the full one, `<Name> own part` and
 `method <Name> factory <selector>`.
 
 These are the first pieces of the VM's own introspection tooling, the equivalent
-of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
-arrives with the mechanisms it would observe.
+of `d8`; the rest -- tracing why a body is compiled, optimized, deoptimized or
+retired and the inline caches' transitions, printing the machine code a run
+generates, and a REPL -- is planned, on the command line first
+([OPEN-WORK.md](../OPEN-WORK.md), "A developer tool like V8's `d8`", "A view of
+what a method compiles to").
 
 ## The reference lowering
 

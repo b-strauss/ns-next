@@ -454,10 +454,34 @@ pub enum FrameKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variable {
     pub name: String,
-    /// `None` for a variable that lives nowhere any more: a block's outer
-    /// variable whose activation returned without keeping its registers,
-    /// and that nothing captured (decision 10). A child always has one.
-    pub value: Option<ValueDescription>,
+    pub value: VariableValue,
+}
+
+/// What a variable holds as the agent shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariableValue {
+    /// Its value.
+    Shown(ValueDescription),
+    /// Nothing, for a variable that lives nowhere any more: a block's
+    /// outer variable whose activation returned without keeping its
+    /// registers, and that nothing captured (decision 10).
+    Unavailable,
+    /// Nothing yet, for a field that holds no value yet: a lazy slot
+    /// whose getter has not filled it (§6.3.3), or a nested class's
+    /// hidden slot before its accessor built the class. Its word is
+    /// `nil`, but its value is not: it does not exist until the program
+    /// asks for it, and no Newspeak code runs at a stop to compute it.
+    NotComputed,
+}
+
+impl VariableValue {
+    /// The value shown, if there is one.
+    pub fn shown(&self) -> Option<&ValueDescription> {
+        match self {
+            VariableValue::Shown(value) => Some(value),
+            VariableValue::Unavailable | VariableValue::NotComputed => None,
+        }
+    }
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its

@@ -8,7 +8,7 @@ import io.github.bstrauss.newspeak.NewspeakBundle
 
 /**
  * The play button beside `main` and each script of a `newspeak.json`, opening
- * Run and Benchmark. Dumb-aware: it reads the file's own PSI, no index.
+ * Run, Debug and Benchmark. Dumb-aware: it reads the file's own PSI, no index.
  */
 class NewspeakRunLineMarkerContributor : RunLineMarkerContributor(), DumbAware {
     override fun getInfo(element: PsiElement): Info? {
@@ -19,7 +19,7 @@ class NewspeakRunLineMarkerContributor : RunLineMarkerContributor(), DumbAware {
         val script = (entry as? ProjectEntry.Script)?.name
         return Info(
             AllIcons.RunConfigurations.TestState.Run,
-            arrayOf(NewspeakRunAction(file, script, NewspeakCommand.RUN), NewspeakRunAction(file, script, NewspeakCommand.BENCH)),
+            playButtonActions(file, script),
         ) { _ -> if (script == null) {
             NewspeakBundle.message("run.marker.tooltip.project")
         } else {

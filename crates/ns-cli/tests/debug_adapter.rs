@@ -1197,7 +1197,98 @@ fn a_program_class_named_array_shows_named_variables() {
     assert!(value.get("indexedVariables").is_none(), "{value}");
     let fields = client.variables(&value["variablesReference"], None, None);
     let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
-    assert_eq!(names, [&json!("field 0"), &json!("field 1")]);
+    assert_eq!(names, [&json!("first"), &json!("second")]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root with slots and a nested class, which stops on line 8 before it
+/// has used its platform's `transcript`.
+const NAMED: &str = indoc! {"
+    class Named = Object new (
+      | n ::= 3. sum ::= 0. |
+    ) (
+      class KindA = Object new () ()
+      public main: platform args: arguments = (
+        KindA new.
+        sum:: n + 1.
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The `name` and `value` of each of `fields`.
+fn names_and_values(fields: &[Value]) -> Vec<(String, String)> {
+    fields
+        .iter()
+        .map(|field| {
+            (
+                field["name"].as_str().unwrap_or_default().to_owned(),
+                field["value"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// An instance's fields are named by its slots and nested classes, and a
+/// lazy slot its program has not used yet says it is not computed, rather
+/// than showing `nil`.
+#[test]
+fn an_instance_s_fields_are_named_and_a_lazy_slot_not_computed_says_so() {
+    let (_directory, path) = program("Named", NAMED);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[8]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let receiver = variable(&variables, "self");
+    let fields = client.variables(&receiver["variablesReference"], None, None);
+    assert_eq!(
+        names_and_values(&fields),
+        [
+            ("n".to_owned(), "3".to_owned()),
+            ("sum".to_owned(), "4".to_owned()),
+            ("KindA".to_owned(), "the class KindA".to_owned()),
+        ]
+    );
+    let platform = variable(&variables, "platform");
+    let facets = client.variables(&platform["variablesReference"], None, None);
+    let transcript = variable(&facets, "transcript");
+    assert_eq!(transcript["value"], "<not computed yet>", "{transcript}");
+    assert_eq!(transcript["variablesReference"], 0, "{transcript}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "4\n");
+}
+
+/// Slot names are structure, not source text: an image built without its
+/// source still names an instance's fields.
+#[test]
+fn a_stripped_image_names_an_instance_s_fields() {
+    let (directory, path) = program("Named", NAMED);
+    let image = directory.join("named.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    let frames = client.stack_frames(0, 0);
+    let main = frames
+        .iter()
+        .find(|frame| frame["name"] == "Named>>main:args:")
+        .unwrap_or_else(|| panic!("no frame of `main:args:`: {frames:?}"));
+    let locals = locals_of(&mut client, main);
+    let variables = client.variables(&locals, None, None);
+    let receiver = variable(&variables, "self");
+    let fields = client.variables(&receiver["variablesReference"], None, None);
+    let names: Vec<&Value> = fields.iter().map(|field| &field["name"]).collect();
+    assert_eq!(names, [&json!("n"), &json!("sum"), &json!("KindA")]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }
@@ -1525,6 +1616,152 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A root whose slot initializers, line 4 the last, run in its
+/// instantiation, a host run before the one of `main:args:`, whose first
+/// statement is line 8.
+const INITIALIZED: &str = indoc! {"
+    class Initialized = Object new (
+      |
+        first ::= 1.
+        second ::= first + 1.
+      |
+    ) (
+      public main: platform args: arguments = (
+        platform transcript show: second printString; newLine.
+      )
+    ) : ()
+"};
+
+/// One `next` from a breakpoint in the root's last slot initializer goes
+/// on past the root's factory, which no step stops in, and out of
+/// the root's instantiation into `main:args:`, a host run of its own,
+/// where it stops at the first statement for the step.
+#[test]
+fn next_from_a_slot_initializer_reaches_main() {
+    let (_directory, path) = program("Initialized", INITIALIZED);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[4]);
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client).1, json!(4));
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Initialized>>main:args:"), json!(8))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "2\n");
+}
+
+/// A root whose `main:args:` instantiates a nested class with a slot
+/// initializer, then prints the slot's value.
+const PARTS: &str = indoc! {"
+    class Parts = Object new () (
+      class Part = Object new (
+        | public value ::= 3. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Part new.
+        platform transcript show: made value printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step into passes over a factory in an image built without its
+/// source as well, where no body has metadata: the factory is known by
+/// its frame's kind (decision 12), and the step into from `main:args:`
+/// at `Part new` stops in `Part`'s initializer, never in `Part class>>new`.
+#[test]
+fn a_step_into_passes_over_a_stripped_image_s_factory() {
+    let (directory, path) = program("Parts", PARTS);
+    let image = directory.join("parts.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    // A body without metadata stops at its first safepoint: the entry
+    // stands in `Part`'s superclass clause, which `Part new` runs first,
+    // and a step into from there stops back in `main:args:`.
+    let mut stops = Vec::new();
+    for _ in 0..2 {
+        client.succeed("stepIn", json!({ "threadId": 1 }));
+        client.stopped("step");
+        let names: Vec<String> = client
+            .stack_frames(0, 0)
+            .iter()
+            .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        stops.push(names);
+    }
+    assert_eq!(
+        stops,
+        [
+            vec!["Parts>>main:args:"],
+            vec!["Part initializer", "Part class>>new", "Parts>>main:args:"],
+        ]
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "3
+"
+    );
+}
+
+/// A root whose line 5 is a loop of two statements, followed on line 8 by
+/// the statement after it.
+const LOOPING: &str = indoc! {"
+    class Looping = Object new (
+      | count ::= 0. sum ::= 0. |
+    ) (
+      public main: platform args: arguments = (
+        [count < 3] whileTrue: [
+          sum:: sum + count.
+          count:: count + 1].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step in from the loop's line stops in its body; a step out of the
+/// body leaves the whole loop, which runs its remaining rounds, and stops
+/// at the line after it.
+#[test]
+fn a_step_out_of_a_loop_s_body_stops_after_the_loop() {
+    let (_directory, path) = program("Looping", LOOPING);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(5))
+    );
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(6))
+    );
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Looping>>main:args:"), json!(8))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
 }
 
 /// A step by line over a send whose callee holds a breakpoint ends at the

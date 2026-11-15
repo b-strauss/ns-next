@@ -1864,53 +1864,53 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   its root; a later module may nest one).
   [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**, at the level of IntelliJ's Java debugger, plus
-  edit-and-continue of running activations; its design is decided
-  (seventeen decisions, nine on 2026-11-10, stage 2's six and stage 3's
-  two on 2026-11-12). Its first stage is built (2026-11-11): the
-  debugging API at the run loop's safepoint, with atomic poll words a
-  remote arms from another thread to pause the program, the commands
-  served while it runs, the stop, which deoptimizes a frame stopped at a
-  poll of optimized code in every JIT build, the stack and values read at
-  it, continue and terminate, and the pause stress mode
-  ([debugger.md](design/debugger.md), "The debugging API at the
-  safepoint"). Its second stage is built (2026-11-12): the stop
-  locations, send entries and variable tables both lowerers collect when
-  the debugger compiles a declaration's level again from its module's
-  current text, kept per body only when it compiles again alike, which
-  give a stopped frame its name, its place and its named variables
-  ([debugger.md](design/debugger.md), "Compiling the metadata again").
-  Its third stage is built (2026-11-13): breakpoints patched in place (a
-  method's fast path switched off while its body is patched), stepping
-  by one-shot breakpoints with the step filters, run to cursor, method
-  breakpoints, exception breakpoints, which stop where the handler
-  search invokes a handler for a caught exception and where it is about
-  to send `defaultAction` for an uncaught one, and the breakpoint and
-  step stress modes ([debugger.md](design/debugger.md), "What stage 3
-  moved" for its cost). Its fourth stage is built (2026-11-14): the DAP
-  agent in `ns-cli` behind `run` and `load`'s `--debug` and
-  `--debug-connect`, hit counts counted by the VM, the language server's
-  breakable lines, and the plugin's debugger with line, method and
-  exception breakpoints, from which the debugger is usable in the IDE
-  ([debugger.md](design/debugger.md), "Launching, the start and the
-  end", "The JetBrains plugin", "What stage 4 moved" for its cost). An uncaught
-  exception whose `defaultAction` override a fast path answers -- a
-  constant, a slot -- pushes nothing at that send, so it stops at the
-  next poll, the return to `signal`, after the override answered; a
-  handler that is no block and whose `cull:` a fast path answers
+  edit-and-continue of running activations; its design is decided (seventeen
+  decisions, nine on 2026-11-10, stage 2's six and stage 3's two on
+  2026-11-12). Its first stage is built (2026-11-11): the debugging API at
+  the run loop's safepoint, with atomic poll words a remote arms from
+  another thread to pause the program, the commands served while it runs,
+  the stop, which deoptimizes a frame stopped at a poll of optimized code in
+  every JIT build, the stack and values read at it, continue and terminate,
+  and the pause stress mode ([debugger.md](design/debugger.md), "The
+  debugging API at the safepoint"). Its second stage is built (2026-11-12):
+  the stop locations, send entries and variable tables both lowerers collect
+  when the debugger compiles a declaration's level again from its module's
+  current text, kept per body only when it compiles again alike, which give
+  a stopped frame its name, its place and its named variables
+  ([debugger.md](design/debugger.md), "Compiling the metadata again"). Its
+  third stage is built (2026-11-13): breakpoints patched in place (a
+  method's fast path switched off while its body is patched), stepping by
+  one-shot breakpoints with the step filters, run to cursor, method
+  breakpoints, exception breakpoints, which stop where the handler search
+  invokes a handler for a caught exception and where it is about to send
+  `defaultAction` for an uncaught one, and the breakpoint and step stress
+  modes ([debugger.md](design/debugger.md), "What stage 3 moved" for its
+  cost). Its fourth stage is built (2026-11-14): the DAP agent in `ns-cli`
+  behind `run` and `load`'s `--debug` and `--debug-connect`, hit counts
+  counted by the VM, the language server's breakable lines, and the plugin's
+  debugger with line, method and exception breakpoints, from which the
+  debugger is usable in the IDE ([debugger.md](design/debugger.md),
+  "Launching, the start and the end", "The JetBrains plugin", "What stage 4
+  moved" for its cost). An uncaught exception whose `defaultAction` override
+  a fast path answers -- a constant, a slot -- pushes nothing at that send,
+  so it stops at the next poll, the return to `signal`, after the override
+  answered; a handler that is no block and whose `cull:` a fast path answers
   likewise stops after it ran ([debugger.md](design/debugger.md),
   "Exceptions"). The rest, in this order: evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
   variables, smart step into, restart frame, force return ("Next" above);
-  hot swap, edit-and-continue and `ActivationMirror`. "Create Method" for
-  an uncaught `MessageNotUnderstood`, and the forced `nil` from
-  `Object>>doesNotUnderstand:` when it is declined, need stage 5's
-  forced return and stage 6's install; until then going on from such a
-  stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It needs no yield path out of
-  `vm::run`. Still to decide, each before the stage that needs it:
-  watchpoints on slots, access control in evaluation, marking objects,
-  evaluation at the depth limit, restart and force return beyond the
-  plain case, restart and the indirection vector, assigning a captured
-  variable, the memory view, folding shipped frames and attaching
+  hot swap, edit-and-continue and `ActivationMirror`. The time a step took,
+  shown inline, stays planned in no stage yet (decided with the user on
+  2026-11-15; [debugger.md](design/debugger.md), "The time a step took").
+  "Create Method" for an uncaught `MessageNotUnderstood`, and the forced
+  `nil` from `Object>>doesNotUnderstand:` when it is declined, need stage
+  5's forced return and stage 6's install; until then going on from such a
+  stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It
+  needs no yield path out of `vm::run`. Still to decide, each before the
+  stage that needs it: watchpoints on slots, access control in evaluation,
+  marking objects, evaluation at the depth limit, restart and force return
+  beyond the plain case, restart and the indirection vector, assigning a
+  captured variable, the memory view, folding shipped frames and attaching
   ([debugger.md](design/debugger.md), "Open questions").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
@@ -2297,8 +2297,74 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
 - **Further `ns-next-analyzer` commands**, each looking without running: a
-  heap dump, a deeper inspection of an image, and inspection of the JIT's
-  compiled code once the JIT tiers exist (road steps 8 and 9 above).
+  heap dump and a deeper inspection of an image; what a method compiles
+  to, machine code included, is the item below.
+- **A command-line debugger client** (decided with the user on
+  2026-11-15; not built): `ns-next debug <program>`, say, driven by
+  commands from a file or standard input -- `break <file>:<line>`, `run`,
+  `next`, `step`, `out`, `continue`, `stack`, `vars <frame>`,
+  `print <value>` and the like -- and printing every stop with its stack
+  and variables as plain text or JSON, a client of the same debugging API
+  the DAP agent serves (`DebugRemote`, [debugger.md](design/debugger.md),
+  "The debugging API at the safepoint"). It matters because the debugger
+  is today reachable only through DAP over a socket, which the IDE plugin
+  drives but an agent with only a shell cannot, so it does not meet the
+  principle that introspection is reachable from the command line first
+  ([design/README.md](design/README.md), "Principles"). First on the
+  command line; the plugin, which speaks DAP, is unaffected.
+- **A profiler** (asked for by the user on 2026-11-15; not designed yet):
+  the time a program spends per method and per send site. It matters because
+  a slow program today shows where its time goes only to a native sampling
+  profiler, which sees the VM's Rust frames and the code zone's anonymous
+  addresses, never a Newspeak method -- the profiles behind "Unexplained
+  measurements and unmeasured decisions" below were read so. Whether it
+  samples or counts, and what it costs a run, are open. The principle it
+  follows (the user's, on 2026-11-15; [design/README.md](design/README.md),
+  "Principles"): every introspection feature is reachable from the command
+  line first -- an `ns-next` or `ns-next-analyzer` subcommand or flag, its
+  output plain text or JSON -- so that an agent such as Claude can use it
+  for debugging; the IDE plugin's views come on top, as clients of the same
+  requests -- here a `run`/`bench` flag whose report is plain text or JSON
+  before any IDE view of it.
+- **A view of what a method compiles to** (asked for by the user on
+  2026-11-15): its bytecode, as `disasm` prints it, and its JIT code -- the
+  baseline machine code, the optimized copies per receiver application, the
+  inlining decisions with the reasons behind each -- first on the command
+  line, then beside the source in the IDE, JITWatch's kind of view. It
+  matters because a slow body is explained by what the tiers made of it,
+  which today only a debugger on the process or a `dumpbin`/`objdump` of the
+  code zone shows, without names. `disasm` prints the instructions only, and
+  compiles without running, so it never sees the machine code, which exists
+  only for a body that ran: the machine-code half needs a running program --
+  a flag of `ns-next run`, or a request of the debugging API at a stop --
+  and the IDE's view is a client of the same request
+  ([compiler.md](design/compiler.md), "Reading the output";
+  [execution.md](design/execution.md), "The baseline JIT's foundation",
+  "Inlining"). The principle it follows (the user's, on 2026-11-15;
+  [design/README.md](design/README.md), "Principles"): every introspection
+  feature is reachable from the command line first -- an `ns-next` or
+  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
+  that an agent such as Claude can use it for debugging; the IDE plugin's
+  views come on top, as clients of the same requests.
+- **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15):
+  tracing flags that say why a body is compiled, optimized, deoptimized or
+  retired and how each inline cache goes from empty to monomorphic,
+  polymorphic and megamorphic; printing the code a run generates --
+  bytecode, baseline and optimized machine code, the inlining; and a REPL
+  that evaluates Newspeak expressions in a live image. It matters because a
+  question about the JIT -- why a loop stayed in the interpreter, why a copy
+  was retired -- is answered today only by a counter or a print added for
+  the occasion; `--cache-statistics`, `--collector-statistics` and
+  `disasm`/`inspect` are its first pieces
+  ([compiler.md](design/compiler.md), "Reading the output"). The principle
+  it follows (the user's, on 2026-11-15;
+  [design/README.md](design/README.md), "Principles"): every introspection
+  feature is reachable from the command line first -- an `ns-next` or
+  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
+  that an agent such as Claude can use it for debugging; the IDE plugin's
+  views come on top, as clients of the same requests; the tracing and the
+  printing are flags of `ns-next`, the REPL a subcommand, each usable
+  without the IDE.
 
 [editor-support.md](design/editor-support.md), "Planned later".
 
@@ -3397,6 +3463,18 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **The play button's Debug through the platform's own launcher** (noted
+  2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
+  configuration through `ProgramRunnerUtil.executeConfiguration`, and its
+  test (`NewspeakRunLineMarkerContributorTest`) replaces that launcher with
+  a recording one, so that it shows the Debug executor and the
+  configuration Run starts handed over but not that the platform then
+  starts the debug session; no `runIde` check of the button's Debug is
+  recorded either. A check under `runIde` -- Debug from the play button
+  stopping at a line breakpoint -- recorded in
+  [editor-support.md](design/editor-support.md) beside the earlier ones,
+  or a test that runs the platform's launcher with a stand-in runner,
+  would close it.
 - **A model test of the poll words' ordering** (noted 2026-11-11, with
   the debugger's first stage). The debugger's agent sets its bit in the
   request word and then stores 0 into `DepthLimit`, both `SeqCst`, from

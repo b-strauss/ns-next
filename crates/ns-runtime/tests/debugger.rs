@@ -22,7 +22,7 @@ use ns_runtime::debugger::{
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
-    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
+    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable, VariableValue,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -703,7 +703,7 @@ fn named<'variables>(variables: &'variables [Variable], name: &str) -> &'variabl
 fn shown(variable: &Variable) -> &ValueDescription {
     variable
         .value
-        .as_ref()
+        .shown()
         .unwrap_or_else(|| panic!("{} was expected to be available", variable.name))
 }
 
@@ -822,12 +822,504 @@ fn an_instance_s_children_are_its_fields() {
     assert_eq!(receiver.child_count, 1);
     assert!(!receiver.indexed, "an instance's children are its fields");
     let names: Vec<&str> = children.iter().map(|child| child.name.as_str()).collect();
-    assert_eq!(names, ["field 0"]);
+    assert_eq!(names, ["count"]);
     assert!(
         shown(&children[0]).label.parse::<u64>().is_ok(),
         "the count slot holds a number, not {}",
         shown(&children[0]).label
     );
+}
+
+/// An instance with slots, nested classes -- one never used -- a subclass
+/// whose private slot shadows its superclass's, a class applying one
+/// mixin three times, and the platform, whose `transcript` it used. Its
+/// `run` stops at the breakpoint on its last statement, where every one
+/// of them is built: its fields are named by the slots and nested
+/// classes that declare them.
+const FIELDS: &str = indoc! {"
+    class Fields = Object new (
+      | n ::= 50000. sum ::= 0. derived thrice platform |
+    ) (
+      class KindA = Object new () ()
+      class Base = Object new (
+        | private x = 1. y = 2. |
+      ) ()
+      class Derived = Base new (
+        | private x = 3. z = 4. |
+      ) ()
+      class Unused = Object new () ()
+      class M = Object new (
+        | x = 5. |
+      ) ()
+      class Thrice = Object new <: M new <: M new <: M new (
+        | w = 6. |
+      ) ()
+      public use: aPlatform = (
+        platform:: aPlatform
+      )
+      public run = (
+        KindA new.
+        derived:: Derived new.
+        thrice:: Thrice new.
+        platform transcript.
+        sum:: sum + 1.
+        ^sum
+      )
+    ) : ()
+"};
+
+/// The fields `fields_while_stopped` reads at the breakpoint.
+struct StoppedFields {
+    /// `self`'s fields from the `start` asked, at most `count` of them.
+    page: Vec<Variable>,
+    derived: Vec<Variable>,
+    thrice: Vec<Variable>,
+    platform: Vec<Variable>,
+}
+
+/// `FIELDS` under `lowering`, handed the platform and stopped at the
+/// breakpoint on `run`'s last statement: the fields it shows there.
+fn fields_while_stopped(lowering: Lowering, start: usize, count: usize) -> StoppedFields {
+    let (mut interpreter, instance) = instance_of(FIELDS, lowering);
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+        "use:",
+    );
+    let offset = line_start(FIELDS, "sum:: sum + 1.");
+    let (fields, result) = debugged_in(
+        &mut interpreter,
+        &instance,
+        |remote| set_breakpoints(remote, "Fields", vec![offset]),
+        move |remote| {
+            let (id, _) = resolved(&expect_breakpoints(remote, "Fields"));
+            assert_eq!(expect_breakpoint_stop(remote), [id]);
+            let frame = stack_trace(remote)
+                .iter()
+                .position(|frame| frame.kind == method("run"))
+                .expect("the stopped method is on the stack");
+            let receiver =
+                value_of(&variables(remote, Command::Variables { frame }), "self").clone();
+            let all = variables(
+                remote,
+                Command::Children {
+                    value: receiver.id,
+                    start: 0,
+                    count: receiver.child_count,
+                },
+            );
+            let children_of = |name: &str| {
+                let value = value_of(&all, name);
+                variables(
+                    remote,
+                    Command::Children {
+                        value: value.id,
+                        start: 0,
+                        count: value.child_count,
+                    },
+                )
+            };
+            let fields = StoppedFields {
+                page: variables(
+                    remote,
+                    Command::Children {
+                        value: receiver.id,
+                        start,
+                        count,
+                    },
+                ),
+                derived: children_of("derived"),
+                thrice: children_of("thrice"),
+                platform: children_of("platform"),
+            };
+            continue_stopped(remote);
+            fields
+        },
+    );
+    expect_ok(result, "run");
+    fields
+}
+
+#[test]
+fn an_instance_s_fields_are_named_by_its_slots_and_nested_classes() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let fields = fields_while_stopped(lowering, 0, 16).page;
+        assert_eq!(
+            names(&fields),
+            [
+                "n", "sum", "derived", "thrice", "platform", "KindA", "Base", "Derived", "Unused",
+                "M", "Thrice"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(value_of(&fields, "n").label, "50000", "{lowering:?}");
+        assert_eq!(
+            value_of(&fields, "KindA").label,
+            "the class KindA",
+            "{lowering:?}"
+        );
+        assert_eq!(
+            named(&fields, "Unused").value,
+            VariableValue::NotComputed,
+            "{lowering:?}: a nested class never used is not computed yet"
+        );
+    }
+}
+
+#[test]
+fn an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let derived = fields_while_stopped(lowering, 0, 0).derived;
+        assert_eq!(names(&derived), ["x (Base)", "y", "x", "z"], "{lowering:?}");
+        let labels: Vec<&str> = derived
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["1", "2", "3", "4"], "{lowering:?}");
+    }
+}
+
+/// Each `<:` clause adds a level, and a chain applying one mixin three
+/// times has three levels declaring its slot: the nearest is the plain
+/// name, the ones above it numbered up from it.
+#[test]
+fn a_mixin_applied_more_than_once_numbers_its_shadowed_slots() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let thrice = fields_while_stopped(lowering, 0, 0).thrice;
+        assert_eq!(
+            names(&thrice),
+            ["x (M 2)", "x (M)", "x", "w"],
+            "{lowering:?}"
+        );
+        let labels: Vec<&str> = thrice
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["5", "5", "5", "6"], "{lowering:?}");
+    }
+}
+
+/// Two different nested classes named `Base`, each declaring a slot `x`,
+/// both levels of one chain -- the superclass and a `<:` clause's mixin --
+/// under a class that declares `x` too.
+const TWINS: &str = indoc! {"
+    class Twins = Object new () (
+      class Outer = Object new () (
+        public class Base = Object new (
+          | x = 1. |
+        ) ()
+      )
+      class Other = Object new () (
+        public class Base = Object new (
+          | x = 2. |
+        ) ()
+      )
+      class Both = outerBase new <: otherBase new (
+        | x = 3. |
+      ) ()
+      outerBase = (
+        ^Outer new Base
+      )
+      otherBase = (
+        ^Other new Base
+      )
+      public run = (
+        | both |
+        both:: Both new.
+        ^both
+      )
+    ) : ()
+"};
+
+/// Two levels of one chain whose mixins differ but share a name would
+/// both read `x (Base)`: each is named by its declaration's path from
+/// its module root instead, and only where the short names collide.
+#[test]
+fn two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let offset = line_start(TWINS, "^both");
+        let (fields, result) = debugged(
+            TWINS,
+            lowering,
+            |remote| set_breakpoints(remote, "Twins", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Twins");
+                let both =
+                    value_of(&variables(remote, Command::Variables { frame: 0 }), "both").clone();
+                let fields = variables(
+                    remote,
+                    Command::Children {
+                        value: both.id,
+                        start: 0,
+                        count: both.child_count,
+                    },
+                );
+                continue_stopped(remote);
+                fields
+            },
+        );
+        expect_ok(result, "run");
+        assert_eq!(
+            names(&fields),
+            ["x (Outer.Base)", "x (Other.Base)", "x"],
+            "{lowering:?}"
+        );
+        let labels: Vec<&str> = fields
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// A module whose `Outer.Base` declares `x`, which `JOINED` applies.
+const LIBRARY: &str = indoc! {"
+    class Library = Object new () (
+      public class Outer = Object new () (
+        public class Base = Object new (
+          | x = 1. |
+        ) ()
+      )
+    ) : ()
+"};
+
+/// A module whose class `Both` applies the `Outer.Base` of each of the two
+/// modules its factory takes, and declares `x` itself.
+const JOINED: &str = indoc! {"
+    class Joined first: first second: second = Object new (
+      |
+        firstLibrary = first.
+        secondLibrary = second.
+      |
+    ) (
+      class Both = firstBase new <: secondBase new (
+        | x = 3. |
+      ) ()
+      firstBase = (
+        ^firstLibrary Outer new Base
+      )
+      secondBase = (
+        ^secondLibrary Outer new Base
+      )
+      public run = (
+        | both |
+        both:: Both new.
+        ^both
+      )
+    ) : ()
+"};
+
+/// A module whose class `Both` applies an `Outer.Base` of each of the
+/// three modules its factory takes -- the first's nested one level deeper,
+/// in its `Library` -- and declares `x` itself.
+const JOINED_THREE: &str = indoc! {"
+    class Joined first: first second: second third: third = Object new (
+      |
+        firstShelf = first.
+        secondLibrary = second.
+        thirdLibrary = third.
+      |
+    ) (
+      class Both = firstBase new <: secondBase new <: thirdBase new (
+        | x = 4. |
+      ) ()
+      firstBase = (
+        ^firstShelf Library new Outer new Base
+      )
+      secondBase = (
+        ^secondLibrary Outer new Base
+      )
+      thirdBase = (
+        ^thirdLibrary Outer new Base
+      )
+      public run = (
+        | both |
+        both:: Both new.
+        ^both
+      )
+    ) : ()
+"};
+
+/// A module whose `Library.Outer.Base` declares `x`: its path from its
+/// root spells what `LIBRARY`'s `Outer.Base` is named from its root's name.
+const SHELF: &str = indoc! {"
+    class Shelf = Object new () (
+      public class Library = Object new () (
+        public class Outer = Object new () (
+          public class Base = Object new (
+            | x = 1. |
+          ) ()
+        )
+      )
+    ) : ()
+"};
+
+/// The names and values of the fields of `JOINED`'s `Both` under
+/// `lowering`, its two levels applied from instances of the modules
+/// `first` and `second`.
+fn joined_fields(lowering: Lowering, first: &str, second: &str) -> (Vec<String>, Vec<String>) {
+    joined_fields_of(lowering, JOINED, &[first, second])
+}
+
+/// The names and values of the fields of the `Both` of `joined`, a module
+/// whose factory takes an instance of each of `libraries`, under
+/// `lowering`.
+fn joined_fields_of(
+    lowering: Lowering,
+    joined: &'static str,
+    libraries: &[&str],
+) -> (Vec<String>, Vec<String>) {
+    let source = joined;
+    let (mut interpreter, joined) = interpreted(source, lowering);
+    let mut library = |source: &str| {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            source.into(),
+            ns_runtime::SourceOrigin::File("library.ns".into()),
+        )
+        .expect("resolve");
+        let class = interpreter.load_module(&resolved);
+        expect_ok(
+            interpreter.instantiate(&class, &[]),
+            "instantiate a library",
+        )
+    };
+    let instances: Vec<Root> = libraries.iter().map(|source| library(source)).collect();
+    let instance = expect_ok(interpreter.instantiate(&joined, &instances), "instantiate");
+    let offset = line_start(source, "^both");
+    let (fields, result) = debugged_in(
+        &mut interpreter,
+        &instance,
+        |remote| set_breakpoints(remote, "Joined", vec![offset]),
+        |remote| {
+            expect_first_stop(remote, "Joined");
+            let both =
+                value_of(&variables(remote, Command::Variables { frame: 0 }), "both").clone();
+            let fields = variables(
+                remote,
+                Command::Children {
+                    value: both.id,
+                    start: 0,
+                    count: both.child_count,
+                },
+            );
+            continue_stopped(remote);
+            fields
+        },
+    );
+    expect_ok(result, "run");
+    (
+        names(&fields).into_iter().map(String::from).collect(),
+        fields
+            .iter()
+            .map(|field| shown(field).label.clone())
+            .collect(),
+    )
+}
+
+/// Two shadowed levels whose mixins share their name and their path from
+/// their module roots, the roots of two modules of different names, are
+/// named by the path from the root's own name on.
+#[test]
+fn shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let kit = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 2");
+        let (names, labels) = joined_fields(lowering, LIBRARY, &kit);
+        assert_eq!(
+            names,
+            ["x (Library.Outer.Base)", "x (Kit.Outer.Base)", "x"],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// Two shadowed levels whose mixins share even the path from their roots'
+/// names, those of two modules of one name, are told apart by their
+/// places in the chain, numbered from the object's class upward.
+#[test]
+fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let second = LIBRARY.replace("x = 1", "x = 2");
+        let (names, labels) = joined_fields(lowering, LIBRARY, &second);
+        assert_eq!(
+            names,
+            [
+                "x (Library.Outer.Base #2)",
+                "x (Library.Outer.Base #1)",
+                "x"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// A declarer named by its path from its module root and another named by
+/// the path from its root's own name may spell the same label: each is
+/// numbered then, as declarers alike in every tier are.
+#[test]
+fn shadowed_slots_alike_across_their_tiers_are_numbered() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let second = LIBRARY.replace("x = 1", "x = 2");
+        let third = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 3");
+        let (names, labels) = joined_fields_of(lowering, JOINED_THREE, &[SHELF, &second, &third]);
+        assert_eq!(
+            names,
+            [
+                "x (Library.Outer.Base #2)",
+                "x (Library.Outer.Base #1)",
+                "x (Kit.Outer.Base)",
+                "x"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3", "4"], "{lowering:?}");
+    }
+}
+
+#[test]
+fn named_fields_are_paged() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let page = fields_while_stopped(lowering, 1, 2).page;
+        assert_eq!(names(&page), ["sum", "derived"], "{lowering:?}");
+        let past = fields_while_stopped(lowering, 9, 5).page;
+        assert_eq!(names(&past), ["M", "Thrice"], "{lowering:?}");
+    }
+}
+
+/// The platform is a shipped class's instance, named from the shipped
+/// mixin's slots; its facets are lazy slots, of which only the one the
+/// program used holds a value, and the others are not computed yet --
+/// not `nil`, which none of them would answer.
+#[test]
+fn a_lazy_slot_not_computed_yet_is_shown_so() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let platform = fields_while_stopped(lowering, 0, 0).platform;
+        assert_eq!(
+            names(&platform),
+            [
+                "transcript",
+                "collections",
+                "kernel",
+                "time",
+                "typedArrays",
+                "mirrors"
+            ],
+            "{lowering:?}"
+        );
+        let transcript = named(&platform, "transcript");
+        assert_eq!(shown(transcript).class_name, "Transcript", "{lowering:?}");
+        for facet in &platform[1..] {
+            assert_eq!(
+                facet.value,
+                VariableValue::NotComputed,
+                "{lowering:?}: {} is not computed yet",
+                facet.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -1208,7 +1700,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&variables, "limit").label, "3");
         let unused = named(&variables, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }
@@ -1315,7 +1807,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&returned, "limit").label, "3");
         let unused = named(&returned, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }
@@ -1604,7 +2096,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&variables, "limit").label, "3");
         let unused = named(&variables, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }
@@ -2946,7 +3438,22 @@ fn stepped<T: Send + 'static>(
     configure: impl FnOnce(&DebugRemote),
     agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
 ) -> (T, i64) {
+    stepped_with(source, lowering, true, selector, configure, agent)
+}
+
+/// `stepped`, the JIT on or off: off, every body runs interpreted, so
+/// that a register holds what the interpreter left there, which machine
+/// code, writing a send's arguments into its slots, would not.
+fn stepped_with<T: Send + 'static>(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    selector: &'static str,
+    configure: impl FnOnce(&DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, i64) {
     let (mut interpreter, instance) = instance_of(source, lowering);
+    interpreter.set_jit_enabled(jit);
     for _ in 0..2 {
         expect_ok(
             interpreter.send(&instance, Symbol::intern(selector), &[]),
@@ -3071,6 +3578,507 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `stops` as pairs of string slices, to compare with a literal.
+fn as_pairs(stops: &[(String, String)]) -> Vec<(&str, &str)> {
+    stops
+        .iter()
+        .map(|(frame, statement)| (frame.as_str(), statement.as_str()))
+        .collect()
+}
+
+/// A module whose slot initializers and statement run in the host run of
+/// its instantiation, a run of its own before the one that sends `main`, as
+/// `ns-next run` runs a root's instantiation before `main:args:`.
+const TWO_RUNS: &str = indoc! {"
+    class TwoRuns = Object new (
+      |
+        first ::= 1.
+        second ::= first + 1.
+      |
+      second:: second * 10.
+    ) (
+      public main = (
+        | x |
+        x:: second + 1.
+        ^x
+      )
+    ) : ()
+"};
+
+/// Instantiates `TWO_RUNS`'s module class under `lowering`, a breakpoint
+/// at its last slot initializer, and sends the instance `main`, a debugger
+/// attached whose `agent` serves both runs from another thread. Answers
+/// what `agent` answered and `main`'s answer.
+fn across_two_runs<T: Send + 'static>(
+    lowering: Lowering,
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, i64) {
+    let (mut interpreter, class) = load(TWO_RUNS, lowering);
+    let remote = interpreter.attach_debugger();
+    let offset = line_start(TWO_RUNS, "second ::= first + 1.");
+    set_breakpoints(&remote, "TwoRuns", vec![offset]);
+    let (answer, result, _) = debugged_by(remote, agent, || {
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        interpreter.send(&instance, Symbol::intern("main"), &[])
+    });
+    (answer, answered(&mut interpreter, result))
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step whose frame leaves its host run -- the instantiation's
+    /// initializer, which returns to the host -- goes on in the program's
+    /// next run, the next place the program reaches (decision 17): the
+    /// run's entry stops at its first statement, a step's stop, whether
+    /// the step was over, into or out. A step over or into from the last
+    /// slot initializer stops at the initializer's statement first; none
+    /// stops in the factory, which is passed over (decision 12).
+    fn a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement(lowering) {
+        for command in [Command::StepOver, Command::StepInto, Command::StepOut] {
+            let name = command.name();
+            let out = command == Command::StepOut;
+            let (stops, answer) = across_two_runs(lowering, move |remote| {
+                expect_first_stop(remote, "TwoRuns");
+                let mut stops = Vec::new();
+                while stops.len() < 4 {
+                    step(remote, command.clone());
+                    let stood = standing(remote, TWO_RUNS);
+                    let in_main = stood.0 == "TwoRuns>>main";
+                    stops.push(stood);
+                    if in_main {
+                        break;
+                    }
+                }
+                continue_stopped(remote);
+                stops
+            });
+            let mut expected = vec![("TwoRuns>>main", "x:: second + 1")];
+            if !out {
+                expected.insert(0, ("TwoRuns initializer", "second:: second * 10"));
+            }
+            assert_eq!(as_pairs(&stops), expected, "{name}");
+            assert_eq!(answer, 21, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Terminate` sent between runs ends the step its run left, as it
+    /// would end the step in a run: the next run stops nowhere, and the
+    /// `Terminate`, which met no run, is refused.
+    fn a_terminate_between_runs_drops_the_step_its_run_left(lowering) {
+        let (mut interpreter, class) = load(TWO_RUNS, lowering);
+        let remote = interpreter.attach_debugger();
+        let offset = line_start(TWO_RUNS, "second ::= first + 1.");
+        set_breakpoints(&remote, "TwoRuns", vec![offset]);
+        let agent = |remote: &DebugRemote| {
+            expect_first_stop(remote, "TwoRuns");
+            // The first step stops at the initializer's statement; the
+            // second leaves the run, past the factory.
+            step(remote, Command::StepOver);
+            remote.send(Command::StepOver);
+            match remote.next_event(EVENT_TIMEOUT) {
+                Some(Event::Continued) => {}
+                other => panic!("the confirmation of the step was expected, not {other:?}"),
+            }
+            // The step leaves the run without a stop.
+            while !run_finished() {
+                if let Some(event) = remote.next_event(Duration::from_millis(10)) {
+                    panic!("the instantiation was expected to end silently, not with {event:?}");
+                }
+            }
+        };
+        let (_, result, remote) =
+            debugged_by(remote, agent, || interpreter.instantiate(&class, &[]));
+        let instance = expect_ok(result, "instantiate");
+        remote.send(Command::Terminate);
+        let (events, result, remote) = events_during(remote, || {
+            interpreter.send(&instance, Symbol::intern("main"), &[])
+        });
+        assert_no_stop(&events);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::Refused { command, .. } if command == "Terminate"
+            )),
+            "{events:?}"
+        );
+        assert_eq!(answered(&mut interpreter, result), 21);
+        drop(remote);
+    }
+}
+
+/// Classes instantiated within a run: one whose initializer has slot
+/// initializers and statements, a subclass whose superclass's
+/// initializer has statements, a class that applies a mixin by a `<:`
+/// clause, and one whose superclass clause's argument sends a method of
+/// the module.
+const INITIALIZING: &str = indoc! {"
+    class Initializing = Object new () (
+      class Header = (
+        |
+          first ::= 1.
+          public second ::= first + 1.
+        |
+        first:: first + 10.
+        second:: second + 10.
+      ) ()
+      class Base = (
+        |
+          a ::= 1.
+        |
+        a:: a + 1.
+      ) ()
+      class Derived = Base new (
+        |
+          public b ::= 2.
+        |
+        b:: b + 1.
+      ) ()
+      class Extra = (
+        |
+          public c ::= 3.
+        |
+        c:: c + 1.
+      ) ()
+      class Mixed = Base new <: Extra new (
+        |
+          public d ::= 4.
+        |
+      ) ()
+      class Setup withSetup: value = (
+        |
+          public e ::= value.
+        |
+      ) ()
+      class Clause = Setup withSetup: setupValue (
+        |
+          public f ::= 6.
+        |
+      ) ()
+      class Ending = (
+        |
+          public g ::= 0.
+        |
+        g < 5 ifTrue: [
+          g:: g + 1.
+          g:: g + 2].
+      ) ()
+      class Taker new: block = (
+        |
+          public h ::= block value.
+        |
+      ) ()
+      setupValue = (
+        ^5
+      )
+      public ending = (
+        | made |
+        made:: Ending new.
+        ^made g
+      )
+      public taking = (
+        | made total |
+        total:: 0.
+        made:: Taker new: [
+          total:: total + 1.
+          total + 40].
+        ^made h
+      )
+      public header = (
+        | made |
+        made:: Header new.
+        ^made second
+      )
+      public derived = (
+        | made |
+        made:: Derived new.
+        ^made b
+      )
+      public mixed = (
+        | made |
+        made:: Mixed new.
+        ^made c + made d
+      )
+      public clause = (
+        | made |
+        made:: Clause new.
+        ^made e + made f
+      )
+    ) : ()
+"};
+
+/// A module whose initializer's last statement is an inlined form, run in
+/// the host run of its instantiation before the one that sends `main`.
+const ENDING_RUNS: &str = indoc! {"
+    class EndingRuns = Object new (
+      |
+        first ::= 1.
+      |
+      first > 0 ifTrue: [
+        first:: first + 1.
+        first:: first * 10].
+    ) (
+      public main = (
+        | x |
+        x:: first + 1.
+        ^x
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form that is the last statement of the
+    /// root's initializer leaves the instantiation's run, past the
+    /// factory, and goes on in the next run: the step carried stops at
+    /// `main`'s first statement.
+    fn a_step_out_of_an_initializer_s_last_form_goes_on_in_the_next_run(lowering) {
+        let (mut interpreter, class) = load(ENDING_RUNS, lowering);
+        let remote = interpreter.attach_debugger();
+        let offset = line_start(ENDING_RUNS, "first:: first + 1.");
+        set_breakpoints(&remote, "EndingRuns", vec![offset]);
+        let agent = |remote: &DebugRemote| {
+            expect_first_stop(remote, "EndingRuns");
+            step(remote, Command::StepOut);
+            let stood = standing(remote, ENDING_RUNS);
+            continue_stopped(remote);
+            stood
+        };
+        let (stood, result, _) = debugged_by(remote, agent, || {
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            interpreter.send(&instance, Symbol::intern("main"), &[])
+        });
+        assert_eq!(
+            stood,
+            (String::from("EndingRuns>>main"), String::from("x:: first + 1"))
+        );
+        assert_eq!(answered(&mut interpreter, result), 21);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form that is an initializer's last
+    /// statement, in a run's `new`, leaves the initializer, passes over the
+    /// factory (decision 12) and stops at the caller's place after the
+    /// `new`.
+    fn a_step_out_of_an_initializer_s_last_form_stops_after_the_new(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "ending",
+            "g:: g + 1.",
+            Command::StepOut,
+            ("Initializing>>ending", "made:: Ending new"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [("Initializing>>ending", "made:: Ending new")]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block handed to a factory and run by a slot
+    /// initializer leaves the send of the factory, which took it, past
+    /// the initializer and the factory: it stops after the `new:`, in the
+    /// statement that assigns what it answered.
+    fn a_step_out_of_a_block_a_slot_initializer_runs_stops_after_the_factory_s_send(
+        lowering
+    ) {
+        let statement = {
+            let from = INITIALIZING.find("made:: Taker new: [").expect("the statement");
+            let until = INITIALIZING[from..].find("total + 40]").expect("its end") + from;
+            &INITIALIZING[from..until + "total + 40]".len()]
+        };
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "taking",
+            "total:: total + 1.",
+            Command::StepOut,
+            ("Initializing>>taking", statement),
+        );
+        assert_eq!(as_pairs(&stops), [("Initializing>>taking", statement)]);
+        assert_eq!(answer, 41);
+    }
+}
+
+/// Sends `selector` to an instance of `INITIALIZING` under `lowering`, a
+/// breakpoint on the line of `breakpoint`, and from its stop takes
+/// `command` until the program stands at `last`, at most twelve times:
+/// answers every stop the steps made, as its frame's name and statement,
+/// and the run's answer.
+fn initializing_stops(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+    command: Command,
+    last: (&'static str, &'static str),
+) -> (Vec<(String, String)>, i64) {
+    let offset = line_start(INITIALIZING, breakpoint);
+    stepped(
+        INITIALIZING,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, "Initializing", vec![offset]),
+        move |remote| {
+            expect_first_stop(remote, "Initializing");
+            let mut stops = Vec::new();
+            while stops.len() < 12 {
+                step(remote, command.clone());
+                let stood = standing(remote, INITIALIZING);
+                let done = stood.0 == last.0 && stood.1 == last.1;
+                stops.push(stood);
+                if done {
+                    break;
+                }
+            }
+            continue_stopped(remote);
+            stops
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over goes through every slot initializer of an initializer
+    /// and then each of its statements, and from the last one, past the
+    /// factory (decision 12), to the caller's place after the `new`.
+    fn a_step_over_goes_through_an_initializer_and_past_the_factory(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "header",
+            "first ::= 1.",
+            Command::StepOver,
+            ("Initializing>>header", "^made second"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Header initializer", "public second ::= first + 1."),
+                ("Header initializer", "first:: first + 10"),
+                ("Header initializer", "second:: second + 10"),
+                ("Initializing>>header", "made:: Header new"),
+                ("Initializing>>header", "^made second"),
+            ]
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of a superclass's initializer
+    /// stops at the first statement of the next level's, the
+    /// subclass's, never in the factory.
+    fn a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "derived",
+            "a:: a + 1.",
+            Command::StepOver,
+            ("Initializing>>derived", "^made b"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Derived initializer", "public b ::= 2."),
+                ("Derived initializer", "b:: b + 1"),
+                ("Initializing>>derived", "made:: Derived new"),
+                ("Initializing>>derived", "^made b"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out taken in a superclass's initializer leaves its frame and
+    /// stops at the first statement of the next level's initializer, the
+    /// subclass's; one taken there leaves the last level's initializer,
+    /// passes over the factory (decision 12), and stops at the caller's
+    /// place after the `new`.
+    fn a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "derived",
+            "a ::= 1.",
+            Command::StepOut,
+            ("Initializing>>derived", "made:: Derived new"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Derived initializer", "public b ::= 2."),
+                ("Initializing>>derived", "made:: Derived new"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into from an instantiation whose class applies a mixin by a
+    /// `<:` clause goes through every level's initializer in the order
+    /// the program runs them (§6.1, §6.2): the check of the `<:` clause,
+    /// the superclass clause and the superclass's initializer, from its
+    /// own superclass clause on, the `<:` clause's message and the mixin's
+    /// initializer, then the class's own slot.
+    fn a_step_into_goes_through_a_mixin_application_s_initializers_in_order(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "mixed",
+            "made:: Mixed new.",
+            Command::StepInto,
+            ("Initializing>>mixed", "^made c + made d"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Mixed initializer", "Extra new"),
+                ("Mixed initializer", "Base new"),
+                ("Base initializer", "Base"),
+                ("Base initializer", "a ::= 1."),
+                ("Base initializer", "a:: a + 1"),
+                ("Mixed initializer", "Extra new"),
+                ("Extra initializer", "public c ::= 3."),
+                ("Extra initializer", "c:: c + 1"),
+                ("Mixed initializer", "public d ::= 4."),
+                ("Initializing>>mixed", "made:: Mixed new"),
+                ("Initializing>>mixed", "^made c + made d"),
+            ]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into from an instantiation whose superclass clause's
+    /// argument sends a method of the module enters that method where the
+    /// program runs it, in the superclass clause, and goes on through the
+    /// rest of the clause, the superclass's initializer and the class's
+    /// own.
+    fn a_step_into_enters_a_method_a_superclass_clause_sends(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "clause",
+            "made:: Clause new.",
+            Command::StepInto,
+            ("Initializing>>clause", "^made e + made f"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Initializing>>setupValue", "^5"),
+                ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Setup initializer", "Setup"),
+                ("Setup initializer", "public e ::= value."),
+                ("Clause initializer", "public f ::= 6."),
+                ("Initializing>>clause", "made:: Clause new"),
+                ("Initializing>>clause", "^made e + made f"),
+            ]
+        );
+        assert_eq!(answer, 11);
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A step into at a statement that sends a method stops at the
     /// callee's first statement, the callee on top of the stack.
@@ -3097,6 +4105,87 @@ ns_runtime::for_each_lowering! {
             (String::from("Stepping>>compute"), String::from("a:: 3"))
         );
         assert_eq!(names, ["Stepping>>compute", "Stepping>>run"]);
+    }
+}
+
+/// A method whose first statement sends a method with an empty body, and
+/// one whose statement hands a block to the shipped `do:`, a block whose
+/// only statement names its parameter -- a statement the optimized
+/// lowering compiles to no instruction, since the block answers the
+/// parameter's register.
+const EMPTY_BODIES: &str = indoc! {"
+    class Emptied = Object new () (
+      public run = (
+        | x |
+        x:: self nothing.
+        ^3
+      )
+      public each = (
+        {1. 2} do: [:each | each].
+        ^4
+      )
+      nothing = ()
+    ) : ()
+"};
+
+/// Sends `selector` to an instance of `EMPTY_BODIES` under `lowering`, a
+/// breakpoint on the line of `breakpoint`, and takes one step into from
+/// its stop: answers where it stopped, its frame's name and statement, and
+/// the names of the frames on the stack.
+fn stepped_into_empty(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+) -> ((String, String), Vec<String>) {
+    let offset = line_start(EMPTY_BODIES, breakpoint);
+    let (stopped, _) = stepped(
+        EMPTY_BODIES,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, "Emptied", vec![offset]),
+        |remote| {
+            expect_first_stop(remote, "Emptied");
+            step(remote, Command::StepInto);
+            let stood = standing(remote, EMPTY_BODIES);
+            let names: Vec<String> = stack_trace(remote)
+                .iter()
+                .map(|frame| frame.name.clone())
+                .collect();
+            continue_stopped(remote);
+            (stood, names)
+        },
+    );
+    stopped
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into a method whose body is empty stops in it, standing in
+    /// the body, as in any method it pushes: only a factory, known by its
+    /// frame's kind, is passed over (decision 12), never a body for having
+    /// no statement start.
+    fn a_step_into_an_empty_body_stops_in_it(lowering) {
+        let (stood, names) = stepped_into_empty(lowering, "run", "x:: self nothing.");
+        assert_eq!(
+            stood,
+            (String::from("Emptied>>nothing"), String::from("nothing = ()"))
+        );
+        assert_eq!(names, ["Emptied>>nothing", "Emptied>>run"]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into a block whose only statement names its parameter stops
+    /// in the block under both lowerings, at that statement, though the
+    /// optimized one compiles it to no instruction: the return the block
+    /// ends with, which no statement holds, stands at the statement it
+    /// follows.
+    fn a_step_into_a_block_naming_its_parameter_stops_in_it(lowering) {
+        let ((frame, statement), names) =
+            stepped_into_empty(lowering, "each", "{1. 2} do: [:each | each].");
+        assert_eq!(frame, "[] in Emptied>>each");
+        assert_eq!(statement, "each");
+        assert_eq!(names.first().map(String::as_str), Some("[] in Emptied>>each"));
+        assert_eq!(names.last().map(String::as_str), Some("Emptied>>each"));
     }
 }
 
@@ -3479,6 +4568,1105 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// Blocks a send takes, inlined and not, and blocks run from elsewhere
+/// than that send: what a step out of a block leaves (decision 17).
+const LEAVING: &str = indoc! {"
+    class Leaving = Object new (
+      | kept |
+    ) (
+      class Truth = () (
+        public ifTrue: block = (
+          ^block value
+        )
+      )
+      class Runner = (
+        | kept |
+      ) (
+        public keep: block = (
+          kept:: block
+        )
+        public run: value = (
+          ^kept value: value
+        )
+        public runWith: setter = (
+          setter runKept.
+          ^kept value: 5
+        )
+      )
+      class Hoarder = (
+        | kept |
+      ) (
+        public ifTrue: block = (
+          kept:: block.
+          ^nil
+        )
+        public runKept = (
+          ^kept value
+        )
+      )
+      class Capturer = () (
+        public doesNotUnderstand: message = (
+          ^message
+        )
+      )
+      class Proxy on: subject = (
+        | target = subject. |
+      ) (
+        public doesNotUnderstand: message = (
+          ^message sendTo: target
+        )
+      )
+      public looping = (
+        | index total |
+        index:: 0.
+        total:: 0.
+        [index < 5] whileTrue: [
+          index:: index + 1.
+          total:: total + index].
+        ^total
+      )
+      public conditional = (
+        | x |
+        x:: 1.
+        x > 0 ifTrue: [
+          x:: x + 10.
+          x:: x + 100].
+        ^x
+      )
+      public nesting = (
+        | index hits |
+        index:: 0.
+        hits:: 0.
+        [index < 3] whileTrue: [
+          index:: index + 1.
+          index > 1 ifTrue: [
+            hits:: hits + 1.
+            hits:: hits + 2].
+          hits:: hits + 10].
+        ^hits
+      )
+      public iterating = (
+        | total |
+        total:: 0.
+        {1. 2. 3} do: [:each |
+          total:: total + each.
+          total:: total * 1].
+        ^total
+      )
+      public protecting = (
+        | answer |
+        answer:: [
+          self boom.
+          7] on: Error do: [:error |
+            | partial |
+            partial:: 3.
+            partial + 4].
+        ^answer + 1
+      )
+      public storing = (
+        | result |
+        self keep: [:value |
+          result:: value + 1.
+          result:: result * 2].
+        ^self later: 4
+      )
+      public returning = (
+        | block |
+        block:: self made.
+        ^block value: 4
+      )
+      public finding = (
+        | found |
+        found:: self find.
+        ^found + 1
+      )
+      boom = (
+        Error signal: 'boom'.
+        ^1
+      )
+      keep: block = (
+        kept:: block
+      )
+      later: value = (
+        | answer |
+        answer:: kept value: value.
+        ^answer
+      )
+      made = (
+        ^[:number |
+          number + 1.
+          number * 2]
+      )
+      find = (
+        {1. 2. 3} do: [:each |
+          each = 2 ifTrue: [^each * 10].
+          each yourself].
+        ^0
+      )
+      public handing = (
+        | total block |
+        total:: 0.
+        block:: [:each |
+          total:: total + (each * 5).
+          total:: total * 1].
+        {1. 2. 3} do: block.
+        ^total
+      )
+      public computing = (
+        | total block |
+        total:: 0.
+        block:: [:each |
+          total:: total - each.
+          total:: total * 1].
+        {1. 2. 3} do: block yourself.
+        ^total
+      )
+      public parenthesizing = (
+        | total |
+        total:: 0.
+        {1. 2. 3} do: ([:each |
+          total:: total + (each * 2).
+          total:: total * 1]).
+        ^total
+      )
+      public assigning = (
+        | x y |
+        x:: 1.
+        y:: (x > 0 ifTrue: [
+          x:: x + 20.
+          x + 100] ifFalse: [0]) + 1.
+        ^y
+      )
+      public passing = (
+        | x |
+        x:: 1.
+        ^self twice: (x > 0
+          ifTrue: [
+            x:: x + 30.
+            x]
+          ifFalse: [0])
+      )
+      twice: value = (
+        ^value * 2
+      )
+      public recursing = (
+        ^self walk: 2
+      )
+      walk: depth = (
+        | total |
+        total:: 0.
+        depth > 0 ifTrue: [total:: self walk: depth - 1].
+        {1. 2} do: [:each |
+          total:: total + (each * 3).
+          total:: total + depth].
+        ^total
+      )
+      public ensuring = (
+        | total |
+        total:: 0.
+        [total:: total + 1] ensure: [
+          total:: total + 10.
+          total:: total * 2].
+        ^total
+      )
+      public unwinding = (
+        | found |
+        found:: self escape.
+        ^found + 1
+      )
+      escape = (
+        [^5] ensure: [
+          kept:: 6.
+          kept:: 7].
+        ^0
+      )
+      public siblings = (
+        | total first second |
+        total:: 0.
+        first:: [
+          total:: total + 1.
+          total:: total + 2].
+        second:: [
+          first value.
+          total:: total * 10].
+        second value.
+        ^total
+      )
+      public nestingStatement = (
+        | c d a |
+        c:: true.
+        d:: true.
+        a:: 0.
+        c ifTrue: [d ifTrue: [
+          a:: a + 1.
+          a:: a + 2]] ifFalse: [a:: 9].
+        ^a
+      )
+      public nestingAssignment = (
+        | c d x |
+        c:: true.
+        d:: true.
+        x:: 0.
+        x:: c ifTrue: [d ifTrue: [
+          x:: x + 4.
+          x + 5]] ifFalse: [2].
+        ^x
+      )
+      public proxying = (
+        | total |
+        total:: 0.
+        (Proxy on: {1. 2. 3}) do: [:each |
+          total:: total + (each * 7).
+          total:: total * 1].
+        ^total
+      )
+      public proxyHanding = (
+        | count total block proxy |
+        count:: 0.
+        total:: 0.
+        proxy:: Proxy on: {1. 2. 3}.
+        block:: [:each |
+          total:: total + (each * 12).
+          total:: total * 1].
+        count:: count + self one.
+        proxy do: block.
+        ^total + count
+      )
+      one = (
+        ^1
+      )
+      public proxyStale = (
+        | runner total x proxy |
+        total:: 0.
+        x:: 0.
+        runner:: Runner new.
+        proxy:: Proxy on: runner.
+        x:: 1 + x.
+        runner keep: [:each |
+          total:: total + (each * 13).
+          total:: total * 1].
+        proxy run: x.
+        ^total
+      )
+      public reassigning = (
+        | runner total held hoarder counting |
+        total:: 0.
+        runner:: Runner new.
+        hoarder:: Hoarder new.
+        counting:: [:each |
+          total:: total + (each * 14).
+          total:: total * 1].
+        runner keep: counting.
+        held:: hoarder.
+        hoarder ifTrue: [held:: counting].
+        runner runWith: held.
+        ^total
+      )
+      public proxyReassigning = (
+        | runner total held hoarder counting proxy |
+        total:: 0.
+        runner:: Runner new.
+        proxy:: Proxy on: runner.
+        hoarder:: Hoarder new.
+        counting:: [:each |
+          total:: total + (each * 15).
+          total:: total * 1].
+        runner keep: counting.
+        held:: hoarder.
+        hoarder ifTrue: [held:: counting].
+        proxy runWith: held.
+        ^total
+      )
+      public proxyExplicit = (
+        | total proxy message |
+        total:: 0.
+        proxy:: Proxy on: {1. 2. 3}.
+        message:: Capturer new do: [:each |
+          total:: total + (each * 16).
+          total:: total * 1].
+        proxy doesNotUnderstand: message.
+        ^total
+      )
+      public proxyInjecting = (
+        | total |
+        total:: (Proxy on: {1. 2. 3}) inject: 100 into: [:sum :each |
+          sum - (each * 8).
+          sum - each].
+        ^total
+      )
+      public tailing = (
+        self tail.
+        ^kept
+      )
+      tail = (
+        kept:: 0.
+        {4. 5. 6} do: [:each |
+          kept:: kept + (each * 9).
+          kept:: kept * 1]
+      )
+      public truthful = (
+        | truth x |
+        truth:: Truth new.
+        x:: 0.
+        truth ifTrue: [
+          x:: x + 1.
+          x:: x + 2].
+        ^x
+      )
+      public truthfulValue = (
+        | truth x |
+        truth:: Truth new.
+        x:: 0.
+        x:: (truth ifTrue: [
+          x:: x + 3.
+          x + 4]) + 5.
+        ^x
+      )
+      public nestingValue = (
+        | c d x |
+        c:: true.
+        d:: true.
+        x:: 0.
+        x:: c ifTrue: [(d ifTrue: [
+          x:: x + 6.
+          x] ifFalse: [0]) + 7] ifFalse: [2].
+        ^x
+      )
+    ) : ()
+"};
+
+/// Where a step stopped: the top frame's name and statement, and the
+/// value of the last call it reported.
+type SteppedTo = ((String, String), Option<String>);
+
+/// Sends `selector` to a `LEAVING` with a breakpoint at the line of
+/// `line`, continues past its first `hits - 1` stops, removes it and takes
+/// `commands`, one step after another: where each stopped, and the run's
+/// answer.
+fn leaving(
+    lowering: Lowering,
+    selector: &'static str,
+    line: &str,
+    hits: usize,
+    commands: Vec<Command>,
+) -> (Vec<SteppedTo>, i64) {
+    leaving_with(lowering, true, selector, line, hits, commands)
+}
+
+/// `leaving`, the JIT on or off (`stepped_with`).
+fn leaving_with(
+    lowering: Lowering,
+    jit: bool,
+    selector: &'static str,
+    line: &str,
+    hits: usize,
+    commands: Vec<Command>,
+) -> (Vec<SteppedTo>, i64) {
+    let offset = line_start(LEAVING, line);
+    stepped_with(
+        LEAVING,
+        lowering,
+        jit,
+        selector,
+        |remote| set_breakpoints(remote, "Leaving", vec![offset]),
+        move |remote| {
+            let (id, _) = resolved(&expect_breakpoints(remote, "Leaving"));
+            for _ in 1..hits {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                continue_stopped(remote);
+            }
+            assert_eq!(expect_breakpoint_stop(remote), [id]);
+            // Only the steps stop from here.
+            set_breakpoints(remote, "Leaving", Vec::new());
+            assert_eq!(expect_breakpoints(remote, "Leaving"), []);
+            let mut stops = Vec::new();
+            for command in commands {
+                let returned = step(remote, command);
+                stops.push((
+                    standing(remote, LEAVING),
+                    returned.map(|returned| returned.label),
+                ));
+            }
+            continue_stopped(remote);
+            stops
+        },
+    )
+}
+
+/// A frame of `LEAVING` named `name`, standing at `statement`, with
+/// `returned` reported as the value of the last call.
+fn stood(name: &str, statement: &str, returned: Option<&str>) -> SteppedTo {
+    (
+        (String::from(name), String::from(statement)),
+        returned.map(String::from),
+    )
+}
+
+/// The statements `stops` stood at: what a step out of an inlined form
+/// is held to, since the reference lowering runs the form's blocks as
+/// frames of their own, which the optimized one lowers inline.
+fn statements(stops: &[SteppedTo]) -> Vec<&str> {
+    stops
+        .iter()
+        .map(|((_, statement), _)| statement.as_str())
+        .collect()
+}
+
+/// The text of `LEAVING`'s statement that begins with `start` and ends
+/// with `end`.
+fn leaving_statement(start: &str, end: &str) -> String {
+    let from = LEAVING.find(start).expect("the statement's start");
+    let until = LEAVING[from..].find(end).expect("the statement's end") + from + end.len();
+    String::from(&LEAVING[from..until])
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `whileTrue:`'s body leaves the whole loop, which
+    /// runs its remaining rounds, and stops after it, never at the
+    /// condition's next evaluation.
+    fn a_step_out_of_a_loop_s_body_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "index:: index + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>looping"), String::from("^total"))
+        );
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a loop's body in its last round, the loop ending
+    /// during the step, stops after the loop too.
+    fn a_step_out_of_a_loop_s_last_round_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "index:: index + 1.",
+            5,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>looping"), String::from("^total"))
+        );
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a loop's condition, where a step over the body's
+    /// last statement goes on, leaves the loop as well.
+    fn a_step_out_of_a_loop_s_condition_stops_after_the_loop(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "looping",
+            "total:: total + index].",
+            1,
+            vec![Command::StepOver, Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["index < 5", "^total"]);
+        assert_eq!(stops[1].0 .0, "Leaving>>looping");
+        assert_eq!(answer, 15);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ifTrue:`'s block stops after the conditional,
+    /// past the block's remaining statements.
+    fn a_step_out_of_an_if_true_s_block_stops_after_the_conditional(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "conditional",
+            "x:: x + 10.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^x"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>conditional");
+        assert_eq!(answer, 111);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block nested in another leaves one level: out of
+    /// the `ifTrue:` to the loop body's next statement, then out of the
+    /// loop.
+    fn a_step_out_of_nested_blocks_leaves_one_level_at_a_time(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nesting",
+            "hits:: hits + 1.",
+            1,
+            vec![Command::StepOut, Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["hits:: hits + 10", "^hits"]);
+        assert_eq!(stops[1].0 .0, "Leaving>>nesting");
+        assert_eq!(answer, 36);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `do:`'s block leaves the whole `do:`, past the
+    /// block's runs for the remaining elements, and stops after it in the
+    /// block's home, reporting what the `do:` answered.
+    fn a_step_out_of_a_do_s_block_stops_after_the_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "iterating",
+            "total:: total + each.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>iterating"), String::from("^total"))
+        );
+        assert!(stops[0].1.is_some(), "the do:'s answer is reported");
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `on:do:`'s protected block, whose error the
+    /// handler takes meanwhile, stops where the `on:do:` answered.
+    fn a_step_out_of_a_protected_block_stops_after_the_on_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "protecting",
+            "self boom.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("answer:: [", "partial + 4]");
+        assert_eq!(
+            stops,
+            [stood("Leaving>>protecting", &statement, Some("7"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `on:do:`'s handler block stops where the
+    /// `on:do:` answered, the handler's value.
+    fn a_step_out_of_a_handler_block_stops_after_the_on_do(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "protecting",
+            "partial:: 3.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("answer:: [", "partial + 4]");
+        assert_eq!(
+            stops,
+            [stood("Leaving>>protecting", &statement, Some("7"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block kept and run by another send than the one that took it,
+    /// its home still running, steps out as any frame does: to the return
+    /// point of its caller.
+    fn a_step_out_of_a_block_run_from_elsewhere_stops_in_its_caller(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "storing",
+            "result:: value + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>later:", "answer:: kept value: value", Some("10"))]
+        );
+        assert_eq!(answer, 10);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block whose home returned steps out as any frame does.
+    fn a_step_out_of_a_block_whose_home_returned_stops_in_its_caller(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "returning",
+            "number + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>returning", "^block value: 4", Some("8"))]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block the last statement's send of a body took
+    /// stops after the send, at the return the body ends with, which no
+    /// statement holds: it stands at that last statement, not at the whole
+    /// body.
+    fn a_step_out_of_a_block_the_last_statement_took_stands_at_that_statement(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "tailing",
+            "kept:: kept + (each * 9).",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("{4. 5. 6} do:", "kept * 1]");
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].0, (String::from("Leaving>>tail"), statement));
+        assert_eq!(answer, 135);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block an inlined form's fallback send runs -- the
+    /// optimized lowering's send of `ifTrue:` to a receiver no Boolean,
+    /// the reference lowering's send of it -- leaves the form as a step
+    /// over of it would: at the next statement for a form that is a whole
+    /// statement, at its join for one used as a value.
+    fn a_step_out_of_a_fallback_send_s_block_leaves_the_form(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "truthful",
+            "x:: x + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^x"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>truthful");
+        assert_eq!(answer, 3);
+        let (stops, answer) = leaving(
+            lowering,
+            "truthfulValue",
+            "x:: x + 3.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("x:: (truth ifTrue: [", "+ 5");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(stops[0].0 .0, "Leaving>>truthfulValue");
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block a send takes leaves the send when what the
+    /// send delivers to is a `doesNotUnderstand:` handler, which holds the
+    /// block only in its `Message`'s arguments: the send's own arguments
+    /// decide, not its callee's.
+    fn a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "proxying",
+            "total:: total + (each * 7).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>proxying"), String::from("^total"))
+        );
+        assert_eq!(answer, 42);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same for a block handed on in a variable, which the send reads
+    /// where it stands, not from its slot: the slot still holds what an
+    /// earlier statement left there.
+    fn a_step_out_of_a_block_a_does_not_understand_takes_in_a_variable_stops_after_the_send(
+        lowering
+    ) {
+        for jit in [true, false] {
+            let (stops, answer) = leaving_with(
+                lowering,
+                jit,
+                "proxyHanding",
+                "total:: total + (each * 12).",
+                1,
+                vec![Command::StepOut],
+            );
+            assert_eq!(stops.len(), 1, "the JIT on: {jit}");
+            assert_eq!(
+                stops[0].0,
+                (String::from("Leaving>>proxyHanding"), String::from("^total + count")),
+                "the JIT on: {jit}"
+            );
+            assert_eq!(answer, 73, "the JIT on: {jit}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block kept by one send and run by a later one through a
+    /// `doesNotUnderstand:` handler, which took another argument, steps
+    /// out as any frame does, though the later send's slot still holds the
+    /// block the earlier one took.
+    fn a_step_out_of_a_kept_block_a_does_not_understand_runs_stops_in_its_caller(lowering) {
+        for jit in [true, false] {
+            let (stops, answer) = leaving_with(
+                lowering,
+                jit,
+                "proxyStale",
+                "total:: total + (each * 13).",
+                1,
+                vec![Command::StepOut],
+            );
+            assert_eq!(stops.len(), 1, "the JIT on: {jit}");
+            assert_eq!(
+                stops[0].0,
+                (String::from("Runner>>run:"), String::from("^kept value: value")),
+                "the JIT on: {jit}"
+            );
+            assert_eq!(answer, 13, "the JIT on: {jit}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A send handed one value is not taken for the send of a block its
+    /// callee runs because a block of the sender's own -- an inlined
+    /// form's fallback closure, which assigns the sender's local in its
+    /// register -- stored that block into the local the send read from
+    /// meanwhile: what the send delivered decides, its callee's parameter
+    /// or, for a `doesNotUnderstand:` handler, its `Message`'s arguments.
+    fn a_step_out_of_a_block_assigned_to_a_sent_local_meanwhile_stops_in_its_caller(lowering) {
+        for (selector, line, answer) in [
+            ("reassigning", "total:: total + (each * 14).", 70),
+            ("proxyReassigning", "total:: total + (each * 15).", 75),
+        ] {
+            for jit in [true, false] {
+                let (stops, answered) =
+                    leaving_with(lowering, jit, selector, line, 1, vec![Command::StepOut]);
+                assert_eq!(stops.len(), 1, "{selector}, the JIT on: {jit}");
+                assert_eq!(
+                    stops[0].0,
+                    (String::from("Runner>>runWith:"), String::from("^kept value: 5")),
+                    "{selector}, the JIT on: {jit}"
+                );
+                assert_eq!(answered, answer, "{selector}, the JIT on: {jit}");
+            }
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Message` a program sends `doesNotUnderstand:` itself is a plain
+    /// argument: a block among its arguments is not taken by that send,
+    /// and a step out of it leaves its frame, as for a block in an array
+    /// any other send is handed.
+    fn a_step_out_of_a_block_in_a_message_sent_explicitly_leaves_its_frame(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "proxyExplicit",
+            "total:: total + (each * 16).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (
+                String::from("[] in Leaving>>proxyExplicit"),
+                String::from("total:: total + (each * 16)")
+            )
+        );
+        assert_eq!(answer, 96);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same for a block that is the send's second argument, which a
+    /// `doesNotUnderstand:` handler's frame does not lie on.
+    fn a_step_out_of_a_second_argument_a_does_not_understand_takes_stops_after_the_send(
+        lowering
+    ) {
+        let (stops, answer) = leaving(
+            lowering,
+            "proxyInjecting",
+            "sum - (each * 8).",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("total:: (Proxy on:", "sum - each]");
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>proxyInjecting"), statement)
+        );
+        assert_eq!(answer, 94);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block a `do:` takes through a variable leaves the
+    /// `do:`, as one of a literal does.
+    fn a_step_out_of_a_block_handed_on_in_a_variable_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "handing",
+            "total:: total + (each * 5).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>handing"), String::from("^total"))
+        );
+        assert_eq!(answer, 30);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block an expression computes for the `do:` leaves
+    /// the `do:`.
+    fn a_step_out_of_a_block_an_expression_hands_on_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "computing",
+            "total:: total - each.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>computing"), String::from("^total"))
+        );
+        assert_eq!(answer, -6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a parenthesized block literal leaves the send that
+    /// took it.
+    fn a_step_out_of_a_parenthesized_block_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "parenthesizing",
+            "total:: total + (each * 2).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>parenthesizing"), String::from("^total"))
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form's block mid-statement stops where the
+    /// form answered, the rest of its statement still to run, as a real
+    /// send's return point does.
+    fn a_step_out_of_an_inlined_form_mid_statement_stops_at_its_answer(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "assigning",
+            "x:: x + 20.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("y:: (x > 0 ifTrue: [", "ifFalse: [0]) + 1");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(stops[0].0 .0, "Leaving>>assigning");
+        assert_eq!(answer, 122);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form's block that is a send's argument
+    /// stops where the form answered, before the send.
+    fn a_step_out_of_an_inlined_form_in_an_argument_stops_at_its_answer(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "passing",
+            "x:: x + 30.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("^self twice: (x > 0", "ifFalse: [0])");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(stops[0].0 .0, "Leaving>>passing");
+        assert_eq!(answer, 62);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of the block of the innermost of three activations of a
+    /// recursive method leaves that activation's `do:`, not an outer
+    /// one's.
+    fn a_step_out_of_a_recursive_home_s_block_stays_in_its_activation(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "recursing",
+            "total:: total + (each * 3).",
+            1,
+            vec![Command::StepOut, Command::StepOut],
+        );
+        assert_eq!(stops.len(), 2);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>walk:"), String::from("^total"))
+        );
+        // Out of the innermost activation, to its caller's send, which
+        // the reference lowering runs in the `ifTrue:`'s block.
+        assert_eq!(stops[1].0 .1, "total:: self walk: depth - 1");
+        assert_eq!(stops[1].1.as_deref(), Some("9"));
+        assert_eq!(answer, 33);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ensure:`'s block leaves the `ensure:`.
+    fn a_step_out_of_an_ensure_block_stops_after_the_ensure(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "ensuring",
+            "total:: total + 10.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>ensuring"), String::from("^total"))
+        );
+        assert_eq!(answer, 22);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ensure:`'s block a non-local return's unwind runs
+    /// stops where the return goes on: the home's caller.
+    fn a_step_out_of_an_ensure_block_an_unwind_runs_stops_where_the_return_goes_on(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "unwinding",
+            "kept:: 6.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>unwinding", "found:: self escape", Some("5"))]
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A closure run by a sibling closure of the same home, which the
+    /// home's send did not take, steps out as any frame does: to the
+    /// return point of the sibling's send, the sibling's next statement.
+    fn a_step_out_of_a_closure_a_sibling_runs_stops_in_the_sibling(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "siblings",
+            "total:: total + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("[] in Leaving>>siblings", "total:: total * 10", Some("3"))]
+        );
+        assert_eq!(answer, 30);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a form that is a whole statement of an enclosing
+    /// form's block stops where a step over of that statement would: at
+    /// the next statement start, never at the enclosing form's own jump
+    /// after it.
+    fn a_step_out_of_a_nested_form_s_statement_stops_where_a_step_over_would(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingStatement",
+            "a:: a + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^a"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>nestingStatement");
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same for a nested form whose enclosing form's value is
+    /// assigned: the step goes on past the assignment.
+    fn a_step_out_of_a_nested_form_in_an_assigned_form_stops_after_the_assignment(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingAssignment",
+            "x:: x + 4.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^x"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>nestingAssignment");
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A nested form that is a value inside an enclosing form's block
+    /// stops at its join, mid the block's statement.
+    fn a_step_out_of_a_nested_form_used_as_a_value_stops_at_its_join(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingValue",
+            "x:: x + 6.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("(d ifTrue: [", "ifFalse: [0]) + 7");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(answer, 13);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a `do:`'s block whose next run returns non-locally
+    /// from the home, before the `do:` answers, stops where that return
+    /// goes on: the home's caller.
+    fn a_step_out_of_a_block_whose_send_a_non_local_return_leaves_stops_where_it_goes_on(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "finding",
+            "each yourself].",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>finding", "found:: self find", Some("20"))]
+        );
+        assert_eq!(answer, 21);
+    }
+}
+
 /// A fallback block whose receiver's `ifTrue:` runs it, then loops for
 /// good inside an `ensure:` that runs the block again, so that a step
 /// into taken in the block is still pending when the program is
@@ -3822,7 +6010,9 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the shipped filter off, the same step out stops in each of
-    /// the forcing's frames on its way to the frame that met the future.
+    /// the forcing's frames on its way to the frame that met the future
+    /// -- out of `resolve`'s block, the receiver of its `ifCurtailed:`,
+    /// past the whole `ifCurtailed:` into `resolve` (decision 17).
     fn with_the_shipped_filter_off_a_step_out_of_a_future_s_resolve_stops_in_its_frames(lowering) {
         let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, false);
         assert_eq!(
@@ -3830,7 +6020,6 @@ ns_runtime::for_each_lowering! {
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
-                "Closure>>ifCurtailed:",
                 "FutureImplementation>>resolve",
                 "Probe>>add:",
             ]
@@ -4132,7 +6321,8 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// With the shipped filter off, the same step out stops in each of
-    /// the forcing's frames first.
+    /// the forcing's frames first, out of `resolve`'s block past the
+    /// whole `ifCurtailed:` that took it.
     fn with_the_shipped_filter_off_a_step_out_into_a_slot_initializer_stops_in_the_forcing_s_frames(lowering) {
         let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, false);
         assert_eq!(
@@ -4140,7 +6330,6 @@ ns_runtime::for_each_lowering! {
             [
                 "[] in Probe initializer",
                 "[] in FutureImplementation>>resolve",
-                "Closure>>ifCurtailed:",
                 "FutureImplementation>>resolve",
                 "Pair initializer",
             ]
@@ -5185,6 +7374,83 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A method a block of its own returns from non-locally, which the host
+/// sends, and a second method for the next run.
+const CARRYING: &str = indoc! {"
+    class Carrying = Object new () (
+      public first = (
+        self each: [:value |
+          ^value * 10].
+        ^0
+      )
+      each: action = (
+        action value: 2.
+        ^nil
+      )
+      public second = (
+        | x |
+        x:: 3.
+        ^x + 1
+      )
+    ) : ()
+"};
+
+/// Runs `CARRYING`'s `first` under `lowering`, a method breakpoint on it
+/// continued past its entry, so that the unwind that arrives at it leaves
+/// its exit to a step that leaves the run, then `second`, a pause asked
+/// between the two runs when `paused`: what the second run's first stop
+/// was, against the breakpoint's id, and where it stood.
+fn carried_exit(lowering: Lowering, paused: bool) -> (&'static str, (String, String)) {
+    let (mut interpreter, instance) = instance_of(CARRYING, lowering);
+    let remote = interpreter.attach_debugger();
+    set_method_breakpoints(
+        &remote,
+        vec![method_breakpoint("Carrying", &[], false, "first")],
+    );
+    let agent = |remote: &DebugRemote| {
+        let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+        assert_eq!(method_end(expect_stop(remote), id), "entry");
+        continue_stopped(remote);
+        id
+    };
+    let (id, result, remote) = debugged_by(remote, agent, || {
+        interpreter.send(&instance, Symbol::intern("first"), &[])
+    });
+    assert_eq!(answered(&mut interpreter, result), 20);
+    if paused {
+        remote.pause();
+    }
+    let agent = move |remote: &DebugRemote| {
+        let end = method_end(expect_stop(remote), id);
+        let stood = standing(remote, CARRYING);
+        continue_stopped(remote);
+        (end, stood)
+    };
+    let (stop, result, _) = debugged_by(remote, agent, || {
+        interpreter.send(&instance, Symbol::intern("second"), &[])
+    });
+    assert_eq!(answered(&mut interpreter, result), 4);
+    stop
+}
+
+ns_runtime::for_each_lowering! {
+    /// The exit of a method a run's last unwind left, which the run's end
+    /// carried to the next run, is reported by that run's first stop --
+    /// the carried step's, or a pause's asked between the runs, which
+    /// stops there instead.
+    fn a_pause_between_runs_reports_the_exits_the_last_run_carried(lowering) {
+        for paused in [false, true] {
+            let (end, stood) = carried_exit(lowering, paused);
+            assert_eq!(end, "exit", "paused: {paused}");
+            assert_eq!(
+                stood,
+                (String::from("Carrying>>second"), String::from("x:: 3")),
+                "paused: {paused}"
+            );
+        }
+    }
+}
+
 /// A method left by the non-local return of a block it was passed, whose
 /// home is its sender.
 const UNWOUND: &str = indoc! {"
@@ -6137,12 +8403,16 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A step out at a caught exception's stop goes out of the handler
-    /// block to where the `on:do:` returns: the statement after it.
+    /// block, past the whole `on:do:` that took it, to where the `on:do:`
+    /// returns: mid-statement, its answer yet to be assigned.
     fn a_step_out_from_a_caught_exception_stops_after_the_on_do(lowering) {
         let (stood, result) = stepped_from_a_catch(lowering, Command::StepOut);
+        let from = HANDLING.find("answer:: [").expect("the on:do:'s statement");
+        let until = HANDLING.find("^answer + 1").expect("the next statement");
+        let statement = HANDLING[from..until].trim_end().trim_end_matches('.');
         assert_eq!(
             stood,
-            (String::from("Handling>>run"), String::from("^answer + 1"))
+            (String::from("Handling>>run"), String::from(statement))
         );
         assert_eq!(result, Ok(8));
     }

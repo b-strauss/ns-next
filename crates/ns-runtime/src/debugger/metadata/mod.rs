@@ -31,6 +31,10 @@ pub(crate) struct BodyMetadata {
     pub(crate) statements: Box<[StatementEntry]>,
     /// Every send, `SendMirror` included, by ascending index.
     pub(crate) sends: Box<[SendEntry]>,
+    /// Every send that takes a block literal as its receiver or an
+    /// argument, inlined or not, in emission order: what a step out of
+    /// such a block leaves (`docs/design/debugger.md`, decision 17).
+    pub(crate) block_sends: Box<[BlockSendEntry]>,
     /// The body's own variables first (parameters, then temporaries, in
     /// resolver order), then each enclosing scope's, outward.
     pub(crate) variables: Box<[VariableEntry]>,
@@ -65,6 +69,49 @@ pub(crate) struct SendEntry {
     /// identifier's span for a unary send kept as an identifier and for a
     /// setter assignment.
     pub(crate) selector: Box<[Span]>,
+}
+
+/// A send that takes block literals, the compiler's inlined forms among
+/// them -- `ifTrue:`, `and:`, `whileTrue:`, a mirror send's failure
+/// block -- and where a frame of the body stands while each of its
+/// blocks runs: what a step out taken in one of them leaves (decision
+/// 17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BlockSendEntry {
+    pub(crate) blocks: Box<[TakenBlock]>,
+    /// Whether the send is one of the forms the optimized lowering
+    /// inlines -- the reference lowering's `SendInlinable` and its loop
+    /// among them -- which a step out leaves for the next statement start
+    /// after it, as a step over of the whole form would; a step out of a
+    /// real send's block stops at `after`, the send's return point.
+    pub(crate) inlined: bool,
+    /// The index after the send's whole lowering: after an inlined form's
+    /// last instruction, its join or its loop's exit, and after a real
+    /// send, the instruction after it.
+    pub(crate) after: u32,
+}
+
+/// One block literal a send takes, by its source -- the `source` of the
+/// closure a `MakeClosure` makes of it -- and where it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TakenBlock {
+    pub(crate) span: Span,
+    pub(crate) place: BlockPlace,
+}
+
+/// Where a frame of the body stands while a block it took runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BlockPlace {
+    /// Lowered inline: the block's statements are these instructions of
+    /// the body itself.
+    Inline(Range<u32>),
+    /// Run as a closure by the send at `send` -- a real send, an inlined
+    /// form's fallback send, a reference-lowered loop's `value` -- which
+    /// the frame stands at while the block's frame runs above, the closure
+    /// made by the `MakeClosure` at `closure`: an index, which names the
+    /// running body's block as well as the body compiled again, whose
+    /// spans an install may have moved.
+    Called { send: u32, closure: u32 },
 }
 
 /// A named variable in scope over the whole body: an inlined block

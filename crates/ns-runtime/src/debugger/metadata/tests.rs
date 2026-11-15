@@ -912,6 +912,101 @@ fn a_reference_send_entry_is_uncached() {
     assert_eq!(entries, 5);
 }
 
+/// Every block literal a send of the family of bodies of `code` takes, by
+/// its text, with whether the send is an inlined form, each once: the
+/// optimized lowering lowers an inlined block twice, inline and as its
+/// fallback closure, and records the sends of both.
+fn taken_blocks(
+    code: &Rc<CompiledCode>,
+    collector: &MetadataCollector,
+    source: &str,
+) -> Vec<(String, bool)> {
+    let mut bodies = Vec::new();
+    family(code, &mut bodies);
+    let mut taken = std::collections::BTreeSet::new();
+    for body in &bodies {
+        let metadata = collector.take(body).expect("every body's metadata");
+        for entry in metadata.block_sends.iter() {
+            for block in entry.blocks.iter() {
+                taken.insert((block.span.text(source).to_owned(), entry.inlined));
+            }
+        }
+    }
+    taken.into_iter().collect()
+}
+
+#[test]
+fn both_lowerings_record_the_same_taken_blocks() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: x = (
+            x ifTrue: [ x foo ].
+            x and: [ x bar ].
+            [ x baz ] whileTrue: [ x qux ].
+            x do: [:each | each ifFalse: [ x zip ] ].
+            [ x boom ] on: x do: [:error | error ].
+            self with: [ 1 ].
+            with: [ 3 ].
+            ^[ 2 ]
+          )
+          with: block = ( ^block value )
+        ) : ()
+    "};
+    let (optimized_code, optimized) = collected_under(source, Lowering::Optimized);
+    let (reference_code, reference) = collected_under(source, Lowering::Reference);
+    let expected: Vec<(String, bool)> = [
+        ("[ 1 ]", false),
+        ("[ 3 ]", false),
+        ("[ x bar ]", true),
+        ("[ x baz ]", true),
+        ("[ x boom ]", false),
+        ("[ x foo ]", true),
+        ("[ x qux ]", true),
+        ("[ x zip ]", true),
+        ("[:each | each ifFalse: [ x zip ] ]", false),
+        ("[:error | error ]", false),
+    ]
+    .into_iter()
+    .map(|(text, inlined)| (text.to_owned(), inlined))
+    .collect();
+    assert_eq!(taken_blocks(&optimized_code, &optimized, source), expected);
+    assert_eq!(taken_blocks(&reference_code, &reference, source), expected);
+}
+
+#[test]
+fn an_inlined_loop_records_its_blocks_inline_and_where_it_goes_on() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: x = ( [ x foo ] whileTrue: [ x bar ]. ^x )
+        ) : ()
+    "};
+    let (code, metadata, _) = collected(source);
+    let [entry] = &metadata.block_sends[..] else {
+        panic!("one block send: {:?}", metadata.block_sends);
+    };
+    assert!(entry.inlined);
+    let start_of = |text: &str| {
+        metadata
+            .statements
+            .iter()
+            .find(|statement| statement.span.text(source) == text)
+            .map(|statement| statement.instructions.start)
+            .unwrap_or_else(|| panic!("the statement {text}"))
+    };
+    // Each block's statements lie in its own instructions, and the loop
+    // goes on at the next statement once it ends.
+    for (block, statement) in entry.blocks.iter().zip(["x foo", "x bar"]) {
+        let super::BlockPlace::Inline(instructions) = &block.place else {
+            panic!("an inline block: {block:?}");
+        };
+        assert!(instructions.contains(&start_of(statement)), "{block:?}");
+    }
+    assert_eq!(entry.after, start_of("^x"));
+    assert!(usize::try_from(entry.after).is_ok_and(|after| after < code.instruction_count()));
+}
+
 #[test]
 fn both_lowerings_record_the_same_initializer_statements() {
     let source = indoc! {"

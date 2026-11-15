@@ -12,7 +12,7 @@ import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
 
 /**
  * The play button beside `main:args:` of a module ns-next can run from its
- * source (`runnableMain`), opening Run and Benchmark. It reads the language
+ * source (`runnableMain`), opening Run, Debug and Benchmark. It reads the language
  * server's symbols and never waits for them: a daemon pass holds a read
  * action every write action, typing included, would wait behind. Without a
  * current answer it asks for one and restarts the file's daemon once it is
@@ -34,7 +34,7 @@ class NewspeakModuleRunLineMarkerContributor : RunLineMarkerContributor(), DumbA
         val className = symbols.first().name
         return Info(
             AllIcons.RunConfigurations.TestState.Run,
-            arrayOf(NewspeakRunAction(file, null, NewspeakCommand.RUN), NewspeakRunAction(file, null, NewspeakCommand.BENCH)),
+            playButtonActions(file, null),
         ) { _ -> NewspeakBundle.message("run.marker.tooltip.module", className) }
     }
 }

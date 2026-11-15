@@ -19,9 +19,10 @@
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
 > syntax errors (Reformat Code leaves such a file alone). For a project's
-> `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
-> project with the `ns-next` the settings name; for a module `ns-next` can
-> run from its source, a play button beside its `main:args:` that runs or
+> `newspeak.json`, completion and validation from the project file's
+> schema, and play buttons that run, debug or benchmark the project with
+> the `ns-next` the settings name; for a module `ns-next` can run from its
+> source, a play button beside its `main:args:` that runs, debugs or
 > benchmarks the module ("The project file and running projects"). Debug
 > on a Newspeak run configuration debugs the program in the IDE's
 > debugger over a DAP client of the plugin's own (the `debugger`
@@ -1678,9 +1679,13 @@ beside the top-level `main` and beside each key of the top-level `scripts`
 object of a `newspeak.json`, and nowhere else. Its icon is the platform's
 run marker, `AllIcons.RunConfigurations.TestState.Run`, the one every
 language's play button uses through `RunLineMarkerContributor`, and clicking
-it opens a menu of two entries, "Run" (`AllIcons.Actions.Execute`) and
-"Benchmark" (`AllIcons.Gutter.RunInQueue`). `main`'s runs without a script, a
-script's with `--script=<name>`. Each entry creates the configuration, or
+it opens a menu of three entries, "Run" (`AllIcons.Actions.Execute`),
+"Debug" (the Debug executor's own text and icon) and "Benchmark"
+(`AllIcons.Gutter.RunInQueue`); a benchmark is never debugged, and "Run"
+and "Debug" name the same configuration and differ in the executor that
+starts it (`NewspeakRunAction`'s `executor`). `main`'s runs without a
+script, a script's with `--script=<name>`. Each entry creates the
+configuration, or
 reuses an equal one -- the same project file, compared system-independently
 and with the file system's case sensitivity, the same script and the same
 command -- selects it and starts it. A configuration created there is
@@ -1699,8 +1704,9 @@ whose key the caret is on (`NewspeakRunConfigurationProducer`).
 
 **The module's play button.** `NewspeakModuleRunLineMarkerContributor`, a
 `RunLineMarkerContributor` for the language `Newspeak`, puts the same play
-button, with the same "Run" and "Benchmark" (`NewspeakRunAction`), beside
-`main:args:` of a module ns-next can run from its source, and nowhere else.
+button, with the same "Run", "Debug" and "Benchmark" (`NewspeakRunAction`),
+beside `main:args:` of a module ns-next can run from its source, and
+nowhere else.
 `ns-next run <file>.ns` builds the root class with `new` and sends the
 instance `main:args:` as a public send (`crates/ns-cli/src/program.rs`,
 `instantiate_application`), so a protected or private `main:args:` -- and
@@ -1755,7 +1761,8 @@ before.
 Decided with the user on 2026-10-05: the plugin runs a project with the
 `ns-next` the user chooses, and bundles none; a run configuration type
 "Newspeak", with the plugin's file icon, groups the configurations; a play
-button beside `main` and each script opens Run and Benchmark. Chosen beside
+button beside `main` and each script opens Run and Benchmark, and Debug
+since the debugger reached the IDE (2026-11-15). Chosen beside
 them: the platform's run marker as the gutter icon; temporary configurations
 from the gutter, named as above; the extra arguments as one field split as
 program parameters; the JSON plugin as an optional dependency. Decided with
@@ -2048,15 +2055,17 @@ The server's own tests are described under its section, above ("Testing").
   its answer is kept, asking again while there is none, and two requests
   for one stamp asking once);
   `NewspeakRunLineMarkerContributorTest` (a play button beside `main` and each
-  script and nowhere else, none in another JSON file, a menu of "Run" and
-  "Benchmark", a configuration created without starting it, reused on a
+  script and nowhere else, none in another JSON file, a menu of "Run",
+  "Debug" and "Benchmark", "Debug" starting the configuration "Run"
+  starts with the Debug executor through a recording launcher, a
+  configuration created without starting it, reused on a
   second click and when stored with backslashes, and the context menu's
   "Run" for the script under the caret or the project);
   `NewspeakModuleRunLineMarkerContributorTest`, over a cache filled by a
   stand-in for the server (`runnableMain` for `new` and for
   `packageUsing:`, a private, a class-side and a missing `main:args:`, a
-  renamed parameter, another selector and an empty answer; Run and Benchmark
-  beside `main:` of a runnable module, also past a character outside the
+  renamed parameter, another selector and an empty answer; Run, Debug and
+  Benchmark beside `main:` of a runnable module, also past a character outside the
   BMP, and none for a protected `main:args:`, another factory or before the
   server has answered; the context menu's "Run" from the file and from inside a
   method, named `<file>.ns` and recognised from the gutter's

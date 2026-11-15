@@ -976,8 +976,10 @@ impl Interpreter {
                 // is served here (`Interpreter::serve_between_runs`), and
                 // a pause asked between runs stops the run's first
                 // activation at its first statement start
-                // (`Interpreter::serve_before_run`).
-                if self.debugger.is_some() {
+                // (`Interpreter::serve_before_run`), as a step the run
+                // before left in progress goes on from it, for a debugger
+                // or the step stress mode.
+                if self.has_agent() {
                     self.serve_before_run();
                 }
                 self.running = true;
@@ -992,10 +994,10 @@ impl Interpreter {
                 self.enter(|mutator| {
                     mutator.set_depth_reserve(None);
                     mutator.breakpoints.drop_past_once();
-                    // A step the run's end left goes with it: its frames
-                    // are gone. So does an exception's stop no poll
-                    // served, and its request bit.
-                    crate::debugger::stepping::end(mutator);
+                    // A step the run's end left goes on in the program's
+                    // next run, its frames gone. An exception's stop no
+                    // poll served goes with the run, and its request bit.
+                    crate::debugger::stepping::run_ended(mutator);
                     crate::debugger::exceptions::drop_pending(mutator);
                 });
                 result
