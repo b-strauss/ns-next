@@ -4604,6 +4604,11 @@ const LEAVING: &str = indoc! {"
           ^kept value
         )
       )
+      class Capturer = () (
+        public doesNotUnderstand: message = (
+          ^message
+        )
+      )
       class Proxy on: subject = (
         | target = subject. |
       ) (
@@ -4870,6 +4875,16 @@ const LEAVING: &str = indoc! {"
         held:: hoarder.
         hoarder ifTrue: [held:: counting].
         proxy runWith: held.
+        ^total
+      )
+      public proxyExplicit = (
+        | total proxy message |
+        total:: 0.
+        proxy:: Proxy on: {1. 2. 3}.
+        message:: Capturer new do: [:each |
+          total:: total + (each * 16).
+          total:: total * 1].
+        proxy doesNotUnderstand: message.
         ^total
       )
       public proxyInjecting = (
@@ -5348,6 +5363,31 @@ ns_runtime::for_each_lowering! {
                 assert_eq!(answered, answer, "{selector}, the JIT on: {jit}");
             }
         }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Message` a program sends `doesNotUnderstand:` itself is a plain
+    /// argument: a block among its arguments is not taken by that send,
+    /// and a step out of it leaves its frame, as for a block in an array
+    /// any other send is handed.
+    fn a_step_out_of_a_block_in_a_message_sent_explicitly_leaves_its_frame(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "proxyExplicit",
+            "total:: total + (each * 16).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (
+                String::from("[] in Leaving>>proxyExplicit"),
+                String::from("total:: total + (each * 16)")
+            )
+        );
+        assert_eq!(answer, 96);
     }
 }
 

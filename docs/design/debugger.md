@@ -2719,7 +2719,11 @@ callee is a `doesNotUnderstand:` handler, to which the send delivered its
 arguments as its `Message`'s, and the closure is one of the `Message`'s
 `arguments`, read through the kernel's `Message` layout as `sendTo:`'s
 leaf reads it (`Mutator::kernel_slot`), no Newspeak code run
-(`stepping::took_closure`). What the send delivered decides, so that a
+(`stepping::took_closure`) -- only when the creator's send is of another
+selector, so that the `Message` is the lookup's delivery: a `Message` a
+program sends `doesNotUnderstand:` itself is an argument like any other,
+whose arguments no send took
+(`a_step_out_of_a_block_in_a_message_sent_explicitly_leaves_its_frame`). What the send delivered decides, so that a
 proxy's `do:` leaves the `do:`
 (`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`),
 and the creator's registers never do: the run loop reads a single

@@ -391,7 +391,12 @@ fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<Se
     let callee = callee_of(mutator, taken_in, creator)?;
     let (creator_code, _, creator_metadata) = place_body(mutator, creator);
     let waiting_at = place_program_counter(mutator, creator);
-    if !took_closure(mutator, callee, taken_in) {
+    if !took_closure(
+        mutator,
+        callee,
+        taken_in,
+        delivers_a_message(&creator_code, waiting_at),
+    ) {
         return None;
     }
     // The send's literal entry, when the closure's block is the literal it
@@ -599,8 +604,11 @@ fn same_place<'gc>(mutator: &Mutator<'gc>, first: Place<'gc>, second: Place<'gc>
 /// the closure's own activation -- a `value` the send made -- or holds
 /// that very closure as its receiver or as one of its parameters, the
 /// registers below its body's argument count, which no body writes; or the
-/// callee is a `doesNotUnderstand:` handler, which the send delivered its
-/// arguments to as its `Message`'s, and the closure is one of them. The
+/// callee is a `doesNotUnderstand:` handler the send's lookup delivered
+/// its arguments to as its `Message`'s -- `delivered`, a send of another
+/// selector, whose `Message` the VM built -- and the closure is one of
+/// them; a `Message` a program sends `doesNotUnderstand:` itself is an
+/// argument like any other. The
 /// sender's registers do not decide: the run loop reads an argument where
 /// it stands and copies it into the send's slot only for a callee laid on
 /// the slots, so a slot may hold what an earlier send took, and the
@@ -610,7 +618,12 @@ fn same_place<'gc>(mutator: &Mutator<'gc>, first: Place<'gc>, second: Place<'gc>
 /// `Message`'s arguments. A closure handed on in a variable or computed by
 /// an expression is taken so as much as a literal; one run by another
 /// send -- a sibling closure, a slot's -- is not.
-fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'gc>) -> bool {
+fn took_closure<'gc>(
+    mutator: &Mutator<'gc>,
+    callee: Place<'gc>,
+    frame: Place<'gc>,
+    delivered: bool,
+) -> bool {
     if same_place(mutator, callee, frame) {
         return true;
     }
@@ -653,10 +666,11 @@ fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'g
     if is_closure(receiver) || parameters.iter().copied().any(is_closure) {
         return true;
     }
-    let handles_a_message = matches!(
-        kind,
-        ActivationKind::Method(selector) if selector == Symbol::DOES_NOT_UNDERSTAND
-    );
+    let handles_a_message = delivered
+        && matches!(
+            kind,
+            ActivationKind::Method(selector) if selector == Symbol::DOES_NOT_UNDERSTAND
+        );
     handles_a_message
         && parameters
             .first()
@@ -665,6 +679,23 @@ fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'g
             .and_then(|arguments| arguments.as_object())
             .and_then(|arguments| heap.array_elements(arguments))
             .is_some_and(|arguments| arguments.into_iter().any(is_closure))
+}
+
+/// Whether a `doesNotUnderstand:` handler the send at `waiting_at` of
+/// `code` pushes holds a `Message` the VM built of the send's arguments: a
+/// send of any selector but `doesNotUnderstand:`, which a program's own
+/// send of it hands the handler as its plain argument.
+fn delivers_a_message(code: &CompiledCode, waiting_at: usize) -> bool {
+    if waiting_at >= code.instruction_count() {
+        return false;
+    }
+    match code.instruction(waiting_at) {
+        Instruction::SendLexical { selector, .. }
+        | Instruction::SendPublic { selector, .. }
+        | Instruction::SendInlinable { selector, .. }
+        | Instruction::SendSuper { selector, .. } => selector != Symbol::DOES_NOT_UNDERSTAND,
+        _ => true,
+    }
 }
 
 /// The frame that created the closure `frame` runs, while it runs or is
