@@ -12,7 +12,8 @@
 //! statement start. The one-shots are a kind of the breakpoint table's,
 //! patched and restored as a line breakpoint is, so that their bodies lose
 //! their machine code for the step; the next stop, whatever made it, ends
-//! the step. No check enters the run loop: what the step does not patch runs
+//! the step, and one its host run's end leaves in progress goes on in the
+//! program's next run (`run_ended`, `carry_into`). No check enters the run loop: what the step does not patch runs
 //! at full speed. A step never lands in a frame the step filters filter
 //! -- by default the shipped modules' (decision 16): a stop it would make
 //! there goes on as a step into from the first unfiltered frame below,
@@ -719,13 +720,54 @@ fn place_of<'gc>(mutator: &Mutator<'gc>, frame: &StackFrame) -> Option<Place<'gc
 
 /// Ends the step, if one is in progress: every one-shot is removed, each
 /// slot no line breakpoint holds given its original back, and the
-/// request bit dropped. Answers the value the step recorded last.
+/// request bit dropped. Answers the value the step recorded last. A step
+/// the last host run carried to the next (`run_ended`) ends too, so that
+/// whatever ends a step between runs -- a `Terminate`, a detach, a pause
+/// asked between them -- ends that one.
 pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Root> {
     let stepping = mutator.stepping.take();
+    mutator.breakpoints.take_carried_step();
     mutator.breakpoints.remove_one_shots();
     drop_request(mutator);
     settle(mutator);
     stepping.and_then(|stepping| stepping.returned)
+}
+
+/// A host run ends with every activation it ran popped: a step still in
+/// progress has left the run without a stop -- its frame returned to the
+/// host, or an unwind popped it there -- and goes on in the program's
+/// next run, the next place the program reaches (decision 17): it ends
+/// here, its frames gone, and its method exits are carried, for the next
+/// run's start to go on with (`carry_into`). Its value of the last call
+/// is not: it names a call of a run that is over. A step standing for a
+/// pause the run started with (`stop_at_entry`) is not carried either:
+/// the pause bit its stop would have served stays set, and stops the next
+/// run itself.
+pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
+    let carried = mutator
+        .stepping
+        .as_mut()
+        .filter(|stepping| !stepping.at_entry)
+        .map(|stepping| std::mem::take(&mut stepping.exits));
+    end(mutator);
+    if let Some(exits) = carried {
+        mutator.breakpoints.carry_step(exits);
+    }
+}
+
+/// A host run starts, `entry` its first activation, which stands at its
+/// first instruction, while the run before carried a step (`run_ended`):
+/// the step goes on as a step into from the entry, so that it stops at
+/// the entry's first statement start -- or at that of a frame the entry
+/// pushes before it reaches one -- as the step filters allow (decision
+/// 16), a step's stop, which reports `exits` too.
+pub(crate) fn carry_into(
+    mutator: &mut Mutator<'_>,
+    entry: ActivationReference,
+    exits: Vec<BreakpointId>,
+) {
+    continue_as_step_into(mutator, entry);
+    keep_exits(mutator, exits);
 }
 
 /// A frame was just popped otherwise than by a return to its caller's
@@ -772,9 +814,10 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
 /// (`popped`) and its stop once (`unwind_stopped`). Any other frame the step named above the stepping
 /// one -- one the step was taken in, a pushed frame's one-shot -- is only
 /// forgotten. `now_on_top` is `None` when no frame goes on yet -- the run
-/// ends, whose end ends the step, or an error is about to be signalled,
-/// whose handler search, or the unwind it starts, says where the program
-/// goes on; the step's frame stays `Holder::Left` until then.
+/// ends, whose end carries the step to the next run (`run_ended`), or an
+/// error is about to be signalled, whose handler search, or the unwind it
+/// starts, says where the program goes on; the step's frame stays
+/// `Holder::Left` until then.
 pub(crate) fn frame_left(mutator: &mut Mutator<'_>, now_on_top: Option<ActivationReference>) {
     popped(mutator);
     went_on(mutator, now_on_top);

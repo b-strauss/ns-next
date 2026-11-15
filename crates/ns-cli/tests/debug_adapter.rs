@@ -1618,6 +1618,53 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     assert_eq!(client.finish().stdout, "42\n");
 }
 
+/// A root whose slot initializers, line 4 the last, run in its
+/// instantiation, a host run before the one of `main:args:`, whose first
+/// statement is line 8.
+const INITIALIZED: &str = indoc! {"
+    class Initialized = Object new (
+      |
+        first ::= 1.
+        second ::= first + 1.
+      |
+    ) (
+      public main: platform args: arguments = (
+        platform transcript show: second printString; newLine.
+      )
+    ) : ()
+"};
+
+/// `next` from a breakpoint in the root's last slot initializer goes on
+/// through the root's instantiation into `main:args:`, a host run of its
+/// own, where it stops at the first statement for the step.
+#[test]
+fn next_from_a_slot_initializer_reaches_main() {
+    let (_directory, path) = program("Initialized", INITIALIZED);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[4]);
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client).1, json!(4));
+    let mut stops = Vec::new();
+    while stops.len() < 4 {
+        client.succeed("next", json!({ "threadId": 1 }));
+        client.stopped("step");
+        let stood = top_frame(&mut client);
+        let in_main = stood.0 == json!("Initialized>>main:args:");
+        stops.push(stood);
+        if in_main {
+            break;
+        }
+    }
+    assert_eq!(
+        stops.last(),
+        Some(&(json!("Initialized>>main:args:"), json!(8))),
+        "{stops:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "2\n");
+}
+
 /// A root whose line 5 is a loop of two statements, followed on line 8 by
 /// the statement after it.
 const LOOPING: &str = indoc! {"

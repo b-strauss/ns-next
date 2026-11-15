@@ -718,6 +718,18 @@ serves the pause bit; the bit stays set meanwhile, so that a body without
 metadata, which floods nothing, stops at the first safepoint as before,
 and the stop is made whatever the step filters say, as a pause's is
 (`a_pause_between_runs_stops_the_sent_method_at_its_first_statement`).
+A step is no command either: one a run's end left in progress -- its
+frame returned to the host, or was popped there, without a stop -- goes
+on in the next run (decision 17). The run's end ends it, its frames gone,
+and carries its method exits on the breakpoint table
+(`stepping::run_ended`); the next run's start, without a pause pending,
+goes on with it as a step into from the run's first activation
+(`stepping::carry_into`), which stops at its first statement start, a
+step's stop. A `Terminate` between runs, refused all the same, ends the
+carried step, as it would end one in a run, and so do a detach and a
+pause asked between runs, whose stop the next run's start makes instead
+(`a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement`,
+`a_terminate_between_runs_drops_the_step_its_run_left`).
 
 Every command dropped between runs is answered by `Event::Refused`, its
 reason that no run executes, so that every command the debugging API
@@ -1357,14 +1369,15 @@ four times more (`STEP_STRESS_GRACE`), and after 64 safepoints at least
 (`STEP_STRESS_GRACE_SAFEPOINTS`), a floor that keeps the grace from
 shrinking with a heap the collect and scavenge stress modes keep small,
 and so the schedule's period with it -- a step out of the run's first
-frame, which returns to the host and stops nowhere, or out of a shipped
+frame, which stops nowhere before its run ends, or out of a shipped
 `to:do:` looping long, stopped in with the shipped filter off, or out of
 the block such a loop runs, which leaves the whole loop (decision 17) -- is
 ended there, as a debugger's pause ends a step, so that no step keeps
 the mode from its next burst; one whose frame has just returned to its
 caller, which stands at the step's return point it fetches next, is
-left to stop there. The run's end ends a step in progress, as it does a
-debugger's.
+left to stop there. A step the run's end leaves in progress goes on in
+the interpreter's next host run, as a debugger's does (decision 17): the
+run's start serves the mode too (`Interpreter::serve_before_run`).
 
 Ending a step that way would also hide a step that can never stop
 because a frame left without the step learning of it -- a pop no
@@ -2585,6 +2598,28 @@ flooding the handler's frames on a throw (`PrepareStepOnThrow`,
 `:1488-1555`). Refusing a step out of such a frame is rejected, since the
 end of an `ensure:` block is a common place to step from; treating it as
 a resume loses the place the step was taken from.
+
+**Built** for a step whose frame leaves its host run: the frame returns to
+the host -- the run's first activation -- or an unwind pops it there, and
+the run ends with the step not stopped. `ns-next run` is several host
+runs of one program -- a project's manifest instantiated, the root
+module, slot initializers included, then `main:args:` -- so the next
+place the program reaches is the next run's first statement: a step
+over at the root's last slot initializer, past the factory, stops at
+`main:args:`'s first statement. The run's end carries the step
+(`stepping::run_ended`), and the next run's start goes on with it as a
+step into from its first activation (`stepping::carry_into`,
+`Interpreter::serve_before_run`), the way a pause pending between runs
+stops that activation ("Commands while the program runs"), but a step's
+stop, with decision 16's filter; step over, into and out alike, between
+every pair of runs. A `Terminate`, a detach, a pause asked between the
+runs and the program's end, which starts no next run, end it; its value
+of the last call is not carried, since it names a call of the run that
+ended. The carried state is read only at a run's start and end, so the
+run loop is unchanged
+(`a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement`,
+`a_terminate_between_runs_drops_the_step_its_run_left`, and
+`next_from_a_slot_initializer_reaches_main` through the DAP agent).
 
 **Built** for a step out taken in a block a send took as its receiver or
 an argument -- one the compiler lowered inline, `whileTrue:`'s,

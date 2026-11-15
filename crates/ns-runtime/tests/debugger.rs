@@ -3283,6 +3283,126 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A module whose slot initializers run in the host run of its
+/// instantiation, a run of its own before the one that sends `main`, as
+/// `ns-next run` runs a root's instantiation before `main:args:`.
+const TWO_RUNS: &str = indoc! {"
+    class TwoRuns = Object new (
+      |
+        first ::= 1.
+        second ::= first + 1.
+      |
+    ) (
+      public main = (
+        | x |
+        x:: second + 1.
+        ^x
+      )
+    ) : ()
+"};
+
+/// Instantiates `TWO_RUNS`'s module class under `lowering`, a breakpoint
+/// at its last slot initializer, and sends the instance `main`, a debugger
+/// attached whose `agent` serves both runs from another thread. Answers
+/// what `agent` answered and `main`'s answer.
+fn across_two_runs<T: Send + 'static>(
+    lowering: Lowering,
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, i64) {
+    let (mut interpreter, class) = load(TWO_RUNS, lowering);
+    let remote = interpreter.attach_debugger();
+    let offset = line_start(TWO_RUNS, "second ::= first + 1.");
+    set_breakpoints(&remote, "TwoRuns", vec![offset]);
+    let (answer, result, _) = debugged_by(remote, agent, || {
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        interpreter.send(&instance, Symbol::intern("main"), &[])
+    });
+    (answer, answered(&mut interpreter, result))
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step whose frame leaves its host run -- the instantiation's
+    /// initializer, which returns to the host -- goes on in the program's
+    /// next run, the next place the program reaches (decision 17): the
+    /// run's entry stops at its first statement, a step's stop, whether
+    /// the step was over, into or out. The steps from the slot
+    /// initializer stop in the factory first, the initializer's caller,
+    /// whose next step leaves the run.
+    fn a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement(lowering) {
+        for command in [Command::StepOver, Command::StepInto, Command::StepOut] {
+            let name = command.name();
+            let (stops, answer) = across_two_runs(lowering, move |remote| {
+                expect_first_stop(remote, "TwoRuns");
+                let mut stops = Vec::new();
+                while stops.len() < 4 {
+                    step(remote, command.clone());
+                    let stood = standing(remote, TWO_RUNS);
+                    let in_main = stood.0 == "TwoRuns>>main";
+                    stops.push(stood);
+                    if in_main {
+                        break;
+                    }
+                }
+                continue_stopped(remote);
+                stops
+            });
+            let expected = [("TwoRuns class>>new", "TwoRuns"), ("TwoRuns>>main", "x:: second + 1")];
+            let stops: Vec<(&str, &str)> = stops
+                .iter()
+                .map(|(frame, statement)| (frame.as_str(), statement.as_str()))
+                .collect();
+            assert_eq!(stops, expected, "{name}");
+            assert_eq!(answer, 3, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Terminate` sent between runs ends the step its run left, as it
+    /// would end the step in a run: the next run stops nowhere, and the
+    /// `Terminate`, which met no run, is refused.
+    fn a_terminate_between_runs_drops_the_step_its_run_left(lowering) {
+        let (mut interpreter, class) = load(TWO_RUNS, lowering);
+        let remote = interpreter.attach_debugger();
+        let offset = line_start(TWO_RUNS, "second ::= first + 1.");
+        set_breakpoints(&remote, "TwoRuns", vec![offset]);
+        let agent = |remote: &DebugRemote| {
+            expect_first_stop(remote, "TwoRuns");
+            // The first step stops in the factory, the initializer's
+            // caller; the second leaves the run.
+            step(remote, Command::StepOver);
+            remote.send(Command::StepOver);
+            match remote.next_event(EVENT_TIMEOUT) {
+                Some(Event::Continued) => {}
+                other => panic!("the confirmation of the step was expected, not {other:?}"),
+            }
+            // The step leaves the run without a stop.
+            while !run_finished() {
+                if let Some(event) = remote.next_event(Duration::from_millis(10)) {
+                    panic!("the instantiation was expected to end silently, not with {event:?}");
+                }
+            }
+        };
+        let (_, result, remote) =
+            debugged_by(remote, agent, || interpreter.instantiate(&class, &[]));
+        let instance = expect_ok(result, "instantiate");
+        remote.send(Command::Terminate);
+        let (events, result, remote) = events_during(remote, || {
+            interpreter.send(&instance, Symbol::intern("main"), &[])
+        });
+        assert_no_stop(&events);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::Refused { command, .. } if command == "Terminate"
+            )),
+            "{events:?}"
+        );
+        assert_eq!(answered(&mut interpreter, result), 3);
+        drop(remote);
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A step into at a statement that sends a method stops at the
     /// callee's first statement, the callee on top of the stack.

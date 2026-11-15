@@ -76,6 +76,10 @@ pub(crate) struct Breakpoints {
     /// pending `ensure:` blocks: an exception one of them raises stops
     /// nothing, as the termination ends a step.
     terminating: bool,
+    /// The method exits of the step a host run's end left in progress,
+    /// which goes on in the program's next run (`stepping::run_ended`);
+    /// `None` while no step is carried.
+    carried_step: Option<Vec<BreakpointId>>,
     /// The exception breakpoints the attached debugger set; the default
     /// until it sets them.
     exceptions: ExceptionBreakpoints,
@@ -551,6 +555,17 @@ impl Breakpoints {
     /// (`false`).
     pub(crate) fn set_terminating(&mut self, terminating: bool) {
         self.terminating = terminating;
+    }
+
+    /// Carries the step a host run's end left in progress, which reports
+    /// `exits`, to the program's next run.
+    pub(crate) fn carry_step(&mut self, exits: Vec<BreakpointId>) {
+        self.carried_step = Some(exits);
+    }
+
+    /// The step the last host run's end left in progress, taken.
+    pub(crate) fn take_carried_step(&mut self) -> Option<Vec<BreakpointId>> {
+        self.carried_step.take()
     }
 
     /// Records the stop a `Breakpoint` arm decided.
