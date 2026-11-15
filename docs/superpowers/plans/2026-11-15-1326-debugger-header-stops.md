@@ -20,7 +20,8 @@
    - every level a `<:` clause adds has a header stop of its own, at its mixin's header, entered by a step into at that clause's message, in the order the levels run;
    - the return from an initializer into the factory still stops at the factory's return point in its caller, after the `new` (decision 12's rule for the way out stands).
 2. **`Object` is left out.** `Object`'s initializer (and `Top`'s) never takes a header stop and is never stopped in, whatever the step filters say: the chain ends at the last class that inherits from `Object` directly.
-3. **The shipped sources come from the binary.** `ns-next` writes the sources it embeds; the plugin takes them from the very binary it runs, keyed by their fingerprint, and shows them as the library "Newspeak Core Library": read-only, browsable, with line breakpoints that are kept with the project.
+3. **The shipped sources come from the binary.** `ns-next` writes the sources it embeds; the plugin takes them from the very binary it runs, keyed by their fingerprint, and shows them as the library "Newspeak Core Library": read-only, browsable, in `core-library/`'s directory layout, with line breakpoints that are kept with the project.
+4. **Old versions are pruned and breakpoints follow.** A fingerprint directory unused for 30 days is deleted (never one an open project uses); when the fingerprint changes, the breakpoints in the old library's files move to the same file in the new one.
 
 ## Global Constraints
 
@@ -94,8 +95,8 @@
 - Test: `crates/ns-cli/tests/` (a test of its own file, as the other subcommands' are)
 
 - [ ] `ns-next shipped-sources --fingerprint` prints the fingerprint of the embedded shipped sources (the one `build.rs` computes, `shipped_code/fingerprint.rs`) as one line.
-- [ ] `ns-next shipped-sources <directory>` writes every shipped module as `<Module>.ns`, byte for byte the binary's text (LF), and a file `fingerprint` holding the same line; it creates the directory, refuses a directory that holds other files than these, and overwrites its own.
-- [ ] `--json` prints `{ "fingerprint": …, "modules": [ { "name": …, "text": … } ] }` instead of writing, so an agent with a shell can read them.
+- [ ] `ns-next shipped-sources <directory>` writes every `.ns` the binary embeds (`Manifest.ns` included) under its path relative to `crates/ns-runtime/core-library/` -- `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns` at the top, `platform/CollectionsFactory.ns` and the four others under `platform/` -- byte for byte the binary's text (LF), and a file `fingerprint` holding the same line; the relative paths are recorded beside the `include_str!`s in `core_library.rs`, so that a moved file cannot leave the two apart (a test compares them with the directory). It creates the directory, refuses a directory that holds other files than these, and overwrites its own.
+- [ ] `--json` prints `{ "fingerprint": …, "modules": [ { "name": …, "path": …, "text": … } ] }` instead of writing, so an agent with a shell can read them.
 - [ ] Tests: every module `shipped_module_source` knows is written and equal to it; the fingerprint agrees between the two forms; a foreign file in the directory is refused.
 - [ ] `CLAUDE.md`'s `ns-cli` paragraph names the subcommand.
 - [ ] `cargo xtask gates commit`; commit `feat: ns-next shipped-sources writes the embedded core library`.
@@ -119,10 +120,12 @@
 - Test: `editors/jetbrains/src/test/kotlin/…` (in the test task whose inputs fit: one that starts `ns-next` is in the debugging tasks' set)
 
 - [ ] The plugin finds the `ns-next` binary it runs (as the run configuration does), asks `shipped-sources --fingerprint`, and, when `<the IDE's system directory>/newspeak/core-library/<fingerprint>/` does not hold it yet, writes it there with `shipped-sources <directory>`; on a background thread, never on the EDT; a failure is logged and leaves the library out.
-- [ ] A `SyntheticLibrary` "Newspeak Core Library" over that directory, its files read-only, shown under External Libraries.
+- [ ] A `SyntheticLibrary` "Newspeak Core Library" over that directory, its files read-only, shown under External Libraries in the directory layout of `core-library/` (`platform/` as a folder).
+- [ ] **Pruning:** every use of a fingerprint directory (the library registered for it, a debug session against it) records its time in a marker file inside it; at the IDE's start and at every extraction the plugin deletes every fingerprint directory unused for 30 days, never the one in use by any open project, so that projects with different `ns-next` binaries keep theirs.
+- [ ] **Breakpoints follow the library:** when a project's fingerprint changes, the line breakpoints standing in an older fingerprint directory's files are moved to the file of the same relative path in the new one, at the same line; one whose line is no longer breakable there is shown as the plugin shows any breakpoint on an unbreakable line. A breakpoint whose file has no counterpart (a module renamed or removed) is left as it is and reported in the IDE log.
 - [ ] A stop in a shipped module (the agent's `source` with `sourceReference` and name `<Module>.ns`) opens the library's file of that name when its text equals the agent's (read through the reference once per session), and the reference's `LightVirtualFile` otherwise.
 - [ ] A line breakpoint in a library file is sent as the shipped module's source (by name, as today's handler sends a referenced module), verified, and kept with the project across sessions.
-- [ ] Tests: the extraction (fingerprint directory written once, reused); the mapping of a shipped frame onto the library file; a breakpoint in the library's `Kernel.ns` (e.g. in a collection method a program calls) stops the program in a debug session (`debugProcessTest`'s or `breakpointTypesTest`'s harness).
+- [ ] Tests: the extraction (fingerprint directory written once, reused); the pruning (an old unused directory deleted, a recently used one and the current one kept); a breakpoint moved to the new fingerprint's file; the mapping of a shipped frame onto the library file; a breakpoint in the library's `Kernel.ns` (e.g. in a collection method a program calls) stops the program in a debug session (`debugProcessTest`'s or `breakpointTypesTest`'s harness).
 - [ ] `docs/design/editor-support.md` and `debugger.md`'s plugin part describe it; `CLAUDE.md`'s plugin paragraph names it in a few words.
 - [ ] `cargo xtask gates commit`; commit `feat: the shipped modules as a library in the IDE`.
 
