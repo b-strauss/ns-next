@@ -136,9 +136,10 @@ Rust 1.98.0, edition 2021, seven crates:
   machine code freed and its method's fast path switched off while it
   stands (`debugger/breakpoints.rs`: line, pending, run to cursor and
   method breakpoints, keyed by body); steps are one-shot breakpoints and
-  a request bit held until the next push, a frame left otherwise
-  reported by the unwinder and the run loop's cold arms, the shipped
-  modules filtered (`debugger/stepping.rs`), and a pause asked between
+  a request bit held until the next push, a push of a factory or of an
+  initializer entered at its class header stopped in, never `Object`'s,
+  a frame left otherwise reported by the unwinder and the run loop's cold
+  arms, the shipped modules filtered (`debugger/stepping.rs`), and a pause asked between
   runs stops the run's first activation at its first statement;
   exception breakpoints are decided by two mirror rows the kernel's
   handler search sends, a leaf and the exit that reads the handler it

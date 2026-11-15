@@ -233,9 +233,10 @@ the front end at all and sends it `main: platform args:`. See
 
 ### The binaries
 
-`ns-next` runs programs: `run`, `run-corpus`, `load`, `bench`, `build` — and `shipped-sources`, which writes the core
-library's embedded sources (`core-library.md`, "The shipped sources as
-files"), one module each under `crates/ns-cli/src/commands/`. `ns-next-analyzer` looks at
+`ns-next` runs programs: `run`, `run-corpus`, `load`, `bench`, `build`, and
+writes the core library's embedded sources with `shipped-sources`
+(`core-library.md`, "The shipped sources as files"); each command is a
+module under `crates/ns-cli/src/commands/`. `ns-next-analyzer` looks at
 Newspeak without running it: `lsp`, `dump-tokens`, `parse`, `parse-corpus`,
 `disasm`, `inspect` and `fmt`, one module each under
 `crates/ns-analyzer/src/commands/`; `disasm` compiles or decodes and `inspect`

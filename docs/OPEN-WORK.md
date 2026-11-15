@@ -3308,6 +3308,14 @@ program's subclass of `String` as an argument, the error of a
   The source a library file is sent as must name the shipped module
   unambiguously. [editor-support.md](design/editor-support.md), "The core
   library". Noted 2026-11-15.
+- **A project the plugin once took for a Newspeak project keeps its
+  core library.** `NewspeakCoreLibrary`'s `newspeak` flag is set when the
+  project's files say so, or when a debug session starts, and never reset:
+  a project whose `newspeak.json` is deleted, or whose last `.ns` file is
+  removed, shows the library until the IDE restarts. The flag would have
+  to be decided again at every refresh.
+  [editor-support.md](design/editor-support.md), "The core library".
+  Noted 2026-11-15.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
   (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
@@ -3474,6 +3482,16 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **The core library as the IDE draws it** (noted 2026-11-15, with the
+  header stops and the library). No `runIde` check was made of the
+  "Newspeak Core Library" node under External Libraries -- its folders,
+  its name, the files excluded that are not `.ns` -- nor of the library's
+  editors being read-only; the tests check the provider, the file index
+  and the files' writability on disk. A line breakpoint in a
+  `LightVirtualFile`, the module a source shown by reference opens when no
+  library file has its text, is untested as well. A check under `runIde`
+  recorded in [editor-support.md](design/editor-support.md) beside the
+  earlier ones would close the first two.
 - **The play button's Debug through the platform's own launcher** (noted
   2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
   configuration through `ProgramRunnerUtil.executeConfiguration`, and its

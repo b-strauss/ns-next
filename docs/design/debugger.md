@@ -45,10 +45,11 @@
 > superclass clause or a `<:` clause's message stops at the entry of the
 > initializer it enters, at that class's header, `Object`'s never, every
 > initializer's statements are stepped in the order they run, and a step
-> on its way out passes over the factory to its caller (decision 12); and no step lands in a frame the step filters filter, by
-> default the shipped modules' -- a stop it would make there goes on as a
-> step into from the first unfiltered frame below, and a step into's
-> request outlasts the pushes of filtered bodies (decision 16); run to
+> on its way out passes over the factory to its caller (decision 12); and
+> no step lands in a frame the step filters filter, by default the shipped
+> modules' -- a stop it would make there goes on as a step into from the
+> first unfiltered frame below, and a step into's request outlasts the
+> pushes of filtered bodies (decision 16); run to
 > cursor stops at a position resolved as a line breakpoint is, in any
 > activation, once (decision 3); and a method breakpoint stops at its
 > method's entry and before each of its returns, and reports an exit an
@@ -1652,9 +1653,10 @@ tests do not.
   factory with the filter off; each `<:` clause's level at its mixin's
   header; a clause whose argument sends; the warmed header stop; and,
   through the agent, a stripped image's superclass header stopped at as
-  a frame without a line. The agent's own test
-  steps in from a loop's
-  line to its body and out to the line after the loop
+  a frame without a line. The agent's own tests step in from a loop's
+  line to its body and out to the line after the loop, and reach the
+  factory's stop and the header stops as frames at the header pattern,
+  their parameters shown
   (`crates/ns-cli/tests/debug_adapter.rs`).
   Of the step filters (decision 16): a step into a `do:` over an array
   landing in its block; a step over at the block's last statement
@@ -2563,8 +2565,8 @@ names or position is rejected, since it would be the one frame of an
 ordinary program without a place; hiding it contradicts the
 specification's "accurate and complete stack traces" (§3.6,
 `newspeak-spec.pdf` p. 17) and would need rules of its own for step out,
-restart and force return. Passing over the factory at its push, as every
-step did before, is rejected with the user: the factory is where the
+restart and force return. Passing over the factory at its push is
+rejected with the user: the factory is where the
 sender's arguments become the class's parameters, which the stop shows.
 Making `enter_factory_body` leave the factory to the run loop while a
 step holds its request, so that its push meets the safepoint, is
@@ -3419,8 +3421,9 @@ step stopping where its frame goes on when there is none
 (`stepping::first_stop`). A factory's push stops in the factory, and
 the push of an initializer a clause entered stops at its entry, at its
 header, the step from there going on to its first statement;
-`Object`'s and `Top`'s initializers keep the request (decision 12). A send answered by a primitive or a leaf pushes nothing,
-and the next one-shot stops.
+`Object`'s and `Top`'s initializers keep the request (decision 12). A send
+answered by a primitive or a leaf pushes nothing, and the next one-shot
+stops.
 
 ### Writing a frame
 

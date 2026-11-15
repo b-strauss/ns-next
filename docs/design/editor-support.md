@@ -288,8 +288,9 @@ sends.
 whether a send to `vmMirror` is marked (`resolver/mod.rs`, `resolve_send`),
 never whether anything is an error — pinned by
 `the_editor_entry_resolves_the_kernel_without_the_mirror_mark`. So does every
-other shipped module, and since the binary refuses to boot with a shipped
-module that does not resolve, a document holding a shipped module's text --
+other shipped module: the editor's resolution and the boot's share one walk,
+the kernel flag adding no error, and since the binary refuses to boot with a
+shipped module that does not resolve, a document holding a shipped module's text --
 the library the plugin shows, written by `ns-next shipped-sources` -- is
 published no diagnostic, and the core library has no hint ("Hints"); pinned
 over every shipped module by `a_shipped_module_s_text_is_the_shipped_module`.
