@@ -7844,7 +7844,11 @@ with its test reproduced first.
   reports the method exits the carried step would have.
 
 Every commit ran `cargo xtask gates commit` (and `codegen` where its
-files changed).
+files changed); at `572f0379` every end-of-batch gate passed -- the
+suite under every stress mode, `images`, `caches`, `benchmarks`,
+`release-checks`, `codegen`, `linux`, `aarch64` -- and so did
+`plugin-verification`. A whole-branch review found no Critical defect;
+its findings are fixed (`875a1f0a` to `572f0379`).
 
 - `e79f61d9` -- decision 17's step out of a block, decided.
 - `95adb768` -- Debug at the play button.
@@ -7864,6 +7868,8 @@ files changed).
   stop at a body's tail standing at its last statement; carried exits
   reported by a pause between runs; no two field labels alike; the
   step stress mode's density restored.
+- `aa332e77`, `39be8a8e`, `572f0379` -- a step out decided by the values
+  the send delivered: the callee's parameters, a delivery's `Message`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
 (the time a step took, planned in no stage), and four tools planned on
