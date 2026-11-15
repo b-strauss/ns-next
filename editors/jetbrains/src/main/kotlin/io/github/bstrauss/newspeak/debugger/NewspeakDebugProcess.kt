@@ -163,14 +163,6 @@ class NewspeakDebugProcess(
     }
 
     /**
-     * Waits, bounded, for the session's look at the core library: when the
-     * binary was rebuilt with other shipped sources, it moves the line
-     * breakpoints to the new library's files, which the session must send
-     * rather than the old ones. Before the client exists, so that nothing
-     * is sent meanwhile; a look that fails or takes too long leaves the
-     * breakpoints where they are.
-     */
-    /**
      * `attach`'s arguments: the core library the project shows, its
      * directory absolute, by which the agent names and shows the shipped
      * modules (`coreLibrary`); none while the project shows none.
@@ -182,6 +174,14 @@ class NewspeakDebugProcess(
         }
     }
 
+    /**
+     * Waits, bounded, for the session's look at the core library: when the
+     * binary was rebuilt with other shipped sources, it moves the line
+     * breakpoints to the new library's files, which the session must send
+     * rather than the old ones. Before the client exists, so that nothing
+     * is sent meanwhile; a look that fails or takes too long leaves the
+     * breakpoints where they are.
+     */
     private fun awaitLibrary(library: Future<Path?>) {
         try {
             library.get(LIBRARY_SECONDS, TimeUnit.SECONDS)
