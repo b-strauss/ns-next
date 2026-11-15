@@ -186,27 +186,30 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
     }
 
     /**
-     * A breakpoint left in a directory of shipped sources the project does
-     * not show -- an older binary's, after a look that failed -- is not
-     * sent: the agent would take it for the running binary's module of the
-     * name, at the older text's line.
+     * A breakpoint in a file of a directory of shipped sources is sent by
+     * the file's path, never by the module's name: the agent takes the path
+     * for the shipped module only in the library the session handed it, so
+     * that a program module of the same name never takes it, and one of a
+     * library the project does not show -- an older binary's -- for none.
      */
-    fun testABreakpointInAShippedDirectoryNotShownIsNotSent() {
-        val older = NewspeakCoreLibrary.STORE.root.resolve("00000000000000ef")
+    fun testABreakpointInALibraryFileIsSentByItsPath() {
+        val library = NewspeakCoreLibrary.STORE.root.resolve("00000000000000ef")
         try {
-            Files.createDirectories(older)
-            VfsRootAccess.allowRootAccess(testRootDisposable, older.toString())
-            Files.writeString(older.resolve("Kernel.ns"), LINES)
-            val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(older.resolve("Kernel.ns")))
+            Files.createDirectories(library)
+            VfsRootAccess.allowRootAccess(testRootDisposable, library.toString())
+            Files.writeString(library.resolve("Kernel.ns"), LINES)
+            val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
             val breakpoint = addLineBreakpoint(kernel, 3, NewspeakLineBreakpointProperties())
             val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true}]}""").asJsonObject }
             val handler = NewspeakLineBreakpointHandler(RecordingSession().proxy)
             handler.registerBreakpoint(breakpoint)
             handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
-            assertEquals(emptyList<JsonObject>(), agent.requests("setBreakpoints"))
+            val source = agent.requests("setBreakpoints").single().getAsJsonObject("source")
+            assertEquals(kernel.toNioPath().toString(), source.get("path").asString)
+            assertNull("no name", source.get("name"))
             runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.removeBreakpoint(breakpoint) } }
         } finally {
-            CoreLibraryStore.deleteRecursively(older)
+            CoreLibraryStore.deleteRecursively(library)
         }
     }
 

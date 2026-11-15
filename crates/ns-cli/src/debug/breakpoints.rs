@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use ns_runtime::{
     BreakpointState, ClassName, Command, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState,
+    MethodBreakpointState, ModuleName,
 };
 use ns_tooling::lines::{LineColumn, LineIndex};
 use serde_json::json;
@@ -73,8 +73,12 @@ pub(crate) fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
 }
 
 /// A class declaration named `Module.Path.To.Class`, as the step filters
-/// and the exception filters' conditions name one.
-pub(crate) fn parse_class_name(text: &str) -> Result<ClassName, String> {
+/// and the exception filters' conditions name one, its module the one
+/// `named` takes `Module` for (`Sources::module_of_class_name`).
+pub(crate) fn parse_class_name(
+    text: &str,
+    named: &dyn Fn(&str) -> ModuleName,
+) -> Result<ClassName, String> {
     let refused = || format!("`{text}` names no class: write `Module.Path.To.Class`");
     let mut segments = text.trim().split('.').map(str::to_string);
     let module = segments.next().unwrap_or_default();
@@ -83,22 +87,32 @@ pub(crate) fn parse_class_name(text: &str) -> Result<ClassName, String> {
     if malformed(&module) || path.iter().any(malformed) {
         return Err(refused());
     }
-    Ok(ClassName { module, path })
+    Ok(ClassName {
+        module: named(&module),
+        path,
+    })
 }
 
 /// Class names separated by commas, as an exception filter's condition
 /// lists them; an empty entry is passed over.
-pub(crate) fn parse_class_names(text: &str) -> Result<Vec<ClassName>, String> {
+pub(crate) fn parse_class_names(
+    text: &str,
+    named: &dyn Fn(&str) -> ModuleName,
+) -> Result<Vec<ClassName>, String> {
     text.split(',')
         .filter(|name| !name.trim().is_empty())
-        .map(parse_class_name)
+        .map(|name| parse_class_name(name, named))
         .collect()
 }
 
 /// A method named `Module.Path.To.Class>>selector`, or
 /// `Module.Path.To.Class class>>selector` for the class side's, its hit
-/// condition left to the caller.
-pub(crate) fn parse_method_name(text: &str) -> Result<MethodBreakpoint, String> {
+/// condition left to the caller, its module the one `named` takes
+/// `Module` for.
+pub(crate) fn parse_method_name(
+    text: &str,
+    named: &dyn Fn(&str) -> ModuleName,
+) -> Result<MethodBreakpoint, String> {
     let refused = || {
         format!(
             "`{text}` names no method: write `Module.Path.To.Class>>selector` or \
@@ -115,7 +129,7 @@ pub(crate) fn parse_method_name(text: &str) -> Result<MethodBreakpoint, String> 
         Some(rest) if rest.ends_with(char::is_whitespace) => (rest.trim_end(), true),
         _ => (class, false),
     };
-    let class = parse_class_name(class).map_err(|_| refused())?;
+    let class = parse_class_name(class, named).map_err(|_| refused())?;
     Ok(MethodBreakpoint {
         class,
         class_side,
@@ -191,7 +205,7 @@ pub(crate) struct Breakpoints {
     /// The highest VM id an `Event::Breakpoints` or
     /// `Event::MethodBreakpoints` named.
     highest_seen: Option<u32>,
-    lines: BTreeMap<String, Set<u32>>,
+    lines: BTreeMap<ModuleName, Set<u32>>,
     functions: Set<String>,
     /// Each VM id of each set's latest answer, with its DAP id.
     dap_ids: BTreeMap<u32, u32>,
@@ -199,7 +213,7 @@ pub(crate) struct Breakpoints {
 
 impl Breakpoints {
     /// The line breakpoints at `offsets` of `module`, each with its DAP id.
-    pub(crate) fn plan_lines(&mut self, module: &str, offsets: Vec<u32>) -> Vec<(u32, u32)> {
+    pub(crate) fn plan_lines(&mut self, module: &ModuleName, offsets: Vec<u32>) -> Vec<(u32, u32)> {
         match self.lines.get(module) {
             Some(set) => set.plan(offsets, &mut self.last_id),
             None => Set::default().plan(offsets, &mut self.last_id),
@@ -208,8 +222,8 @@ impl Breakpoints {
 
     /// The planned line breakpoints of `module` reached the VM: they are
     /// the client's latest request for the module.
-    pub(crate) fn requested_lines(&mut self, module: &str, planned: Vec<(u32, u32)>) {
-        self.lines.entry(module.to_string()).or_default().requested = planned;
+    pub(crate) fn requested_lines(&mut self, module: &ModuleName, planned: Vec<(u32, u32)>) {
+        self.lines.entry(module.clone()).or_default().requested = planned;
     }
 
     /// The function breakpoints named `names`, each with its DAP id.
@@ -225,7 +239,7 @@ impl Breakpoints {
     /// The DAP ids of the line breakpoints at `offsets` of `module`,
     /// planned and requested at once.
     #[cfg(test)]
-    pub(crate) fn request_lines(&mut self, module: &str, offsets: Vec<u32>) -> Vec<u32> {
+    pub(crate) fn request_lines(&mut self, module: &ModuleName, offsets: Vec<u32>) -> Vec<u32> {
         let planned = self.plan_lines(module, offsets);
         let ids = planned.iter().map(|(_, id)| *id).collect();
         self.requested_lines(module, planned);
@@ -243,7 +257,7 @@ impl Breakpoints {
     }
 
     /// Every module the client set line breakpoints in.
-    pub(crate) fn modules(&self) -> Vec<String> {
+    pub(crate) fn modules(&self) -> Vec<ModuleName> {
         self.lines.keys().cloned().collect()
     }
 
@@ -279,8 +293,8 @@ impl Breakpoints {
 
     /// The VM's answer for `module`'s line breakpoints: the VM ids it
     /// gave, each with the DAP id it stands for.
-    pub(crate) fn answered_lines(&mut self, module: &str, pairs: &[(u32, u32)]) {
-        let set = self.lines.entry(module.to_string()).or_default();
+    pub(crate) fn answered_lines(&mut self, module: &ModuleName, pairs: &[(u32, u32)]) {
+        let set = self.lines.entry(module.clone()).or_default();
         Self::answered(set, &mut self.dap_ids, pairs);
     }
 
@@ -494,7 +508,9 @@ impl Agent {
             .breakpoints
             .iter()
             .map(|breakpoint| {
-                let mut method = parse_method_name(&breakpoint.name)?;
+                let mut method = parse_method_name(&breakpoint.name, &|name| {
+                    self.sources.module_of_class_name(name)
+                })?;
                 method.hit_condition = hit_condition(breakpoint.hit_condition.as_deref())?;
                 Ok(method)
             })
@@ -565,7 +581,7 @@ impl Agent {
             .iter()
             .filter_map(|options| options.condition.as_deref())
         {
-            match parse_class_names(condition) {
+            match parse_class_names(condition, &|name| self.sources.module_of_class_name(name)) {
                 Ok(names) => {
                     for name in names {
                         if !classes.contains(&name) {
@@ -594,7 +610,11 @@ impl Agent {
     /// resolved, an install moved one -- reported as `breakpoint` events.
     /// One that arrives while a replacement of the module's set is on its
     /// way names breakpoints the replacement removes, and is dropped.
-    pub(super) fn line_breakpoints_changed(&mut self, module: &str, states: &[BreakpointState]) {
+    pub(super) fn line_breakpoints_changed(
+        &mut self,
+        module: &ModuleName,
+        states: &[BreakpointState],
+    ) {
         if self.replacing("SetBreakpoints", Some(module)) {
             return;
         }
@@ -643,6 +663,11 @@ mod tests {
     use super::*;
     use ns_runtime::BreakpointId;
 
+    /// A class name's module taken for the program's.
+    fn program(name: &str) -> ModuleName {
+        ModuleName::program(name)
+    }
+
     #[test]
     fn hit_conditions_parse_in_every_form() {
         let forms = [
@@ -687,12 +712,13 @@ mod tests {
 
     #[test]
     fn method_names_parse_with_and_without_class_side() {
-        let instance = parse_method_name("Module.Outer.Inner>>at:put:").expect("a method");
+        let instance =
+            parse_method_name("Module.Outer.Inner>>at:put:", &program).expect("a method");
         assert_eq!(
             instance,
             MethodBreakpoint {
                 class: ClassName {
-                    module: "Module".to_string(),
+                    module: ModuleName::program("Module"),
                     path: vec!["Outer".to_string(), "Inner".to_string()],
                 },
                 class_side: false,
@@ -700,14 +726,15 @@ mod tests {
                 hit_condition: None,
             }
         );
-        let class_side = parse_method_name(" Module.Inner class >> new ").expect("a method");
+        let class_side =
+            parse_method_name(" Module.Inner class >> new ", &program).expect("a method");
         assert!(class_side.class_side);
         assert_eq!(class_side.class.path, ["Inner"]);
         assert_eq!(class_side.selector, "new");
-        let root = parse_method_name("Calls>>>>").expect("a method");
+        let root = parse_method_name("Calls>>>>", &program).expect("a method");
         assert!(root.class.path.is_empty());
         assert_eq!(root.selector, ">>");
-        let named_class = parse_method_name("Module.Subclass>>run").expect("a method");
+        let named_class = parse_method_name("Module.Subclass>>run", &program).expect("a method");
         assert!(!named_class.class_side, "`Subclass` is a name, not a side");
     }
 
@@ -720,17 +747,21 @@ mod tests {
             "Calls..Inner>>run",
             "Calls>>at: put:",
         ] {
-            assert!(parse_method_name(text).is_err(), "{text}");
+            assert!(parse_method_name(text, &program).is_err(), "{text}");
         }
     }
 
     #[test]
     fn class_names_parse_from_a_list() {
-        let names = parse_class_names("Kernel.Error, Program.Outer.Inner,").expect("names");
+        let names = parse_class_names("Kernel.Error, Program.Outer.Inner,", &|name| {
+            ModuleName::shipped(name)
+        })
+        .expect("names");
         assert_eq!(names.len(), 2);
+        assert_eq!(names[0].module, ModuleName::shipped("Kernel"));
         assert_eq!(names[1].path, ["Outer", "Inner"]);
-        assert!(parse_class_names("Kernel.Error, Kernel Exception").is_err());
-        assert_eq!(parse_class_names(" "), Ok(Vec::new()));
+        assert!(parse_class_names("Kernel.Error, Kernel Exception", &program).is_err());
+        assert_eq!(parse_class_names(" ", &program), Ok(Vec::new()));
     }
 
     #[test]
@@ -745,17 +776,17 @@ mod tests {
     #[test]
     fn a_breakpoint_keeps_its_id_while_the_client_sends_it() {
         let mut table = Breakpoints::default();
-        let first = table.request_lines("Loop", vec![10, 20]);
+        let first = table.request_lines(&program("Loop"), vec![10, 20]);
         assert_eq!(first, [1, 2]);
-        table.answered_lines("Loop", &[(0, 1), (1, 2)]);
+        table.answered_lines(&program("Loop"), &[(0, 1), (1, 2)]);
         assert_eq!(table.dap_id(1), Some(2));
-        let second = table.request_lines("Loop", vec![20, 30]);
+        let second = table.request_lines(&program("Loop"), vec![20, 30]);
         assert_eq!(second, [2, 3]);
         // The VM's ids of the earlier answer map until the next answer,
         // but a breakpoint the client removed is named no more.
         assert_eq!(table.dap_id(0), None);
         assert_eq!(table.dap_id(1), Some(2));
-        table.answered_lines("Loop", &[(2, 2), (3, 3)]);
+        table.answered_lines(&program("Loop"), &[(2, 2), (3, 3)]);
         assert_eq!(table.dap_id(1), None);
         assert_eq!(table.dap_id(3), Some(3));
         assert_eq!(table.request_functions(vec!["Loop>>run".to_string()]), [4]);

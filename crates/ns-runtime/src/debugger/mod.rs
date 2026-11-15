@@ -29,8 +29,8 @@ pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
-    MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
-    ValueDescription, ValueId, Variable, VariableValue,
+    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, SendLocation,
+    StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};

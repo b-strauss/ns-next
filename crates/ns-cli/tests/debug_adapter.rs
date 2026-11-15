@@ -75,6 +75,36 @@ fn program(name: &str, source: &str) -> (ScratchDirectory, PathBuf) {
     (directory, path)
 }
 
+/// A scratch directory holding the binary's shipped sources, as `ns-next
+/// shipped-sources` writes them for a client's core library, and the
+/// directory's absolute path.
+fn core_library() -> (ScratchDirectory, PathBuf) {
+    let directory = ScratchDirectory::new("core-library");
+    let library = directory.join("library");
+    let (written, _, error) =
+        common::ns_next(&[OsStr::new("shipped-sources"), library.as_os_str()]);
+    assert!(written, "{error}");
+    let library = PathBuf::from(absolute(&library));
+    (directory, library)
+}
+
+/// The 1-based line of `Array>>do:`'s loop body in the shipped
+/// `Kernel.ns`, which a program's `do:` over an array reaches.
+fn array_do_body_line() -> u32 {
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the shipped kernel");
+    let lines: Vec<&str> = kernel.lines().collect();
+    let size = lines
+        .iter()
+        .position(|line| line.contains("count = vmMirror collectionSize: self ifFail:"))
+        .expect("Array>>do:");
+    let body = size
+        + lines[size..]
+            .iter()
+            .position(|line| line.trim() == "action value: (self at: index).")
+            .expect("its loop body");
+    u32::try_from(body + 1).expect("a line number")
+}
+
 fn names(events: &[Value]) -> Vec<String> {
     events
         .iter()
@@ -1125,29 +1155,19 @@ fn a_breakpoint_set_before_configuration_done_is_answered_and_stops() {
     assert_eq!(client.finish().stdout, "hi\n");
 }
 
+/// A breakpoint in the core library's `Kernel.ns`, named by that file's
+/// path, stops in the shipped `Array>>do:`, whose frame is shown by the
+/// same path.
 #[test]
 fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     let (_directory, path) = program("Walker", WALKER);
-    let kernel = std::fs::read_to_string(
-        common::repository_root().join("crates/ns-runtime/core-library/Kernel.ns"),
-    )
-    .expect("read Kernel.ns");
-    // `Array>>do:`'s loop body, which `WALKER`'s `do:` reaches.
-    let lines: Vec<&str> = kernel.lines().collect();
-    let size = lines
-        .iter()
-        .position(|line| line.contains("count = vmMirror collectionSize: self ifFail:"))
-        .expect("Array>>do:");
-    let body = size
-        + lines[size..]
-            .iter()
-            .position(|line| line.trim() == "action value: (self at: index).")
-            .expect("its loop body");
-    let line = u32::try_from(body + 1).expect("a line number");
+    let (_library_directory, library) = core_library();
+    let kernel = file_source(&library.join("Kernel.ns"));
+    let line = array_do_body_line();
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(false);
-    let breakpoints = client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[line]);
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let breakpoints = client.set_breakpoints(kernel.clone(), &[line]);
     assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
     assert_eq!(breakpoints[0]["line"], line, "{breakpoints:?}");
     client.configuration_done();
@@ -1156,10 +1176,138 @@ fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
     assert_eq!(frames[0]["line"], line, "{frames:?}");
     assert_eq!(frames[0]["source"]["name"], "Kernel.ns", "{frames:?}");
-    client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[]);
+    assert_eq!(frames[0]["source"]["path"], kernel["path"], "{frames:?}");
+    assert!(
+        frames[0]["source"].get("sourceReference").is_none(),
+        "{frames:?}"
+    );
+    client.set_breakpoints(kernel, &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "12\n");
+}
+
+/// A program whose own root is named `Kernel`, like the shipped module:
+/// its line 4 runs a `do:` over an array, which the shipped `Array>>do:`
+/// runs, and its line 5 prints the sum.
+const OWN_KERNEL: &str = indoc! {"
+    class Kernel = Object new () (
+      public main: platform args: arguments = (
+        | sum ::= 0. |
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The top frame's name, line and source.
+fn top_placed(client: &mut DapClient) -> (Value, Value, Value) {
+    let frames = client.stack_frames(0, 1);
+    (
+        frames[0]["name"].clone(),
+        frames[0]["line"].clone(),
+        frames[0]["source"].clone(),
+    )
+}
+
+/// A program module named like a shipped one is another module: a
+/// breakpoint in the core library's `Kernel.ns` stops only in the shipped
+/// `Array>>do:`, shown by the library file's path, and one by the
+/// program's file only in the program's `Kernel`, shown by its own.
+#[test]
+fn a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let (_library_directory, library) = core_library();
+    let shipped = file_source(&library.join("Kernel.ns"));
+    let own = file_source(&path);
+    let body = array_do_body_line();
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let in_shipped = client.set_breakpoints(shipped.clone(), &[body]);
+    assert_eq!(in_shipped[0]["verified"], true, "{in_shipped:?}");
+    assert_eq!(in_shipped[0]["line"], body, "{in_shipped:?}");
+    let in_own = client.set_breakpoints(own.clone(), &[5]);
+    assert_eq!(in_own[0]["verified"], true, "{in_own:?}");
+    client.configuration_done();
+
+    for element in 1..=3 {
+        client.stopped("breakpoint");
+        let (name, line, source) = top_placed(&mut client);
+        assert_eq!(name, "Array>>do:", "the stop at element {element}");
+        assert_eq!(line, body, "the stop at element {element}");
+        assert_eq!(source["path"], shipped["path"], "{source}");
+        assert!(source.get("sourceReference").is_none(), "{source}");
+        client.succeed("continue", json!({ "threadId": 1 }));
+    }
+    client.stopped("breakpoint");
+    let (name, line, source) = top_placed(&mut client);
+    assert_eq!(name, "Kernel>>main:args:");
+    assert_eq!(line, 5);
+    assert_eq!(source["path"], own["path"], "{source}");
+    client.set_breakpoints(shipped, &[]);
+    client.set_breakpoints(own, &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// Without a core library, a shipped module has no file the client could
+/// name, and its name names none: `Kernel.ns` by name is the program's
+/// file-less module of that name or nothing, never the shipped one.
+#[test]
+fn a_shipped_module_is_never_named_by_its_name() {
+    let (_directory, path) = program("Walker", WALKER);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let breakpoints =
+        client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[array_do_body_line()]);
+    assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "12\n");
+}
+
+/// A core library whose fingerprint is not the binary's holds texts this
+/// binary does not run: the agent says so and does not use it -- its
+/// files name no module, and a shipped frame is shown by reference.
+#[test]
+fn a_core_library_of_another_fingerprint_is_ignored() {
+    let (_directory, path) = program("Walker", WALKER);
+    let (_library_directory, library) = core_library();
+    std::fs::write(library.join("fingerprint"), "0000000000000000\n").expect("another fingerprint");
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    let response = client.request(
+        "attach",
+        json!({ "stopOnEntry": true, "coreLibrary": absolute(&library) }),
+    );
+    assert_eq!(response["success"], true, "{response}");
+    let output = client.event("output");
+    let said = output["body"]["output"].as_str().unwrap_or_default();
+    assert!(said.contains("is not used"), "{output}");
+    client.event("initialized");
+    let kernel = file_source(&library.join("Kernel.ns"));
+    let breakpoints = client.set_breakpoints(kernel, &[array_do_body_line()]);
+    assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "classes": [] }),
+    );
+    client.configuration_done();
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let (name, _, source) = top_placed(&mut client);
+    assert_eq!(name, "Array>>do:");
+    assert!(source.get("path").is_none(), "{source}");
+    assert!(
+        source["sourceReference"].as_i64().is_some_and(|id| id > 0),
+        "{source}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
 }
 
 /// A root with a class of its own named `Array`, whose instance holds two
@@ -2236,10 +2384,12 @@ fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
         .position(|line| line.contains("^vmMirror transcript: self show: text ifFail:"))
         .expect("`show:`'s body");
     let line = u32::try_from(line + 1).expect("a line number");
+    let (_library_directory, library) = core_library();
+    let transcript_file = file_source(&library.join("platform").join("TranscriptFactory.ns"));
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(false);
-    let breakpoints = client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[line]);
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let breakpoints = client.set_breakpoints(transcript_file.clone(), &[line]);
     assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
     client.configuration_done();
     let changed = client.event("breakpoint");
@@ -2254,7 +2404,7 @@ fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
         json!([breakpoints[0]["id"]]),
         "{stopped}"
     );
-    client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[]);
+    client.set_breakpoints(transcript_file, &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }

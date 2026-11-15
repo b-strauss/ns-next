@@ -456,7 +456,8 @@ fn module_class<'gc>(
     // A breakpoint in the module, pending until it was built, resolves
     // now, before its factory and its initializer run.
     if !mutator.has_no_breakpoints() {
-        crate::debugger::breakpoints::module_built(mutator, shipped.name);
+        let module = crate::debugger::ModuleName::shipped(shipped.name);
+        crate::debugger::breakpoints::module_built(mutator, &module);
     }
     Some(class)
 }

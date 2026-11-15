@@ -58,7 +58,7 @@ pub enum Command {
     /// or, for a position that resolves to no statement -- its module not
     /// built, no statement at or after the offset -- by `Event::Refused`,
     /// the program still stopped.
-    RunToPosition { module: String, offset: u32 },
+    RunToPosition { module: ModuleName, offset: u32 },
     /// The run ends as an uncaught termination does: every pending
     /// `ensure:` block runs, and the host's send answers the error
     /// "the debugger terminated the program".
@@ -75,9 +75,9 @@ pub enum Command {
         start: usize,
         count: usize,
     },
-    /// Replaces every line breakpoint of the module `module` names -- its
-    /// root class's name, as `FrameLocation::module` names it, a shipped
-    /// module's too -- by `breakpoints`, each at a byte offset into the
+    /// Replaces every line breakpoint of the module `module` names -- a
+    /// program's or a shipped one, as `FrameLocation::module` names it --
+    /// by `breakpoints`, each at a byte offset into the
     /// module's current text. Each resolves to the first statement start
     /// at or after its offset in any body of the module, and every body
     /// with a statement of that same span stops there: an inlined block's
@@ -86,7 +86,7 @@ pub enum Command {
     /// not the module's set held it before. Answered by
     /// `Event::Breakpoints`.
     SetBreakpoints {
-        module: String,
+        module: ModuleName,
         breakpoints: Vec<LineBreakpoint>,
     },
     /// Replaces the step filters: the frames no step stops in
@@ -131,9 +131,9 @@ pub enum Command {
         halt: bool,
         classes: Vec<ClassName>,
     },
-    /// The current text of the module `module` names -- its root class's
-    /// name, as `FrameLocation::module` names it, a shipped module's too,
-    /// built or not -- unless `known_revision` is the revision the answer
+    /// The current text of the module `module` names -- a program's, as
+    /// `FrameLocation::module` names it, or a shipped one, built or not --
+    /// unless `known_revision` is the revision the answer
     /// would carry. `known_revision` is the revision of a
     /// `ModuleTextAnswer::Text` the agent holds for this very module; an
     /// agent keeps a revision only beside a `Text`, since the revision
@@ -143,7 +143,7 @@ pub enum Command {
     /// agent reads a text only where it reads positions in it. Answered by
     /// `Event::ModuleText`.
     ModuleText {
-        module: String,
+        module: ModuleName,
         known_revision: Option<u64>,
     },
 }
@@ -213,12 +213,63 @@ impl HitCondition {
     }
 }
 
+/// A module as the debugging API names it: the name of its root class,
+/// and whether it is one of the binary's shipped modules. A program may
+/// declare a module of a shipped module's name -- a `Kernel` of its own --
+/// which is another module: neither ever takes the other's breakpoints,
+/// text or classes (`docs/design/debugger.md`, "The agent's sources").
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModuleName {
+    /// The name of the module's root class.
+    pub name: String,
+    /// Whether it is a shipped module rather than the program's.
+    pub shipped: bool,
+}
+
+impl ModuleName {
+    /// The program's module whose root class is named `name`.
+    pub fn program(name: impl Into<String>) -> ModuleName {
+        ModuleName {
+            name: name.into(),
+            shipped: false,
+        }
+    }
+
+    /// The shipped module whose root class is named `name`.
+    pub fn shipped(name: impl Into<String>) -> ModuleName {
+        ModuleName {
+            name: name.into(),
+            shipped: true,
+        }
+    }
+}
+
+impl ModuleName {
+    /// The module whose root is `root`.
+    pub(crate) fn of(root: &crate::mixin::Mixin) -> ModuleName {
+        ModuleName {
+            name: root.name.to_string(),
+            shipped: root.shipped,
+        }
+    }
+
+    /// Whether `root` is this module's root.
+    pub(crate) fn names(&self, root: &crate::mixin::Mixin) -> bool {
+        root.shipped == self.shipped && root.name.as_str() == self.name
+    }
+}
+
+impl std::fmt::Display for ModuleName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.name)
+    }
+}
+
 /// A class declaration of a module, as a step filter names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassName {
-    /// The name of the module's root class, as `FrameLocation::module`
-    /// names it.
-    pub module: String,
+    /// The module, as `FrameLocation::module` names it.
+    pub module: ModuleName,
     /// The names of the declarations from the module's root down to the
     /// class, the root's own excluded: empty for the root itself, `["A",
     /// "B"]` for `B` nested in `A`.
@@ -281,7 +332,7 @@ pub enum Event {
     /// unasked when a pending one resolves -- its module was built -- or
     /// an install moved one.
     Breakpoints {
-        module: String,
+        module: ModuleName,
         breakpoints: Vec<BreakpointState>,
     },
     /// The answer to `Command::SetStepFilters`: the filters are in effect.
@@ -298,7 +349,7 @@ pub enum Event {
     /// for every module and 0 before the first: a text read at a revision
     /// is current until it is raised.
     ModuleText {
-        module: String,
+        module: ModuleName,
         revision: u64,
         text: ModuleTextAnswer,
     },
@@ -426,9 +477,9 @@ pub struct FrameDescription {
 /// Where a frame stands, in the current text of its module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameLocation {
-    /// The name of the module's root class; the spans count in its
+    /// The module, a program's or a shipped one; the spans count in its
     /// current text.
-    pub module: String,
+    pub module: ModuleName,
     /// The innermost statement whose instructions hold the frame's
     /// program counter; for a factory, the class header's factory
     /// pattern (decision 12).

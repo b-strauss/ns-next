@@ -60,6 +60,10 @@ pub(crate) struct AttachArguments {
     /// The listening mode's token; the connecting mode needs none.
     pub(crate) token: Option<String>,
     pub(crate) stop_on_entry: bool,
+    /// The directory of the binary's shipped sources the client shows as
+    /// its core library, absolute: a shipped module is named, and shown,
+    /// by the path of its file there (`Sources::take_library`).
+    pub(crate) core_library: Option<String>,
 }
 
 #[derive(Deserialize, Default)]

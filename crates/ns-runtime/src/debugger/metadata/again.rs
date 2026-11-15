@@ -226,12 +226,14 @@ fn declaration_id(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<MixinId>
     }
 }
 
-/// The name of the root class of the module `running` is declared in, as
-/// a frame's location names its module; `None` for a mixin no heap
-/// registered.
-pub(crate) fn module_name(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<String> {
+/// The module `running` is declared in, as a frame's location names it;
+/// `None` for a mixin no heap registered.
+pub(crate) fn module_name(
+    mutator: &Mutator<'_>,
+    running: &Rc<Mixin>,
+) -> Option<crate::debugger::ModuleName> {
     let (root, _) = declaration_path(mutator, running)?;
-    Some(root.name.to_string())
+    Some(crate::debugger::ModuleName::of(&root))
 }
 
 /// The root class of the module `running` is declared in, and the names

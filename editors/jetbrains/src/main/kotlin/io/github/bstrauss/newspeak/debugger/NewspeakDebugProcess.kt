@@ -70,7 +70,7 @@ class NewspeakDebugProcess(
     private val secret: String,
 ) : XDebugProcess(session) {
     private val work = AppExecutorUtil.createBoundedApplicationPoolExecutor("Newspeak debugger", 1)
-    private val lineBreakpoints = NewspeakLineBreakpointHandler(session, NewspeakCoreLibrary.getInstance(session.project))
+    private val lineBreakpoints = NewspeakLineBreakpointHandler(session)
     private val methodBreakpoints = NewspeakMethodBreakpointHandler(session)
     private val exceptionBreakpoints = NewspeakExceptionBreakpointHandler(session)
 
@@ -133,8 +133,7 @@ class NewspeakDebugProcess(
         awaitLibrary(library)
         val client = DapClient(connection)
         this.client = client
-        val coreLibrary = NewspeakCoreLibrary.getInstance(session.project)
-        sources = NewspeakSources(client, coreLibrary::fileNamed, coreLibrary::sourceOf)
+        sources = NewspeakSources(client)
         if (ended) {
             client.close()
             return
@@ -155,7 +154,7 @@ class NewspeakDebugProcess(
             addProperty("pathFormat", "path")
         }
         client.request("initialize", initialize)
-            .thenCompose { _ -> client.request("attach", JsonObject().apply { addProperty("stopOnEntry", false) }) }
+            .thenCompose { _ -> client.request("attach", attachArguments()) }
             .whenComplete { _, failure ->
                 if (failure != null && causeOf(failure) !is DapConnectionClosedException) {
                     work.execute { fail(NewspeakBundle.message("debugger.error.start", messageOf(failure))) }
@@ -171,6 +170,18 @@ class NewspeakDebugProcess(
      * is sent meanwhile; a look that fails or takes too long leaves the
      * breakpoints where they are.
      */
+    /**
+     * `attach`'s arguments: the core library the project shows, its
+     * directory absolute, by which the agent names and shows the shipped
+     * modules (`coreLibrary`); none while the project shows none.
+     */
+    internal fun attachArguments(): JsonObject = JsonObject().apply {
+        addProperty("stopOnEntry", false)
+        NewspeakCoreLibrary.getInstance(session.project).directory?.let { directory ->
+            addProperty("coreLibrary", directory.toAbsolutePath().toString())
+        }
+    }
+
     private fun awaitLibrary(library: Future<Path?>) {
         try {
             library.get(LIBRARY_SECONDS, TimeUnit.SECONDS)

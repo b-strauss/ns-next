@@ -17,7 +17,7 @@ use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
 use ns_runtime::debugger::{
     BreakpointId, BreakpointState, ClassName, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState, ModuleTextAnswer,
+    MethodBreakpointState, ModuleName, ModuleTextAnswer,
 };
 use ns_runtime::JitStatistics;
 use ns_runtime::{
@@ -1576,7 +1576,7 @@ ns_runtime::for_each_lowering! {
                 .unwrap_or_else(|| panic!("{} is located", frames[index].name))
         };
         let looping = located(innermost);
-        assert_eq!(looping.module, "Stacked");
+        assert_eq!(looping.module.name, "Stacked");
         // The loop's statement, or its condition's, the statement of an
         // inlined block, which the loop's back edge jumps to.
         assert!(
@@ -1847,7 +1847,7 @@ ns_runtime::for_each_lowering! {
             .location
             .clone()
             .expect("the factory is located");
-        assert_eq!(location.module, "Factories");
+        assert_eq!(location.module.name, "Factories");
         assert_eq!(location.statement.text(FACTORIES), "x: first y: second");
         assert_eq!(names(&variables), ["self", "first", "second"]);
         assert_eq!(value_of(&variables, "first").label, "3");
@@ -1989,7 +1989,7 @@ ns_runtime::for_each_lowering! {
             .location
             .clone()
             .expect("the superseded method is located");
-        assert_eq!(location.module, "Adding");
+        assert_eq!(location.module.name, "Adding");
         assert_eq!(location.statement.text(ADDING), "^block value: count");
         assert_eq!(names(&method), ["self", "count", "items", "block"]);
         assert_eq!(value_of(&method, "count").label, "5");
@@ -2291,10 +2291,21 @@ fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
     set_line_breakpoints(remote, module, breakpoints);
 }
 
+/// The module a test names `name`: a shipped one when the binary ships a
+/// module of that name -- no test's program declares one -- and the
+/// program's otherwise.
+fn module_named(name: &str) -> ModuleName {
+    if ns_runtime::shipped_module_source(name).is_some() {
+        ModuleName::shipped(name)
+    } else {
+        ModuleName::program(name)
+    }
+}
+
 /// Sets the line breakpoints of `module` to `breakpoints`.
 fn set_line_breakpoints(remote: &DebugRemote, module: &str, breakpoints: Vec<LineBreakpoint>) {
     remote.send(Command::SetBreakpoints {
-        module: String::from(module),
+        module: module_named(module),
         breakpoints,
     });
 }
@@ -2306,7 +2317,7 @@ fn expect_breakpoints(remote: &DebugRemote, module: &str) -> Vec<BreakpointState
         Some(Event::Breakpoints {
             module: reported,
             breakpoints,
-        }) if reported == module => breakpoints,
+        }) if reported.name == module => breakpoints,
         other => panic!("the breakpoints of {module} were expected, not {other:?}"),
     }
 }
@@ -2383,7 +2394,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(THREE_STATEMENTS), "count:: count + 10");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module, "Lines");
+        assert_eq!(location.module.name, "Lines");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2417,7 +2428,7 @@ ns_runtime::for_each_lowering! {
         );
         let answered = events
             .iter()
-            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module == "Lines"))
+            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module.name == "Lines"))
             .expect("the removal is answered");
         let stale: Vec<&Event> = events[answered..]
             .iter()
@@ -2746,7 +2757,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(TRANSCRIPT_FACTORY), "^Transcript new");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module, "TranscriptFactory");
+        assert_eq!(location.module.name, "TranscriptFactory");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2902,7 +2913,7 @@ fn reports_no_breakpoint(events: &[Event], module: &str) -> bool {
         matches!(
             event,
             Event::Breakpoints { module: reported, breakpoints }
-                if reported == module && breakpoints.is_empty()
+                if reported.name == module && breakpoints.is_empty()
         )
     })
 }
@@ -4270,7 +4281,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(frames[0].kind, FrameKind::Factory);
         assert_eq!(frames[1].name, "Headers>>point");
         let location = frames[0].location.clone().expect("the factory is located");
-        assert_eq!(location.module, "Headers");
+        assert_eq!(location.module.name, "Headers");
         assert_eq!(location.statement.text(HEADERS), "x: ax y: ay");
         assert_eq!(names(&variables), ["self", "ax", "ay"]);
         assert_eq!(value_of(&variables, "ax").label, "1");
@@ -4830,7 +4841,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("Headers"),
+                        module: module_named("Headers"),
                         path: vec![String::from("Middle")],
                     }],
                 });
@@ -4876,7 +4887,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("Headers"),
+                        module: module_named("Headers"),
                         path: vec![String::from("Hollow")],
                     }],
                 });
@@ -7240,7 +7251,7 @@ fn standing_in_either(remote: &DebugRemote, source: &str) -> (String, String) {
         .location
         .clone()
         .unwrap_or_else(|| panic!("{} is located", top.name));
-    let text = if location.module == "Kernel" {
+    let text = if location.module.name == "Kernel" {
         KERNEL
     } else {
         source
@@ -7778,7 +7789,7 @@ ns_runtime::for_each_lowering! {
                 top.location.map(|location| location.module)
             },
         );
-        assert_eq!(module.as_deref(), Some("Kernel"));
+        assert_eq!(module, Some(ModuleName::shipped("Kernel")));
         assert_eq!(answer, 18);
     }
 }
@@ -7819,7 +7830,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("Helping"),
+                        module: module_named("Helping"),
                         path: vec![String::from("Helper")],
                     }],
                 });
@@ -7909,7 +7920,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("HelpingTwice"),
+                        module: module_named("HelpingTwice"),
                         path: vec![String::from("Helper")],
                     }],
                 });
@@ -8026,7 +8037,7 @@ ns_runtime::for_each_lowering! {
                     let top = stack_trace(remote).remove(0);
                     let location = top.location.expect("the stop is located");
                     stops.push((
-                        location.module,
+                        location.module.name,
                         location.statement.text(BRANCHING).to_owned(),
                     ));
                     continue_stopped(remote);
@@ -8293,7 +8304,7 @@ fn method_breakpoint(
 ) -> MethodBreakpoint {
     MethodBreakpoint {
         class: ClassName {
-            module: String::from(module),
+            module: module_named(module),
             path: path.iter().map(|name| String::from(*name)).collect(),
         },
         class_side,
@@ -8425,7 +8436,7 @@ ns_runtime::for_each_lowering! {
                 set_breakpoints(remote, "Looping", Vec::new());
                 expect_breakpoints(remote, "Looping");
                 remote.send(Command::RunToPosition {
-                    module: String::from("Looping"),
+                    module: module_named("Looping"),
                     offset: cursor,
                 });
                 match remote.next_event(EVENT_TIMEOUT) {
@@ -8471,7 +8482,7 @@ ns_runtime::for_each_lowering! {
                     let event = request(
                         remote,
                         Command::RunToPosition {
-                            module: String::from(module),
+                            module: module_named(module),
                             offset: past,
                         },
                     );
@@ -9635,7 +9646,7 @@ ns_runtime::for_each_lowering! {
     /// chain, and no other: the plain `Error` runs on.
     fn an_exception_class_filter_selects_by_class_chain(lowering) {
         let special = ClassName {
-            module: String::from("Classed"),
+            module: module_named("Classed"),
             path: vec![String::from("Special")],
         };
         let ((reason, after), result) = raised(
@@ -10963,14 +10974,24 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// What `Command::ModuleText` answers for `module`.
+/// What `Command::ModuleText` answers for the module a test names
+/// `module` (`module_named`).
 fn module_text(
     remote: &DebugRemote,
     module: &str,
     known_revision: Option<u64>,
 ) -> (u64, ModuleTextAnswer) {
+    module_text_of(remote, module_named(module), known_revision)
+}
+
+/// What `Command::ModuleText` answers for `module`.
+fn module_text_of(
+    remote: &DebugRemote,
+    module: ModuleName,
+    known_revision: Option<u64>,
+) -> (u64, ModuleTextAnswer) {
     let command = Command::ModuleText {
-        module: String::from(module),
+        module: module.clone(),
         known_revision,
     };
     match request(remote, command) {
@@ -11089,7 +11110,7 @@ fn a_shipped_module_not_built_yet_answers_its_shipped_text() {
 }
 
 #[test]
-fn a_program_module_named_like_a_shipped_one_answers_its_own_text() {
+fn a_program_module_and_the_shipped_one_of_its_name_answer_their_own_texts() {
     let source = indoc! {"
         class TimeFactory = Object new (
           | count ::= 0. |
@@ -11101,8 +11122,15 @@ fn a_program_module_named_like_a_shipped_one_answers_its_own_text() {
         ) : ()
     "};
     let expected = String::from(source);
-    let (_, text) = while_stopped(source, |remote| module_text(remote, "TimeFactory", None));
-    assert_eq!(text, ModuleTextAnswer::Text(expected));
+    let ((_, own), (_, shipped)) = while_stopped(source, |remote| {
+        (
+            module_text_of(remote, ModuleName::program("TimeFactory"), None),
+            module_text_of(remote, ModuleName::shipped("TimeFactory"), None),
+        )
+    });
+    assert_eq!(own, ModuleTextAnswer::Text(expected));
+    let shipped_text = ns_runtime::shipped_module_source("TimeFactory").expect("a shipped module");
+    assert_eq!(shipped, ModuleTextAnswer::Text(String::from(shipped_text)));
 }
 
 ns_runtime::for_each_lowering! {
@@ -11245,5 +11273,107 @@ ns_runtime::for_each_lowering! {
             answered(&mut interpreter, after),
             answered(&mut fresh, without)
         );
+    }
+}
+
+/// A program whose root is named `Kernel`, like the shipped module, whose
+/// `run` walks an array with the shipped `Array>>do:`.
+const OWN_KERNEL: &str = indoc! {"
+    class Kernel = Object new (
+      | sum ::= 0. |
+    ) (
+      public run = (
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// The offset of the start of the line of the shipped `Kernel.ns` that
+/// holds `Array>>do:`'s loop body.
+fn array_do_body() -> u32 {
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the shipped kernel");
+    let size = kernel
+        .find("count = vmMirror collectionSize: self ifFail:")
+        .expect("Array>>do:");
+    let body = size
+        + kernel[size..]
+            .find("action value: (self at: index).")
+            .expect("its loop body");
+    let start = kernel[..body].rfind('\n').map_or(0, |newline| newline + 1);
+    u32::try_from(start).expect("the kernel is small")
+}
+
+ns_runtime::for_each_lowering! {
+    /// A program module named like a shipped one is another module: the
+    /// shipped `Kernel`'s breakpoints stop only in shipped code and the
+    /// program's only in the program's, each frame's location names its own
+    /// module, and each module's text is its own.
+    fn a_program_root_named_kernel_is_another_module_than_the_shipped_kernel(lowering) {
+        let shipped = ModuleName::shipped("Kernel");
+        let own = ModuleName::program("Kernel");
+        let (stops, answer) = stepped(
+            OWN_KERNEL,
+            lowering,
+            "run",
+            |remote| {
+                remote.send(Command::SetBreakpoints {
+                    module: shipped.clone(),
+                    breakpoints: vec![LineBreakpoint::at(array_do_body())],
+                });
+                remote.send(Command::SetBreakpoints {
+                    module: own.clone(),
+                    breakpoints: vec![LineBreakpoint::at(line_start(OWN_KERNEL, "^sum"))],
+                });
+            },
+            |remote| {
+                let mut stops = Vec::new();
+                loop {
+                    let ended = run_finished();
+                    match remote.next_event(Duration::from_millis(10)) {
+                        Some(Event::Breakpoints { breakpoints, .. }) => {
+                            assert!(
+                                breakpoints.iter().all(|state| state.statement.is_some()),
+                                "every breakpoint resolves"
+                            );
+                        }
+                        Some(Event::Stopped { .. }) => {
+                            let top = stack_trace(remote).remove(0);
+                            let location = top.location.expect("the stop is located");
+                            let text = match request(
+                                remote,
+                                Command::ModuleText {
+                                    module: location.module.clone(),
+                                    known_revision: None,
+                                },
+                            ) {
+                                Event::ModuleText {
+                                    text: ModuleTextAnswer::Text(text),
+                                    ..
+                                } => text,
+                                other => panic!("a module's text was expected, not {other:?}"),
+                            };
+                            // `Array>>do:`'s loop body is a block of its own
+                            // under the reference lowering, inline under the
+                            // optimized one.
+                            let name = top.name.trim_start_matches("[] in ").to_owned();
+                            stops.push((name, location.module, text == OWN_KERNEL));
+                            continue_stopped(remote);
+                        }
+                        Some(other) => panic!("only stops were expected, not {other:?}"),
+                        None if ended => return stops,
+                        None => {}
+                    }
+                }
+            },
+        );
+        let in_shipped = (String::from("Array>>do:"), shipped, false);
+        let in_own = (String::from("Kernel>>run"), own, true);
+        assert_eq!(
+            stops,
+            [in_shipped.clone(), in_shipped.clone(), in_shipped, in_own]
+        );
+        // The two warming sends summed the array before.
+        assert_eq!(answer, 18);
     }
 }

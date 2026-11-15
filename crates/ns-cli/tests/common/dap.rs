@@ -450,7 +450,13 @@ impl DapClient {
     /// then the `process` and `initialized` events; answers the `process`
     /// event.
     pub fn attach(&mut self, stop_on_entry: bool) -> Value {
-        let mut arguments = json!({ "stopOnEntry": stop_on_entry });
+        self.attach_with(json!({ "stopOnEntry": stop_on_entry }))
+    }
+
+    /// `attach` with `arguments` and the listening mode's token, if any,
+    /// then the `process` and `initialized` events; answers the `process`
+    /// event.
+    pub fn attach_with(&mut self, mut arguments: Value) -> Value {
         if let Some((_, token)) = &self.listening {
             arguments["token"] = json!(token);
         }

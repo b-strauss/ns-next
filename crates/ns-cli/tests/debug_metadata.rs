@@ -22,7 +22,7 @@ use std::time::Duration;
 use libtest_mimic::{Arguments, Failed, Trial};
 use ns_runtime::{
     BreakableStatement, BreakpointState, Command, Event, HostSignal, Interpreter, LineBreakpoint,
-    Lowering,
+    Lowering, ModuleName,
 };
 use ns_syntax::Span;
 
@@ -176,7 +176,7 @@ fn breakable_statements_agree_with_the_breakpoints(
         .iter()
         .zip(&breakable)
         .map(|(resolved, statements)| Landings {
-            module: resolved.module.root_class.name.name.clone(),
+            module: ModuleName::program(resolved.module.root_class.name.name.clone()),
             source: &resolved.source,
             expected: expected_landings(statements, lowering),
         })
@@ -228,7 +228,7 @@ fn shipped_breakable_statements_agree_with_the_breakpoints(
         }
         let text = ns_runtime::shipped_module_source(name).unwrap_or_default();
         modules.push(Landings {
-            module: name.to_string(),
+            module: ModuleName::shipped(name),
             source: text,
             expected: expected_landings(&statements, lowering),
         });
@@ -269,8 +269,8 @@ fn expected_landings(
 
 /// The breakpoints a module is set, each beside where it should land.
 struct Landings<'text> {
-    /// The module's root class's name.
-    module: String,
+    /// The module.
+    module: ModuleName,
     source: &'text str,
     /// Each breakpoint's offset and the statement it should land on.
     expected: Vec<(u32, Option<Span>)>,
@@ -358,14 +358,14 @@ fn resolved_text(source: &str) -> Result<ns_runtime::ResolvedModule, Failed> {
 /// The VM's answer to the next `SetBreakpoints` of `module`.
 fn breakpoints_of(
     remote: &ns_runtime::DebugRemote,
-    module: &str,
+    module: &ModuleName,
 ) -> Result<Vec<BreakpointState>, Failed> {
     loop {
         match remote.next_event(EVENT_TIMEOUT) {
             Some(Event::Breakpoints {
                 module: reported,
                 breakpoints,
-            }) if reported == module => return Ok(breakpoints),
+            }) if reported == *module => return Ok(breakpoints),
             Some(Event::Breakpoints { .. }) => {}
             other => {
                 return Err(

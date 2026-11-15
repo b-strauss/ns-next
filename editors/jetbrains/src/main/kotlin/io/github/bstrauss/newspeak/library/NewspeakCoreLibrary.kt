@@ -18,7 +18,6 @@ import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 import com.intellij.openapi.roots.AdditionalLibraryRootsListener
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
-import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.concurrency.AppExecutorUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
@@ -26,14 +25,10 @@ import io.github.bstrauss.newspeak.run.RuntimeLocation
 import io.github.bstrauss.newspeak.run.locateRuntime
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
-import kotlin.io.path.isRegularFile
-import kotlin.io.path.name
 
 /**
  * A project's "Newspeak Core Library": the shipped sources of the `ns-next`
@@ -159,20 +154,6 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
     /** The root of the library shown, as a file; null while there is none or it is gone. */
     fun root(): VirtualFile? = directory?.let(LocalFileSystem.getInstance()::findFileByNioFile)
 
-    /**
-     * The library's file named [name] -- `Kernel.ns`, `TimeFactory.ns` --
-     * wherever it lies in the layout; null for none.
-     */
-    fun fileNamed(name: String): VirtualFile? {
-        val shown = directory ?: return null
-        val path = try {
-            Files.walk(shown).use { stream -> stream.filter { path -> path.isRegularFile() && path.name == name }.findFirst().orElse(null) }
-        } catch (_: IOException) {
-            null
-        } ?: return null
-        return LocalFileSystem.getInstance().findFileByNioFile(path) ?: LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
-    }
-
     /** Forgets the directory shown, so that the next look shows it anew, as after the IDE's start; for the tests. Called on the event dispatch thread. */
     internal fun forgetTheDirectoryShown() {
         directory = null
@@ -213,46 +194,6 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
             STORE.prune(now, IN_USE.values.toSet() + listOfNotNull(shown))
         }
     }
-
-    /** How the agent may know the file at [fileUrl], judged against the directory this project shows ([librarySourceOf]). */
-    fun sourceOf(fileUrl: String): LibrarySource = librarySourceOf(fileUrl, directory, STORE)
-}
-
-/** How the agent may know a file, as far as the core library decides it. */
-sealed interface LibrarySource {
-    /** A file outside every directory of shipped sources: the agent knows it by its path. */
-    data object Outside : LibrarySource
-
-    /** A module of the directory the project shows, the running binary's: the agent knows it by [name], `<Module>.ns`. */
-    data class Module(val name: String) : LibrarySource
-
-    /**
-     * A file of another directory of shipped sources -- an older binary's,
-     * which a look that failed or timed out left the project's breakpoints
-     * in -- or no module at all: the agent knows no such module, and its
-     * breakpoints are not sent, so that they neither stop at an older
-     * text's line numbers nor replace the shown file's set of the same name.
-     */
-    data object Elsewhere : LibrarySource
-}
-
-/**
- * How the agent may know the file at [fileUrl] when the project shows
- * [shown], a directory of [store], or nothing for null: a module of
- * [shown] by its name, any other file of [store] not at all, and every
- * file outside it by its path.
- */
-internal fun librarySourceOf(fileUrl: String, shown: Path?, store: CoreLibraryStore): LibrarySource {
-    if (!fileUrl.startsWith("file:")) return LibrarySource.Outside
-    val path = try {
-        Path.of(VfsUtilCore.urlToPath(fileUrl))
-    } catch (_: InvalidPathException) {
-        return LibrarySource.Outside
-    }
-    val place = store.placeOf(path) ?: return LibrarySource.Outside
-    val name = place.relative.fileName.toString()
-    val inShown = shown != null && shown.toAbsolutePath().normalize() == store.root.resolve(place.fingerprint).toAbsolutePath().normalize()
-    return if (inShown && name.endsWith(".ns")) LibrarySource.Module(name) else LibrarySource.Elsewhere
 }
 
 /**

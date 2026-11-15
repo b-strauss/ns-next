@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ns_runtime::{
-    Command, DebugControl, Event, StopReason, ValueDescription, Variable, VariableValue,
+    Command, DebugControl, Event, ModuleName, StopReason, ValueDescription, Variable, VariableValue,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -173,7 +173,7 @@ pub(super) enum Reply {
     /// requests waiting for them read.
     Frames { generation: u64 },
     /// A module's current text, which the requests waiting for it read.
-    Text { module: String },
+    Text { module: ModuleName },
 }
 
 /// How the VM's answer becomes a request's response body.
@@ -192,7 +192,7 @@ pub(super) enum Conversion {
     /// `setBreakpoints`': its module, each breakpoint asked for, in the
     /// request's order, and the text the offsets count in.
     Breakpoints {
-        module: String,
+        module: ModuleName,
         entries: Vec<LineEntry>,
         text: String,
     },
@@ -209,7 +209,7 @@ pub(super) enum Conversion {
 /// names a module, to the first naming that module.
 struct Pending {
     command: &'static str,
-    module: Option<String>,
+    module: Option<ModuleName>,
     reply: Reply,
 }
 
@@ -560,6 +560,10 @@ impl Agent {
             client.writer.mark_attached();
         }
         self.stop_on_entry = arguments.stop_on_entry;
+        let library = arguments
+            .core_library
+            .as_deref()
+            .map(|directory| self.sources.take_library(std::path::Path::new(directory)));
         self.respond(connection, request, None);
         let process = protocol::ProcessEventBody {
             name: self.process_name.clone(),
@@ -572,6 +576,13 @@ impl Agent {
             },
         };
         self.event("process", Some(to_value(process)));
+        if let Some(Err(reason)) = library {
+            // The client shows sources this binary does not run: its shipped
+            // modules are shown by reference instead, and their files name none.
+            let output = json!({ "category": "console", "output": format!("{reason}
+") });
+            self.event("output", Some(output));
+        }
         self.event("initialized", None);
     }
 
@@ -769,7 +780,7 @@ impl Agent {
         );
         // Only the texts of the frames shown: a client that asks for the
         // top frame first reads no other module's text.
-        let modules: BTreeSet<String> = page
+        let modules: BTreeSet<ModuleName> = page
             .iter()
             .filter_map(|(_, frame)| frame.location.as_ref())
             .map(|location| location.module.clone())
@@ -796,18 +807,18 @@ impl Agent {
 
     /// Whether `module`'s current text is there for this stop, asking the
     /// VM for it, with the revision the agent holds, when it is not.
-    pub(super) fn read_text(&mut self, module: &str) -> Result<bool, String> {
+    pub(super) fn read_text(&mut self, module: &ModuleName) -> Result<bool, String> {
         let generation = self.stop.generation();
         if !self.sources.needs_text(module, generation) || !self.stopped {
             return Ok(true);
         }
         if let Some(known_revision) = self.sources.ask(module, generation) {
             let command = Command::ModuleText {
-                module: module.to_string(),
+                module: module.clone(),
                 known_revision,
             };
             let reply = Reply::Text {
-                module: module.to_string(),
+                module: module.clone(),
             };
             if !self.command(command, reply) {
                 self.sources.refused(module);
@@ -828,11 +839,7 @@ impl Agent {
             .filter(|reference| *reference > 0)
             .or_else(|| arguments.source.and_then(|source| source.source_reference))
             .unwrap_or_default();
-        let Some(module) = self
-            .sources
-            .module_of_reference(reference)
-            .map(str::to_string)
-        else {
+        let Some(module) = self.sources.module_of_reference(reference).cloned() else {
             return Some(Err("no source has that reference".to_string()));
         };
         match self.read_text(&module) {
@@ -1239,9 +1246,9 @@ impl Agent {
     /// Whether a command `command` names (`Command::name`), for `module`
     /// when given, is on its way to the VM: a replacement of a set, which
     /// outdates an event the VM sent unasked about that set before it.
-    pub(super) fn replacing(&self, command: &str, module: Option<&str>) -> bool {
+    pub(super) fn replacing(&self, command: &str, module: Option<&ModuleName>) -> bool {
         self.pending.iter().any(|pending| {
-            pending.command == command && (module.is_none() || pending.module.as_deref() == module)
+            pending.command == command && (module.is_none() || pending.module.as_ref() == module)
         })
     }
 
@@ -1854,10 +1861,10 @@ mod tests {
     #[test]
     fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {
         let mut known = Breakpoints::default();
-        let ids = known.request_lines("Loop", vec![10, 20]);
-        known.answered_lines("Loop", &[(1, ids[0]), (2, ids[1])]);
+        let ids = known.request_lines(&ModuleName::program("Loop"), vec![10, 20]);
+        known.answered_lines(&ModuleName::program("Loop"), &[(1, ids[0]), (2, ids[1])]);
         // The client removes the breakpoint at 10.
-        known.request_lines("Loop", vec![20]);
+        known.request_lines(&ModuleName::program("Loop"), vec![20]);
         let replaced = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
@@ -1875,17 +1882,17 @@ mod tests {
     #[test]
     fn a_pending_replacement_hides_the_ids_it_replaces() {
         let mut known = Breakpoints::default();
-        let ids = known.request_lines("Loop", vec![10]);
-        known.answered_lines("Loop", &[(1, ids[0])]);
+        let ids = known.request_lines(&ModuleName::program("Loop"), vec![10]);
+        known.answered_lines(&ModuleName::program("Loop"), &[(1, ids[0])]);
         let stop = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
         // Sent again, unanswered: the client still holds the breakpoint.
-        known.request_lines("Loop", vec![10]);
+        known.request_lines(&ModuleName::program("Loop"), vec![10]);
         let body = to_value(stopped_body(&stop, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[0]]));
         // Replaced by another line, unanswered: the stop names nothing.
-        known.request_lines("Loop", vec![30]);
+        known.request_lines(&ModuleName::program("Loop"), vec![30]);
         let body = to_value(stopped_body(&stop, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");

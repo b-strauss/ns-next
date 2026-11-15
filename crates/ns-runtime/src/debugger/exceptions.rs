@@ -318,7 +318,7 @@ fn names(mutator: &Mutator<'_>, classes: &[ClassName], mixin: &Rc<Mixin>) -> boo
         return false;
     };
     classes.iter().any(|class| {
-        class.module == root.name.as_str()
+        class.module.names(&root)
             && class.path.len() == path.len()
             && class
                 .path

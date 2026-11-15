@@ -321,7 +321,8 @@ impl<'gc> Mutator<'gc> {
         self.note_module_built();
         // A breakpoint set before the module was loaded resolves now.
         if !self.has_no_breakpoints() {
-            crate::debugger::breakpoints::module_built(self, mixin.name.as_str());
+            let module = crate::debugger::ModuleName::of(&mixin);
+            crate::debugger::breakpoints::module_built(self, &module);
         }
         class
     }

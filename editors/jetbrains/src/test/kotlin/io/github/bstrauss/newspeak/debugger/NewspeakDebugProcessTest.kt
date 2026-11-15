@@ -380,23 +380,37 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         }
     }
 
-    /** A shipped frame whose text is the library's file's opens that file, where its breakpoints stand. */
-    fun testAShippedFrameOpensTheLibrarysFileWhenItsTextIsTheAgents() {
+    /**
+     * The session hands the agent the library the project shows, absolute,
+     * at `attach`; a shipped frame the agent then shows by the path of the
+     * library's file opens that file, where its breakpoints stand, with no
+     * `source` request.
+     */
+    fun testTheAttachHandsTheAgentTheLibraryWhoseFilesShippedFramesOpen() {
         val library = libraryDirectory()
-        val kernelText = Files.readString(library.resolve("Kernel.ns"))
+        val kernel = library.resolve("Kernel.ns")
+        val stack = JsonParser.parseString(SHIPPED_STACK).asJsonObject
+        stack.getAsJsonArray("stackFrames")[0].asJsonObject.add(
+            "source",
+            JsonObject().apply {
+                addProperty("name", "Kernel.ns")
+                addProperty("path", kernel.toString())
+            },
+        )
         val faked = fakeSession()
         val agent = identifiedAgent(faked) { command, _ ->
             when (command) {
-                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
-                "source" -> JsonObject().apply { addProperty("content", kernelText) }
+                "stackTrace" -> stack
                 else -> JsonObject()
             }
         }
         agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(library.toAbsolutePath().toString(), agent.requests("attach").single().get("coreLibrary").asString)
         agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
         val position = faked.debugging.nextPause()
-        assertEquals(LocalFileSystem.getInstance().findFileByNioFile(library.resolve("Kernel.ns")), position.file)
+        assertEquals(LocalFileSystem.getInstance().findFileByNioFile(kernel), position.file)
         assertEquals(1, position.line)
+        assertFalse("no source is asked for", agent.commands().contains("source"))
     }
 
     /** `Array>>do:`'s loop body, which `WALKER`'s `do:` reaches, stops the program at a breakpoint in the library's file. */

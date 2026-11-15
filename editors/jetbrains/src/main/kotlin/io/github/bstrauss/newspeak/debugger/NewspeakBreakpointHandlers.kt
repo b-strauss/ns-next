@@ -15,9 +15,6 @@ import io.github.bstrauss.newspeak.debugger.dap.DapBreakpoint
 import io.github.bstrauss.newspeak.debugger.dap.DapBreakpointEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
-import io.github.bstrauss.newspeak.library.LibrarySource
-import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
-import io.github.bstrauss.newspeak.library.librarySourceOf
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -137,14 +134,13 @@ abstract class NewspeakBreakpointHandler<B : XBreakpoint<*>>(
 }
 
 /**
- * Line breakpoints, a file's set at a time. A program's module is named by
- * its file's path; a module shown by reference -- a shipped one, as
- * `<Module>.ns` -- and a file of the core library [library] shows by that
- * name, which is how the agent knows a module that is no file of the
- * program's. A file of any other directory of shipped sources is not sent
- * ([LibrarySource.Elsewhere]); without a library, none is shown.
+ * Line breakpoints, a file's set at a time. A file on disk is named by its
+ * path -- a program's module's file, and a file of the core library, which
+ * the agent takes for the shipped module only in the library the session
+ * handed it, so that no program module of a shipped module's name ever
+ * takes its breakpoints -- and a module shown by reference by its name.
  */
-class NewspeakLineBreakpointHandler(session: XDebugSession, private val library: NewspeakCoreLibrary? = null) :
+class NewspeakLineBreakpointHandler(session: XDebugSession) :
     NewspeakBreakpointHandler<NewspeakLineBreakpoint>(NewspeakLineBreakpointType::class.java, session) {
     override fun setOf(breakpoint: NewspeakLineBreakpoint): String = breakpoint.fileUrl
 
@@ -188,19 +184,8 @@ class NewspeakLineBreakpointHandler(session: XDebugSession, private val library:
         }
     }
 
-    /**
-     * How the agent names the file at [fileUrl]: by name for a file of the
-     * core library shown and for a module's text shown by reference, by
-     * path for any other file on disk but one of another directory of
-     * shipped sources, which it does not name at all.
-     */
+    /** How the agent names the file at [fileUrl]: by path for a file on disk, by name for a module's text shown by reference. */
     private fun sourceOf(fileUrl: String): JsonObject? {
-        val shipped = library?.sourceOf(fileUrl) ?: librarySourceOf(fileUrl, null, NewspeakCoreLibrary.STORE)
-        when (shipped) {
-            is LibrarySource.Module -> return JsonObject().apply { addProperty("name", shipped.name) }
-            LibrarySource.Elsewhere -> return null
-            LibrarySource.Outside -> {}
-        }
         if (fileUrl.startsWith("file:")) {
             return JsonObject().apply { addProperty("path", Path.of(VfsUtilCore.urlToPath(fileUrl)).toString()) }
         }

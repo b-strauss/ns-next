@@ -106,7 +106,8 @@ impl<'gc> Mutator<'gc> {
         if !self.has_no_breakpoints() {
             let (module_root, _) = self.path_from_module_root(id);
             if let Some(root) = self.heap.mixin(module_root) {
-                crate::debugger::breakpoints::module_built(self, root.name.as_str());
+                let module = crate::debugger::ModuleName::of(&root);
+                crate::debugger::breakpoints::module_built(self, &module);
             }
         }
         Ok(prepared.texts)

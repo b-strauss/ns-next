@@ -737,7 +737,7 @@ ns-cli::bin/ns-next debug::connection::tests::a_token_is_32_lowercase_hex_digits
 ns-cli::bin/ns-next debug::sources::tests::a_program_module_is_shown_by_its_path_while_its_text_is_the_file_s
 ns-cli::bin/ns-next debug::sources::tests::a_reference_is_stable_per_module
 ns-cli::bin/ns-next debug::sources::tests::a_shipped_module_s_text_is_the_binary_s_and_never_asked
-ns-cli::bin/ns-next debug::sources::tests::a_source_names_a_module_by_reference_path_or_name
+ns-cli::bin/ns-next debug::sources::tests::a_source_names_a_module_by_reference_path_or_a_file_less_name
 ns-cli::bin/ns-next debug::sources::tests::a_text_asked_at_a_stop_is_current_for_that_stop_only
 ns-cli::bin/ns-next debug::stepping::tests::a_step_by_line_goes_on_only_in_its_activation_on_its_line
 ns-cli::bin/ns-next debug::stepping::tests::a_step_goes_by_line_unless_asked_otherwise

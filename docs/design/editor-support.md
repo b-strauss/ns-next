@@ -1869,18 +1869,17 @@ them only through internal API (`XBreakpointBase`,
 whether the line still takes one is the language server's and the agent's
 to say, as for any breakpoint. One whose file has no counterpart -- a
 module renamed or removed -- stays where it is and is logged. The
-debugger sends a library file's breakpoints by the module's name -- only
-those of the directory the project shows, the running binary's; a file of
-any other fingerprint directory, which a look that failed or timed out
-leaves breakpoints in, is not sent at all and its breakpoints stay
-unverified, since the agent would take it for the running binary's module
-of the name at the older text's lines, and two directories' `Kernel.ns`
-would replace each other's set (`LibrarySource`, `librarySourceOf`) -- so
-a program module named like a shipped one (a `Kernel` of its own) takes a
-breakpoint set in the library's file of that name (`docs/OPEN-WORK.md`);
-it opens
-the library's file for a stop in a shipped module whose text is its own
-([debugger.md](debugger.md), "The JetBrains plugin").
+debugger hands the agent the directory the project shows at `attach`
+(`coreLibrary`), and sends a library file's breakpoints by the file's
+path, as any file's: the agent takes the path for the shipped module only
+in that directory, and only when its fingerprint is the binary's, so a
+program module named like a shipped one (a `Kernel` of its own) never
+takes a library breakpoint, and a file of any other fingerprint
+directory, which a look that failed or timed out leaves breakpoints in,
+names no module and its breakpoints stay unverified. A shipped frame
+comes with the library file's path, which the debugger opens directly
+([debugger.md](debugger.md), "The agent's sources", "The JetBrains
+plugin").
 
 ## Build and packaging
 
@@ -2037,7 +2036,8 @@ The server's own tests are described under its section, above ("Testing").
   exception stopped it in the debugger's balloon; `stop()` keeps the
   connection until `terminate` is answered; a module shown by reference
   is one read-only `LightVirtualFile` across two stops, asked for once,
-  while one whose text is the core library's file's opens that file;
+  while the `attach` hands the agent the library shown and a shipped frame
+  the agent shows by a library file's path opens that file;
   and, for the core library: the store writes a fingerprint's directory
   once, its files read-only and no staging left, and reuses it; the
   library shown is the settings' binary's, `platform/` a folder, a module
@@ -2069,8 +2069,8 @@ The server's own tests are described under its section, above ("Testing").
   block's highlighted range and column the server's; and, through each
   handler over a scripted peer and a session that records what it is
   told: a pass count is sent as the `hitCondition` and a block variant's
-  column as the `column`, a breakpoint in a directory of shipped sources
-  the project does not show is not sent, a breakpoint the agent moves says the line it
+  column as the `column`, a breakpoint in a file of a directory of
+  shipped sources is sent by the file's path and no name, a breakpoint the agent moves says the line it
   stops at and one it refuses its reason, a method breakpoint is sent by
   its name and pass count, and the exception breakpoints as the filters
   and the classes' options, "Any exception" for uncaught ones taking
@@ -2081,10 +2081,8 @@ The server's own tests are described under its section, above ("Testing").
   binary: pruning (`CoreLibraryStoreTest`, plain JUnit over directories it
   writes) deletes a directory unused for 31 days, keeps one used 29 days
   ago, one in use however old and anything not the store's own, and a
-  touch counts as a use; a file is placed by its fingerprint and its path
-  below it; and only a module of the directory shown is named to the
-  agent, a file of another fingerprint directory not at all, any other
-  file by its path. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
+  touch counts as a use; and a file is placed by its fingerprint and its
+  path below it. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
   line breakpoints of an older fingerprint move to the same files of the
   new one with their settings, one without a counterpart stays, and the
   new library's own is kept. `NewspeakProjectTest`: a project with a

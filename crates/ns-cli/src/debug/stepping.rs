@@ -186,7 +186,7 @@ impl Agent {
         let classes: Result<Vec<_>, String> = arguments
             .classes
             .iter()
-            .map(|name| parse_class_name(name))
+            .map(|name| parse_class_name(name, &|module| self.sources.module_of_class_name(module)))
             .collect();
         let classes = match classes {
             Ok(classes) => classes,

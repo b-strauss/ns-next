@@ -8,11 +8,6 @@ import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapSource
 import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
-import io.github.bstrauss.newspeak.library.LibrarySource
-import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
-import io.github.bstrauss.newspeak.library.librarySourceOf
-import java.io.IOException
-import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -20,21 +15,17 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The files a session's frames are shown in. The agent names a program's
- * module by its file's path while its text is the file's, and every other
- * module -- a shipped one, an image's, one an install changed -- by a
- * reference whose `source` request answers its text, stable per module for
- * the session; such a module is shown read-only, as `<Module>.ns`, in one
- * file per reference for the session, so that every frame in it opens the
- * same editor. That file is the project's core library's file of the name
- * ([libraryFile]) when its text is the agent's -- a shipped module of the
- * very binary that runs, whose breakpoints stand there -- and a
- * `LightVirtualFile` of the agent's text otherwise.
+ * module by its file's path while its text is the file's, a shipped one by
+ * the path of its file in the core library the session handed it at
+ * `attach` -- the binary's own sources, whose breakpoints stand there --
+ * and every other module -- a shipped one without that library, an
+ * image's, one an install changed -- by a reference whose `source` request
+ * answers its text, stable per module for the session; such a module is
+ * shown read-only, as `<Module>.ns`, in one `LightVirtualFile` per
+ * reference for the session, so that every frame in it opens the same
+ * editor.
  */
-class NewspeakSources(
-    private val client: DapClient,
-    private val libraryFile: (String) -> VirtualFile? = { null },
-    private val librarySource: (String) -> LibrarySource = { fileUrl -> librarySourceOf(fileUrl, null, NewspeakCoreLibrary.STORE) },
-) {
+class NewspeakSources(private val client: DapClient) {
     private val byReference = ConcurrentHashMap<Int, VirtualFile>()
 
     /**
@@ -57,12 +48,10 @@ class NewspeakSources(
 
     /**
      * How the agent names [file]: by its reference when this session showed
-     * it so, by its name when it is a file of the core library the project
-     * shows ([librarySource]), which is how the agent knows a shipped
-     * module, by its path when it is any other file on disk but one of
-     * another directory of shipped sources; null for any other -- a file of
-     * an older binary's shipped sources, a module's text an earlier session
-     * showed -- which the agent cannot name.
+     * it so, and by its path when it is a file on disk -- a program's, or a
+     * file of the core library, which the agent takes for the shipped module
+     * only in the library it was handed; null for any other -- a module's
+     * text an earlier session showed -- which the agent cannot name.
      */
     fun sourceOf(file: VirtualFile): JsonObject? {
         val reference = byReference.entries.firstOrNull { (_, shown) -> shown == file }?.key
@@ -73,11 +62,7 @@ class NewspeakSources(
             }
         }
         if (!file.isInLocalFileSystem) return null
-        return when (val shipped = librarySource(file.url)) {
-            is LibrarySource.Module -> JsonObject().apply { addProperty("name", shipped.name) }
-            LibrarySource.Elsewhere -> null
-            LibrarySource.Outside -> JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
-        }
+        return JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
     }
 
     private fun fileForReference(reference: Int, name: String?): VirtualFile? {
@@ -94,18 +79,8 @@ class NewspeakSources(
         } catch (_: Exception) {
             null
         } ?: return null
-        val file = name?.let(libraryFile)?.takeIf { library -> textOf(library) == text }
-            ?: LightVirtualFile(name ?: "$reference.ns", NewspeakFileType, text).apply { isWritable = false }
+        val file = LightVirtualFile(name ?: "$reference.ns", NewspeakFileType, text).apply { isWritable = false }
         return byReference.putIfAbsent(reference, file) ?: file
-    }
-
-    /** A library file's text as written, byte for byte the binary's: no document's, whose line ends may differ. */
-    private fun textOf(file: VirtualFile): String? = try {
-        Files.readString(file.toNioPath())
-    } catch (_: IOException) {
-        null
-    } catch (_: UnsupportedOperationException) {
-        null
     }
 
     private companion object {

@@ -4002,10 +4002,47 @@ and keeps by revision, so that a later stop asks only whether it changed
 -- a shipped module's text is the binary's own
 (`ns_runtime::shipped_module_source`), never asked; a frame without a
 location shows no source and line 0. A program module whose current text
-is its file's as loaded is shown by the file's path, every other module --
-a shipped one, an image's, one an install changed -- by a
-`sourceReference`, stable per module for the session, whose `source`
-request answers the text. `scopes` gives a frame's `Locals` and, at a
+is its file's as loaded is shown by the file's path, a shipped module by
+the path of its file in the core library the client handed over at
+`attach`, and every other module -- a shipped one without that library,
+an image's, one an install changed -- by a `sourceReference`, stable per
+module for the session, whose `source` request answers the text.
+
+**The agent's sources.** A shipped module is a module of its own,
+whatever the program's names: a program may declare a module of a
+shipped module's name -- a `Kernel` of its own -- which is another
+module, and the debugging API names every module by its root's name and
+whether it is shipped (`ModuleName`: `FrameLocation::module`,
+`SetBreakpoints`, `RunToPosition`, `ModuleText`, `Event::Breakpoints`,
+`ClassName`), the VM resolving a breakpoint, a module's text, a method
+breakpoint, an exception filter and a step filter in that module's roots
+only (`ModuleName::names`, `breakpoints::module_roots`). The agent names
+a shipped module by its file's absolute path, never by a name or a marker
+(decided with the user on 2026-11-15): a client hands over the directory
+of shipped sources it shows as `attach`'s `coreLibrary`, absolute, which
+the agent takes only when the directory's `fingerprint` file is its own
+`shipped_sources_fingerprint()` -- else it says so in an `output` event
+and shows its shipped modules by reference -- and then maps
+`<directory>/<path>`, each path `shipped_source_files` records, to the
+shipped module, both ways, paths compared as a program file's are: a
+`setBreakpoints` source of that path names the shipped module only, and a
+shipped frame's `source` carries that path and no `sourceReference`. The
+library's `Manifest.ns` names the program's embedded manifest, a program
+module. A program module is named by its own file's path; a name,
+`<Module>.ns`, names only a program module that has no file -- an
+image's, the embedded manifest -- or one a stop showed by reference that
+is not shipped, never a shipped module, so that a program module named
+`Kernel` never takes the library's breakpoints and a shipped frame never
+shows the program's text
+(`a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints`,
+`a_shipped_module_is_never_named_by_its_name`,
+`a_core_library_of_another_fingerprint_is_ignored`,
+`a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
+A class name a client types -- a function breakpoint's, an exception
+filter's condition, a step filter -- names the program's module of its
+`Module` segment when the program has one, else the shipped one
+(`Sources::module_of_class_name`), so a program `Kernel` hides the
+shipped `Kernel`'s classes from such names. `scopes` gives a frame's `Locals` and, at a
 step's stop, the top frame's `Return value`; `variables` pages a frame's
 variables and a value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
@@ -4018,8 +4055,9 @@ start of its line or, with a `column`, at that place of it, a block
 variant, in UTF-16 columns of the module's text as the agent knows it -- a
 program module's file as loaded until a stop read a newer current text, a
 shipped module's own, before any stop showed it too -- the module named by
-a source's path, its name `<Module>.ns` or its reference, and a source
-naming none answered unverified, "not a module of this program". A path
+a source's path, its reference, or, for a program module without a file,
+its name `<Module>.ns` ("The agent's sources"), and a source naming none
+answered unverified, "not a module of this program". A path
 names a module's file when both resolve to one canonical path, every `..`
 and symbolic link resolved, since the two are spelled independently: a
 project file names `../shared/Tree.ns` as written, a program may be
@@ -4283,15 +4321,16 @@ balloon (`XDebugSession.reportMessage`, a warning), which the platform
 shows whichever of the session's tabs is in front, where the console holds
 the program's own streams and would mix the message into them
 (`testAnExceptionStopSaysWhichException`). A `NewspeakStackFrame` is
-placed through `NewspeakSources`: a program module's file by its path, any
-other module -- a shipped one, an image's, one an install changed -- by
-the `source` request's answer, read once per reference for the session:
-the project's core library's file of the name `<Module>.ns` when its text
-is the answer byte for byte -- a shipped module of the binary that runs,
-or its `Manifest.ns`, which a project compiles as its own embedded module
-([editor-support.md](editor-support.md), "The core library") -- and
-otherwise a read-only `LightVirtualFile` of that name holding the answer,
-one per reference for the session; a hidden frame
+placed through `NewspeakSources`: a file the agent names by its path -- a
+program module's, and a file of the core library the session handed the
+agent at `attach` (`coreLibrary`, the directory the project shows), where
+a shipped module's breakpoints stand ("The agent's sources";
+[editor-support.md](editor-support.md), "The core library") -- opened
+directly, and any other module -- a shipped one without the library, an
+image's, one an install changed -- by the `source` request's answer, read
+once per reference for the session, as a read-only `LightVirtualFile` of
+the name `<Module>.ns` holding the answer, one per reference for the
+session; a hidden frame
 (`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
 are the `Return value` scope's value, at a step's stop, above the
 `Locals`; a `NewspeakValue` shows the agent's text and class of a value
@@ -4332,15 +4371,15 @@ time:
   "Breakable lines"). A line on which a block's first statement starts
   offers the line and each such block as variants; a block variant's
   breakpoint is sent with the `column` of that statement, the line's
-  without one. A module's file on disk is named by its `path`, a module
-  the session shows by reference -- a shipped one, as `<Module>.ns` --
-  and a file of the core library the project shows by its `name`, which
-  is how the agent knows a module that is no file of the program's: a shipped module, and
-  the program's embedded `Manifest`, which a project's run loads; in a
-  run of one module, which loads no manifest, the agent answers a
-  `Manifest.ns` breakpoint unverified. A file of any other fingerprint
-  directory -- an older binary's text, which a look that failed left
-  breakpoints in -- is not sent, its breakpoints left unverified. The breakpoints in the library's
+  without one. A file on disk is named by its `path` -- a program
+  module's, and a file of the core library, which the agent takes for the
+  shipped module, or for the program's embedded `Manifest`, only in the
+  library the session handed it ("The agent's sources"), so that a file
+  of any other fingerprint directory -- an older binary's text, which a
+  look that failed left breakpoints in -- names no module and its
+  breakpoints stay unverified; in a run of one module, which loads no
+  manifest, the agent answers a `Manifest.ns` breakpoint unverified -- and
+  a module the session shows by reference by its name. The breakpoints in the library's
   files are kept with the project and follow it to a new fingerprint
   ([editor-support.md](editor-support.md), "The core library"). Run to
   Cursor names a library file the same way. The pass count (`NewspeakLineBreakpointProperties`,

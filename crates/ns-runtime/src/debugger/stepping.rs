@@ -1388,7 +1388,7 @@ fn decide_filtered(mutator: &Mutator<'_>, frame: &StackFrame, filters: &StepFilt
     };
     (filters.shipped && root.shipped)
         || filters.classes.iter().any(|class| {
-            class.module == root.name.as_str()
+            class.module.names(&root)
                 && class.path.len() <= path.len()
                 && class
                     .path
