@@ -162,6 +162,7 @@ fn expect_paused(remote: &DebugRemote) {
         Some(Event::Stopped {
             reason: StopReason::Pause,
             returned: None,
+            ..
         }) => {}
         other => panic!("a stop for the pause was expected, not {other:?}"),
     }
@@ -284,6 +285,7 @@ fn a_remote_split_in_two_serves_from_two_threads() {
             Ok(Event::Stopped {
                 reason: StopReason::Pause,
                 returned: None,
+                ..
             }) => {}
             other => panic!("a stop for the pause was expected, not {other:?}"),
         }
@@ -2336,6 +2338,7 @@ fn expect_breakpoint_stop(remote: &DebugRemote) -> Vec<BreakpointId> {
         Some(Event::Stopped {
             reason: StopReason::Breakpoint { ids },
             returned: None,
+            ..
         }) => ids,
         other => panic!("a stop at a breakpoint was expected, not {other:?}"),
     }
@@ -3482,6 +3485,7 @@ fn step(remote: &DebugRemote, command: Command) -> Option<ValueDescription> {
         Some(Event::Stopped {
             reason: StopReason::Step,
             returned,
+            ..
         }) => returned,
         other => panic!("a stop of the step was expected, not {other:?}"),
     }
@@ -7429,6 +7433,84 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// Sends the step `command` to the stopped program and waits for its
+/// stop, answering whether the stop says the step went on from another
+/// frame than the one it was taken in.
+fn step_elsewhere(remote: &DebugRemote, command: Command) -> bool {
+    remote.send(command);
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Continued) => {}
+        other => panic!("the confirmation of the step was expected, not {other:?}"),
+    }
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Stopped {
+            reason: StopReason::Step,
+            elsewhere,
+            ..
+        }) => elsewhere,
+        other => panic!("a stop of the step was expected, not {other:?}"),
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step's stop says whether the step went on from another frame:
+    /// not for a step over that stops in the frame it was taken in, though
+    /// a `do:` ran a block meanwhile; so for one that lands in the block's
+    /// next activation, which the agent's step by line tells from the
+    /// activation it left by it alone.
+    fn a_step_s_stop_says_whether_it_went_on_from_another_frame(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let (elsewhere, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                set_breakpoints(remote, "Collecting", Vec::new());
+                expect_breakpoints(remote, "Collecting");
+                let into = step_elsewhere(remote, Command::StepInto);
+                let over = step_elsewhere(remote, Command::StepOver);
+                let each = top_variable(remote, "each");
+                continue_stopped(remote);
+                (into, over, each)
+            },
+        );
+        assert_eq!(elsewhere, (false, true, String::from("2")));
+        assert_eq!(answer, 18);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the loop's statement stops after the loop in the
+    /// frame it was taken in, the blocks the `do:` ran meanwhile none of
+    /// its business: its stop says it went on nowhere else.
+    fn a_step_over_a_loop_says_it_stayed_in_its_frame(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let (elsewhere, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                let elsewhere = step_elsewhere(remote, Command::StepOver);
+                let stood = standing(remote, COLLECTING);
+                continue_stopped(remote);
+                (elsewhere, stood)
+            },
+        );
+        assert_eq!(
+            elsewhere,
+            (
+                false,
+                (String::from("Collecting>>run"), String::from("^total"))
+            )
+        );
+        assert_eq!(answer, 18);
+    }
+}
+
 /// A `do:` over two thousand elements, whose block notes the 1,500th:
 /// long enough for the suspend stress mode to suspend `run` below the
 /// shipped `Array>>do:` before then.
@@ -8214,6 +8296,7 @@ ns_runtime::for_each_lowering! {
                     Some(Event::Stopped {
                         reason: StopReason::Step,
                         returned: None,
+                        ..
                     }) => {}
                     other => panic!("the run to cursor's stop was expected, not {other:?}"),
                 }
@@ -10309,6 +10392,7 @@ fn indexes_at_stops(remote: &DebugRemote, id: BreakpointId) -> Vec<String> {
             Some(Event::Stopped {
                 reason: StopReason::Breakpoint { ids },
                 returned: None,
+                ..
             }) => {
                 assert_eq!(ids, [id]);
                 let variables = variables(remote, Command::Variables { frame: 0 });

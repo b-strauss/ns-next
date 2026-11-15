@@ -1,11 +1,14 @@
 //! The steps, run to cursor and the step filters. The VM steps by
 //! statement; the agent steps by line on top of it, as the JDWP agent
 //! steps by its line table (`docs/design/debugger.md`, decision 4): a
-//! step by line repeats the VM's step while it stops in the frame it
-//! began in -- the same stack depth and frame name -- on the line it began
-//! on, and reports only the stop that leaves the line or the frame. A
-//! stop for any other reason -- a breakpoint, an exception, a pause -- ends
-//! it at once.
+//! step by line repeats the VM's step while it stops in the activation it
+//! began in -- the same stack depth and frame name, the VM's step never
+//! having gone on from another frame -- on the line it began on, and
+//! reports only the stop that leaves the line or the activation: a
+//! block's next activation is another place, though it stands at the
+//! same depth, in a frame of the same name, on the same line. A stop for
+//! any other reason -- a breakpoint, an exception, a pause -- ends it at
+//! once.
 
 use ns_runtime::{Command, FrameDescription, StopReason};
 
@@ -59,10 +62,14 @@ impl Place {
 }
 
 /// Whether a step by line that began at `origin` steps again from a stop
-/// at `here`: the same frame on the same line. A frame without a line
-/// stops the step, since it cannot be told to be on the same one.
-pub(crate) fn steps_on(origin: &Place, here: &Place) -> bool {
-    origin.line.is_some() && origin == here
+/// at `here`, `elsewhere` whether the VM's step went on from another frame
+/// than the one it was taken in (`Event::Stopped`): the same activation on
+/// the same line. A frame without a line stops the step, since it cannot
+/// be told to be on the same one, and so does a step that went on
+/// elsewhere, whose stop stands in another activation even where its
+/// depth, name and line are the origin's -- a block's next activation.
+pub(crate) fn steps_on(origin: &Place, here: &Place, elsewhere: bool) -> bool {
+    !elsewhere && origin.line.is_some() && origin == here
 }
 
 /// Where a step by line is.
@@ -76,8 +83,10 @@ pub(crate) enum Phase {
     /// The VM steps; the program runs.
     Running { origin: Place },
     /// The VM's step stopped; the agent reads where, to step again or to
-    /// report the stop. The client has not seen this stop.
-    Deciding { origin: Place },
+    /// report the stop. The client has not seen this stop. `elsewhere` is
+    /// whether the VM's step went on from another frame than the one it
+    /// was taken in.
+    Deciding { origin: Place, elsewhere: bool },
 }
 
 /// A step by line in progress.
@@ -195,8 +204,10 @@ impl Agent {
 
     /// A stop of the VM while a step by line runs: the step's own stop is
     /// decided on; any other ends the step, and is reported as it is.
-    /// Answers whether the stop is the step's to decide.
-    pub(super) fn line_step_stopped(&mut self, reason: &StopReason) -> bool {
+    /// Answers whether the stop is the step's to decide. `elsewhere` is
+    /// the stop's word on whether the VM's step went on from another
+    /// frame (`Event::Stopped`).
+    pub(super) fn line_step_stopped(&mut self, reason: &StopReason, elsewhere: bool) -> bool {
         let Some(step) = self.line_step.take() else {
             return false;
         };
@@ -207,7 +218,7 @@ impl Agent {
             return false;
         }
         self.line_step = Some(LineStep {
-            phase: Phase::Deciding { origin },
+            phase: Phase::Deciding { origin, elsewhere },
             ..step
         });
         self.advance_line_step();
@@ -255,7 +266,7 @@ impl Agent {
                     }
                 }
             },
-            Phase::Deciding { origin } => {
+            Phase::Deciding { origin, elsewhere } => {
                 if step.interrupted {
                     self.report_stop(&StopReason::Pause);
                     return;
@@ -263,7 +274,7 @@ impl Agent {
                 let here = match self.top_place() {
                     None => {
                         self.line_step = Some(LineStep {
-                            phase: Phase::Deciding { origin },
+                            phase: Phase::Deciding { origin, elsewhere },
                             ..step
                         });
                         return;
@@ -271,7 +282,7 @@ impl Agent {
                     Some(Err(_)) => None,
                     Some(Ok(here)) => Some(here),
                 };
-                let again = here.is_some_and(|here| steps_on(&origin, &here));
+                let again = here.is_some_and(|here| steps_on(&origin, &here, elsewhere));
                 if again && self.command(step.command.clone(), Reply::Repeated) {
                     self.resuming = true;
                     self.line_step = Some(LineStep {
@@ -324,14 +335,28 @@ mod tests {
     }
 
     #[test]
-    fn a_step_by_line_goes_on_only_in_its_frame_on_its_line() {
+    fn a_step_by_line_goes_on_only_in_its_activation_on_its_line() {
         let origin = place(2, "Calls>>main:args:", Some(3));
-        assert!(steps_on(&origin, &place(2, "Calls>>main:args:", Some(3))));
-        assert!(!steps_on(&origin, &place(2, "Calls>>main:args:", Some(4))));
-        assert!(!steps_on(&origin, &place(3, "Calls>>main:args:", Some(3))));
-        assert!(!steps_on(&origin, &place(2, "Calls>>double:", Some(3))));
+        let same = place(2, "Calls>>main:args:", Some(3));
+        assert!(steps_on(&origin, &same, false));
+        assert!(!steps_on(&origin, &same, true));
+        assert!(!steps_on(
+            &origin,
+            &place(2, "Calls>>main:args:", Some(4)),
+            false
+        ));
+        assert!(!steps_on(
+            &origin,
+            &place(3, "Calls>>main:args:", Some(3)),
+            false
+        ));
+        assert!(!steps_on(
+            &origin,
+            &place(2, "Calls>>double:", Some(3)),
+            false
+        ));
         let nowhere = place(2, "Calls>>main:args:", None);
-        assert!(!steps_on(&nowhere, &nowhere.clone()));
+        assert!(!steps_on(&nowhere, &nowhere.clone(), false));
     }
 
     #[test]

@@ -1147,9 +1147,13 @@ impl Agent {
             return;
         }
         match event {
-            Event::Stopped { reason, returned } => {
+            Event::Stopped {
+                reason,
+                returned,
+                elsewhere,
+            } => {
                 self.serve_replacements_received();
-                self.stopped_at(&reason, returned);
+                self.stopped_at(&reason, returned, elsewhere);
             }
             Event::Refused { command, .. } if command == Command::Terminate.name() => {
                 // A `Terminate` that met no run -- sent between two, or
@@ -1164,7 +1168,14 @@ impl Agent {
         }
     }
 
-    fn stopped_at(&mut self, reason: &StopReason, returned: Option<ValueDescription>) {
+    /// The VM stopped for `reason`; `elsewhere` says whether a step went
+    /// on from another frame than the one it was taken in (`Event::Stopped`).
+    fn stopped_at(
+        &mut self,
+        reason: &StopReason,
+        returned: Option<ValueDescription>,
+        elsewhere: bool,
+    ) {
         self.stopped = true;
         self.resuming = false;
         self.stop.begin(returned);
@@ -1172,7 +1183,7 @@ impl Agent {
             self.go_on();
             return;
         }
-        if self.line_step_stopped(reason) {
+        if self.line_step_stopped(reason, elsewhere) {
             return;
         }
         self.report_stop(reason);
@@ -1829,6 +1840,7 @@ mod tests {
         harness.agent.vm_event(Event::Stopped {
             reason: StopReason::Pause,
             returned: None,
+            elsewhere: false,
         });
         assert!(harness.agent.client.is_some(), "the peer was refused");
         while let Some(input) = harness.agent.deferred.pop_front() {

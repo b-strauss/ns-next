@@ -510,7 +510,7 @@ The commands (`debugger::Command`):
   raised, so that an agent asks again only whether it changed. Served
   only at a stop, where the agent reads positions in it.
 
-The events (`debugger::Event`): `Stopped { reason, returned }`, the
+The events (`debugger::Event`): `Stopped { reason, returned, elsewhere }`, the
 program stopped and serves commands until a `Continue` or a `Terminate` --
 `StopReason::Pause`, `StopReason::Breakpoint { ids }`, the breakpoints
 standing at the statement it stopped at, `StopReason::Step`, a step's or
@@ -522,7 +522,10 @@ exception breakpoint's, `exits` the method breakpoints whose exit by an
 unwind it reports ("Exceptions", "Method breakpoints"); `returned`, at a
 step's stop, the value the stepping frame's last call answered, described
 as the stop's first value, and `None` at every other stop ("The return
-value of the last call"); `StackTrace`; `Variables`, the answer to both
+value of the last call"); `elsewhere`, at a step's stop, whether the
+step went on as a step into from where the program went on rather than
+from the frame it was taken in, so that it stands in another activation
+(decision 4), and `false` at every other stop; `StackTrace`; `Variables`, the answer to both
 `Variables` and `Children`; `Refused { command, reason }`, the command
 `Command::name` names not served; `Continued`; and `Breakpoints { module,
 breakpoints }`, the module's line breakpoints in the order of their
@@ -815,7 +818,7 @@ the stack is the interpreter's word for word before the agent reads it
 of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
-The stop then sends `Stopped { reason, returned }` -- a pause's, a
+The stop then sends `Stopped { reason, returned, elsewhere }` -- a pause's, a
 breakpoint's with the ids standing at its slot, an exception
 breakpoint's ("Exceptions"), or a step's with the
 value of the last call, the first value of the stop's table ("Values the
@@ -1799,7 +1802,8 @@ tests do not.
   without lines; breakpoints set before `configurationDone`, in a
   shipped module, while running, as a block variant, with a pass count
   and on a comment line; a stop naming a replaced breakpoint; steps by
-  line and by statement, in and out, a line step over a one-line loop
+  line and by statement, in and out, a line step over a one-line loop,
+  one at a one-line block's statement stopping in its next activation
   and one a breakpoint ends mid-line; run to cursor; a function
   breakpoint; an uncaught exception's description; `pause` of a running
   loop and right after a `continue`; a stack trace while running
@@ -2195,18 +2199,35 @@ The metadata of a body lists:
   was taken by is an inlined form (decision 17).
 
 The agent steps by line for IntelliJ, over statement starts until the line
-or the frame changes, as the JDWP agent steps by its line table
+or the activation changes, as the JDWP agent steps by its line table
 (`stepControl_handleStep`,
 `jdk/src/jdk.jdwp.agent/share/native/libjdwp/stepControl.c:523-697`, the
 line comparison at `:640-669`, `findLineNumber` at `:130`): a `next` or
 `stepIn` by line -- DAP's default `granularity` -- sends the VM's
 `StepOver` or `StepInto` and, while the stop it makes is a step's in the
-frame the step began in -- the same stack depth and frame name -- on the
-line it began on, sends it again, reporting only the stop that leaves the
-line or the frame; a stop for any other reason -- a breakpoint, an
-exception, a pause -- ends the step at once and is reported as it is
+activation the step began in -- the same stack depth and frame name, the
+VM's step never having gone on from another frame -- on the line it began
+on, sends it again, reporting only the stop that leaves the line or the
+activation; a stop for any other reason -- a breakpoint, an exception, a
+pause -- ends the step at once and is reported as it is
 (`next_by_line_steps_over_a_whole_line`). A frame without a location ends
-it too, since no line can be compared. Each repetition reads the stop's
+it too, since no line can be compared. Depth and name cannot tell a
+block's next activation from the one the step left: a `next` at the
+statement of a one-line block a `do:` runs stands, after the VM's step
+over, in the next activation at the same depth, in a frame of the same
+name, on the same line, where decision 16 stops it. So the step's stop
+says whether the VM's step went on as a step into from where the program
+went on rather than from the frame it was taken in -- after that frame,
+or its caller, returned or unwound, past a filtered frame, at a handler,
+or into the next run (`Event::Stopped`'s `elsewhere`,
+`stepping::continue_as_step_into`) -- and a stop that went on elsewhere
+is another place, whatever its depth, name and line
+(`a_line_step_over_at_a_one_line_block_stops_in_its_next_activation`,
+`a_step_s_stop_says_whether_it_went_on_from_another_frame`). Statements
+on one line of one activation are still stepped over as one line, and so
+is a one-line loop whose block a step over passes, since the step goes
+on in the frame it was taken in (`a_line_step_over_a_one_line_loop_ends`,
+`a_step_over_a_loop_says_it_stayed_in_its_frame`). Each repetition reads the stop's
 frames and the top frame's module's text from the VM, the text by
 revision, so that a step over a line of several statements costs a round
 trip per statement and never a stop the client sees. A client may ask for

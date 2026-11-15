@@ -358,6 +358,20 @@ struct Standing {
     /// its frame is placed at its declaration's header, and a step from
     /// it goes on to its first statement (`stepping::begin_at_header`).
     at_header: bool,
+    /// Whether the step the stop ends went on from another frame than the
+    /// one it was taken in (`stepping::went_on_elsewhere`), which the
+    /// stop's event reports.
+    elsewhere: bool,
+}
+
+impl Standing {
+    /// A stop in the frame on top, at no header, for no step that went on
+    /// elsewhere.
+    const ON_TOP: Standing = Standing {
+        in_handler: true,
+        at_header: false,
+        elsewhere: false,
+    };
 }
 
 /// What serving the debugger at a safepoint decided.
@@ -498,7 +512,7 @@ impl Interpreter {
             }
             let standing = Standing {
                 in_handler,
-                at_header: false,
+                ..Standing::ON_TOP
             };
             return self.stop_standing(reason, None, floor, CommandSource::Remote, standing);
         }
@@ -518,9 +532,10 @@ impl Interpreter {
                 // The stop serves a pause asked meanwhile too, and ends a
                 // step, whatever made it.
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
-                let (reason, returned) = self.enter(|mutator| {
+                let (reason, returned, elsewhere) = self.enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
                     let at_entry = stepping::is_at_entry(mutator);
+                    let elsewhere = stepping::went_on_elsewhere(mutator);
                     let returned = stepping::end(mutator);
                     // A slot only a step's one-shot or the run to cursor
                     // stopped at is the step's stop, which reports the
@@ -529,13 +544,17 @@ impl Interpreter {
                     // breakpoint the debugger set there makes it the
                     // breakpoint's.
                     match breakpoint.hits.reason(unwound) {
-                        Some(reason) => (reason, None),
-                        None if at_entry => (StopReason::Pause, None),
-                        None => (StopReason::Step, returned),
+                        Some(reason) => (reason, None, false),
+                        None if at_entry => (StopReason::Pause, None, false),
+                        None => (StopReason::Step, returned, elsewhere),
                     }
                 });
                 let source = self.step_agent();
-                let served = self.stop(reason, returned, floor, source);
+                let standing = Standing {
+                    elsewhere,
+                    ..Standing::ON_TOP
+                };
+                let served = self.stop_standing(reason, returned, floor, source, standing);
                 // The frame fetches the patched slot again as it goes on:
                 // the breakpoint it stopped at lets it past once.
                 if served == Served::GoOn {
@@ -567,17 +586,20 @@ impl Interpreter {
             // breakpoint at the slot it fetches next is the next stop's,
             // which the step from the header, or a `Continue`, reaches
             // there, so the header stop lets nothing past.
-            let unwound = self.enter(|mutator| {
+            let (unwound, elsewhere) = self.enter(|mutator| {
                 let unwound = stepping::take_exits(mutator);
+                let elsewhere = stepping::went_on_elsewhere(mutator);
                 stepping::end(mutator);
-                unwound
+                (unwound, elsewhere)
             });
-            let reason = Hits::default().reason(unwound).unwrap_or(StopReason::Step);
+            let reason = Hits::default().reason(unwound);
             let source = self.step_agent();
             let standing = Standing {
-                in_handler: true,
                 at_header: true,
+                elsewhere: reason.is_none() && elsewhere,
+                ..Standing::ON_TOP
             };
+            let reason = reason.unwrap_or(StopReason::Step);
             return self.stop_standing(reason, None, floor, source, standing);
         }
         if let HeldStep::Stop | HeldStep::StopInFactory = held {
@@ -585,9 +607,10 @@ impl Interpreter {
             // it fetches as it goes on: a breakpoint there makes the stop
             // the breakpoint's -- a method breakpoint's entry -- and lets
             // it past once. A factory stands at its `InitializeInstance`.
-            let (reason, standing) = self
+            let (reason, standing, elsewhere) = self
                 .enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
+                    let elsewhere = stepping::went_on_elsewhere(mutator);
                     stepping::end(mutator);
                     let top = mutator.heap.top_activation()?;
                     let (hits, after) = crate::interpreter::breakpoint::standing_hits(mutator, top);
@@ -598,12 +621,18 @@ impl Interpreter {
                         index: mutator.heap.activation_program_counter(top),
                         after,
                     };
-                    Some((hits.reason(unwound), standing))
+                    Some((hits.reason(unwound), standing, elsewhere))
                 })
-                .map_or((None, None), |(reason, standing)| (reason, Some(standing)));
+                .map_or((None, None, false), |(reason, standing, elsewhere)| {
+                    (reason, Some(standing), elsewhere)
+                });
+            let stood = Standing {
+                elsewhere: reason.is_none() && elsewhere,
+                ..Standing::ON_TOP
+            };
             let reason = reason.unwrap_or(StopReason::Step);
             let source = self.step_agent();
-            let served = self.stop(reason, None, floor, source);
+            let served = self.stop_standing(reason, None, floor, source, stood);
             if let (Served::GoOn, Some(standing)) = (served, standing) {
                 self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
             }
@@ -855,11 +884,7 @@ impl Interpreter {
         floor: usize,
         source: CommandSource,
     ) -> Served {
-        let standing = Standing {
-            in_handler: true,
-            at_header: false,
-        };
-        self.stop_standing(reason, returned, floor, source, standing)
+        self.stop_standing(reason, returned, floor, source, Standing::ON_TOP)
     }
 
     /// `stop`, standing where `standing` says.
@@ -874,6 +899,7 @@ impl Interpreter {
         let Standing {
             in_handler,
             at_header,
+            elsewhere,
         } = standing;
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         let first_value_id = self
@@ -894,7 +920,14 @@ impl Interpreter {
         let returned = returned.map(|returned| {
             self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
         });
-        self.answer(&mut source, Event::Stopped { reason, returned });
+        self.answer(
+            &mut source,
+            Event::Stopped {
+                reason,
+                returned,
+                elsewhere,
+            },
+        );
         // The run's frames, walked at the first command that reads them:
         // nothing pushes or pops while the program is stopped.
         let mut frames = None;

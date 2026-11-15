@@ -205,6 +205,14 @@ pub(crate) struct Stepping {
     /// Whether the step stands for a pause a host run started with
     /// (`stop_at_entry`): its stop is the pause's.
     at_entry: bool,
+    /// Whether the step went on as a step into from where the program
+    /// went on (`continue_as_step_into`): its frame or its return point's
+    /// caller left, a filtered frame was passed, a handler was found or
+    /// the next run started. Its stop then stands in another activation
+    /// than the one the step was taken in, though it may be one of the
+    /// same body at the same depth -- a block's next activation -- which
+    /// the agent's step by line tells apart by it (decision 4).
+    went_on_elsewhere: bool,
 }
 
 impl Stepping {
@@ -238,6 +246,7 @@ impl Stepping {
             #[cfg(debug_assertions)]
             waiting_on: None,
             at_entry: false,
+            went_on_elsewhere: false,
         }
     }
 }
@@ -1021,11 +1030,24 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
         mutator.breakpoints.count_step_from_suspended();
     }
     start(mutator, StepAction::Into, place, place, returned, None);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.went_on_elsewhere = true;
+    }
     if let Place::Running(frame) = place {
         stop_at_factory_entry(mutator, frame);
     }
     keep_exits(mutator, exits);
     settle(mutator);
+}
+
+/// Whether the step in progress went on as a step into from another frame
+/// than the one it was taken in (`Stepping::went_on_elsewhere`): read by
+/// the step's stop before it ends the step.
+pub(crate) fn went_on_elsewhere(mutator: &Mutator<'_>) -> bool {
+    mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| stepping.went_on_elsewhere)
 }
 
 /// A step into that goes on from `frame`, when `frame` is a factory's

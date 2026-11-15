@@ -1568,6 +1568,56 @@ fn a_line_step_over_a_one_line_loop_ends() {
     assert_eq!(client.finish().stdout, "6\n");
 }
 
+/// A root whose line 5 is a `do:` over a one-line block, followed on line
+/// 6 by the statement after it.
+const ONE_LINE_BLOCK: &str = indoc! {"
+    class OneLineBlock = Object new (
+      | sum ::= 0. |
+    ) (
+      public main: platform args: arguments = (
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The value of `name` among the top frame's locals.
+fn top_local(client: &mut DapClient, name: &str) -> Value {
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    variable(&variables, name)["value"].clone()
+}
+
+/// A `next` by line at a one-line block's statement stops in the block's
+/// next activation, though it stands on the same line in a frame of the
+/// same name and depth: a new activation is another place.
+#[test]
+fn a_line_step_over_at_a_one_line_block_stops_in_its_next_activation() {
+    let (_directory, path) = program("OneLineBlock", ONE_LINE_BLOCK);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in OneLineBlock>>main:args:"), json!(5))
+    );
+    assert_eq!(top_local(&mut client, "each"), "1");
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in OneLineBlock>>main:args:"), json!(5))
+    );
+    assert_eq!(top_local(&mut client, "each"), "2");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
 /// A root whose line 4 sends `double:`, a method of its own.
 const CALLS: &str = indoc! {"
     class Calls = Object new () (

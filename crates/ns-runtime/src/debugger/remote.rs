@@ -253,10 +253,19 @@ pub enum Event {
     /// The program stopped at a safepoint, and serves commands until a
     /// `Continue`, a step or a `Terminate`. `returned` is, at a step's
     /// stop, the value the stepping frame's last call answered -- the
-    /// first value of the stop -- and `None` otherwise.
+    /// first value of the stop -- and `None` otherwise. `elsewhere` is,
+    /// at a step's stop, whether the step went on, before it stopped, as
+    /// a step into from where the program went on rather than from the
+    /// frame it was taken in -- after that frame, or its caller, returned
+    /// or unwound, past a frame the step filters filter, at a handler the
+    /// handler search found, or into the next run: the stop stands in
+    /// another activation, even one of the same body at the same depth on
+    /// the same line, such as a block's next activation
+    /// (`docs/design/debugger.md`, decision 4); `false` otherwise.
     Stopped {
         reason: StopReason,
         returned: Option<ValueDescription>,
+        elsewhere: bool,
     },
     /// The answer to `Command::StackTrace`.
     StackTrace(Vec<FrameDescription>),
