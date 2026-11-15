@@ -2,8 +2,8 @@ package io.github.bstrauss.newspeak.debugger
 
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.project.DumbAware
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerManager
 
@@ -22,11 +22,10 @@ class NewspeakStepIntoShippedAction : ToggleAction(), DumbAware {
         event.presentation.isEnabledAndVisible = sessionOf(event)?.debugProcess is NewspeakDebugProcess
     }
 
-    override fun isSelected(event: AnActionEvent): Boolean = NewspeakDebuggerSettings.getInstance().filters.stepIntoShipped
+    override fun isSelected(event: AnActionEvent): Boolean = NewspeakDebuggerSettings.getInstance().stepIntoShipped
 
     override fun setSelected(event: AnActionEvent, state: Boolean) {
-        val settings = NewspeakDebuggerSettings.getInstance()
-        settings.update(settings.filters.copy(stepIntoShipped = state))
+        NewspeakDebuggerSettings.getInstance().update(state)
     }
 
     /** The session the tool window shows, or, where its context names none, the project's current one. */

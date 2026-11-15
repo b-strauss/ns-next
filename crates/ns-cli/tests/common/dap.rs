@@ -431,6 +431,12 @@ impl DapClient {
         self.connection.event(name)
     }
 
+    /// The events that arrived while a response was awaited and no
+    /// `event` has taken since, in order.
+    pub fn buffered_events(&self) -> Vec<Value> {
+        self.connection.events.iter().cloned().collect()
+    }
+
     /// `initialize`, asserting it succeeded.
     pub fn initialize(&mut self) -> Value {
         let response = self.request(

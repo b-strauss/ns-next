@@ -10,10 +10,10 @@
 //! any other reason -- a breakpoint, an exception, a pause -- ends it at
 //! once.
 
-use ns_runtime::{Command, FrameDescription, StopReason};
+use ns_runtime::{ClassName, Command, FrameDescription, StopReason};
 
 use super::agent::{Agent, Conversion, Reply};
-use super::breakpoints::{offset_of, parse_class_name};
+use super::breakpoints::offset_of;
 use super::protocol;
 use super::stopped::Frames;
 
@@ -175,34 +175,69 @@ impl Agent {
     }
 
     /// `nsNext/setStepFilters`, a request of ns-next's own: whether a step
-    /// passes the shipped modules' code, and the classes, each
-    /// `Module.Path.To.Class`, whose code it passes too.
+    /// passes the shipped modules' code, and the entries, each a module
+    /// named by its source as a breakpoint's is and a class path in it,
+    /// whose code it passes too. An entry the agent cannot take -- its
+    /// source names no module of this program, its path is malformed, or
+    /// the module's current text declares no such class -- is left out
+    /// and said in an `output` event, so that one stale entry never keeps
+    /// the others from applying.
     pub(super) fn set_step_filters(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) =
             self.arguments::<protocol::SetStepFiltersArguments>(connection, request)
         else {
             return;
         };
-        let classes: Result<Vec<_>, String> = arguments
-            .classes
-            .iter()
-            .map(|name| {
-                parse_class_name(name, &|module| self.sources.modules_of_class_name(module))
-            })
-            .collect::<Result<Vec<_>, String>>()
-            .map(|classes| classes.into_iter().flatten().collect());
-        let classes = match classes {
-            Ok(classes) => classes,
-            Err(message) => {
-                self.respond_error(connection, request, &message);
-                return;
+        let mut classes = Vec::new();
+        let mut skipped = Vec::new();
+        for entry in &arguments.entries {
+            match self.step_filter_class(entry) {
+                Ok(class) => classes.push(class),
+                Err(reason) => skipped.push(reason),
             }
-        };
+        }
+        if !skipped.is_empty() {
+            let output = skipped
+                .iter()
+                .map(|reason| {
+                    format!(
+                        "a step filter is left out: {reason}
+"
+                    )
+                })
+                .collect::<String>();
+            self.event(
+                "output",
+                Some(serde_json::json!({ "category": "console", "output": output })),
+            );
+        }
         let command = Command::SetStepFilters {
             shipped: arguments.shipped,
             classes,
         };
         self.forward(connection, request, command);
+    }
+
+    /// The class a step filter's entry names, or why it names none.
+    fn step_filter_class(&self, entry: &protocol::StepFilterEntry) -> Result<ClassName, String> {
+        let source = describe_source(&entry.source);
+        let Some(module) = self.sources.module_named_by(&entry.source) else {
+            return Err(format!("{source} is no module of this program"));
+        };
+        let path = &entry.class_path;
+        if path
+            .iter()
+            .any(|segment| segment.is_empty() || segment.contains(char::is_whitespace))
+        {
+            return Err(format!("`{}` in {source} names no class", path.join(".")));
+        }
+        if self.sources.declares_class(&module, path) == Some(false) {
+            return Err(format!("{source} declares no class `{}`", path.join(".")));
+        }
+        Ok(ClassName {
+            module,
+            path: path.clone(),
+        })
     }
 
     /// A stop of the VM while a step by line runs: the step's own stop is
@@ -326,6 +361,21 @@ impl Agent {
             .range(&location.module, location.statement)
             .map(|(start, _)| start.line);
         Some(Ok(Place::of(&frames, line)))
+    }
+}
+
+/// How an `output` event names a client's source: its path, its name or
+/// its reference.
+fn describe_source(source: &protocol::SourceArgument) -> String {
+    if let Some(path) = &source.path {
+        return path.clone();
+    }
+    if let Some(name) = &source.name {
+        return name.clone();
+    }
+    match source.source_reference {
+        Some(reference) => format!("the source {reference}"),
+        None => "a source of no name".to_string(),
     }
 }
 

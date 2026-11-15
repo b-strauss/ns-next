@@ -359,6 +359,40 @@ impl Sources {
         modules
     }
 
+    /// Whether `module`'s current text declares the class `path` names
+    /// from its root down, the root's own name left out: `None` when the
+    /// agent knows no text of the module, or the text does not parse, so
+    /// that the VM, which filters by the declarations it runs, decides.
+    pub(crate) fn declares_class(&self, module: &ModuleName, path: &[String]) -> Option<bool> {
+        let text = match self.texts.get(module) {
+            Some(current) => current.text.as_str(),
+            None => self
+                .program_module(module)
+                .and_then(|program| program.text.as_deref())
+                .or_else(|| self.library_file_of(module).map(|file| file.text))
+                .or_else(|| shipped(module))?,
+        };
+        let parsed = ns_syntax::parse(text).ok()?;
+        let mut declaration = &parsed.root_class;
+        for segment in path {
+            let nested = declaration
+                .instance_side
+                .members
+                .iter()
+                .find_map(|member| match member {
+                    ns_syntax::ast::Member::Class(class) if class.name.name == *segment => {
+                        Some(&**class)
+                    }
+                    _ => None,
+                });
+            match nested {
+                Some(class) => declaration = class,
+                None => return Some(false),
+            }
+        }
+        Some(true)
+    }
+
     fn program_module(&self, module: &ModuleName) -> Option<&ProgramModule> {
         if module.shipped {
             return None;

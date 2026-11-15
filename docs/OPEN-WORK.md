@@ -3495,6 +3495,16 @@ program's subclass of `String` as an argument, the error of a
   library file has its text, is untested as well. A check under `runIde`
   recorded in [editor-support.md](design/editor-support.md) beside the
   earlier ones would close the first two.
+- **The step filters as the IDE draws them** (noted 2026-11-15, with the
+  step filters' settings). No `runIde` check was made of the toggle "Step
+  Into Kernel and Platform Code" in the debug tool window's ⋮ | Debugger
+  Settings, shown for a Newspeak session and hidden for another
+  language's, of Newspeak's section on Debugger | Stepping, nor of the
+  page "Newspeak Step Filters": its chooser's tree of the project's and
+  the core library's files and classes, Add and Remove, and an invalid
+  entry drawn as one. The tests run the action, the configurables and the
+  chooser's model directly ([editor-support.md](design/editor-support.md),
+  "Plugin testing and gates").
 - **The play button's Debug through the platform's own launcher** (noted
   2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
   configuration through `ProgramRunnerUtil.executeConfiguration`, and its

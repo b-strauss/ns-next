@@ -2063,8 +2063,10 @@ The server's own tests are described under its section, above ("Testing").
   module and its depth, whatever the agent's ids and lines, its caller
   and a recursive activation of its body others, and a step over in the
   real runtime keeps the stepping frame the same; the session sends the
-  settings' step filters before `configurationDone` and again at a
-  change of the settings, and, with the real runtime, a step into
+  step filters -- the switch and the project's entries by their paths --
+  before `configurationDone` and again at a change of either, and, with
+  the real runtime, a step into `Helper new run` with the program's
+  `Helper` filtered stops at the next statement, and a step into
   `{1. 2} do: [...]` stops in the block until the debug tool window's
   toggle, shown for the Newspeak session, lets the next step into go
   into a shipped module's file; and an
@@ -2105,13 +2107,22 @@ The server's own tests are described under its section, above ("Testing").
   new library's own is kept. `NewspeakProjectTest`: a project with a
   `.ns` file or a `newspeak.json` is a Newspeak project, one with neither
   is not;
-- the step filters' settings, under `test`
-  (`NewspeakSteppingConfigurableTest`, on `BasePlatformTestCase`): the
-  Stepping section has Newspeak's configurable, which shows, applies and
-  resets the switch and the classes; the state the platform stores is
-  read back as the same filters; and a change is told to the sessions
-  once, a change to the same filters not at all, with the arguments
-  `nsNext/setStepFilters` takes;
+- the step filters' settings, under `test`, on `BasePlatformTestCase`:
+  `NewspeakSteppingConfigurableTest` -- the Stepping section has
+  Newspeak's configurable, which shows, applies and resets the switch;
+  the state the platform stores is read back as the same switch; and a
+  change is told to the sessions once, a change to the same switch not at
+  all, with the arguments `nsNext/setStepFilters` takes.
+  `NewspeakStepFiltersTest` -- the chooser offers each file with the
+  classes its root nests, recursively, and a file the server did not
+  answer for its whole module only, the tree only the groups that have
+  files; a project's entries are stored and read back; a library file's
+  entry is its path below the fingerprint's directory and names the file
+  of the same path in another fingerprint's, and none without a library;
+  a project file's entry is relative to the project's directory, one
+  outside it absolute, and a session sends each by its file's path,
+  leaving out one whose file is gone; and the page lists, applies and
+  resets the entries and marks one whose file is gone;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -2283,8 +2294,14 @@ and resolves cleanly in a JetBrains IDE today.
   External Libraries as the project view's tree draws it (the tests read
   the provider, the file index and the nodes the project view builds),
   the variables view's restore of the nodes expanded across a step (the
-  tests check the frames' equality objects it is keyed by), and the
-  turning off and on that
+  tests check the frames' equality objects it is keyed by), the toggle
+  "Step Into Kernel and Platform Code" in the debug tool window's ⋮ |
+  Debugger Settings and its absence for another language's session (the
+  tests run its `update` and `setSelected` over a data context of their
+  own), Newspeak's section on the Stepping page and the page "Newspeak
+  Step Filters" as the Settings dialog draws them, the chooser's tree
+  dialog and the page's Add and Remove (the tests read the choices and
+  the page's model), and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

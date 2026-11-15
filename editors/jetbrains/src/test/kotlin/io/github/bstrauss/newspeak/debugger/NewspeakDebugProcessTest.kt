@@ -11,30 +11,32 @@ import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.actionSystem.impl.SimpleDataContext
-import com.intellij.testFramework.TestActionEvent
 import com.intellij.ide.projectView.ViewSettings
 import com.intellij.ide.projectView.impl.nodes.ExternalLibrariesNode
 import com.intellij.ide.projectView.impl.nodes.PsiDirectoryNode
 import com.intellij.ide.projectView.impl.nodes.SyntheticLibraryElementNode
 import com.intellij.ide.util.treeView.AbstractTreeNode
-import com.intellij.psi.PsiFileSystemItem
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
-import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
+import com.intellij.psi.PsiFileSystemItem
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.ui.ColoredTextContainer
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugProcessStarter
 import com.intellij.xdebugger.XDebugSession
@@ -46,13 +48,11 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
-import com.intellij.ui.ColoredTextContainer
-import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.frame.XCompositeNode
-import com.intellij.xdebugger.frame.XExecutionStack
-import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XDebuggerTreeNodeHyperlink
+import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XFullValueEvaluator
+import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XValue
 import com.intellij.xdebugger.frame.XValueChildrenList
 import com.intellij.xdebugger.frame.XValueContainer
@@ -104,7 +104,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         super.setUp()
         directory = Files.createTempDirectory("ns-next-debug-process")
         NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
-        NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS)
+        NewspeakDebuggerSettings.getInstance().update(false)
+        NewspeakSkippedClasses.getInstance(project).update(emptyList())
     }
 
     override fun tearDown() {
@@ -127,7 +128,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) }
             }
             NewspeakSettings.getInstance().state.runtimePath = null
-            NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS)
+            NewspeakDebuggerSettings.getInstance().update(false)
+            NewspeakSkippedClasses.getInstance(project).update(emptyList())
             // The store's files are read-only, which Windows refuses to delete otherwise.
             CoreLibraryStore.deleteRecursively(directory)
         } finally {
@@ -536,20 +538,57 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
      * program start, and again, at once, whenever the settings change.
      */
     fun testTheSessionSendsTheStepFiltersAtItsStartAndAtEveryChange() {
-        NewspeakDebuggerSettings.getInstance().update(StepFilters(stepIntoShipped = true, skippedClasses = listOf("Walker.Inner")))
+        val walker = program("Walker", WALKER)
+        val skipped = NewspeakSkippedClasses.getInstance(project)
+        NewspeakDebuggerSettings.getInstance().update(true)
+        skipped.update(listOf(skipped.entryFor(walker, listOf("Inner"), projectDirectory = null)))
         val faked = fakeSession()
         val agent = identifiedAgent(faked) { _, _ -> JsonObject() }
         agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
         val commands = agent.commands()
         assertTrue(commands.toString(), commands.indexOf("nsNext/setStepFilters") in 0 until commands.indexOf("configurationDone"))
+        val path = JsonPrimitive(walker.toNioPath().toString())
         assertEquals(
-            listOf("""{"shipped":false,"classes":["Walker.Inner"]}"""),
+            listOf("""{"shipped":false,"entries":[{"source":{"path":$path},"classPath":["Inner"]}]}"""),
             agent.requests("nsNext/setStepFilters").map(JsonObject::toString),
         )
 
-        onEdt { NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS) }
+        onEdt { NewspeakDebuggerSettings.getInstance().update(false) }
         awaitRequests(agent, "nsNext/setStepFilters", 2)
-        assertEquals("""{"shipped":true,"classes":[]}""", agent.requests("nsNext/setStepFilters").last().toString())
+        onEdt { skipped.update(emptyList()) }
+        awaitRequests(agent, "nsNext/setStepFilters", 3)
+        assertEquals(
+            listOf(
+                """{"shipped":true,"entries":[{"source":{"path":$path},"classPath":["Inner"]}]}""",
+                """{"shipped":true,"entries":[]}""",
+            ),
+            agent.requests("nsNext/setStepFilters").drop(1).map(JsonObject::toString),
+        )
+    }
+
+    /**
+     * A class of the project's step filters keeps a step into from going
+     * into it: with `Helper` filtered, a step into `Helper new run` passes
+     * the factory and `run` and stops at the next statement of `main:args:`.
+     */
+    fun testAStepIntoPassesAFilteredProgramClass() {
+        val program = program("Helping", HELPING)
+        val skipped = NewspeakSkippedClasses.getInstance(project)
+        skipped.update(listOf(skipped.entryFor(program, listOf("Helper"), projectDirectory = null)))
+        toggleBreakpoint(program, line = 3)
+        val debugging = debug(program)
+        assertEquals(2, debugging.nextPause().line)
+
+        onEdt { debugging.session.stepInto() }
+        val stepped = debugging.nextPause()
+        assertEquals(program, stepped.file)
+        assertEquals("line 4, counted from 0 by the platform", 3, stepped.line)
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.output().contains("ran"))
     }
 
     /**
@@ -1238,8 +1277,20 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             ],"totalFrames":2}
         """.trimIndent()
 
-        /** The step filters' default: steps pass the shipped modules, and no class. */
-        val DEFAULT_STEP_FILTERS = StepFilters(stepIntoShipped = false, skippedClasses = emptyList())
+        /** A root whose line 3 runs a method of its nested `Helper`, and whose line 4 prints. */
+        val HELPING = """
+            class Helping = Object new () (
+              public main: platform args: arguments = (
+                Helper new run.
+                platform transcript show: 'ran'; newLine.
+              )
+              class Helper = () (
+                public run = (
+                  ^42
+                )
+              )
+            ) : ()
+        """.trimIndent() + "\n"
 
         /** A fingerprint no binary has, an older library's in the tests. */
         const val OLDER_FINGERPRINT = "ffffffffffffffff"

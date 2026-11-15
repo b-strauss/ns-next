@@ -32,7 +32,10 @@ class NewspeakCoreLibraryRoots(private val root: VirtualFile) :
         ExcludeFileCondition { isDirectory, name, _, _, _ -> !isDirectory && !name.endsWith(".ns") },
     ),
     ItemPresentation {
-    override fun getSourceRoots(): Collection<VirtualFile> = coreLibrarySourceRoots(root)
+    /** Read once: the directory never changes while it is shown ([coreLibrarySourceRoots]). */
+    private val roots: List<VirtualFile> by lazy { coreLibrarySourceRoots(root) }
+
+    override fun getSourceRoots(): Collection<VirtualFile> = roots
 
     override fun getPresentableText(): String = NewspeakCoreLibrary.NAME
 

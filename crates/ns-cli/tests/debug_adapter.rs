@@ -959,7 +959,7 @@ fn a_shipped_frame_is_shown_through_a_source_reference() {
     client.attach(true);
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": [] }),
+        json!({ "shipped": false, "entries": [] }),
     );
     client.configuration_done();
     client.stopped("entry");
@@ -1326,38 +1326,145 @@ fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
     assert_eq!(exit_code_reported(&mut client), 1);
 }
 
-/// A step filter's class name whose module the program declares too
-/// filters the shipped module's class as well: with the shipped filter
-/// off, `Kernel.Array` with a program module `Kernel` keeps a step into the
-/// `do:` out of the shipped `Array>>do:`, so that it lands in the block.
-#[test]
-fn a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
-    let (_directory, path) = program("Kernel", OWN_KERNEL);
+/// A session of [`OWN_KERNEL`], a program whose root is named `Kernel`
+/// like the shipped module, with the core library taken, the shipped
+/// filter off and the step filter entries `entries` answers for the
+/// program's file and the library's directory, standing at the `do:`
+/// statement on line 4 after a step from the entry; and the `output`
+/// events' text the agent sent by then.
+struct OwnKernel {
+    client: DapClient,
+    library: PathBuf,
+    said: String,
+    _directories: (ScratchDirectory, ScratchDirectory),
+}
+
+fn own_kernel_filtered(entries: impl FnOnce(&Path, &Path) -> Value) -> OwnKernel {
+    let (directory, path) = program("Kernel", OWN_KERNEL);
+    let (library_directory, library) = core_library();
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(true);
+    client.attach_with(json!({ "stopOnEntry": true, "coreLibrary": absolute(&library) }));
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": ["Kernel.Array"] }),
+        json!({ "shipped": false, "entries": entries(&path, &library) }),
     );
+    // Said before the answer, which waits for the VM's.
+    let said = client
+        .buffered_events()
+        .iter()
+        .filter(|event| event["event"] == "output")
+        .filter_map(|event| event["body"]["output"].as_str())
+        .collect::<String>();
     client.configuration_done();
     client.stopped("entry");
     // The entry stands at the local's initializer on line 3.
-    let by_statement = json!({ "threadId": 1, "granularity": "statement" });
-    client.succeed("stepIn", by_statement.clone());
+    client.succeed("stepIn", by_statement());
     client.stopped("step");
     assert_eq!(
         top_frame(&mut client),
         (json!("Kernel>>main:args:"), json!(4))
     );
-    client.succeed("stepIn", by_statement);
+    OwnKernel {
+        client,
+        library,
+        said,
+        _directories: (directory, library_directory),
+    }
+}
+
+fn by_statement() -> Value {
+    json!({ "threadId": 1, "granularity": "statement" })
+}
+
+/// A step filter's entry names its module by its file, as a breakpoint
+/// does: the library's `Kernel.ns` and the class path `Array` filter the
+/// shipped `Array` and not the program's module named `Kernel`, so that
+/// a step into the `do:` passes the shipped `Array>>do:` and lands in
+/// the program's block.
+#[test]
+fn a_step_filter_by_the_library_file_filters_only_the_shipped_module() {
+    let mut session = own_kernel_filtered(
+        |_, library| json!([{ "source": file_source(&library.join("Kernel.ns")), "classPath": ["Array"] }]),
+    );
+    assert_eq!(session.said, "");
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
     client.stopped("step");
     assert_eq!(
-        top_frame(&mut client),
+        top_frame(client),
         (json!("[] in Kernel>>main:args:"), json!(4))
     );
     client.succeed("continue", json!({ "threadId": 1 }));
-    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(exit_code_reported(client), 0);
+}
+
+/// The program's own `Kernel.ns` with no class path filters the whole
+/// program module and not the shipped one: a step into the `do:` stops
+/// in the shipped `Array>>do:`, shown by the library's file, and a step
+/// into from there never lands in the program's block.
+#[test]
+fn a_step_filter_by_the_program_file_filters_only_the_program_module() {
+    let mut session = own_kernel_filtered(
+        |program, _| json!([{ "source": file_source(program), "classPath": [] }]),
+    );
+    let kernel = file_source(&session.library.join("Kernel.ns"));
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
+    client.stopped("step");
+    let (name, _, source) = top_placed(client);
+    assert_eq!(name, "Array>>do:");
+    assert_eq!(source["path"], kernel["path"], "{source}");
+    for _ in 0..3 {
+        client.succeed("stepIn", by_statement());
+        client.stopped("step");
+        let (name, _) = top_frame(client);
+        assert!(
+            !name
+                .as_str()
+                .unwrap_or_default()
+                .contains("in Kernel>>main:args:"),
+            "{name}"
+        );
+    }
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(client), 0);
+}
+
+/// An entry the agent cannot take -- a file of no module of the program,
+/// a class its module does not declare, a malformed path -- is left out
+/// and said in an `output` event, and the others apply.
+#[test]
+fn an_unmappable_step_filter_entry_is_left_out_and_the_others_apply() {
+    let mut session = own_kernel_filtered(|program, library| {
+        let elsewhere = program.with_file_name("Elsewhere.ns");
+        json!([
+            { "source": file_source(&elsewhere), "classPath": [] },
+            { "source": file_source(&library.join("Kernel.ns")), "classPath": ["NoSuchClass"] },
+            { "source": file_source(program), "classPath": [""] },
+            { "source": file_source(&library.join("Kernel.ns")), "classPath": ["Array"] },
+        ])
+    });
+    let said = session.said.clone();
+    assert_eq!(
+        said.matches("a step filter is left out").count(),
+        3,
+        "{said}"
+    );
+    assert!(
+        said.contains("Elsewhere.ns is no module of this program"),
+        "{said}"
+    );
+    assert!(said.contains("declares no class `NoSuchClass`"), "{said}");
+    let client = &mut session.client;
+    client.succeed("stepIn", by_statement());
+    client.stopped("step");
+    assert_eq!(
+        top_frame(client),
+        (json!("[] in Kernel>>main:args:"), json!(4))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(client), 0);
 }
 
 /// Without a core library, a shipped module has no file the client could
@@ -1401,7 +1508,7 @@ fn a_core_library_of_another_fingerprint_is_ignored() {
     assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
     client.succeed(
         "nsNext/setStepFilters",
-        json!({ "shipped": false, "classes": [] }),
+        json!({ "shipped": false, "entries": [] }),
     );
     client.configuration_done();
     client.stopped("entry");

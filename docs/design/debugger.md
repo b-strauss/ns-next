@@ -2732,8 +2732,8 @@ to their default with its other contents at an attachment and a detach.
 A step never lands in a filtered frame: by default the shipped modules'
 bodies -- a body is shipped when its module's root is, as for its
 metadata ("Compiling the metadata again") -- and, beside them, the
-bodies of the program's class declarations a list the client sends
-names, IntelliJ's "Do not step into the classes"; the filter of the
+bodies of the class declarations a list the client sends names,
+IntelliJ's "Do not step into the classes"; the filter of the
 shipped modules can be switched off. A stop a step would make in a
 filtered frame -- a return point inside `Array>>do:` after a step over
 at a block's last statement, the first statement of a shipped method a
@@ -4203,6 +4203,25 @@ stop. Requests only a stop serves -- `stackTrace`, `scopes`,
 error while the program runs, never sent to the VM; `pause` sends the
 remote's pause. `nsNext/setStepFilters` and `nsNext/statistics` (the
 number of texts the VM sent, for tests) are requests of ns-next's own.
+`nsNext/setStepFilters` takes `shipped`, whether the shipped modules
+are filtered (on when left out), and `entries`, each a `source` naming a
+module as a breakpoint's does -- a program module's file, a file of the
+core library taken, or a reference -- and a `classPath` in it from the
+module's root down, the root's own name left out, empty for the whole
+module (`StepFilterEntry`); the agent sends `Command::SetStepFilters`
+with a `ClassName` for each entry it can take. An entry whose source
+names no module of the program, whose path holds an empty or blank
+segment, or whose class the module's current text -- the VM's answer,
+else the text the program was loaded with, else the binary's -- does not
+declare (`Sources::declares_class`, parsed by `ns-syntax`) is left out
+and said in an `output` event, and the others apply; a text the agent
+does not have or cannot parse leaves the VM to decide, since the filter
+matches only the declarations it runs. A file names its module only, so
+a program module named like a shipped one -- a `Kernel` of its own --
+and the shipped module are filtered apart (`debug_adapter.rs`'s
+`a_step_filter_by_the_library_file_filters_only_the_shipped_module`,
+`a_step_filter_by_the_program_file_filters_only_the_program_module`,
+`an_unmappable_step_filter_entry_is_left_out_and_the_others_apply`).
 
 The host waits for the configuration before its first run, serving
 meanwhile every configuration command the agent queues
@@ -4503,27 +4522,49 @@ time:
   breakpoint takes those, and "Any exception" taking uncaught or caught
   exceptions makes the class breakpoints' filters take every class.
 
-The step filters (decision 16) are kept among the platform's debugger
-settings, application-wide (`NewspeakDebuggerSettings`, an
-`XDebuggerSettings` registered as `xdebugger.settings`): whether a step goes into the kernel's and the platform's code,
-which by default it passes, and the classes not to step into, each
-`Module.Path.To.Class`, checked as an exception breakpoint's class is --
-a class filtering every class nested in it, a module alone the whole
-module. They are edited in Newspeak's section of Settings | Build,
-Execution, Deployment | Debugger | Stepping (`NewspeakSteppingConfigurable`,
-the `DebuggerSettingsCategory.STEPPING` configurable, as Java's "Do not
-step into the classes" is there), and the first by "Step Into Kernel and
-Platform Code" in the debug tool window's Debugger Settings
+The step filters (decision 16) are two settings. Whether a step goes
+into the kernel's and the platform's code, which by default it passes,
+is application-wide, as Java's stepping switches are, kept among the
+platform's debugger settings (`NewspeakDebuggerSettings`, an
+`XDebuggerSettings` registered as `xdebugger.settings`) and edited in
+Newspeak's section of Settings | Build, Execution, Deployment | Debugger
+| Stepping (`NewspeakSteppingConfigurable`, the
+`DebuggerSettingsCategory.STEPPING` configurable) and by "Step Into
+Kernel and Platform Code" in the debug tool window's Debugger Settings
 (`NewspeakStepIntoShippedAction`, a toggle in the platform's group
 `XDebugger.Settings`, shown for a Newspeak session only), the same
-setting, as Java's switches there are its settings'. A session sends them
-as `nsNext/setStepFilters` (`shipped` the negation of the switch,
-`classes` the list) before `configurationDone`, and again whenever they
-change -- a change is told on the settings' topic, which each session
-hears from its start to its `stop()` -- at once, on the thread that
-changed them, which waits for no answer, so that a step started after a
-change is sent after it and runs under it; an answer that refuses a
-class is reported, the agent's filters staying as they were.
+setting, as Java's switches there are its settings'. The classes not to
+step into, IntelliJ's "Do not step into the classes", are the project's
+(`NewspeakSkippedClasses`, a project service kept in the workspace, as
+the breakpoints are), on a page of their own under Debugger, "Newspeak
+Step Filters" (`NewspeakStepFiltersConfigurable`, a `projectConfigurable`
+whose parent is the debugger's page, as Java's Async Stack Traces is,
+since the Stepping section has no project). An entry is never typed: Add
+opens a tree of the project's `.ns` files and the core library's, each
+with the classes its root nests as the language server's document
+symbols answer them (`StepFilterChoices.kt`), and the user chooses a
+file, for its whole module, or a class, for it and every class nested in
+it. An entry is a file and a class path in it, the root's name left
+out: a library file by its path below the library's directory --
+`platform/CollectionsFactory.ns`, never the fingerprint's -- so that it
+names the same file in a rebuilt binary's library, a project file by
+its path below the project's directory, one outside it by its own. The
+page marks an entry whose file is gone or whose file no longer declares
+its class, decided off the event dispatch thread. A session sends the
+filters as `nsNext/setStepFilters` -- `shipped` the negation of the
+switch, `entries` each entry whose file is there by its absolute path,
+a library file's under the library the project shows now, and its
+`classPath` -- before `configurationDone`, and again whenever either
+setting changes: a change is told on the settings' topic, which each
+session hears from its start to its `stop()`, its subscription a child
+of the project's step filters service; it is sent at once, on the thread
+that changed them, which waits for no answer, so that a step started
+after a change is sent after it and runs under it, and the filters are
+read and their request queued under one lock, so that the configuration's
+send and a change's at the session's start reach the agent in the order
+they read the settings. The agent maps each entry's file as it maps a
+breakpoint's ("The agent's sources"), and one it cannot take it leaves
+out and says in an `output` event, which the console shows.
 
 A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on

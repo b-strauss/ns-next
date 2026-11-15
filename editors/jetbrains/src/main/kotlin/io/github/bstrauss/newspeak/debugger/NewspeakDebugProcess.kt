@@ -13,6 +13,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.MessageType
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugSession
@@ -106,8 +107,20 @@ class NewspeakDebugProcess(
     @Volatile
     private var stepFiltersSent = false
 
-    /** The settings' changes, heard while the session lasts. */
-    private val stepFiltersChanges = ApplicationManager.getApplication().messageBus.connect()
+    /**
+     * The settings' changes, heard while the session lasts: disposed at
+     * its `stop()`, and with the project's step filters at the latest.
+     */
+    private val stepFiltersSubscription = Disposer.newDisposable("Newspeak step filters of a debug session").also { subscription ->
+        Disposer.register(NewspeakSkippedClasses.getInstance(session.project), subscription)
+    }
+
+    /**
+     * Held while the filters are read and their request queued, so that
+     * two sends -- the configuration's and a change's -- reach the agent
+     * in the order they read the settings, the later read always last.
+     */
+    private val stepFiltersLock = Any()
 
     /** Completes when the agent answered the first `terminate`; for the tests of the Stop. */
     internal val terminateAnswered = CompletableFuture<Unit>()
@@ -122,7 +135,8 @@ class NewspeakDebugProcess(
     override fun createConsole(): ExecutionConsole = console ?: super.createConsole()
 
     override fun sessionInitialized() {
-        stepFiltersChanges.subscribe(NewspeakDebuggerSettings.TOPIC, StepFiltersListener { client?.let(::changeStepFilters) })
+        ApplicationManager.getApplication().messageBus.connect(stepFiltersSubscription)
+            .subscribe(NewspeakDebuggerSettings.TOPIC, StepFiltersListener { client?.let(::changeStepFilters) })
         // A use of the library, and a look at whether the binary's sources changed since the project opened, while the runtime starts.
         val library = NewspeakCoreLibrary.getInstance(session.project).refreshForDebugging()
         work.execute { connect(library) }
@@ -257,13 +271,15 @@ class NewspeakDebugProcess(
     }
 
     /**
-     * Sends the settings' step filters (`nsNext/setStepFilters`), whose
-     * refusal -- a class the agent cannot read -- is reported, the filters
-     * staying as they were.
+     * Sends the step filters (`nsNext/setStepFilters`): the settings'
+     * switch and the project's classes, by their files' paths. An entry
+     * the agent cannot take it leaves out and says in an `output` event,
+     * which the console shows; a refusal of the whole request is reported.
      */
     private fun sendStepFilters(client: DapClient): CompletableFuture<*> =
-        client.request("nsNext/setStepFilters", NewspeakDebuggerSettings.getInstance().filters.arguments())
-            .whenComplete { _, failure -> if (failure != null) refused(failure) }
+        synchronized(stepFiltersLock) {
+            client.request("nsNext/setStepFilters", NewspeakDebuggerSettings.stepFilterArguments(session.project))
+        }.whenComplete { _, failure -> if (failure != null) refused(failure) }
 
     /**
      * The settings changed: a session configured sends the filters again
@@ -465,7 +481,7 @@ class NewspeakDebugProcess(
      */
     override fun stop() {
         ended = true
-        stepFiltersChanges.disconnect()
+        Disposer.dispose(stepFiltersSubscription)
         handler.terminateThroughDebugger = null
         serverSocket.close()
         val client = client ?: return
