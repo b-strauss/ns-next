@@ -3656,16 +3656,6 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
-- The stress group's wall time grew when its suites began sharing the
-  cores (2026-11-15, `1128abe8`): at two test threads each, the sixteen
-  suites ended between 329 s (NO_JIT) and 1,323 s (COLLECT), so the group
-  took 1,323 s against about 820 s at 18 threads each -- the shorter
-  suites end early and leave their cores idle while COLLECT, PAUSE, STEP
-  and MOVES run on two threads apiece. Giving each suite threads by its
-  measured length (`xtask`'s `stress_threads_each`, the total still the
-  machine's threads) would recover most of it without the 288 processes
-  that stalled the tests that wait on a process they start
-  (`docs/design/README.md`, "Gates").
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
   support.arm.com page, as the convention asks, but the pages' paths

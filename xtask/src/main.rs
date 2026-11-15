@@ -115,16 +115,73 @@ fn stress_suite_arguments(mode: &str, config: &Path, threads: usize) -> Vec<Stri
         .collect()
 }
 
-/// The test threads each of the stress group's `runs` suites takes: the
-/// machine's cores shared among them, at least one each. The suites run at
-/// once, so the profile's 18 threads apiece put sixteen suites' 288 test
-/// processes on 24 cores, and a test that waits on a process it started
-/// -- a debug agent's connection, a language server's answer -- stalled
-/// past its wall-clock bound; shared, the machine runs about as many test
-/// processes as it has cores.
-fn stress_threads_each(runs: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    cores.div_ceil(runs.max(1)).max(1)
+/// How long each stress suite ran, in seconds, at two test threads apiece
+/// on the development machine's 24 cores (2026-11-15): the weights by
+/// which `stress_threads` shares the threads out. Only their ratios
+/// matter; a mode missing here weighs as the heaviest.
+const STRESS_SUITE_SECONDS: &[(&str, u32)] = &[
+    ("MOVES", 748),
+    ("CACHES", 527),
+    ("COLLECT", 1323),
+    ("SCAVENGE", 704),
+    ("WIDE", 429),
+    ("SUSPEND", 353),
+    ("JIT", 339),
+    ("EXIT", 332),
+    ("ZONE", 618),
+    ("OPTIMIZE", 338),
+    ("DEOPT", 338),
+    ("INVALIDATE", 356),
+    ("PAUSE", 890),
+    ("BREAKPOINTS", 431),
+    ("STEP", 839),
+    ("NO_JIT", 329),
+];
+
+/// The test threads each of the stress group's suites `modes` takes, in
+/// their order, out of a budget of the machine's `threads` rounded up to
+/// a multiple of the suites. The suites run at once: at the profile's 18
+/// threads apiece sixteen suites put 288 test processes on 24 cores, and
+/// a test that waits on a process it started -- a debug agent's
+/// connection, a language server's answer -- stalled past its wall-clock
+/// bound. An even share left the short suites' cores idle while the long
+/// ones ran on, so each suite starts with one thread and every further
+/// thread goes to the suite whose measured length per thread is the
+/// longest (`STRESS_SUITE_SECONDS`).
+fn stress_threads(modes: &[&str], threads: usize) -> Vec<usize> {
+    let suites = modes.len().max(1);
+    let budget = threads.max(1).div_ceil(suites) * suites;
+    let heaviest = STRESS_SUITE_SECONDS
+        .iter()
+        .map(|(_, seconds)| *seconds)
+        .max()
+        .unwrap_or(1);
+    let weights: Vec<u64> = modes
+        .iter()
+        .map(|mode| {
+            let seconds = STRESS_SUITE_SECONDS
+                .iter()
+                .find(|(name, _)| name == mode)
+                .map_or(heaviest, |(_, seconds)| *seconds);
+            u64::from(seconds)
+        })
+        .collect();
+    let mut shares = vec![1usize; modes.len()];
+    for _ in modes.len()..budget {
+        // The suite that would run longest per thread; compared as
+        // `weight_a * threads_b > weight_b * threads_a`, without division.
+        let Some(longest) = (0..modes.len()).reduce(|best, index| {
+            if weights[index] * shares[best] as u64 > weights[best] * shares[index] as u64 {
+                index
+            } else {
+                best
+            }
+        }) else {
+            break;
+        };
+        shares[longest] += 1;
+    }
+    shares
 }
 
 /// The command a Docker group runs its suite with, after `nextest_options`'
@@ -1069,11 +1126,17 @@ fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result
     println!("\n==> the suite under {}, at once", names.join(", "));
     let logs = root.join(".temp");
     std::fs::create_dir_all(&logs).map_err(|error| format!("create .temp/: {error}"))?;
-    let threads = stress_threads_each(runs.len());
-    println!("    {threads} test threads each");
+    let machine = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let shares = stress_threads(&names, machine);
+    let listed: Vec<String> = names
+        .iter()
+        .zip(&shares)
+        .map(|(mode, threads)| format!("{mode} {threads}"))
+        .collect();
+    println!("    test threads: {}", listed.join(", "));
     let started = Instant::now();
     let mut children = Vec::new();
-    for (mode, variable) in &runs {
+    for ((mode, variable), threads) in runs.iter().zip(shares) {
         let log_path = logs.join(format!("stress-{mode}.log"));
         let log = std::fs::File::create(&log_path)
             .map_err(|error| format!("create {}: {error}", log_path.display()))?;
@@ -1477,15 +1540,35 @@ mod tests {
         assert_eq!(names.len(), runs.len(), "every run has a log of its own");
     }
 
-    /// The stress suites share the machine's cores, each taking at least
-    /// one test thread and passing its share to nextest.
+    /// The stress suites share the machine's threads by their measured
+    /// lengths: every suite at least one, the budget the threads rounded up
+    /// to a multiple of the suites, the longest suite the most, and every
+    /// mode the group runs weighed.
     #[test]
-    fn the_stress_suites_share_the_cores() {
-        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-        let each = stress_threads_each(stress_suite_runs().len());
-        assert!(each >= 1);
-        assert!(each * stress_suite_runs().len() < cores + stress_suite_runs().len());
-        assert_eq!(stress_threads_each(0), cores.max(1));
+    fn the_stress_suites_share_the_threads_by_their_lengths() {
+        let runs = stress_suite_runs();
+        let modes: Vec<&str> = runs.iter().map(|(name, _)| name.as_str()).collect();
+        for mode in &modes {
+            assert!(
+                STRESS_SUITE_SECONDS.iter().any(|(name, _)| name == mode),
+                "{mode} has no measured length"
+            );
+        }
+        let shares = stress_threads(&modes, 24);
+        assert_eq!(shares.iter().sum::<usize>(), 32);
+        assert!(shares.iter().all(|threads| *threads >= 1));
+        let collect = modes
+            .iter()
+            .position(|mode| *mode == "COLLECT")
+            .expect("COLLECT");
+        let no_jit = modes
+            .iter()
+            .position(|mode| *mode == "NO_JIT")
+            .expect("NO_JIT");
+        assert_eq!(shares.iter().max(), Some(&shares[collect]));
+        assert!(shares[collect] > shares[no_jit]);
+        assert_eq!(stress_threads(&modes, 1), vec![1; modes.len()]);
+        assert_eq!(stress_threads(&["UNKNOWN", "NO_JIT"], 3), vec![3, 1]);
         let arguments = stress_suite_arguments("MOVES", Path::new("generated.toml"), 3);
         assert!(
             arguments
