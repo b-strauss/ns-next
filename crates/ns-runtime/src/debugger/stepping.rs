@@ -187,7 +187,11 @@ pub(crate) struct Stepping {
     /// The frame the step was begun in when that is not the stepping
     /// frame: an initializer's at its header stop, whose step steps from
     /// its sender (`begin_at_header`). A stop in it is a stop in the frame
-    /// the step was begun in (`went_on_past_filtered`).
+    /// the step was begun in (`went_on_past_filtered`). Set only while a
+    /// one-shot of the frame's own waits at its first statement, which it
+    /// reaches before any return: a return to its caller's send is
+    /// reported to no step, so the name must not outlive the frame's run
+    /// to that one-shot; every other way it leaves is reported (`popped`).
     begun_in: Option<Holder>,
     /// The method breakpoints whose method an unwind left since the step
     /// began (`method_left`), which its stop reports as the method's exit.
@@ -1465,32 +1469,40 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     if enters_at_header(mutator, top) {
         return HeldStep::StopAtHeader;
     }
-    if stop_at_first(mutator, top, true) {
-        HeldStep::Stop
-    } else {
-        HeldStep::GoOn
+    match stop_at_first(mutator, top, true) {
+        FirstStop::Standing => HeldStep::Stop,
+        FirstStop::Patched | FirstStop::Nowhere => HeldStep::GoOn,
     }
 }
 
+/// Where `stop_at_first` stops a pushed frame.
+enum FirstStop {
+    /// It stands at its first statement start: the safepoint stops it.
+    Standing,
+    /// At a one-shot for it at its first statement start.
+    Patched,
+    /// Nowhere in it: it runs nothing a step stops at.
+    Nowhere,
+}
+
 /// Stops `top`, a frame the step pushed, at its first statement start
-/// (`first_stop`): answers whether it stands there already, when
-/// `standing_stops` -- the safepoint stops it there -- and sets a one-shot
-/// there otherwise, which the frame reaches as it goes on, or fetches
-/// next when it stands there. An initializer with nothing but the clause
-/// that stands for `Object new` runs nothing a step stops at: nothing is
-/// set, and the step stops where the stepping frame goes on, after the
-/// `new`.
+/// (`first_stop`): `Standing` when it stands there already and
+/// `standing_stops` -- the safepoint stops it there -- and otherwise a
+/// one-shot there, which the frame reaches as it goes on, or fetches next
+/// when it stands there. An initializer with nothing but the clause that
+/// stands for `Object new` runs nothing a step stops at: nothing is set,
+/// and the step stops where the stepping frame goes on, after the `new`.
 fn stop_at_first(
     mutator: &mut Mutator<'_>,
     top: ActivationReference,
     standing_stops: bool,
-) -> bool {
+) -> FirstStop {
     let code = mutator.heap.activation_code(top);
     let Some(first) = first_stop(mutator, top, &code) else {
-        return false;
+        return FirstStop::Nowhere;
     };
     if standing_stops && mutator.heap.activation_program_counter(top) >= first {
-        return true;
+        return FirstStop::Standing;
     }
     if let Some(stepping) = &mut mutator.stepping {
         // The value the stepping frame's last call answered is not the
@@ -1508,7 +1520,7 @@ fn stop_at_first(
         },
     );
     settle(mutator);
-    false
+    FirstStop::Patched
 }
 
 /// Whether `top` is the initializer a factory the step pushed went on
@@ -1651,12 +1663,18 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
     // its stop.
     drop_request(mutator);
     // The step was begun in the initializer, and steps in it as in any
-    // other frame should the filters filter it (decision 16).
-    if let Some(stepping) = &mut mutator.stepping {
-        stepping.started_filtered = started_filtered;
-        stepping.begun_in = Some(Holder::Running(top));
+    // other frame should the filters filter it (decision 16) -- only while
+    // a one-shot of its own waits in it, which it reaches before it can
+    // return: a return to its caller's send reports no pop (`popped`), so
+    // a name of it kept past its return would name the next activation
+    // pushed at its offset. An initializer that runs nothing a step stops
+    // at leaves the step to its sender, begun nowhere filtered.
+    if let FirstStop::Patched = stop_at_first(mutator, top, false) {
+        if let Some(stepping) = &mut mutator.stepping {
+            stepping.started_filtered = started_filtered;
+            stepping.begun_in = Some(Holder::Running(top));
+        }
     }
-    stop_at_first(mutator, top, false);
     settle(mutator);
 }
 

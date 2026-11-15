@@ -2502,7 +2502,13 @@ steps from its sender: a filter switched on at the stop that filters the
 initializer -- a shipped superclass's with the shipped filter off, a
 class filter naming it -- leaves the step stepping in it, as in any
 frame a step is begun in (decision 16; `Stepping::begun_in`,
-`a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered`). An
+`a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered`). The
+step names the initializer so only while the one-shot at its first
+statement waits, which it reaches before it can return: a return to its
+caller's send is reported to no step, so a name kept past it would name
+the next activation at its offset. An initializer that runs nothing a
+step stops at leaves the step to its sender, begun in no filtered frame
+(`a_step_from_an_empty_header_stop_never_stops_in_a_filtered_call`). An
 initializer without metadata, an image's without source, is stopped at
 its header as a frame without a line, and a step goes on from it as
 from any push without metadata

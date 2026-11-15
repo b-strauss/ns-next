@@ -4094,7 +4094,9 @@ ns_runtime::for_each_lowering! {
 /// with a factory pattern, the lowest from `Object`; a class whose clause
 /// names `Object new` explicitly, one whose superclass is shipped, and
 /// one whose own level runs nothing, so that its factory pushes its
-/// superclass's initializer.
+/// superclass's initializer; and a superclass whose initializer has no
+/// statement a step stops at, only a slot without an initializer, whose
+/// subclass's slot then sends one of its methods.
 const HEADERS: &str = indoc! {"
     class Headers = Object new () (
       class Lowest new: a = (
@@ -4113,6 +4115,16 @@ const HEADERS: &str = indoc! {"
         | public code ::= 9. |
       ) ()
       class Thin = Marker new () ()
+      class Hollow new: h = (
+        | public hollow |
+      ) (
+        public seed = (
+          ^5
+        )
+      )
+      class Filled = Hollow new: 1 (
+        | public filled ::= seed. |
+      ) ()
       class Basis new: a = (
         | public base ::= a. |
       ) ()
@@ -4169,6 +4181,11 @@ const HEADERS: &str = indoc! {"
         | made |
         made:: Thin new.
         ^made mark
+      )
+      public filled = (
+        | made |
+        made:: Filled new.
+        ^made filled
       )
     ) : ()
 "};
@@ -4688,6 +4705,57 @@ ns_runtime::for_each_lowering! {
             )
         );
         assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step from the header stop of an initializer that runs nothing a
+    /// step stops at goes on in its sender, the step begun nowhere
+    /// filtered: with a class filter naming that class set at the header,
+    /// the step over stops at the sender's next statement, and the step
+    /// into there passes over the filtered method the statement sends,
+    /// which runs where the initializer ran, to the place after the `new`.
+    fn a_step_from_an_empty_header_stop_never_stops_in_a_filtered_call(lowering) {
+        let offset = line_start(HEADERS, "made:: Filled new.");
+        let (stops, answer) = stepped(
+            HEADERS,
+            lowering,
+            "filled",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let mut stops = Vec::new();
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, HEADERS));
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: String::from("Headers"),
+                        path: vec![String::from("Hollow")],
+                    }],
+                });
+                expect_step_filters_set(remote);
+                for command in [Command::StepOver, Command::StepInto] {
+                    step(remote, command);
+                    stops.push(standing(remote, HEADERS));
+                }
+                continue_stopped(remote);
+                stops
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Filled class>>new", "Filled"),
+                ("Filled initializer", "Hollow new: 1"),
+                ("Hollow initializer", "new: h"),
+                ("Filled initializer", "public filled ::= seed."),
+                ("Headers>>filled", "made:: Filled new"),
+            ]
+        );
+        assert_eq!(answer, 5);
     }
 }
 
