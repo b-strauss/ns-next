@@ -1043,7 +1043,7 @@ impl Interpreter {
     /// the run's first safepoint, or else a step the run before left in
     /// progress, which goes on from the first activation
     /// (`stepping::carry_into`) and stops it there too, a step's stop.
-    /// Cold: a run without a debugger tests one option.
+    /// Cold: a run without an agent tests one option.
     #[cold]
     pub(crate) fn serve_before_run(&mut self) {
         self.serve_between_runs();

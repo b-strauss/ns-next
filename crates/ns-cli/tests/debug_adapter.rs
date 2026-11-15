@@ -1634,9 +1634,10 @@ const INITIALIZED: &str = indoc! {"
     ) : ()
 "};
 
-/// `next` from a breakpoint in the root's last slot initializer goes on
-/// through the root's instantiation into `main:args:`, a host run of its
-/// own, where it stops at the first statement for the step.
+/// One `next` from a breakpoint in the root's last slot initializer goes
+/// on past the root's factory, which has no statement start, and out of
+/// the root's instantiation into `main:args:`, a host run of its own,
+/// where it stops at the first statement for the step.
 #[test]
 fn next_from_a_slot_initializer_reaches_main() {
     let (_directory, path) = program("Initialized", INITIALIZED);
@@ -1644,21 +1645,11 @@ fn next_from_a_slot_initializer_reaches_main() {
     breakpoints_before_the_start(&mut client, &path, &[4]);
     client.stopped("breakpoint");
     assert_eq!(top_frame(&mut client).1, json!(4));
-    let mut stops = Vec::new();
-    while stops.len() < 4 {
-        client.succeed("next", json!({ "threadId": 1 }));
-        client.stopped("step");
-        let stood = top_frame(&mut client);
-        let in_main = stood.0 == json!("Initialized>>main:args:");
-        stops.push(stood);
-        if in_main {
-            break;
-        }
-    }
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
     assert_eq!(
-        stops.last(),
-        Some(&(json!("Initialized>>main:args:"), json!(8))),
-        "{stops:?}"
+        top_frame(&mut client),
+        (json!("Initialized>>main:args:"), json!(8))
     );
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);

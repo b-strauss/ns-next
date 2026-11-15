@@ -687,6 +687,12 @@ impl Breakpoints {
         !self.methods.is_empty()
     }
 
+    /// Whether the method breakpoint `id` is still set: a `SetMethodBreakpoints`
+    /// may have removed it since a step recorded its method's exit.
+    pub(crate) fn has_method_breakpoint(&self, id: BreakpointId) -> bool {
+        self.methods.iter().any(|entry| entry.id == id)
+    }
+
     /// The method breakpoints whose method `code` is a body of.
     pub(crate) fn exits_of(&self, code: &Rc<CompiledCode>) -> Vec<BreakpointId> {
         self.methods

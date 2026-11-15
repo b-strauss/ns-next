@@ -13,14 +13,17 @@
 //! patched and restored as a line breakpoint is, so that their bodies lose
 //! their machine code for the step; the next stop, whatever made it, ends
 //! the step, and one its host run's end leaves in progress goes on in the
-//! program's next run (`run_ended`, `carry_into`). No check enters the run loop: what the step does not patch runs
-//! at full speed. A step never lands in a frame the step filters filter
-//! -- by default the shipped modules' (decision 16): a stop it would make
-//! there goes on as a step into from the first unfiltered frame below,
-//! and a step into's request outlasts the pushes of filtered bodies. A
-//! method an unwind leaves while a method breakpoint names it is reported
-//! by a step of the same kind (`method_left`), whose stop reports the
-//! method's exit where the program goes on.
+//! program's next run (`run_ended`, `carry_into`). No check enters the
+//! run loop: what the step does not patch runs at full speed. A step
+//! never lands in a frame the step filters filter -- by default the
+//! shipped modules' (decision 16): a stop it would make there goes on as
+//! a step into from the first unfiltered frame below, and a step into's
+//! request outlasts the pushes of filtered bodies -- nor in a frame whose
+//! body has no statement start, a factory's (decision 12), which it
+//! passes over from that frame itself (`passes_over`). A method an unwind
+//! leaves while a method breakpoint names it is reported by a step of the
+//! same kind (`method_left`), whose stop reports the method's exit where
+//! the program goes on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1107,13 +1110,18 @@ pub(crate) fn at_return_point(mutator: &Mutator<'_>) -> bool {
 }
 
 /// The method breakpoints whose exit by an unwind the step in progress
-/// reports, taken: its stop is the method's exit.
+/// reports, taken: its stop is the method's exit. Only those still set
+/// are answered -- a `SetMethodBreakpoints` served since the unwind, in
+/// this run or between runs for a carried step, may have removed one,
+/// whose id the client no longer knows.
 pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
-    mutator
+    let mut exits = mutator
         .stepping
         .as_mut()
         .map(|stepping| std::mem::take(&mut stepping.exits))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    exits.retain(|id| mutator.breakpoints.has_method_breakpoint(*id));
+    exits
 }
 
 /// The step's own one-shot stopped `activation`, the top frame, where no
@@ -1124,7 +1132,13 @@ pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
 /// -- as a step into from the first unfiltered frame below
 /// (`continue_as_step_into`). A frame the step was begun in, stopped
 /// there by a breakpoint or with the filter off, is stepped in as any
-/// other, and so is a block the compiler lowered inline in it.
+/// other, and so is a block the compiler lowered inline in it. A frame
+/// whose body has no statement start -- a factory's, at its return point
+/// after a step over at its initializer's last statement -- is passed
+/// over too, whatever the filters say and wherever the step began
+/// (decision 12): the step goes on as a step into from that frame, whose
+/// return point in its caller, or the next run's start when it returns to
+/// the host, is where it stops.
 pub(crate) fn went_on_past_filtered(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1133,14 +1147,33 @@ pub(crate) fn went_on_past_filtered(
         return false;
     };
     let (frame, started_filtered) = (stepping.frame, stepping.started_filtered);
-    if started_filtered && takes(mutator, frame, activation) {
-        return false;
-    }
-    if !is_filtered(mutator, &StackFrame::Running(activation)) {
+    let passes = has_no_statement_start(mutator, &StackFrame::Running(activation))
+        || (!(started_filtered && takes(mutator, frame, activation))
+            && is_filtered(mutator, &StackFrame::Running(activation)));
+    if !passes {
         return false;
     }
     continue_as_step_into(mutator, activation);
     true
+}
+
+/// Whether `frame`'s body has no statement start by its metadata -- a
+/// factory's, which its class header describes (decision 12) -- so that
+/// no step stops in it: the step passes over it as over a filtered frame
+/// (`passes_over`). A body without metadata is not known to have none.
+fn has_no_statement_start(mutator: &mut Mutator<'_>, frame: &StackFrame) -> bool {
+    let (_, _, metadata) = match frame {
+        StackFrame::Running(activation) => stack::running_body(mutator, *activation),
+        StackFrame::Suspended(root) => stack::suspended_body(mutator, root),
+    };
+    metadata.is_some_and(|metadata| metadata.statements.is_empty())
+}
+
+/// Whether a step into's request goes on through `frame` to the frames it
+/// pushes rather than stopping in it: the step filters filter it
+/// (decision 16), or its body has no statement start (decision 12).
+fn passes_over(mutator: &mut Mutator<'_>, frame: &StackFrame) -> bool {
+    is_filtered(mutator, frame) || has_no_statement_start(mutator, frame)
 }
 
 /// Whether the step filters filter `frame` (decision 16): its body is a
@@ -1258,9 +1291,10 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     if was_there || inline_code_of_step(mutator, top) {
         return HeldStep::GoOn;
     }
-    // A filtered body keeps the request: the step goes on through it to
-    // the next unfiltered body it pushes, itself or through others.
-    if is_filtered(mutator, &StackFrame::Running(top)) || !sent_by_step(mutator, top) {
+    // A filtered body keeps the request, as does one without a statement
+    // start: the step goes on through it to the next body it pushes that
+    // it stops in, itself or through others.
+    if passes_over(mutator, &StackFrame::Running(top)) || !sent_by_step(mutator, top) {
         return HeldStep::GoOn;
     }
     let code = mutator.heap.activation_code(top);
@@ -1292,17 +1326,21 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
 }
 
 /// Whether the step's frame, or a block the step flooded for it, sent to
-/// `top`: its sender is one of them, or a frame the step filters filter
-/// whose sender is, and so on down -- the shipped `do:` the stepping
-/// frame sent, which runs a block of the program. A frame between the
-/// one the step was taken in and the stepping frame, and an unfiltered
-/// frame, end the walk: what they send is not the step's.
-fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
+/// `top`: its sender is one of them, or a frame the step passes over --
+/// one the step filters filter, or one whose body has no statement start
+/// (`passes_over`) -- whose sender is, and so on down: the shipped `do:`
+/// the stepping frame sent, which runs a block of the program, or the
+/// factory that runs the initializer of the class it sent `new` to. A
+/// frame between the one the step was taken in and the stepping frame,
+/// and a frame the step stops in, end the walk: what they send is not the
+/// step's.
+fn sent_by_step(mutator: &mut Mutator<'_>, top: ActivationReference) -> bool {
     let Some(stepping) = &mutator.stepping else {
         return false;
     };
-    let heap = &mutator.heap;
-    let between = |held: Holder| stepping.between.iter().any(|(other, _)| other.is(held));
+    let stepping_frame = stepping.frame;
+    let between: Vec<Holder> = stepping.between.iter().map(|(held, _)| *held).collect();
+    let is_between = |held: Holder| between.iter().any(|other| other.is(held));
     let Some(mut sender) = sender_of(mutator, top) else {
         return false;
     };
@@ -1310,10 +1348,10 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
         sender = match sender {
             Place::Running(activation) => {
                 let held = Holder::Running(activation);
-                if stepping.frame.is(held) || inline_code_of_step(mutator, activation) {
+                if stepping_frame.is(held) || inline_code_of_step(mutator, activation) {
                     return true;
                 }
-                if between(held) || !is_filtered(mutator, &StackFrame::Running(activation)) {
+                if is_between(held) || !passes_over(mutator, &StackFrame::Running(activation)) {
                     return false;
                 }
                 match sender_of(mutator, activation) {
@@ -1324,17 +1362,29 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
             Place::Suspended(frame) => {
                 if let Some(key) = suspended_key(mutator, frame) {
                     let held = Holder::Suspended(key);
-                    if stepping.frame.is(held) {
+                    if stepping_frame.is(held) {
                         return true;
                     }
-                    if between(held) {
+                    if is_between(held) {
                         return false;
                     }
                 }
-                let root = heap.stash(Value::object(heap.frame_object(frame)));
-                if !is_filtered(mutator, &StackFrame::Suspended(root)) {
+                let root = mutator
+                    .heap
+                    .stash(Value::object(mutator.heap.frame_object(frame)));
+                if !passes_over(mutator, &StackFrame::Suspended(root.clone())) {
                     return false;
                 }
+                // The frame is read again through its root: deciding may
+                // have compiled the body's metadata again.
+                let heap = &mutator.heap;
+                let Some(frame) = heap
+                    .fetch(&root)
+                    .as_object()
+                    .and_then(|object| heap.object_frame(object))
+                else {
+                    return false;
+                };
                 match heap.frame_sender(frame) {
                     Some(sender) => Place::Suspended(sender),
                     None => return false,

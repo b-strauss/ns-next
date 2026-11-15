@@ -3283,8 +3283,16 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// A module whose slot initializers run in the host run of its
-/// instantiation, a run of its own before the one that sends `main`, as
+/// `stops` as pairs of string slices, to compare with a literal.
+fn as_pairs(stops: &[(String, String)]) -> Vec<(&str, &str)> {
+    stops
+        .iter()
+        .map(|(frame, statement)| (frame.as_str(), statement.as_str()))
+        .collect()
+}
+
+/// A module whose slot initializers and statement run in the host run of
+/// its instantiation, a run of its own before the one that sends `main`, as
 /// `ns-next run` runs a root's instantiation before `main:args:`.
 const TWO_RUNS: &str = indoc! {"
     class TwoRuns = Object new (
@@ -3292,6 +3300,7 @@ const TWO_RUNS: &str = indoc! {"
         first ::= 1.
         second ::= first + 1.
       |
+      second:: second * 10.
     ) (
       public main = (
         | x |
@@ -3325,12 +3334,14 @@ ns_runtime::for_each_lowering! {
     /// initializer, which returns to the host -- goes on in the program's
     /// next run, the next place the program reaches (decision 17): the
     /// run's entry stops at its first statement, a step's stop, whether
-    /// the step was over, into or out. The steps from the slot
-    /// initializer stop in the factory first, the initializer's caller,
-    /// whose next step leaves the run.
+    /// the step was over, into or out. A step over or into from the last
+    /// slot initializer stops at the initializer's statement first; none
+    /// stops in the factory, which has no statement start and is passed
+    /// over (decision 12).
     fn a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement(lowering) {
         for command in [Command::StepOver, Command::StepInto, Command::StepOut] {
             let name = command.name();
+            let out = command == Command::StepOut;
             let (stops, answer) = across_two_runs(lowering, move |remote| {
                 expect_first_stop(remote, "TwoRuns");
                 let mut stops = Vec::new();
@@ -3346,13 +3357,12 @@ ns_runtime::for_each_lowering! {
                 continue_stopped(remote);
                 stops
             });
-            let expected = [("TwoRuns class>>new", "TwoRuns"), ("TwoRuns>>main", "x:: second + 1")];
-            let stops: Vec<(&str, &str)> = stops
-                .iter()
-                .map(|(frame, statement)| (frame.as_str(), statement.as_str()))
-                .collect();
-            assert_eq!(stops, expected, "{name}");
-            assert_eq!(answer, 3, "{name}");
+            let mut expected = vec![("TwoRuns>>main", "x:: second + 1")];
+            if !out {
+                expected.insert(0, ("TwoRuns initializer", "second:: second * 10"));
+            }
+            assert_eq!(as_pairs(&stops), expected, "{name}");
+            assert_eq!(answer, 21, "{name}");
         }
     }
 }
@@ -3368,8 +3378,8 @@ ns_runtime::for_each_lowering! {
         set_breakpoints(&remote, "TwoRuns", vec![offset]);
         let agent = |remote: &DebugRemote| {
             expect_first_stop(remote, "TwoRuns");
-            // The first step stops in the factory, the initializer's
-            // caller; the second leaves the run.
+            // The first step stops at the initializer's statement; the
+            // second leaves the run, past the factory.
             step(remote, Command::StepOver);
             remote.send(Command::StepOver);
             match remote.next_event(EVENT_TIMEOUT) {
@@ -3398,8 +3408,261 @@ ns_runtime::for_each_lowering! {
             )),
             "{events:?}"
         );
-        assert_eq!(answered(&mut interpreter, result), 3);
+        assert_eq!(answered(&mut interpreter, result), 21);
         drop(remote);
+    }
+}
+
+/// Classes instantiated within a run: one whose initializer has slot
+/// initializers and statements, a subclass whose superclass's
+/// initializer has statements, a class that applies a mixin by a `<:`
+/// clause, and one whose superclass clause's argument sends a method of
+/// the module.
+const INITIALIZING: &str = indoc! {"
+    class Initializing = Object new () (
+      class Header = (
+        |
+          first ::= 1.
+          public second ::= first + 1.
+        |
+        first:: first + 10.
+        second:: second + 10.
+      ) ()
+      class Base = (
+        |
+          a ::= 1.
+        |
+        a:: a + 1.
+      ) ()
+      class Derived = Base new (
+        |
+          public b ::= 2.
+        |
+        b:: b + 1.
+      ) ()
+      class Extra = (
+        |
+          public c ::= 3.
+        |
+        c:: c + 1.
+      ) ()
+      class Mixed = Base new <: Extra new (
+        |
+          public d ::= 4.
+        |
+      ) ()
+      class Setup withSetup: value = (
+        |
+          public e ::= value.
+        |
+      ) ()
+      class Clause = Setup withSetup: setupValue (
+        |
+          public f ::= 6.
+        |
+      ) ()
+      setupValue = (
+        ^5
+      )
+      public header = (
+        | made |
+        made:: Header new.
+        ^made second
+      )
+      public derived = (
+        | made |
+        made:: Derived new.
+        ^made b
+      )
+      public mixed = (
+        | made |
+        made:: Mixed new.
+        ^made c + made d
+      )
+      public clause = (
+        | made |
+        made:: Clause new.
+        ^made e + made f
+      )
+    ) : ()
+"};
+
+/// Sends `selector` to an instance of `INITIALIZING` under `lowering`, a
+/// breakpoint on the line of `breakpoint`, and from its stop takes
+/// `command` until the program stands at `last`, at most twelve times:
+/// answers every stop the steps made, as its frame's name and statement,
+/// and the run's answer.
+fn initializing_stops(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+    command: Command,
+    last: (&'static str, &'static str),
+) -> (Vec<(String, String)>, i64) {
+    let offset = line_start(INITIALIZING, breakpoint);
+    stepped(
+        INITIALIZING,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, "Initializing", vec![offset]),
+        move |remote| {
+            expect_first_stop(remote, "Initializing");
+            let mut stops = Vec::new();
+            while stops.len() < 12 {
+                step(remote, command.clone());
+                let stood = standing(remote, INITIALIZING);
+                let done = stood.0 == last.0 && stood.1 == last.1;
+                stops.push(stood);
+                if done {
+                    break;
+                }
+            }
+            continue_stopped(remote);
+            stops
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over goes through every slot initializer of an initializer
+    /// and then each of its statements, and from the last one, past the
+    /// factory, which has no statement start (decision 12), to the
+    /// caller's place after the `new`.
+    fn a_step_over_goes_through_an_initializer_and_past_the_factory(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "header",
+            "first ::= 1.",
+            Command::StepOver,
+            ("Initializing>>header", "^made second"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Header initializer", "public second ::= first + 1."),
+                ("Header initializer", "first:: first + 10"),
+                ("Header initializer", "second:: second + 10"),
+                ("Initializing>>header", "made:: Header new"),
+                ("Initializing>>header", "^made second"),
+            ]
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of a superclass's initializer
+    /// stops at the first statement of the next level's, the
+    /// subclass's, never in the factory.
+    fn a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "derived",
+            "a:: a + 1.",
+            Command::StepOver,
+            ("Initializing>>derived", "^made b"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Derived initializer", "public b ::= 2."),
+                ("Derived initializer", "b:: b + 1"),
+                ("Initializing>>derived", "made:: Derived new"),
+                ("Initializing>>derived", "^made b"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out taken in a superclass's initializer leaves its frame and
+    /// stops at the first statement of the next level's initializer, the
+    /// subclass's; one taken there leaves the last level's initializer,
+    /// passes over the factory, which has no statement start (decision
+    /// 12), and stops at the caller's place after the `new`.
+    fn a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "derived",
+            "a ::= 1.",
+            Command::StepOut,
+            ("Initializing>>derived", "made:: Derived new"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Derived initializer", "public b ::= 2."),
+                ("Initializing>>derived", "made:: Derived new"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into from an instantiation whose class applies a mixin by a
+    /// `<:` clause goes through every level's initializer in the order
+    /// the program runs them (§6.1, §6.2): the check of the `<:` clause,
+    /// the superclass clause and the superclass's initializer, from its
+    /// own superclass clause on, the `<:` clause's message and the mixin's
+    /// initializer, then the class's own slot.
+    fn a_step_into_goes_through_a_mixin_application_s_initializers_in_order(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "mixed",
+            "made:: Mixed new.",
+            Command::StepInto,
+            ("Initializing>>mixed", "^made c + made d"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Mixed initializer", "Extra new"),
+                ("Mixed initializer", "Base new"),
+                ("Base initializer", "Base"),
+                ("Base initializer", "a ::= 1."),
+                ("Base initializer", "a:: a + 1"),
+                ("Mixed initializer", "Extra new"),
+                ("Extra initializer", "public c ::= 3."),
+                ("Extra initializer", "c:: c + 1"),
+                ("Mixed initializer", "public d ::= 4."),
+                ("Initializing>>mixed", "made:: Mixed new"),
+                ("Initializing>>mixed", "^made c + made d"),
+            ]
+        );
+        assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into from an instantiation whose superclass clause's
+    /// argument sends a method of the module enters that method where the
+    /// program runs it, in the superclass clause, and goes on through the
+    /// rest of the clause, the superclass's initializer and the class's
+    /// own.
+    fn a_step_into_enters_a_method_a_superclass_clause_sends(lowering) {
+        let (stops, answer) = initializing_stops(
+            lowering,
+            "clause",
+            "made:: Clause new.",
+            Command::StepInto,
+            ("Initializing>>clause", "^made e + made f"),
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Initializing>>setupValue", "^5"),
+                ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Setup initializer", "Setup"),
+                ("Setup initializer", "public e ::= value."),
+                ("Clause initializer", "public f ::= 6."),
+                ("Initializing>>clause", "made:: Clause new"),
+                ("Initializing>>clause", "^made e + made f"),
+            ]
+        );
+        assert_eq!(answer, 11);
     }
 }
 

@@ -2352,7 +2352,28 @@ and has no source, yet stands on every stack between the sender of `C
 x: a` and `C`'s initializer. Its frame takes its metadata from the class
 header: its arguments are named as the factory's parameters in the
 header, it stands at the header's factory message pattern, and it has no
-statement start, so no step stops in it. Its body is equal by
+statement start, so no step stops in it. A step passes over it as over a
+frame the step filters filter (decision 16), whatever the filters say: a
+stop the step would make in it -- the return point an initializer's
+return, or a step out of one, reaches -- goes on as a step into from the
+factory itself (`stepping::went_on_past_filtered`), and a step into's
+request goes on through it to the initializer it pushes
+(`stepping::passes_over`, `held_step`, `sent_by_step`). So every
+initializer's statements are stepped, in the order the program runs
+them -- a `<:` clause's check, the superclass clause, the superclass's
+initializer, each `<:` clause's message and its level's initializer,
+the slot initializers and the body's statements -- a step over or out at
+a level's last statement stops at the next level's first, and from the
+last level's the step stops at the factory's return point in its
+caller, after the `new`, or, for a factory the host sent, at the next
+host run's first statement (decision 17;
+`a_step_over_goes_through_an_initializer_and_past_the_factory`,
+`a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s`,
+`a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new`,
+`a_step_into_goes_through_a_mixin_application_s_initializers_in_order`,
+`a_step_into_enters_a_method_a_superclass_clause_sends`). A body whose metadata has no
+statement start is passed over the same way; one without metadata is
+not known to have none. Its body is equal by
 construction, `factory_body` of the same arity. Primordial Soup's
 `computeDebugInfo:` takes a factory's from the class header the same way
 (`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
@@ -2605,8 +2626,10 @@ the run ends with the step not stopped. `ns-next run` is several host
 runs of one program -- a project's manifest instantiated, the root
 module, slot initializers included, then `main:args:` -- so the next
 place the program reaches is the next run's first statement: a step
-over at the root's last slot initializer, past the factory, stops at
-`main:args:`'s first statement. The run's end carries the step
+over or out at the last statement of the root's initializer returns to
+the factory, which is passed over as a step into (decision 12) and
+returns to the host, and the step stops at `main:args:`'s first
+statement, one step. The run's end carries the step
 (`stepping::run_ended`), and the next run's start goes on with it as a
 step into from its first activation (`stepping::carry_into`,
 `Interpreter::serve_before_run`), the way a pause pending between runs
