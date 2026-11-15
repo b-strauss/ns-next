@@ -1612,7 +1612,26 @@ impl MixinApplication {
     /// it down and whether it is a lazy slot. The one walk of the layout,
     /// so that an install, which copies fields by their names, and the
     /// debugger, which shows them, never disagree on which field is which.
+    /// The install relies on every applied mixin being registered.
     pub(crate) fn field_layout(&self, heap: &crate::heap::Heap) -> Vec<LaidOutField> {
+        let fields = self
+            .checked_field_layout(heap)
+            .expect("internal: an applied mixin is registered");
+        debug_assert_eq!(
+            fields.len(),
+            self.slot_count,
+            "internal: an application's fields are its levels' slots and cache slots"
+        );
+        fields
+    }
+
+    /// `field_layout`, or `None` where a level's mixin has no id in
+    /// `heap`: what a debugger query reads, which names the fields by
+    /// number then rather than ending the program it inspects.
+    pub(crate) fn checked_field_layout(
+        &self,
+        heap: &crate::heap::Heap,
+    ) -> Option<Vec<LaidOutField>> {
         let mut levels = Vec::new();
         let mut level = Some(self);
         while let Some(application) = level {
@@ -1622,9 +1641,7 @@ impl MixinApplication {
         let mut fields = Vec::with_capacity(self.slot_count);
         let mut occurrences: HashMap<MixinId, u32> = HashMap::new();
         for (level, application) in levels.into_iter().rev().enumerate() {
-            let id = heap
-                .known_mixin_id(&application.mixin)
-                .expect("internal: an applied mixin is registered");
+            let id = heap.known_mixin_id(&application.mixin)?;
             let count = occurrences.entry(id).or_insert(0);
             let occurrence = *count;
             *count += 1;
@@ -1656,12 +1673,7 @@ impl MixinApplication {
                 lazy: false,
             }));
         }
-        debug_assert_eq!(
-            fields.len(),
-            self.slot_count,
-            "internal: an application's fields are its levels' slots and cache slots"
-        );
-        fields
+        Some(fields)
     }
 }
 

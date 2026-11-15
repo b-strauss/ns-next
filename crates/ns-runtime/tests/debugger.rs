@@ -999,6 +999,79 @@ fn a_mixin_applied_more_than_once_numbers_its_shadowed_slots() {
     }
 }
 
+/// Two different nested classes named `Base`, each declaring a slot `x`,
+/// both levels of one chain -- the superclass and a `<:` clause's mixin --
+/// under a class that declares `x` too.
+const TWINS: &str = indoc! {"
+    class Twins = Object new () (
+      class Outer = Object new () (
+        public class Base = Object new (
+          | x = 1. |
+        ) ()
+      )
+      class Other = Object new () (
+        public class Base = Object new (
+          | x = 2. |
+        ) ()
+      )
+      class Both = outerBase new <: otherBase new (
+        | x = 3. |
+      ) ()
+      outerBase = (
+        ^Outer new Base
+      )
+      otherBase = (
+        ^Other new Base
+      )
+      public run = (
+        | both |
+        both:: Both new.
+        ^both
+      )
+    ) : ()
+"};
+
+/// Two levels of one chain whose mixins differ but share a name would
+/// both read `x (Base)`: each is named by its declaration's path from
+/// its module root instead, and only where the short names collide.
+#[test]
+fn two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let offset = line_start(TWINS, "^both");
+        let (fields, result) = debugged(
+            TWINS,
+            lowering,
+            |remote| set_breakpoints(remote, "Twins", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Twins");
+                let both =
+                    value_of(&variables(remote, Command::Variables { frame: 0 }), "both").clone();
+                let fields = variables(
+                    remote,
+                    Command::Children {
+                        value: both.id,
+                        start: 0,
+                        count: both.child_count,
+                    },
+                );
+                continue_stopped(remote);
+                fields
+            },
+        );
+        expect_ok(result, "run");
+        assert_eq!(
+            names(&fields),
+            ["x (Outer.Base)", "x (Other.Base)", "x"],
+            "{lowering:?}"
+        );
+        let labels: Vec<&str> = fields
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
 #[test]
 fn named_fields_are_paged() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {

@@ -1193,12 +1193,21 @@ level above, the declaring mixin's name added. Where `<:` clauses apply
 one mixin more than once, its levels are told apart by number, counted
 by the mixin's id from the nearest shadowed level upward: `x (M)`, then
 `x (M 2)` (`a_mixin_applied_more_than_once_numbers_its_shadowed_slots`).
-Two different mixins that share a name are not numbered, and both read
-`x (Base)`. A field no declaration names is
-`field <index>`, which only an instance whose class holds no
-application, or one with more fields than its application lays out,
-would show; neither happens to an instance the VM made. Paging counts
-the named fields as it counts elements (`named_fields_are_paged`).
+Two different mixins that share a name, each shadowing the same name,
+are not numbered: each is named by its declaration's path from its
+module root instead, `x (Outer.Base)` and `x (Other.Base)`, and by that
+path from the root's own name on where even the paths are alike, while
+a mixin whose name no other shares there keeps the short form
+(`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`).
+A field no declaration names is `field <index>`, which only an instance
+whose class holds no application, one with more fields than its
+application lays out, or one whose layout names a mixin the heap holds
+no id for would show; none happens to an instance the VM made, and the
+last, which the install treats as a broken invariant, the query answers
+by number rather than fail on (`MixinApplication::checked_field_layout`;
+`a_layout_naming_an_unregistered_mixin_numbers_the_fields`). Paging
+counts the named fields as it counts elements
+(`named_fields_are_paged`).
 
 A field that holds no value yet is shown as not computed rather than as
 its word, `nil` (`VariableValue::NotComputed`): a lazy

@@ -164,11 +164,15 @@ struct FieldLabel {
 /// which the program's own code there reads; each level above it is
 /// `x (Super)`, its declaring mixin's name added, and where one chain
 /// applies that same mixin more than once, each further one up is
-/// numbered, `x (Super 2)`, counted by the mixin's id: two different
-/// mixins that share a name both read `x (Super)`. A field no declaration
-/// names is `field <index>`: only an instance whose class holds no
-/// application, or one with more fields than its application lays out,
-/// shows one.
+/// numbered, `x (Super 2)`, counted by the mixin's id. Two different
+/// mixins that share a name, each shadowing the same name, are told apart
+/// by their declarations' paths from their module roots, `x
+/// (Outer.Super)` and `x (Other.Super)` (`qualifiers`); a mixin whose
+/// name no other shares there keeps the short form. A field no
+/// declaration names is `field <index>`: an instance whose class holds no
+/// application, one with more fields than its application lays out, or
+/// one whose layout names a mixin the heap holds no id for, which a query
+/// shows rather than fail on (`MixinApplication::checked_field_layout`).
 fn field_labels<'gc>(
     mutator: &Mutator<'gc>,
     object: ObjectReference<'gc>,
@@ -177,7 +181,8 @@ fn field_labels<'gc>(
     let heap = &mutator.heap;
     let layout = heap
         .class_application(heap.object_class(object))
-        .map_or_else(Vec::new, |application| application.field_layout(heap));
+        .and_then(|application| application.checked_field_layout(heap))
+        .unwrap_or_default();
     let declared: Vec<Option<Declared>> = (0..field_count)
         .map(|index| {
             let field = layout.get(index)?;
@@ -211,6 +216,7 @@ fn field_labels<'gc>(
         let level = nearest.entry(field.name).or_insert(field.level);
         *level = (*level).max(field.level);
     }
+    let qualifiers = qualifiers(mutator, &declared, &nearest);
     // Numbered from the object's class upward, as the shadowed fields are
     // met reading up the chain; fields lie in level order, so that is the
     // reverse of field order.
@@ -229,9 +235,12 @@ fn field_labels<'gc>(
             Some(field) => {
                 let count = shadowed.entry((field.name, field.declarer)).or_insert(0);
                 *count += 1;
+                let declarer = qualifiers
+                    .get(&(field.name, field.declarer))
+                    .map_or_else(|| field.declarer_name.to_string(), Clone::clone);
                 let name = match *count {
-                    1 => format!("{} ({})", field.name, field.declarer_name),
-                    count => format!("{} ({} {count})", field.name, field.declarer_name),
+                    1 => format!("{} ({declarer})", field.name),
+                    count => format!("{} ({declarer} {count})", field.name),
                 };
                 FieldLabel {
                     name,
@@ -243,6 +252,63 @@ fn field_labels<'gc>(
     }
     labels.reverse();
     labels
+}
+
+/// How each shadowed field's declarer is named in its label, by the
+/// field's name and the declarer's id: its mixin's name, unless another
+/// declarer of a field shadowed under the same name shares that name --
+/// then its declaration's path from its module root, `Outer.Super`, and
+/// where that is shared too, as by the roots of two modules of one name,
+/// that path from the root's own name on, `Module.Outer.Super`. A field
+/// of the nearest level shadows nothing and has none.
+fn qualifiers(
+    mutator: &Mutator<'_>,
+    declared: &[Option<Declared>],
+    nearest: &HashMap<Symbol, usize>,
+) -> HashMap<(Symbol, MixinId), String> {
+    let mut declarers: HashMap<Symbol, Vec<(MixinId, Symbol)>> = HashMap::new();
+    for field in declared.iter().flatten() {
+        if nearest.get(&field.name) == Some(&field.level) {
+            continue;
+        }
+        let ids = declarers.entry(field.name).or_default();
+        if !ids.iter().any(|(id, _)| *id == field.declarer) {
+            ids.push((field.declarer, field.declarer_name));
+        }
+    }
+    // A module root's own path is empty: it is named by its name.
+    let path = |id: MixinId, from_root: bool| {
+        let (root, path) = mutator.path_from_module_root(id);
+        let mut names: Vec<String> = path.iter().map(ToString::to_string).collect();
+        if from_root || names.is_empty() {
+            if let Some(root) = mutator.heap.mixin(root) {
+                names.insert(0, root.name.to_string());
+            }
+        }
+        names.join(".")
+    };
+    let mut qualifiers = HashMap::new();
+    for (name, ids) in &declarers {
+        for (id, short) in ids {
+            let sharing: Vec<MixinId> = ids
+                .iter()
+                .filter(|(other, other_short)| other != id && other_short == short)
+                .map(|(other, _)| *other)
+                .collect();
+            let qualifier = if sharing.is_empty() {
+                short.to_string()
+            } else {
+                let own = path(*id, false);
+                if sharing.iter().all(|other| path(*other, false) != own) {
+                    own
+                } else {
+                    path(*id, true)
+                }
+            };
+            qualifiers.insert((*name, *id), qualifier);
+        }
+    }
+    qualifiers
 }
 
 /// One field a declaration names: the name it was declared with, the id
@@ -279,4 +345,56 @@ fn child_count<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> usize {
         _ => None,
     };
     count.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::field_labels;
+    use crate::mixin::{DispatchIds, LevelFacts, Mixin, MixinApplication};
+    use crate::{Interpreter, Symbol};
+
+    /// An instance whose class's application names a mixin the heap holds
+    /// no id for -- a class no program can make, built by hand -- shows
+    /// its fields by number: a debugger query never ends the program it
+    /// inspects on a layout it cannot name.
+    #[test]
+    fn a_layout_naming_an_unregistered_mixin_numbers_the_fields() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let mixin = Rc::new(Mixin::empty(Symbol::intern("Unregistered")));
+            let level_facts = LevelFacts::of(&mixin);
+            let application = mutator.heap.register_application(MixinApplication {
+                index: crate::heap::ApplicationIndex::UNREGISTERED,
+                mixin,
+                superclass: None,
+                inherits_value: false,
+                first_mutable_slot: None,
+                instantiation_refusal: None,
+                nested_slot: crate::hash::IdentityMap::default(),
+                declared_slots: Vec::new(),
+                slot_count: 0,
+                own_slot_base: 0,
+                dispatch_ids: DispatchIds::NONE,
+                instance_header: None,
+                level_facts,
+            });
+            let class = mutator
+                .heap
+                .allocate_self_referential_class(crate::heap::NewClass {
+                    application,
+                    enclosing: None,
+                    declaring_class: None,
+                    superclass: None,
+                    builtin: None,
+                });
+            let object = mutator.heap.allocate_instance(class, 2);
+            let names: Vec<String> = field_labels(mutator, object, 2)
+                .into_iter()
+                .map(|label| label.name)
+                .collect();
+            assert_eq!(names, ["field 0", "field 1"]);
+        });
+    }
 }
