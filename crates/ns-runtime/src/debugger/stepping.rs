@@ -33,6 +33,8 @@ use super::metadata::again::{declaration_path, BodyOrigin};
 use super::metadata::{BlockPlace, BlockSendEntry, BodyMetadata, Cache, TakenBlock};
 use super::remote::{BreakpointId, ClassName};
 use super::stack::{self, StackFrame};
+use ns_syntax::Span;
+
 use crate::bytecode::{register_written, CompiledCode, Instruction};
 use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
 use crate::interpreter::Mutator;
@@ -430,8 +432,11 @@ fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<Se
 /// statement -- the rest of the statement the form is part of, which the
 /// flood's next statement start would pass, as a real send's return point
 /// is: `None` at a statement start, which the flood stops at, at a loop's
-/// back jump, which goes on to the loop's condition, and outside every
-/// statement, at a body's implicit return.
+/// back jump, which goes on to the loop's condition, and at or past the
+/// end of the innermost statement the form is part of -- at a body's
+/// implicit return, or at an enclosing form's code after a form that is a
+/// whole statement -- where the flood's next statement start is the step
+/// over's.
 fn join_stop(
     code: &CompiledCode,
     metadata: &BodyMetadata,
@@ -446,10 +451,30 @@ fn join_stop(
         .statements
         .iter()
         .any(|statement| statement.instructions.start == join);
-    let mid_statement = metadata
+    // The innermost statement the form is part of: the smallest that holds
+    // every block the form takes and lies in none of them. An enclosing
+    // statement holds a nested form's join too -- an outer form's branch
+    // jump after an inner form that is a whole statement of that branch --
+    // where a step over of the inner statement goes on at the flood's next
+    // statement start, not at the outer form's jump.
+    let first = entry.blocks.iter().map(|taken| taken.span.start).min()?;
+    let last = entry.blocks.iter().map(|taken| taken.span.end).max()?;
+    let inside_a_block = |span: Span| {
+        entry
+            .blocks
+            .iter()
+            .any(|taken| taken.span.start <= span.start && span.end <= taken.span.end)
+    };
+    let statement = metadata
         .statements
         .iter()
-        .any(|statement| statement.instructions.start < join && join < statement.instructions.end);
+        .filter(|statement| {
+            statement.span.start <= first
+                && last <= statement.span.end
+                && !inside_a_block(statement.span)
+        })
+        .min_by_key(|statement| statement.span.end - statement.span.start)?;
+    let mid_statement = statement.instructions.start < join && join < statement.instructions.end;
     let back_jump = matches!(
         code.instruction(after),
         Instruction::Jump { target } if target <= join

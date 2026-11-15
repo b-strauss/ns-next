@@ -3993,6 +3993,36 @@ const LEAVING: &str = indoc! {"
         second value.
         ^total
       )
+      public nestingStatement = (
+        | c d a |
+        c:: true.
+        d:: true.
+        a:: 0.
+        c ifTrue: [d ifTrue: [
+          a:: a + 1.
+          a:: a + 2]] ifFalse: [a:: 9].
+        ^a
+      )
+      public nestingAssignment = (
+        | c d x |
+        c:: true.
+        d:: true.
+        x:: 0.
+        x:: c ifTrue: [d ifTrue: [
+          x:: x + 4.
+          x + 5]] ifFalse: [2].
+        ^x
+      )
+      public nestingValue = (
+        | c d x |
+        c:: true.
+        d:: true.
+        x:: 0.
+        x:: c ifTrue: [(d ifTrue: [
+          x:: x + 6.
+          x] ifFalse: [0]) + 7] ifFalse: [2].
+        ^x
+      )
     ) : ()
 "};
 
@@ -4438,6 +4468,59 @@ ns_runtime::for_each_lowering! {
             [stood("[] in Leaving>>siblings", "total:: total * 10", Some("3"))]
         );
         assert_eq!(answer, 30);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a form that is a whole statement of an enclosing
+    /// form's block stops where a step over of that statement would: at
+    /// the next statement start, never at the enclosing form's own jump
+    /// after it.
+    fn a_step_out_of_a_nested_form_s_statement_stops_where_a_step_over_would(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingStatement",
+            "a:: a + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^a"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>nestingStatement");
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same for a nested form whose enclosing form's value is
+    /// assigned: the step goes on past the assignment.
+    fn a_step_out_of_a_nested_form_in_an_assigned_form_stops_after_the_assignment(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingAssignment",
+            "x:: x + 4.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(statements(&stops), ["^x"]);
+        assert_eq!(stops[0].0 .0, "Leaving>>nestingAssignment");
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A nested form that is a value inside an enclosing form's block
+    /// stops at its join, mid the block's statement.
+    fn a_step_out_of_a_nested_form_used_as_a_value_stops_at_its_join(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "nestingValue",
+            "x:: x + 6.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("(d ifTrue: [", "ifFalse: [0]) + 7");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(answer, 13);
     }
 }
 
