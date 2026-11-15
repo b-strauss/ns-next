@@ -7832,16 +7832,17 @@ with its test reproduced first.
   a step over of it would, under both lowerings, the metadata recording
   each send that takes a block and where its blocks lie; a stop after a
   body's last statement stands at that statement.
-- **A step passes over the factory and goes on in the next host run.**
-  A step over from a root's last slot initializer stopped nowhere, the
-  run ending under it, and a step stopped in the factory, a frame
-  without a statement. A step its host run's end leaves in progress goes
-  on in the program's next run, stopping at its first statement
-  (`stepping::run_ended`, `carry_into`); and no step stops in a factory,
-  known by its frame's kind, with or without metadata, which every step
-  passes over, so that every level's initializer is stepped in the order
-  §6.1 and §6.2 run them (decision 12); a pause asked between runs
-  reports the method exits the carried step would have.
+- **A step passes over the factory on its way out and goes on in the
+  next host run.** A step over from a root's last slot initializer
+  stopped nowhere, the run ending under it. A step its host run's end
+  leaves in progress goes on in the program's next run, stopping at its
+  first statement (`stepping::run_ended`, `carry_into`); a step leaving
+  an initializer passes over the factory, known by its frame's kind,
+  with or without metadata, to its caller, so that every level's
+  initializer is stepped in the order §6.1 and §6.2 run them (decision
+  12) -- a step into an instantiation stops in the factory, at its
+  header's pattern; a pause asked between runs reports the method exits
+  the carried step would have.
 
 Every commit ran `cargo xtask gates commit` (and `codegen` where its
 files changed); at `572f0379` every end-of-batch gate passed -- the
@@ -7858,9 +7859,9 @@ its findings are fixed (`875a1f0a` to `572f0379`).
   send that took it, however the block was passed, and stops where a
   step over of it would.
 - `fe1c9244`, `3b905461` -- a step goes on in the program's next run and
-  passes over the factory, stepping every initializer.
+  passes over the factory on its way out, stepping every initializer.
 - `177b924a` -- the factory known by its frame's kind: an empty body is
-  stepped into again, and a stripped image's factory passed over.
+  stepped into again.
 - `af6aedad` -- shadowed fields of two same-named mixins named by their
   paths, and no panic from a debugger query.
 - `875a1f0a` -- the whole-branch review's findings: a step out decided by

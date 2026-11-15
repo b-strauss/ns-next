@@ -4302,6 +4302,141 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    /// A pause asked before a host run that instantiates a class stops
+    /// the run's factory at its entry, as the pause's stop, and a step
+    /// from there stops at the first statement of the initializer it
+    /// pushes.
+    fn a_pause_before_an_instantiation_stops_in_its_factory(lowering) {
+        let (mut interpreter, class) = load(TWO_RUNS, lowering);
+        let remote = interpreter.attach_debugger();
+        remote.pause();
+        let agent = |remote: &DebugRemote| {
+            expect_paused(remote);
+            let paused = standing(remote, TWO_RUNS);
+            let kind = stack_trace(remote)[0].kind.clone();
+            step(remote, Command::StepOver);
+            let stepped = standing(remote, TWO_RUNS);
+            continue_stopped(remote);
+            (paused, kind, stepped)
+        };
+        let ((paused, kind, stepped), result, _) =
+            debugged_by(remote, agent, || interpreter.instantiate(&class, &[]));
+        expect_ok(result, "instantiate");
+        assert_eq!(
+            paused,
+            (String::from("TwoRuns class>>new"), String::from("TwoRuns"))
+        );
+        assert_eq!(kind, FrameKind::Factory);
+        assert_eq!(
+            stepped,
+            (
+                String::from("TwoRuns initializer"),
+                String::from("Object new")
+            )
+        );
+    }
+}
+
+/// Sends `point` to an instance of `HEADERS` under `lowering` often
+/// enough that its factory and initializers are compiled -- the
+/// default JIT on -- then debugs one more send, a breakpoint at the
+/// instantiation, taking each of `commands` from its stop: answers every
+/// stop they made and the run's answer.
+fn warmed_header_stops(lowering: Lowering, commands: Vec<Command>) -> (Vec<(String, String)>, i64) {
+    let (mut interpreter, instance) = instance_of(HEADERS, lowering);
+    for _ in 0..1_000 {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("point"), &[]),
+            "warm",
+        );
+    }
+    let remote = interpreter.attach_debugger();
+    let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+    set_breakpoints(&remote, "Headers", vec![offset]);
+    let agent = move |remote: &DebugRemote| {
+        expect_first_stop(remote, "Headers");
+        let mut stops = Vec::new();
+        for command in commands {
+            step(remote, command);
+            stops.push(standing(remote, HEADERS));
+        }
+        continue_stopped(remote);
+        stops
+    };
+    let (stops, result, _) = debugged_by(remote, agent, || {
+        interpreter.send(&instance, Symbol::intern("point"), &[])
+    });
+    (stops, answered(&mut interpreter, result))
+}
+
+ns_runtime::for_each_lowering! {
+    /// The factory's stop and the step from it hold for a factory and
+    /// initializers machine code has compiled: the instantiation warmed a
+    /// thousand times first.
+    fn a_step_into_a_warmed_instantiation_stops_in_the_factory(lowering) {
+        let (stops, answer) = warmed_header_stops(
+            lowering,
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Punkt initializer", "public x ::= ax."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A line breakpoint on the initializer's first statement stands
+    /// where the step from the factory's stop goes: that stop is the
+    /// breakpoint's, made once, and the program then runs to its end.
+    fn a_breakpoint_at_the_initializer_s_first_statement_takes_the_step_from_the_factory(
+        lowering
+    ) {
+        let offsets = vec![
+            line_start(HEADERS, "made:: Bare x: 3."),
+            line_start(HEADERS, "| public x ::= ax. |"),
+        ];
+        let (stops, answer) = stepped(
+            HEADERS,
+            lowering,
+            "bare",
+            |remote| set_breakpoints(remote, "Headers", offsets),
+            |remote| {
+                let states = expect_breakpoints(remote, "Headers");
+                let ids: Vec<BreakpointId> = states.iter().map(|state| state.id).collect();
+                assert_eq!(ids.len(), 2);
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                let mut stops = Vec::new();
+                step(remote, Command::StepInto);
+                stops.push(standing(remote, HEADERS));
+                remote.send(Command::StepOver);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the confirmation of the step was expected, not {other:?}"),
+                }
+                assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                stops.push(standing(remote, HEADERS));
+                continue_stopped(remote);
+                stops
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Bare class>>x:", "x: ax"),
+                ("Bare initializer", "public x ::= ax."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// A step carried into a host run that sends a factory -- a root's
     /// instantiation after a run the step left (decision 17) -- stops in
     /// the factory at the run's start, and the next step stops at the

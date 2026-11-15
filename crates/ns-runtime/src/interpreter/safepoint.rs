@@ -302,7 +302,9 @@ impl Interpreter {
 }
 
 impl From<bool> for SafepointOutcome {
-    /// Whether the suspend stress mode rebuilt the stack.
+    /// Whether the stack was rebuilt -- by the debugger's undoing of an
+    /// initializer's push to stop in its factory, or by the suspend
+    /// stress mode.
     fn from(rebuilt: bool) -> SafepointOutcome {
         if rebuilt {
             SafepointOutcome::Rebuilt

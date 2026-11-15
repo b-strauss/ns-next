@@ -724,6 +724,9 @@ serves the pause bit; the bit stays set meanwhile, so that a body without
 metadata, which floods nothing, stops at the first safepoint as before,
 and the stop is made whatever the step filters say, as a pause's is
 (`a_pause_between_runs_stops_the_sent_method_at_its_first_statement`).
+A factory the host sends, which has no statement start, is stopped at
+its entry by a one-shot at its first instruction (decision 12;
+`a_pause_before_an_instantiation_stops_in_its_factory`).
 A step is no command either: one a run's end left in progress -- its
 frame returned to the host, or was popped there, without a stop -- goes
 on in the next run (decision 17). The run's end ends it, its frames gone,
@@ -1620,7 +1623,10 @@ tests do not.
   writes no clause, and after the `new` for an initializer with no
   statement; a step out there stopping after the `new`; a body-less
   declaration's factory; and a step carried into an instantiation's run
-  stopping in its factory, and, through the agent, a stripped image's
+  stopping in its factory, as does a pause asked before it; the stop and
+  the step from it after a thousand warming instantiations; a line
+  breakpoint on the initializer's first statement taking the step from
+  the factory's stop, once; and, through the agent, a stripped image's
   factory stopped in as a frame without a line. The agent's own test
   steps in from a loop's
   line to its body and out to the line after the loop
@@ -2413,8 +2419,9 @@ on -- and stops in the factory, at its `InitializeInstance`, the run
 loop reading the frame on top again (`stepping::rewound_into_factory`,
 `HeldStep::StopInFactory`, `Served::Rebuilt`); a factory the host sends,
 the first activation of an instantiation's run, which a step the run
-before left goes on from (decision 17), stops at its first instruction
-through a one-shot (`stepping::stop_at_factory_entry`). Neither puts a
+before left goes on from (decision 17) or a pause asked before the run
+stops, stops at its first instruction through a one-shot
+(`stepping::stop_at_factory_entry`). Neither puts a
 test on the instantiation's path: the one is decided at the held step's
 safepoint, the other by a patch. A step over or into at that stop goes
 on, as a step into, to the initializer the factory pushes, and stops at

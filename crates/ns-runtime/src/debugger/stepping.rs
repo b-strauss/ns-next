@@ -790,7 +790,9 @@ fn stop_after_send<'gc>(
 /// it runs anything, so the first one-shot it reaches is its first
 /// statement's; that stop is the pause's (`is_at_entry`) and serves the
 /// pause bit, which stays set meanwhile, so that a body without metadata,
-/// which floods nothing, still stops at the first safepoint. It stops in
+/// which floods nothing, still stops at the first safepoint. A factory
+/// the host sends, which has no statement start, is stopped at its entry
+/// (`stop_at_factory_entry`). It stops in
 /// the entry frame whatever the step filters say, as a pause stops where
 /// the program is. The method exits of a step the run before carried
 /// (`run_ended`), `exits`, are the pause's stop's to report, as a pause
@@ -813,6 +815,9 @@ pub(crate) fn stop_at_entry(
         stepping.started_filtered = true;
         stepping.at_entry = true;
     }
+    // A factory the host sends has no statement start: the pause stops it
+    // at its entry, as a step carried into its run does.
+    stop_at_factory_entry(mutator, entry);
     keep_exits(mutator, exits);
     settle(mutator);
 }
@@ -1005,7 +1010,8 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
 /// A step into that goes on from `frame`, when `frame` is a factory's
 /// that has not run yet -- the first activation of a host run that sends
 /// a factory, which a step the run before left goes on from (decision
-/// 17) -- stops at its entry, as one that pushes the factory does
+/// 17), or which a pause asked before the run stops (`stop_at_entry`) --
+/// stops at its entry, as one that pushes the factory does
 /// (`held_step`): the factory's one place, since it has no statement
 /// start for the flood to patch. A one-shot at its first instruction,
 /// which it fetches next, makes the stop. A filtered factory -- a shipped
