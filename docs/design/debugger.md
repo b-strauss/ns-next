@@ -4386,7 +4386,16 @@ image's, one an install changed -- by the `source` request's answer, read
 once per reference for the session, as a read-only `LightVirtualFile` of
 the name `<Module>.ns` holding the answer, one per reference for the
 session; a hidden frame
-(`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
+(`presentationHint: "subtle"`) stays listed, drawn greyed. A frame's
+equality object (`XStackFrame.getEqualityObject`), by which the platform
+keeps the nodes the user expanded in the variables view and restores
+them at the next stop, is the body it runs -- the agent's name of it --
+its module's file or name and its depth, the frames below it counted,
+since the DAP frame's `id` is numbered afresh at every stop: a step
+within one body, or a loop's block activated again at the same depth,
+keeps what the user opened, as Java's frames do by their method, while a
+recursive activation, deeper, is another frame; the object is a data
+class, since the platform's front end compares it by its text. Its children
 are the `Return value` scope's value, at a step's stop, above the
 `Locals`, named by its call and drawn with the platform's icon of a
 returned value (`AllIcons.Debugger.WatchLastReturnValue`), as Java's is,

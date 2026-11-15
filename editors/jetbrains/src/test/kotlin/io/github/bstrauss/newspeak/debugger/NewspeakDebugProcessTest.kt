@@ -3,6 +3,7 @@ package io.github.bstrauss.newspeak.debugger
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.intellij.execution.KillableProcess
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.executors.DefaultDebugExecutor
@@ -75,6 +76,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.Icon
 
 /**
@@ -159,10 +161,13 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val debugging = debug(program)
         assertEquals(3, debugging.nextPause().line)
 
+        val before = checkNotNull(debugging.session.currentStackFrame).equalityObject
         onEdt { debugging.session.stepOver(false) }
         val stepped = debugging.nextPause()
         assertEquals(program, stepped.file)
         assertEquals("line 5, counted from 0 by the platform", 4, stepped.line)
+        // The platform keeps the variables view's expanded nodes for the frame it takes for the same.
+        assertEquals("the stepping frame is the same frame", before, checkNotNull(debugging.session.currentStackFrame).equalityObject)
 
         onEdt { debugging.session.resume() }
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
@@ -661,6 +666,54 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val returned = presentationOf(children.getValue("(kinds at: which) value"))
         assertEquals(Presentation(AllIcons.Debugger.WatchLastReturnValue, "Integer", "1", false), returned)
         assertNull("a local has no icon of its own", presentationOf(children.getValue("elements")).icon)
+    }
+
+    /**
+     * A frame is the same as one of an earlier stop -- the platform then
+     * keeps the nodes the user expanded -- when it runs the same body in
+     * the same module at the same depth, whatever the agent's frame ids
+     * and lines; a frame of another body, or of a recursive activation of
+     * the same body, deeper, is another.
+     */
+    fun testAFrameIsTheSameAcrossStopsByItsBodyAndDepth() {
+        // The frames' file, which a stop opens.
+        val path = JsonPrimitive(program("Counter", STOPS).path).toString()
+        val stacks = listOf(
+            """{"stackFrames":[
+              {"id":1,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":4,"column":5},
+              {"id":2,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":2}""",
+            """{"stackFrames":[
+              {"id":7,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":5,"column":5},
+              {"id":8,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":2}""",
+            """{"stackFrames":[
+              {"id":1,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":4,"column":5},
+              {"id":2,"name":"Counter>>count:","source":{"name":"Counter.ns","path":$path},"line":6,"column":5},
+              {"id":3,"name":"Counter>>main:args:","source":{"name":"Counter.ns","path":$path},"line":7,"column":5}
+            ],"totalFrames":3}""",
+        )
+        val answered = AtomicInteger()
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(stacks[answered.getAndIncrement()]).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        val stops = stacks.indices.map { stop ->
+            if (stop > 0) onEdt { faked.debugging.session.resume() }
+            agent.event("stopped", JsonObject().apply { addProperty("reason", "step") })
+            faked.debugging.nextPause()
+            framesOf(faked.debugging.session).map { frame -> frame.equalityObject }
+        }
+        val (first, second, recursive) = stops
+        assertEquals("the same activation at the next line", first, second)
+        assertFalse("the caller is another frame", first[0] == first[1])
+        assertFalse("a recursive activation, deeper, is another frame", recursive[0] == first[0])
+        assertEquals("the activation it was called from is the earlier stop's", first[0], recursive[1])
+        assertEquals(first[1], recursive[2])
     }
 
     /** The agent's `variables` answer: one local, an `Array` of 150 elements, and its elements a page at a time. */

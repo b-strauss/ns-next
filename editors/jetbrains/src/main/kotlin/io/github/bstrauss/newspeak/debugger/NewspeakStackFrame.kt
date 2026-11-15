@@ -19,16 +19,36 @@ import java.util.concurrent.CompletableFuture
  * One frame of a stop, at [position] -- null for a frame the agent places
  * nowhere, as one of a body compiled without its metadata -- with its
  * variables, and at a step's stop the value the step's last call returned.
+ * [depth] counts the frames below it, the stack's first frame 0.
  */
 class NewspeakStackFrame(
     private val client: DapClient,
     private val frame: DapStackFrame,
     private val position: XSourcePosition?,
+    private val depth: Int,
 ) : XStackFrame() {
     /** A frame the agent hides by default -- the shipped modules' own -- stays listed, drawn greyed. */
     val hidden: Boolean get() = frame.presentationHint == "subtle"
 
     override fun getSourcePosition(): XSourcePosition? = position
+
+    /**
+     * What the platform keeps the variables view's expanded nodes by and
+     * restores them for at the next stop: the activation's place across
+     * stops, which the DAP frame's `id`, numbered afresh at each stop, is
+     * not. A frame is the same as one of an earlier stop when it runs the
+     * same body -- the agent's name of it, `Class>>selector` or a block's
+     * `[] in Class>>selector`, in the same module -- at the same depth, as
+     * Java's frames are by their method: a step within one method, or a
+     * loop's block activated again at the same depth, keeps what the user
+     * opened, while a recursive activation, deeper, is another frame. A
+     * data class, as the platform's front end compares the object by its
+     * text.
+     */
+    override fun getEqualityObject(): Any = Identity(frame.name, frame.source?.path ?: frame.source?.name, depth)
+
+    /** The parts of [getEqualityObject]: the body's name, its module's file or name, and the depth. */
+    private data class Identity(val body: String, val module: String?, val depth: Int)
 
     override fun customizePresentation(component: ColoredTextContainer) {
         component.append(frame.name, if (hidden) SimpleTextAttributes.GRAYED_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)

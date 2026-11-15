@@ -304,15 +304,16 @@ class NewspeakDebugProcess(
             LOG.warn("the stack of a stop could not be read", exception)
             return emptyList<NewspeakStackFrame>() to start
         }
-        val frames = body.get("stackFrames")
+        val read = body.get("stackFrames")
             ?.takeIf { element -> element.isJsonArray }
             ?.asJsonArray
             ?.filter { element -> element.isJsonObject }
             ?.map { element -> DapStackFrame.from(element.asJsonObject) }
             .orEmpty()
-            .map { frame -> NewspeakStackFrame(client, frame, positionOf(frame)) }
-        val total = body.get("totalFrames")?.takeIf { element -> element.isJsonPrimitive }?.asInt ?: (start + frames.size)
-        return frames to maxOf(total, start + frames.size)
+        val answered = body.get("totalFrames")?.takeIf { element -> element.isJsonPrimitive }?.asInt ?: (start + read.size)
+        val total = maxOf(answered, start + read.size)
+        val frames = read.mapIndexed { index, frame -> NewspeakStackFrame(client, frame, positionOf(frame), total - 1 - (start + index)) }
+        return frames to total
     }
 
     private fun positionOf(frame: DapStackFrame): XSourcePosition? {

@@ -2058,7 +2058,11 @@ The server's own tests are described under its section, above ("Testing").
   moved by the session's look before it is sent and stops in the new
   library's file, and one in its `Manifest.ns` stops a project's
   manifest as it answers a module;
-  a hidden frame is drawn greyed and the program's frame not; and an
+  a hidden frame is drawn greyed and the program's frame not; a frame
+  is the same across stops -- its equality object -- by its body, its
+  module and its depth, whatever the agent's ids and lines, its caller
+  and a recursive activation of its body others, and a step over in the
+  real runtime keeps the stepping frame the same; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
   with `start` 100; an agent's `terminated` event or a close before any
   `process` event ends the session with the error and kills the process,
@@ -2266,7 +2270,9 @@ and resolves cleanly in a JetBrains IDE today.
   module's read-only `LightVirtualFile`, the core library's node under
   External Libraries as the project view's tree draws it (the tests read
   the provider, the file index and the nodes the project view builds),
-  and the turning off and on that
+  the variables view's restore of the nodes expanded across a step (the
+  tests check the frames' equality objects it is keyed by), and the
+  turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run
