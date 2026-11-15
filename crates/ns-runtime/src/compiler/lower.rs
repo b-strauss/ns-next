@@ -1961,6 +1961,8 @@ impl<'a> Lowerer<'a> {
             receiver: spans.receiver,
             selector: spans.selector.into(),
             call: spans.call,
+            parenthesize_receiver: spans.parenthesize_receiver,
+            setter: spans.setter,
         });
     }
 
@@ -2906,25 +2908,46 @@ fn variable_place(access: Access) -> VariablePlace {
 /// A send's spans as the debugger's metadata names them
 /// (`docs/design/debugger.md`, decision 15, "The return value of the last
 /// call"): its receiver's -- `None` where nothing in the source spells
-/// one -- its selector tokens', and the whole call's, from its receiver,
-/// or its selector where the receiver is implicit, to its last argument.
+/// one -- its selector tokens', and the call's, from its receiver, or its
+/// selector where the receiver is implicit or a cascade's, to its last
+/// argument; whether the receiver, which a cascade's later message is
+/// spanned without, reads as that message's in parentheses; and whether
+/// the send is a setter assignment's.
 #[derive(Clone, Copy)]
 pub(super) struct SendSpans<'text> {
     pub(super) receiver: Option<Span>,
     pub(super) selector: &'text [Span],
     pub(super) call: Span,
+    pub(super) parenthesize_receiver: bool,
+    pub(super) setter: bool,
 }
 
 impl<'text> SendSpans<'text> {
     /// The send of `message` to `receiver`, the implicit receiver
-    /// included. A cascade's message is spanned from its receiver, the
-    /// cascade's.
+    /// included. A cascade's later message, which the source spells
+    /// apart from its receiver, is spanned without it, and names it in
+    /// parentheses when it is a binary or keyword send written without
+    /// them, as the message would read sent to it alone: `(a + b) c`.
     pub(super) fn of(receiver: &Expression, message: &'text ast::MessageSend) -> SendSpans<'text> {
-        let receiver = receiver_span(receiver);
+        let spelled = receiver_span(receiver);
+        let apart = spelled.is_some_and(|spelled| spelled.end <= message.span.start);
+        let call = match spelled {
+            Some(spelled) if !apart => spelled.merge(message.span),
+            _ => message.span,
+        };
+        let parenthesize_receiver = apart
+            && receiver.parentheses.is_empty()
+            && matches!(
+                &receiver.kind,
+                ExpressionKind::Send(send)
+                    if !matches!(send.message.selector, ast::Selector::Unary(_))
+            );
         SendSpans {
-            receiver,
+            receiver: spelled,
             selector: &message.selector_spans,
-            call: receiver.map_or(message.span, |receiver| receiver.merge(message.span)),
+            call,
+            parenthesize_receiver,
+            setter: false,
         }
     }
 
@@ -2934,6 +2957,8 @@ impl<'text> SendSpans<'text> {
             receiver: None,
             selector: std::slice::from_ref(span),
             call: *span,
+            parenthesize_receiver: false,
+            setter: false,
         }
     }
 
@@ -2944,6 +2969,8 @@ impl<'text> SendSpans<'text> {
             receiver: None,
             selector: std::slice::from_ref(target),
             call: target.merge(value.span),
+            parenthesize_receiver: false,
+            setter: true,
         }
     }
 }

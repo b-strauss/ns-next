@@ -1433,34 +1433,14 @@ fn module_roots(mutator: &Mutator<'_>, name: &ModuleName) -> Vec<MixinId> {
 /// module without text (an image built with its source stripped).
 pub(crate) fn module_text(mutator: &Mutator<'_>, name: &ModuleName) -> Option<String> {
     if name.shipped {
-        return shipped_text(name).map(|text| String::from(&*text));
+        let shipped = name.name == KERNEL_MODULE
+            || SHIPPED_MODULES
+                .iter()
+                .any(|shipped| shipped.name == name.name);
+        return shipped.then(|| String::from(&*shipped_module_text(&name.name)));
     }
     let root = module_roots(mutator, name).into_iter().next()?;
     mutator.heap.module_source(root)
-}
-
-/// The text of `span` in the current text of the module `name` names, as
-/// `module_text` reads it, a shipped module's sliced without a copy of
-/// the whole: what names a returned value's call at every step's stop.
-pub(crate) fn module_text_of(
-    mutator: &Mutator<'_>,
-    name: &ModuleName,
-    span: Span,
-) -> Option<String> {
-    let range = span.start as usize..span.end as usize;
-    if name.shipped {
-        return shipped_text(name).and_then(|text| text.get(range).map(String::from));
-    }
-    module_text(mutator, name).and_then(|text| text.get(range).map(String::from))
-}
-
-/// A shipped module's text, `None` for a name no shipped module has.
-fn shipped_text(name: &ModuleName) -> Option<Rc<str>> {
-    let shipped = name.name == KERNEL_MODULE
-        || SHIPPED_MODULES
-            .iter()
-            .any(|shipped| shipped.name == name.name);
-    shipped.then(|| shipped_module_text(&name.name))
 }
 
 /// Resolves `offsets` against every current body of the module whose

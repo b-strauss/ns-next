@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::breakpoints::module_text_of;
 use super::metadata::again::{module_name, BodyOrigin, Member};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
@@ -19,8 +18,7 @@ use super::remote::{
 };
 use super::stepping::RecordedCall;
 use super::values::StopValues;
-use crate::builtins::primitive::mirror_entry;
-use crate::bytecode::{CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
 use crate::interpreter::Mutator;
 use crate::mixin::{MethodEntry, Mixin};
@@ -603,28 +601,67 @@ fn location(
 const CALL_NAME_LIMIT: usize = 60;
 
 /// The name of the call a step recorded the answer of, as the stop
-/// reports it (`ReturnedValue::call`): the send's source in its module's
-/// current text, through its body's metadata, on one line; or, where
-/// the body has no metadata -- an image built with `--strip-source` --
-/// or the call is no send the source spells, what the instruction says.
+/// reports it (`ReturnedValue::call`): the send's source, sliced from the
+/// text its body's metadata was compiled from (`Cache::metadata_with_text`)
+/// -- a cascade's later message after its receiver's, in parentheses
+/// where the entry says so -- without its comments, on one line; or,
+/// where the body has no metadata -- an image built with
+/// `--strip-source` -- or the call is no send the source spells, what
+/// the instruction says (`Call::name`).
 pub(crate) fn call_name(mutator: &mut Mutator<'_>, call: RecordedCall) -> String {
     let RecordedCall {
         code,
         index,
+        call,
         origin,
     } = call;
     let spelled = origin.and_then(|origin| {
-        let metadata = Cache::metadata(mutator, &code, &origin)?;
+        let (metadata, text) = Cache::metadata_with_text(mutator, &code, &origin)?;
         let program_counter = u32::try_from(index).ok()?;
         let found = metadata
             .sends
             .binary_search_by_key(&program_counter, |entry| entry.index)
             .ok()?;
-        let span = metadata.sends[found].call;
-        let module = module_name(mutator, &origin.mixin)?;
-        module_text_of(mutator, &module, span).map(|text| one_line(&text))
+        let entry = &metadata.sends[found];
+        let call = uncommented(text.get(entry.call.start as usize..entry.call.end as usize)?);
+        let receiver = entry
+            .receiver
+            .filter(|receiver| receiver.end <= entry.call.start);
+        let named = match receiver {
+            Some(receiver) => {
+                let receiver =
+                    uncommented(text.get(receiver.start as usize..receiver.end as usize)?);
+                if entry.parenthesize_receiver {
+                    format!("({receiver}) {call}")
+                } else {
+                    format!("{receiver} {call}")
+                }
+            }
+            None => call,
+        };
+        Some(one_line(&named))
     });
-    spelled.unwrap_or_else(|| instruction_call_name(&code.instruction(index)))
+    spelled.unwrap_or_else(|| call.name())
+}
+
+/// `source`, a send's text, with every comment in it blanked out: a
+/// send's span starts and ends at a token, never inside a comment or a
+/// literal, so its text lexes alone as it does in its module.
+fn uncommented(source: &str) -> String {
+    let lexed = ns_syntax::lexer::Lexer::new(source).run_keeping_comments();
+    let mut text = String::with_capacity(source.len());
+    let mut from = 0;
+    for comment in &lexed.comments {
+        let (start, end) = (comment.span.start as usize, comment.span.end as usize);
+        if start < from || source.get(from..start).is_none() || source.get(start..end).is_none() {
+            continue;
+        }
+        text.push_str(&source[from..start]);
+        text.push(' ');
+        from = end;
+    }
+    text.push_str(source.get(from..).unwrap_or_default());
+    text
 }
 
 /// `text` on one line, each run of whitespace one space, its middle left
@@ -659,26 +696,6 @@ fn one_line(text: &str) -> String {
     let head: String = characters[..head].iter().collect();
     let tail: String = characters[tail..].iter().collect();
     format!("{} … {}", head.trim_end(), tail.trim_start())
-}
-
-/// What a call instruction names, without the source: a send's
-/// selector, `super` before a super send's, and the kind of the other
-/// calls.
-fn instruction_call_name(instruction: &Instruction) -> String {
-    match instruction {
-        Instruction::SendLexical { selector, .. }
-        | Instruction::SendPublic { selector, .. }
-        | Instruction::SendInlinable { selector, .. } => selector.to_string(),
-        Instruction::SendSuper { selector, .. } => format!("super {selector}"),
-        Instruction::SendMirror { primitive, .. } => {
-            String::from(mirror_entry(*primitive).selector)
-        }
-        Instruction::ResolveFuture { .. } => String::from("future"),
-        Instruction::InitializeInstance { .. } => String::from("initializer"),
-        Instruction::InitializeSuperclass { .. } => String::from("superclass initializer"),
-        Instruction::InitializeAppliedLevel { .. } => String::from("mixin initializer"),
-        _ => String::from("call"),
-    }
 }
 
 /// The variables of the frame at index `frame` of the stack trace, `None`

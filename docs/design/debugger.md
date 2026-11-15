@@ -1031,8 +1031,10 @@ The metadata of decisions 4, 5 and 10 to 12 is built
 (`BodyMetadata`) are its statement starts (`StatementEntry`: the
 instructions one statement compiled to and its span), its sends
 (`SendEntry`: the index, the `CallSite`, the receiver's span, the
-selector tokens' spans and the whole call's span), its sends that take block literals
-(`BlockSendEntry`: each block taken, a `TakenBlock` of its span and its
+selector tokens' spans, the call's span, whether a receiver spelled
+apart from it is named in parentheses and whether it is a setter
+assignment's), its sends that take block literals (`BlockSendEntry`:
+each block taken, a `TakenBlock` of its span and its
 place -- `BlockPlace::Inline`, the instructions it lowered to, or
 `BlockPlace::Called { send, closure }`, the send that runs its closure and
 the `MakeClosure` that made it, an index that names the running body's
@@ -3937,29 +3939,52 @@ value recorded as `Stopped::returned`, the stop's first value; a stop in
 a frame a step into pushed, and every stop that is not a step's, report
 none.
 
-The value is named by the call that answered it, as IntelliJ names
-Java's (`MethodReturnValueDescriptorImpl`, the method's class and name).
-A call is always the instruction before the one-shot's index in the frame
-it answered into, so a step over's value and a step out's -- the
-callee's answer, at its return point in the caller -- are named alike:
-by the send in the caller, the expression the user reads on the line the
-step stopped at, which tells two sends of one method on that line apart
-where the callee's `Class>>selector` would not. The one-shot notes only
-where the call stands, beside the value: its body, its index and the
-declaration the body belongs to (`stepping::RecordedCall`), no handle,
-so that it outlives a frame a step over its last statement leaves. The
-stop names it, once, rather than every call a step over a loop runs
-past (`stack::call_name`): through the body's metadata, whose send entry
-records the whole call's span (`SendEntry::call`, from the receiver --
-or the selector, where the receiver is implicit -- to the last argument;
-a setter assignment's whole assignment), the text of that span in the
-module's current text, a shipped module's sliced without a copy of the
-whole, on one line, each run of whitespace one space, and a call longer
-than 60 characters keeps its start and its end, each cut at a space, its
-middle left out as ` … `: `(kinds at: which) value`. A body without
-metadata -- an image built with `--strip-source` -- names it by the
-instruction: a send's selector, `super` before a super send's, a mirror
-send's mirror selector, and `future`, `initializer`, `superclass
+The value is named by the call that answered it. Where IntelliJ names
+Java's by the method's class and name (`MethodReturnValueDescriptorImpl`),
+this names it by the send in the caller, because a call is always the
+instruction before the one-shot's index in the frame it answered into,
+so that a step over's value and a step out's -- the callee's answer, at
+its return point in the caller -- are named alike, by the expression the
+user reads on the line the step stopped at, which tells two sends of one
+method on that line apart where the callee's `Class>>selector` would
+not. A setter assignment's send records nothing: its answer is the
+receiver, never the value the assignment answers, so the flood leaves
+out the index after it (`SendEntry::setter`) and the assigned value's
+call stays the last -- `count:: count + 1` reports `count + 1`, and an
+assignment of a literal reports none
+(`a_setter_s_answer_is_not_the_returned_value`).
+
+The one-shot notes only where the call stands, beside the value: its
+body, its index, the kind of call the instruction is (`stepping::Call`,
+decided by the one match that decides what a call is, `call_of`) and the
+declaration the body belongs to, taken again from the previous call of
+the same body (`stepping::RecordedCall`) -- no handle, so that it
+outlives a frame a step over its last statement leaves. The stop names
+it, once, rather than every call a step over a loop runs past
+(`stack::call_name`): through the body's metadata, whose send entry
+records the call's span (`SendEntry::call`, from the receiver -- or the
+selector, where the receiver is implicit -- to the last argument; a
+setter assignment's whole assignment), sliced from the text that
+metadata was compiled from, which the metadata cache keeps beside it
+and clears with it at every install (`Cache::metadata_with_text`), so
+that no text is assembled at a stop and a module is never looked up by
+a name two loaded modules may share
+(`a_call_is_named_from_its_own_module_s_text`). A cascade's later
+message, which the source spells apart from its receiver, is named by
+the receiver's text and its own, the receiver in parentheses where it is
+a binary or keyword send written without them
+(`SendEntry::parenthesize_receiver`): `platform transcript newLine`,
+`(3 + 4) min: 9`
+(`a_cascade_s_message_is_named_by_its_receiver_and_itself`). Its
+comments are left out -- the text of a send starts and ends at a token,
+so it lexes alone as in its module
+(`a_comment_inside_a_call_is_not_in_its_name`) -- and the name is put on
+one line, each run of whitespace one space; a call longer than 60
+characters keeps its start and its end, each cut at a space, its middle
+left out as ` … `: `(kinds at: which) value`. A body without metadata
+-- an image built with `--strip-source` -- names it by the instruction
+(`Call::name`): a send's selector, `super` before a super send's, a
+mirror send's mirror selector, and `future`, `initializer`, `superclass
 initializer` or `mixin initializer` for the other calls
 (`a_step_over_names_the_returned_value_by_its_call`,
 `a_stripped_image_names_the_return_value_by_its_selector`).

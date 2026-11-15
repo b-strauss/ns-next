@@ -20,15 +20,19 @@ pub(crate) struct Cache {
     bodies: HashMap<usize, Entry>,
 }
 
-/// One body's entry. The body is held weakly: a strong hold would keep
-/// every body the debugger ever looked at alive, and with it its inline
-/// caches' family (`InlineCaches::forget_families` frees a family only
-/// once its body is held by the family alone). A `Weak` still keeps the
-/// body's allocation, so no other body takes its address while the entry
-/// lives, and a dead entry is forgotten at the next miss.
+/// One body's entry, its metadata beside the module's text the metadata
+/// was compiled from, which every span of it counts in: what names a
+/// returned value's call slices, without assembling the text again or
+/// looking the module up by name, which two loaded modules may share.
+/// The body is held weakly: a strong hold would keep every body the
+/// debugger ever looked at alive, and with it its inline caches' family
+/// (`InlineCaches::forget_families` frees a family only once its body is
+/// held by the family alone). A `Weak` still keeps the body's allocation,
+/// so no other body takes its address while the entry lives, and a dead
+/// entry is forgotten at the next miss.
 struct Entry {
     code: Weak<CompiledCode>,
-    metadata: Option<Rc<BodyMetadata>>,
+    metadata: Option<(Rc<BodyMetadata>, Rc<str>)>,
 }
 
 impl Cache {
@@ -45,6 +49,15 @@ impl Cache {
         code: &Rc<CompiledCode>,
         origin: &BodyOrigin,
     ) -> Option<Rc<BodyMetadata>> {
+        Cache::metadata_with_text(mutator, code, origin).map(|(metadata, _)| metadata)
+    }
+
+    /// `metadata`, with the module's text it was compiled from.
+    pub(crate) fn metadata_with_text(
+        mutator: &mut Mutator<'_>,
+        code: &Rc<CompiledCode>,
+        origin: &BodyOrigin,
+    ) -> Option<(Rc<BodyMetadata>, Rc<str>)> {
         if let Some(entry) = mutator.debug_metadata.bodies.get(&address(code)) {
             return entry.metadata.clone();
         }
@@ -55,14 +68,14 @@ impl Cache {
             let Some(level) = compile_level(mutator, &origin.mixin, lowering) else {
                 break;
             };
-            let complete = mutator.debug_metadata.fill(level.pairs);
+            let complete = mutator.debug_metadata.fill(level.pairs, &level.text);
             if matches!(origin.member, Member::Factory)
                 && !mutator.debug_metadata.bodies.contains_key(&address(code))
             {
                 let metadata = level.factory.metadata_of(code);
                 mutator
                     .debug_metadata
-                    .fill(vec![(Rc::clone(code), metadata)]);
+                    .fill(vec![(Rc::clone(code), metadata)], &level.text);
             }
             if complete {
                 break;
@@ -99,7 +112,7 @@ impl Cache {
                     .map(|(code, _)| Rc::clone(code))
                     .collect();
             }
-            if mutator.debug_metadata.fill(level.pairs) {
+            if mutator.debug_metadata.fill(level.pairs, &level.text) {
                 break;
             }
         }
@@ -110,7 +123,8 @@ impl Cache {
                 let metadata = cache
                     .bodies
                     .get(&address(&code))
-                    .and_then(|entry| entry.metadata.clone());
+                    .and_then(|entry| entry.metadata.as_ref())
+                    .map(|(metadata, _)| Rc::clone(metadata));
                 (code, metadata)
             })
             .collect()
@@ -123,9 +137,10 @@ impl Cache {
         self.bodies.clear();
     }
 
-    /// Records `pairs`, a body's tables never replaced by `None` nor by
-    /// another lowering's; answers whether every body of them paired.
-    fn fill(&mut self, pairs: PairedBodies) -> bool {
+    /// Records `pairs`, compiled from `text`, a body's tables never
+    /// replaced by `None` nor by another lowering's; answers whether every
+    /// body of them paired.
+    fn fill(&mut self, pairs: PairedBodies, text: &Rc<str>) -> bool {
         let mut complete = true;
         for (code, metadata) in pairs {
             complete &= metadata.is_some();
@@ -134,7 +149,7 @@ impl Cache {
                 metadata: None,
             });
             if entry.metadata.is_none() {
-                entry.metadata = metadata;
+                entry.metadata = metadata.map(|metadata| (metadata, Rc::clone(text)));
             }
         }
         complete

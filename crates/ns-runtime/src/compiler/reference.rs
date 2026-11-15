@@ -1124,6 +1124,8 @@ impl<'a> Body<'a> {
                     receiver: spans.receiver,
                     selector: spans.selector.into(),
                     call: spans.call,
+                    parenthesize_receiver: spans.parenthesize_receiver,
+                    setter: spans.setter,
                 });
             }
         }

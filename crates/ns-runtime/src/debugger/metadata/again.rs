@@ -30,8 +30,10 @@ use crate::Symbol;
 pub(crate) struct BodyOrigin {
     /// The version of the mixin the frame's level applies -- possibly one
     /// an edit superseded, which keeps its id (`Heap::known_mixin_id`).
-    /// Held only while the metadata is looked up: no cache keeps a mixin,
-    /// so that a superseded version is dropped as soon as nothing runs it.
+    /// Held while the metadata is looked up, and by a step's recorded
+    /// call (`stepping::RecordedCall`) until the step's stop names it:
+    /// no cache keeps a mixin, so that a superseded version is dropped as
+    /// soon as nothing runs it and no step in progress names a call of it.
     pub(crate) mixin: Rc<Mixin>,
     pub(crate) member: Member,
 }
@@ -59,11 +61,13 @@ pub(crate) enum Member {
 /// `None` where the body compiled again differs.
 pub(crate) type PairedBodies = Vec<(Rc<CompiledCode>, Option<Rc<BodyMetadata>>)>;
 
-/// A level compiled again: its paired bodies, and the factory's metadata,
-/// which any body of the factory's arity takes.
+/// A level compiled again: its paired bodies, the factory's metadata,
+/// which any body of the factory's arity takes, and the module's text it
+/// was compiled from, which every span of the metadata counts in.
 pub(crate) struct LevelAgain {
     pub(crate) pairs: PairedBodies,
     pub(crate) factory: FactoryAgain,
+    pub(crate) text: Rc<str>,
 }
 
 /// The factory's metadata as the class header gives it (decision 12), and
@@ -164,6 +168,7 @@ pub(crate) fn compile_level(
     Some(LevelAgain {
         pairs: pairing.pairs,
         factory,
+        text: module_text,
     })
 }
 

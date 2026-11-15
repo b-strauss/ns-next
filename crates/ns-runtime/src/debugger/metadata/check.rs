@@ -364,17 +364,17 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
             within_text(*selector, "a send's selector span")?;
         }
         // The call names the value it answered, so that it spells the
-        // whole send: its receiver and every selector token.
+        // whole send: every selector token, and its receiver -- or, for a
+        // cascade's later message, which the source spells apart from
+        // the receiver, the receiver before it.
         within_text(send.call, "a send's call span")?;
         let holds = |span: Span| send.call.start <= span.start && span.end <= send.call.end;
-        if !send
+        let receiver_placed = send
             .receiver
-            .into_iter()
-            .chain(send.selector.iter().copied())
-            .all(holds)
-        {
+            .is_none_or(|receiver| holds(receiver) || receiver.end <= send.call.start);
+        if !send.selector.iter().copied().all(holds) || !receiver_placed {
             return Err(format!(
-                "the send entry {}'s call span does not hold its receiver and selector",
+                "the send entry {}'s call span does not hold its selector, or its receiver neither holds nor follows it",
                 send.index
             ));
         }

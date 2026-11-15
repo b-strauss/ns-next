@@ -1952,7 +1952,7 @@ pub(crate) fn record(
     let Some(previous) = index.checked_sub(1) else {
         return;
     };
-    let Some(register) = call_destination(&code.instruction(previous)) else {
+    let Some((register, call)) = call_of(&code.instruction(previous)) else {
         return;
     };
     let Ok(program_counter) = u32::try_from(index) else {
@@ -1965,22 +1965,32 @@ pub(crate) fn record(
     {
         return;
     }
-    if mutator.stepping.is_none() {
-        return;
-    }
     // Only the call is noted here, as cheaply as the value: its name is
     // read from the body's metadata at the stop, once, rather than at
-    // every call a step over a loop runs past.
-    let origin = stack::origin(&mutator.heap, &StackFrame::Running(activation));
+    // every call a step over a loop runs past. The declaration a body
+    // belongs to is the body's, so the previous call's is taken again for
+    // a call of the same body, every turn of a loop.
+    let code = mutator.heap.activation_code(activation);
+    let Some(stepping) = &mut mutator.stepping else {
+        return;
+    };
+    let same_body = stepping
+        .returned
+        .take()
+        .filter(|returned| Rc::ptr_eq(&returned.call.code, &code));
+    let origin = match same_body {
+        Some(returned) => returned.call.origin,
+        None => stack::origin(&mutator.heap, &StackFrame::Running(activation)),
+    };
     let value = mutator.heap.activation_local(activation, register);
     let root = mutator.heap.stash(value);
-    let code = mutator.heap.activation_code(activation);
     if let Some(stepping) = &mut mutator.stepping {
         stepping.returned = Some(Returned {
             value: root,
             call: RecordedCall {
                 code,
                 index: previous,
+                call,
                 origin,
             },
         });
@@ -1996,12 +2006,13 @@ pub(crate) struct Returned {
 
 /// Where the call a step recorded stands, which names it at the stop
 /// (`stack::call_name`): the body, the call instruction's index in it and
-/// the declaration the body belongs to. It holds no handle, so that it
-/// outlives the frame it was recorded in, which a step over a method's
-/// last statement leaves before its stop.
+/// its kind, and the declaration the body belongs to. It holds no
+/// handle, so that it outlives the frame it was recorded in, which a step
+/// over a method's last statement leaves before its stop.
 pub(crate) struct RecordedCall {
     pub(crate) code: Rc<CompiledCode>,
     pub(crate) index: usize,
+    pub(crate) call: Call,
     pub(crate) origin: Option<BodyOrigin>,
 }
 
@@ -2316,9 +2327,12 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
             .filter_map(|entry| usize::try_from(entry.instructions.start).ok())
             .filter(flooded)
             .collect();
+        // A setter's answer is its receiver, never the value its
+        // assignment answers: the assigned value's call stays the last.
         let returns: Vec<usize> = metadata
             .sends
             .iter()
+            .filter(|send| !send.setter)
             .filter_map(|send| usize::try_from(send.index).ok())
             .map(|index| index + 1)
             .filter(flooded)
@@ -2495,22 +2509,89 @@ fn patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, index: usize, one_s
     mutator.heap.code_id(code);
 }
 
-/// The register a call writes its answer to: a send's, a
-/// `ResolveFuture`'s, an initializer invocation's or a `SendMirror`'s
-/// destination, where a caller stands while its callee runs; `None` for
+/// The register a call writes its answer to (`call_of`); `None` for
 /// every other instruction.
 fn call_destination(instruction: &Instruction) -> Option<u16> {
+    call_of(instruction).map(|(destination, _)| destination)
+}
+
+/// The register a call writes its answer to -- a send's, a
+/// `ResolveFuture`'s, an initializer invocation's or a `SendMirror`'s
+/// destination, where a caller stands while its callee runs -- and what
+/// kind of call it is, which names it where its body has no metadata:
+/// decided together, so that an instruction a step takes for a call is
+/// one it can name. `None` for every other instruction.
+fn call_of(instruction: &Instruction) -> Option<(u16, Call)> {
     match instruction {
-        Instruction::SendLexical { destination, .. }
-        | Instruction::SendPublic { destination, .. }
-        | Instruction::SendInlinable { destination, .. }
-        | Instruction::SendSuper { destination, .. }
-        | Instruction::SendMirror { destination, .. }
-        | Instruction::ResolveFuture { destination, .. }
-        | Instruction::InitializeInstance { destination, .. }
-        | Instruction::InitializeSuperclass { destination, .. }
-        | Instruction::InitializeAppliedLevel { destination, .. } => Some(*destination),
+        Instruction::SendLexical {
+            destination,
+            selector,
+            ..
+        }
+        | Instruction::SendPublic {
+            destination,
+            selector,
+            ..
+        }
+        | Instruction::SendInlinable {
+            destination,
+            selector,
+            ..
+        } => Some((*destination, Call::Send(*selector))),
+        Instruction::SendSuper {
+            destination,
+            selector,
+            ..
+        } => Some((*destination, Call::Super(*selector))),
+        Instruction::SendMirror {
+            destination,
+            primitive,
+            ..
+        } => Some((*destination, Call::Mirror(*primitive))),
+        Instruction::ResolveFuture { destination, .. } => Some((*destination, Call::Future)),
+        Instruction::InitializeInstance { destination, .. } => {
+            Some((*destination, Call::Initializer))
+        }
+        Instruction::InitializeSuperclass { destination, .. } => {
+            Some((*destination, Call::SuperclassInitializer))
+        }
+        Instruction::InitializeAppliedLevel { destination, .. } => {
+            Some((*destination, Call::MixinInitializer))
+        }
         _ => None,
+    }
+}
+
+/// The kind of a call a step recorded (`call_of`), which names it where
+/// its body has no metadata (`Call::name`).
+#[derive(Clone, Copy)]
+pub(crate) enum Call {
+    /// A send of the selector, lexical, public or inlinable.
+    Send(Symbol),
+    Super(Symbol),
+    Mirror(crate::builtins::primitive::MirrorPrimitive),
+    Future,
+    Initializer,
+    SuperclassInitializer,
+    MixinInitializer,
+}
+
+impl Call {
+    /// The call as the instruction names it: a send's selector, `super`
+    /// before a super send's, a mirror send's mirror selector, and the
+    /// kind of each other call.
+    pub(crate) fn name(self) -> String {
+        match self {
+            Call::Send(selector) => selector.to_string(),
+            Call::Super(selector) => format!("super {selector}"),
+            Call::Mirror(primitive) => {
+                String::from(crate::builtins::primitive::mirror_entry(primitive).selector)
+            }
+            Call::Future => String::from("future"),
+            Call::Initializer => String::from("initializer"),
+            Call::SuperclassInitializer => String::from("superclass initializer"),
+            Call::MixinInitializer => String::from("mixin initializer"),
+        }
     }
 }
 

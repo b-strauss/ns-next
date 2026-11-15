@@ -5500,6 +5500,192 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// The call and the value's label each of `steps` steps over reports,
+/// from the breakpoint at `line` of `source`'s module `module`, run by
+/// `selector`, and the run's answer.
+fn stepped_calls(
+    source: &'static str,
+    module: &'static str,
+    line: &str,
+    selector: &'static str,
+    lowering: Lowering,
+    steps: usize,
+) -> (Vec<Option<(String, String)>>, i64) {
+    let offset = line_start(source, line);
+    stepped(
+        source,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, module, vec![offset]),
+        move |remote| {
+            expect_first_stop(remote, module);
+            let calls = (0..steps)
+                .map(|_| {
+                    step(remote, Command::StepOver)
+                        .map(|returned| (returned.call, returned.value.label))
+                })
+                .collect();
+            continue_stopped(remote);
+            calls
+        },
+    )
+}
+
+/// `(call, label)` as `stepped_calls` reports it.
+fn called(call: &str, label: &str) -> Option<(String, String)> {
+    Some((String::from(call), String::from(label)))
+}
+
+/// A slot whose setter assignments take a send's answer and a literal.
+const SETTING: &str = indoc! {"
+    class Setting = Object new (
+      | count ::= 5. |
+    ) (
+      public run = (
+        count:: count + 1.
+        count:: 3.
+        ^count
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A setter's answer, the receiver, never replaces the value of the
+    /// last call: a step over a slot's assignment reports the assigned
+    /// send's answer, named by that send, and an assignment of a literal
+    /// reports none.
+    fn a_setter_s_answer_is_not_the_returned_value(lowering) {
+        let (calls, answer) =
+            stepped_calls(SETTING, "Setting", "count:: count + 1.", "run", lowering, 2);
+        // The warming runs left the slot at 3 before this run's 3 + 1.
+        assert_eq!(calls, [called("count + 1", "4"), None]);
+        assert_eq!(answer, 3);
+    }
+}
+
+/// Cascades whose later messages go to a unary send's answer and to a
+/// binary send's.
+const CASCADING: &str = indoc! {"
+    class Cascading = Object new () (
+      public run = (
+        | answer |
+        answer:: self seven abs; negated.
+        answer:: 3 + 4 max: 2; min: 9.
+        ^answer
+      )
+      seven = (
+        ^7
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A cascade's later message is named by the cascade's receiver and
+    /// that message alone, a receiver that is a binary or keyword send in
+    /// parentheses.
+    fn a_cascade_s_message_is_named_by_its_receiver_and_itself(lowering) {
+        let (calls, answer) = stepped_calls(
+            CASCADING,
+            "Cascading",
+            "answer:: self seven abs; negated.",
+            "run",
+            lowering,
+            2,
+        );
+        assert_eq!(
+            calls,
+            [called("self seven negated", "-7"), called("(3 + 4) min: 9", "7")]
+        );
+        assert_eq!(answer, 7);
+    }
+}
+
+/// A send written over several lines with a comment between its parts.
+const COMMENTED: &str = indoc! {"
+    class Commented = Object new () (
+      public run = (
+        | answer |
+        answer:: self
+          first: 1 /// The first part.
+          second: 2.
+        ^answer
+      )
+      first: first second: second = (
+        ^first + second
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A comment inside a call is left out of its name.
+    fn a_comment_inside_a_call_is_not_in_its_name(lowering) {
+        let (calls, _) =
+            stepped_calls(COMMENTED, "Commented", "answer:: self", "run", lowering, 1);
+        assert_eq!(calls, [called("self first: 1 second: 2", "3")]);
+    }
+}
+
+/// Two modules of one root name, whose texts differ: the call is named
+/// from the text of the module whose body made it.
+const TWIN: &str = indoc! {"
+    class Twin = Object new () (
+      public run = (
+        | answer |
+        answer:: self compute.
+        ^answer
+      )
+      compute = (
+        ^6
+      )
+    ) : ()
+"};
+
+/// The second `Twin`, laid out differently.
+const SECOND_TWIN: &str = indoc! {"
+    class Twin = Object new () (
+      public run = (
+        | answer unused |
+        unused:: 0.
+        answer:: self twice: 3.
+        ^answer
+      )
+      twice: number = (
+        ^number * 2
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Of two loaded modules of one root name, the one whose body made a
+    /// call names it.
+    fn a_call_is_named_from_its_own_module_s_text(lowering) {
+        let (mut interpreter, _) = load(TWIN, lowering);
+        let module = ns_syntax::parse(SECOND_TWIN).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            SECOND_TWIN.into(),
+            ns_runtime::SourceOrigin::File("second.ns".into()),
+        )
+        .expect("resolve");
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let offset = line_start(SECOND_TWIN, "answer:: self twice: 3.");
+        let (call, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Twin", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Twin");
+                let returned = step(remote, Command::StepOver).expect("twice:'s answer");
+                continue_stopped(remote);
+                (returned.call, returned.value.label)
+            },
+        );
+        expect_ok(result, "run");
+        assert_eq!(call, (String::from("self twice: 3"), String::from("6")));
+    }
+}
+
 /// A factorial that keeps the recursive call's answer in a temporary,
 /// a statement of its own before the one that answers it.
 const RECURSIVE: &str = indoc! {"
