@@ -20,8 +20,11 @@ class NewspeakCoreLibraryRootsProvider : AdditionalLibraryRootsProvider() {
 
 /**
  * The library over one directory of shipped sources, in `core-library/`'s
- * layout -- `platform/` a folder -- its files only the modules: the
- * directory's `fingerprint` and its use marker are the store's own.
+ * layout: its roots are the directory's modules and its folders --
+ * `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns` and `platform/` -- so
+ * that External Libraries shows them directly under the library, with
+ * neither the fingerprint's directory nor the store's own files, its
+ * `fingerprint` and its use marker, which lie under no root.
  */
 class NewspeakCoreLibraryRoots(private val root: VirtualFile) :
     SyntheticLibrary(
@@ -29,7 +32,7 @@ class NewspeakCoreLibraryRoots(private val root: VirtualFile) :
         ExcludeFileCondition { isDirectory, name, _, _, _ -> !isDirectory && !name.endsWith(".ns") },
     ),
     ItemPresentation {
-    override fun getSourceRoots(): Collection<VirtualFile> = listOf(root)
+    override fun getSourceRoots(): Collection<VirtualFile> = coreLibrarySourceRoots(root)
 
     override fun getPresentableText(): String = NewspeakCoreLibrary.NAME
 
@@ -44,6 +47,15 @@ class NewspeakCoreLibraryRoots(private val root: VirtualFile) :
         const val COMPARISON_ID = "io.github.bstrauss.newspeak.coreLibrary"
     }
 }
+
+/**
+ * The roots of the library over [directory]: every folder and every module
+ * directly in it, the store's files left out. A directory is written once
+ * and never changes ([CoreLibraryStore]), so its entries are its roots for
+ * as long as it is shown.
+ */
+fun coreLibrarySourceRoots(directory: VirtualFile): List<VirtualFile> =
+    directory.children.filter { entry -> entry.isDirectory || entry.name.endsWith(".ns") }.sortedBy(VirtualFile::getName)
 
 /** Looks at the settings' `ns-next` as a project opens, which shows its library and prunes the store. */
 class NewspeakCoreLibraryStartup : ProjectActivity {

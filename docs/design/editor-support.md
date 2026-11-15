@@ -1835,9 +1835,14 @@ so that the event dispatch thread never waits for `ns-next` and no two
 looks write or prune at once; a failure -- no binary set, one that cannot
 be started, an older one without the command -- is logged and leaves the
 library out. `NewspeakCoreLibraryRootsProvider` shows the directory in
-`core-library/`'s layout, `platform/` a folder, its `fingerprint` and use
-marker excluded (`NewspeakCoreLibraryRoots`, a `SyntheticLibrary`); the
-files are read-only on disk, so their editors are. The language server
+`core-library/`'s layout (`NewspeakCoreLibraryRoots`, a
+`SyntheticLibrary`): the library's roots are the directory's entries the
+sources consist of -- `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`
+and the folder `platform/` -- so that the project view shows them directly
+under the library's node, as the platform draws a synthetic library's
+roots, with neither the fingerprint's directory nor its `fingerprint` and
+use marker, which stay in the directory, under no root, for the store and
+the agent; the files are read-only on disk, so their editors are. The language server
 answers the breakable lines of a shipped module's file as the shipped
 module's ("Breakable lines") -- provided the bundled analyzer and the
 settings' `ns-next` are the same build, since only then is the library's
@@ -2040,8 +2045,11 @@ The server's own tests are described under its section, above ("Testing").
   the agent shows by a library file's path opens that file;
   and, for the core library: the store writes a fingerprint's directory
   once, its files read-only and no staging left, and reuses it; the
-  library shown is the settings' binary's, `platform/` a folder, a module
-  the library's source and the `fingerprint` file not in the library; a
+  library shown is the settings' binary's, its roots the three modules
+  and `platform/`, a folder, the modules the library's source and the
+  `fingerprint`, the use marker and the fingerprint's directory not in
+  the library, and External Libraries' node of it (`ExternalLibrariesNode`)
+  has those four children and `platform/` its five modules; a
   project that is no Newspeak project shows none until its first debug
   session; the pruning keeps the directory an open project shows however
   long ago its use was recorded and deletes an unused one; a
@@ -2256,8 +2264,9 @@ and resolves cleanly in a JetBrains IDE today.
   `newspeak/breakableLines` round trip through the platform's LSP client
   (the breakpoint types' test replaces the fetcher), a breakpoint in a
   module's read-only `LightVirtualFile`, the core library's node under
-  External Libraries as the project view draws it (the tests read the
-  provider and the file index), and the turning off and on that
+  External Libraries as the project view's tree draws it (the tests read
+  the provider, the file index and the nodes the project view builds),
+  and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

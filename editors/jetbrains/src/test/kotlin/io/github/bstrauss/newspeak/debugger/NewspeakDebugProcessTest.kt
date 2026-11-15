@@ -10,6 +10,12 @@ import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
 import com.intellij.icons.AllIcons
+import com.intellij.ide.projectView.ViewSettings
+import com.intellij.ide.projectView.impl.nodes.ExternalLibrariesNode
+import com.intellij.ide.projectView.impl.nodes.PsiDirectoryNode
+import com.intellij.ide.projectView.impl.nodes.SyntheticLibraryElementNode
+import com.intellij.ide.util.treeView.AbstractTreeNode
+import com.intellij.psi.PsiFileSystemItem
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
 import com.intellij.openapi.application.ReadAction
@@ -321,24 +327,66 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertEquals("no staging directory is left", listOf(first.directory), Files.list(store.root).use { stream -> stream.toList() })
     }
 
-    /** The library under External Libraries is the settings' binary's shipped sources, in `core-library/`'s layout. */
+    /**
+     * The library under External Libraries is the settings' binary's
+     * shipped sources, in `core-library/`'s layout: the modules and
+     * `platform/` directly under the library's node, neither the
+     * fingerprint's directory nor the store's own files.
+     */
     fun testTheLibraryShowsTheShippedSourcesOfTheSettingsBinary() {
         val library = libraryDirectory()
         assertEquals(NewspeakCoreLibrary.STORE.root.resolve(CoreLibraryStore(directory).fingerprintOf(runtime)), library)
         val provider = AdditionalLibraryRootsProvider.EP_NAME.findExtensionOrFail(NewspeakCoreLibraryRootsProvider::class.java)
         val shown = provider.getAdditionalProjectLibraries(project).single() as NewspeakCoreLibraryRoots
         assertEquals("Newspeak Core Library", shown.presentableText)
-        val root = shown.sourceRoots.single()
-        assertEquals(library, root.toNioPath())
-        val platform = checkNotNull(root.findChild("platform")) { "platform/ is a folder" }
+        assertEquals(
+            listOf("Kernel.ns", "Manifest.ns", "PlatformFactory.ns", "platform"),
+            shown.sourceRoots.map { root -> root.name },
+        )
+        assertTrue(shown.sourceRoots.all { root -> root.parent.toNioPath() == library })
+        val platform = shown.sourceRoots.single { root -> root.name == "platform" }
+        assertTrue("platform/ is a folder", platform.isDirectory)
         val time = checkNotNull(platform.findChild("TimeFactory.ns"))
-        val fingerprint = checkNotNull(root.findChild(CoreLibraryStore.FINGERPRINT_FILE))
+        val kernel = shown.sourceRoots.single { root -> root.name == "Kernel.ns" }
+        val folder = checkNotNull(LocalFileSystem.getInstance().findFileByNioFile(library))
+        val fingerprint = checkNotNull(folder.findChild(CoreLibraryStore.FINGERPRINT_FILE))
+        val marker = checkNotNull(folder.findChild(CoreLibraryStore.MARKER))
         val index = ProjectFileIndex.getInstance(project)
-        val (source, inLibrary) = ReadAction.computeBlocking<Pair<Boolean, Boolean>, RuntimeException> {
-            index.isInLibrarySource(time) to index.isInLibrary(fingerprint)
+        val inIndex = ReadAction.computeBlocking<List<Boolean>, RuntimeException> {
+            listOf(
+                index.isInLibrarySource(time),
+                index.isInLibrarySource(kernel),
+                index.isInLibrary(fingerprint),
+                index.isInLibrary(marker),
+                index.isInLibrary(folder),
+            )
         }
-        assertTrue("a module is the library's source", source)
-        assertFalse("the store's own files are not shown", inLibrary)
+        assertEquals("the modules are the library's source, the store's files and the fingerprint's directory not", listOf(true, true, false, false, false), inIndex)
+
+        // What the project view shows under External Libraries.
+        val tree = ReadAction.computeBlocking<Map<String, List<String>>, RuntimeException> {
+            val node = ExternalLibrariesNode(project, ViewSettings.DEFAULT).children
+                .single { child -> child is SyntheticLibraryElementNode && child.value == shown }
+            fun nameOf(node: AbstractTreeNode<*>): String = (node.value as PsiFileSystemItem).name
+            node.children.associate { child ->
+                nameOf(child) to if (child is PsiDirectoryNode) child.children.map(::nameOf).sorted() else emptyList()
+            }
+        }
+        assertEquals(
+            mapOf(
+                "Kernel.ns" to emptyList(),
+                "Manifest.ns" to emptyList(),
+                "PlatformFactory.ns" to emptyList(),
+                "platform" to listOf(
+                    "CollectionsFactory.ns",
+                    "MirrorsFactory.ns",
+                    "TimeFactory.ns",
+                    "TranscriptFactory.ns",
+                    "TypedArraysFactory.ns",
+                ),
+            ),
+            tree,
+        )
     }
 
     /**

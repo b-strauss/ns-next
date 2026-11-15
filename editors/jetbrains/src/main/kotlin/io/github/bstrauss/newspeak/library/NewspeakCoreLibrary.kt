@@ -123,10 +123,11 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
     private fun show(shown: Path?): Path? {
         val previous = directory
         if (shown == previous) return if (project.isDisposed) null else shown
-        val oldRoots = previous?.let(LocalFileSystem.getInstance()::findFileByNioFile)?.let(::listOf).orEmpty()
+        val oldRoots = previous?.let(LocalFileSystem.getInstance()::findFileByNioFile)?.let(::coreLibrarySourceRoots).orEmpty()
         val newRoot = shown?.let(LocalFileSystem.getInstance()::refreshAndFindFileByNioFile)
         // Written outside the IDE, the files are seen only once refreshed.
         newRoot?.let { root -> VfsUtil.markDirtyAndRefresh(false, true, true, root) }
+        val newRoots = newRoot?.let(::coreLibrarySourceRoots).orEmpty()
         var recorded = false
         ApplicationManager.getApplication().invokeAndWait(
             {
@@ -140,7 +141,7 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
                         project,
                         NAME,
                         oldRoots,
-                        listOfNotNull(newRoot),
+                        newRoots,
                         NAME,
                     )
                 }
@@ -151,7 +152,7 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
         return if (recorded) shown else null
     }
 
-    /** The root of the library shown, as a file; null while there is none or it is gone. */
+    /** The directory of the library shown, as a file, whose entries are its roots; null while there is none or it is gone. */
     fun root(): VirtualFile? = directory?.let(LocalFileSystem.getInstance()::findFileByNioFile)
 
     /** Forgets the directory shown, so that the next look shows it anew, as after the IDE's start; for the tests. Called on the event dispatch thread. */
