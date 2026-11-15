@@ -352,6 +352,11 @@ pub(crate) enum Served {
     GoOn,
     /// The agent terminated the run.
     Terminate,
+    /// The program goes on, through the rest of the safepoint, in another
+    /// frame than the one the run loop left, which it reads again: a step
+    /// stopped in a factory by undoing its initializer's push
+    /// (`stepping::HeldStep::StopInFactory`).
+    Rebuilt,
 }
 
 impl Interpreter {
@@ -533,11 +538,16 @@ impl Interpreter {
             let reason = Hits::default().reason(unwound).unwrap_or(StopReason::Pause);
             return self.stop(reason, None, floor, CommandSource::Remote);
         }
-        if bits & DEBUGGER_STEP != 0 && matches!(self.enter(stepping::held_step), HeldStep::Stop) {
+        let held = if bits & DEBUGGER_STEP != 0 {
+            self.enter(stepping::held_step)
+        } else {
+            HeldStep::GoOn
+        };
+        if let HeldStep::Stop | HeldStep::StopInFactory = held {
             // The pushed frame stands at its first statement start, which
             // it fetches as it goes on: a breakpoint there makes the stop
             // the breakpoint's -- a method breakpoint's entry -- and lets
-            // it past once.
+            // it past once. A factory stands at its `InitializeInstance`.
             let (reason, standing) = self
                 .enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
@@ -560,7 +570,10 @@ impl Interpreter {
             if let (Served::GoOn, Some(standing)) = (served, standing) {
                 self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
             }
-            return served;
+            return match (held, served) {
+                (HeldStep::StopInFactory, Served::GoOn) => Served::Rebuilt,
+                _ => served,
+            };
         }
         Served::GoOn
     }

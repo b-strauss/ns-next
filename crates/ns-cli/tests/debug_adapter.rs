@@ -1671,12 +1671,12 @@ const PARTS: &str = indoc! {"
     ) : ()
 "};
 
-/// A step into passes over a factory in an image built without its
-/// source as well, where no body has metadata: the factory is known by
-/// its frame's kind (decision 12), and the step into from `main:args:`
-/// at `Part new` stops in `Part`'s initializer, never in `Part class>>new`.
+/// A step into stops in a factory in an image built without its source
+/// as well, where no body has metadata: the step into from `main:args:`
+/// at `Part new` stops in `Part class>>new`, a frame without a line, and
+/// the next step into goes on to `Part`'s initializer.
 #[test]
-fn a_step_into_passes_over_a_stripped_image_s_factory() {
+fn a_step_into_stops_in_a_stripped_image_s_factory() {
     let (directory, path) = program("Parts", PARTS);
     let image = directory.join("parts.nsi");
     let (built, _, error) = common::ns_next(&[
@@ -1693,23 +1693,32 @@ fn a_step_into_passes_over_a_stripped_image_s_factory() {
     // stands in `Part`'s superclass clause, which `Part new` runs first,
     // and a step into from there stops back in `main:args:`.
     let mut stops = Vec::new();
-    for _ in 0..2 {
+    let mut factory_lines = Vec::new();
+    for _ in 0..3 {
         client.succeed("stepIn", json!({ "threadId": 1 }));
         client.stopped("step");
-        let names: Vec<String> = client
-            .stack_frames(0, 0)
+        let frames = client.stack_frames(0, 0);
+        let names: Vec<String> = frames
             .iter()
             .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
             .collect();
+        factory_lines.extend(
+            frames
+                .iter()
+                .filter(|frame| frame["name"] == "Part class>>new")
+                .map(|frame| frame["line"].clone()),
+        );
         stops.push(names);
     }
     assert_eq!(
         stops,
         [
             vec!["Parts>>main:args:"],
+            vec!["Part class>>new", "Parts>>main:args:"],
             vec!["Part initializer", "Part class>>new", "Parts>>main:args:"],
         ]
     );
+    assert_eq!(factory_lines, [json!(0), json!(0)]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(

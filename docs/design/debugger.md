@@ -39,9 +39,11 @@
 > pops, or whose frame returns otherwise than to its caller's send, goes
 > on as a step into from the frame the program goes on in, the next host
 > run's first statement when the frame returns to the host (decision 17);
-> no step stops in a factory's frame, which every step passes over, and
-> every initializer's statements are stepped in the order they run
-> (decision 12); and no step lands in a frame the step filters filter, by
+> a step into an instantiation stops in the factory's frame, at the
+> class header's factory pattern, a step over or into there goes on to
+> the first statement of the initializer it pushes, every initializer's
+> statements are stepped in the order they run, and a step on its way
+> out passes over the factory to its caller (decision 12); and no step lands in a frame the step filters filter, by
 > default the shipped modules' -- a stop it would make there goes on as a
 > step into from the first unfiltered frame below, and a step into's
 > request outlasts the pushes of filtered bodies (decision 16); run to
@@ -1611,7 +1613,16 @@ tests do not.
   initializer's last statement left past the factory, after the `new`
   in a run and in the next run's first statement after the root's
   instantiation; and a block a slot initializer runs left with the
-  factory's send. The agent's own test steps in from a loop's
+  factory's send. Of the factory (decision 12): a step into an
+  instantiation stopping in the factory at its header's pattern, its
+  parameters shown; a step over and a step into there stopping at the
+  superclass clause, at the first slot initializer of a class that
+  writes no clause, and after the `new` for an initializer with no
+  statement; a step out there stopping after the `new`; a body-less
+  declaration's factory; and a step carried into an instantiation's run
+  stopping in its factory, and, through the agent, a stripped image's
+  factory stopped in as a frame without a line. The agent's own test
+  steps in from a loop's
   line to its body and out to the line after the loop
   (`crates/ns-cli/tests/debug_adapter.rs`).
   Of the step filters (decision 16): a step into a `do:` over an array
@@ -2388,20 +2399,42 @@ and has no source, yet stands on every stack between the sender of `C
 x: a` and `C`'s initializer. Its frame takes its metadata from the class
 header: its arguments are named as the factory's parameters in the
 header, it stands at the header's factory message pattern, and it has no
-statement start. No step stops in it: a step passes over it as over a
-frame the step filters filter (decision 16), whatever the filters say:
-a stop the step would make in it -- the return point an initializer's
-return, or a step out of one, reaches -- goes on as a step into from the
-factory itself (`stepping::went_on_past_filtered`), and a step into's
-request goes on through it to the initializer it pushes
-(`stepping::passes_over`, `held_step`, `sent_by_step`). The factory is
-known by its frame's kind (`stack::is_factory`, the stack trace's
-`FrameKind::Factory`), not by its having no statement start: an empty
-body (`nothing = ()`) has none either and a step into stops in it, at
-the body, as in any method it pushes
-(`a_step_into_an_empty_body_stops_in_it`); and a factory of an image
-without source, which has no metadata, is passed over too
-(`a_step_into_passes_over_a_stripped_image_s_factory`). So every
+statement start. A step into at the instantiation stops in it, at its
+entry, as in any body it pushes, though it has none: its place is the
+pattern, its variables the factory's parameters as the sender passed
+them (decided with the user on 2026-11-15, the Java constructor
+pattern). A factory a frame sends runs its first two instructions as
+part of the send, the instance allocated and the initializer pushed,
+with no safepoint between (`Mutator::enter_factory_body`), so the held
+request meets the initializer's push first: the debugger undoes that
+push -- the initializer has run nothing, and the factory's
+`InitializeInstance` decides and pushes it again once the program goes
+on -- and stops in the factory, at its `InitializeInstance`, the run
+loop reading the frame on top again (`stepping::rewound_into_factory`,
+`HeldStep::StopInFactory`, `Served::Rebuilt`); a factory the host sends,
+the first activation of an instantiation's run, which a step the run
+before left goes on from (decision 17), stops at its first instruction
+through a one-shot (`stepping::stop_at_factory_entry`). Neither puts a
+test on the instantiation's path: the one is decided at the held step's
+safepoint, the other by a patch. A step over or into at that stop goes
+on, as a step into, to the initializer the factory pushes, and stops at
+its first statement -- the superclass clause when one is written, else
+the first `<:` clause's check or slot initializer: the clause that
+stands for `Object new` where a declaration writes none (§6.1), which
+the metadata places at the class's name, is none a step stops at
+(`stepping::first_stop`), and an initializer with no other statement
+lets the step stop after the `new`, where the factory returns; a step
+out stops after the `new` at once. On the way out the factory is passed
+over as a frame the step filters filter is (decision 16), whatever the
+filters say: a stop the step would make in it past its entry -- the
+return point an initializer's return, or a step out of one, reaches --
+goes on as a step into from the factory itself
+(`stepping::went_on_past_filtered`), which stops at the factory's
+return point in its caller. The factory is known by its frame's kind
+(`stack::is_factory`, the stack trace's `FrameKind::Factory`), with or
+without metadata: a factory of an image without source is stopped in
+as a frame without a line, and the next step goes on
+(`a_step_into_stops_in_a_stripped_image_s_factory`). So every
 initializer's statements are stepped, in the order the program runs
 them -- a `<:` clause's check, the superclass clause, the superclass's
 initializer, each `<:` clause's message and its level's initializer,
@@ -2410,6 +2443,13 @@ a level's last statement stops at the next level's first, and from the
 last level's the step stops at the factory's return point in its
 caller, after the `new`, or, for a factory the host sent, at the next
 host run's first statement (decision 17;
+`a_step_into_an_instantiation_stops_in_the_factory`,
+`a_step_from_the_factory_stops_at_the_superclass_clause`,
+`a_step_from_the_factory_without_a_clause_stops_at_the_first_slot`,
+`a_step_from_the_factory_of_an_empty_initializer_stops_after_the_new`,
+`a_step_out_of_the_factory_stops_after_the_new`,
+`a_step_from_a_body_less_declaration_s_factory_stops_in_its_initializer`,
+`a_step_carried_into_an_instantiation_stops_in_its_factory`,
 `a_step_over_goes_through_an_initializer_and_past_the_factory`,
 `a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s`,
 `a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new`,
@@ -2422,7 +2462,13 @@ names or position is rejected, since it would be the one frame of an
 ordinary program without a place; hiding it contradicts the
 specification's "accurate and complete stack traces" (§3.6,
 `newspeak-spec.pdf` p. 17) and would need rules of its own for step out,
-restart and force return.
+restart and force return. Passing over the factory at its push, as every
+step did before, is rejected with the user: the factory is where the
+sender's arguments become the class's parameters, which the stop shows.
+Making `enter_factory_body` leave the factory to the run loop while a
+step holds its request, so that its push meets the safepoint, is
+rejected: it puts a test of the request word on every instantiation, a
+branch a program run without a debugger takes.
 
 ### 13. A frame shows named variables only
 
@@ -3265,8 +3311,13 @@ statement start: at once when its frame stands there, at index 0, and
 through a one-shot for the pushed frame at index 1 for a body -- a
 method's or a block's -- whose first instruction makes its indirection
 vector (`MakeVector`, emitted before the local initializers and outside
-every statement's range, `compiler/lower.rs`). A send answered by a
-primitive or a leaf pushes nothing, and the next one-shot stops.
+every statement's range, `compiler/lower.rs`), or, for an initializer
+of a declaration that writes no superclass clause, at the first
+statement start after the clause that stands for `Object new`, the
+step stopping where its frame goes on when there is none
+(`stepping::first_stop`). A factory's push stops in the factory
+(decision 12). A send answered by a primitive or a leaf pushes nothing,
+and the next one-shot stops.
 
 ### Writing a frame
 
