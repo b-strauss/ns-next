@@ -345,13 +345,24 @@ mod tests {
     /// `finish` ends within its one deadline however much is queued for a
     /// client that reads a byte at a time: each of the queued messages
     /// would take the trickle far longer than the deadline, all of them
-    /// some seconds, though each stays within its own bound.
+    /// about half a minute, though each stays within its own bound.
+    ///
+    /// What `finish` takes is held against what writing the queue would
+    /// take, not against the deadline plus a margin: past the deadline it
+    /// waits for the writer to see the close and for the thread to end,
+    /// which on a loaded machine -- the stress gate runs sixteen suites at
+    /// once -- took a second for a deadline of 100 ms. The queue cannot be
+    /// written faster than a pause per byte, so a `finish` that waited for
+    /// it, or for each message's own bound, would take at least that; one
+    /// that ends sooner did not wait for the queue, however slowly the
+    /// machine schedules its threads.
     #[test]
     fn finish_ends_within_its_deadline_whatever_is_queued() {
         let closed = Arc::new(AtomicBool::new(false));
         let closing = Arc::clone(&closed);
+        let pause = Duration::from_millis(5);
         let trickle = Trickle {
-            pause: Duration::from_millis(2),
+            pause,
             timeouts: Vec::new(),
             closed: Arc::clone(&closed),
         };
@@ -368,15 +379,19 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         )
         .expect("a writer thread");
-        for index in 0..50 {
-            assert!(writer.send(serde_json::json!({ "index": index })));
+        let mut queued_bytes = 0;
+        for index in 0..200 {
+            let message = serde_json::json!({ "index": index });
+            queued_bytes += wire::frame(&message).expect("a frame").len();
+            assert!(writer.send(message));
         }
+        let writing_the_queue = pause * u32::try_from(queued_bytes).expect("a few kilobytes");
         let started = Instant::now();
         writer.finish(Duration::from_millis(100));
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "finish took {:?}",
-            started.elapsed()
+            elapsed < writing_the_queue,
+            "finish took {elapsed:?}, as long as writing the queue, {writing_the_queue:?}"
         );
         assert!(closed.load(Ordering::SeqCst), "the connection is closed");
     }
