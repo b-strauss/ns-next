@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 
-use super::remote::{ValueDescription, ValueId, Variable};
-use crate::heap::{ObjectReference, ObjectShape};
+use super::remote::{ValueDescription, ValueId, Variable, VariableValue};
+use crate::heap::{MixinId, ObjectReference, ObjectShape};
 use crate::interpreter::Mutator;
+use crate::mixin::FieldName;
 use crate::{Root, Symbol, Value, ValueKind};
 
 /// The values one stop handed out, by id. Its ids continue those of the
@@ -105,19 +106,12 @@ impl StopValues {
             let Some(child) = child else {
                 unreachable!("internal: a child below the count is readable")
             };
-            children.push(if filling.is_unfilled(child) {
-                Variable {
-                    name,
-                    value: None,
-                    not_computed: true,
-                }
+            let value = if filling.is_unfilled(child) {
+                VariableValue::NotComputed
             } else {
-                Variable {
-                    name,
-                    value: Some(self.describe(mutator, child)),
-                    not_computed: false,
-                }
-            });
+                VariableValue::Shown(self.describe(mutator, child))
+            };
+            children.push(Variable { name, value });
         }
         Some(children)
     }
@@ -159,91 +153,68 @@ struct FieldLabel {
     filling: Filling,
 }
 
-/// One field a declaration names: the name it was declared with, the
-/// mixin of the level that declared it and that level's place in the
-/// chain, counted from the root.
-struct Declared {
-    name: Symbol,
-    declarer: Symbol,
-    level: usize,
-    filling: Filling,
-}
-
-/// The names of `object`'s `field_count` fields, read off the layout of
-/// its class's application (`Mutator::apply_mixin`): each level, from the
-/// root, lays its own slots down at its `own_slot_base` in declaration
-/// order, then one hidden slot per nested class it declares
-/// (`MixinApplication::nested_slot`). A slot is named as it was declared,
-/// a hidden slot by its nested class's name -- both structure, which an
-/// image keeps without its source. A name declared on more than one
-/// level (a superclass's private `x` under a subclass's `x`, a nested
-/// class a subclass declares again) is the plain name only on the level
-/// nearest the object's class, which the program's own code there reads;
-/// each level above it is `x (Super)`, its declaring mixin's name added,
-/// and numbered, `x (Super 2)`, when one chain applies that mixin twice.
-/// A field no declaration names is `field <index>`: every field of an
-/// object whose application the layout came from has a name, so only an
-/// instance whose class holds no application, or one with more fields
-/// than its application lays out, shows one.
+/// The names of `object`'s `field_count` fields, from the layout of its
+/// class's application -- `MixinApplication::field_layout`, the walk an
+/// install copies fields by, so that the two never disagree: a slot is
+/// named as it was declared, a nested class's hidden slot by the nested
+/// class's name -- both structure, which an image keeps without its
+/// source. A name declared on more than one level (a superclass's
+/// private `x` under a subclass's `x`, a nested class a subclass declares
+/// again) is the plain name only on the level nearest the object's class,
+/// which the program's own code there reads; each level above it is
+/// `x (Super)`, its declaring mixin's name added, and where one chain
+/// applies that same mixin more than once, each further one up is
+/// numbered, `x (Super 2)`, counted by the mixin's id: two different
+/// mixins that share a name both read `x (Super)`. A field no declaration
+/// names is `field <index>`: only an instance whose class holds no
+/// application, or one with more fields than its application lays out,
+/// shows one.
 fn field_labels<'gc>(
     mutator: &Mutator<'gc>,
     object: ObjectReference<'gc>,
     field_count: usize,
 ) -> Vec<FieldLabel> {
     let heap = &mutator.heap;
-    let mut declared: Vec<Option<Declared>> = (0..field_count).map(|_| None).collect();
-    let mut levels = Vec::new();
-    let mut level = heap.class_application(heap.object_class(object));
-    while let Some(application) = level {
-        level = application.superclass.clone();
-        levels.push(application);
-    }
-    for (level, application) in levels.iter().rev().enumerate() {
-        let declarer = application.mixin.name;
-        let own_base = application.own_slot_base;
-        for (position, slot) in application.mixin.slots.iter().enumerate() {
-            if let Some(field) = declared.get_mut(own_base + position) {
-                *field = Some(Declared {
-                    name: slot.name,
-                    declarer,
-                    level,
-                    filling: if slot.lazy {
+    let layout = heap
+        .class_application(heap.object_class(object))
+        .map_or_else(Vec::new, |application| application.field_layout(heap));
+    let declared: Vec<Option<Declared>> = (0..field_count)
+        .map(|index| {
+            let field = layout.get(index)?;
+            match field.name {
+                FieldName::Slot { mixin, name, .. } => Some(Declared {
+                    name,
+                    declarer: mixin,
+                    declarer_name: heap.mixin(mixin)?.name,
+                    level: field.level,
+                    filling: if field.lazy {
                         Filling::Lazy
                     } else {
                         Filling::Always
                     },
-                });
+                }),
+                FieldName::Nested { declaration, .. } => {
+                    let declarer = heap.enclosing_mixin_id(declaration)?;
+                    Some(Declared {
+                        name: heap.mixin(declaration)?.name,
+                        declarer,
+                        declarer_name: heap.mixin(declarer)?.name,
+                        level: field.level,
+                        filling: Filling::NestedClass,
+                    })
+                }
             }
-        }
-        // This level's hidden slots follow its own slots; every entry
-        // below them is an inherited level's.
-        let nested_start = own_base + application.mixin.slots.len();
-        for (nested, index) in application.nested_slot.iter() {
-            let Some(field) = declared.get_mut(*index) else {
-                continue;
-            };
-            if *index < nested_start {
-                continue;
-            }
-            if let Some(nested) = heap.mixin(*nested) {
-                *field = Some(Declared {
-                    name: nested.name,
-                    declarer,
-                    level,
-                    filling: Filling::NestedClass,
-                });
-            }
-        }
-    }
+        })
+        .collect();
     let mut nearest: HashMap<Symbol, usize> = HashMap::new();
     for field in declared.iter().flatten() {
         let level = nearest.entry(field.name).or_insert(field.level);
         *level = (*level).max(field.level);
     }
-    // Numbered from the object's class upward, as the shadowed slots are
-    // met reading up the chain; fields lie in level order, so that is
-    // the reverse of field order.
-    let mut shadowed: HashMap<(Symbol, Symbol), u32> = HashMap::new();
+    // Numbered from the object's class upward, as the shadowed fields are
+    // met reading up the chain; fields lie in level order, so that is the
+    // reverse of field order.
+    let mut shadowed: HashMap<(Symbol, MixinId), u32> = HashMap::new();
     let mut labels: Vec<FieldLabel> = Vec::with_capacity(field_count);
     for (index, field) in declared.iter().enumerate().rev() {
         let label = match field {
@@ -259,8 +230,8 @@ fn field_labels<'gc>(
                 let count = shadowed.entry((field.name, field.declarer)).or_insert(0);
                 *count += 1;
                 let name = match *count {
-                    1 => format!("{} ({})", field.name, field.declarer),
-                    count => format!("{} ({} {count})", field.name, field.declarer),
+                    1 => format!("{} ({})", field.name, field.declarer_name),
+                    count => format!("{} ({} {count})", field.name, field.declarer_name),
                 };
                 FieldLabel {
                     name,
@@ -272,6 +243,17 @@ fn field_labels<'gc>(
     }
     labels.reverse();
     labels
+}
+
+/// One field a declaration names: the name it was declared with, the id
+/// and the name of the mixin of the level declaring it, that level's place
+/// in the chain, counted from the root, and how the field is filled.
+struct Declared {
+    name: Symbol,
+    declarer: MixinId,
+    declarer_name: Symbol,
+    level: usize,
+    filling: Filling,
 }
 
 /// Whether `value`'s children are elements, counted from 1, rather than

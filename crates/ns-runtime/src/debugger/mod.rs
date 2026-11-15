@@ -30,7 +30,7 @@ pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
     MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
-    ValueDescription, ValueId, Variable,
+    ValueDescription, ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -180,7 +180,7 @@ impl StressReader {
                         // to ask children of.
                         .extend(variables.iter().filter_map(|variable| {
                             Some(Command::Children {
-                                value: variable.value.as_ref()?.id,
+                                value: variable.value.shown()?.id,
                                 start: 0,
                                 count: StressReader::CHILDREN,
                             })

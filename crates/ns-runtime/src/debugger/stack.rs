@@ -13,7 +13,9 @@ use std::rc::Rc;
 
 use super::metadata::again::{module_name, BodyOrigin, Member};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
-use super::remote::{FrameDescription, FrameKind, FrameLocation, SendLocation, Variable};
+use super::remote::{
+    FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
+};
 use super::values::StopValues;
 use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
@@ -580,8 +582,9 @@ pub(crate) fn variables(
         read.into_iter()
             .map(|(name, value)| Variable {
                 name,
-                value: value.map(|value| values.describe(mutator, value)),
-                not_computed: false,
+                value: value.map_or(VariableValue::Unavailable, |value| {
+                    VariableValue::Shown(values.describe(mutator, value))
+                }),
             })
             .collect(),
     )

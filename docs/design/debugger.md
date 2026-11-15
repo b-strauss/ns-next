@@ -1162,7 +1162,9 @@ alone describe a value: no Newspeak code runs while the program is
 stopped.
 
 An instance's fields are named from the layout of its class's
-application (`values.rs`'s `field_labels`; `object-model.md`, "Mixin
+application (`values.rs`'s `field_labels`, over
+`MixinApplication::field_layout`, the one walk of the layout, which an
+install copies fields by too; `object-model.md`, "Mixin
 application"): each level of the chain, from the root, lays its own
 slots down at its slot base in declaration order, then one hidden slot
 per nested class it declares, so a field is named by its slot's name or
@@ -1175,18 +1177,25 @@ built with `--strip-source` names them too
 level declares -- a superclass's private `x` under a subclass's `x`, a
 nested class declared again -- is the plain name on the level nearest
 the object's class, the one its own code reads, and `x (Base)` on each
-level above, the declaring mixin's name added, numbered `x (Base 2)`
-when one chain applies that mixin twice. A field no declaration names is
+level above, the declaring mixin's name added. Where `<:` clauses apply
+one mixin more than once, its levels are told apart by number, counted
+by the mixin's id from the nearest shadowed level upward: `x (M)`, then
+`x (M 2)` (`a_mixin_applied_more_than_once_numbers_its_shadowed_slots`).
+Two different mixins that share a name are not numbered, and both read
+`x (Base)`. A field no declaration names is
 `field <index>`, which only an instance whose class holds no
 application, or one with more fields than its application lays out,
 would show; neither happens to an instance the VM made. Paging counts
 the named fields as it counts elements (`named_fields_are_paged`).
 
 A field that holds no value yet is shown as not computed rather than as
-its word, `nil` (`Variable::not_computed`, its `value` `None`): a lazy
+its word, `nil` (`VariableValue::NotComputed`): a lazy
 slot (§6.3.3) its getter has not filled -- `nil` is what its getter reads
 as unfilled (`Instruction::ReturnSlotIfFilled`) -- and a nested class's
 hidden slot before its accessor built the class, or while it builds it.
+A lazy slot whose initializer answered `nil` reads as not computed too,
+and rightly: §6.3.3's getter evaluates the initializer whenever the slot
+contains `nil`, so its next read computes it again.
 No stop computes one, since no Newspeak code runs at a stop; one that
 holds a value shows it (`a_lazy_slot_not_computed_yet_is_shown_so`:
 the platform's facets, of which only `transcript`, used, holds one). The

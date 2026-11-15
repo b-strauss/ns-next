@@ -22,7 +22,7 @@ use ns_runtime::debugger::{
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
-    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
+    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable, VariableValue,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -703,7 +703,7 @@ fn named<'variables>(variables: &'variables [Variable], name: &str) -> &'variabl
 fn shown(variable: &Variable) -> &ValueDescription {
     variable
         .value
-        .as_ref()
+        .shown()
         .unwrap_or_else(|| panic!("{} was expected to be available", variable.name))
 }
 
@@ -830,13 +830,15 @@ fn an_instance_s_children_are_its_fields() {
     );
 }
 
-/// A loop that never ends in an instance with slots, nested classes --
-/// one never used -- a subclass whose private slot shadows its
-/// superclass's, and the platform, whose `transcript` it used: its
-/// fields are named by the slots and nested classes that declare them.
+/// An instance with slots, nested classes -- one never used -- a subclass
+/// whose private slot shadows its superclass's, a class applying one
+/// mixin three times, and the platform, whose `transcript` it used. Its
+/// `run` stops at the breakpoint on its last statement, where every one
+/// of them is built: its fields are named by the slots and nested
+/// classes that declare them.
 const FIELDS: &str = indoc! {"
     class Fields = Object new (
-      | n ::= 50000. sum ::= 0. derived platform |
+      | n ::= 50000. sum ::= 0. derived thrice platform |
     ) (
       class KindA = Object new () ()
       class Base = Object new (
@@ -846,80 +848,108 @@ const FIELDS: &str = indoc! {"
         | private x = 3. z = 4. |
       ) ()
       class Unused = Object new () ()
+      class M = Object new (
+        | x = 5. |
+      ) ()
+      class Thrice = Object new <: M new <: M new <: M new (
+        | w = 6. |
+      ) ()
       public use: aPlatform = (
         platform:: aPlatform
       )
       public run = (
         KindA new.
         derived:: Derived new.
+        thrice:: Thrice new.
         platform transcript.
-        [true] whileTrue: [sum:: sum + 1].
-        ^derived
+        sum:: sum + 1.
+        ^sum
       )
     ) : ()
 "};
 
-/// `FIELDS` under `lowering`, handed the platform and stopped in its
-/// loop: answers `self`'s fields from `start`, at most `count` of them,
-/// those of its `derived` and those of its `platform`.
-fn fields_while_stopped(
-    lowering: Lowering,
-    start: usize,
-    count: usize,
-) -> (Vec<Variable>, Vec<Variable>, Vec<Variable>) {
+/// The fields `fields_while_stopped` reads at the breakpoint.
+struct StoppedFields {
+    /// `self`'s fields from the `start` asked, at most `count` of them.
+    page: Vec<Variable>,
+    derived: Vec<Variable>,
+    thrice: Vec<Variable>,
+    platform: Vec<Variable>,
+}
+
+/// `FIELDS` under `lowering`, handed the platform and stopped at the
+/// breakpoint on `run`'s last statement: the fields it shows there.
+fn fields_while_stopped(lowering: Lowering, start: usize, count: usize) -> StoppedFields {
     let (mut interpreter, instance) = instance_of(FIELDS, lowering);
     let platform = interpreter.platform();
     expect_ok(
         interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
         "use:",
     );
-    while_stopped_in(interpreter, &instance, PAUSE_DELAY, move |remote| {
-        let frame = stack_trace(remote)
-            .iter()
-            .position(|frame| frame.kind == method("run"))
-            .expect("the loop's method is on the stack");
-        let receiver = value_of(&variables(remote, Command::Variables { frame }), "self").clone();
-        let all = variables(
-            remote,
-            Command::Children {
-                value: receiver.id,
-                start: 0,
-                count: receiver.child_count,
-            },
-        );
-        let children_of = |name: &str| {
-            let value = value_of(&all, name);
-            variables(
+    let offset = line_start(FIELDS, "sum:: sum + 1.");
+    let (fields, result) = debugged_in(
+        &mut interpreter,
+        &instance,
+        |remote| set_breakpoints(remote, "Fields", vec![offset]),
+        move |remote| {
+            let (id, _) = resolved(&expect_breakpoints(remote, "Fields"));
+            assert_eq!(expect_breakpoint_stop(remote), [id]);
+            let frame = stack_trace(remote)
+                .iter()
+                .position(|frame| frame.kind == method("run"))
+                .expect("the stopped method is on the stack");
+            let receiver =
+                value_of(&variables(remote, Command::Variables { frame }), "self").clone();
+            let all = variables(
                 remote,
                 Command::Children {
-                    value: value.id,
+                    value: receiver.id,
                     start: 0,
-                    count: value.child_count,
+                    count: receiver.child_count,
                 },
-            )
-        };
-        let derived = children_of("derived");
-        let platform = children_of("platform");
-        let page = variables(
-            remote,
-            Command::Children {
-                value: receiver.id,
-                start,
-                count,
-            },
-        );
-        (page, derived, platform)
-    })
-    .0
+            );
+            let children_of = |name: &str| {
+                let value = value_of(&all, name);
+                variables(
+                    remote,
+                    Command::Children {
+                        value: value.id,
+                        start: 0,
+                        count: value.child_count,
+                    },
+                )
+            };
+            let fields = StoppedFields {
+                page: variables(
+                    remote,
+                    Command::Children {
+                        value: receiver.id,
+                        start,
+                        count,
+                    },
+                ),
+                derived: children_of("derived"),
+                thrice: children_of("thrice"),
+                platform: children_of("platform"),
+            };
+            continue_stopped(remote);
+            fields
+        },
+    );
+    expect_ok(result, "run");
+    fields
 }
 
 #[test]
 fn an_instance_s_fields_are_named_by_its_slots_and_nested_classes() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (fields, _, _) = fields_while_stopped(lowering, 0, 16);
+        let fields = fields_while_stopped(lowering, 0, 16).page;
         assert_eq!(
             names(&fields),
-            ["n", "sum", "derived", "platform", "KindA", "Base", "Derived", "Unused"],
+            [
+                "n", "sum", "derived", "thrice", "platform", "KindA", "Base", "Derived", "Unused",
+                "M", "Thrice"
+            ],
             "{lowering:?}"
         );
         assert_eq!(value_of(&fields, "n").label, "50000", "{lowering:?}");
@@ -928,11 +958,10 @@ fn an_instance_s_fields_are_named_by_its_slots_and_nested_classes() {
             "the class KindA",
             "{lowering:?}"
         );
-        assert!(!named(&fields, "KindA").not_computed, "{lowering:?}");
-        let unused = named(&fields, "Unused");
-        assert!(
-            unused.not_computed && unused.value.is_none(),
-            "{lowering:?}: a nested class never used is not computed yet: {unused:?}"
+        assert_eq!(
+            named(&fields, "Unused").value,
+            VariableValue::NotComputed,
+            "{lowering:?}: a nested class never used is not computed yet"
         );
     }
 }
@@ -940,7 +969,7 @@ fn an_instance_s_fields_are_named_by_its_slots_and_nested_classes() {
 #[test]
 fn an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (_, derived, _) = fields_while_stopped(lowering, 0, 0);
+        let derived = fields_while_stopped(lowering, 0, 0).derived;
         assert_eq!(names(&derived), ["x (Base)", "y", "x", "z"], "{lowering:?}");
         let labels: Vec<&str> = derived
             .iter()
@@ -950,13 +979,33 @@ fn an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one() {
     }
 }
 
+/// Each `<:` clause adds a level, and a chain applying one mixin three
+/// times has three levels declaring its slot: the nearest is the plain
+/// name, the ones above it numbered up from it.
+#[test]
+fn a_mixin_applied_more_than_once_numbers_its_shadowed_slots() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let thrice = fields_while_stopped(lowering, 0, 0).thrice;
+        assert_eq!(
+            names(&thrice),
+            ["x (M 2)", "x (M)", "x", "w"],
+            "{lowering:?}"
+        );
+        let labels: Vec<&str> = thrice
+            .iter()
+            .map(|field| shown(field).label.as_str())
+            .collect();
+        assert_eq!(labels, ["5", "5", "5", "6"], "{lowering:?}");
+    }
+}
+
 #[test]
 fn named_fields_are_paged() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (page, _, _) = fields_while_stopped(lowering, 1, 2);
+        let page = fields_while_stopped(lowering, 1, 2).page;
         assert_eq!(names(&page), ["sum", "derived"], "{lowering:?}");
-        let (past, _, _) = fields_while_stopped(lowering, 6, 5);
-        assert_eq!(names(&past), ["Derived", "Unused"], "{lowering:?}");
+        let past = fields_while_stopped(lowering, 9, 5).page;
+        assert_eq!(names(&past), ["M", "Thrice"], "{lowering:?}");
     }
 }
 
@@ -967,7 +1016,7 @@ fn named_fields_are_paged() {
 #[test]
 fn a_lazy_slot_not_computed_yet_is_shown_so() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (_, _, platform) = fields_while_stopped(lowering, 0, 0);
+        let platform = fields_while_stopped(lowering, 0, 0).platform;
         assert_eq!(
             names(&platform),
             [
@@ -981,12 +1030,12 @@ fn a_lazy_slot_not_computed_yet_is_shown_so() {
             "{lowering:?}"
         );
         let transcript = named(&platform, "transcript");
-        assert!(!transcript.not_computed, "{lowering:?}");
         assert_eq!(shown(transcript).class_name, "Transcript", "{lowering:?}");
         for facet in &platform[1..] {
-            assert!(
-                facet.not_computed && facet.value.is_none(),
-                "{lowering:?}: {} is not computed yet: {facet:?}",
+            assert_eq!(
+                facet.value,
+                VariableValue::NotComputed,
+                "{lowering:?}: {} is not computed yet",
                 facet.name
             );
         }
@@ -1371,7 +1420,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&variables, "limit").label, "3");
         let unused = named(&variables, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }
@@ -1478,7 +1527,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&returned, "limit").label, "3");
         let unused = named(&returned, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }
@@ -1767,7 +1816,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(value_of(&variables, "limit").label, "3");
         let unused = named(&variables, "unused");
         match lowering {
-            Lowering::Optimized => assert_eq!(unused.value, None),
+            Lowering::Optimized => assert_eq!(unused.value, VariableValue::Unavailable),
             Lowering::Reference => assert_eq!(shown(unused).label, "42"),
         }
     }

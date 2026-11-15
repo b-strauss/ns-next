@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use ns_runtime::{FrameDescription, ValueDescription, ValueId, Variable};
+use ns_runtime::{FrameDescription, ValueDescription, ValueId, Variable, VariableValue};
 use ns_syntax::Span;
 
 use super::protocol;
@@ -152,19 +152,12 @@ impl Stop {
     /// no presentation hint: DAP's `lazy` hint promises a value fetched
     /// through the variable's reference, and a stop computes none.
     pub(crate) fn variable(&mut self, variable: &Variable) -> protocol::Variable {
-        let Some(value) = &variable.value else {
-            let shown = if variable.not_computed {
-                "<not computed yet>"
-            } else {
-                "not available"
-            };
-            return protocol::Variable {
-                name: variable.name.clone(),
-                value: shown.to_string(),
-                class_name: None,
-                variables_reference: 0,
-                indexed_variables: None,
-            };
+        let value = match &variable.value {
+            VariableValue::Shown(value) => value,
+            VariableValue::Unavailable => return Self::without_value(variable, "not available"),
+            VariableValue::NotComputed => {
+                return Self::without_value(variable, "<not computed yet>")
+            }
         };
         let indexed = value.indexed;
         let variables_reference = if value.child_count > 0 {
@@ -182,6 +175,17 @@ impl Stop {
             class_name: Some(value.class_name.clone()),
             variables_reference,
             indexed_variables: indexed.then_some(value.child_count),
+        }
+    }
+
+    /// A variable that holds no value, its text saying why.
+    fn without_value(variable: &Variable, text: &str) -> protocol::Variable {
+        protocol::Variable {
+            name: variable.name.clone(),
+            value: text.to_string(),
+            class_name: None,
+            variables_reference: 0,
+            indexed_variables: None,
         }
     }
 }

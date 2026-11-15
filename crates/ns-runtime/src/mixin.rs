@@ -1601,25 +1601,41 @@ impl MixinApplication {
     /// level declares a slot name, and caches a nested class, at most
     /// once, and two levels of one mixin differ in their occurrence.
     pub(crate) fn field_names(&self, heap: &crate::heap::Heap) -> Vec<FieldName> {
+        self.field_layout(heap)
+            .into_iter()
+            .map(|field| field.name)
+            .collect()
+    }
+
+    /// Every field of an instance, by index, as `field_names` names it,
+    /// with what a reader of the fields asks besides: the level that lays
+    /// it down and whether it is a lazy slot. The one walk of the layout,
+    /// so that an install, which copies fields by their names, and the
+    /// debugger, which shows them, never disagree on which field is which.
+    pub(crate) fn field_layout(&self, heap: &crate::heap::Heap) -> Vec<LaidOutField> {
         let mut levels = Vec::new();
         let mut level = Some(self);
         while let Some(application) = level {
             levels.push(application);
             level = application.superclass.as_deref();
         }
-        let mut names = Vec::with_capacity(self.slot_count);
+        let mut fields = Vec::with_capacity(self.slot_count);
         let mut occurrences: HashMap<MixinId, u32> = HashMap::new();
-        for application in levels.into_iter().rev() {
+        for (level, application) in levels.into_iter().rev().enumerate() {
             let id = heap
                 .known_mixin_id(&application.mixin)
                 .expect("internal: an applied mixin is registered");
             let count = occurrences.entry(id).or_insert(0);
             let occurrence = *count;
             *count += 1;
-            names.extend(application.mixin.slots.iter().map(|slot| FieldName::Slot {
-                mixin: id,
-                occurrence,
-                name: slot.name,
+            fields.extend(application.mixin.slots.iter().map(|slot| LaidOutField {
+                name: FieldName::Slot {
+                    mixin: id,
+                    occurrence,
+                    name: slot.name,
+                },
+                level,
+                lazy: slot.lazy,
             }));
             // This level's cache slots follow its own slots; every entry
             // below `nested_start` is an inherited level's.
@@ -1631,22 +1647,33 @@ impl MixinApplication {
                 .map(|(id, index)| (*index, *id))
                 .collect();
             nested.sort_unstable_by_key(|(index, _)| *index);
-            names.extend(
-                nested
-                    .into_iter()
-                    .map(|(_, declaration)| FieldName::Nested {
-                        declaration,
-                        occurrence,
-                    }),
-            );
+            fields.extend(nested.into_iter().map(|(_, declaration)| LaidOutField {
+                name: FieldName::Nested {
+                    declaration,
+                    occurrence,
+                },
+                level,
+                lazy: false,
+            }));
         }
         debug_assert_eq!(
-            names.len(),
+            fields.len(),
             self.slot_count,
             "internal: an application's fields are its levels' slots and cache slots"
         );
-        names
+        fields
     }
+}
+
+/// One field of an instance's layout (`MixinApplication::field_layout`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LaidOutField {
+    pub(crate) name: FieldName,
+    /// The level laying it down, counted from the chain's root.
+    pub(crate) level: usize,
+    /// Whether it is a lazy slot (§6.3.3), filled by its getter's first
+    /// send rather than by the initializer.
+    pub(crate) lazy: bool,
 }
 
 /// Unlinks the superclass list in a loop rather than through the stack.
