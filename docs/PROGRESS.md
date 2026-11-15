@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md) |
+| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md) |
 
 ## Notes
 
@@ -7958,3 +7958,90 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects
 and gaps" (the library's flag never reset, its breakable lines needing
 the analyzer and `ns-next` to be one build) and "Missing tests" (the
 library under `runIde`).
+
+## The debugger: the returned value named by its call, and the step filters per project (2026-11-15)
+
+[debugger.md](design/debugger.md), "The return value of the last call",
+"The agent's sources", "The JetBrains plugin";
+[editor-support.md](design/editor-support.md), "Plugin testing and
+gates".
+
+On the branch `feature/debugger-return-value-name`, after the header
+stops above.
+
+- **A step's returned value is named by the send that answered it**, in
+  the frame it answered into, so that a step over's value and a step
+  out's are named alike, by the expression on the line the step stopped
+  at: `Event::Stopped`'s `ReturnedValue { call, value }`, the DAP
+  agent's one variable of "Return value" named by `call`. The metadata's
+  `SendEntry` records the call's span (`call`), from the receiver -- or
+  the selector, where the receiver is implicit or a cascade's -- to the
+  last argument, whether a cascade's receiver is named in parentheses
+  (`parenthesize_receiver`), and whether the send is a setter
+  assignment's (`setter`). The text is sliced from the text the metadata
+  was compiled from, which the metadata cache keeps beside it, one text
+  per module shared by its levels, and clears at every install
+  (`Cache::metadata_with_text`, `Cache::module_text`); a body without
+  metadata -- an image built with `--strip-source` -- and a call the
+  source spells as no send are named by the instruction (`Call::name`:
+  the selector, `super` before a super send's, a mirror selector, or
+  `future`, `initializer`, `superclass initializer`, `mixin
+  initializer`).
+- **What a name leaves out**: a setter assignment's send records
+  nothing, its answer the receiver -- a step over the assignment, and a
+  step out of a setter method or of a block such an assignment handed
+  its method, which keeps the value before; a cascade's later message is
+  named by its receiver and itself; comments are blanked; the name is
+  put on one line and a call longer than 60 characters keeps its start
+  and its end around ` … `.
+- **`nsNext/setStepFilters` takes `entries`**, each `{ source,
+  classPath }`, the module named by its file as a breakpoint's is and
+  the class path from the root down; the typed `classes` form is
+  removed, and a request still naming it is refused by an error that
+  names the new form. An entry of a file of no module of the program is
+  left out silently; a malformed path or a class the module does not
+  declare (`Sources::declares_class`) is left out and said in an
+  `output` event, once for as long as the client sends the same, and the
+  others apply.
+- **The plugin**: the core library's node shows its modules and
+  `platform/` directly, not the fingerprint's directory
+  (`coreLibrarySourceRoots`); a frame's equality object, its body, module
+  and depth, keeps the variables expanded across a step; "Step Into
+  Kernel and Platform Code" is an application-wide switch on the Stepping
+  page and a toggle in the debug tab's ⋮ | Debugger Settings; the
+  classes not to step into are the project's, on a page of their own,
+  "Newspeak Step Filters", chosen from a tree of the project's and the
+  core library's files, a file's classes asked of the language server
+  only as its node expands, for at most 15 seconds, with a speed search,
+  and sent by their files' paths at the configuration and at every
+  change.
+
+Every commit ran `cargo xtask gates commit`. The end-of-batch gates and
+`plugin-verification` follow the branch review.
+
+- `054630d6` -- the returned value named by its call.
+- `f647058f` -- the core library's node shows its modules and
+  `platform/` directly.
+- `19cbf1fc` -- expanded variables stay expanded across a step.
+- `5a591c3e` -- the setting to step into the kernel's and the platform's
+  code.
+- `34f25fab` -- the name skips setters, cascades' receivers spelled
+  apart and comments, sliced from its own module's text.
+- `615bdfee` -- the step filters' classes chosen per project and sent by
+  their files.
+- `70aac35b` -- the branch review's fixes in the runtime and the
+  agent: a step out into a setter assignment records nothing, the
+  instruction's names tested, one text per module in the metadata cache,
+  the step filters' silence for other programs' files and their
+  refusal of `classes`.
+- `d6d17cea` -- the branch review's fixes in the plugin: the chooser
+  asks a file's classes as it expands, bounded and cancellable, with a
+  speed search; a damaged entry counts as gone; the page for real
+  projects only.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Missing tests"
+(the step filters as the IDE draws them, the core library's node under
+`runIde`); the variables view's restore across a step is among the
+plugin's paths into the platform without a test
+([editor-support.md](design/editor-support.md), "Plugin testing and
+gates").
