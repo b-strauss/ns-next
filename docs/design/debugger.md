@@ -1208,11 +1208,13 @@ and `x (Kit.Outer.Base)`, while a mixin whose name no other shares there
 keeps the short form
 (`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`,
 `shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots`).
-Where even that is alike, as for two modules of one name, the mixins are
-told apart by their places in the chain, numbered from the nearest
-upward, `x (Library.Outer.Base #1)` and `x (Library.Outer.Base #2)`, so
-that no two labels are ever alike
-(`shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered`).
+Where two labels still read alike -- two modules of one name, or one
+mixin's path from its root that another's path from its root's own name
+spells -- those mixins are told apart by their places in the chain,
+numbered from the nearest upward, `x (Library.Outer.Base #1)` and
+`x (Library.Outer.Base #2)`, so that no two labels are ever alike
+(`shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered`,
+`shadowed_slots_alike_across_their_tiers_are_numbered`).
 A field no declaration names is `field <index>`, which only an instance
 whose class holds no application, one with more fields than its
 application lays out, or one whose layout names a mixin the heap holds no
@@ -2719,17 +2721,29 @@ a method, a mirror leaf, or a `doesNotUnderstand:` handler, which holds
 the closure only in its `Message`'s arguments -- a step out of the block
 a proxy's `do:` runs leaves the `do:`
 (`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`).
-The registers read are the receiver's and each argument's slot, which
-hold them until the send answers: a callee laid on the slots takes them
-as its own arguments, which its body never writes, and covers only the
-registers above them; a slot the leftover analysis finds tainted before
-the send, which the collector's pre-pass nils while the callee lies
-elsewhere -- a `doesNotUnderstand:` handler's or a mirror leaf's
-activation lands above the window -- is read where the send copied it
-from instead, and no register at or above the slots' end, or tainted
-before the send, is read at all, so that the read never meets a dead
-register ("A register a frame does not read before it writes it is
-dead", `CLAUDE.md`). A block literal, a parenthesized one, a closure
+The registers read are the window the send read: the receiver's and each
+argument's source, the register the send read it from where it stands
+(`vm::argument_window`), never a slot that is not its own source. The run
+loop reads a single argument, or consecutive ones, in place and copies
+them into the slots only for a callee laid on them, so a slot the send
+did not read still holds what an earlier instruction left there -- clean
+to the leftover analysis, but no argument of this send: a
+`doesNotUnderstand:` handler's activation lands above the window and
+copies nothing into it, and reading the slot would miss a block handed on
+in a variable and match a block an earlier send of the same slot took
+(`a_step_out_of_a_block_a_does_not_understand_takes_in_a_variable_stops_after_the_send`,
+`a_step_out_of_a_kept_block_a_does_not_understand_runs_stops_in_its_caller`,
+both run with the JIT off too, since machine code writes every argument
+into its slot). Only registers below the slots, and a slot that is its own
+source, are read: no callee's window covers the former, a callee laid on
+the slots takes the latter as its own arguments, which its body never
+writes, and the send read each, so that none is tainted before it and the
+read never meets a dead register ("A register a frame does not read
+before it writes it is dead", `CLAUDE.md`). While the send runs nothing
+writes them but a block of the creator's own that assigns the named local
+a source is; so a match means the send read that closure unless such a
+block stored the very closure that runs into that local meanwhile, and a
+block it assigned anything else is a miss, a frame's step out. A block literal, a parenthesized one, a closure
 handed on in a variable or computed by an expression are all taken
 alike; the creator's literal entry, when the closure's block is the
 literal the send took, only says whether the send is an inlined form.

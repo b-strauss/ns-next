@@ -1040,10 +1040,10 @@ impl Interpreter {
     /// to run: the commands queued between runs (`serve_between_runs`),
     /// then a pause asked meanwhile, which stops the first activation at
     /// its first statement start (`stepping::stop_at_entry`) rather than at
-    /// the run's first safepoint and reports the method exits of a step the
-    /// run before left in progress, or else a step the run before left in
+    /// the run's first safepoint, or else a step the run before left in
     /// progress, which goes on from the first activation
-    /// (`stepping::carry_into`) and stops it there too, a step's stop.
+    /// (`stepping::carry_into`) and stops it there too, a step's stop. A
+    /// pause's stop reports that step's method exits, which it ends.
     /// Cold: a run without an agent tests one option.
     #[cold]
     pub(crate) fn serve_before_run(&mut self) {

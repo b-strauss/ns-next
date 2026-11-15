@@ -3,12 +3,12 @@ package io.github.bstrauss.newspeak.run
 import com.intellij.codeInsight.daemon.LineMarkerInfo
 import com.intellij.execution.Executor
 import com.intellij.execution.PsiLocation
-import com.intellij.execution.RunnerAndConfigurationSettings
-import com.intellij.execution.executors.DefaultDebugExecutor
-import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.execution.RunManager
+import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.execution.actions.ConfigurationContext
 import com.intellij.execution.actions.RunConfigurationProducer
+import com.intellij.execution.executors.DefaultDebugExecutor
+import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionWithDelegate

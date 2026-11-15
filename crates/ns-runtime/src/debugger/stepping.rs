@@ -640,16 +640,27 @@ fn took_closure<'gc>(
 }
 
 /// The registers of a frame waiting at the send at `waiting_at` of `code`
-/// that hold the send's receiver and arguments until the send answers:
-/// the receiver's register -- a mirror send's subject's -- and each
-/// argument's slot -- or, for a slot
-/// the leftover analysis finds tainted before the send, the register the
-/// send copied the argument from, since the collector's pre-pass nils
-/// such a slot while the callee lies elsewhere, as a `doesNotUnderstand:`
-/// handler's or a mirror leaf's activation does. Only registers below the
-/// slots' end and tainted by nothing before the send: a callee laid on
-/// the slots covers every register above them, and its own arguments,
-/// the slots, are registers its body never writes.
+/// that still hold what the send read as its receiver and arguments: the
+/// receiver's register -- a mirror send's subject's -- and each
+/// argument's source, the register the send read it from wherever it
+/// stands (`vm::argument_window`). The argument's slot is read only where
+/// it is that source: the run loop reads a single argument, or
+/// consecutive ones, where they stand and copies them into the slots only
+/// for a callee laid on them, so that a slot the send did not read still
+/// holds what an earlier instruction left there, which the leftover
+/// analysis calls clean but which is not this send's argument -- a
+/// `doesNotUnderstand:` handler's activation lands above the window and
+/// copies nothing into it. Only registers below the slots, and a slot
+/// that is its own source, are read: no callee's window covers the
+/// former, a callee laid on the slots takes the latter as its own
+/// arguments, which its body never writes, and each is one the send read,
+/// so that the leftover analysis finds it tainted by nothing before the
+/// send and the read never meets a dead register; a source in or above
+/// the slots but not its own slot, which neither lowering emits, is not
+/// read. While the send runs nothing writes those registers but a block
+/// of the creator's own that assigns the named local a source is: the
+/// registers answer what the send read unless such a block assigned the
+/// local meanwhile.
 fn sent_registers(code: &CompiledCode, waiting_at: usize) -> Vec<u16> {
     let Ok(program_counter) = u32::try_from(waiting_at) else {
         return Vec::new();
@@ -663,7 +674,6 @@ fn sent_registers(code: &CompiledCode, waiting_at: usize) -> Vec<u16> {
     };
     let tainted = code.tainted_before(program_counter).to_vec();
     let is_tainted = |register: u16| tainted.iter().any(|range| range.contains(&register));
-    let slots_end = usize::from(argument_base) + sources.len();
     let receiver = match &instruction {
         Instruction::SendPublic {
             receiver_register, ..
@@ -677,14 +687,16 @@ fn sent_registers(code: &CompiledCode, waiting_at: usize) -> Vec<u16> {
         } => Some(*receiver_register),
         _ => None,
     };
+    let below_the_slots = |register: &u16| *register < argument_base;
     let arguments = sources.iter().enumerate().filter_map(|(offset, source)| {
-        let slot = u16::try_from(usize::from(argument_base) + offset).ok()?;
-        Some(if is_tainted(slot) { *source } else { slot })
+        let is_its_slot = usize::from(*source) == usize::from(argument_base) + offset;
+        (below_the_slots(source) || is_its_slot).then_some(*source)
     });
     receiver
+        .filter(below_the_slots)
         .into_iter()
         .chain(arguments)
-        .filter(|register| usize::from(*register) < slots_end && !is_tainted(*register))
+        .filter(|register| !is_tainted(*register))
         .collect()
 }
 

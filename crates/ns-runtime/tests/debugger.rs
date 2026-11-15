@@ -1109,11 +1109,68 @@ const JOINED: &str = indoc! {"
     ) : ()
 "};
 
+/// A module whose class `Both` applies an `Outer.Base` of each of the
+/// three modules its factory takes -- the first's nested one level deeper,
+/// in its `Library` -- and declares `x` itself.
+const JOINED_THREE: &str = indoc! {"
+    class Joined first: first second: second third: third = Object new (
+      |
+        firstShelf = first.
+        secondLibrary = second.
+        thirdLibrary = third.
+      |
+    ) (
+      class Both = firstBase new <: secondBase new <: thirdBase new (
+        | x = 4. |
+      ) ()
+      firstBase = (
+        ^firstShelf Library new Outer new Base
+      )
+      secondBase = (
+        ^secondLibrary Outer new Base
+      )
+      thirdBase = (
+        ^thirdLibrary Outer new Base
+      )
+      public run = (
+        | both |
+        both:: Both new.
+        ^both
+      )
+    ) : ()
+"};
+
+/// A module whose `Library.Outer.Base` declares `x`: its path from its
+/// root spells what `LIBRARY`'s `Outer.Base` is named from its root's name.
+const SHELF: &str = indoc! {"
+    class Shelf = Object new () (
+      public class Library = Object new () (
+        public class Outer = Object new () (
+          public class Base = Object new (
+            | x = 1. |
+          ) ()
+        )
+      )
+    ) : ()
+"};
+
 /// The names and values of the fields of `JOINED`'s `Both` under
 /// `lowering`, its two levels applied from instances of the modules
 /// `first` and `second`.
 fn joined_fields(lowering: Lowering, first: &str, second: &str) -> (Vec<String>, Vec<String>) {
-    let (mut interpreter, joined) = interpreted(JOINED, lowering);
+    joined_fields_of(lowering, JOINED, &[first, second])
+}
+
+/// The names and values of the fields of the `Both` of `joined`, a module
+/// whose factory takes an instance of each of `libraries`, under
+/// `lowering`.
+fn joined_fields_of(
+    lowering: Lowering,
+    joined: &'static str,
+    libraries: &[&str],
+) -> (Vec<String>, Vec<String>) {
+    let source = joined;
+    let (mut interpreter, joined) = interpreted(source, lowering);
     let mut library = |source: &str| {
         let module = ns_syntax::parse(source).expect("parse");
         let resolved = ns_runtime::resolve(
@@ -1128,13 +1185,9 @@ fn joined_fields(lowering: Lowering, first: &str, second: &str) -> (Vec<String>,
             "instantiate a library",
         )
     };
-    let first = library(first);
-    let second = library(second);
-    let instance = expect_ok(
-        interpreter.instantiate(&joined, &[first, second]),
-        "instantiate",
-    );
-    let offset = line_start(JOINED, "^both");
+    let instances: Vec<Root> = libraries.iter().map(|source| library(source)).collect();
+    let instance = expect_ok(interpreter.instantiate(&joined, &instances), "instantiate");
+    let offset = line_start(source, "^both");
     let (fields, result) = debugged_in(
         &mut interpreter,
         &instance,
@@ -1200,6 +1253,29 @@ fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
             "{lowering:?}"
         );
         assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// A declarer named by its path from its module root and another named by
+/// the path from its root's own name may spell the same label: each is
+/// numbered then, as declarers alike in every tier are.
+#[test]
+fn shadowed_slots_alike_across_their_tiers_are_numbered() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let second = LIBRARY.replace("x = 1", "x = 2");
+        let third = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 3");
+        let (names, labels) = joined_fields_of(lowering, JOINED_THREE, &[SHELF, &second, &third]);
+        assert_eq!(
+            names,
+            [
+                "x (Library.Outer.Base #2)",
+                "x (Library.Outer.Base #1)",
+                "x (Kit.Outer.Base)",
+                "x"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3", "4"], "{lowering:?}");
     }
 }
 
@@ -3362,7 +3438,22 @@ fn stepped<T: Send + 'static>(
     configure: impl FnOnce(&DebugRemote),
     agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
 ) -> (T, i64) {
+    stepped_with(source, lowering, true, selector, configure, agent)
+}
+
+/// `stepped`, the JIT on or off: off, every body runs interpreted, so
+/// that a register holds what the interpreter left there, which machine
+/// code, writing a send's arguments into its slots, would not.
+fn stepped_with<T: Send + 'static>(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    selector: &'static str,
+    configure: impl FnOnce(&DebugRemote),
+    agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+) -> (T, i64) {
     let (mut interpreter, instance) = instance_of(source, lowering);
+    interpreter.set_jit_enabled(jit);
     for _ in 0..2 {
         expect_ok(
             interpreter.send(&instance, Symbol::intern(selector), &[]),
@@ -4488,6 +4579,16 @@ const LEAVING: &str = indoc! {"
           ^block value
         )
       )
+      class Runner = (
+        | kept |
+      ) (
+        public keep: block = (
+          kept:: block
+        )
+        public run: value = (
+          ^kept value: value
+        )
+      )
       class Proxy on: subject = (
         | target = subject. |
       ) (
@@ -4699,6 +4800,34 @@ const LEAVING: &str = indoc! {"
           total:: total * 1].
         ^total
       )
+      public proxyHanding = (
+        | count total block proxy |
+        count:: 0.
+        total:: 0.
+        proxy:: Proxy on: {1. 2. 3}.
+        block:: [:each |
+          total:: total + (each * 12).
+          total:: total * 1].
+        count:: count + self one.
+        proxy do: block.
+        ^total + count
+      )
+      one = (
+        ^1
+      )
+      public proxyStale = (
+        | runner total x proxy |
+        total:: 0.
+        x:: 0.
+        runner:: Runner new.
+        proxy:: Proxy on: runner.
+        x:: 1 + x.
+        runner keep: [:each |
+          total:: total + (each * 13).
+          total:: total * 1].
+        proxy run: x.
+        ^total
+      )
       public proxyInjecting = (
         | total |
         total:: (Proxy on: {1. 2. 3}) inject: 100 into: [:sum :each |
@@ -4762,10 +4891,23 @@ fn leaving(
     hits: usize,
     commands: Vec<Command>,
 ) -> (Vec<SteppedTo>, i64) {
+    leaving_with(lowering, true, selector, line, hits, commands)
+}
+
+/// `leaving`, the JIT on or off (`stepped_with`).
+fn leaving_with(
+    lowering: Lowering,
+    jit: bool,
+    selector: &'static str,
+    line: &str,
+    hits: usize,
+    commands: Vec<Command>,
+) -> (Vec<SteppedTo>, i64) {
     let offset = line_start(LEAVING, line);
-    stepped(
+    stepped_with(
         LEAVING,
         lowering,
+        jit,
         selector,
         |remote| set_breakpoints(remote, "Leaving", vec![offset]),
         move |remote| {
@@ -5082,6 +5224,59 @@ ns_runtime::for_each_lowering! {
             (String::from("Leaving>>proxying"), String::from("^total"))
         );
         assert_eq!(answer, 42);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The same for a block handed on in a variable, which the send reads
+    /// where it stands, not from its slot: the slot still holds what an
+    /// earlier statement left there.
+    fn a_step_out_of_a_block_a_does_not_understand_takes_in_a_variable_stops_after_the_send(
+        lowering
+    ) {
+        for jit in [true, false] {
+            let (stops, answer) = leaving_with(
+                lowering,
+                jit,
+                "proxyHanding",
+                "total:: total + (each * 12).",
+                1,
+                vec![Command::StepOut],
+            );
+            assert_eq!(stops.len(), 1, "the JIT on: {jit}");
+            assert_eq!(
+                stops[0].0,
+                (String::from("Leaving>>proxyHanding"), String::from("^total + count")),
+                "the JIT on: {jit}"
+            );
+            assert_eq!(answer, 73, "the JIT on: {jit}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block kept by one send and run by a later one through a
+    /// `doesNotUnderstand:` handler, which took another argument, steps
+    /// out as any frame does, though the later send's slot still holds the
+    /// block the earlier one took.
+    fn a_step_out_of_a_kept_block_a_does_not_understand_runs_stops_in_its_caller(lowering) {
+        for jit in [true, false] {
+            let (stops, answer) = leaving_with(
+                lowering,
+                jit,
+                "proxyStale",
+                "total:: total + (each * 13).",
+                1,
+                vec![Command::StepOut],
+            );
+            assert_eq!(stops.len(), 1, "the JIT on: {jit}");
+            assert_eq!(
+                stops[0].0,
+                (String::from("Runner>>run:"), String::from("^kept value: value")),
+                "the JIT on: {jit}"
+            );
+            assert_eq!(answer, 13, "the JIT on: {jit}");
+        }
     }
 }
 
