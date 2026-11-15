@@ -178,6 +178,22 @@ pub fn shipped_module_source(name: &str) -> Option<&'static str> {
         .map(|shipped| shipped.source)
 }
 
+/// The name of the shipped module whose text `text` is, byte for byte --
+/// `Kernel` or a `SHIPPED_MODULES` entry -- `None` for every other text,
+/// `Manifest.ns`'s included, which a program compiles as its own. A tool
+/// that shows a copy of the binary's sources treats such a text as the
+/// module; only the exact text names it, so that nothing a user writes
+/// is ever taken for shipped code.
+pub fn shipped_module_named_by_text(text: &str) -> Option<&'static str> {
+    if text == super::kernel::KERNEL_SOURCE {
+        return Some(KERNEL_MODULE);
+    }
+    SHIPPED_MODULES
+        .iter()
+        .find(|shipped| shipped.source == text)
+        .map(|shipped| shipped.name)
+}
+
 /// One `.ns` file the binary embeds: the module's name, its path below
 /// `crates/ns-runtime/core-library/` with `/` separators, and its text.
 pub struct ShippedSourceFile {

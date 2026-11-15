@@ -101,7 +101,9 @@ impl Drop for Worker {
 /// that never asks pays nothing, and kept, since a bootstrap per request
 /// would cost more than the compile. It instantiates the shipped core
 /// library and nothing else: `Interpreter::breakable_statements` compiles
-/// the document's module without loading or running it. A panic in the
+/// the document's module without loading or running it, and
+/// `Interpreter::shipped_breakable_statements` a shipped module's, which
+/// stays unbuilt if it is a lazy one. A panic in the
 /// compile is an ns-next defect; it answers `None`, and drops the
 /// interpreter, whose state it may have left half changed, for a new one
 /// at the next request.
@@ -109,6 +111,16 @@ fn serve(jobs: &Receiver<Job>, answers: &Sender<Option<Vec<BreakableStatement>>>
     let mut interpreter: Option<Interpreter> = None;
     for job in jobs {
         let answered = catch_unwind(AssertUnwindSafe(|| {
+            // A document holding a shipped module's text, byte for byte,
+            // is the shipped module: compiled from the binary's own text
+            // and resolution, as the VM compiles it, so that the answer is
+            // where a breakpoint set in it lands. The document's text only
+            // selects the module, so no text a user writes is ever
+            // resolved as shipped code.
+            if let Some(name) = ns_runtime::shipped_module_named_by_text(&job.text) {
+                let interpreter = interpreter.get_or_insert_with(Interpreter::bootstrap);
+                return interpreter.shipped_breakable_statements(name);
+            }
             let module = ns_syntax::parse(&job.text).ok()?;
             if nested_sends(&module.root_class) > MAX_NESTED_SENDS {
                 return None;

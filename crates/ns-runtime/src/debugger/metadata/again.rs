@@ -111,7 +111,7 @@ pub(crate) fn compile_level(
     // synthesized for a shipped declaration is not marked shipped.
     let root_mixin = mutator.heap.mixin(module_root)?;
     let (resolved, source, module_text) = if root_mixin.shipped {
-        shipped_resolution(root_mixin.name)?
+        shipped_resolution(root_mixin.name.as_str())?
     } else {
         let text = mutator.heap.module_source(module_root)?;
         let module = ns_syntax::parse(&text).ok()?;
@@ -174,19 +174,16 @@ pub(crate) fn compile_level(
 /// `SetBreakpoints` would resolve against had it been loaded, compiled by
 /// the same function `compile_level` compiles a loaded level again with.
 /// Each body is paired with itself, so that what is answered is exactly
-/// what a pairing would keep. Registers nothing and runs nothing.
+/// what a pairing would keep. `source` is the kind the module is compiled
+/// as when it is loaded: a shipped module's is its boot's
+/// (`shipped_resolution`). Registers nothing and runs nothing.
 pub(crate) fn compile_unloaded_level(
     mutator: &mut Mutator<'_>,
     resolved: &ResolvedModule,
     declaration: &ast::ClassDeclaration,
+    source: ModuleSource,
     lowering: Lowering,
 ) -> PairedBodies {
-    // As `load_module` compiles a module (`compile_root_mixin`).
-    let source = if resolved.kernel {
-        ModuleSource::CoreLibrary
-    } else {
-        ModuleSource::User
-    };
     let collector = MetadataCollector::new();
     let fresh = mutator.mixin_level(
         declaration,
@@ -253,8 +250,9 @@ pub(crate) fn declaration_path(
 /// `name`, the boot's own (`interpreter::kernel::resolved_kernel`,
 /// `core_library::resolved_shipped_module`), so that the bodies' mirror
 /// sends are the same; `None` for a name no shipped module has.
-fn shipped_resolution(name: Symbol) -> Option<(Rc<ResolvedModule>, ModuleSource, Rc<str>)> {
-    let name = name.as_str();
+pub(crate) fn shipped_resolution(
+    name: &str,
+) -> Option<(Rc<ResolvedModule>, ModuleSource, Rc<str>)> {
     if name == KERNEL_MODULE {
         return Some((
             crate::interpreter::kernel::resolved_kernel(),

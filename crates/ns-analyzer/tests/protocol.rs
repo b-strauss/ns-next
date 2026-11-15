@@ -1012,3 +1012,100 @@ fn a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on() {
     );
     shut_down(&client, server_thread);
 }
+
+/// Each line of a breakable lines' answer and how many variants it has.
+fn lines_and_variant_counts(lines: &Value) -> Vec<(u64, usize)> {
+    lines
+        .as_array()
+        .expect("lines are answered")
+        .iter()
+        .map(|entry| {
+            (
+                entry["line"].as_u64().expect("a line"),
+                entry["variants"].as_array().expect("variants").len(),
+            )
+        })
+        .collect()
+}
+
+/// What a breakable lines' answer of `statements` in `text` says of each
+/// line: the lines statements start on and the blocks whose first each
+/// is.
+fn expected_lines(statements: &[ns_runtime::BreakableStatement], text: &str) -> Vec<(u64, usize)> {
+    let index = ns_tooling::lines::LineIndex::new(text);
+    let mut lines: Vec<(u64, usize)> = Vec::new();
+    for statement in statements {
+        let line = u64::from(index.position(text, statement.statement.start).line);
+        if lines.last().is_none_or(|(last, _)| *last != line) {
+            lines.push((line, 0));
+        }
+        if let (Some(_), Some((_, variants))) = (statement.block, lines.last_mut()) {
+            *variants += 1;
+        }
+    }
+    lines
+}
+
+/// A document holding, byte for byte, the text of a shipped module, as
+/// the JetBrains plugin opens the library `ns-next shipped-sources`
+/// writes, is the shipped module: no diagnostic is published for it, and
+/// its breakable lines are the statements the binary's own compile of the
+/// module stops at (`Interpreter::shipped_breakable_statements`), which
+/// `ns-cli`'s `debug_metadata` holds to where a breakpoint lands.
+#[test]
+fn a_shipped_module_s_text_is_the_shipped_module() {
+    let (client, server_thread) = initialized_server();
+    let mut interpreter = ns_runtime::Interpreter::bootstrap();
+    let shipped: Vec<_> = ns_runtime::shipped_source_files()
+        .into_iter()
+        .filter(|file| ns_runtime::shipped_module_named_by_text(file.text).is_some())
+        .collect();
+    assert!(shipped.len() >= 7, "only {} shipped modules", shipped.len());
+    for (id, file) in (2..).zip(shipped) {
+        let uri = format!("file:///C:/library/{}", file.path);
+        notify(
+            &client,
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": file.text } }),
+        );
+        let diagnostics = next_diagnostics_within(&client, COMPILING_TIMEOUT);
+        assert_eq!(diagnostics["diagnostics"], json!([]), "{}", file.name);
+        let statements = interpreter
+            .shipped_breakable_statements(file.name)
+            .expect("a shipped module's statements");
+        assert!(!statements.is_empty(), "{}", file.name);
+        let answer = breakable_lines(&client, id, &uri);
+        assert_eq!(
+            lines_and_variant_counts(&answer["lines"]),
+            expected_lines(&statements, file.text),
+            "{}",
+            file.name
+        );
+    }
+    shut_down(&client, server_thread);
+}
+
+/// A text one byte away from a shipped module's -- a line put above it
+/// -- is an ordinary module, its breakable lines its own compile's.
+#[test]
+fn a_text_one_byte_from_a_shipped_module_s_is_an_ordinary_module() {
+    let (client, server_thread) = initialized_server();
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the kernel's text");
+    let text = format!("\n{kernel}");
+    let uri = "file:///C:/work/Kernel.ns";
+    open_document_within(&client, uri, &text, COMPILING_TIMEOUT);
+    let module = ns_syntax::parse(&text).expect("the text parses");
+    let resolved = ns_runtime::resolve(
+        module,
+        text.as_str().into(),
+        ns_runtime::SourceOrigin::File("Kernel.ns".into()),
+    )
+    .expect("the text resolves as a program's module");
+    let statements = ns_runtime::Interpreter::bootstrap().breakable_statements(&resolved);
+    let answer = breakable_lines(&client, 2, uri);
+    assert_eq!(
+        lines_and_variant_counts(&answer["lines"]),
+        expected_lines(&statements, &text)
+    );
+    shut_down(&client, server_thread);
+}

@@ -287,7 +287,12 @@ sends.
 `Kernel.ns` resolves without errors this way: the `kernel` flag decides only
 whether a send to `vmMirror` is marked (`resolver/mod.rs`, `resolve_send`),
 never whether anything is an error — pinned by
-`the_editor_entry_resolves_the_kernel_without_the_mirror_mark`.
+`the_editor_entry_resolves_the_kernel_without_the_mirror_mark`. So does every
+other shipped module, and since the binary refuses to boot with a shipped
+module that does not resolve, a document holding a shipped module's text --
+the library the plugin shows, written by `ns-next shipped-sources` -- is
+published no diagnostic, and the core library has no hint ("Hints"); pinned
+over every shipped module by `a_shipped_module_s_text_is_the_shipped_module`.
 
 ### Classification
 
@@ -1136,10 +1141,29 @@ it ([debugger.md](debugger.md), "The JetBrains plugin").
 
 The answer is `Interpreter::breakable_statements`' over the resolved
 module, which compiles every level of it under the optimized lowering
-without loading or running anything, grouped by line. It is
-compiled on a worker thread of its own, which the server spawns at the
-first request and asks synchronously, handing it the document's text: the
-worker parses, resolves and compiles, and answers spans only, since an
+without loading or running anything, grouped by line.
+
+**A shipped module's text.** A document whose text is, byte for byte, a
+shipped module's (`ns_runtime::shipped_module_named_by_text`: `Kernel.ns`
+or a module of the shipped table, never `Manifest.ns`, which a program
+compiles as its own) is that shipped module: its answer is
+`Interpreter::shipped_breakable_statements`', which compiles the binary's
+own text with the boot's resolution -- the one that records the mirror
+sends -- and the boot's kind of module, as the debugger compiles a
+shipped level again for a breakpoint ([debugger.md](debugger.md),
+"Compiling the metadata again"), so the lines are where a breakpoint set
+in the module lands; a lazy module stays unbuilt. The document's text
+only selects which module is compiled, and only an exact copy selects
+one, so no text a user writes is resolved as shipped code (`CLAUDE.md`,
+"The VM mirror is a capability"); a text one byte away from a shipped
+module's is an ordinary module. `ns-cli`'s `debug_metadata` holds every
+shipped module's answer to where `SetBreakpoints` lands in the built
+module, under both lowerings
+(`shipped_breakable_statements_agree_with_the_breakpoints`).
+
+The answer is compiled on a worker thread of its own, which the server
+spawns at the first request and asks synchronously, handing it the
+document's text: the worker parses, resolves and compiles, and answers spans only, since an
 interpreter and the symbol interner are bound to the thread that made
 them. The worker bootstraps one interpreter, at its first module rather
 than at the server's start, so that an editor that never asks pays

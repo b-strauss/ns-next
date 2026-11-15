@@ -2,7 +2,10 @@
 //! recorded paths are the files' real places below `core-library/`, so a
 //! file moved without its record fails here.
 
-use ns_runtime::{shipped_module_source, shipped_source_files, shipped_sources_fingerprint};
+use ns_runtime::{
+    shipped_module_named_by_text, shipped_module_source, shipped_source_files,
+    shipped_sources_fingerprint,
+};
 use std::path::Path;
 
 fn core_library_directory() -> std::path::PathBuf {
@@ -65,4 +68,28 @@ fn the_fingerprint_is_sixteen_hexadecimal_digits_and_stable() {
     assert_eq!(fingerprint.len(), 16, "{fingerprint}");
     assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(fingerprint, shipped_sources_fingerprint());
+}
+
+/// A text is a shipped module's only byte for byte: each module's own text
+/// names it, `Manifest.ns`'s none, since a program compiles it as its own,
+/// and a text one byte longer, shorter or different none.
+#[test]
+fn only_a_shipped_module_s_exact_text_names_it() {
+    for file in shipped_source_files() {
+        let expected = (file.name != "Manifest").then_some(file.name);
+        assert_eq!(shipped_module_named_by_text(file.text), expected);
+        let longer = format!("{} ", file.text);
+        let shorter = &file.text[..file.text.len() - 1];
+        let mut changed = file.text.as_bytes().to_vec();
+        let last = changed.len() - 1;
+        changed[last - 1] = if changed[last - 1] == b')' {
+            b' '
+        } else {
+            b')'
+        };
+        let changed = String::from_utf8(changed).expect("an ASCII byte replaced");
+        for text in [longer.as_str(), shorter, changed.as_str()] {
+            assert_eq!(shipped_module_named_by_text(text), None, "{}", file.name);
+        }
+    }
 }
