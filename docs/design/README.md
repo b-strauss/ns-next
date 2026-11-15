@@ -485,7 +485,9 @@ step its build needed), and on 2026-11-13 `stress` about 1,050 s --
 1,038 s the suite under the fifteen modes it runs and with the JIT off
 at once, without the tests no switch reaches (1,233 s with them, 1,642 s
 on the whole suite), beside another build on the machine, and
-`run-corpus` plain and under each mode a few seconds more -- and on
+`run-corpus` plain and under each mode a few seconds more; on
+2026-11-15, the threads shared by the suites' lengths, the suites 782 s
+(at two threads each 1,323 s, COLLECT alone on in the end) -- and on
 2026-11-13, in Docker with a warm image, `linux` about three and a half
 minutes (the copy 7 s, the suite step 80 s with its build, nextest's run
 29 s against 52 s for the whole suite, the doctests 1 s, the Newspeak
