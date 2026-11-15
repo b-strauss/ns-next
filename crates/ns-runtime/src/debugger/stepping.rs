@@ -213,6 +213,17 @@ pub(crate) struct Stepping {
     /// same body at the same depth -- a block's next activation -- which
     /// the agent's step by line tells apart by it (decision 4).
     went_on_elsewhere: bool,
+    /// The activation the step was taken in when the step steps in
+    /// another frame -- a fallback closure of a block its creator's
+    /// inlined form took, whose creator is the stepping frame -- while it
+    /// has not left: its return is noted by a one-shot where its caller
+    /// goes on (`OneShot::leaves`), an unwind's pop by `popped`, since a
+    /// later stop in a block of the same body at the same offset may be
+    /// its next activation.
+    origin: Option<Holder>,
+    /// Whether `origin` left: the step's stop is then in another
+    /// activation (`went_on_elsewhere`).
+    origin_left: bool,
 }
 
 impl Stepping {
@@ -247,6 +258,8 @@ impl Stepping {
             waiting_on: None,
             at_entry: false,
             went_on_elsewhere: false,
+            origin: None,
+            origin_left: false,
         }
     }
 }
@@ -339,6 +352,7 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
     }
+    note_origin(mutator, top);
     settle(mutator);
     // The top frame fetches the slot it stands at again as it goes on,
     // which the flood may just have patched -- a pause at a push leaves a
@@ -801,6 +815,7 @@ fn stop_after_send<'gc>(
         holder,
         stops: true,
         records: true,
+        leaves: false,
     };
     patch(mutator, code, after, one_shot);
     if let Some(stepping) = &mut mutator.stepping {
@@ -956,6 +971,10 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
     if stepping.begun_in.is_some_and(gone) {
         stepping.begun_in = None;
     }
+    if stepping.origin.is_some_and(gone) {
+        stepping.origin = None;
+        stepping.origin_left = true;
+    }
     stepping.between.retain(|(held, _)| !gone(*held));
     mutator.breakpoints.forget_one_shot_holders(gone);
 }
@@ -1041,13 +1060,55 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
 }
 
 /// Whether the step in progress went on as a step into from another frame
-/// than the one it was taken in (`Stepping::went_on_elsewhere`): read by
-/// the step's stop before it ends the step.
+/// than the one it was taken in (`Stepping::went_on_elsewhere`), or the
+/// activation it was taken in left while the step stepped in another
+/// frame (`Stepping::origin_left`): its stop stands in another activation.
+/// Read by the step's stop before it ends the step.
 pub(crate) fn went_on_elsewhere(mutator: &Mutator<'_>) -> bool {
     mutator
         .stepping
         .as_ref()
-        .is_some_and(|stepping| stepping.went_on_elsewhere)
+        .is_some_and(|stepping| stepping.went_on_elsewhere || stepping.origin_left)
+}
+
+/// Notes `top`, the activation a step was just begun in, as its origin
+/// when the step steps in another frame -- the creator of the fallback
+/// closure `top` runs -- and patches where `top`'s caller goes on with a
+/// one-shot that notes its return and never stops: a block a receiver
+/// runs again may stop the step in a new activation at `top`'s offset, at
+/// the same depth, which only that return tells from `top`.
+fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
+    let origin = Holder::Running(top);
+    let steps_elsewhere = mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| !stepping.frame.is(origin));
+    if !steps_elsewhere {
+        return;
+    }
+    let Some((caller, code, point)) = return_slot(mutator, origin) else {
+        return;
+    };
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.origin = Some(origin);
+    }
+    let one_shot = OneShot {
+        holder: caller,
+        stops: false,
+        records: false,
+        leaves: true,
+    };
+    patch(mutator, &code, point, one_shot);
+}
+
+/// The activation a step was taken in returned to its caller
+/// (`OneShot::leaves`).
+pub(crate) fn origin_returned(mutator: &mut Mutator<'_>) {
+    if let Some(stepping) = &mut mutator.stepping {
+        if stepping.origin.take().is_some() {
+            stepping.origin_left = true;
+        }
+    }
 }
 
 /// A step into that goes on from `frame`, when `frame` is a factory's
@@ -1076,6 +1137,7 @@ fn stop_at_factory_entry(mutator: &mut Mutator<'_>, frame: ActivationReference) 
             holder: Holder::Running(frame),
             stops: true,
             records: false,
+            leaves: false,
         },
     );
 }
@@ -1539,6 +1601,7 @@ fn stop_at_first(
             holder: Holder::Running(top),
             stops: true,
             records: false,
+            leaves: false,
         },
     );
     settle(mutator);
@@ -2220,6 +2283,7 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
                 holder: frame,
                 stops: true,
                 records: false,
+                leaves: false,
             };
             patch(mutator, &body, index, one_shot);
         }
@@ -2228,6 +2292,7 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
                 holder: frame,
                 stops: false,
                 records: true,
+                leaves: false,
             };
             patch(mutator, &body, index, one_shot);
         }
@@ -2311,35 +2376,51 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
 /// which the one-shot waits for (`resumed`). None for a frame without a
 /// caller.
 fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
+    let Some((caller, code, point)) = return_slot(mutator, frame) else {
+        return;
+    };
+    let one_shot = OneShot {
+        holder: caller,
+        stops: true,
+        records: true,
+        leaves: false,
+    };
+    patch(mutator, &code, point, one_shot);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.return_point = Some((caller, point));
+    }
+}
+
+/// Where `frame`'s return goes on: its caller -- running, or suspended and
+/// held by the step -- that caller's body and the index after the call it
+/// stands at; `None` for a frame with no caller, or whose caller stands at
+/// no call.
+fn return_slot(
+    mutator: &mut Mutator<'_>,
+    frame: Holder,
+) -> Option<(Holder, Rc<CompiledCode>, usize)> {
     let heap = &mutator.heap;
     let sender = match frame {
         Holder::Running(activation) => match heap.activation_suspended_sender(activation) {
             Some(suspended) => Err(suspended),
-            None => match heap.activation_sender(activation) {
-                Some(caller) => Ok(caller),
-                None => return,
-            },
+            None => Ok(heap.activation_sender(activation)?),
         },
         Holder::Suspended(key) => {
-            let Some(own) = mutator.stepping.as_ref().and_then(|stepping| {
+            let own = mutator.stepping.as_ref().and_then(|stepping| {
                 stepping
                     .suspended
                     .iter()
                     .find(|(held, _)| *held == key)
                     .and_then(|(_, root)| heap.fetch(root).as_object())
                     .and_then(|object| heap.object_frame(object))
-            }) else {
-                return;
-            };
-            let Some(sender) = heap.frame_sender(own) else {
-                return;
-            };
+            })?;
+            let sender = heap.frame_sender(own)?;
             match heap.frame_activation(sender) {
                 Some(caller) => Ok(caller),
                 None => Err(sender),
             }
         }
-        Holder::Left => return,
+        Holder::Left => return None,
     };
     let (caller, standing, code) = match sender {
         Ok(caller) => (
@@ -2348,9 +2429,7 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
             heap.activation_code(caller),
         ),
         Err(suspended) => {
-            let Some(code) = heap.frame_code(suspended) else {
-                return;
-            };
+            let code = heap.frame_code(suspended)?;
             let standing = heap.frame_stored_program_counter(suspended);
             (Holder::Suspended(hold(mutator, suspended)), standing, code)
         }
@@ -2358,17 +2437,9 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
     let point = standing + 1;
     if point >= code.instruction_count() || call_destination(&code.instruction(standing)).is_none()
     {
-        return;
+        return None;
     }
-    let one_shot = OneShot {
-        holder: caller,
-        stops: true,
-        records: true,
-    };
-    patch(mutator, &code, point, one_shot);
-    if let Some(stepping) = &mut mutator.stepping {
-        stepping.return_point = Some((caller, point));
-    }
+    Some((caller, code, point))
 }
 
 /// Patches slot `index` of `code` with `one_shot`, giving the body a code

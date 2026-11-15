@@ -98,6 +98,9 @@ pub(crate) fn reached(
         if one_shot.records {
             stepping::record(mutator, activation, &code, index);
         }
+        if one_shot.leaves {
+            stepping::origin_returned(mutator);
+        }
         step_stops |= one_shot.stops;
     }
     let (hits, after, passed) = hits_of(

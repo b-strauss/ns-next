@@ -1803,8 +1803,9 @@ tests do not.
   shipped module, while running, as a block variant, with a pass count
   and on a comment line; a stop naming a replaced breakpoint; steps by
   line and by statement, in and out, a line step over a one-line loop,
-  one at a one-line block's statement stopping in its next activation
-  and one a breakpoint ends mid-line; a continue and a terminate at a
+  one at a one-line block's statement and one at a one-line fallback
+  block's stopping in its next activation, and one a breakpoint ends
+  mid-line; a continue and a terminate at a
   factory's stop; run to cursor; a function
   breakpoint; an uncaught exception's description; `pause` of a running
   loop and right after a `continue`; a stack trace while running
@@ -2221,10 +2222,19 @@ says whether the VM's step went on as a step into from where the program
 went on rather than from the frame it was taken in -- after that frame,
 or its caller, returned or unwound, past a filtered frame, at a handler,
 or into the next run (`Event::Stopped`'s `elsewhere`,
-`stepping::continue_as_step_into`) -- and a stop that went on elsewhere
-is another place, whatever its depth, name and line
+`stepping::continue_as_step_into`) -- or whether the activation it was
+taken in left while the step stepped in another frame: a step taken in
+the fallback closure of a block its creator's inlined form took steps in
+the creator, and a receiver that runs the block again makes a new
+activation at the same offset, at the same depth, in a frame of the same
+name, which only the first's return tells apart, noted by a one-shot that
+never stops where its caller goes on (`OneShot::leaves`,
+`stepping::note_origin`) and by `popped` for an unwind. A stop that went
+on elsewhere is another place, whatever its depth, name and line
 (`a_line_step_over_at_a_one_line_block_stops_in_its_next_activation`,
-`a_step_s_stop_says_whether_it_went_on_from_another_frame`). Statements
+`a_line_step_over_at_a_fallback_block_stops_in_its_next_activation`,
+`a_step_s_stop_says_whether_it_went_on_from_another_frame`,
+`a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere`). Statements
 on one line of one activation are still stepped over as one line, and so
 is a one-line loop whose block a step over passes, since the step goes
 on in the frame it was taken in (`a_line_step_over_a_one_line_loop_ends`,

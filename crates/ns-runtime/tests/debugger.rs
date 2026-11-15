@@ -11377,3 +11377,66 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answer, 18);
     }
 }
+
+/// An `ifTrue:` sent to an object that answers it by running its
+/// argument twice: the fallback closure of the block the compiler inlines
+/// runs in two activations of one sender, at one depth.
+const FALLING_TWICE: &str = indoc! {"
+    class FallingTwice = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        ^self check: Twice new
+      )
+      check: condition = (
+        count:: 1.
+        condition ifTrue: [
+          count:: count + 10].
+        ^count
+      )
+      public class Twice = Object new () (
+        public ifTrue: block = (
+          block value.
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of a fallback block its receiver
+    /// runs twice stops in the block's next activation, at the same depth
+    /// and in a frame of the same name, and its stop says it went on in
+    /// another activation than the one it was taken in, which the agent's
+    /// step by line tells apart by it alone.
+    fn a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere(lowering) {
+        let offset = line_start(FALLING_TWICE, "count:: count + 10].");
+        let ((elsewhere, stood, depths), answer) = stepped(
+            FALLING_TWICE,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "FallingTwice", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "FallingTwice");
+                set_breakpoints(remote, "FallingTwice", Vec::new());
+                expect_breakpoints(remote, "FallingTwice");
+                let before = stack_trace(remote).len();
+                let elsewhere = step_elsewhere(remote, Command::StepOver);
+                let stood = standing(remote, FALLING_TWICE);
+                let after = stack_trace(remote).len();
+                continue_stopped(remote);
+                (elsewhere, stood, (before, after))
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("[] in FallingTwice>>check:"),
+                String::from("count:: count + 10")
+            )
+        );
+        assert_eq!(depths.0, depths.1, "the same depth");
+        assert!(elsewhere, "the stop is in another activation");
+        assert_eq!(answer, 21);
+    }
+}

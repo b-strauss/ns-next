@@ -1766,6 +1766,81 @@ fn a_line_step_over_at_a_one_line_block_stops_in_its_next_activation() {
     assert_eq!(client.finish().stdout, "6\n");
 }
 
+/// A root whose line 6 sends `ifTrue:` with a one-line block to an object
+/// that runs it twice, from its lines 11 and 12: the block the compiler
+/// inlines runs as its fallback closure, twice at one depth.
+const FALLING_TWICE: &str = indoc! {"
+    class FallingTwice = Object new (
+      | count ::= 0. twice = Twice new. |
+    ) (
+      public main: platform args: arguments = (
+        | before |
+        twice ifTrue: [count:: count + 10].
+        platform transcript show: count printString; newLine.
+      )
+      public class Twice = Object new () (
+        public ifTrue: block = (
+          block value.
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+/// A `next` by line at a one-line fallback block's statement stops in the
+/// block's next activation, which its receiver's `ifTrue:` runs from its
+/// next line: a new activation is another place, though at the same
+/// depth, in a frame of the same name, on the same line.
+#[test]
+fn a_line_step_over_at_a_fallback_block_stops_in_its_next_activation() {
+    let (_directory, path) = program("FallingTwice", FALLING_TWICE);
+    let text = FALLING_TWICE.lines().nth(5).expect("line 6");
+    let column = text
+        .find("count:: count + 10")
+        .expect("the block's statement")
+        + 1;
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 6, "column": column }],
+        }),
+    );
+    assert_eq!(body["breakpoints"][0]["verified"], true, "{body}");
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 2);
+    assert_eq!(
+        frames[0]["name"], "[] in FallingTwice>>main:args:",
+        "{frames:?}"
+    );
+    assert_eq!(frames[0]["line"], 6, "{frames:?}");
+    assert_eq!(frames[1]["line"], 11, "{frames:?}");
+    client.succeed(
+        "setBreakpoints",
+        json!({ "source": file_source(&path), "breakpoints": [] }),
+    );
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 2);
+    assert_eq!(
+        frames[0]["name"], "[] in FallingTwice>>main:args:",
+        "{frames:?}"
+    );
+    assert_eq!(frames[0]["line"], 6, "{frames:?}");
+    assert_eq!(
+        frames[1]["line"], 12,
+        "the block's second activation: {frames:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "20\n");
+}
+
 /// A root whose line 4 sends `double:`, a method of its own.
 const CALLS: &str = indoc! {"
     class Calls = Object new () (

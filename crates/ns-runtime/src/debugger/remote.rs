@@ -309,9 +309,11 @@ pub enum Event {
     /// a step into from where the program went on rather than from the
     /// frame it was taken in -- after that frame, or its caller, returned
     /// or unwound, past a frame the step filters filter, at a handler the
-    /// handler search found, or into the next run: the stop stands in
-    /// another activation, even one of the same body at the same depth on
-    /// the same line, such as a block's next activation
+    /// handler search found, or into the next run -- or whether the
+    /// activation it was taken in returned while the step stepped in
+    /// another frame, the creator of the fallback closure it was taken in:
+    /// the stop stands in another activation, even one of the same body at
+    /// the same depth on the same line, such as a block's next activation
     /// (`docs/design/debugger.md`, decision 4); `false` otherwise.
     Stopped {
         reason: StopReason,

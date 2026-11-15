@@ -252,6 +252,10 @@ pub(crate) struct OneShot {
     /// slot answered, the value of the last call a step reports
     /// (`stepping::record`).
     pub(crate) records: bool,
+    /// Whether taking it says the activation the step was taken in has
+    /// returned: it stands where that activation's caller goes on
+    /// (`stepping::origin_returned`).
+    pub(crate) leaves: bool,
 }
 
 /// The slot a stop that resumes goes past once: the activation standing
