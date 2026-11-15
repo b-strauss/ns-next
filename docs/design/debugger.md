@@ -732,8 +732,11 @@ goes on with it as a step into from the run's first activation
 step's stop. A `Terminate` between runs, refused all the same, ends the
 carried step, as it would end one in a run, and so do a detach and a
 pause asked between runs, whose stop the next run's start makes instead
+and which reports the carried step's method exits, as a pause in a run
+reports those of the step it ends
 (`a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement`,
-`a_terminate_between_runs_drops_the_step_its_run_left`).
+`a_terminate_between_runs_drops_the_step_its_run_left`,
+`a_pause_between_runs_reports_the_exits_the_last_run_carried`).
 
 Every command dropped between runs is answered by `Event::Refused`, its
 reason that no run executes, so that every command the debugging API
@@ -1200,9 +1203,16 @@ mixin's id from the nearest shadowed level upward: `x (M)`, then `x (M 2)`
 different mixins that share a name, each shadowing the same name, are not
 numbered: each is named by its declaration's path from its module root
 instead, `x (Outer.Base)` and `x (Other.Base)`, and by that path from the
-root's own name on where even the paths are alike, while a mixin whose
-name no other shares there keeps the short form
-(`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`).
+root's own name on where even the paths are alike, `x (Library.Outer.Base)`
+and `x (Kit.Outer.Base)`, while a mixin whose name no other shares there
+keeps the short form
+(`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`,
+`shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots`).
+Where even that is alike, as for two modules of one name, the mixins are
+told apart by their places in the chain, numbered from the nearest
+upward, `x (Library.Outer.Base #1)` and `x (Library.Outer.Base #2)`, so
+that no two labels are ever alike
+(`shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered`).
 A field no declaration names is `field <index>`, which only an instance
 whose class holds no application, one with more fields than its
 application lays out, or one whose layout names a mixin the heap holds no
@@ -1400,7 +1410,9 @@ the stack, a frame suspended into its object, a frame that just returned
 to its caller standing at the return point, or a frame whose pop was
 reported, `Holder::Left` -- a step waits so for the handler search's
 report of an error the popped frame's continuation raised, while the
-exception's machinery runs (decision 17) -- (`stepping::frame_still_there`);
+exception's machinery runs (decision 17) -- and that it knows where the
+frame whose send a step out of a block leaves is, a running activation
+of the stack unless it was renamed so (`stepping::frame_still_there`);
 a running name no live activation answers to, a pop no report reached,
 fails it. A step waiting `Left` keeps the frame that was on top when
 the error was raised, and the check requires it still to run below the
@@ -1420,10 +1432,12 @@ left otherwise than by a return and the filters are shown never to
 change a program's outcome, and reading the stack at every stop never to
 read a register the leftover analysis calls dead;
 `the_step_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a
-program of a loop, blocks, a non-local return out of a `do:`, an
-exception handler and a recursion to its outcome under both lowerings,
-the JIT on and off, the mode on and off, and requires that its steps
-stopped, as above.
+program of 200 rounds of a recursion, blocks, a non-local return out of
+a `do:`, an exception handler and a deeper recursion to its outcome
+under both lowerings, the JIT on and off, the mode on and off, and
+requires that its steps stopped, as above: its rounds are frames rather
+than a loop's block, which a step out leaves for the whole loop, so that
+most steps stop.
 
 ### Testing and gates
 
@@ -1585,9 +1599,17 @@ tests do not.
   leaving its own `do:`; out of an `ensure:`'s block, and of one a
   non-local return's unwind runs; a block kept and run by another send,
   one whose home returned, and one a sibling closure runs, stepping out
-  to their callers; and a `do:`'s block whose next run returns
+  to their callers; a `do:`'s block whose next run returns
   non-locally from the home stopping at the home's caller's return
-  point. The agent's own test steps in from a loop's
+  point; a block a proxy's `doesNotUnderstand:` runs, its send's first
+  argument and its second, leaving the send; a block the body's last
+  statement took standing, once left, at that statement; an inlined
+  form's fallback send to a user class's `ifTrue:` left as the form, as
+  a statement and mid-statement; an inlined form that is an
+  initializer's last statement left past the factory, after the `new`
+  in a run and in the next run's first statement after the root's
+  instantiation; and a block a slot initializer runs left with the
+  factory's send. The agent's own test steps in from a loop's
   line to its body and out to the line after the loop
   (`crates/ns-cli/tests/debug_adapter.rs`).
   Of the step filters (decision 16): a step into a `do:` over an array
@@ -2651,7 +2673,8 @@ step into from its first activation (`stepping::carry_into`,
 stops that activation ("Commands while the program runs"), but a step's
 stop, with decision 16's filter; step over, into and out alike, between
 every pair of runs. A `Terminate`, a detach, a pause asked between the
-runs and the program's end, which starts no next run, end it; its value
+runs -- whose stop reports the step's method exits -- and the program's
+end, which starts no next run, end it; its value
 of the last call is not carried, since it names a call of the run that
 ended. The carried state is read only at a run's start and end, so the
 run loop is unchanged
@@ -2685,20 +2708,42 @@ leaves one block level; else, for a frame that runs a closure, the send
 its creator -- the frame its captured frame names, running or suspended
 -- stands at, when that send took this very closure, which is decided at
 the stop from the frames themselves: walking down the closure's senders
-meets the creator, and the frame just above it, the send's callee, is the
-closure's own activation -- a `value` the creator sent -- or holds the
-closure object the stopped frame runs (`Heap::activation_closure`,
-`Heap::frame_closure`) as its receiver or in one of its parameters, the
-registers below its body's argument count, which the compiler never
-writes (`stepping::took_closure`). A block literal, a parenthesized one, a
-closure handed on in a variable or computed by an expression are all
-taken alike; the creator's literal entry, when the closure's block is the
+meets the creator, and either the frame just above it, the send's
+callee, is the closure's own activation -- a `value` the creator sent --
+or the creator's send itself holds the closure object the stopped frame
+runs (`Heap::activation_closure`, `Heap::frame_closure`) as its receiver
+or one of its arguments, read in the creator's frame
+(`stepping::took_closure`, `stepping::sent_registers`). The send decides,
+not its callee, so that whatever it delivers to takes the closure alike:
+a method, a mirror leaf, or a `doesNotUnderstand:` handler, which holds
+the closure only in its `Message`'s arguments -- a step out of the block
+a proxy's `do:` runs leaves the `do:`
+(`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`).
+The registers read are the receiver's and each argument's slot, which
+hold them until the send answers: a callee laid on the slots takes them
+as its own arguments, which its body never writes, and covers only the
+registers above them; a slot the leftover analysis finds tainted before
+the send, which the collector's pre-pass nils while the callee lies
+elsewhere -- a `doesNotUnderstand:` handler's or a mirror leaf's
+activation lands above the window -- is read where the send copied it
+from instead, and no register at or above the slots' end, or tainted
+before the send, is read at all, so that the read never meets a dead
+register ("A register a frame does not read before it writes it is
+dead", `CLAUDE.md`). A block literal, a parenthesized one, a closure
+handed on in a variable or computed by an expression are all taken
+alike; the creator's literal entry, when the closure's block is the
 literal the send took, only says whether the send is an inlined form.
 A frame of a method, a closure whose creator returned, and one whose
 creator's send did not take it -- a sibling closure that runs it, a
 closure kept and run by another send -- step out as any frame does. A
 frame at a loop's own statement start, before its first round, stands at
 no instruction of its blocks yet, and a step out there leaves the frame.
+So does a frame of a body without metadata, as an image built with
+`--strip-source` has: no inline block of it is known, so a step out
+inside one falls back to a frame step out, while a closure's creator's
+send is still found and left for the index after it, since that needs no
+metadata -- though without it no send is known to be an inlined form's,
+so a fallback send or a `SendInlinable` is left as a real send is.
 
 An inlined form -- and its reference-lowered counterpart, a
 `SendInlinable` or the loop of `value` sends, and the optimized
@@ -2723,7 +2768,26 @@ which return to the send and are replaced by the next element's at the
 same offset. The creator leaving otherwise than by a return is reported
 as the step's frame is (`Stepping::has_left`): a non-local return out of
 the closure, an exception a handler below takes, an unwind, each going on
-where the program goes on.
+where the program goes on. A real send that is its body's last
+statement, a method's without a `^` or a block's, is left for the
+return the body ends with, which no statement holds: that stop stands at
+the statement it follows, as every program counter no statement holds
+but one ends at does (`stack::location`;
+`a_step_out_of_a_block_the_last_statement_took_stands_at_that_statement`),
+so that the IDE shows the send just left rather than the whole body.
+
+The two kinds of leaving meet decision 12's and the next run's: a step
+out of an inlined form that is an initializer's last statement leaves
+the initializer, passes over the factory and stops after the `new` in
+the caller, or, in the root's instantiation run, goes on in the next
+run's `main:args:`; a block handed to a factory and run by a slot
+initializer is left with the factory's send, after the `new:`; and an
+inlined form's fallback send, a user class answering `ifTrue:`, is left
+as its form is, at the next statement or at its join mid-statement
+(`a_step_out_of_an_initializer_s_last_form_stops_after_the_new`,
+`a_step_out_of_an_initializer_s_last_form_goes_on_in_the_next_run`,
+`a_step_out_of_a_block_a_slot_initializer_runs_stops_after_the_factory_s_send`,
+`a_step_out_of_a_fallback_send_s_block_leaves_the_form`).
 
 ## Planned: the mechanisms
 

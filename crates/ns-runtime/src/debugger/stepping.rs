@@ -20,10 +20,9 @@
 //! a step into from the first unfiltered frame below, and a step into's
 //! request outlasts the pushes of filtered bodies -- nor in a factory's
 //! frame (decision 12), which it passes over from that frame itself
-//! (`passes_over`). A method an unwind
-//! leaves while a method breakpoint names it is reported by a step of the
-//! same kind (`method_left`), whose stop reports the method's exit where
-//! the program goes on.
+//! (`passes_over`). A method an unwind leaves while a method breakpoint
+//! names it is reported by a step of the same kind (`method_left`), whose
+//! stop reports the method's exit where the program goes on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -388,11 +387,18 @@ fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<Se
     }
     let creator = creator_of(mutator, taken_in)?;
     let callee = callee_of(mutator, taken_in, creator)?;
-    if !took_closure(mutator, callee, taken_in) {
-        return None;
-    }
     let (creator_code, _, creator_metadata) = place_body(mutator, creator);
     let waiting_at = place_program_counter(mutator, creator);
+    if !took_closure(
+        mutator,
+        creator,
+        &creator_code,
+        waiting_at,
+        callee,
+        taken_in,
+    ) {
+        return None;
+    }
     // The send's literal entry, when the closure's block is the literal it
     // took, says whether it is an inlined form; a closure the send took
     // otherwise -- through a variable, from an expression -- a real send's.
@@ -593,15 +599,24 @@ fn same_place<'gc>(mutator: &Mutator<'gc>, first: Place<'gc>, second: Place<'gc>
     }
 }
 
-/// Whether the send whose callee is `callee` took the closure `frame`
-/// runs, decided at the stop: the callee is the closure's own activation
-/// -- a `value` the send made -- or holds that very closure as its
-/// receiver or as one of its parameters, the registers below its body's
-/// argument count, which the compiler never writes. A closure handed on
-/// in a variable or computed by an expression is taken so as much as a
-/// literal; one run by another send -- a sibling closure, a slot's -- is
-/// not.
-fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'gc>) -> bool {
+/// Whether the send `creator` stands at, at `waiting_at` of `code`, took
+/// the closure `frame` runs, decided at the stop: `callee`, the send's
+/// callee, is the closure's own activation -- a `value` the send made --
+/// or the send's own receiver or one of its arguments is that very
+/// closure (`sent_registers`). The send decides, not its callee, so that
+/// whatever it delivers to takes the closure alike -- a method, a mirror
+/// leaf, a `doesNotUnderstand:` handler, which holds the closure only in
+/// its `Message`'s arguments. A closure handed on in a variable or
+/// computed by an expression is taken so as much as a literal; one run by
+/// another send -- a sibling closure, a slot's -- is not.
+fn took_closure<'gc>(
+    mutator: &Mutator<'gc>,
+    creator: Place<'gc>,
+    code: &CompiledCode,
+    waiting_at: usize,
+    callee: Place<'gc>,
+    frame: Place<'gc>,
+) -> bool {
     if same_place(mutator, callee, frame) {
         return true;
     }
@@ -613,22 +628,64 @@ fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'g
     let Some(closure) = closure else {
         return false;
     };
-    let is_closure =
-        |value: Value<'gc>| value.as_object().is_some_and(|object| object.same(closure));
-    match callee {
-        Place::Running(activation) => {
-            let parameters = heap.activation_code(activation).argument_count;
-            is_closure(heap.activation_receiver(activation))
-                || (0..parameters).any(|index| is_closure(heap.activation_local(activation, index)))
-        }
-        Place::Suspended(suspended) => {
-            let parameters = heap
-                .frame_code(suspended)
-                .map_or(0, |code| code.argument_count);
-            is_closure(heap.frame_receiver(suspended))
-                || (0..parameters).any(|index| is_closure(heap.frame_local(suspended, index)))
-        }
+    sent_registers(code, waiting_at)
+        .into_iter()
+        .any(|register| {
+            let value = match creator {
+                Place::Running(activation) => heap.activation_local(activation, register),
+                Place::Suspended(suspended) => heap.frame_local(suspended, register),
+            };
+            value.as_object().is_some_and(|object| object.same(closure))
+        })
+}
+
+/// The registers of a frame waiting at the send at `waiting_at` of `code`
+/// that hold the send's receiver and arguments until the send answers:
+/// the receiver's register -- a mirror send's subject's -- and each
+/// argument's slot -- or, for a slot
+/// the leftover analysis finds tainted before the send, the register the
+/// send copied the argument from, since the collector's pre-pass nils
+/// such a slot while the callee lies elsewhere, as a `doesNotUnderstand:`
+/// handler's or a mirror leaf's activation does. Only registers below the
+/// slots' end and tainted by nothing before the send: a callee laid on
+/// the slots covers every register above them, and its own arguments,
+/// the slots, are registers its body never writes.
+fn sent_registers(code: &CompiledCode, waiting_at: usize) -> Vec<u16> {
+    let Ok(program_counter) = u32::try_from(waiting_at) else {
+        return Vec::new();
+    };
+    if waiting_at >= code.instruction_count() {
+        return Vec::new();
     }
+    let instruction = code.instruction(waiting_at);
+    let Some((argument_base, sources)) = instruction.argument_slots() else {
+        return Vec::new();
+    };
+    let tainted = code.tainted_before(program_counter).to_vec();
+    let is_tainted = |register: u16| tainted.iter().any(|range| range.contains(&register));
+    let slots_end = usize::from(argument_base) + sources.len();
+    let receiver = match &instruction {
+        Instruction::SendPublic {
+            receiver_register, ..
+        }
+        | Instruction::SendInlinable {
+            receiver_register, ..
+        }
+        | Instruction::SendMirror {
+            subject_register: receiver_register,
+            ..
+        } => Some(*receiver_register),
+        _ => None,
+    };
+    let arguments = sources.iter().enumerate().filter_map(|(offset, source)| {
+        let slot = u16::try_from(usize::from(argument_base) + offset).ok()?;
+        Some(if is_tainted(slot) { *source } else { slot })
+    });
+    receiver
+        .into_iter()
+        .chain(arguments)
+        .filter(|register| usize::from(*register) < slots_end && !is_tainted(*register))
+        .collect()
 }
 
 /// The frame that created the closure `frame` runs, while it runs or is
@@ -705,8 +762,14 @@ fn stop_after_send<'gc>(
 /// pause bit, which stays set meanwhile, so that a body without metadata,
 /// which floods nothing, still stops at the first safepoint. It stops in
 /// the entry frame whatever the step filters say, as a pause stops where
-/// the program is.
-pub(crate) fn stop_at_entry(mutator: &mut Mutator<'_>, entry: ActivationReference) {
+/// the program is. The method exits of a step the run before carried
+/// (`run_ended`), `exits`, are the pause's stop's to report, as a pause
+/// in a run reports those of the step it ends.
+pub(crate) fn stop_at_entry(
+    mutator: &mut Mutator<'_>,
+    entry: ActivationReference,
+    exits: Vec<BreakpointId>,
+) {
     end(mutator);
     start(
         mutator,
@@ -720,6 +783,7 @@ pub(crate) fn stop_at_entry(mutator: &mut Mutator<'_>, entry: ActivationReferenc
         stepping.started_filtered = true;
         stepping.at_entry = true;
     }
+    keep_exits(mutator, exits);
     settle(mutator);
 }
 
@@ -1040,26 +1104,35 @@ pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, lea
 /// for whose handler search's report, or the unwind its default action
 /// starts, the step waits, `Left`, while the exception's machinery runs.
 /// A running name no live activation answers to is a pop no report ever
-/// reached: the step could never stop. For the step stress mode's check
-/// as it ends a step itself.
+/// reached: the step could never stop. The same holds of the frame whose
+/// send a step out of a block leaves (`Stepping::after_send`), which
+/// stays on the stack until it fetches its one-shot after the send, or
+/// is renamed as it leaves otherwise. For the step stress mode's check as
+/// it ends a step itself.
 #[cfg(debug_assertions)]
 pub(crate) fn frame_still_there(mutator: &Mutator<'_>) -> bool {
     let Some(stepping) = &mutator.stepping else {
         return true;
     };
-    match stepping.frame {
-        Holder::Running(held) => {
-            let mut next = mutator.heap.top_activation();
-            while let Some(live) = next {
-                if held.names(live) {
-                    return true;
-                }
-                next = mutator.heap.activation_sender(live);
+    let on_the_stack = |held: ActivationReference| {
+        let mut next = mutator.heap.top_activation();
+        while let Some(live) = next {
+            if held.names(live) {
+                return true;
             }
-            at_return_point(mutator)
+            next = mutator.heap.activation_sender(live);
         }
+        false
+    };
+    let frame_there = match stepping.frame {
+        Holder::Running(held) => on_the_stack(held) || at_return_point(mutator),
         Holder::Suspended(_) | Holder::Left => true,
-    }
+    };
+    let send_there = match stepping.after_send {
+        Some((Holder::Running(held), _)) => on_the_stack(held),
+        Some((Holder::Suspended(_) | Holder::Left, _)) | None => true,
+    };
+    frame_there && send_there
 }
 
 /// Whether a step waiting, `Left`, for the handler search's report of an

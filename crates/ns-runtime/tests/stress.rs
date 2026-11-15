@@ -891,6 +891,55 @@ ns_runtime::for_each_lowering! {
 // reading the stack and its values at every stop
 // (`docs/design/debugger.md`, "The step stress mode").
 
+/// `BREAKPOINTED_PROGRAM`'s work and answer, its 200 rounds a recursion
+/// rather than a loop's block: a step out of a block leaves the whole send
+/// that took it (decision 17), so that the step stress mode's steps out
+/// of a loop's block run the rest of the loop, while those out of a round
+/// here leave one frame.
+const STEPPED_PROGRAM: &str = indoc! {"
+    class Stepped = Object new (
+    ) (
+      class Counter = Object new (
+        | public total ::= 0. |
+      ) (
+        public add: amount = (
+          total:: total + amount
+        )
+      ) : ()
+      firstAbove: limit in: items = (
+        items do: [:each | each > limit ifTrue: [^each]].
+        ^0
+      )
+      guarded: index = (
+        ^[
+          index \\\\ 3 = 0 ifTrue: [Error new signal: 'three'].
+          index
+        ]
+          on: Error
+          do: [:error | error return: 100]
+      )
+      depth: count = (
+        count = 0 ifTrue: [^0].
+        ^1 + (self depth: count - 1)
+      )
+      rounds: count into: counter over: items = (
+        count = 0 ifTrue: [^0].
+        self rounds: count - 1 into: counter over: items.
+        counter add: (self firstAbove: count \\\\ 50 in: items).
+        counter add: (self guarded: count).
+        ^count
+      )
+      public run = (
+        | counter items |
+        counter:: Counter new.
+        items:: {3. 9. 27. 81}.
+        self rounds: 200 into: counter over: items.
+        counter add: (self depth: 100).
+        ^counter total
+      )
+    ) : ()
+"};
+
 /// How a run of `source`'s `run` ended under `lowering`, the JIT on or
 /// off, and how many of the step stress mode's steps stopped and how many
 /// it ended itself.
@@ -926,30 +975,29 @@ ns_runtime::for_each_lowering! {
     fn the_step_stress_mode_keeps_outcomes(lowering) {
         for jit in [true, false] {
             let (plain, plain_steps, plain_ended) =
-                run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, false);
+                run_stepped(STEPPED_PROGRAM, lowering, jit, false);
             assert_eq!(plain, "answered 29815", "the control, the JIT on: {jit}");
             assert_eq!((plain_steps, plain_ended), (0, 0));
-            let (stepped, steps, ended) = run_stepped(BREAKPOINTED_PROGRAM, lowering, jit, true);
+            let (stepped, steps, ended) = run_stepped(STEPPED_PROGRAM, lowering, jit, true);
             assert_eq!(stepped, plain, "the JIT on: {jit}");
             // Many whole bursts. The steps the mode ends itself are steps
-            // out of the shipped `to:do:` looping 200 times, stopped in
-            // with the shipped filter off, and out of the block `run`
-            // hands it, which leave the whole loop (decision 17), and of
-            // `run`, which returns to the host. The test runs under every
-            // mode of the `stress` gate: measured under each of the
-            // fifteen and with the JIT off, the steps that stopped were at
-            // least 85 and at least 3.0 times those ended (the JIT stress
-            // mode's optimized run with the JIT, the lowest of both),
+            // out of a long send -- the recursion's outer rounds, `run`,
+            // which returns to the host -- that the schedule's period
+            // outlasts. The test runs under every mode of the `stress`
+            // gate: measured under each of the fifteen and with the JIT
+            // off, the steps that stopped were at least 475 (the JIT
+            // stress mode's optimized run with the JIT) and at least 11
+            // times those ended (the suspend stress mode's reference run),
             // since the grace's floor of safepoints keeps it from
             // shrinking with a heap the collect and scavenge stress modes
-            // keep small. The bounds lie a third or more below both.
+            // keep small. The bounds lie far below both.
             let burst = Interpreter::stress_step_burst();
             assert!(
-                steps >= 3 * burst,
+                steps >= 6 * burst,
                 "the step stress mode's steps stopped {steps} times, the JIT on: {jit}"
             );
             assert!(
-                steps >= 2 * ended,
+                steps >= 4 * ended,
                 "{steps} steps stopped and {ended} were ended, the JIT on: {jit}"
             );
         }

@@ -259,8 +259,11 @@ fn field_labels<'gc>(
 /// declarer of a field shadowed under the same name shares that name --
 /// then its declaration's path from its module root, `Outer.Super`, and
 /// where that is shared too, as by the roots of two modules of one name,
-/// that path from the root's own name on, `Module.Outer.Super`. A field
-/// of the nearest level shadows nothing and has none.
+/// that path from the root's own name on, `Module.Outer.Super`; where
+/// even that is shared, as by two modules of one source, each such
+/// declarer takes its place among them in the chain, from the nearest,
+/// as an ordinal, `Module.Outer.Super #2`, so that no two labels are
+/// alike. A field of the nearest level shadows nothing and has none.
 fn qualifiers(
     mutator: &Mutator<'_>,
     declared: &[Option<Declared>],
@@ -299,10 +302,26 @@ fn qualifiers(
                 short.to_string()
             } else {
                 let own = path(*id, false);
+                let from_root = path(*id, true);
+                let alike: Vec<&(MixinId, Symbol)> = ids
+                    .iter()
+                    .filter(|(other, other_short)| {
+                        other_short == short && path(*other, true) == from_root
+                    })
+                    .collect();
                 if sharing.iter().all(|other| path(*other, false) != own) {
                     own
+                } else if alike.len() == 1 {
+                    from_root
                 } else {
-                    path(*id, true)
+                    // The declarers lie in level order, the root's first,
+                    // and are numbered from the object's class upward, as
+                    // a mixin applied twice is.
+                    let ordinal = alike
+                        .iter()
+                        .position(|(other, _)| other == id)
+                        .map_or(0, |position| alike.len() - position);
+                    format!("{from_root} #{ordinal}")
                 }
             };
             qualifiers.insert((*name, *id), qualifier);
