@@ -396,6 +396,19 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
                             "the inline block {instructions:?} does not end before {after}"
                         ));
                     }
+                    // Its statements are the ones a step out of it passes.
+                    let outside = metadata.statements.iter().find(|statement| {
+                        taken.span.start <= statement.span.start
+                            && statement.span.end <= taken.span.end
+                            && !statement.instructions.is_empty()
+                            && !instructions.contains(&statement.instructions.start)
+                    });
+                    if let Some(statement) = outside {
+                        return Err(format!(
+                            "the inline block {instructions:?} does not hold its statement at {}",
+                            statement.instructions.start
+                        ));
+                    }
                 }
                 BlockPlace::Called { send, closure } => {
                     let is_send =
@@ -408,7 +421,7 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
                     let made = closure < send
                         && matches!(
                             code.instruction(closure as usize),
-                            Instruction::MakeClosure { .. }
+                            Instruction::MakeClosure { code: made, .. } if made.source == taken.span
                         );
                     if !made {
                         return Err(format!(
@@ -596,6 +609,21 @@ mod tests {
                 let mut inline_block_past_its_end = metadata.clone();
                 inline_block_past_its_end.block_sends = taking(BlockPlace::Inline(0..2), 1);
                 broken.push(("an inline block past its end", inline_block_past_its_end));
+
+                let mut statements_outside_the_block = metadata.clone();
+                let whole_text = u32::try_from(SOURCE.len()).expect("small");
+                statements_outside_the_block.block_sends = Box::new([BlockSendEntry {
+                    blocks: Box::new([TakenBlock {
+                        span: Span::new(0, whole_text),
+                        place: BlockPlace::Inline(0..0),
+                    }]),
+                    inlined: true,
+                    after: 1,
+                }]);
+                broken.push((
+                    "an inline block without its statements",
+                    statements_outside_the_block,
+                ));
 
                 let mut called_by_no_send = metadata.clone();
                 called_by_no_send.block_sends =

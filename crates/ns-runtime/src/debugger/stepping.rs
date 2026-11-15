@@ -271,8 +271,16 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         None,
         passed,
     );
-    if let Some(SendLeft::Called { frame, code, after }) = left {
-        stop_after_send(mutator, frame, &code, after);
+    match left {
+        Some(SendLeft::Called { frame, code, after }) => {
+            stop_after_send(mutator, frame, &code, after);
+        }
+        Some(SendLeft::Inlined {
+            frame,
+            join: Some(join),
+            left,
+        }) => stop_after_send(mutator, frame, &left.body, join),
+        Some(SendLeft::Inlined { join: None, .. }) | None => {}
     }
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
@@ -296,11 +304,16 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
 /// The send a step out taken in a block leaves (decision 17), in `frame`,
 /// the frame that runs the send.
 enum SendLeft<'gc> {
-    /// A form the optimized lowering inlines, left for the next statement
-    /// start after it, as a step over of the whole form would leave it:
-    /// the stepping frame is flooded as for a step over, but for the
-    /// form's own blocks, which the flood passes over.
-    Inlined { frame: Place<'gc>, left: LeftBlocks },
+    /// A form the optimized lowering inlines, left for where it answered:
+    /// its join, when that is mid-statement (`join_stop`), or else the
+    /// next statement start after it, as a step over of the whole form
+    /// would leave it -- the stepping frame is flooded as for a step
+    /// over, but for the form's own blocks, which the flood passes over.
+    Inlined {
+        frame: Place<'gc>,
+        join: Option<usize>,
+        left: LeftBlocks,
+    },
     /// A real send, left for its return point, `after` in `code`.
     Called {
         frame: Place<'gc>,
@@ -348,57 +361,99 @@ impl LeftBlocks {
 /// The send a step out taken in `taken_in` leaves, when the frame runs a
 /// block a send took (decision 17): the innermost inlined form one of
 /// whose inline blocks holds the instruction the frame stands at, in its
-/// own body; or else, for a frame that runs a closure, the send of its
-/// creator that took the closure's block literal -- a real send, or an
-/// inlined form's fallback send or reference-lowered counterpart -- which
-/// the creator stands at, the frame above it on the stack, so that the
-/// closure runs within that send. `None` for every other frame -- a
-/// method, a block whose creator returned or waits on another send --
-/// which a step out leaves for its caller.
+/// own body; or else, for a frame that runs a closure, the send its
+/// creator stands at, when that send took the closure (`took_closure`) --
+/// a real send, or an inlined form's fallback send or reference-lowered
+/// counterpart, which the creator's literal entry names. `None` for every
+/// other frame -- a method, a block whose creator returned or whose
+/// creator's send did not take it -- which a step out leaves for its
+/// caller.
 fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<SendLeft<'gc>> {
     let (code, _, metadata) = place_body(mutator, taken_in);
     let standing = place_program_counter(mutator, taken_in);
-    if let Some(entry) = metadata
-        .as_deref()
-        .and_then(|metadata| inline_send_around(metadata, standing))
-    {
-        return Some(SendLeft::Inlined {
-            frame: taken_in,
-            left: left_blocks(&code, entry),
-        });
+    if let Some(metadata) = metadata.as_deref() {
+        if let Some(entry) = inline_send_around(metadata, standing) {
+            return Some(SendLeft::Inlined {
+                frame: taken_in,
+                join: join_stop(&code, metadata, entry),
+                left: left_blocks(&code, entry),
+            });
+        }
     }
     let creator = creator_of(mutator, taken_in)?;
+    let callee = callee_of(mutator, taken_in, creator)?;
+    if !took_closure(mutator, callee, taken_in) {
+        return None;
+    }
     let (creator_code, _, creator_metadata) = place_body(mutator, creator);
-    let creator_metadata = creator_metadata?;
     let waiting_at = place_program_counter(mutator, creator);
-    let took_this_block = |taken: &TakenBlock| match taken.place {
+    // The send's literal entry, when the closure's block is the literal it
+    // took, says whether it is an inlined form; a closure the send took
+    // otherwise -- through a variable, from an expression -- a real send's.
+    let took_this_literal = |taken: &TakenBlock| match taken.place {
         BlockPlace::Called { send, closure } => {
             usize::try_from(send) == Ok(waiting_at)
                 && made_by(&creator_code, closure).is_some_and(|made| Rc::ptr_eq(&made, &code))
         }
         BlockPlace::Inline(_) => false,
     };
-    let entry = creator_metadata
-        .block_sends
-        .iter()
-        .find(|entry| entry.blocks.iter().any(took_this_block))?;
-    if !runs_within(mutator, taken_in, creator) {
-        return None;
-    }
-    if entry.inlined {
+    let literal = creator_metadata.as_deref().and_then(|metadata| {
+        metadata
+            .block_sends
+            .iter()
+            .find(|entry| entry.inlined && entry.blocks.iter().any(took_this_literal))
+            .map(|entry| (metadata, entry))
+    });
+    if let Some((metadata, entry)) = literal {
         return Some(SendLeft::Inlined {
             frame: creator,
+            join: join_stop(&creator_code, metadata, entry),
             left: left_blocks(&creator_code, entry),
         });
     }
-    let after = usize::try_from(entry.after)
-        .ok()
-        .filter(|after| *after < creator_code.instruction_count())?;
+    let after = waiting_at + 1;
+    let is_send = waiting_at < creator_code.instruction_count()
+        && call_destination(&creator_code.instruction(waiting_at)).is_some();
+    if !is_send || after >= creator_code.instruction_count() {
+        return None;
+    }
     Some(SendLeft::Called {
         frame: creator,
         code: creator_code,
         after,
     })
+}
+
+/// The index of the join of the inlined form `entry` of `code`, where a
+/// step out of it stops once the form has answered, when that is mid
+/// statement -- the rest of the statement the form is part of, which the
+/// flood's next statement start would pass, as a real send's return point
+/// is: `None` at a statement start, which the flood stops at, at a loop's
+/// back jump, which goes on to the loop's condition, and outside every
+/// statement, at a body's implicit return.
+fn join_stop(
+    code: &CompiledCode,
+    metadata: &BodyMetadata,
+    entry: &BlockSendEntry,
+) -> Option<usize> {
+    let join = entry.after;
+    let after = usize::try_from(join).ok()?;
+    if after >= code.instruction_count() {
+        return None;
+    }
+    let starts_a_statement = metadata
+        .statements
+        .iter()
+        .any(|statement| statement.instructions.start == join);
+    let mid_statement = metadata
+        .statements
+        .iter()
+        .any(|statement| statement.instructions.start < join && join < statement.instructions.end);
+    let back_jump = matches!(
+        code.instruction(after),
+        Instruction::Jump { target } if target <= join
+    );
+    (mid_statement && !starts_a_statement && !back_jump).then_some(after)
 }
 
 /// The innermost inlined form of `metadata` one of whose inline blocks
@@ -471,29 +526,80 @@ fn made_by(code: &CompiledCode, index: u32) -> Option<Rc<CompiledCode>> {
     }
 }
 
-/// Whether `creator` is met walking down the senders of `frame`, through
-/// the suspended ones: the frame runs within the send `creator` stands at.
-fn runs_within<'gc>(mutator: &Mutator<'gc>, frame: Place<'gc>, creator: Place<'gc>) -> bool {
+/// The frame directly above `creator` walking down the senders of
+/// `frame`, through the suspended ones -- `frame` itself when `creator` is
+/// its sender: the callee of the send `creator` stands at, within which
+/// `frame` runs. `None` when `creator` is not met.
+fn callee_of<'gc>(
+    mutator: &Mutator<'gc>,
+    frame: Place<'gc>,
+    creator: Place<'gc>,
+) -> Option<Place<'gc>> {
     let heap = &mutator.heap;
     let below = |place: Place<'gc>| match place {
         Place::Running(activation) => sender_of(mutator, activation),
         Place::Suspended(frame) => heap.frame_sender(frame).map(Place::Suspended),
     };
+    let mut above = frame;
     let mut next = below(frame);
     while let Some(place) = next {
-        let met = match (place, creator) {
-            (Place::Running(running), Place::Running(creator)) => creator.names(running),
-            (Place::Suspended(suspended), Place::Suspended(creator)) => heap
-                .frame_object(suspended)
-                .same(heap.frame_object(creator)),
-            _ => false,
-        };
-        if met {
-            return true;
+        if same_place(mutator, place, creator) {
+            return Some(above);
         }
+        above = place;
         next = below(place);
     }
-    false
+    None
+}
+
+/// Whether `first` and `second` are the same frame of the run.
+fn same_place<'gc>(mutator: &Mutator<'gc>, first: Place<'gc>, second: Place<'gc>) -> bool {
+    let heap = &mutator.heap;
+    match (first, second) {
+        (Place::Running(first), Place::Running(second)) => first.names(second),
+        (Place::Suspended(first), Place::Suspended(second)) => {
+            heap.frame_object(first).same(heap.frame_object(second))
+        }
+        _ => false,
+    }
+}
+
+/// Whether the send whose callee is `callee` took the closure `frame`
+/// runs, decided at the stop: the callee is the closure's own activation
+/// -- a `value` the send made -- or holds that very closure as its
+/// receiver or as one of its parameters, the registers below its body's
+/// argument count, which the compiler never writes. A closure handed on
+/// in a variable or computed by an expression is taken so as much as a
+/// literal; one run by another send -- a sibling closure, a slot's -- is
+/// not.
+fn took_closure<'gc>(mutator: &Mutator<'gc>, callee: Place<'gc>, frame: Place<'gc>) -> bool {
+    if same_place(mutator, callee, frame) {
+        return true;
+    }
+    let heap = &mutator.heap;
+    let closure = match frame {
+        Place::Running(activation) => heap.activation_closure(activation),
+        Place::Suspended(frame) => heap.frame_closure(frame),
+    };
+    let Some(closure) = closure else {
+        return false;
+    };
+    let is_closure =
+        |value: Value<'gc>| value.as_object().is_some_and(|object| object.same(closure));
+    match callee {
+        Place::Running(activation) => {
+            let parameters = heap.activation_code(activation).argument_count;
+            is_closure(heap.activation_receiver(activation))
+                || (0..parameters).any(|index| is_closure(heap.activation_local(activation, index)))
+        }
+        Place::Suspended(suspended) => {
+            let parameters = heap
+                .frame_code(suspended)
+                .map_or(0, |code| code.argument_count);
+            is_closure(heap.frame_receiver(suspended))
+                || (0..parameters).any(|index| is_closure(heap.frame_local(suspended, index)))
+        }
+    }
 }
 
 /// The frame that created the closure `frame` runs, while it runs or is

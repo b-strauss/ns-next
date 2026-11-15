@@ -3784,6 +3784,95 @@ const LEAVING: &str = indoc! {"
           each yourself].
         ^0
       )
+      public handing = (
+        | total block |
+        total:: 0.
+        block:: [:each |
+          total:: total + (each * 5).
+          total:: total * 1].
+        {1. 2. 3} do: block.
+        ^total
+      )
+      public computing = (
+        | total block |
+        total:: 0.
+        block:: [:each |
+          total:: total - each.
+          total:: total * 1].
+        {1. 2. 3} do: block yourself.
+        ^total
+      )
+      public parenthesizing = (
+        | total |
+        total:: 0.
+        {1. 2. 3} do: ([:each |
+          total:: total + (each * 2).
+          total:: total * 1]).
+        ^total
+      )
+      public assigning = (
+        | x y |
+        x:: 1.
+        y:: (x > 0 ifTrue: [
+          x:: x + 20.
+          x + 100] ifFalse: [0]) + 1.
+        ^y
+      )
+      public passing = (
+        | x |
+        x:: 1.
+        ^self twice: (x > 0
+          ifTrue: [
+            x:: x + 30.
+            x]
+          ifFalse: [0])
+      )
+      twice: value = (
+        ^value * 2
+      )
+      public recursing = (
+        ^self walk: 2
+      )
+      walk: depth = (
+        | total |
+        total:: 0.
+        depth > 0 ifTrue: [total:: self walk: depth - 1].
+        {1. 2} do: [:each |
+          total:: total + (each * 3).
+          total:: total + depth].
+        ^total
+      )
+      public ensuring = (
+        | total |
+        total:: 0.
+        [total:: total + 1] ensure: [
+          total:: total + 10.
+          total:: total * 2].
+        ^total
+      )
+      public unwinding = (
+        | found |
+        found:: self escape.
+        ^found + 1
+      )
+      escape = (
+        [^5] ensure: [
+          kept:: 6.
+          kept:: 7].
+        ^0
+      )
+      public siblings = (
+        | total first second |
+        total:: 0.
+        first:: [
+          total:: total + 1.
+          total:: total + 2].
+        second:: [
+          first value.
+          total:: total * 10].
+        second value.
+        ^total
+      )
     ) : ()
 "};
 
@@ -4049,6 +4138,186 @@ ns_runtime::for_each_lowering! {
             [stood("Leaving>>returning", "^block value: 4", Some("8"))]
         );
         assert_eq!(answer, 8);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block a `do:` takes through a variable leaves the
+    /// `do:`, as one of a literal does.
+    fn a_step_out_of_a_block_handed_on_in_a_variable_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "handing",
+            "total:: total + (each * 5).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>handing"), String::from("^total"))
+        );
+        assert_eq!(answer, 30);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a block an expression computes for the `do:` leaves
+    /// the `do:`.
+    fn a_step_out_of_a_block_an_expression_hands_on_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "computing",
+            "total:: total - each.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>computing"), String::from("^total"))
+        );
+        assert_eq!(answer, -6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of a parenthesized block literal leaves the send that
+    /// took it.
+    fn a_step_out_of_a_parenthesized_block_stops_after_the_send(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "parenthesizing",
+            "total:: total + (each * 2).",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>parenthesizing"), String::from("^total"))
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form's block mid-statement stops where the
+    /// form answered, the rest of its statement still to run, as a real
+    /// send's return point does.
+    fn a_step_out_of_an_inlined_form_mid_statement_stops_at_its_answer(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "assigning",
+            "x:: x + 20.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("y:: (x > 0 ifTrue: [", "ifFalse: [0]) + 1");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(stops[0].0 .0, "Leaving>>assigning");
+        assert_eq!(answer, 122);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an inlined form's block that is a send's argument
+    /// stops where the form answered, before the send.
+    fn a_step_out_of_an_inlined_form_in_an_argument_stops_at_its_answer(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "passing",
+            "x:: x + 30.",
+            1,
+            vec![Command::StepOut],
+        );
+        let statement = leaving_statement("^self twice: (x > 0", "ifFalse: [0])");
+        assert_eq!(statements(&stops), [statement.as_str()]);
+        assert_eq!(stops[0].0 .0, "Leaving>>passing");
+        assert_eq!(answer, 62);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of the block of the innermost of three activations of a
+    /// recursive method leaves that activation's `do:`, not an outer
+    /// one's.
+    fn a_step_out_of_a_recursive_home_s_block_stays_in_its_activation(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "recursing",
+            "total:: total + (each * 3).",
+            1,
+            vec![Command::StepOut, Command::StepOut],
+        );
+        assert_eq!(stops.len(), 2);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>walk:"), String::from("^total"))
+        );
+        // Out of the innermost activation, to its caller's send, which
+        // the reference lowering runs in the `ifTrue:`'s block.
+        assert_eq!(stops[1].0 .1, "total:: self walk: depth - 1");
+        assert_eq!(stops[1].1.as_deref(), Some("9"));
+        assert_eq!(answer, 33);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ensure:`'s block leaves the `ensure:`.
+    fn a_step_out_of_an_ensure_block_stops_after_the_ensure(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "ensuring",
+            "total:: total + 10.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0].0,
+            (String::from("Leaving>>ensuring"), String::from("^total"))
+        );
+        assert_eq!(answer, 22);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out of an `ensure:`'s block a non-local return's unwind runs
+    /// stops where the return goes on: the home's caller.
+    fn a_step_out_of_an_ensure_block_an_unwind_runs_stops_where_the_return_goes_on(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "unwinding",
+            "kept:: 6.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("Leaving>>unwinding", "found:: self escape", Some("5"))]
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A closure run by a sibling closure of the same home, which the
+    /// home's send did not take, steps out as any frame does: to the
+    /// return point of the sibling's send, the sibling's next statement.
+    fn a_step_out_of_a_closure_a_sibling_runs_stops_in_the_sibling(lowering) {
+        let (stops, answer) = leaving(
+            lowering,
+            "siblings",
+            "total:: total + 1.",
+            1,
+            vec![Command::StepOut],
+        );
+        assert_eq!(
+            stops,
+            [stood("[] in Leaving>>siblings", "total:: total * 10", Some("3"))]
+        );
+        assert_eq!(answer, 30);
     }
 }
 
