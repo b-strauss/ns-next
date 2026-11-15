@@ -1825,6 +1825,110 @@ fn a_step_into_stops_at_a_stripped_image_s_superclass_header() {
     );
 }
 
+/// A root whose `main:args:` instantiates `Punkt`, whose header names a
+/// factory pattern and a superclass clause, itself a class with a factory
+/// pattern. The header patterns are on lines 2 and 5.
+const POINTS: &str = indoc! {"
+    class Points = Object new () (
+      class Basis new: a = (
+        | public base ::= a. |
+      ) ()
+      class Punkt x: ax y: ay = Basis new: ax (
+        | public y ::= ay. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Punkt x: 1 y: 2.
+        platform transcript show: (made y + made base) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A frame's name, line, column and end of its range.
+fn placed(frame: &Value) -> (String, i64, i64, i64, i64) {
+    let number = |key: &str| frame[key].as_i64().unwrap_or(-1);
+    (
+        frame["name"].as_str().unwrap_or_default().to_owned(),
+        number("line"),
+        number("column"),
+        number("endLine"),
+        number("endColumn"),
+    )
+}
+
+/// A step stop whose top frame is answered, after `request`.
+fn step_to_top(client: &mut DapClient, request: &str) -> Vec<Value> {
+    client.succeed(request, json!({ "threadId": 1 }));
+    client.stopped("step");
+    client.stack_frames(0, 0)
+}
+
+/// The header stops through the agent: a step into the instantiation stops
+/// in the factory, named as the stack trace names a factory and placed at
+/// the header's factory pattern, whose parameters are the frame's
+/// variables; a step over reaches the superclass clause, a step into the
+/// clause the superclass's header, and a step out goes back after the clause.
+#[test]
+fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    // The entry stands in `Punkt`'s superclass clause, which `Punkt x: 1 y: 2`
+    // evaluates first; two steps into reach `main:args:`'s statement.
+    step_to_top(&mut client, "stepIn");
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Points>>main:args:".into(), 10, 5, 10, 27)
+    );
+
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        frames.iter().map(placed).collect::<Vec<_>>(),
+        [
+            ("Punkt class>>x:y:".to_owned(), 5, 15, 5, 26),
+            ("Points>>main:args:".to_owned(), 10, 18, 10, 25),
+        ]
+    );
+    assert_eq!(frames[0]["source"]["path"], absolute(&path), "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "ax")["value"], "1", "{variables:?}");
+    assert_eq!(variable(&variables, "ay")["value"], "2", "{variables:?}");
+
+    let frames = step_to_top(&mut client, "next");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Punkt initializer".into(), 5, 29, 5, 42)
+    );
+    assert_eq!(frames.len(), 3, "{frames:?}");
+
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Basis initializer".into(), 2, 15, 2, 21)
+    );
+    assert_eq!(frames.len(), 4, "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "a")["value"], "1", "{variables:?}");
+
+    let frames = step_to_top(&mut client, "stepOut");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Punkt initializer".into(), 6, 7, 6, 23)
+    );
+    assert_eq!(frames.len(), 3, "{frames:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "3
+"
+    );
+}
+
 /// A root whose line 5 is a loop of two statements, followed on line 8 by
 /// the statement after it.
 const LOOPING: &str = indoc! {"
