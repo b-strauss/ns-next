@@ -18,7 +18,8 @@ mod target_runner;
 
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
-/// (`bench`), and an application written as an image (`build`). What looks
+/// (`bench`), an application written as an image (`build`), and the core
+/// library's sources the binary embeds (`shipped-sources`). What looks
 /// at Newspeak without running it -- parsing, disassembly, image inspection,
 /// the language server -- is `ns-next-analyzer`.
 #[derive(Parser)]
@@ -180,6 +181,27 @@ enum Command {
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
     },
+    /// Write the `.ns` sources this binary embeds -- the kernel, the
+    /// manifest and the factories -- into DIRECTORY in the layout of
+    /// `core-library/`, with a `fingerprint` file; or print their
+    /// fingerprint; or print them as JSON. The directory is created, and
+    /// refused when it holds anything that is not one of these files.
+    #[command(group(
+        clap::ArgGroup::new("form")
+            .required(true)
+            .args(["directory", "fingerprint", "json"])
+    ))]
+    ShippedSources {
+        directory: Option<PathBuf>,
+        /// Print the fingerprint of the embedded sources, one line, instead
+        /// of writing them. It changes with any embedded `.ns` text.
+        #[arg(long)]
+        fingerprint: bool,
+        /// Print `{ "fingerprint": ..., "modules": [ { "name", "path",
+        /// "text" } ] }` instead of writing.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The native stack the interpreter runs on. Nothing re-enters the run loop
@@ -283,5 +305,10 @@ fn execute(command: Command) -> ExitCode {
             strip_source,
             lowering,
         } => commands::build::execute(&program, &out, !strip_source, lowering.into()),
+        Command::ShippedSources {
+            directory,
+            fingerprint,
+            json,
+        } => commands::shipped_sources::execute(directory.as_deref(), fingerprint, json),
     }
 }

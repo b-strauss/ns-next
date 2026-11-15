@@ -3,3 +3,4 @@ pub(crate) mod build;
 pub(crate) mod load;
 pub(crate) mod run;
 pub(crate) mod run_corpus;
+pub(crate) mod shipped_sources;

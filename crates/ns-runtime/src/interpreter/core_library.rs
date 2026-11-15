@@ -37,11 +37,20 @@ pub(crate) const MIRRORS_FACTORY_SOURCE: &str =
 /// user module, holds no mirror, and may be carried by an image.
 pub const MANIFEST_SOURCE: &str = include_str!("../../core-library/Manifest.ns");
 
+/// `Kernel.ns`'s and `Manifest.ns`'s paths below `core-library/`, beside
+/// their `include_str!`s (`kernel::KERNEL_SOURCE`, `MANIFEST_SOURCE`).
+const KERNEL_PATH: &str = "Kernel.ns";
+const MANIFEST_PATH: &str = "Manifest.ns";
+
 /// One shipped module. Every entry here is shipped source; a user module
 /// joins the table, marked as such by the host, with the step that loads
 /// one.
 pub(crate) struct ShippedModule {
     pub(crate) name: &'static str,
+    /// The file the source is embedded from, relative to `core-library/`,
+    /// recorded beside its `include_str!` so that a moved file cannot leave
+    /// the two apart (`tests/shipped_source_files.rs`).
+    pub(crate) path: &'static str,
     pub(crate) source: &'static str,
     pub(crate) factory: ShippedFactory,
 }
@@ -65,31 +74,37 @@ pub(crate) const KERNEL_MODULE: &str = "Kernel";
 pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
     ShippedModule {
         name: "PlatformFactory",
+        path: "PlatformFactory.ns",
         source: PLATFORM_FACTORY_SOURCE,
         factory: ShippedFactory::MirrorAndKernel,
     },
     ShippedModule {
         name: "TranscriptFactory",
+        path: "platform/TranscriptFactory.ns",
         source: TRANSCRIPT_FACTORY_SOURCE,
         factory: ShippedFactory::Mirror,
     },
     ShippedModule {
         name: "TimeFactory",
+        path: "platform/TimeFactory.ns",
         source: TIME_FACTORY_SOURCE,
         factory: ShippedFactory::Mirror,
     },
     ShippedModule {
         name: "CollectionsFactory",
+        path: "platform/CollectionsFactory.ns",
         source: COLLECTIONS_FACTORY_SOURCE,
         factory: ShippedFactory::Kernel,
     },
     ShippedModule {
         name: "TypedArraysFactory",
+        path: "platform/TypedArraysFactory.ns",
         source: TYPED_ARRAYS_FACTORY_SOURCE,
         factory: ShippedFactory::MirrorAndKernel,
     },
     ShippedModule {
         name: "MirrorsFactory",
+        path: "platform/MirrorsFactory.ns",
         source: MIRRORS_FACTORY_SOURCE,
         factory: ShippedFactory::MirrorAndKernel,
     },
@@ -161,6 +176,60 @@ pub fn shipped_module_source(name: &str) -> Option<&'static str> {
         .iter()
         .find(|shipped| shipped.name == name)
         .map(|shipped| shipped.source)
+}
+
+/// One `.ns` file the binary embeds: the module's name, its path below
+/// `crates/ns-runtime/core-library/` with `/` separators, and its text.
+pub struct ShippedSourceFile {
+    pub name: &'static str,
+    pub path: &'static str,
+    pub text: &'static str,
+}
+
+/// Every `.ns` the binary embeds -- `Kernel`, `Manifest` (which no shipped
+/// module table lists, since a program compiles it as its own) and the
+/// `SHIPPED_MODULES` -- in that order, so that a tool can write the library
+/// out in its directory layout.
+pub fn shipped_source_files() -> Vec<ShippedSourceFile> {
+    let mut files = vec![
+        ShippedSourceFile {
+            name: KERNEL_MODULE,
+            path: KERNEL_PATH,
+            text: super::kernel::KERNEL_SOURCE,
+        },
+        ShippedSourceFile {
+            name: "Manifest",
+            path: MANIFEST_PATH,
+            text: MANIFEST_SOURCE,
+        },
+    ];
+    files.extend(SHIPPED_MODULES.iter().map(|shipped| ShippedSourceFile {
+        name: shipped.name,
+        path: shipped.path,
+        text: shipped.source,
+    }));
+    files
+}
+
+/// The fingerprint of the embedded sources: FNV-1a over every
+/// `shipped_source_files` entry's path and text, each part preceded by its
+/// length, as sixteen lowercase hexadecimal digits. It covers `Manifest.ns`
+/// too, which the shipped code's fingerprint (`build.rs`) leaves out, since
+/// whoever keys a copy of the sources by it must see every text change; it
+/// stays the same for a binary's lifetime.
+pub fn shipped_sources_fingerprint() -> String {
+    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut part = |bytes: &[u8]| {
+        for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
+            state ^= u64::from(*byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for file in shipped_source_files() {
+        part(file.path.as_bytes());
+        part(file.text.as_bytes());
+    }
+    format!("{state:016x}")
 }
 
 /// The text of `Kernel` or of the `SHIPPED_MODULES` entry `name`, as one

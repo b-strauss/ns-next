@@ -98,7 +98,10 @@ pub use heap::{
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,
     NewClosure, ObjectReference, ObjectShape, RegisterBase, Root, StackExhausted,
 };
-pub use interpreter::core_library::{shipped_module_source, MANIFEST_SOURCE};
+pub use interpreter::core_library::{
+    shipped_module_source, shipped_source_files, shipped_sources_fingerprint, ShippedSourceFile,
+    MANIFEST_SOURCE,
+};
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,
     HostResult, HostSignal, Interpreter, MethodSide, Mutator,

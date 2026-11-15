@@ -196,7 +196,11 @@ Rust 1.98.0, edition 2021, seven crates:
   (`core-library.md`, "The embedded shipped code").
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
-  `load`, `bench`, `build`. A program is one `.ns` file or a project of several
+  `load`, `bench`, `build`, and `shipped-sources`, which writes the `.ns`
+  sources the binary embeds (`Manifest.ns` included) in `core-library/`'s
+  layout with a `fingerprint` file, prints that fingerprint, or prints them
+  as JSON (`commands/shipped_sources.rs`; `core-library.md`, "The shipped
+  sources as files"). A program is one `.ns` file or a project of several
   modules: a directory whose `newspeak.json` names them, the current directory
   when no program is given (`project.rs`, `program.rs`). The file is described
   by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
