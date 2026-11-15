@@ -7939,6 +7939,11 @@ branch review.
   factory stop.
 - `87d8dd43` -- only the shown library directory's files are named to the
   agent.
+- `69ead1d8` -- a program module named like a shipped one never takes its
+  breakpoints: every module of the debugging API a `ModuleName`, and a
+  shipped module named by its file's path in the core library the client
+  hands over at `attach`.
+- `cfb1f0ad` -- a line step stops in a fallback block's next activation.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects
 and gaps" (the library's flag never reset, its breakable lines needing
