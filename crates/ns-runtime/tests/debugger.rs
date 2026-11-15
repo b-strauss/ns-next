@@ -22,7 +22,8 @@ use ns_runtime::debugger::{
 use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
-    MethodSide, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable, VariableValue,
+    MethodSide, ReturnedValue, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,
+    VariableValue,
 };
 
 /// How long the remote's thread waits for an event before it fails the
@@ -3485,8 +3486,8 @@ fn stepped_with<T: Send + 'static>(
 
 /// Sends the step `command` to the stopped program and waits for its
 /// stop: the confirmation first, then the step's stop, whose returned
-/// value it answers.
-fn step(remote: &DebugRemote, command: Command) -> Option<ValueDescription> {
+/// value, with its call, it answers.
+fn step(remote: &DebugRemote, command: Command) -> Option<ReturnedValue> {
     remote.send(command);
     match remote.next_event(EVENT_TIMEOUT) {
         Some(Event::Continued) => {}
@@ -5368,7 +5369,10 @@ ns_runtime::for_each_lowering! {
                 String::from("^self compute + 1")
             )
         );
-        assert_eq!(returned.expect("the callee's answer").label, "14");
+        let returned = returned.expect("the callee's answer");
+        assert_eq!(returned.value.label, "14");
+        // Named by the send the callee returned to, in the caller.
+        assert_eq!(returned.call, "self compute");
         assert_eq!(answer, 15);
     }
 }
@@ -5391,8 +5395,9 @@ ns_runtime::for_each_lowering! {
             },
         );
         let returned = returned.expect("compute's answer");
-        assert_eq!(returned.label, "14");
-        assert_eq!(returned.class_name, "Integer");
+        assert_eq!(returned.value.label, "14");
+        assert_eq!(returned.value.class_name, "Integer");
+        assert_eq!(returned.call, "self compute");
     }
 }
 
@@ -5421,8 +5426,77 @@ ns_runtime::for_each_lowering! {
                 String::from("^self compute + 1")
             )
         );
-        assert_eq!(returned.expect("compute's answer").label, "14");
+        let returned = returned.expect("compute's answer");
+        assert_eq!(returned.value.label, "14");
+        assert_eq!(returned.call, "self compute");
         assert_eq!(answer, 15);
+    }
+}
+
+/// Statements whose last call is one of several sends, one a primitive
+/// answers, one written over several lines and one too long to show
+/// whole.
+const RETURNS_CALLED: &str = indoc! {"
+    class ReturnsCalled = Object new () (
+      public run = (
+        | answer |
+        answer:: (self compute + 1) max: 3.
+        answer:: answer + 4.
+        answer:: self
+          first: answer
+          second: 2.
+        answer:: self combineTheFirstArgument: 1000 withTheSecondArgument: 2000 andTheThird: answer.
+        ^answer
+      )
+      compute = (
+        ^6
+      )
+      first: first second: second = (
+        ^first + second
+      )
+      combineTheFirstArgument: first withTheSecondArgument: second andTheThird: third = (
+        ^first + second + third
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Each step over a statement names the value it reports by the
+    /// statement's last call: of several sends the last, a send a
+    /// primitive answered alike, a send written over several lines on one
+    /// line, and a long one with its middle left out.
+    fn a_step_over_names_the_returned_value_by_its_call(lowering) {
+        let offset = line_start(RETURNS_CALLED, "answer:: (self compute + 1) max: 3.");
+        let (returned, answer) = stepped(
+            RETURNS_CALLED,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "ReturnsCalled", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "ReturnsCalled");
+                let returned: Vec<(String, String)> = (0..4)
+                    .map(|_| {
+                        let returned = step(remote, Command::StepOver)
+                            .expect("each statement's last call");
+                        (returned.call, returned.value.label)
+                    })
+                    .collect();
+                continue_stopped(remote);
+                returned
+            },
+        );
+        let expected = [
+            ("(self compute + 1) max: 3", "7"),
+            ("answer + 4", "11"),
+            ("self first: answer second: 2", "13"),
+            ("self combineTheFirstArgument: … 2000 andTheThird: answer", "3013"),
+        ];
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(call, label)| (String::from(*call), String::from(*label)))
+            .collect();
+        assert_eq!(returned, expected);
+        assert_eq!(answer, 3013);
     }
 }
 
@@ -5493,7 +5567,7 @@ ns_runtime::for_each_lowering! {
                     standing(remote, RECURSIVE),
                     factorial_frames(remote),
                     top_variable(remote, "n"),
-                    returned.map(|returned| returned.label),
+                    returned.map(|returned| returned.value.label),
                 );
                 set_breakpoints(remote, "Recursive", Vec::new());
                 expect_breakpoints(remote, "Recursive");
@@ -6112,7 +6186,7 @@ fn leaving_with(
                 let returned = step(remote, command);
                 stops.push((
                     standing(remote, LEAVING),
-                    returned.map(|returned| returned.label),
+                    returned.map(|returned| returned.value.label),
                 ));
             }
             continue_stopped(remote);
@@ -6990,7 +7064,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Unwinding>>ensuring"), String::from("x:: self home"))
         );
-        assert_eq!(returned.expect("the home's answer").label, "5");
+        assert_eq!(returned.expect("the home's answer").value.label, "5");
         assert_eq!(answer, 8);
     }
 }
@@ -7018,7 +7092,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Unwinding>>finding"), String::from("y:: self find"))
         );
-        assert_eq!(returned.expect("the home's answer").label, "20");
+        assert_eq!(returned.expect("the home's answer").value.label, "20");
         assert_eq!(answer, 21);
     }
 }
@@ -7066,7 +7140,7 @@ fn expect_step_filters_set(remote: &DebugRemote) {
 struct SteppedOut {
     names: Vec<String>,
     stood: (String, String),
-    returned: Option<ValueDescription>,
+    returned: Option<ReturnedValue>,
     answer: i64,
 }
 
@@ -7131,7 +7205,7 @@ ns_runtime::for_each_lowering! {
             out.stood,
             (String::from("Probe>>add:"), String::from("^sum * 10"))
         );
-        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
     }
 }
@@ -7156,7 +7230,7 @@ ns_runtime::for_each_lowering! {
             out.stood,
             (String::from("Probe>>add:"), String::from("^sum * 10"))
         );
-        assert_eq!(out.returned.expect("the + run again").label, "3");
+        assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
     }
 }
@@ -8104,7 +8178,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Collecting>>run"), String::from("^total"))
         );
-        assert_eq!(returned.expect("do:'s answer").class_name, "Array");
+        assert_eq!(returned.expect("do:'s answer").value.class_name, "Array");
         assert_eq!(answer, 18);
     }
 }
@@ -8134,7 +8208,7 @@ ns_runtime::for_each_lowering! {
             stood,
             (String::from("Folding>>run"), String::from("^sum"))
         );
-        assert_eq!(returned.expect("inject:into:'s answer").label, "6");
+        assert_eq!(returned.expect("inject:into:'s answer").value.label, "6");
         assert_eq!(answer, 6);
     }
 }

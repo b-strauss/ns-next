@@ -2024,8 +2024,11 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
     let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
     let returned = &scopes["scopes"][1];
     assert_eq!(returned["name"], "Return value", "{scopes}");
+    assert_eq!(returned["presentationHint"], "returnValue", "{scopes}");
     let value = client.variables(&returned["variablesReference"], None, None);
     assert_eq!(value[0]["value"], "42", "{value:?}");
+    // Named by the send in the caller that the callee returned to.
+    assert_eq!(value[0]["name"], "self double: 21", "{value:?}");
 
     client.succeed("next", json!({ "threadId": 1 }));
     client.stopped("step");
@@ -2033,6 +2036,126 @@ fn step_in_and_out_stop_in_the_callee_and_back() {
         top_frame(&mut client),
         (json!("Calls>>main:args:"), json!(5))
     );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A root whose line 14 sends `value` to an element of an `Array` of
+/// two instances: a `KindA`, which declares no slot, and a `Holder`,
+/// which declares one.
+const KINDS: &str = indoc! {"
+    class Kinds = Object new () (
+      class KindA = Object new () (
+        public value = (
+          ^1
+        )
+      )
+      class Holder = Object new (
+        | public contents ::= 5. |
+      ) ()
+      public main: platform args: arguments = (
+        | kinds which total |
+        kinds:: {KindA new. Holder new}.
+        which:: 1.
+        total:: (kinds at: which) value.
+        platform transcript show: total printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step over a line reports the value of its last call in the scope
+/// "Return value", the one variable there named by the call's source.
+#[test]
+fn a_step_over_names_the_return_value_by_its_call() {
+    let (_directory, path) = program("Kinds", KINDS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[14]);
+    client.stopped("breakpoint");
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Kinds>>main:args:"), json!(15))
+    );
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = &scopes["scopes"][1];
+    assert_eq!(returned["name"], "Return value", "{scopes}");
+    assert_eq!(returned["presentationHint"], "returnValue", "{scopes}");
+    let value = client.variables(&returned["variablesReference"], None, None);
+    assert_eq!(value.len(), 1, "{value:?}");
+    assert_eq!(value[0]["name"], "(kinds at: which) value", "{value:?}");
+    assert_eq!(value[0]["value"], "1", "{value:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "1\n");
+}
+
+/// An element is expandable exactly when it has fields: a `KindA`, which
+/// declares no slot, has no children and so no reference, and a
+/// `Holder` one, its slot.
+#[test]
+fn only_an_element_with_fields_expands() {
+    let (_directory, path) = program("Kinds", KINDS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[14]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let kinds = variable(&variables, "kinds");
+    assert_eq!(kinds["indexedVariables"], 2, "{kinds}");
+    let elements = client.variables(&kinds["variablesReference"], None, None);
+    let kind = variable(&elements, "[1]");
+    assert_eq!(kind["type"], "KindA", "{kind}");
+    assert_eq!(kind["variablesReference"], 0, "{kind}");
+    let holder = variable(&elements, "[2]");
+    assert_eq!(holder["type"], "Holder", "{holder}");
+    assert_ne!(holder["variablesReference"], 0, "{holder}");
+    let fields = client.variables(&holder["variablesReference"], None, None);
+    let fields: Vec<(Value, Value)> = fields
+        .iter()
+        .map(|field| (field["name"].clone(), field["value"].clone()))
+        .collect();
+    assert_eq!(fields, [(json!("contents"), json!("5"))]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// In an image built without its source, where no body has metadata, a
+/// step out names the value it reports by the selector of the send in
+/// the caller that the callee returned to.
+#[test]
+fn a_stripped_image_names_the_return_value_by_its_selector() {
+    let (directory, path) = program("Calls", CALLS);
+    let image = directory.join("calls.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Calls>>double:" }] }),
+    );
+    client.configuration_done();
+    client.stopped("function breakpoint");
+    assert_eq!(top_frame(&mut client).0, json!("Calls>>double:"));
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("stepOut", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(top_frame(&mut client).0, json!("Calls>>main:args:"));
+    let scopes = client.succeed("scopes", json!({ "frameId": 1 }));
+    let returned = &scopes["scopes"][1];
+    assert_eq!(returned["name"], "Return value", "{scopes}");
+    let value = client.variables(&returned["variablesReference"], None, None);
+    assert_eq!(value[0]["name"], "double:", "{value:?}");
+    assert_eq!(value[0]["value"], "42", "{value:?}");
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "42\n");

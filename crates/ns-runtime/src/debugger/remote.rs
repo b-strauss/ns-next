@@ -304,7 +304,8 @@ pub enum Event {
     /// The program stopped at a safepoint, and serves commands until a
     /// `Continue`, a step or a `Terminate`. `returned` is, at a step's
     /// stop, the value the stepping frame's last call answered -- the
-    /// first value of the stop -- and `None` otherwise. `elsewhere` is,
+    /// first value of the stop -- with the call that answered it, and
+    /// `None` otherwise. `elsewhere` is,
     /// at a step's stop, whether the step went on, before it stopped, as
     /// a step into from where the program went on rather than from the
     /// frame it was taken in -- after that frame, or its caller, returned
@@ -317,7 +318,7 @@ pub enum Event {
     /// (`docs/design/debugger.md`, decision 4); `false` otherwise.
     Stopped {
         reason: StopReason,
-        returned: Option<ValueDescription>,
+        returned: Option<ReturnedValue>,
         elsewhere: bool,
     },
     /// The answer to `Command::StackTrace`.
@@ -544,6 +545,19 @@ impl VariableValue {
             VariableValue::Unavailable | VariableValue::NotComputed => None,
         }
     }
+}
+
+/// The value a step's last call answered, and that call as a reader
+/// names it (`docs/design/debugger.md`, "The return value of the last
+/// call").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnedValue {
+    /// The send that answered it, in the frame it answered into: its
+    /// source text on one line, each run of whitespace one space, its
+    /// middle left out past 60 characters; or, where the body has no
+    /// metadata -- an image built with `--strip-source` -- its selector.
+    pub call: String,
+    pub value: ValueDescription,
 }
 
 /// A value as the agent shows it: its id for `Command::Children`, its

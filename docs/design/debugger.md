@@ -520,9 +520,10 @@ and `StopReason::MethodExit { id, others }`, a method breakpoint's
 description, caught, exits }` and `StopReason::Halt { exits }`, an
 exception breakpoint's, `exits` the method breakpoints whose exit by an
 unwind it reports ("Exceptions", "Method breakpoints"); `returned`, at a
-step's stop, the value the stepping frame's last call answered, described
-as the stop's first value, and `None` at every other stop ("The return
-value of the last call"); `elsewhere`, at a step's stop, whether the
+step's stop, a `ReturnedValue`: the value the stepping frame's last call
+answered, described as the stop's first value, and the call that answered
+it as a reader names it, a `String`; `None` at every other stop ("The
+return value of the last call"); `elsewhere`, at a step's stop, whether the
 step went on as a step into from where the program went on rather than
 from the frame it was taken in, so that it stands in another activation
 (decision 4), and `false` at every other stop; `StackTrace`; `Variables`, the answer to both
@@ -1029,8 +1030,8 @@ The metadata of decisions 4, 5 and 10 to 12 is built
 (`crates/ns-runtime/src/debugger/metadata/`). A body's tables
 (`BodyMetadata`) are its statement starts (`StatementEntry`: the
 instructions one statement compiled to and its span), its sends
-(`SendEntry`: the index, the `CallSite`, the receiver's span and the
-selector tokens' spans), its sends that take block literals
+(`SendEntry`: the index, the `CallSite`, the receiver's span, the
+selector tokens' spans and the whole call's span), its sends that take block literals
 (`BlockSendEntry`: each block taken, a `TakenBlock` of its span and its
 place -- `BlockPlace::Inline`, the instructions it lowered to, or
 `BlockPlace::Called { send, closure }`, the send that runs its closure and
@@ -1194,7 +1195,11 @@ named as the program declared it; for an
 (`Heap::array_element`; `an_array_s_children_are_its_elements_paged`).
 Every other value has none: an immediate, a `ByteArray`, a `String`, and
 a reified mixin, whose one field is an id that tells a reader nothing.
-Each child is described, and held, as every value is. The heap's accessors
+An instance whose class declares no slot and no nested class has no
+field and so no children, and the agent gives it no
+`variablesReference`, exactly as it gives one to every value with a
+child (`only_an_element_with_fields_expands`). Each child is described,
+and held, as every value is. The heap's accessors
 alone describe a value: no Newspeak code runs while the program is
 stopped.
 
@@ -3932,6 +3937,33 @@ value recorded as `Stopped::returned`, the stop's first value; a stop in
 a frame a step into pushed, and every stop that is not a step's, report
 none.
 
+The value is named by the call that answered it, as IntelliJ names
+Java's (`MethodReturnValueDescriptorImpl`, the method's class and name).
+A call is always the instruction before the one-shot's index in the frame
+it answered into, so a step over's value and a step out's -- the
+callee's answer, at its return point in the caller -- are named alike:
+by the send in the caller, the expression the user reads on the line the
+step stopped at, which tells two sends of one method on that line apart
+where the callee's `Class>>selector` would not. The one-shot notes only
+where the call stands, beside the value: its body, its index and the
+declaration the body belongs to (`stepping::RecordedCall`), no handle,
+so that it outlives a frame a step over its last statement leaves. The
+stop names it, once, rather than every call a step over a loop runs
+past (`stack::call_name`): through the body's metadata, whose send entry
+records the whole call's span (`SendEntry::call`, from the receiver --
+or the selector, where the receiver is implicit -- to the last argument;
+a setter assignment's whole assignment), the text of that span in the
+module's current text, a shipped module's sliced without a copy of the
+whole, on one line, each run of whitespace one space, and a call longer
+than 60 characters keeps its start and its end, each cut at a space, its
+middle left out as ` … `: `(kinds at: which) value`. A body without
+metadata -- an image built with `--strip-source` -- names it by the
+instruction: a send's selector, `super` before a super send's, a mirror
+send's mirror selector, and `future`, `initializer`, `superclass
+initializer` or `mixin initializer` for the other calls
+(`a_step_over_names_the_returned_value_by_its_call`,
+`a_stripped_image_names_the_return_value_by_its_selector`).
+
 ### Launching, the start and the end
 
 **Built** (`crates/ns-cli/src/debug/`), but for the `output` events of
@@ -4064,7 +4096,9 @@ while any of them is
 (`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
 `an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
 `a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name`). `scopes` gives a frame's `Locals` and, at a
-step's stop, the top frame's `Return value`; `variables` pages a frame's
+step's stop, the top frame's `Return value`, `presentationHint`
+`returnValue`, whose one variable is named by the call that returned it
+(`ReturnedValue::call`); `variables` pages a frame's
 variables and a value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
 `variablesReference` is valid until the program goes on, and the ids
@@ -4354,7 +4388,9 @@ the name `<Module>.ns` holding the answer, one per reference for the
 session; a hidden frame
 (`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
 are the `Return value` scope's value, at a step's stop, above the
-`Locals`; a `NewspeakValue` shows the agent's text and class of a value
+`Locals`, named by its call and drawn with the platform's icon of a
+returned value (`AllIcons.Debugger.WatchLastReturnValue`), as Java's is,
+whose name carries no other mark; a `NewspeakValue` shows the agent's text and class of a value
 and pages its children by 100, the tree offering the next page
 (`tooManyChildren`) -- an indexed value's count known, a named value's
 until a page comes back short. Resume is `continue`; Step Over, Step Into

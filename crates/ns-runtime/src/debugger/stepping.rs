@@ -173,8 +173,8 @@ pub(crate) struct Stepping {
     /// and records as the return point does (`send_left`).
     after_send: Option<(Holder, usize)>,
     /// The value the stepping frame's last call answered, recorded at the
-    /// return point after it (`record`).
-    returned: Option<Root>,
+    /// return point after it, and where that call stands (`record`).
+    returned: Option<Returned>,
     /// The frame object of each suspended frame the step names, by its
     /// key (`Holder::Suspended`).
     suspended: Vec<(u32, Root)>,
@@ -240,7 +240,7 @@ impl Stepping {
     /// A step of `action` whose frame is `Holder::Left`, `returned` the
     /// value recorded so far: one `start` is about to name its frame for,
     /// or one waiting for where the program goes on.
-    fn new(action: StepAction, returned: Option<Root>) -> Stepping {
+    fn new(action: StepAction, returned: Option<Returned>) -> Stepping {
         Stepping {
             action,
             frame: Holder::Left,
@@ -898,7 +898,7 @@ fn place_of<'gc>(mutator: &Mutator<'gc>, frame: &StackFrame) -> Option<Place<'gc
 /// the last host run carried to the next (`run_ended`) ends too, so that
 /// whatever ends a step between runs -- a `Terminate`, a detach, a pause
 /// asked between them -- ends that one.
-pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Root> {
+pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Returned> {
     let stepping = mutator.stepping.take();
     mutator.breakpoints.take_carried_step();
     mutator.breakpoints.remove_one_shots();
@@ -1213,7 +1213,7 @@ fn steps_at_or_above<'gc>(
 
 /// The step's value of the last call and the exits it reports, taken with
 /// the step, which a step that replaces it carries on.
-fn carried(mutator: &mut Mutator<'_>) -> (Option<Root>, Vec<BreakpointId>) {
+fn carried(mutator: &mut Mutator<'_>) -> (Option<Returned>, Vec<BreakpointId>) {
     mutator
         .stepping
         .take()
@@ -1941,7 +1941,8 @@ pub(crate) fn takes(mutator: &Mutator<'_>, holder: Holder, running: ActivationRe
 /// destination is live there: the value of the last call, which the
 /// step's stop reports. A register the leftover analysis finds tainted
 /// before `index` -- reached by a jump that skipped the call -- is not
-/// read.
+/// read. The call is noted beside the value, which names it at the
+/// stop.
 pub(crate) fn record(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1964,11 +1965,44 @@ pub(crate) fn record(
     {
         return;
     }
+    if mutator.stepping.is_none() {
+        return;
+    }
+    // Only the call is noted here, as cheaply as the value: its name is
+    // read from the body's metadata at the stop, once, rather than at
+    // every call a step over a loop runs past.
+    let origin = stack::origin(&mutator.heap, &StackFrame::Running(activation));
     let value = mutator.heap.activation_local(activation, register);
     let root = mutator.heap.stash(value);
+    let code = mutator.heap.activation_code(activation);
     if let Some(stepping) = &mut mutator.stepping {
-        stepping.returned = Some(root);
+        stepping.returned = Some(Returned {
+            value: root,
+            call: RecordedCall {
+                code,
+                index: previous,
+                origin,
+            },
+        });
     }
+}
+
+/// The value a step recorded as its last call's answer
+/// (`Stepping::returned`), and the call.
+pub(crate) struct Returned {
+    pub(crate) value: Root,
+    pub(crate) call: RecordedCall,
+}
+
+/// Where the call a step recorded stands, which names it at the stop
+/// (`stack::call_name`): the body, the call instruction's index in it and
+/// the declaration the body belongs to. It holds no handle, so that it
+/// outlives the frame it was recorded in, which a step over a method's
+/// last statement leaves before its stop.
+pub(crate) struct RecordedCall {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) index: usize,
+    pub(crate) origin: Option<BodyOrigin>,
 }
 
 /// The suspend stress mode is about to suspend every activation of the
@@ -2114,7 +2148,7 @@ fn start<'gc>(
     action: StepAction,
     top: Place<'gc>,
     taken_in: Place<'gc>,
-    returned: Option<Root>,
+    returned: Option<Returned>,
     passed: Option<&LeftBlocks>,
 ) {
     // Its frame is named by `stepping_frame`, which may hold `taken_in` as

@@ -14,9 +14,7 @@ use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind}
 use ns_syntax::Span;
 
 use super::control_flow;
-use super::lower::{
-    lower_literal, receiver_span, selector_of, taken_block_spans, Collecting, SendSpans,
-};
+use super::lower::{lower_literal, selector_of, taken_block_spans, Collecting, SendSpans};
 use super::simultaneous;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
@@ -740,7 +738,7 @@ impl<'a> Body<'a> {
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&id.name);
                 let (argument_base, argument_sources) = self.arguments(&[]);
-                let spans = (None, std::slice::from_ref(&id.span));
+                let spans = SendSpans::identifier(&id.span);
                 self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendLexical {
                         depth,
@@ -757,7 +755,7 @@ impl<'a> Body<'a> {
             Some(Binding::SuperSend) => {
                 let selector = Symbol::intern(&id.name);
                 let (argument_base, argument_sources) = self.arguments(&[]);
-                let spans = (None, std::slice::from_ref(&id.span));
+                let spans = SendSpans::identifier(&id.span);
                 self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector,
@@ -804,7 +802,7 @@ impl<'a> Body<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
-                let spans = (None, std::slice::from_ref(&target.span));
+                let spans = SendSpans::setter(&target.span, value);
                 self.emit_send(None, spans, |destination, call_site| {
                     Instruction::SendLexical {
                         depth,
@@ -828,10 +826,7 @@ impl<'a> Body<'a> {
 
     fn send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = (
-            receiver_span(&send.receiver),
-            &send.message.selector_spans[..],
-        );
+        let spans = SendSpans::of(&send.receiver, &send.message);
         match self.binding(send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -907,7 +902,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        let spans = SendSpans::of(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -931,7 +926,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        let spans = SendSpans::of(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendInlinable {
                 selector,
@@ -970,10 +965,7 @@ impl<'a> Body<'a> {
         let condition_register = self.block(condition, None);
         let body_register = self.block(body, None);
         let loop_start = self.code.len();
-        let spans = (
-            receiver_span(&send.receiver),
-            &send.message.selector_spans[..],
-        );
+        let spans = SendSpans::of(&send.receiver, &send.message);
         let condition_send = self.code.len();
         let condition_value = self.value_send(condition_register, spans);
         let not_boolean_jump = self.code.len();
@@ -1126,12 +1118,12 @@ impl<'a> Body<'a> {
         // of it.
         if self.code.len() > index {
             if let Some(collected) = self.collected.as_mut() {
-                let (receiver, selector) = spans;
                 collected.sends.push(SendEntry {
                     index: Self::target(index),
                     call_site: Some(CallSite::UNCACHED),
-                    receiver,
-                    selector: selector.into(),
+                    receiver: spans.receiver,
+                    selector: spans.selector.into(),
+                    call: spans.call,
                 });
             }
         }

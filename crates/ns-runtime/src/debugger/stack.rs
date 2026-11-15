@@ -11,13 +11,16 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
+use super::breakpoints::module_text_of;
 use super::metadata::again::{module_name, BodyOrigin, Member};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
     FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
 };
+use super::stepping::RecordedCall;
 use super::values::StopValues;
-use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
+use crate::builtins::primitive::mirror_entry;
+use crate::bytecode::{CompiledCode, Instruction, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
 use crate::interpreter::Mutator;
 use crate::mixin::{MethodEntry, Mixin};
@@ -595,6 +598,89 @@ fn location(
     })
 }
 
+/// How many characters the name of a returned value's call keeps; a
+/// longer call leaves out its middle (`one_line`).
+const CALL_NAME_LIMIT: usize = 60;
+
+/// The name of the call a step recorded the answer of, as the stop
+/// reports it (`ReturnedValue::call`): the send's source in its module's
+/// current text, through its body's metadata, on one line; or, where
+/// the body has no metadata -- an image built with `--strip-source` --
+/// or the call is no send the source spells, what the instruction says.
+pub(crate) fn call_name(mutator: &mut Mutator<'_>, call: RecordedCall) -> String {
+    let RecordedCall {
+        code,
+        index,
+        origin,
+    } = call;
+    let spelled = origin.and_then(|origin| {
+        let metadata = Cache::metadata(mutator, &code, &origin)?;
+        let program_counter = u32::try_from(index).ok()?;
+        let found = metadata
+            .sends
+            .binary_search_by_key(&program_counter, |entry| entry.index)
+            .ok()?;
+        let span = metadata.sends[found].call;
+        let module = module_name(mutator, &origin.mixin)?;
+        module_text_of(mutator, &module, span).map(|text| one_line(&text))
+    });
+    spelled.unwrap_or_else(|| instruction_call_name(&code.instruction(index)))
+}
+
+/// `text` on one line, each run of whitespace one space, its middle left
+/// out where it is longer than `CALL_NAME_LIMIT` characters: the start
+/// and the end are kept, each cut at a space where one is, so that the
+/// receiver and the last selector part stay readable.
+fn one_line(text: &str) -> String {
+    let spaced = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let characters: Vec<char> = spaced.chars().collect();
+    if characters.len() <= CALL_NAME_LIMIT {
+        return spaced;
+    }
+    let half = (CALL_NAME_LIMIT - 1) / 2;
+    let mut head = half;
+    if characters[head] != ' ' {
+        if let Some(space) = characters[..head]
+            .iter()
+            .rposition(|character| *character == ' ')
+        {
+            head = space;
+        }
+    }
+    let mut tail = characters.len() - half;
+    if characters[tail - 1] != ' ' {
+        if let Some(space) = characters[tail..]
+            .iter()
+            .position(|character| *character == ' ')
+        {
+            tail += space + 1;
+        }
+    }
+    let head: String = characters[..head].iter().collect();
+    let tail: String = characters[tail..].iter().collect();
+    format!("{} … {}", head.trim_end(), tail.trim_start())
+}
+
+/// What a call instruction names, without the source: a send's
+/// selector, `super` before a super send's, and the kind of the other
+/// calls.
+fn instruction_call_name(instruction: &Instruction) -> String {
+    match instruction {
+        Instruction::SendLexical { selector, .. }
+        | Instruction::SendPublic { selector, .. }
+        | Instruction::SendInlinable { selector, .. } => selector.to_string(),
+        Instruction::SendSuper { selector, .. } => format!("super {selector}"),
+        Instruction::SendMirror { primitive, .. } => {
+            String::from(mirror_entry(*primitive).selector)
+        }
+        Instruction::ResolveFuture { .. } => String::from("future"),
+        Instruction::InitializeInstance { .. } => String::from("initializer"),
+        Instruction::InitializeSuperclass { .. } => String::from("superclass initializer"),
+        Instruction::InitializeAppliedLevel { .. } => String::from("mixin initializer"),
+        _ => String::from("call"),
+    }
+}
+
 /// The variables of the frame at index `frame` of the stack trace, `None`
 /// past the stack: `self`, then, with the body's metadata, each named
 /// variable once, the innermost of a name, read where it lives
@@ -778,5 +864,44 @@ fn numbered_variables<'gc>(reader: &Reader<'_, 'gc>, read: &mut Vec<(String, Opt
             format!("register {register}")
         };
         read.push((name, Some(value)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::one_line;
+
+    /// A call's text is shown on one line, each run of whitespace one
+    /// space, and a short one whole.
+    #[test]
+    fn a_call_is_named_on_one_line() {
+        assert_eq!(
+            one_line(
+                "self
+      first: answer
+	  second: 2"
+            ),
+            "self first: answer second: 2"
+        );
+        assert_eq!(
+            one_line("(kinds at: which) value"),
+            "(kinds at: which) value"
+        );
+    }
+
+    /// A call past the limit keeps its start and its end, cut at spaces,
+    /// and one with no space to cut at is cut where the limit falls.
+    #[test]
+    fn a_long_call_leaves_out_its_middle() {
+        let words = "receiver first: 1 second: 2 third: 3 fourth: 4 fifth: 5 sixth: 6 seventh: 7";
+        let named = one_line(words);
+        assert_eq!(
+            named,
+            "receiver first: 1 second: 2 … fifth: 5 sixth: 6 seventh: 7"
+        );
+        assert!(named.chars().count() <= 62, "{named}");
+        let unbroken = "x".repeat(100);
+        let named = one_line(&unbroken);
+        assert_eq!(named, format!("{} … {}", "x".repeat(29), "x".repeat(29)));
     }
 }

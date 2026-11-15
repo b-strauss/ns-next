@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ns_runtime::{
-    Command, DebugControl, Event, ModuleName, StopReason, ValueDescription, Variable, VariableValue,
+    Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -941,10 +941,13 @@ impl Agent {
                 };
                 self.forward_converted(connection, request, command, conversion);
             }
-            Target::Returned(value) => {
+            Target::Returned(returned) => {
+                // Named by its call, as a reader tells it from the line
+                // it stepped over (`docs/design/debugger.md`, "The return
+                // value of the last call").
                 let returned = Variable {
-                    name: "returned".to_string(),
-                    value: VariableValue::Shown(value),
+                    name: returned.call,
+                    value: VariableValue::Shown(returned.value),
                 };
                 let variables = vec![self.stop.variable(&returned)];
                 self.respond(connection, request, Some(json!({ "variables": variables })));
@@ -1180,7 +1183,7 @@ impl Agent {
     fn stopped_at(
         &mut self,
         reason: &StopReason,
-        returned: Option<ValueDescription>,
+        returned: Option<ReturnedValue>,
         elsewhere: bool,
     ) {
         self.stopped = true;

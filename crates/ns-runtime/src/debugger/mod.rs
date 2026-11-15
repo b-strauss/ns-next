@@ -29,8 +29,8 @@ pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
-    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, SendLocation,
-    StopReason, ValueDescription, ValueId, Variable, VariableValue,
+    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
+    SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -39,10 +39,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::heap::{DEBUGGER_BITS, DEBUGGER_COMMANDS, DEBUGGER_PAUSE, DEBUGGER_STEP, DEBUGGER_STOP};
 use crate::interpreter::{Interpreter, Mutator, Signal};
 use crate::types::NewspeakError;
-use crate::{Root, Symbol, Value};
+use crate::{Symbol, Value};
 use breakpoints::Hits;
 use exceptions::ExceptionBreakpoints;
-use stepping::{HeldStep, StepAction, StepFilters};
+use stepping::{HeldStep, Returned, StepAction, StepFilters};
 use values::StopValues;
 
 /// The message of the error a run the debugger terminated ends with.
@@ -880,7 +880,7 @@ impl Interpreter {
     fn stop(
         &mut self,
         reason: StopReason,
-        returned: Option<Root>,
+        returned: Option<Returned>,
         floor: usize,
         source: CommandSource,
     ) -> Served {
@@ -891,7 +891,7 @@ impl Interpreter {
     fn stop_standing(
         &mut self,
         reason: StopReason,
-        returned: Option<Root>,
+        returned: Option<Returned>,
         floor: usize,
         mut source: CommandSource,
         standing: Standing,
@@ -918,7 +918,11 @@ impl Interpreter {
         );
         let caught = in_handler && matches!(reason, StopReason::Exception { caught: true, .. });
         let returned = returned.map(|returned| {
-            self.enter(|mutator| values.describe(mutator, mutator.heap.fetch(&returned)))
+            self.enter(|mutator| {
+                let value = values.describe(mutator, mutator.heap.fetch(&returned.value));
+                let call = stack::call_name(mutator, returned.call);
+                ReturnedValue { call, value }
+            })
         });
         self.answer(
             &mut source,

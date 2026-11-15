@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use ns_runtime::{FrameDescription, ValueDescription, ValueId, Variable, VariableValue};
+use ns_runtime::{FrameDescription, ReturnedValue, ValueId, Variable, VariableValue};
 use ns_syntax::Span;
 
 use super::protocol;
@@ -25,8 +25,9 @@ pub(crate) enum Target {
         child_count: usize,
         indexed: bool,
     },
-    /// The step's stop's return value, the one variable of its scope.
-    Returned(ValueDescription),
+    /// The step's stop's return value, the one variable of its scope,
+    /// named by the call that answered it.
+    Returned(ReturnedValue),
 }
 
 /// The stop's frames, as far as the agent has them.
@@ -45,7 +46,7 @@ pub(crate) struct Stop {
     /// asked at another generation describes another stop.
     generation: u64,
     frames: Frames,
-    returned: Option<ValueDescription>,
+    returned: Option<ReturnedValue>,
     references: BTreeMap<i64, Target>,
     next_reference: i64,
 }
@@ -66,8 +67,8 @@ impl Stop {
     }
 
     /// The program stopped; `returned` is the value its step's last call
-    /// answered.
-    pub(crate) fn begin(&mut self, returned: Option<ValueDescription>) {
+    /// answered, with the call.
+    pub(crate) fn begin(&mut self, returned: Option<ReturnedValue>) {
         self.clear();
         self.returned = returned;
     }
@@ -131,7 +132,7 @@ impl Stop {
         }
     }
 
-    pub(crate) fn returned(&self) -> Option<&ValueDescription> {
+    pub(crate) fn returned(&self) -> Option<&ReturnedValue> {
         self.returned.as_ref()
     }
 

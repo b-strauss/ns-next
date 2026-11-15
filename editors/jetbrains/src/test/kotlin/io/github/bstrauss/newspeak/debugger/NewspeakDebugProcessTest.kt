@@ -9,6 +9,7 @@ import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
+import com.intellij.icons.AllIcons
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
 import com.intellij.openapi.application.ReadAction
@@ -580,6 +581,40 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertEquals(listOf(0 to 100, 100 to 100), pageRequests)
     }
 
+    fun testTheReturnValueIsShownAboveTheLocalsNamedByItsCall() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, arguments ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "scopes" -> JsonParser.parseString(
+                    """{"scopes":[
+                        {"name":"Locals","presentationHint":"locals","variablesReference":$LOCALS_REFERENCE,"expensive":false},
+                        {"name":"Return value","presentationHint":"returnValue","variablesReference":$RETURNED_REFERENCE,"expensive":false}
+                    ]}""",
+                ).asJsonObject
+                "variables" -> if (arguments.get("variablesReference").asInt == RETURNED_REFERENCE) {
+                    JsonParser.parseString(
+                        """{"variables":[{"name":"(kinds at: which) value","value":"1","type":"Integer","variablesReference":0}]}""",
+                    ).asJsonObject
+                } else {
+                    variablesAnswer(arguments)
+                }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "step") })
+        faked.debugging.nextPause()
+
+        // As Java's, the value the last call returned comes first, named by the call, drawn with the platform's icon of a return value.
+        val children = childrenOf(checkNotNull(faked.debugging.session.currentStackFrame))
+        assertEquals(listOf("(kinds at: which) value", "elements"), children.keys.toList())
+        val returned = presentationOf(children.getValue("(kinds at: which) value"))
+        assertEquals(Presentation(AllIcons.Debugger.WatchLastReturnValue, "Integer", "1", false), returned)
+        assertNull("a local has no icon of its own", presentationOf(children.getValue("elements")).icon)
+    }
+
     /** The agent's `variables` answer: one local, an `Array` of 150 elements, and its elements a page at a time. */
     private fun variablesAnswer(arguments: JsonObject): JsonObject {
         val variables = JsonArray()
@@ -938,14 +973,14 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         override fun setMessage(message: String, icon: Icon?, attributes: SimpleTextAttributes, link: XDebuggerTreeNodeHyperlink?) {}
     }
 
-    private data class Presentation(val type: String?, val value: String, val hasChildren: Boolean)
+    private data class Presentation(val icon: Icon?, val type: String?, val value: String, val hasChildren: Boolean)
 
     private fun presentationOf(value: XValue): Presentation {
         val presented = CompletableFuture<Presentation>()
         value.computePresentation(
             object : XValueNode {
                 override fun setPresentation(icon: Icon?, type: String?, value: String, hasChildren: Boolean) {
-                    presented.complete(Presentation(type, value, hasChildren))
+                    presented.complete(Presentation(icon, type, value, hasChildren))
                 }
 
                 override fun setPresentation(icon: Icon?, presentation: XValuePresentation, hasChildren: Boolean) {
@@ -963,7 +998,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                             override fun renderError(error: String) { text.append(error) }
                         },
                     )
-                    presented.complete(Presentation(presentation.type, text.toString(), hasChildren))
+                    presented.complete(Presentation(icon, presentation.type, text.toString(), hasChildren))
                 }
 
                 override fun setFullValueEvaluator(fullValueEvaluator: XFullValueEvaluator) {}
@@ -1004,6 +1039,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val LOCALS_REFERENCE = 100
         const val ELEMENTS_REFERENCE = 200
         const val ELEMENT_COUNT = 150
+
+        /** The fake agent's reference of a step's stop's "Return value" scope. */
+        const val RETURNED_REFERENCE = 300
 
         /** A shipped module's text, which the fake agent names by a reference only. */
         val KERNEL_TEXT = """

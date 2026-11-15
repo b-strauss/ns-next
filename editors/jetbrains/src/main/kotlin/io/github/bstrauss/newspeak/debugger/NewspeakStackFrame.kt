@@ -59,10 +59,14 @@ class NewspeakStackFrame(
             val returned = scopes.firstOrNull { scope -> scope.presentationHint == "returnValue" }
             returnedValues(returned).whenComplete { values, _ ->
                 if (node.isObsolete) return@whenComplete
-                // The returned value first, as Java's return value is shown above the locals.
+                // The returned value first, as Java's is shown above the locals: named by the
+                // call that returned it, the agent's name, and drawn with the platform's icon
+                // of a returned value, which says what it is as Java's says it.
                 if (!values.isNullOrEmpty()) {
                     val top = XValueChildrenList()
-                    for (variable in values) top.addTopValue(NewspeakValue(client, variable))
+                    for (variable in values) {
+                        top.addTopValue(NewspeakValue(client, variable, AllIcons.Debugger.WatchLastReturnValue))
+                    }
                     node.addChildren(top, locals == null)
                 } else if (locals == null) {
                     node.addChildren(XValueChildrenList.EMPTY, true)

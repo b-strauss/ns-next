@@ -1744,7 +1744,7 @@ impl<'a> Lowerer<'a> {
                     argument_base,
                     argument_sources,
                     into,
-                    (None, std::slice::from_ref(&id.span)),
+                    SendSpans::identifier(&id.span),
                 )
             }
             // The resolver attaches `SuperSend` to a bare identifier in one
@@ -1755,7 +1755,7 @@ impl<'a> Lowerer<'a> {
             // `current_class` -- the class that declares the clause.
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.lower_arguments(&[], &[]);
-                let spans = (None, std::slice::from_ref(&id.span));
+                let spans = SendSpans::identifier(&id.span);
                 self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector: crate::Symbol::intern(&id.name),
@@ -1906,7 +1906,7 @@ impl<'a> Lowerer<'a> {
             argument_base,
             vec![value_register],
             None,
-            (None, std::slice::from_ref(&target.span)),
+            SendSpans::setter(&target.span, value),
         );
         self.record_taken_blocks(None, std::slice::from_ref(value), false);
         value_register
@@ -1954,13 +1954,13 @@ impl<'a> Lowerer<'a> {
         let Some(collected) = self.collected.as_mut() else {
             return;
         };
-        let (receiver, selector) = spans;
         collected.sends.push(SendEntry {
             index: u32::try_from(index)
                 .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions"),
             call_site,
-            receiver,
-            selector: selector.into(),
+            receiver: spans.receiver,
+            selector: spans.selector.into(),
+            call: spans.call,
         });
     }
 
@@ -2054,7 +2054,7 @@ impl<'a> Lowerer<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
-        let spans = (receiver_span(receiver), &message.selector_spans[..]);
+        let spans = SendSpans::of(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -2204,10 +2204,7 @@ impl<'a> Lowerer<'a> {
     /// object `outer N m` would send to, loaded without running any code.
     fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = (
-            receiver_span(&send.receiver),
-            &send.message.selector_spans[..],
-        );
+        let spans = SendSpans::of(&send.receiver, &send.message);
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -2551,10 +2548,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             index,
             Some(call_site),
-            (
-                receiver_span(&send.receiver),
-                &send.message.selector_spans[..],
-            ),
+            SendSpans::of(&send.receiver, &send.message),
         );
         let end_label = self.here();
         self.patch_target(after_fast_path_jump, end_label);
@@ -2608,10 +2602,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             failure_jump,
             None,
-            (
-                receiver_span(&send.receiver),
-                &send.message.selector_spans[..],
-            ),
+            SendSpans::of(&send.receiver, &send.message),
         );
         let after_send_jump = self.emit(Instruction::Jump { target: 0 });
         let failure_label = self.here();
@@ -2912,14 +2903,54 @@ fn variable_place(access: Access) -> VariablePlace {
     }
 }
 
-/// A send's receiver span -- `None` where nothing in the source spells
-/// one -- and its selector tokens' spans, as the debugger's metadata names
-/// them (`docs/design/debugger.md`, decision 15).
-pub(super) type SendSpans<'text> = (Option<Span>, &'text [Span]);
+/// A send's spans as the debugger's metadata names them
+/// (`docs/design/debugger.md`, decision 15, "The return value of the last
+/// call"): its receiver's -- `None` where nothing in the source spells
+/// one -- its selector tokens', and the whole call's, from its receiver,
+/// or its selector where the receiver is implicit, to its last argument.
+#[derive(Clone, Copy)]
+pub(super) struct SendSpans<'text> {
+    pub(super) receiver: Option<Span>,
+    pub(super) selector: &'text [Span],
+    pub(super) call: Span,
+}
+
+impl<'text> SendSpans<'text> {
+    /// The send of `message` to `receiver`, the implicit receiver
+    /// included. A cascade's message is spanned from its receiver, the
+    /// cascade's.
+    pub(super) fn of(receiver: &Expression, message: &'text ast::MessageSend) -> SendSpans<'text> {
+        let receiver = receiver_span(receiver);
+        SendSpans {
+            receiver,
+            selector: &message.selector_spans,
+            call: receiver.map_or(message.span, |receiver| receiver.merge(message.span)),
+        }
+    }
+
+    /// A unary send the source spells as the identifier at `span` alone.
+    pub(super) fn identifier(span: &'text Span) -> SendSpans<'text> {
+        SendSpans {
+            receiver: None,
+            selector: std::slice::from_ref(span),
+            call: *span,
+        }
+    }
+
+    /// The setter send of an assignment of `value` to the identifier at
+    /// `target`, whose call is the whole assignment.
+    pub(super) fn setter(target: &'text Span, value: &Expression) -> SendSpans<'text> {
+        SendSpans {
+            receiver: None,
+            selector: std::slice::from_ref(target),
+            call: target.merge(value.span),
+        }
+    }
+}
 
 /// The span of a send's receiver, `None` for the implicit receiver the
 /// parser made up.
-pub(super) fn receiver_span(receiver: &Expression) -> Option<Span> {
+fn receiver_span(receiver: &Expression) -> Option<Span> {
     (!receiver.synthesized).then_some(receiver.span)
 }
 

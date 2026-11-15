@@ -76,6 +76,11 @@ pub(crate) struct SendEntry {
     /// identifier's span for a unary send kept as an identifier and for a
     /// setter assignment.
     pub(crate) selector: Box<[Span]>,
+    /// The whole call, from its receiver -- or its selector, where the
+    /// receiver is implicit -- to its last argument; a setter
+    /// assignment's whole assignment: what names the value it answered
+    /// (`docs/design/debugger.md`, "The return value of the last call").
+    pub(crate) call: Span,
 }
 
 /// A send that takes block literals, the compiler's inlined forms among
