@@ -1644,7 +1644,10 @@ tests do not.
   header; a step over a clause and a step out of a header stop; a step
   over and out from a superclass's last statement taking no header stop;
   an explicit `Object new` clause; a shipped superclass's header, only
-  with the filter off; a factory whose level runs nothing stopping at its
+  with the filter off, and stepped in once a filter switched on at it
+  filters it, the shipped one or a class filter; a breakpoint at a first
+  statement at the entry after the header stop, by a continue and by a
+  step; a factory whose level runs nothing stopping at its
   superclass's header; `Object` never stopped in from an empty class's
   factory with the filter off; each `<:` clause's level at its mixin's
   header; a clause whose argument sends; the warmed header stop; and,
@@ -2488,7 +2491,18 @@ the same index -- a breakpoint at a first statement that starts at
 index 0 -- by the stop itself, which places its frame at the header
 (`Standing::at_header` in `debugger/mod.rs`, the metadata's
 `header_pattern`), not by the frame, and it lets nothing past, so a
-breakpoint at the slot the frame fetches next is the next stop's. An
+breakpoint at the slot the frame fetches next is the next stop's: a
+`Continue` from the header stop stops there once, and a step over or
+into from it makes one stop there, reported as the breakpoint's, as the
+step from a factory's stop to a breakpoint at the initializer's first
+statement is
+(`a_breakpoint_at_a_first_statement_at_the_entry_follows_the_header_stop`).
+The step from a header stop is begun in the initializer, though it
+steps from its sender: a filter switched on at the stop that filters the
+initializer -- a shipped superclass's with the shipped filter off, a
+class filter naming it -- leaves the step stepping in it, as in any
+frame a step is begun in (decision 16; `Stepping::begun_in`,
+`a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered`). An
 initializer without metadata, an image's without source, is stopped at
 its header as a frame without a line, and a step goes on from it as
 from any push without metadata

@@ -184,6 +184,11 @@ pub(crate) struct Stepping {
     /// which it then steps in as in any other (`is_filtered`); decided as
     /// the step begins, whatever filters are set while it runs.
     started_filtered: bool,
+    /// The frame the step was begun in when that is not the stepping
+    /// frame: an initializer's at its header stop, whose step steps from
+    /// its sender (`begin_at_header`). A stop in it is a stop in the frame
+    /// the step was begun in (`went_on_past_filtered`).
+    begun_in: Option<Holder>,
     /// The method breakpoints whose method an unwind left since the step
     /// began (`method_left`), which its stop reports as the method's exit.
     exits: Vec<BreakpointId>,
@@ -224,6 +229,7 @@ impl Stepping {
             suspended: Vec::new(),
             next_key: 0,
             started_filtered: false,
+            begun_in: None,
             exits: Vec::new(),
             #[cfg(debug_assertions)]
             waiting_on: None,
@@ -934,6 +940,9 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
             stepping.after_send = Some((Holder::Left, index));
         }
     }
+    if stepping.begun_in.is_some_and(gone) {
+        stepping.begun_in = None;
+    }
     stepping.between.retain(|(held, _)| !gone(*held));
     mutator.breakpoints.forget_one_shot_holders(gone);
 }
@@ -1281,7 +1290,9 @@ pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
 /// -- as a step into from the first unfiltered frame below
 /// (`continue_as_step_into`). A frame the step was begun in, stopped
 /// there by a breakpoint or with the filter off, is stepped in as any
-/// other, and so is a block the compiler lowered inline in it. A
+/// other -- an initializer at its header stop too, whose step steps from
+/// its sender (`Stepping::begun_in`) -- and so is a block the compiler
+/// lowered inline in it. A
 /// factory's frame past its entry -- at its return point after a step
 /// over or out at its initializer's last statement -- is passed over too,
 /// whatever the filters say and wherever the step began (decision 12):
@@ -1297,12 +1308,17 @@ pub(crate) fn went_on_past_filtered(
     let Some(stepping) = &mutator.stepping else {
         return false;
     };
-    let (frame, started_filtered) = (stepping.frame, stepping.started_filtered);
+    let (frame, started_filtered, begun_in) =
+        (stepping.frame, stepping.started_filtered, stepping.begun_in);
+    let begun_here = |mutator: &Mutator<'_>| {
+        takes(mutator, frame, activation)
+            || begun_in.is_some_and(|begun| begun.is(Holder::Running(activation)))
+    };
     let past_a_factory_s_entry = stack::is_factory(&mutator.heap, &StackFrame::Running(activation))
         && mutator.heap.activation_program_counter(activation) > 0;
     let passes = past_a_factory_s_entry
         || passed_by_every_step(mutator, activation)
-        || (!(started_filtered && takes(mutator, frame, activation))
+        || (!(started_filtered && begun_here(mutator))
             && is_filtered(mutator, &StackFrame::Running(activation)));
     if !passes {
         return false;
@@ -1626,11 +1642,20 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
         begin(mutator, action, None);
         return;
     };
+    let started_filtered = is_filtered(mutator, &StackFrame::Running(top));
     end(mutator);
+    // `top` stands above the sender but is left out of `between`, which
+    // only a held request reads: the request is dropped at once.
     start(mutator, StepAction::Into, sender, sender, None, None);
     // The push the request waits for has happened: the header stop was
     // its stop.
     drop_request(mutator);
+    // The step was begun in the initializer, and steps in it as in any
+    // other frame should the filters filter it (decision 16).
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.started_filtered = started_filtered;
+        stepping.begun_in = Some(Holder::Running(top));
+    }
     stop_at_first(mutator, top, false);
     settle(mutator);
 }
@@ -1955,6 +1980,9 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
             if holder.is(from) {
                 stepping.after_send = Some((onto, index));
             }
+        }
+        if stepping.begun_in.is_some_and(|begun| begun.is(from)) {
+            stepping.begun_in = Some(onto);
         }
     }
     mutator.breakpoints.rename_one_shots(from, onto);

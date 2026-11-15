@@ -4570,7 +4570,8 @@ ns_runtime::for_each_lowering! {
     /// A shipped superclass's header stop is filtered as any shipped
     /// code: with the shipped filter on, a step into at the clause goes
     /// on to the class's next statement; with it off, it stops at the
-    /// header of the shipped class whose initializer runs.
+    /// header of the shipped class whose initializer runs, and a step
+    /// begun there steps in that frame once the filter is switched on.
     fn a_shipped_superclass_s_header_stop_comes_with_the_filter_off(lowering) {
         let (filtered, answer) = header_stops(
             lowering,
@@ -4603,6 +4604,144 @@ ns_runtime::for_each_lowering! {
             ]
         );
         assert_eq!(answer, 9);
+        // A step begun at that header steps in its frame as in any other,
+        // the shipped filter switched on at the stop (decision 16): the
+        // step over stops at `Exception`'s first statement.
+        let offset = line_start(HEADERS, "made:: Failure new.");
+        let (stood, answer) = stepped(
+            HEADERS,
+            lowering,
+            "failure",
+            |remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+                set_breakpoints(remote, "Headers", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "Headers");
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: Vec::new(),
+                });
+                expect_step_filters_set(remote);
+                step(remote, Command::StepOver);
+                let stood = standing_in_either(remote, HEADERS);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        // `Exception = Object (`: its first statement is the clause it
+        // writes.
+        assert_eq!(
+            stood,
+            (
+                String::from("Exception initializer"),
+                String::from("Object")
+            )
+        );
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step begun at a header stop whose class a class filter names,
+    /// set at the stop, steps in that initializer as in any frame the step
+    /// is begun in (decision 16): the step over stops at its first
+    /// statement.
+    fn a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered(lowering) {
+        let offset = line_start(HEADERS, "made:: Highest new: 1.");
+        let (stood, answer) = stepped(
+            HEADERS,
+            lowering,
+            "chain",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: String::from("Headers"),
+                        path: vec![String::from("Middle")],
+                    }],
+                });
+                expect_step_filters_set(remote);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, HEADERS);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Middle initializer"),
+                String::from("Lowest new: b + 1")
+            )
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A line breakpoint on a superclass initializer's first statement,
+    /// which starts at its entry, stands where its header stop stands: a
+    /// `Continue` from the header stop stops at the breakpoint once, and
+    /// a step over from it makes one stop there, the breakpoint's, as the
+    /// step from a factory's stop does.
+    fn a_breakpoint_at_a_first_statement_at_the_entry_follows_the_header_stop(lowering) {
+        for command in [Command::Continue, Command::StepOver] {
+            let name = command.name();
+            let offsets = vec![
+                line_start(HEADERS, "made:: Highest new: 1."),
+                line_start(HEADERS, "class Middle new: b = Lowest new: b + 1 ("),
+            ];
+            let (stops, answer) = stepped(
+                HEADERS,
+                lowering,
+                "chain",
+                |remote| set_breakpoints(remote, "Headers", offsets),
+                move |remote| {
+                    let states = expect_breakpoints(remote, "Headers");
+                    let ids: Vec<BreakpointId> = states.iter().map(|state| state.id).collect();
+                    assert_eq!(ids.len(), 2);
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                    let mut stops = Vec::new();
+                    for _ in 0..3 {
+                        step(remote, Command::StepInto);
+                        stops.push(standing(remote, HEADERS));
+                    }
+                    remote.send(command);
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        other => panic!("the confirmation was expected, not {other:?}"),
+                    }
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                    stops.push(standing(remote, HEADERS));
+                    continue_stopped(remote);
+                    stops
+                },
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                [
+                    ("Highest class>>new:", "new: c"),
+                    ("Highest initializer", "Middle new: c + 1"),
+                    ("Middle initializer", "new: b"),
+                    ("Middle initializer", "Lowest new: b + 1"),
+                ],
+                "{name}"
+            );
+            assert_eq!(answer, 6, "{name}");
+        }
     }
 }
 
