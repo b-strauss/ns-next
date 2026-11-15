@@ -1252,6 +1252,114 @@ fn a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints() 
     assert_eq!(client.finish().stdout, "6\n");
 }
 
+/// A program whose own root is named `Kernel`, like the shipped module,
+/// that signals the shipped `Error`.
+const OWN_KERNEL_FAILING: &str = indoc! {"
+    class Kernel = Object new () (
+      public main: platform args: arguments = (
+        Error signal: 'boom'.
+      )
+    ) : ()
+"};
+
+/// A function breakpoint whose class name's module both the program and
+/// the binary declare -- a program module `Kernel` -- is set in both: in
+/// the program's `Kernel` where it declares the method, and in the shipped
+/// `Kernel`'s classes, each behind the one DAP id.
+#[test]
+fn a_function_breakpoint_reaches_both_modules_of_its_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({
+            "breakpoints": [{ "name": "Kernel>>main:args:" }, { "name": "Kernel.Array>>do:" }],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], true, "{body}");
+    assert_eq!(breakpoints[1]["verified"], true, "{body}");
+    client.configuration_done();
+    let stopped = client.stopped("function breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client).0, json!("Kernel>>main:args:"));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    let stopped = client.stopped("function breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[1]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client).0, json!("Array>>do:"));
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// An exception filter's class name whose module the program declares too
+/// names the shipped module's class as well: `Kernel.Error` with a program
+/// module `Kernel` stops the shipped `Error` signalled.
+#[test]
+fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL_FAILING);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setExceptionBreakpoints",
+        json!({
+            "filters": [],
+            "filterOptions": [{ "filterId": "uncaught", "condition": "Kernel.Error" }],
+        }),
+    );
+    client.configuration_done();
+    let stopped = client.stopped("exception");
+    assert_eq!(stopped["body"]["description"], "Error", "{stopped}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 1);
+}
+
+/// A step filter's class name whose module the program declares too
+/// filters the shipped module's class as well: with the shipped filter
+/// off, `Kernel.Array` with a program module `Kernel` keeps a step into the
+/// `do:` out of the shipped `Array>>do:`, so that it lands in the block.
+#[test]
+fn a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(true);
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "classes": ["Kernel.Array"] }),
+    );
+    client.configuration_done();
+    client.stopped("entry");
+    // The entry stands at the local's initializer on line 3.
+    let by_statement = json!({ "threadId": 1, "granularity": "statement" });
+    client.succeed("stepIn", by_statement.clone());
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Kernel>>main:args:"), json!(4))
+    );
+    client.succeed("stepIn", by_statement);
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in Kernel>>main:args:"), json!(4))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
 /// Without a core library, a shipped module has no file the client could
 /// name, and its name names none: `Kernel.ns` by name is the program's
 /// file-less module of that name or nothing, never the shipped one.
@@ -1839,6 +1947,45 @@ fn a_line_step_over_at_a_fallback_block_stops_in_its_next_activation() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "20\n");
+}
+
+/// A root whose line 4 halts and then runs two more statements, followed
+/// on line 5 by the statement after them.
+const HALTING: &str = indoc! {"
+    class Halting = Object new () (
+      public main: platform args: arguments = (
+        | first second |
+        self halt. first:: 1. second:: 2.
+        platform transcript show: (first + second) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A `next` by line from a `halt`'s stop, which stands in the shown frame
+/// below the exception's machinery, steps over the rest of the line in
+/// that frame and stops on the next line.
+#[test]
+fn a_line_step_from_a_halt_stop_leaves_the_line() {
+    let (_directory, path) = program("Halting", HALTING);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed("setExceptionBreakpoints", json!({ "filters": ["halt"] }));
+    client.configuration_done();
+    let stopped = client.stopped("exception");
+    assert_eq!(stopped["body"]["text"], "halt", "{stopped}");
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    let shown: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame.get("presentationHint").is_none())
+        .collect();
+    assert_eq!(shown[0]["name"], "Halting>>main:args:", "{frames:?}");
+    assert_eq!(shown[0]["line"], 5, "{frames:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
 }
 
 /// A root whose line 4 sends `double:`, a method of its own.

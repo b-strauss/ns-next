@@ -47,8 +47,8 @@ pub(crate) struct Place {
 }
 
 impl Place {
-    /// The place of a stop whose frames are `frames`, its top frame's
-    /// statement on `line`.
+    /// The place of a stop whose frames are `frames` from the first it
+    /// shows down, that frame's statement on `line`.
     pub(crate) fn of(frames: &[FrameDescription], line: Option<u32>) -> Place {
         Place {
             depth: frames.len(),
@@ -186,8 +186,11 @@ impl Agent {
         let classes: Result<Vec<_>, String> = arguments
             .classes
             .iter()
-            .map(|name| parse_class_name(name, &|module| self.sources.module_of_class_name(module)))
-            .collect();
+            .map(|name| {
+                parse_class_name(name, &|module| self.sources.modules_of_class_name(module))
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(|classes| classes.into_iter().flatten().collect());
         let classes = match classes {
             Ok(classes) => classes,
             Err(message) => {
@@ -305,7 +308,11 @@ impl Agent {
         let Frames::Known(frames) = self.stop.frames() else {
             return Some(Err("the stop's frames are not known".to_string()));
         };
-        let frames = frames.clone();
+        // An exception's stop hides its machinery above the frame it shows,
+        // which the VM steps from (`FrameDescription::hidden`): the step is
+        // taken there, and its place is that frame's.
+        let shown = frames.iter().position(|frame| !frame.hidden).unwrap_or(0);
+        let frames = frames[shown..].to_vec();
         let Some(location) = frames.first().and_then(|top| top.location.clone()) else {
             return Some(Ok(Place::of(&frames, None)));
         };

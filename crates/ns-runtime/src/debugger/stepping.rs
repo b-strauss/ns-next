@@ -316,6 +316,9 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         StepAction::Over | StepAction::Into => None,
     };
     let step_from = left.as_ref().map_or(taken_in, SendLeft::frame);
+    // Only a step taken in the top frame itself may step in another: the
+    // creator of the fallback closure it runs (`note_origin`).
+    let taken_on_top = shown.is_none() && left.is_none();
     // A factory has no statement of its own: a step over at its stop goes
     // on, as a step into, to the initializer it pushes (decision 12).
     let action = match (action, step_from) {
@@ -352,7 +355,9 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
     }
-    note_origin(mutator, top);
+    if taken_on_top {
+        note_origin(mutator, top);
+    }
     settle(mutator);
     // The top frame fetches the slot it stands at again as it goes on,
     // which the flood may just have patched -- a pause at a push leaves a
@@ -1980,6 +1985,8 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
     named.extend(stepping.between.iter().map(|(held, _)| *held));
     named.extend(stepping.return_point.map(|(caller, _)| caller));
     named.extend(stepping.after_send.map(|(holder, _)| holder));
+    named.extend(stepping.begun_in);
+    named.extend(stepping.origin);
     // Walked over the live activations, which alone may be read: a handle
     // the step holds is compared, never read through.
     let mut next = mutator.heap.top_activation();
@@ -2062,7 +2069,8 @@ fn hold<'gc>(mutator: &mut Mutator<'gc>, frame: FrameReference<'gc>) -> u32 {
 }
 
 /// Every name `from` of the step's is `onto` from here on: the stepping
-/// frame's, its return point's and its one-shots'.
+/// frame's, its return point's, the frame it was begun in, its origin and
+/// its one-shots'.
 fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
     if let Some(stepping) = &mut mutator.stepping {
         if stepping.frame.is(from) {
@@ -2086,6 +2094,9 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
         }
         if stepping.begun_in.is_some_and(|begun| begun.is(from)) {
             stepping.begun_in = Some(onto);
+        }
+        if stepping.origin.is_some_and(|origin| origin.is(from)) {
+            stepping.origin = Some(onto);
         }
     }
     mutator.breakpoints.rename_one_shots(from, onto);

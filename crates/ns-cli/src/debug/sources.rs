@@ -336,23 +336,27 @@ impl Sources {
         without_file.then_some(module)
     }
 
-    /// The module the `Module` segment of a class name a client typed
+    /// The modules the `Module` segment of a class name a client typed
     /// names -- a step filter's, a method or an exception breakpoint's:
-    /// the program's module of that name when the program has one, else
-    /// the shipped module of that name when the binary has one, else the
-    /// program's, which is pending until it is built. A program module
-    /// named like a shipped one is the one such a name means; the shipped
-    /// one's classes are then named by no class name.
-    pub(crate) fn module_of_class_name(&self, name: &str) -> ModuleName {
+    /// the program's module of that name when the program has one and the
+    /// shipped module of that name when the binary has one -- both, for a
+    /// program module named like a shipped one, so that a name reaches the
+    /// classes of either -- and otherwise the program's, which is pending
+    /// until it is built.
+    pub(crate) fn modules_of_class_name(&self, name: &str) -> Vec<ModuleName> {
         let program = ModuleName::program(name);
-        if self.program_module(&program).is_some() {
-            return program;
-        }
         let shipped = ModuleName::shipped(name);
-        if self::shipped(&shipped).is_some() {
-            return shipped;
+        let mut modules = Vec::new();
+        if self.program_module(&program).is_some() {
+            modules.push(program.clone());
         }
-        program
+        if self::shipped(&shipped).is_some() {
+            modules.push(shipped);
+        }
+        if modules.is_empty() {
+            modules.push(program);
+        }
+        modules
     }
 
     fn program_module(&self, module: &ModuleName) -> Option<&ProgramModule> {
@@ -657,7 +661,7 @@ mod tests {
 
     /// A program module named like a shipped one is another module: its
     /// text is its own, the shipped module's the binary's, and a class
-    /// name a client types means the program's.
+    /// name a client types names both.
     #[test]
     fn a_program_module_named_like_a_shipped_one_is_another_module() {
         let mut sources = Sources::new(vec![ProgramModule {
@@ -674,14 +678,14 @@ mod tests {
             sources.text_for_positions(&kernel()),
             ns_runtime::shipped_module_source("Kernel")
         );
-        assert_eq!(sources.module_of_class_name("Kernel"), own);
+        assert_eq!(sources.modules_of_class_name("Kernel"), [own, kernel()]);
         assert_eq!(
-            sources.module_of_class_name("CollectionsFactory"),
-            ModuleName::shipped("CollectionsFactory")
+            sources.modules_of_class_name("CollectionsFactory"),
+            [ModuleName::shipped("CollectionsFactory")]
         );
         assert_eq!(
-            sources.module_of_class_name("Elsewhere"),
-            ModuleName::program("Elsewhere")
+            sources.modules_of_class_name("Elsewhere"),
+            [ModuleName::program("Elsewhere")]
         );
     }
 

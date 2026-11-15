@@ -2224,8 +2224,10 @@ or its caller, returned or unwound, past a filtered frame, at a handler,
 or into the next run (`Event::Stopped`'s `elsewhere`,
 `stepping::continue_as_step_into`) -- or whether the activation it was
 taken in left while the step stepped in another frame: a step taken in
-the fallback closure of a block its creator's inlined form took steps in
-the creator, and a receiver that runs the block again makes a new
+the top frame itself -- not at an exception's stop, which steps from the
+frame it shows below the machinery, nor for a step out that leaves the
+send that took a block -- that is the fallback closure of a block its
+creator's inlined form took steps in the creator, and a receiver that runs the block again makes a new
 activation at the same offset, at the same depth, in a frame of the same
 name, which only the first's return tells apart, noted by a one-shot that
 never stops where its caller goes on (`OneShot::leaves`,
@@ -2234,7 +2236,10 @@ on elsewhere is another place, whatever its depth, name and line
 (`a_line_step_over_at_a_one_line_block_stops_in_its_next_activation`,
 `a_line_step_over_at_a_fallback_block_stops_in_its_next_activation`,
 `a_step_s_stop_says_whether_it_went_on_from_another_frame`,
-`a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere`). Statements
+`a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere`).
+The agent places a stop by the first frame it shows, below an
+exception's hidden machinery, the frame the VM steps from
+(`a_line_step_from_a_halt_stop_leaves_the_line`). Statements
 on one line of one activation are still stepped over as one line, and so
 is a one-line loop whose block a step over passes, since the step goes
 on in the frame it was taken in (`a_line_step_over_a_one_line_loop_ends`,
@@ -4049,10 +4054,16 @@ shows the program's text
 `a_core_library_of_another_fingerprint_is_ignored`,
 `a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
 A class name a client types -- a function breakpoint's, an exception
-filter's condition, a step filter -- names the program's module of its
-`Module` segment when the program has one, else the shipped one
-(`Sources::module_of_class_name`), so a program `Kernel` hides the
-shipped `Kernel`'s classes from such names. `scopes` gives a frame's `Locals` and, at a
+filter's condition, a step filter -- names every module of its `Module`
+segment's name, the program's and the shipped one where both exist
+(`Sources::modules_of_class_name`), so that `Kernel.Error` reaches the
+shipped `Error` beside a program module `Kernel`, with no syntax of its
+own: a filter sends the VM a `ClassName` for each, and a function
+breakpoint one method breakpoint for each behind its one DAP id, verified
+while any of them is
+(`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
+`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
+`a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name`). `scopes` gives a frame's `Locals` and, at a
 step's stop, the top frame's `Return value`; `variables` pages a frame's
 variables and a value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
