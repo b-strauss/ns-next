@@ -345,6 +345,21 @@ impl StepStress {
     }
 }
 
+/// Where a stop stands, beyond its frames.
+#[derive(Clone, Copy)]
+struct Standing {
+    /// Whether a caught exception's stop stands in a frame its handler
+    /// pushed (`exceptions::serve`): one that does not stands in the
+    /// kernel's machinery, which it hides, and steps from the frame below
+    /// it, as an uncaught exception's stop does.
+    in_handler: bool,
+    /// Whether the stop is an initializer's header stop, at its entry
+    /// before its first statement (`stepping::HeldStep::StopAtHeader`):
+    /// its frame is placed at its declaration's header, and a step from
+    /// it goes on to its first statement (`stepping::begin_at_header`).
+    at_header: bool,
+}
+
 /// What serving the debugger at a safepoint decided.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Served {
@@ -481,7 +496,11 @@ impl Interpreter {
             if let StopReason::Exception { exits, .. } | StopReason::Halt { exits } = &mut reason {
                 exits.extend(unwound);
             }
-            return self.stop_standing(reason, None, floor, CommandSource::Remote, in_handler);
+            let standing = Standing {
+                in_handler,
+                at_header: false,
+            };
+            return self.stop_standing(reason, None, floor, CommandSource::Remote, standing);
         }
         if let Some(breakpoint) = breakpoint {
             // A stop only a step's one-shot made, in a frame the step
@@ -543,6 +562,24 @@ impl Interpreter {
         } else {
             HeldStep::GoOn
         };
+        if let HeldStep::StopAtHeader = held {
+            // The initializer stands before its first statement: a
+            // breakpoint at the slot it fetches next is the next stop's,
+            // which the step from the header, or a `Continue`, reaches
+            // there, so the header stop lets nothing past.
+            let unwound = self.enter(|mutator| {
+                let unwound = stepping::take_exits(mutator);
+                stepping::end(mutator);
+                unwound
+            });
+            let reason = Hits::default().reason(unwound).unwrap_or(StopReason::Step);
+            let source = self.step_agent();
+            let standing = Standing {
+                in_handler: true,
+                at_header: true,
+            };
+            return self.stop_standing(reason, None, floor, source, standing);
+        }
         if let HeldStep::Stop | HeldStep::StopInFactory = held {
             // The pushed frame stands at its first statement start, which
             // it fetches as it goes on: a breakpoint there makes the stop
@@ -818,21 +855,26 @@ impl Interpreter {
         floor: usize,
         source: CommandSource,
     ) -> Served {
-        self.stop_standing(reason, returned, floor, source, true)
+        let standing = Standing {
+            in_handler: true,
+            at_header: false,
+        };
+        self.stop_standing(reason, returned, floor, source, standing)
     }
 
-    /// `stop`, `in_handler` whether a caught exception's stop stands in a
-    /// frame its handler pushed (`exceptions::serve`): one that does not
-    /// stands in the kernel's machinery, which it hides, and steps from
-    /// the frame below it, as an uncaught exception's stop does.
+    /// `stop`, standing where `standing` says.
     fn stop_standing(
         &mut self,
         reason: StopReason,
         returned: Option<Root>,
         floor: usize,
         mut source: CommandSource,
-        in_handler: bool,
+        standing: Standing,
     ) -> Served {
+        let Standing {
+            in_handler,
+            at_header,
+        } = standing;
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         let first_value_id = self
             .debugger
@@ -897,7 +939,11 @@ impl Interpreter {
                             let first = exceptions::first_shown(mutator, frames);
                             frames.get(first)
                         });
-                        stepping::begin(mutator, action, shown.flatten());
+                        if at_header {
+                            stepping::begin_at_header(mutator, action);
+                        } else {
+                            stepping::begin(mutator, action, shown.flatten());
+                        }
                     });
                     self.answer(&mut source, Event::Continued);
                     break Served::GoOn;
@@ -924,7 +970,7 @@ impl Interpreter {
                         } else {
                             0..0
                         };
-                        stack::stack_trace(mutator, frames, hidden, &mut values)
+                        stack::stack_trace(mutator, frames, hidden, at_header, &mut values)
                     });
                     self.answer(&mut source, Event::StackTrace(descriptions));
                 }

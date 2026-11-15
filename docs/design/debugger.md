@@ -41,9 +41,11 @@
 > run's first statement when the frame returns to the host (decision 17);
 > a step into an instantiation stops in the factory's frame, at the
 > class header's factory pattern, a step over or into there goes on to
-> the first statement of the initializer it pushes, every initializer's
-> statements are stepped in the order they run, and a step on its way
-> out passes over the factory to its caller (decision 12); and no step lands in a frame the step filters filter, by
+> the first statement of the initializer it pushes, a step into a
+> superclass clause or a `<:` clause's message stops at the entry of the
+> initializer it enters, at that class's header, `Object`'s never, every
+> initializer's statements are stepped in the order they run, and a step
+> on its way out passes over the factory to its caller (decision 12); and no step lands in a frame the step filters filter, by
 > default the shipped modules' -- a stop it would make there goes on as a
 > step into from the first unfiltered frame below, and a step into's
 > request outlasts the pushes of filtered bodies (decision 16); run to
@@ -926,8 +928,9 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
   (`FrameLocation`): the name of its module's root class, the innermost
   statement whose instructions hold its program counter -- an inlined
   block's statement inside its loop or conditional, the body's `source`
-  for the return it ends with -- or a factory's class header pattern
-  (decision 12), and for a frame below the top the receiver and selector
+  for the return it ends with -- or a factory's class header pattern,
+  and an initializer's at its header stop (decision 12), and for a frame
+  below the top the receiver and selector
   spans of the send it waits on; every span in the module's current text
   (decision 11). `None` without metadata (decision 5): a module without
   text, an image's without its source among them, or a body its text no
@@ -1035,7 +1038,8 @@ name, the lexical depth in frame scopes, and the place, a `VariablePlace`
 the vector held in a register of the frame or of one `hops` out), the
 body's own first, parameters before temporaries, then each enclosing
 scope's outward, and, for a factory, the header's factory pattern
-(`factory_pattern`). Every span is in the module's current text (decision
+(`factory_pattern`), for an initializer body the same, where its header
+stop stands (`header_pattern`). Every span is in the module's current text (decision
 11).
 
 - **Both lowerers collect.** The reference lowering is an independent
@@ -1113,6 +1117,11 @@ scope's outward, and, for a factory, the header's factory pattern
   name for a header that writes none. Any body that compiles alike with
   `compiler::factory_body` of the header's arity takes it, a factory body
   no mixin holds -- a host's `instantiate` builds its own -- included.
+  Each initializer body of the level, not its blocks, takes the same
+  place as its `header_pattern`, where its header stop stands; the
+  metadata's check (`metadata/check.rs`, decision 14) holds every
+  initializer body to having one within the text and every other body
+  to having none.
 - **Which lowering.** The cache compiles a level under the interpreter's
   lowering first, then under the other one only when the first left a
   body of the level unpaired, and keeps every pairing either found,
@@ -1627,7 +1636,20 @@ tests do not.
   the step from it after a thousand warming instantiations; a line
   breakpoint on the initializer's first statement taking the step from
   the factory's stop, once; and, through the agent, a stripped image's
-  factory stopped in as a frame without a line. The agent's own test
+  factory stopped in as a frame without a line. Of the header stops
+  (decision 12): a step into a superclass clause stopping at the
+  superclass's header, its factory's parameters shown; a chain of three
+  levels stepped into header by header and back, never into `Object`,
+  with the shipped filter on and off, and a step over at the lowest
+  header; a step over a clause and a step out of a header stop; a step
+  over and out from a superclass's last statement taking no header stop;
+  an explicit `Object new` clause; a shipped superclass's header, only
+  with the filter off; a factory whose level runs nothing stopping at its
+  superclass's header; `Object` never stopped in from an empty class's
+  factory with the filter off; each `<:` clause's level at its mixin's
+  header; a clause whose argument sends; the warmed header stop; and,
+  through the agent, a stripped image's superclass header stopped at as
+  a frame without a line. The agent's own test
   steps in from a loop's
   line to its body and out to the line after the loop
   (`crates/ns-cli/tests/debug_adapter.rs`).
@@ -2441,15 +2463,58 @@ return point in its caller. The factory is known by its frame's kind
 (`stack::is_factory`, the stack trace's `FrameKind::Factory`), with or
 without metadata: a factory of an image without source is stopped in
 as a frame without a line, and the next step goes on
-(`a_step_into_stops_in_a_stripped_image_s_factory`). So every
-initializer's statements are stepped, in the order the program runs
-them -- a `<:` clause's check, the superclass clause, the superclass's
-initializer, each `<:` clause's message and its level's initializer,
-the slot initializers and the body's statements -- a step over or out at
-a level's last statement stops at the next level's first, and from the
-last level's the step stops at the factory's return point in its
-caller, after the `new`, or, for a factory the host sent, at the next
-host run's first statement (decision 17;
+(`a_step_into_stops_in_a_stripped_image_s_factory`).
+
+Every other level has a stop of its own at its header, the same
+pattern's place one level up (decided with the user on 2026-11-15): a
+step into whose push is an initializer entered for another level than
+its sender's own -- by a superclass clause's `InitializeSuperclass`, by a
+`<:` clause's message's `InitializeAppliedLevel`, or by a factory whose
+own levels run nothing, which pushes the first initializer above them
+that does (`instantiate::enter_or_pass`) -- stops in it at its entry,
+before its first statement, placed at its declaration's factory pattern
+or name (`stepping::enters_at_header`, `HeldStep::StopAtHeader`), its
+variables the factory's parameters as the clause passed them. An
+initializer its own class's factory pushes has none: the factory's stop
+is that level's. A clause whose arguments send enters what they send
+first, as any statement does; only the clause's own initialization of
+the level takes the header stop. A step over or into at a header stop
+goes on to that initializer's first statement, as the push would have
+stopped it (`stepping::begin_at_header`, `first_stop`), the frame not
+let past its entry, since its first statement may start there, and a
+step out goes back to the sender after its clause; a step over at the
+clause runs the whole chain above it. The stop is told from a stop at
+the same index -- a breakpoint at a first statement that starts at
+index 0 -- by the stop itself, which places its frame at the header
+(`Standing::at_header` in `debugger/mod.rs`, the metadata's
+`header_pattern`), not by the frame, and it lets nothing past, so a
+breakpoint at the slot the frame fetches next is the next stop's. An
+initializer without metadata, an image's without source, is stopped at
+its header as a frame without a line, and a step goes on from it as
+from any push without metadata
+(`a_step_into_stops_at_a_stripped_image_s_superclass_header`).
+`Object`'s initializer and `Top`'s never stop, whatever the step
+filters say, decided by the level they initialize, not by its being
+shipped: they keep the held request as a filtered frame does, and a
+stop in them goes on as one in a filtered frame
+(`stepping::passed_by_every_step`), so the header stops of a chain end
+at the last class that inherits from `Object` directly and an explicit
+`Object new` clause steps to the next statement. A shipped superclass
+other than `Object` is filtered as any shipped code: its header stop
+comes only with the shipped filter off. Nothing of it is on the
+instantiation's path: the decision is the held step's, at the safepoint
+the push takes while a step into holds its request.
+
+So every initializer's statements are stepped, in the order the program
+runs them -- a `<:` clause's check, the superclass clause, the
+superclass's header and initializer, each `<:` clause's message and its
+level's header and initializer, the slot initializers and the body's
+statements -- a step over or out at a level's last statement stops at
+the next level's first after the clause that entered it, with no header
+stop on the way down, and from the last level's the step stops at the
+factory's return point in its caller, after the `new`, or, for a
+factory the host sent, at the next host run's first statement (decision
+17;
 `a_step_into_an_instantiation_stops_in_the_factory`,
 `a_step_from_the_factory_stops_at_the_superclass_clause`,
 `a_step_from_the_factory_without_a_clause_stops_at_the_first_slot`,
@@ -2461,7 +2526,16 @@ host run's first statement (decision 17;
 `a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s`,
 `a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new`,
 `a_step_into_goes_through_a_mixin_application_s_initializers_in_order`,
-`a_step_into_enters_a_method_a_superclass_clause_sends`). Its body is
+`a_step_into_enters_a_method_a_superclass_clause_sends`,
+`a_step_into_a_superclass_clause_stops_at_the_superclass_s_header`,
+`a_step_into_goes_through_every_header_of_a_superclass_chain`,
+`a_step_over_at_the_lowest_header_stops_at_its_first_statement`,
+`a_step_over_a_clause_and_out_of_a_header_stop_in_the_subclass`,
+`a_step_from_a_superclass_s_last_statement_takes_no_header_stop`,
+`a_step_into_an_explicit_object_clause_stops_at_the_next_statement`,
+`a_shipped_superclass_s_header_stop_comes_with_the_filter_off`,
+`a_step_from_a_factory_into_a_superclass_s_initializer_stops_at_its_header`,
+`a_step_from_an_empty_factory_never_stops_in_object`). A factory's body is
 equal by construction, `factory_body` of the same arity. Primordial
 Soup's `computeDebugInfo:` takes a factory's from the class header the
 same way (`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
@@ -3322,8 +3396,10 @@ every statement's range, `compiler/lower.rs`), or, for an initializer
 of a declaration that writes no superclass clause, at the first
 statement start after the clause that stands for `Object new`, the
 step stopping where its frame goes on when there is none
-(`stepping::first_stop`). A factory's push stops in the factory
-(decision 12). A send answered by a primitive or a leaf pushes nothing,
+(`stepping::first_stop`). A factory's push stops in the factory, and
+the push of an initializer a clause entered stops at its entry, at its
+header, the step from there going on to its first statement;
+`Object`'s and `Top`'s initializers keep the request (decision 12). A send answered by a primitive or a leaf pushes nothing,
 and the next one-shot stops.
 
 ### Writing a frame

@@ -1248,6 +1248,7 @@ impl<'a> Body<'a> {
             sends: collected.sends.into(),
             block_sends: collected.block_sends.into(),
             factory_pattern: None,
+            header_pattern: None,
         });
         if cfg!(debug_assertions) {
             let instructions = self.code.instructions();

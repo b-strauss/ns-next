@@ -483,6 +483,15 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
         (_, Some(_)) => return Err("a body the lowerers compile has a factory pattern".into()),
         (_, None) => {}
     }
+    // Only an initializer body stands at its header, never one of its
+    // blocks, and every one does.
+    let initializer = matches!(body.member, Member::Initializer(_)) && body.enclosing.is_empty();
+    match (initializer, metadata.header_pattern) {
+        (true, Some(header)) => within_text(header, "the initializer's header")?,
+        (true, None) => return Err("the initializer stands at no header".to_string()),
+        (false, Some(_)) => return Err("a body other than an initializer has a header".into()),
+        (false, None) => {}
+    }
     Ok(())
 }
 
@@ -630,9 +639,13 @@ mod tests {
                     taking(BlockPlace::Called { send: 0, closure: 0 }, 1);
                 broken.push(("a block called by no send", called_by_no_send));
 
-                let mut a_factory_pattern = metadata;
+                let mut a_factory_pattern = metadata.clone();
                 a_factory_pattern.factory_pattern = Some(Span::new(0, 1));
                 broken.push(("a lowered body with a factory pattern", a_factory_pattern));
+
+                let mut a_block_s_header = metadata;
+                a_block_s_header.header_pattern = Some(Span::new(0, 1));
+                broken.push(("a block standing at a header", a_block_s_header));
 
                 for (what, metadata) in broken {
                     assert!(check_tables(&block, &metadata, SOURCE).is_err(), "{what}");

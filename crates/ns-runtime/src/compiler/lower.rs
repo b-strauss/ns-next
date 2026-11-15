@@ -2739,6 +2739,7 @@ impl<'a> Lowerer<'a> {
             sends: collected.sends.into(),
             block_sends: collected.block_sends.into(),
             factory_pattern: None,
+            header_pattern: None,
         });
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a

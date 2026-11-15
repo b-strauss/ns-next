@@ -3904,7 +3904,7 @@ ns_runtime::for_each_lowering! {
 
 /// Sends `selector` to an instance of `INITIALIZING` under `lowering`, a
 /// breakpoint on the line of `breakpoint`, and from its stop takes
-/// `command` until the program stands at `last`, at most twelve times:
+/// `command` until the program stands at `last`, at most sixteen times:
 /// answers every stop the steps made, as its frame's name and statement,
 /// and the run's answer.
 fn initializing_stops(
@@ -3923,7 +3923,7 @@ fn initializing_stops(
         move |remote| {
             expect_first_stop(remote, "Initializing");
             let mut stops = Vec::new();
-            while stops.len() < 12 {
+            while stops.len() < 16 {
                 step(remote, command.clone());
                 let stood = standing(remote, INITIALIZING);
                 let done = stood.0 == last.0 && stood.1 == last.1;
@@ -4019,10 +4019,11 @@ ns_runtime::for_each_lowering! {
     /// `<:` clause stops in the factory, then goes through every level's
     /// initializer in the order the program runs them (§6.1, §6.2): the
     /// check of the `<:` clause, the superclass clause and the
-    /// superclass's initializer, from its first slot initializer on -- its
-    /// clause, which stands for `Object new`, is none a step stops at --
-    /// the `<:` clause's message and the mixin's initializer, then the
-    /// class's own slot.
+    /// superclass's initializer, at its header first, then from its first
+    /// slot initializer on -- its clause, which stands for `Object new`,
+    /// is none a step stops at -- the `<:` clause's message and the
+    /// mixin's initializer, at the mixin's header first, then the class's
+    /// own slot.
     fn a_step_into_goes_through_a_mixin_application_s_initializers_in_order(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -4037,9 +4038,11 @@ ns_runtime::for_each_lowering! {
                 ("Mixed class>>new", "Mixed"),
                 ("Mixed initializer", "Extra new"),
                 ("Mixed initializer", "Base new"),
+                ("Base initializer", "Base"),
                 ("Base initializer", "a ::= 1."),
                 ("Base initializer", "a:: a + 1"),
                 ("Mixed initializer", "Extra new"),
+                ("Extra initializer", "Extra"),
                 ("Extra initializer", "public c ::= 3."),
                 ("Extra initializer", "c:: c + 1"),
                 ("Mixed initializer", "public d ::= 4."),
@@ -4055,8 +4058,9 @@ ns_runtime::for_each_lowering! {
     /// A step into from an instantiation whose superclass clause's
     /// argument sends a method of the module stops in the factory, then
     /// enters that method where the program runs it, in the superclass
-    /// clause, and goes on through the rest of the clause, the
-    /// superclass's initializer and the class's own.
+    /// clause, and goes on through the rest of the clause -- only the
+    /// clause's own initialization of the superclass takes the header
+    /// stop -- the superclass's initializer and the class's own.
     fn a_step_into_enters_a_method_a_superclass_clause_sends(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -4072,6 +4076,7 @@ ns_runtime::for_each_lowering! {
                 ("Clause initializer", "Setup withSetup: setupValue"),
                 ("Initializing>>setupValue", "^5"),
                 ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Setup initializer", "withSetup: value"),
                 ("Setup initializer", "public e ::= value."),
                 ("Clause initializer", "public f ::= 6."),
                 ("Initializing>>clause", "made:: Clause new"),
@@ -4085,9 +4090,29 @@ ns_runtime::for_each_lowering! {
 /// Classes instantiated within a run, each by a factory a step into
 /// stops in: one with a factory pattern and a superclass clause, one with
 /// a factory pattern and no clause written, one whose initializer has no
-/// statement, and a body-less declaration.
+/// statement, and a body-less declaration; a chain of three levels, each
+/// with a factory pattern, the lowest from `Object`; a class whose clause
+/// names `Object new` explicitly, one whose superclass is shipped, and
+/// one whose own level runs nothing, so that its factory pushes its
+/// superclass's initializer.
 const HEADERS: &str = indoc! {"
     class Headers = Object new () (
+      class Lowest new: a = (
+        | public low ::= a. |
+      ) ()
+      class Middle new: b = Lowest new: b + 1 (
+        | public middle ::= b. |
+      ) ()
+      class Highest new: c = Middle new: c + 1 (
+        | public high ::= c. |
+      ) ()
+      class Explicit = Object new (
+        | public seven ::= 7. |
+      ) ()
+      class Failure = Error new (
+        | public code ::= 9. |
+      ) ()
+      class Thin = Marker new () ()
       class Basis new: a = (
         | public base ::= a. |
       ) ()
@@ -4125,6 +4150,26 @@ const HEADERS: &str = indoc! {"
         made:: Applied new.
         ^made mark + made base
       )
+      public chain = (
+        | made |
+        made:: Highest new: 1.
+        ^made low + made middle + made high
+      )
+      public explicit = (
+        | made |
+        made:: Explicit new.
+        ^made seven
+      )
+      public failure = (
+        | made |
+        made:: Failure new.
+        ^made code
+      )
+      public thin = (
+        | made |
+        made:: Thin new.
+        ^made mark
+      )
     ) : ()
 "};
 
@@ -4138,18 +4183,41 @@ fn header_stops(
     breakpoint: &str,
     commands: Vec<Command>,
 ) -> (Vec<(String, String)>, i64) {
+    header_stops_filtered(lowering, selector, breakpoint, commands, true)
+}
+
+/// `header_stops`, the shipped filter as `shipped` says: a stop in a
+/// shipped frame is read in the kernel's text.
+fn header_stops_filtered(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+    commands: Vec<Command>,
+    shipped: bool,
+) -> (Vec<(String, String)>, i64) {
     let offset = line_start(HEADERS, breakpoint);
     stepped(
         HEADERS,
         lowering,
         selector,
-        |remote| set_breakpoints(remote, "Headers", vec![offset]),
+        |remote| {
+            if !shipped {
+                remote.send(Command::SetStepFilters {
+                    shipped,
+                    classes: Vec::new(),
+                });
+            }
+            set_breakpoints(remote, "Headers", vec![offset]);
+        },
         move |remote| {
+            if !shipped {
+                expect_step_filters_set(remote);
+            }
             expect_first_stop(remote, "Headers");
             let mut stops = Vec::new();
             for command in commands {
                 step(remote, command);
-                stops.push(standing(remote, HEADERS));
+                stops.push(standing_in_either(remote, HEADERS));
             }
             continue_stopped(remote);
             stops
@@ -4302,6 +4370,290 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    /// A step into at a superclass clause stops in the superclass's
+    /// initializer at its entry, before its first statement: placed at
+    /// the superclass's header pattern, its variables the factory's
+    /// parameters as the clause passed them (decision 12).
+    fn a_step_into_a_superclass_clause_stops_at_the_superclass_s_header(lowering) {
+        let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let ((stops, frames, variables), answer) = stepped(
+            HEADERS,
+            lowering,
+            "point",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let mut stops = Vec::new();
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, HEADERS));
+                }
+                let frames = stack_trace(remote);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                continue_stopped(remote);
+                (stops, frames, variables)
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Basis initializer", "new: a"),
+            ]
+        );
+        assert_eq!(frames[0].kind, FrameKind::Initializer);
+        assert_eq!(frames[1].name, "Punkt initializer");
+        assert_eq!(value_of(&variables, "a").label, "1");
+        assert_eq!(answer, 3);
+    }
+}
+
+/// The stops of nine steps into from `chain`'s instantiation: the
+/// factory, then each level's clause and the next level's header, down
+/// to the lowest level, whose clause stands for `Object new`, then each
+/// level's slot on the way back, and the place after the `new`.
+const CHAIN_STOPS: [(&str, &str); 9] = [
+    ("Highest class>>new:", "new: c"),
+    ("Highest initializer", "Middle new: c + 1"),
+    ("Middle initializer", "new: b"),
+    ("Middle initializer", "Lowest new: b + 1"),
+    ("Lowest initializer", "new: a"),
+    ("Lowest initializer", "public low ::= a."),
+    ("Middle initializer", "public middle ::= b."),
+    ("Highest initializer", "public high ::= c."),
+    ("Headers>>chain", "made:: Highest new: 1"),
+];
+
+ns_runtime::for_each_lowering! {
+    /// A step into at each superclass clause of a chain of three levels
+    /// stops at the next level's header, and the lowest level, which
+    /// inherits from `Object`, goes on to its own first statement, never
+    /// into `Object`'s initializer, with the shipped filter on and off.
+    fn a_step_into_goes_through_every_header_of_a_superclass_chain(lowering) {
+        for shipped in [true, false] {
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "chain",
+                "made:: Highest new: 1.",
+                vec![Command::StepInto; 9],
+                shipped,
+            );
+            assert_eq!(as_pairs(&stops), CHAIN_STOPS, "shipped filter {shipped}");
+            assert_eq!(answer, 6, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the header stop of the lowest level goes on to its
+    /// first statement, past the clause that stands for `Object new`,
+    /// never into `Object`, with the shipped filter on and off.
+    fn a_step_over_at_the_lowest_header_stops_at_its_first_statement(lowering) {
+        for shipped in [true, false] {
+            let mut commands = vec![Command::StepInto; 5];
+            commands.push(Command::StepOver);
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "chain",
+                "made:: Highest new: 1.",
+                commands,
+                shipped,
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                CHAIN_STOPS[..6],
+                "shipped filter {shipped}"
+            );
+            assert_eq!(answer, 6, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a superclass clause runs the whole superclass chain
+    /// and stops at the subclass's next statement, and a step out at a
+    /// header stop goes back to the subclass's initializer, after its
+    /// clause.
+    fn a_step_over_a_clause_and_out_of_a_header_stop_in_the_subclass(lowering) {
+        let (over, answer) = header_stops(
+            lowering,
+            "chain",
+            "made:: Highest new: 1.",
+            vec![Command::StepInto, Command::StepInto, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&over),
+            [
+                ("Highest class>>new:", "new: c"),
+                ("Highest initializer", "Middle new: c + 1"),
+                ("Highest initializer", "public high ::= c."),
+            ]
+        );
+        assert_eq!(answer, 6);
+        let (out, answer) = header_stops(
+            lowering,
+            "chain",
+            "made:: Highest new: 1.",
+            vec![
+                Command::StepInto,
+                Command::StepInto,
+                Command::StepInto,
+                Command::StepOut,
+            ],
+        );
+        assert_eq!(
+            as_pairs(&out),
+            [
+                ("Highest class>>new:", "new: c"),
+                ("Highest initializer", "Middle new: c + 1"),
+                ("Middle initializer", "new: b"),
+                ("Highest initializer", "public high ::= c."),
+            ]
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over, and a step out, at the last statement of a
+    /// superclass's initializer goes on in the next level's initializer,
+    /// at the statement after its clause, and on to the place after the
+    /// `new`: no header stop on the way down.
+    fn a_step_from_a_superclass_s_last_statement_takes_no_header_stop(lowering) {
+        for command in [Command::StepOver, Command::StepOut] {
+            let name = command.name();
+            let (stops, answer) = header_stops(
+                lowering,
+                "chain",
+                "| public low ::= a. |",
+                vec![command; 3],
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                CHAIN_STOPS[6..],
+                "{name}"
+            );
+            assert_eq!(answer, 6, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a clause that names `Object new` explicitly goes on
+    /// to the class's next statement: `Object` is no level a step stops
+    /// in, with the shipped filter on and off.
+    fn a_step_into_an_explicit_object_clause_stops_at_the_next_statement(lowering) {
+        for shipped in [true, false] {
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "explicit",
+                "made:: Explicit new.",
+                vec![Command::StepInto; 3],
+                shipped,
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                [
+                    ("Explicit class>>new", "Explicit"),
+                    ("Explicit initializer", "Object new"),
+                    ("Explicit initializer", "public seven ::= 7."),
+                ],
+                "shipped filter {shipped}"
+            );
+            assert_eq!(answer, 7, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A shipped superclass's header stop is filtered as any shipped
+    /// code: with the shipped filter on, a step into at the clause goes
+    /// on to the class's next statement; with it off, it stops at the
+    /// header of the shipped class whose initializer runs.
+    fn a_shipped_superclass_s_header_stop_comes_with_the_filter_off(lowering) {
+        let (filtered, answer) = header_stops(
+            lowering,
+            "failure",
+            "made:: Failure new.",
+            vec![Command::StepInto; 3],
+        );
+        assert_eq!(
+            as_pairs(&filtered),
+            [
+                ("Failure class>>new", "Failure"),
+                ("Failure initializer", "Error new"),
+                ("Failure initializer", "public code ::= 9."),
+            ]
+        );
+        assert_eq!(answer, 9);
+        let (unfiltered, answer) = header_stops_filtered(
+            lowering,
+            "failure",
+            "made:: Failure new.",
+            vec![Command::StepInto; 3],
+            false,
+        );
+        assert_eq!(
+            as_pairs(&unfiltered),
+            [
+                ("Failure class>>new", "Failure"),
+                ("Failure initializer", "Error new"),
+                ("Exception initializer", "Exception"),
+            ]
+        );
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A factory whose own level runs nothing pushes its superclass's
+    /// initializer: the step from the factory stops at that class's
+    /// header, then at its first statement.
+    fn a_step_from_a_factory_into_a_superclass_s_initializer_stops_at_its_header(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "thin",
+            "made:: Thin new.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Thin class>>new", "Thin"),
+                ("Marker initializer", "Marker"),
+                ("Marker initializer", "public mark ::= 7."),
+            ]
+        );
+        assert_eq!(answer, 7);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, a step over at the factory's stop of
+    /// a class whose levels run nothing stops after the `new`, never in
+    /// `Object`'s initializer.
+    fn a_step_from_an_empty_factory_never_stops_in_object(lowering) {
+        let (stops, answer) = header_stops_filtered(
+            lowering,
+            "empty",
+            "made:: Empty new.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+            false,
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Empty class>>new", "Empty"),
+                ("Headers>>empty", "made:: Empty new"),
+                ("Headers>>empty", "^4"),
+            ]
+        );
+        assert_eq!(answer, 4);
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// A pause asked before a host run that instantiates a class stops
     /// the run's factory at its entry, as the pause's stop, and a step
     /// from there stops at the first statement of the initializer it
@@ -4384,6 +4736,24 @@ ns_runtime::for_each_lowering! {
                 ("Punkt class>>x:y:", "x: ax y: ay"),
                 ("Punkt initializer", "Basis new: ax"),
                 ("Punkt initializer", "public x ::= ax."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The header stop of a superclass clause, and the step from it,
+    /// hold for initializers machine code has compiled.
+    fn a_step_into_a_warmed_superclass_clause_stops_at_its_header(lowering) {
+        let (stops, answer) = warmed_header_stops(lowering, vec![Command::StepInto; 4]);
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Basis initializer", "new: a"),
+                ("Basis initializer", "public base ::= a."),
             ]
         );
         assert_eq!(answer, 3);

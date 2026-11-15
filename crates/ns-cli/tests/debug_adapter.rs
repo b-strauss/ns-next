@@ -1728,6 +1728,103 @@ fn a_step_into_stops_in_a_stripped_image_s_factory() {
     );
 }
 
+/// A root whose `main:args:` instantiates a nested class whose superclass
+/// clause names another nested class with a slot initializer.
+const DERIVED_PARTS: &str = indoc! {"
+    class DerivedParts = Object new () (
+      class Base = Object new (
+        | public base ::= 4. |
+      ) ()
+      class Part = Base new (
+        | public value ::= 3. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Part new.
+        platform transcript show: (made value + made base) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step into a superclass clause stops at the superclass's header in an
+/// image built without its source as well: a frame without a line, at the
+/// superclass's initializer, which the next step into goes on from as from
+/// any push without metadata, back to the subclass's initializer once it
+/// returns. The steps from the entry go through the nested classes'
+/// superclass clauses first, which `Part new` evaluates before it sends
+/// the factory.
+#[test]
+fn a_step_into_stops_at_a_stripped_image_s_superclass_header() {
+    let (directory, path) = program("DerivedParts", DERIVED_PARTS);
+    let image = directory.join("derived.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    let mut stops = Vec::new();
+    let mut header_lines = Vec::new();
+    for _ in 0..7 {
+        client.succeed("stepIn", json!({ "threadId": 1 }));
+        client.stopped("step");
+        let frames = client.stack_frames(0, 0);
+        let names: Vec<String> = frames
+            .iter()
+            .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        header_lines.extend(
+            frames
+                .iter()
+                .take(1)
+                .filter(|frame| frame["name"] == "Base initializer")
+                .map(|frame| frame["line"].clone()),
+        );
+        stops.push(names);
+    }
+    assert_eq!(
+        stops,
+        [
+            vec![
+                "Base superclass clause",
+                "Part superclass clause",
+                "DerivedParts>>main:args:"
+            ],
+            vec!["Part superclass clause", "DerivedParts>>main:args:"],
+            vec!["DerivedParts>>main:args:"],
+            vec!["Part class>>new", "DerivedParts>>main:args:"],
+            vec![
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+            vec![
+                "Base initializer",
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+            vec![
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+        ]
+    );
+    assert_eq!(header_lines, [json!(0)]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "7
+"
+    );
+}
+
 /// A root whose line 5 is a loop of two statements, followed on line 8 by
 /// the statement after it.
 const LOOPING: &str = indoc! {"

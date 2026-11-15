@@ -307,6 +307,7 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
             block_sends: Box::new([]),
             variables,
             factory_pattern: Some(position),
+            header_pattern: None,
         }),
     }
 }
@@ -344,7 +345,8 @@ impl Pairing<'_> {
     /// Pairs every body of `running`, one side of a level, with `fresh`,
     /// the same side compiled again, if it has one: methods by selector,
     /// the initializer bodies and the clause by field, the factory with
-    /// the header's.
+    /// the header's. An initializer body stands at the header too, at its
+    /// header stop (decision 12): its metadata takes the factory's place.
     fn side(&mut self, running: &Mixin, fresh: Option<&Mixin>) {
         for (selector, entry) in &running.methods {
             match entry {
@@ -352,7 +354,7 @@ impl Pairing<'_> {
                     let again = fresh
                         .and_then(|fresh| fresh.compiled_method(*selector))
                         .map(|method| Rc::clone(&method.code));
-                    self.family(&method.code, again);
+                    self.family(&method.code, again, None);
                 }
                 MethodEntry::Factory(factory) => {
                     if self.seen.insert(address(&factory.code)) {
@@ -369,12 +371,13 @@ impl Pairing<'_> {
             InitializerBody::Standalone,
         ] {
             if let Some(code) = kind.code_of(running) {
-                self.family(&code, fresh.and_then(|fresh| kind.code_of(fresh)));
+                let header = self.factory.metadata.factory_pattern;
+                self.family(&code, fresh.and_then(|fresh| kind.code_of(fresh)), header);
             }
         }
         if let Some(code) = &running.superclass_clause_code {
             let again = fresh.and_then(|fresh| fresh.superclass_clause_code.clone());
-            self.family(code, again);
+            self.family(code, again, None);
         }
     }
 
@@ -383,15 +386,31 @@ impl Pairing<'_> {
     /// alike gets no tables at all: a block's tables name its creators'
     /// registers, which only an equal root vouches for. A worklist, not a
     /// recursion: a running body may be an image's, whose nesting the
-    /// text compiled again does not bound.
-    fn family(&mut self, running: &Rc<CompiledCode>, again: Option<Rc<CompiledCode>>) {
+    /// text compiled again does not bound. `header` is where the root
+    /// stands at its header stop, an initializer's; its blocks have none.
+    fn family(
+        &mut self,
+        running: &Rc<CompiledCode>,
+        again: Option<Rc<CompiledCode>>,
+        header: Option<Span>,
+    ) {
         let again = again.filter(|again| compiles_alike(running, again));
+        let root = address(running);
         let mut pending = vec![(Rc::clone(running), again)];
         while let Some((running, again)) = pending.pop() {
             if !self.seen.insert(address(&running)) {
                 continue;
             }
             let metadata = again.as_ref().and_then(|again| self.take(again));
+            let metadata = match (metadata, header) {
+                (Some(metadata), Some(header)) if address(&running) == root => {
+                    Some(Rc::new(BodyMetadata {
+                        header_pattern: Some(header),
+                        ..(*metadata).clone()
+                    }))
+                }
+                (metadata, _) => metadata,
+            };
             let running_blocks = running.body().created_blocks();
             match &again {
                 // `compiles_alike` held every block to its counterpart.
