@@ -19,6 +19,7 @@ import com.intellij.util.xmlb.annotations.Attribute
 import com.intellij.util.xmlb.annotations.Tag
 import com.intellij.util.xmlb.annotations.XCollection
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
 /**
@@ -152,11 +153,21 @@ class NewspeakSkippedClasses(private val project: Project) : PersistentStateComp
  * root's own name left out; empty for the whole module.
  */
 data class SkippedClass(val inLibrary: Boolean, val path: String, val classPath: List<String>) {
-    /** The file's path against [base], the directory the entry is relative to; null without one for a relative entry. */
-    fun resolvedAgainst(base: Path?): Path? {
+    /**
+     * The file's path against [base], the directory the entry is relative
+     * to; null without one for a relative entry, and for a path no file
+     * system holds -- a damaged workspace file -- which counts as gone, so
+     * that it never stops a session's configuration.
+     */
+    fun resolvedAgainst(base: Path?): Path? = try {
         val own = Path.of(path)
-        if (own.isAbsolute && !inLibrary) return own
-        return base?.let { directory -> path.split('/').fold(directory) { resolved, part -> resolved.resolve(part) } }
+        if (own.isAbsolute && !inLibrary) {
+            own
+        } else {
+            base?.let { directory -> path.split('/').fold(directory) { resolved, part -> resolved.resolve(part) } }
+        }
+    } catch (_: InvalidPathException) {
+        null
     }
 
     /** How the list shows the entry: the file, and the class after it. */

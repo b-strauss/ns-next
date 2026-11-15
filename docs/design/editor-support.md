@@ -2113,16 +2113,19 @@ The server's own tests are described under its section, above ("Testing").
   the state the platform stores is read back as the same switch; and a
   change is told to the sessions once, a change to the same switch not at
   all, with the arguments `nsNext/setStepFilters` takes.
-  `NewspeakStepFiltersTest` -- the chooser offers each file with the
-  classes its root nests, recursively, and a file the server did not
-  answer for its whole module only, the tree only the groups that have
-  files; a project's entries are stored and read back; a library file's
-  entry is its path below the fingerprint's directory and names the file
-  of the same path in another fingerprint's, and none without a library;
-  a project file's entry is relative to the project's directory, one
-  outside it absolute, and a session sends each by its file's path,
-  leaving out one whose file is gone; and the page lists, applies and
-  resets the entries and marks one whose file is gone;
+  `NewspeakStepFiltersTest` -- a file offers the classes its root
+  nests, recursively; the chooser's tree has only the groups that have
+  files, asks nothing before a node expands and puts a file's classes
+  under it once the server answers, asking it once; a server that never
+  answers, deaf to the interrupt, leaves the file whole-module only after
+  the bound; a project's entries are stored and read back; a library
+  file's entry is its path below the fingerprint's directory and names
+  the file of the same path in another fingerprint's, and none without a
+  library; a project file's entry is relative to the project's directory,
+  one outside it absolute, and a session sends each by its file's path,
+  leaving out one whose file is gone; an entry whose path no file system
+  holds counts as gone; and the page lists, applies and resets the
+  entries and marks one whose file is gone;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -2300,8 +2303,9 @@ and resolves cleanly in a JetBrains IDE today.
   tests run its `update` and `setSelected` over a data context of their
   own), Newspeak's section on the Stepping page and the page "Newspeak
   Step Filters" as the Settings dialog draws them, the chooser's tree
-  dialog and the page's Add and Remove (the tests read the choices and
-  the page's model), and the turning off and on that
+  dialog -- a node's expansion asking its classes, the speed search --
+  and the page's Add and Remove (the tests read the choices, the
+  chooser's model and the page's model), and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

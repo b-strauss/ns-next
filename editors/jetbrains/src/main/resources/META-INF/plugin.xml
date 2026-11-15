@@ -118,6 +118,7 @@
         <xdebugger.settings implementation="io.github.bstrauss.newspeak.debugger.NewspeakDebuggerSettings"/>
         <!-- A project's classes not to step into, a page of their own under Debugger, as Java's Async Stack Traces is. -->
         <projectConfigurable parentId="project.propDebugger"
+                             nonDefaultProject="true"
                              instance="io.github.bstrauss.newspeak.debugger.NewspeakStepFiltersConfigurable"
                              id="io.github.bstrauss.newspeak.stepFilters"
                              key="debugger.step.filters.display.name"/>

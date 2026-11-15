@@ -4561,21 +4561,32 @@ step into, IntelliJ's "Do not step into the classes", are the project's
 the breakpoints are), on a page of their own under Debugger, "Newspeak
 Step Filters" (`NewspeakStepFiltersConfigurable`, a `projectConfigurable`
 whose parent is the debugger's page, as Java's Async Stack Traces is,
-since the Stepping section has no project). An entry is never typed: Add
-opens a tree of the project's `.ns` files and the core library's, each
-with the classes its root nests as the language server's document
-symbols answer them (`StepFilterChoices.kt`), and the user chooses a
-file, for its whole module, or a class, for it and every class nested in
-it. An entry is a file and a class path in it, the root's name left
+since the Stepping section has no project, and registered for real
+projects only, `nonDefaultProject`, since the default project has no
+files to choose). An entry is never typed: Add lists the project's `.ns`
+files and the core library's at once, under a progress the user may
+cancel, as a tree with a speed search, each file a node for its whole
+module, and asks a file's classes -- those its root nests, as the
+language server's document symbols answer them -- only when its node is
+expanded, on a pooled thread, for at most 15 seconds, after which a file
+the server has not answered offers its whole module only; closing the
+dialog cancels every question still asked (`StepFilterChoices.kt`,
+`StepFilterTree`). The user chooses a file, for its whole module, or a
+class, for it and every class nested in it. An entry is a file and a class path in it, the root's name left
 out: a library file by its path below the library's directory --
 `platform/CollectionsFactory.ns`, never the fingerprint's -- so that it
 names the same file in a rebuilt binary's library, a project file by
 its path below the project's directory, one outside it by its own. The
 page marks an entry whose file is gone or whose file no longer declares
-its class, decided off the event dispatch thread. A session sends the
+its class, decided off the event dispatch thread; an entry whose path no
+file system holds -- a damaged workspace file -- counts as gone
+(`SkippedClass.resolvedAgainst`), so that it never stops a session's
+configuration. A session sends the
 filters as `nsNext/setStepFilters` -- `shipped` the negation of the
 switch, `entries` each entry whose file is there by its absolute path,
-a library file's under the library the project shows now, and its
+a library file's under the library the project shows now, so that a
+library entry is not sent while the project shows no library -- the
+page marks it then, as it marks an entry whose file is gone -- and its
 `classPath` -- before `configurationDone`, and again whenever either
 setting changes: a change is told on the settings' topic, which each
 session hears from its start to its `stop()`, its subscription a child
@@ -4585,8 +4596,9 @@ after a change is sent after it and runs under it, and the filters are
 read and their request queued under one lock, so that the configuration's
 send and a change's at the session's start reach the agent in the order
 they read the settings. The agent maps each entry's file as it maps a
-breakpoint's ("The agent's sources"), and one it cannot take it leaves
-out and says in an `output` event, which the console shows.
+breakpoint's ("The agent's sources"), leaves out an entry of a file of
+no module of the program unsaid, and says one it cannot take otherwise
+in an `output` event, which the console shows.
 
 A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on

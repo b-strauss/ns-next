@@ -3501,8 +3501,9 @@ program's subclass of `String` as an argument, the error of a
   Settings, shown for a Newspeak session and hidden for another
   language's, of Newspeak's section on Debugger | Stepping, nor of the
   page "Newspeak Step Filters": its chooser's tree of the project's and
-  the core library's files and classes, Add and Remove, and an invalid
-  entry drawn as one. The tests run the action, the configurables and the
+  the core library's files and classes, a node's expansion asking its
+  classes and the speed search, Add and Remove, and an invalid entry
+  drawn as one. The tests run the action, the configurables and the
   chooser's model directly ([editor-support.md](design/editor-support.md),
   "Plugin testing and gates").
 - **The play button's Debug through the platform's own launcher** (noted

@@ -32,7 +32,12 @@ class NewspeakCoreLibraryRoots(private val root: VirtualFile) :
         ExcludeFileCondition { isDirectory, name, _, _, _ -> !isDirectory && !name.endsWith(".ns") },
     ),
     ItemPresentation {
-    /** Read once: the directory never changes while it is shown ([coreLibrarySourceRoots]). */
+    /**
+     * Read at this library's first ask, once for it: the provider makes a
+     * new library at each of the platform's asks, which reads them again,
+     * and what each read rests on, the directory's entries, never changes
+     * while it is shown ([coreLibrarySourceRoots]).
+     */
     private val roots: List<VirtualFile> by lazy { coreLibrarySourceRoots(root) }
 
     override fun getSourceRoots(): Collection<VirtualFile> = roots

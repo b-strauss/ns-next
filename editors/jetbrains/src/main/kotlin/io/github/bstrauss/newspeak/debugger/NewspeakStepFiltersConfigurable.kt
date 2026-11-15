@@ -3,15 +3,18 @@ package io.github.bstrauss.newspeak.debugger
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.ToolbarDecorator
+import com.intellij.ui.TreeSpeedSearch
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.treeStructure.Tree
@@ -25,8 +28,9 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
+import javax.swing.event.TreeExpansionEvent
+import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultMutableTreeNode
-import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreeSelectionModel
 
 /**
@@ -68,15 +72,23 @@ class NewspeakStepFiltersConfigurable(private val project: Project) : Configurab
         }
     }
 
-    /** The entry the user chooses from the tree; null when cancelled. The tree is gathered under a progress, the server waited for. */
+    /**
+     * The entry the user chooses from the tree; null when cancelled. The
+     * files are listed under a progress the user may cancel; each file's
+     * classes are read only as its node is expanded ([StepFilterTree]).
+     */
     private fun choose(): SkippedClass? {
-        val choices = ProgressManager.getInstance().runProcessWithProgressSynchronously(
-            ThrowableComputable<StepFilterChoices, RuntimeException> { gatherChoices(project) },
-            NewspeakBundle.message("debugger.step.filters.gathering"),
-            true,
-            project,
-        )
-        val dialog = ChooserDialog(choices)
+        val files = try {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                ThrowableComputable<StepFilterFiles, RuntimeException> { gatherFiles(project) },
+                NewspeakBundle.message("debugger.step.filters.gathering"),
+                true,
+                project,
+            )
+        } catch (_: ProcessCanceledException) {
+            return null
+        }
+        val dialog = ChooserDialog(files)
         return if (dialog.showAndGet()) dialog.chosen else null
     }
 
@@ -127,18 +139,34 @@ class NewspeakStepFiltersConfigurable(private val project: Project) : Configurab
         }
     }
 
-    /** The tree to choose from: the project's modules and the core library's, each with its classes. */
-    private inner class ChooserDialog(choices: StepFilterChoices) : DialogWrapper(project, true) {
+    /**
+     * The tree to choose from: the project's modules and the core
+     * library's, each file's classes read as it expands, with a speed
+     * search over what is read.
+     */
+    private inner class ChooserDialog(files: StepFilterFiles) : DialogWrapper(project, true) {
         var chosen: SkippedClass? = null
             private set
 
-        private val tree = Tree(DefaultTreeModel(rootOf(choices))).apply {
+        private val choices = StepFilterTree(project, files).also { tree -> Disposer.register(disposable, tree) }
+
+        private val tree = Tree(choices.model).apply {
             isRootVisible = false
             selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
             addTreeSelectionListener { _ ->
                 chosen = ((lastSelectedPathComponent as? DefaultMutableTreeNode)?.userObject as? StepFilterChoice)?.entry
                 isOKActionEnabled = chosen != null
             }
+            addTreeWillExpandListener(
+                object : TreeWillExpandListener {
+                    override fun treeWillExpand(event: TreeExpansionEvent) {
+                        (event.path.lastPathComponent as? DefaultMutableTreeNode)?.let(choices::read)
+                    }
+
+                    override fun treeWillCollapse(event: TreeExpansionEvent) {}
+                },
+            )
+            TreeSpeedSearch.installOn(this)
         }
 
         init {
@@ -157,20 +185,5 @@ class NewspeakStepFiltersConfigurable(private val project: Project) : Configurab
         const val GAP = 4
         const val WIDTH = 480
         const val HEIGHT = 400
-    }
-}
-
-/** The chooser's tree: a group of the project's modules and one of the core library's, each choice a node with its classes below. */
-internal fun rootOf(choices: StepFilterChoices): DefaultMutableTreeNode {
-    fun nodeOf(choice: StepFilterChoice): DefaultMutableTreeNode =
-        DefaultMutableTreeNode(choice).apply { choice.children.forEach { child -> add(nodeOf(child)) } }
-    return DefaultMutableTreeNode().apply {
-        for ((name, group) in listOf(
-            NewspeakBundle.message("debugger.step.filters.group.project") to choices.project,
-            NewspeakBundle.message("debugger.step.filters.group.library") to choices.library,
-        )) {
-            if (group.isEmpty()) continue
-            add(DefaultMutableTreeNode(name).apply { group.forEach { choice -> add(nodeOf(choice)) } })
-        }
     }
 }
