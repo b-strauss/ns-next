@@ -7919,8 +7919,12 @@ the binary
   file in the new one.
 
 Every commit ran `cargo xtask gates commit` (`analyzer` for the
-analyzer's); the end-of-batch gates and `plugin-verification` follow the
-branch review.
+analyzer's). The end-of-batch gates and `plugin-verification` passed at
+`1128abe8`: every stress suite, `run-corpus` "ran 6, failed 0, skipped
+205" plain and under each mode, `linux`, `aarch64` (457 s) and the
+plugin's verification (238 s). The stress suites now share the machine's
+cores, two test threads each on 24 (`1128abe8`): at 18 each, tests that
+wait on a process they start failed in a different mode at each run.
 
 - `add082a6`, `ef254bf2` -- the factory's frame stopped in by a step
   into and by a pause.
@@ -7944,6 +7948,11 @@ branch review.
   shipped module named by its file's path in the core library the client
   hands over at `attach`.
 - `cfb1f0ad` -- a line step stops in a fallback block's next activation.
+- `9a431d50`, `c65883da` -- the step's origin noted only for a step taken
+  on top, a line step placed by the first frame a stop shows, and a typed
+  class name reaching the program's and the shipped module alike.
+- `12f049c8` -- the stress run's waits outlast a stalled process.
+- `1128abe8` -- the stress suites share the machine's cores.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects
 and gaps" (the library's flag never reset, its breakable lines needing
