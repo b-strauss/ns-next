@@ -8016,8 +8016,11 @@ stops above.
   and sent by their files' paths at the configuration and at every
   change.
 
-Every commit ran `cargo xtask gates commit`. The end-of-batch gates and
-`plugin-verification` follow the branch review.
+Every commit ran `cargo xtask gates commit`. The end-of-batch gates --
+now without the Docker groups `linux` and `aarch64`, which run on demand
+(`4e7210e4`) -- and `plugin-verification` passed at `4e7210e4`: every
+stress suite (780 s), `run-corpus` "ran 6, failed 0, skipped 205" plain
+and under each mode, and the plugin's verification (245 s).
 
 - `054630d6` -- the returned value named by its call.
 - `f647058f` -- the core library's node shows its modules and
