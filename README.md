@@ -39,11 +39,11 @@ Not built yet, and the limits worth knowing before trying it on real code:
   rather than a promise, a pattern literal evaluates to **nil**, and
   Typed-Newspeak annotations parse and are discarded. Mirrors read a program
   and a MirrorBuilder edits and installs it (`platform mirrors`).
-- **No debugger in the IDE yet.** The debugging API in `ns-runtime` pauses a
-  run, reads its stack and values, and sets line, method and exception
-  breakpoints and steps, but only the test suite drives it: the Debug Adapter
-  Protocol agent and the JetBrains plugin's debugger come next
-  (`docs/design/debugger.md`).
+- **A debugger without evaluation yet.** `ns-next run --debug` speaks the
+  Debug Adapter Protocol, and the JetBrains plugin debugs with it: line,
+  method and exception breakpoints, steps, the stack and its values, the
+  shipped modules as a library; evaluating an expression, watches,
+  conditions and setting a variable come next (`docs/design/debugger.md`).
 
 `docs/design/` describes how the system works and how much of each aspect exists;
 `docs/PROGRESS.md` is the milestone chronology beside it, and `docs/OPEN-WORK.md`
