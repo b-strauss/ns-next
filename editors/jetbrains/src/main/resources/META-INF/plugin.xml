@@ -33,7 +33,8 @@
           connected to the IDE's debugger, which shows its stops, stack and variables, the core
           library's modules among them, with line breakpoints (on the lines a statement starts on, in a
           block of the line, with a pass count, removed once hit), method and exception breakpoints,
-          stepping by line, run to cursor and pause. The first Stop ends the program as its own <code>terminate</code> would; a second
+          stepping by line (past the core library's code unless Step Into Kernel and Platform Code is on,
+          and past the classes the debugger's Stepping settings name), run to cursor and pause. The first Stop ends the program as its own <code>terminate</code> would; a second
           one kills it.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
@@ -113,6 +114,8 @@
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointType"/>
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakMethodBreakpointType"/>
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakExceptionBreakpointType"/>
+        <!-- The step filters, under Settings | Build, Execution, Deployment | Debugger | Stepping. -->
+        <xdebugger.settings implementation="io.github.bstrauss.newspeak.debugger.NewspeakDebuggerSettings"/>
         <!-- The shipped modules of the ns-next the settings name, under External Libraries. -->
         <additionalLibraryRootsProvider implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRootsProvider"/>
         <postStartupActivity implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryStartup"/>
@@ -128,6 +131,11 @@
         <action id="io.github.bstrauss.newspeak.RestartServer"
                 class="io.github.bstrauss.newspeak.lsp.RestartServerAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <!-- The debug tool window's Debugger Settings, the platform's group of the debugger's switches. -->
+        <action id="io.github.bstrauss.newspeak.StepIntoShipped"
+                class="io.github.bstrauss.newspeak.debugger.NewspeakStepIntoShippedAction">
+            <add-to-group group-id="XDebugger.Settings" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>

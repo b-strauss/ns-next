@@ -4350,8 +4350,8 @@ ahead of it, or the connection's close, ends the session the same way,
 since the agent sends that event first and only another peer would not. At
 the `initialized` event it sends every breakpoint the session registered
 -- the line breakpoints a file's set at a time, the method breakpoints and
-the exception breakpoints, the last two even when empty -- and
-`configurationDone` once the agent answered them. The platform's Stop
+the exception breakpoints, the last two even when empty -- and the step
+filters, then `configurationDone` once the agent answered them. The platform's Stop
 destroys the process: while the agent is attached the handler asks it to
 `terminate` instead, so the program ends as its own `terminate…` would,
 and the platform's second Stop, on a process still terminating, kills it
@@ -4477,6 +4477,28 @@ time:
   caught exceptions is taken for uncaught ones too when another class
   breakpoint takes those, and "Any exception" taking uncaught or caught
   exceptions makes the class breakpoints' filters take every class.
+
+The step filters (decision 16) are kept among the platform's debugger
+settings, application-wide (`NewspeakDebuggerSettings`, an
+`XDebuggerSettings` registered as `xdebugger.settings`): whether a step goes into the kernel's and the platform's code,
+which by default it passes, and the classes not to step into, each
+`Module.Path.To.Class`, checked as an exception breakpoint's class is --
+a class filtering every class nested in it, a module alone the whole
+module. They are edited in Newspeak's section of Settings | Build,
+Execution, Deployment | Debugger | Stepping (`NewspeakSteppingConfigurable`,
+the `DebuggerSettingsCategory.STEPPING` configurable, as Java's "Do not
+step into the classes" is there), and the first by "Step Into Kernel and
+Platform Code" in the debug tool window's Debugger Settings
+(`NewspeakStepIntoShippedAction`, a toggle in the platform's group
+`XDebugger.Settings`, shown for a Newspeak session only), the same
+setting, as Java's switches there are its settings'. A session sends them
+as `nsNext/setStepFilters` (`shipped` the negation of the switch,
+`classes` the list) before `configurationDone`, and again whenever they
+change -- a change is told on the settings' topic, which each session
+hears from its start to its `stop()` -- at once, on the thread that
+changed them, which waits for no answer, so that a step started after a
+change is sent after it and runs under it; an answer that refuses a
+class is reported, the agent's filters staying as they were.
 
 A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on

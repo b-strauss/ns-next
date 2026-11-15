@@ -11,6 +11,9 @@ import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.ide.projectView.ViewSettings
 import com.intellij.ide.projectView.impl.nodes.ExternalLibrariesNode
 import com.intellij.ide.projectView.impl.nodes.PsiDirectoryNode
@@ -101,6 +104,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         super.setUp()
         directory = Files.createTempDirectory("ns-next-debug-process")
         NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS)
     }
 
     override fun tearDown() {
@@ -123,6 +127,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) }
             }
             NewspeakSettings.getInstance().state.runtimePath = null
+            NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS)
             // The store's files are read-only, which Windows refuses to delete otherwise.
             CoreLibraryStore.deleteRecursively(directory)
         } finally {
@@ -523,6 +528,75 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
         } finally {
             CoreLibraryStore.deleteRecursively(older)
+        }
+    }
+
+    /**
+     * The session sends the settings' step filters before it lets the
+     * program start, and again, at once, whenever the settings change.
+     */
+    fun testTheSessionSendsTheStepFiltersAtItsStartAndAtEveryChange() {
+        NewspeakDebuggerSettings.getInstance().update(StepFilters(stepIntoShipped = true, skippedClasses = listOf("Walker.Inner")))
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { _, _ -> JsonObject() }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        val commands = agent.commands()
+        assertTrue(commands.toString(), commands.indexOf("nsNext/setStepFilters") in 0 until commands.indexOf("configurationDone"))
+        assertEquals(
+            listOf("""{"shipped":false,"classes":["Walker.Inner"]}"""),
+            agent.requests("nsNext/setStepFilters").map(JsonObject::toString),
+        )
+
+        onEdt { NewspeakDebuggerSettings.getInstance().update(DEFAULT_STEP_FILTERS) }
+        awaitRequests(agent, "nsNext/setStepFilters", 2)
+        assertEquals("""{"shipped":true,"classes":[]}""", agent.requests("nsNext/setStepFilters").last().toString())
+    }
+
+    /**
+     * The debug tool window's toggle, shown for a Newspeak session, lets a
+     * step into go into the shipped modules at once: with the filter on, a
+     * step into `{1. 2} do: [...]` stops in the block, with it off the
+     * next step into stops in a shipped module's file.
+     */
+    fun testTheToggleLetsAStepIntoGoIntoTheShippedModules() {
+        libraryDirectory()
+        val program = program("Walker", WALKER)
+        toggleBreakpoint(program, line = 3)
+        val debugging = debug(program)
+        assertEquals(2, debugging.nextPause().line)
+
+        val action = NewspeakStepIntoShippedAction()
+        val context = SimpleDataContext.builder()
+            .add(CommonDataKeys.PROJECT, project)
+            .add(XDebugSession.DATA_KEY, debugging.session)
+            .build()
+        val event = TestActionEvent.createTestEvent(action, context)
+        action.update(event)
+        assertTrue("shown for a Newspeak session", event.presentation.isEnabledAndVisible)
+        assertFalse("steps pass the shipped modules by default", action.isSelected(event))
+
+        onEdt { debugging.session.stepInto() }
+        val filtered = debugging.nextPause()
+        assertEquals("the block's first statement", program, filtered.file)
+
+        onEdt { action.setSelected(event, true) }
+        assertTrue(action.isSelected(event))
+        onEdt { debugging.session.stepInto() }
+        val shipped = debugging.nextPause()
+        assertTrue(shipped.file.path, shipped.file.name in SHIPPED_FILES.map { file -> file.substringAfterLast('/') })
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /** Waits, bounded, until [agent] received [count] requests [command]. */
+    private fun awaitRequests(agent: FakeAgent, command: String, count: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (agent.requests(command).size < count) {
+            if (System.nanoTime() > deadline) throw AssertionError("no $count `$command` within $WAIT_SECONDS s: ${agent.commands()}")
+            Thread.sleep(POLL_MILLISECONDS)
         }
     }
 
@@ -1133,6 +1207,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val SECRET = "00112233445566778899aabbccddeeff"
         const val WAIT_MILLISECONDS = 30_000L
 
+        /** How often a wait for what a fake agent received looks again. */
+        const val POLL_MILLISECONDS = 20L
+
         /** How long a program inside one leaf must outlive the terminate: it would end at once otherwise. */
         const val LEAF_OUTLIVES_MILLISECONDS = 1_000L
 
@@ -1160,6 +1237,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
               {"id":2,"name":"Program>>main:args:","line":0,"column":0}
             ],"totalFrames":2}
         """.trimIndent()
+
+        /** The step filters' default: steps pass the shipped modules, and no class. */
+        val DEFAULT_STEP_FILTERS = StepFilters(stepIntoShipped = false, skippedClasses = emptyList())
 
         /** A fingerprint no binary has, an older library's in the tests. */
         const val OLDER_FINGERPRINT = "ffffffffffffffff"

@@ -2062,7 +2062,12 @@ The server's own tests are described under its section, above ("Testing").
   is the same across stops -- its equality object -- by its body, its
   module and its depth, whatever the agent's ids and lines, its caller
   and a recursive activation of its body others, and a step over in the
-  real runtime keeps the stepping frame the same; and an
+  real runtime keeps the stepping frame the same; the session sends the
+  settings' step filters before `configurationDone` and again at a
+  change of the settings, and, with the real runtime, a step into
+  `{1. 2} do: [...]` stops in the block until the debug tool window's
+  toggle, shown for the Newspeak session, lets the next step into go
+  into a shipped module's file; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
   with `start` 100; an agent's `terminated` event or a close before any
   `process` event ends the session with the error and kills the process,
@@ -2100,6 +2105,13 @@ The server's own tests are described under its section, above ("Testing").
   new library's own is kept. `NewspeakProjectTest`: a project with a
   `.ns` file or a `newspeak.json` is a Newspeak project, one with neither
   is not;
+- the step filters' settings, under `test`
+  (`NewspeakSteppingConfigurableTest`, on `BasePlatformTestCase`): the
+  Stepping section has Newspeak's configurable, which shows, applies and
+  resets the switch and the classes; the state the platform stores is
+  read back as the same filters; and a change is told to the sessions
+  once, a change to the same filters not at all, with the arguments
+  `nsNext/setStepFilters` takes;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`

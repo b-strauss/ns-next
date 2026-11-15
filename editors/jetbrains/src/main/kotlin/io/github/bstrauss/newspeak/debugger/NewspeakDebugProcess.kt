@@ -6,6 +6,7 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.execution.ui.ExecutionConsole
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
@@ -97,6 +98,17 @@ class NewspeakDebugProcess(
     @Volatile
     private var lastStop: NewspeakSuspendContext? = null
 
+    /**
+     * Whether the configuration sent the step filters: from then on every
+     * change of the settings sends them again, while before it the
+     * configuration sends them as they are by then.
+     */
+    @Volatile
+    private var stepFiltersSent = false
+
+    /** The settings' changes, heard while the session lasts. */
+    private val stepFiltersChanges = ApplicationManager.getApplication().messageBus.connect()
+
     /** Completes when the agent answered the first `terminate`; for the tests of the Stop. */
     internal val terminateAnswered = CompletableFuture<Unit>()
 
@@ -110,6 +122,7 @@ class NewspeakDebugProcess(
     override fun createConsole(): ExecutionConsole = console ?: super.createConsole()
 
     override fun sessionInitialized() {
+        stepFiltersChanges.subscribe(NewspeakDebuggerSettings.TOPIC, StepFiltersListener { client?.let(::changeStepFilters) })
         // A use of the library, and a look at whether the binary's sources changed since the project opened, while the runtime starts.
         val library = NewspeakCoreLibrary.getInstance(session.project).refreshForDebugging()
         work.execute { connect(library) }
@@ -230,15 +243,37 @@ class NewspeakDebugProcess(
         return false
     }
 
-    /** The agent takes the configuration: the breakpoints of every kind, then the start. */
+    /** The agent takes the configuration: the breakpoints of every kind and the step filters, then the start. */
     private fun configure(client: DapClient) {
         if (ended) return
-        val answers = lineBreakpoints.sendAll(client) + methodBreakpoints.sendAll(client) + exceptionBreakpoints.sendAll(client)
+        stepFiltersSent = true
+        val answers = lineBreakpoints.sendAll(client) + methodBreakpoints.sendAll(client) + exceptionBreakpoints.sendAll(client) +
+            sendStepFilters(client)
         // The start waits for every answer, since DAP's order has the client configure before it.
         CompletableFuture.allOf(*answers.toTypedArray())
             .handle { _, _ -> client.request("configurationDone") }
             .thenCompose { done -> done }
             .whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
+    /**
+     * Sends the settings' step filters (`nsNext/setStepFilters`), whose
+     * refusal -- a class the agent cannot read -- is reported, the filters
+     * staying as they were.
+     */
+    private fun sendStepFilters(client: DapClient): CompletableFuture<*> =
+        client.request("nsNext/setStepFilters", NewspeakDebuggerSettings.getInstance().filters.arguments())
+            .whenComplete { _, failure -> if (failure != null) refused(failure) }
+
+    /**
+     * The settings changed: a session configured sends the filters again
+     * at once, on the thread that changed them, which never waits for the
+     * answer -- so that a step the user starts after a change is sent
+     * after it, and runs under the filters it changed to.
+     */
+    private fun changeStepFilters(client: DapClient) {
+        if (ended || !stepFiltersSent) return
+        sendStepFilters(client)
     }
 
     // ---- Stops ----
@@ -430,6 +465,7 @@ class NewspeakDebugProcess(
      */
     override fun stop() {
         ended = true
+        stepFiltersChanges.disconnect()
         handler.terminateThroughDebugger = null
         serverSocket.close()
         val client = client ?: return
