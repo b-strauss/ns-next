@@ -309,7 +309,7 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
     }
     // A factory's tables come from its class header, not from its body,
     // which the compiler synthesizes from its arity: no statement start,
-    // so that no step stops in it, and no send (decision 12).
+    // since the source writes none, and no send (decision 12).
     let factory = matches!(body.member, Member::Factory);
     let lowered_ranges = if factory {
         &[][..]

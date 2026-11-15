@@ -1635,7 +1635,7 @@ const INITIALIZED: &str = indoc! {"
 "};
 
 /// One `next` from a breakpoint in the root's last slot initializer goes
-/// on past the root's factory, which has no statement start, and out of
+/// on past the root's factory, which no step stops in, and out of
 /// the root's instantiation into `main:args:`, a host run of its own,
 /// where it stops at the first statement for the step.
 #[test]
@@ -1654,6 +1654,69 @@ fn next_from_a_slot_initializer_reaches_main() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "2\n");
+}
+
+/// A root whose `main:args:` instantiates a nested class with a slot
+/// initializer, then prints the slot's value.
+const PARTS: &str = indoc! {"
+    class Parts = Object new () (
+      class Part = Object new (
+        | public value ::= 3. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Part new.
+        platform transcript show: made value printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step into passes over a factory in an image built without its
+/// source as well, where no body has metadata: the factory is known by
+/// its frame's kind (decision 12), and the step into from `main:args:`
+/// at `Part new` stops in `Part`'s initializer, never in `Part class>>new`.
+#[test]
+fn a_step_into_passes_over_a_stripped_image_s_factory() {
+    let (directory, path) = program("Parts", PARTS);
+    let image = directory.join("parts.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    // A body without metadata stops at its first safepoint: the entry
+    // stands in `Part`'s superclass clause, which `Part new` runs first,
+    // and a step into from there stops back in `main:args:`.
+    let mut stops = Vec::new();
+    for _ in 0..2 {
+        client.succeed("stepIn", json!({ "threadId": 1 }));
+        client.stopped("step");
+        let names: Vec<String> = client
+            .stack_frames(0, 0)
+            .iter()
+            .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        stops.push(names);
+    }
+    assert_eq!(
+        stops,
+        [
+            vec!["Parts>>main:args:"],
+            vec!["Part initializer", "Part class>>new", "Parts>>main:args:"],
+        ]
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "3
+"
+    );
 }
 
 /// A root whose line 5 is a loop of two statements, followed on line 8 by

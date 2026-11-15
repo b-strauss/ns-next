@@ -223,6 +223,13 @@ pub(crate) fn is_block(heap: &Heap<'_>, frame: &StackFrame) -> bool {
     matches!(frame.read(heap).kind(heap), ActivationKind::Closure(_))
 }
 
+/// Whether `frame` is a factory's activation, the stack trace's
+/// `FrameKind::Factory`: decided by the frame's kind, which every factory
+/// frame has, with metadata or without it.
+pub(crate) fn is_factory(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Factory(_))
+}
+
 /// The body `frame` runs.
 pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
     frame.read(heap).code(heap)

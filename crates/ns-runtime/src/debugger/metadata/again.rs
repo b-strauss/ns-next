@@ -276,8 +276,8 @@ fn shipped_resolution(name: Symbol) -> Option<(Rc<ResolvedModule>, ModuleSource,
 
 /// The factory's metadata from `declaration`'s header (decision 12): its
 /// parameters, named as the header names them, in the registers a factory
-/// body takes its arguments in; no statement start, so that no step stops
-/// in it, and no send; and the header's factory pattern as where it
+/// body takes its arguments in; no statement start, since the source
+/// writes none, and no send; and the header's factory pattern as where it
 /// stands, or the class's name for a header that writes none.
 fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
     let (parameters, argument_count, position) = match &declaration.factory {

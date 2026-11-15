@@ -3336,8 +3336,7 @@ ns_runtime::for_each_lowering! {
     /// run's entry stops at its first statement, a step's stop, whether
     /// the step was over, into or out. A step over or into from the last
     /// slot initializer stops at the initializer's statement first; none
-    /// stops in the factory, which has no statement start and is passed
-    /// over (decision 12).
+    /// stops in the factory, which is passed over (decision 12).
     fn a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement(lowering) {
         for command in [Command::StepOver, Command::StepInto, Command::StepOut] {
             let name = command.name();
@@ -3526,8 +3525,7 @@ fn initializing_stops(
 ns_runtime::for_each_lowering! {
     /// A step over goes through every slot initializer of an initializer
     /// and then each of its statements, and from the last one, past the
-    /// factory, which has no statement start (decision 12), to the
-    /// caller's place after the `new`.
+    /// factory (decision 12), to the caller's place after the `new`.
     fn a_step_over_goes_through_an_initializer_and_past_the_factory(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -3579,8 +3577,8 @@ ns_runtime::for_each_lowering! {
     /// A step out taken in a superclass's initializer leaves its frame and
     /// stops at the first statement of the next level's initializer, the
     /// subclass's; one taken there leaves the last level's initializer,
-    /// passes over the factory, which has no statement start (decision
-    /// 12), and stops at the caller's place after the `new`.
+    /// passes over the factory (decision 12), and stops at the caller's
+    /// place after the `new`.
     fn a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -3692,6 +3690,90 @@ ns_runtime::for_each_lowering! {
             (String::from("Stepping>>compute"), String::from("a:: 3"))
         );
         assert_eq!(names, ["Stepping>>compute", "Stepping>>run"]);
+    }
+}
+
+/// A method whose first statement sends a method with an empty body, and
+/// one whose statement hands a block to the shipped `do:`, a block whose
+/// only statement names its parameter -- a statement the optimized
+/// lowering compiles to no instruction, since the block answers the
+/// parameter's register.
+const EMPTY_BODIES: &str = indoc! {"
+    class Emptied = Object new () (
+      public run = (
+        | x |
+        x:: self nothing.
+        ^3
+      )
+      public each = (
+        {1. 2} do: [:each | each].
+        ^4
+      )
+      nothing = ()
+    ) : ()
+"};
+
+/// Sends `selector` to an instance of `EMPTY_BODIES` under `lowering`, a
+/// breakpoint on the line of `breakpoint`, and takes one step into from
+/// its stop: answers where it stopped, its frame's name and statement, and
+/// the names of the frames on the stack.
+fn stepped_into_empty(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+) -> ((String, String), Vec<String>) {
+    let offset = line_start(EMPTY_BODIES, breakpoint);
+    let (stopped, _) = stepped(
+        EMPTY_BODIES,
+        lowering,
+        selector,
+        |remote| set_breakpoints(remote, "Emptied", vec![offset]),
+        |remote| {
+            expect_first_stop(remote, "Emptied");
+            step(remote, Command::StepInto);
+            let stood = standing(remote, EMPTY_BODIES);
+            let names: Vec<String> = stack_trace(remote)
+                .iter()
+                .map(|frame| frame.name.clone())
+                .collect();
+            continue_stopped(remote);
+            (stood, names)
+        },
+    );
+    stopped
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into a method whose body is empty stops in it, standing in
+    /// the body, as in any method it pushes: only a factory, known by its
+    /// frame's kind, is passed over (decision 12), never a body for having
+    /// no statement start.
+    fn a_step_into_an_empty_body_stops_in_it(lowering) {
+        let (stood, names) = stepped_into_empty(lowering, "run", "x:: self nothing.");
+        assert_eq!(
+            stood,
+            (String::from("Emptied>>nothing"), String::from("nothing = ()"))
+        );
+        assert_eq!(names, ["Emptied>>nothing", "Emptied>>run"]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into a block whose only statement names its parameter stops
+    /// in the block under both lowerings, though the optimized one compiles
+    /// that statement to no instruction and so stands in the block's body
+    /// rather than at the statement.
+    fn a_step_into_a_block_naming_its_parameter_stops_in_it(lowering) {
+        let ((frame, statement), names) =
+            stepped_into_empty(lowering, "each", "{1. 2} do: [:each | each].");
+        assert_eq!(frame, "[] in Emptied>>each");
+        let expected = match lowering {
+            Lowering::Optimized => "[:each | each]",
+            Lowering::Reference => "each",
+        };
+        assert_eq!(statement, expected);
+        assert_eq!(names.first().map(String::as_str), Some("[] in Emptied>>each"));
+        assert_eq!(names.last().map(String::as_str), Some("Emptied>>each"));
     }
 }
 

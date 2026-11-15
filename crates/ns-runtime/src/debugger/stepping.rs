@@ -18,9 +18,9 @@
 //! never lands in a frame the step filters filter -- by default the
 //! shipped modules' (decision 16): a stop it would make there goes on as
 //! a step into from the first unfiltered frame below, and a step into's
-//! request outlasts the pushes of filtered bodies -- nor in a frame whose
-//! body has no statement start, a factory's (decision 12), which it
-//! passes over from that frame itself (`passes_over`). A method an unwind
+//! request outlasts the pushes of filtered bodies -- nor in a factory's
+//! frame (decision 12), which it passes over from that frame itself
+//! (`passes_over`). A method an unwind
 //! leaves while a method breakpoint names it is reported by a step of the
 //! same kind (`method_left`), whose stop reports the method's exit where
 //! the program goes on.
@@ -1132,13 +1132,13 @@ pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
 /// -- as a step into from the first unfiltered frame below
 /// (`continue_as_step_into`). A frame the step was begun in, stopped
 /// there by a breakpoint or with the filter off, is stepped in as any
-/// other, and so is a block the compiler lowered inline in it. A frame
-/// whose body has no statement start -- a factory's, at its return point
-/// after a step over at its initializer's last statement -- is passed
-/// over too, whatever the filters say and wherever the step began
-/// (decision 12): the step goes on as a step into from that frame, whose
-/// return point in its caller, or the next run's start when it returns to
-/// the host, is where it stops.
+/// other, and so is a block the compiler lowered inline in it. A
+/// factory's frame -- at its return point after a step over at its
+/// initializer's last statement -- is passed over too, whatever the
+/// filters say and wherever the step began (decision 12): the step goes
+/// on as a step into from that frame, whose return point in its caller,
+/// or the next run's start when it returns to the host, is where it
+/// stops.
 pub(crate) fn went_on_past_filtered(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1147,7 +1147,7 @@ pub(crate) fn went_on_past_filtered(
         return false;
     };
     let (frame, started_filtered) = (stepping.frame, stepping.started_filtered);
-    let passes = has_no_statement_start(mutator, &StackFrame::Running(activation))
+    let passes = stack::is_factory(&mutator.heap, &StackFrame::Running(activation))
         || (!(started_filtered && takes(mutator, frame, activation))
             && is_filtered(mutator, &StackFrame::Running(activation)));
     if !passes {
@@ -1157,23 +1157,15 @@ pub(crate) fn went_on_past_filtered(
     true
 }
 
-/// Whether `frame`'s body has no statement start by its metadata -- a
-/// factory's, which its class header describes (decision 12) -- so that
-/// no step stops in it: the step passes over it as over a filtered frame
-/// (`passes_over`). A body without metadata is not known to have none.
-fn has_no_statement_start(mutator: &mut Mutator<'_>, frame: &StackFrame) -> bool {
-    let (_, _, metadata) = match frame {
-        StackFrame::Running(activation) => stack::running_body(mutator, *activation),
-        StackFrame::Suspended(root) => stack::suspended_body(mutator, root),
-    };
-    metadata.is_some_and(|metadata| metadata.statements.is_empty())
-}
-
 /// Whether a step into's request goes on through `frame` to the frames it
 /// pushes rather than stopping in it: the step filters filter it
-/// (decision 16), or its body has no statement start (decision 12).
-fn passes_over(mutator: &mut Mutator<'_>, frame: &StackFrame) -> bool {
-    is_filtered(mutator, frame) || has_no_statement_start(mutator, frame)
+/// (decision 16), or it is a factory's (decision 12). The factory is
+/// known by its frame's kind, never by its body's having no statement
+/// start: an empty body has none either and is stepped into as any
+/// other, and a factory of an image without source has no metadata to
+/// say so.
+fn passes_over(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
+    is_filtered(mutator, frame) || stack::is_factory(&mutator.heap, frame)
 }
 
 /// Whether the step filters filter `frame` (decision 16): its body is a
@@ -1291,9 +1283,9 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     if was_there || inline_code_of_step(mutator, top) {
         return HeldStep::GoOn;
     }
-    // A filtered body keeps the request, as does one without a statement
-    // start: the step goes on through it to the next body it pushes that
-    // it stops in, itself or through others.
+    // A filtered body keeps the request, as does a factory: the step goes
+    // on through it to the next body it pushes that it stops in, itself or
+    // through others.
     if passes_over(mutator, &StackFrame::Running(top)) || !sent_by_step(mutator, top) {
         return HeldStep::GoOn;
     }
@@ -1327,14 +1319,13 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
 
 /// Whether the step's frame, or a block the step flooded for it, sent to
 /// `top`: its sender is one of them, or a frame the step passes over --
-/// one the step filters filter, or one whose body has no statement start
-/// (`passes_over`) -- whose sender is, and so on down: the shipped `do:`
-/// the stepping frame sent, which runs a block of the program, or the
-/// factory that runs the initializer of the class it sent `new` to. A
-/// frame between the one the step was taken in and the stepping frame,
-/// and a frame the step stops in, end the walk: what they send is not the
-/// step's.
-fn sent_by_step(mutator: &mut Mutator<'_>, top: ActivationReference) -> bool {
+/// one the step filters filter, or a factory's (`passes_over`) -- whose
+/// sender is, and so on down: the shipped `do:` the stepping frame sent,
+/// which runs a block of the program, or the factory that runs the
+/// initializer of the class it sent `new` to. A frame between the one the
+/// step was taken in and the stepping frame, and a frame the step stops
+/// in, end the walk: what they send is not the step's.
+fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
     let Some(stepping) = &mutator.stepping else {
         return false;
     };
@@ -1369,22 +1360,11 @@ fn sent_by_step(mutator: &mut Mutator<'_>, top: ActivationReference) -> bool {
                         return false;
                     }
                 }
-                let root = mutator
-                    .heap
-                    .stash(Value::object(mutator.heap.frame_object(frame)));
-                if !passes_over(mutator, &StackFrame::Suspended(root.clone())) {
+                let heap = &mutator.heap;
+                let root = heap.stash(Value::object(heap.frame_object(frame)));
+                if !passes_over(mutator, &StackFrame::Suspended(root)) {
                     return false;
                 }
-                // The frame is read again through its root: deciding may
-                // have compiled the body's metadata again.
-                let heap = &mutator.heap;
-                let Some(frame) = heap
-                    .fetch(&root)
-                    .as_object()
-                    .and_then(|object| heap.object_frame(object))
-                else {
-                    return false;
-                };
                 match heap.frame_sender(frame) {
                     Some(sender) => Place::Suspended(sender),
                     None => return false,

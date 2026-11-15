@@ -2352,13 +2352,20 @@ and has no source, yet stands on every stack between the sender of `C
 x: a` and `C`'s initializer. Its frame takes its metadata from the class
 header: its arguments are named as the factory's parameters in the
 header, it stands at the header's factory message pattern, and it has no
-statement start, so no step stops in it. A step passes over it as over a
-frame the step filters filter (decision 16), whatever the filters say: a
-stop the step would make in it -- the return point an initializer's
+statement start. No step stops in it: a step passes over it as over a
+frame the step filters filter (decision 16), whatever the filters say:
+a stop the step would make in it -- the return point an initializer's
 return, or a step out of one, reaches -- goes on as a step into from the
 factory itself (`stepping::went_on_past_filtered`), and a step into's
 request goes on through it to the initializer it pushes
-(`stepping::passes_over`, `held_step`, `sent_by_step`). So every
+(`stepping::passes_over`, `held_step`, `sent_by_step`). The factory is
+known by its frame's kind (`stack::is_factory`, the stack trace's
+`FrameKind::Factory`), not by its having no statement start: an empty
+body (`nothing = ()`) has none either and a step into stops in it, at
+the body, as in any method it pushes
+(`a_step_into_an_empty_body_stops_in_it`); and a factory of an image
+without source, which has no metadata, is passed over too
+(`a_step_into_passes_over_a_stripped_image_s_factory`). So every
 initializer's statements are stepped, in the order the program runs
 them -- a `<:` clause's check, the superclass clause, the superclass's
 initializer, each `<:` clause's message and its level's initializer,
@@ -2371,12 +2378,10 @@ host run's first statement (decision 17;
 `a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s`,
 `a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new`,
 `a_step_into_goes_through_a_mixin_application_s_initializers_in_order`,
-`a_step_into_enters_a_method_a_superclass_clause_sends`). A body whose metadata has no
-statement start is passed over the same way; one without metadata is
-not known to have none. Its body is equal by
-construction, `factory_body` of the same arity. Primordial Soup's
-`computeDebugInfo:` takes a factory's from the class header the same way
-(`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
+`a_step_into_enters_a_method_a_superclass_clause_sends`). Its body is
+equal by construction, `factory_body` of the same arity. Primordial
+Soup's `computeDebugInfo:` takes a factory's from the class header the
+same way (`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
 names or position is rejected, since it would be the one frame of an
 ordinary program without a place; hiding it contradicts the
 specification's "accurate and complete stack traces" (§3.6,
