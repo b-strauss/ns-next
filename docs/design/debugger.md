@@ -35,55 +35,59 @@
 > until the next push, and report the value of the last call ("Step over
 > in recursion and blocks", "Step into's held request", "The return value
 > of the last call"); a step out taken in a block a send took, inlined or
-> not, leaves that whole send (decision 17); a step whose frame an unwind pops, or whose frame
-> returns otherwise than to its caller's send, goes on as a step into from
-> the frame the program goes on in (decision 17); and no step lands in a
-> frame the step filters filter, by default the shipped modules' -- a stop
-> it would make there goes on as a step into from the first unfiltered
-> frame below, and a step into's request outlasts the pushes of filtered
-> bodies (decision 16); run to cursor stops at a position resolved as a
-> line breakpoint is, in any activation, once (decision 3); and a method
-> breakpoint stops at its method's entry and before each of its returns,
-> and reports an exit an unwind makes where the program goes on ("Method
-> breakpoints"); and exception breakpoints stop an uncaught exception
-> before its `defaultAction` runs, a caught one before its handler runs,
-> each filtered by class, and an uncaught `halt`, which goes on resumed
-> with nil, the stack trace marking the frames above the first one below
-> the exception's machinery hidden, and the handler search reports the
-> handler it found to a step in progress ("Exceptions"); and the
-> breakpoint stress mode patches every statement start of every body it
-> finds running at a safepoint with a breakpoint that never stops ("The
-> breakpoint stress mode"); and the step stress mode stops every program
-> at the safepoints its schedule picks and takes a burst of steps from
-> there, reading the stack at every stop ("The step stress mode").
-> Stage 4 is built too -- the debugger in the IDE: `ns-next run` and
-> `load` take `--debug`, which listens on 127.0.0.1 behind a token, and
-> `--debug-connect`, which connects to a client that listens, and the DAP
-> agent in `ns-cli` speaks the session over the remote's two halves --
-> line breakpoints with block variants and hit conditions, which the VM
-> counts, function and exception breakpoints, steps by line or statement,
-> run to cursor, pause, terminate and disconnect, and a stop's stack,
-> variables and sources, a module's text asked of the VM by revision
-> ("Launching, the start and the end", "Hit counts and temporary
-> breakpoints"); the language server answers a module's breakable lines
-> before any session runs, from `Interpreter::breakable_statements` ("A
-> breakpoint names a source position"); and the plugin debugs a Newspeak
-> run configuration in IntelliJ's debugger over a DAP client of its own,
-> with line, method and exception breakpoints ("The JetBrains plugin"). An
-> attached debugger with its defaults costs a running program nothing
-> measurable ("What stage 4 moved"). Everything else is planned:
-> evaluation, conditional breakpoints and logpoints, watches and setting
-> variables, smart step into, restart frame and force return (stage 5,
-> next), hot swap and edit-and-continue (stage 6) ("Planned: the order of
-> building it"). The design rests on seventeen decisions made with the
-> user, nine on 2026-11-10, stage 2's six and stage 3's two on 2026-11-12
-> ("The decisions"), on the mechanisms they imply, stage 4's questions
-> among them, decided on 2026-11-14 ("Planned: the mechanisms"), and
-> leaves the questions in "Open questions" to be decided. It builds on
-> groundwork that exists: reified activations and the activation stack,
-> suspension into frames, the statement→program-counter table, stable
-> call-site numbers, retained source, the unwinder's frame targets, the
-> JIT's materialization and invalidation, the safepoint poll, and the
+> not, leaves that whole send (decision 17); a step whose frame an unwind
+> pops, or whose frame returns otherwise than to its caller's send, goes
+> on as a step into from the frame the program goes on in, the next host
+> run's first statement when the frame returns to the host (decision 17);
+> no step stops in a factory's frame, which every step passes over, and
+> every initializer's statements are stepped in the order they run
+> (decision 12); and no step lands in a frame the step filters filter, by
+> default the shipped modules' -- a stop it would make there goes on as a
+> step into from the first unfiltered frame below, and a step into's
+> request outlasts the pushes of filtered bodies (decision 16); run to
+> cursor stops at a position resolved as a line breakpoint is, in any
+> activation, once (decision 3); and a method breakpoint stops at its
+> method's entry and before each of its returns, and reports an exit an
+> unwind makes where the program goes on ("Method breakpoints"); and
+> exception breakpoints stop an uncaught exception before its
+> `defaultAction` runs, a caught one before its handler runs, each
+> filtered by class, and an uncaught `halt`, which goes on resumed with
+> nil, the stack trace marking the frames above the first one below the
+> exception's machinery hidden, and the handler search reports the handler
+> it found to a step in progress ("Exceptions"); and the breakpoint stress
+> mode patches every statement start of every body it finds running at a
+> safepoint with a breakpoint that never stops ("The breakpoint stress
+> mode"); and the step stress mode stops every program at the safepoints
+> its schedule picks and takes a burst of steps from there, reading the
+> stack at every stop ("The step stress mode"). Stage 4 is built too --
+> the debugger in the IDE: `ns-next run` and `load` take `--debug`, which
+> listens on 127.0.0.1 behind a token, and `--debug-connect`, which
+> connects to a client that listens, and the DAP agent in `ns-cli` speaks
+> the session over the remote's two halves -- line breakpoints with block
+> variants and hit conditions, which the VM counts, function and exception
+> breakpoints, steps by line or statement, run to cursor, pause, terminate
+> and disconnect, and a stop's stack, variables and sources, a module's
+> text asked of the VM by revision ("Launching, the start and the end",
+> "Hit counts and temporary breakpoints"); the language server answers a
+> module's breakable lines before any session runs, from
+> `Interpreter::breakable_statements` ("A breakpoint names a source
+> position"); and the plugin debugs a Newspeak run configuration in
+> IntelliJ's debugger over a DAP client of its own, with line, method and
+> exception breakpoints ("The JetBrains plugin"). An attached debugger
+> with its defaults costs a running program nothing measurable ("What
+> stage 4 moved"). Everything else is planned: evaluation, conditional
+> breakpoints and logpoints, watches and setting variables, smart step
+> into, restart frame and force return (stage 5, next), hot swap and
+> edit-and-continue (stage 6) ("Planned: the order of building it"). The
+> design rests on seventeen decisions made with the user, nine on
+> 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
+> decisions"), on the mechanisms they imply, stage 4's questions among
+> them, decided on 2026-11-14 ("Planned: the mechanisms"), and leaves the
+> questions in "Open questions" to be decided. It builds on groundwork
+> that exists: reified activations and the activation stack, suspension
+> into frames, the statement→program-counter table, stable call-site
+> numbers, retained source, the unwinder's frame targets, the JIT's
+> materialization and invalidation, the safepoint poll, and the
 > MirrorBuilder's atomic install, each described in the document for its
 > own aspect ("What exists").
 > **Code:** the VM's side is `crates/ns-runtime/src/debugger/` (`mod.rs`:
@@ -1014,17 +1018,17 @@ instructions one statement compiled to and its span), its sends
 selector tokens' spans), its sends that take block literals
 (`BlockSendEntry`: each block taken, a `TakenBlock` of its span and its
 place -- `BlockPlace::Inline`, the instructions it lowered to, or
-`BlockPlace::Called { send, closure }`, the send that runs its closure
-and the `MakeClosure` that made it, an index that names the running
-body's block where an install moved the spans -- whether the send is an
-inlined form, and the index after it), its named variables (`VariableEntry`: the name,
-the lexical depth in frame scopes, and the place, a `VariablePlace` --
-`Register`, `Outer { hops, register }` or `Vector { vector, slot }`, the
-vector held in a register of the frame or of one `hops` out), the body's
-own first, parameters before temporaries, then each enclosing scope's
-outward, and, for a factory, the header's factory pattern
-(`factory_pattern`). Every span is in the module's current text
-(decision 11).
+`BlockPlace::Called { send, closure }`, the send that runs its closure and
+the `MakeClosure` that made it, an index that names the running body's
+block where an install moved the spans -- whether the send is an inlined
+form, and the index after it), its named variables (`VariableEntry`: the
+name, the lexical depth in frame scopes, and the place, a `VariablePlace`
+-- `Register`, `Outer { hops, register }` or `Vector { vector, slot }`,
+the vector held in a register of the frame or of one `hops` out), the
+body's own first, parameters before temporaries, then each enclosing
+scope's outward, and, for a factory, the header's factory pattern
+(`factory_pattern`). Every span is in the module's current text (decision
+11).
 
 - **Both lowerers collect.** The reference lowering is an independent
   module, not a mode ([compiler.md](compiler.md), "The reference
@@ -1173,41 +1177,40 @@ Each child is described, and held, as every value is. The heap's accessors
 alone describe a value: no Newspeak code runs while the program is
 stopped.
 
-An instance's fields are named from the layout of its class's
-application (`values.rs`'s `field_labels`, over
-`MixinApplication::field_layout`, the one walk of the layout, which an
-install copies fields by too; `object-model.md`, "Mixin
-application"): each level of the chain, from the root, lays its own
-slots down at its slot base in declaration order, then one hidden slot
-per nested class it declares, so a field is named by its slot's name or
-by its nested class's (`KindA`), a superclass's slots included and a
-shipped class's alike (`an_instance_s_fields_are_named_by_its_slots_and_nested_classes`,
+An instance's fields are named from the layout of its class's application
+(`values.rs`'s `field_labels`, over `MixinApplication::field_layout`, the
+one walk of the layout, which an install copies fields by too;
+`object-model.md`, "Mixin application"): each level of the chain, from the
+root, lays its own slots down at its slot base in declaration order, then
+one hidden slot per nested class it declares, so a field is named by its
+slot's name or by its nested class's (`KindA`), a superclass's slots
+included and a shipped class's alike
+(`an_instance_s_fields_are_named_by_its_slots_and_nested_classes`,
 `an_instance_s_fields_include_its_superclass_s_and_name_a_shadowed_one`).
-The names are the mixins' structure, never their source, so an image
-built with `--strip-source` names them too
+The names are the mixins' structure, never their source, so an image built
+with `--strip-source` names them too
 (`a_stripped_image_names_an_instance_s_fields`). A name more than one
 level declares -- a superclass's private `x` under a subclass's `x`, a
-nested class declared again -- is the plain name on the level nearest
-the object's class, the one its own code reads, and `x (Base)` on each
-level above, the declaring mixin's name added. Where `<:` clauses apply
-one mixin more than once, its levels are told apart by number, counted
-by the mixin's id from the nearest shadowed level upward: `x (M)`, then
-`x (M 2)` (`a_mixin_applied_more_than_once_numbers_its_shadowed_slots`).
-Two different mixins that share a name, each shadowing the same name,
-are not numbered: each is named by its declaration's path from its
-module root instead, `x (Outer.Base)` and `x (Other.Base)`, and by that
-path from the root's own name on where even the paths are alike, while
-a mixin whose name no other shares there keeps the short form
+nested class declared again -- is the plain name on the level nearest the
+object's class, the one its own code reads, and `x (Base)` on each level
+above, the declaring mixin's name added. Where `<:` clauses apply one
+mixin more than once, its levels are told apart by number, counted by the
+mixin's id from the nearest shadowed level upward: `x (M)`, then `x (M 2)`
+(`a_mixin_applied_more_than_once_numbers_its_shadowed_slots`). Two
+different mixins that share a name, each shadowing the same name, are not
+numbered: each is named by its declaration's path from its module root
+instead, `x (Outer.Base)` and `x (Other.Base)`, and by that path from the
+root's own name on where even the paths are alike, while a mixin whose
+name no other shares there keeps the short form
 (`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`).
 A field no declaration names is `field <index>`, which only an instance
 whose class holds no application, one with more fields than its
-application lays out, or one whose layout names a mixin the heap holds
-no id for would show; none happens to an instance the VM made, and the
-last, which the install treats as a broken invariant, the query answers
-by number rather than fail on (`MixinApplication::checked_field_layout`;
-`a_layout_naming_an_unregistered_mixin_numbers_the_fields`). Paging
-counts the named fields as it counts elements
-(`named_fields_are_paged`).
+application lays out, or one whose layout names a mixin the heap holds no
+id for would show; none happens to an instance the VM made, and the last,
+which the install treats as a broken invariant, the query answers by
+number rather than fail on (`MixinApplication::checked_field_layout`;
+`a_layout_naming_an_unregistered_mixin_numbers_the_fields`). Paging counts
+the named fields as it counts elements (`named_fields_are_paged`).
 
 A field that holds no value yet is shown as not computed rather than as
 its word, `nil` (`VariableValue::NotComputed`): a lazy
@@ -2429,19 +2432,17 @@ records no range.
   (`a_reference_lowered_image_body_pairs_with_the_reference_lowering`).
 - An oracle over every body: a test compiles every body of every golden
   again under the lowering it runs under, both of them, and requires it
-  equal, and holds the tables to their invariants -- every statement
-  start within the body and at the start of every
-  `statement_program_counter` range, every send entry naming a send of
-  exactly its `CallSite`, every block send going on within the body, its
-  inline blocks before that and holding their statement starts, and its
-  called ones run by a send of the body and made by a `MakeClosure`
-  before it whose body's source is the block's span, every variable's register below
-  `local_count` and its range within the body, every span within the
-  module's text;
-  the shipped modules' bodies are checked once by a test of their own,
-  not per golden; the `images` gate runs it through `build` and `load`,
-  which checks the trial of the optimized lowering and then the
-  reference lowering.
+  equal, and holds the tables to their invariants -- every statement start
+  within the body and at the start of every `statement_program_counter`
+  range, every send entry naming a send of exactly its `CallSite`, every
+  block send going on within the body, its inline blocks before that and
+  holding their statement starts, and its called ones run by a send of the
+  body and made by a `MakeClosure` before it whose body's source is the
+  block's span, every variable's register below `local_count` and its
+  range within the body, every span within the module's text; the shipped
+  modules' bodies are checked once by a test of their own, not per golden;
+  the `images` gate runs it through `build` and `load`, which checks the
+  trial of the optimized lowering and then the reference lowering.
 - The pause stress mode's reader asks for every frame's name, position
   and named variables through the tables, its outer chain included, so
   that every golden and the corpus read named variables at real stops,
@@ -3129,28 +3130,28 @@ of the same home running in a callee. V8 checks the frame count the same
 way ("We have to ignore recursive calls", `v8/src/debug/debug.cc:822-855`),
 and the JDWP agent compares `fromDepth` (`stepControl.c:523-697`).
 
-The flood covers the stepping body's own statement starts and those of
-the inlined blocks in it, from its metadata, and the statement starts of
-each block literal the compiler lowered inline (`stepping::inlined_blocks`):
+The flood covers the stepping body's own statement starts and those of the
+inlined blocks in it, from its metadata, and the statement starts of each
+block literal the compiler lowered inline (`stepping::inlined_blocks`):
 under the optimized lowering, the fallback closure a receiver that is not
-a Boolean runs, recognized as a block literal whose `source` encloses
-one of the body's statements, its inline copy's; under the reference
-lowering, which inlines nothing, a block literal a `SendInlinable` takes
-as its receiver or an argument, the blocks the optimized lowering
-inlines; and so on into those blocks' own. A simultaneous slot's
-computation, the closure a `MakeFuture` takes, is none of them, though
-its source is the very span of the initializer's statement for the slot:
-its future's `resolve` runs it, a frame of its own. So a step over a non-Boolean
-receiver's `ifTrue:` stops in its fallback block as in the inline copy,
-and a step under the reference lowering stops where it stops under the
-optimized one. A step taken in such a block steps in its creator, the
-frame whose inline code the block stands for (`stepping_frame`), so that
-a step over the block's last statement goes on at the creator's next
-statement start rather than in the receiver's `ifTrue:` or in a loop's
-`value` send; a creator that returned leaves the block a frame of its
-own. A step out taken in such a block leaves the form that took it, as
-one taken in its inline copy does (decision 17). A block the body creates otherwise is a body of its own and not
-flooded, so a step over a `do:` whose argument block contains a
+a Boolean runs, recognized as a block literal whose `source` encloses one
+of the body's statements, its inline copy's; under the reference lowering,
+which inlines nothing, a block literal a `SendInlinable` takes as its
+receiver or an argument, the blocks the optimized lowering inlines; and so
+on into those blocks' own. A simultaneous slot's computation, the closure
+a `MakeFuture` takes, is none of them, though its source is the very span
+of the initializer's statement for the slot: its future's `resolve` runs
+it, a frame of its own. So a step over a non-Boolean receiver's `ifTrue:`
+stops in its fallback block as in the inline copy, and a step under the
+reference lowering stops where it stops under the optimized one. A step
+taken in such a block steps in its creator, the frame whose inline code
+the block stands for (`stepping_frame`), so that a step over the block's
+last statement goes on at the creator's next statement start rather than
+in the receiver's `ifTrue:` or in a loop's `value` send; a creator that
+returned leaves the block a frame of its own. A step out taken in such a
+block leaves the form that took it, as one taken in its inline copy does
+(decision 17). A block the body creates otherwise is a body of its own and
+not flooded, so a step over a `do:` whose argument block contains a
 breakpoint stops only at that breakpoint, as IntelliJ's does.
 
 The suspend stress mode suspends every activation of the run into its
@@ -3889,7 +3890,9 @@ be a thread of its own ([liveness-and-reflection.md](liveness-and-reflection.md)
 
 The agent measures the wall time from the resume to the stop, minus the
 time it spent serving commands meanwhile, and sends it with the `stopped`
-event, which the plugin shows inline as IntelliJ does.
+event, which the plugin shows inline as IntelliJ does. It is planned in
+no stage yet (decided with the user on 2026-11-15): neither stage 5 nor
+stage 6 builds it ("Planned: the order of building it").
 
 ## Open questions
 

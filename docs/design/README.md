@@ -32,7 +32,7 @@ that cannot name its code is describing an intention, and should say so.
 
 ## Principles
 
-Four rules decide between design options before any aspect's own reasoning
+Five rules decide between design options before any aspect's own reasoning
 does.
 
 **The specification is a requirement.** Behaviour the specification requires
@@ -72,6 +72,19 @@ the unsafe code is confined to where it is needed, as `crates/ns-memory` is
 other crates is an engineering choice, not an axiom: an option is never ruled
 out merely because it needs `unsafe`; the argument against it has to name the
 guarantee it gives up or the complexity it adds.
+
+**Introspection is reachable from the command line first.** Every feature
+that looks into a program or the VM -- the debugger, a profiler, what a
+method compiles to, tracing the JIT's decisions -- is an `ns-next` or
+`ns-next-analyzer` subcommand or flag first, its output plain text or JSON,
+so that an agent such as Claude can use it for debugging; the IDE plugin's
+views come on top, as clients of the same requests (the user's rule, stated
+on 2026-11-15). The debugger follows it: its agent speaks DAP, JSON over a
+socket behind `ns-next run --debug`, to any client, the plugin one of them
+([debugger.md](debugger.md)); the planned profiler, code view and
+`d8`-like tool are to follow it too
+([OPEN-WORK.md](../OPEN-WORK.md), "Planned: editor support and the
+analyzer").
 
 ## The map
 
