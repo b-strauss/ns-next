@@ -840,7 +840,10 @@ implementation decides (`docs/references/PROVENANCE.md`).
 deviation from the specification is a defect; no valid construct is carved out
 because it is rare; performance decides among semantics-preserving options,
 judged by the finished system; a guarantee is made by arranging Newspeak classes
-before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
+before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable;
+every introspection feature (debugger, profiler, code views, traces) is
+reachable from the command line first, as text or JSON, so that an agent can
+use it, and the IDE's views are clients of the same data.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
