@@ -1796,6 +1796,58 @@ the document symbols the structure view shares through
 `DocumentSymbolCache`; the run configuration's program a `newspeak.json` or
 a `.ns` module.
 
+### The core library
+
+The shipped modules -- `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`
+and `platform/`'s five -- are shown under External Libraries as the
+library "Newspeak Core Library" (`library/`), taken from the very
+`ns-next` the settings name, the binary every run of the project starts,
+so that what the editor shows is what runs (decided with the user on
+2026-11-15). `NewspeakCoreLibrary`, a project service, asks that binary
+`ns-next shipped-sources --fingerprint` and, when
+`<the IDE's system directory>/newspeak/core-library/<fingerprint>/` does
+not hold its sources yet, has it write them there with `ns-next
+shipped-sources <directory>` ([core-library.md](core-library.md), "The
+shipped sources as files"): into a staging directory first, whose files
+are made read-only and which is then moved into place, so that no reader
+sees a directory half written and two IDEs writing one fingerprint keep
+one (`CoreLibraryStore`). It looks as the project opens
+(`NewspeakCoreLibraryStartup`), as the settings are applied and as a
+debug session starts, every look on one thread of the application's own,
+so that the event dispatch thread never waits for `ns-next` and no two
+looks write or prune at once; a failure -- no binary set, one that cannot
+be started, an older one without the command -- is logged and leaves the
+library out. `NewspeakCoreLibraryRootsProvider` shows the directory in
+`core-library/`'s layout, `platform/` a folder, its `fingerprint` and use
+marker excluded (`NewspeakCoreLibraryRoots`, a `SyntheticLibrary`); the
+files are read-only on disk, so their editors are. The language server
+answers the breakable lines of a shipped module's file as the shipped
+module's ("Breakable lines").
+
+**Pruning.** Every use of a fingerprint directory -- a look that shows
+it, a debug session against it -- sets the time of the marker
+`last-used` inside it. At every look the plugin deletes each fingerprint
+directory, and each staging directory a writer left, last used 30 days
+ago or earlier, but never one an open project shows, so that projects
+whose settings once named different binaries keep theirs; a directory
+never marked counts from its own time, and nothing else under the store
+is touched. A directory deleted while a project still had breakpoints in
+it is written again, at the same path, as soon as a project's binary has
+its fingerprint.
+
+**Breakpoints follow the library.** Line breakpoints in a library file
+are kept with the project, as every breakpoint is. When a project's look
+shows another fingerprint directory than it showed, its line breakpoints
+in every other fingerprint directory's files move to the file of the same
+path in the new one, at the same line, with their pass count, block
+column, enablement, suspend policy and condition (`moveLineBreakpoints`);
+whether the line still takes one is the language server's and the agent's
+to say, as for any breakpoint. One whose file has no counterpart -- a
+module renamed or removed -- stays where it is and is logged. The
+debugger sends a library file's breakpoints by the module's name and opens
+the library's file for a stop in a shipped module whose text is its own
+([debugger.md](debugger.md), "The JetBrains plugin").
+
 ## Build and packaging
 
 - **Gradle project** under `editors/jetbrains/`, with the wrapper committed,
@@ -1950,7 +2002,15 @@ The server's own tests are described under its section, above ("Testing").
   before any configuration is sent; an exception's stop says which
   exception stopped it in the debugger's balloon; `stop()` keeps the
   connection until `terminate` is answered; a module shown by reference
-  is one read-only `LightVirtualFile` across two stops, asked for once;
+  is one read-only `LightVirtualFile` across two stops, asked for once,
+  while one whose text is the core library's file's opens that file;
+  and, for the core library: the store writes a fingerprint's directory
+  once, its files read-only and no staging left, and reuses it; the
+  library shown is the settings' binary's, `platform/` a folder, a module
+  the library's source and the `fingerprint` file not in the library; a
+  breakpoint in the library's `Kernel.ns`, in `Array>>do:`, stops the real
+  runtime at each element, and one in its `Manifest.ns` stops a project's
+  manifest as it answers a module;
   a hidden frame is drawn greyed and the program's frame not; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
   with `start` 100; an agent's `terminated` event or a close before any
@@ -1977,6 +2037,15 @@ The server's own tests are described under its section, above ("Testing").
   every class; against the real runtime, a temporary breakpoint in a loop
   stops once and is gone. A task of its own, `breakpointTypesTest`, with
   `debugProcessTest`'s inputs, which `check` depends on;
+- the core library's store and breakpoints, under `test`, which start no
+  binary: pruning (`CoreLibraryStoreTest`, plain JUnit over directories it
+  writes) deletes a directory unused for 31 days, keeps one used 29 days
+  ago, one in use however old and anything not the store's own, and a
+  touch counts as a use; a file is placed by its fingerprint and its path
+  below it. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
+  line breakpoints of an older fingerprint move to the same files of the
+  new one with their settings, one without a counterpart stays, and the
+  new library's own is kept;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -2144,7 +2213,9 @@ and resolves cleanly in a JetBrains IDE today.
 - **The debugger's paths into the platform** without a test: the real
   `newspeak/breakableLines` round trip through the platform's LSP client
   (the breakpoint types' test replaces the fetcher), a breakpoint in a
-  shipped module's read-only file, and the turning off and on that
+  module's read-only `LightVirtualFile`, the core library's node under
+  External Libraries as the project view draws it (the tests read the
+  provider and the file index), and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

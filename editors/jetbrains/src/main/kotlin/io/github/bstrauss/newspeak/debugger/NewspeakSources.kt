@@ -8,6 +8,9 @@ import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapSource
 import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -20,10 +23,16 @@ import java.util.concurrent.TimeUnit
  * reference whose `source` request answers its text, stable per module for
  * the session; such a module is shown read-only, as `<Module>.ns`, in one
  * file per reference for the session, so that every frame in it opens the
- * same editor.
+ * same editor. That file is the project's core library's file of the name
+ * ([libraryFile]) when its text is the agent's -- a shipped module of the
+ * very binary that runs, whose breakpoints stand there -- and a
+ * `LightVirtualFile` of the agent's text otherwise.
  */
-class NewspeakSources(private val client: DapClient) {
-    private val byReference = ConcurrentHashMap<Int, LightVirtualFile>()
+class NewspeakSources(
+    private val client: DapClient,
+    private val libraryFile: (String) -> VirtualFile? = { null },
+) {
+    private val byReference = ConcurrentHashMap<Int, VirtualFile>()
 
     /**
      * The file [source] names, or null for none the IDE can show. Blocks
@@ -45,9 +54,10 @@ class NewspeakSources(private val client: DapClient) {
 
     /**
      * How the agent names [file]: by its reference when this session showed
-     * it so, by its path when it is a file on disk; null for any other --
-     * a module's text an earlier session showed, say -- which the agent
-     * cannot name.
+     * it so, by its name when it is a core library's file, which is how the
+     * agent knows a shipped module, by its path when it is any other file on
+     * disk; null for any other -- a module's text an earlier session
+     * showed, say -- which the agent cannot name.
      */
     fun sourceOf(file: VirtualFile): JsonObject? {
         val reference = byReference.entries.firstOrNull { (_, shown) -> shown == file }?.key
@@ -58,6 +68,7 @@ class NewspeakSources(private val client: DapClient) {
             }
         }
         if (!file.isInLocalFileSystem) return null
+        NewspeakCoreLibrary.moduleSourceNameOf(file.url)?.let { name -> return JsonObject().apply { addProperty("name", name) } }
         return JsonObject().apply { addProperty("path", file.toNioPath().toString()) }
     }
 
@@ -75,8 +86,18 @@ class NewspeakSources(private val client: DapClient) {
         } catch (_: Exception) {
             null
         } ?: return null
-        val file = LightVirtualFile(name ?: "$reference.ns", NewspeakFileType, text).apply { isWritable = false }
+        val file = name?.let(libraryFile)?.takeIf { library -> textOf(library) == text }
+            ?: LightVirtualFile(name ?: "$reference.ns", NewspeakFileType, text).apply { isWritable = false }
         return byReference.putIfAbsent(reference, file) ?: file
+    }
+
+    /** A library file's text as written, byte for byte the binary's: no document's, whose line ends may differ. */
+    private fun textOf(file: VirtualFile): String? = try {
+        Files.readString(file.toNioPath())
+    } catch (_: IOException) {
+        null
+    } catch (_: UnsupportedOperationException) {
+        null
     }
 
     private companion object {

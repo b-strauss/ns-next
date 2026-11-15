@@ -113,6 +113,9 @@
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointType"/>
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakMethodBreakpointType"/>
         <xdebugger.breakpointType implementation="io.github.bstrauss.newspeak.debugger.NewspeakExceptionBreakpointType"/>
+        <!-- The shipped modules of the ns-next the settings name, under External Libraries. -->
+        <additionalLibraryRootsProvider implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRootsProvider"/>
+        <postStartupActivity implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryStartup"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

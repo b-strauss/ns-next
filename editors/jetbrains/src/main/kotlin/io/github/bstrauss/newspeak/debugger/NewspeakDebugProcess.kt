@@ -34,6 +34,7 @@ import io.github.bstrauss.newspeak.debugger.dap.DapOutputEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapProcessEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
@@ -107,6 +108,8 @@ class NewspeakDebugProcess(
     override fun createConsole(): ExecutionConsole = console ?: super.createConsole()
 
     override fun sessionInitialized() {
+        // A use of the library, and a look at whether the binary's sources changed since the project opened.
+        NewspeakCoreLibrary.getInstance(session.project).refresh()
         work.execute(::connect)
     }
 
@@ -127,7 +130,7 @@ class NewspeakDebugProcess(
         }
         val client = DapClient(connection)
         this.client = client
-        sources = NewspeakSources(client)
+        sources = NewspeakSources(client, NewspeakCoreLibrary.getInstance(session.project)::fileNamed)
         if (ended) {
             client.close()
             return

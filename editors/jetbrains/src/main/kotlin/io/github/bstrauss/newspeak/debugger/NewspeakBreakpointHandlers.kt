@@ -15,6 +15,7 @@ import io.github.bstrauss.newspeak.debugger.dap.DapBreakpoint
 import io.github.bstrauss.newspeak.debugger.dap.DapBreakpointEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -136,7 +137,8 @@ abstract class NewspeakBreakpointHandler<B : XBreakpoint<*>>(
 /**
  * Line breakpoints, a file's set at a time. A program's module is named by
  * its file's path; a module shown by reference -- a shipped one, as
- * `<Module>.ns` -- by that name, which is how the agent knows it.
+ * `<Module>.ns` -- and a file of the core library by that name, which is
+ * how the agent knows a module that is no file of the program's.
  */
 class NewspeakLineBreakpointHandler(session: XDebugSession) :
     NewspeakBreakpointHandler<NewspeakLineBreakpoint>(NewspeakLineBreakpointType::class.java, session) {
@@ -183,8 +185,13 @@ class NewspeakLineBreakpointHandler(session: XDebugSession) :
     }
 
     private companion object {
-        /** How the agent names the file at [fileUrl]: by path on disk, by name for a module's text shown by reference. */
+        /**
+         * How the agent names the file at [fileUrl]: by name for a core
+         * library's file and for a module's text shown by reference, by
+         * path for any other file on disk.
+         */
         fun sourceOf(fileUrl: String): JsonObject? {
+            NewspeakCoreLibrary.moduleSourceNameOf(fileUrl)?.let { name -> return JsonObject().apply { addProperty("name", name) } }
             if (fileUrl.startsWith("file:")) {
                 return JsonObject().apply { addProperty("path", Path.of(VfsUtilCore.urlToPath(fileUrl)).toString()) }
             }

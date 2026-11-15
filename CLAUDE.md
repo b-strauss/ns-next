@@ -283,7 +283,9 @@ artifact (`--check` only says whether it is current).
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
 Code included, through the server's formatting), a structure view of its
-own over the server's document symbols, and the debugger (`debugger/`): a
+own over the server's document symbols, the shipped modules as the
+library "Newspeak Core Library", written by the `ns-next` it runs
+(`library/`), and the debugger (`debugger/`): a
 DAP client of its own (`dap/`, on the platform's Gson), Debug on a run
 configuration through an `XDebugProcess` that starts `ns-next run
 --debug-connect` against a socket it listens on and acts only on the

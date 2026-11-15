@@ -4241,9 +4241,14 @@ shows whichever of the session's tabs is in front, where the console holds
 the program's own streams and would mix the message into them
 (`testAnExceptionStopSaysWhichException`). A `NewspeakStackFrame` is
 placed through `NewspeakSources`: a program module's file by its path, any
-other module -- a shipped one, an image's, one an install changed -- as a
-read-only `LightVirtualFile` named `<Module>.ns` holding the `source`
-request's answer, one per reference for the session; a hidden frame
+other module -- a shipped one, an image's, one an install changed -- by
+the `source` request's answer, read once per reference for the session:
+the project's core library's file of the name `<Module>.ns` when its text
+is the answer byte for byte -- a shipped module of the binary that runs,
+or its `Manifest.ns`, which a project compiles as its own embedded module
+([editor-support.md](editor-support.md), "The core library") -- and
+otherwise a read-only `LightVirtualFile` of that name holding the answer,
+one per reference for the session; a hidden frame
 (`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
 are the `Return value` scope's value, at a step's stop, above the
 `Locals`; a `NewspeakValue` shows the agent's text and class of a value
@@ -4286,7 +4291,14 @@ time:
   breakpoint is sent with the `column` of that statement, the line's
   without one. A module's file on disk is named by its `path`, a module
   the session shows by reference -- a shipped one, as `<Module>.ns` --
-  by its `name`. The pass count (`NewspeakLineBreakpointProperties`,
+  and a file of the core library by its `name`, which is how the agent
+  knows a module that is no file of the program's: a shipped module, and
+  the program's embedded `Manifest`, which a project's run loads; in a
+  run of one module, which loads no manifest, the agent answers a
+  `Manifest.ns` breakpoint unverified. The breakpoints in the library's
+  files are kept with the project and follow it to a new fingerprint
+  ([editor-support.md](editor-support.md), "The core library"). Run to
+  Cursor names a library file the same way. The pass count (`NewspeakLineBreakpointProperties`,
   edited in the breakpoint's properties) is sent as the `hitCondition`,
   in the agent's forms ("Hit counts and temporary breakpoints"). The
   handler marks each breakpoint verified, or, where the agent set it at
