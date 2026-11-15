@@ -22,7 +22,10 @@ pinned toolchain is raised from 1.98.0 to the stable release of the day
 the Docker image `xtask/docker/Dockerfile` -- the new Clippy lints fixed
 and the `codegen` budgets checked again; then the workspace moves from
 edition 2021 to 2024, by `cargo fix --edition` and a formatting commit
-of its own, every gate run to the end of the batch, since the edition
+of its own, every gate run to the end of the batch -- the Docker groups
+`linux` and `aarch64` included, though they are no longer part of
+`end-of-batch`, since a new compiler and edition reach every platform and
+the image changes too -- since the edition
 changes what the tree relies on: the temporary-scope rules of 2024
 change when a temporary in an `if let` scrutinee or a block's tail
 expression is dropped, `impl Trait` in return position captures every
