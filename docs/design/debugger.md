@@ -4199,7 +4199,10 @@ Debug on a Newspeak run configuration that runs a program
 ("Launching, the start and the end"), through
 `NewspeakDebuggeeProcessHandler`, a `KillableProcessHandler`. The debug
 process (`NewspeakDebugProcess.kt`) takes the connection within 30 s,
-initializes and attaches, and checks that the `process` event's
+waits, at most 60 s, for the look at the project's core library the
+session started with -- which moves the line breakpoints to a rebuilt
+binary's library before any is sent ([editor-support.md](editor-support.md),
+"The core library") -- initializes and attaches, and checks that the `process` event's
 `systemProcessId` is the PID of the process it started and its
 `nsNextSecret` the secret the runner made for that process -- 128 bits of
 `SecureRandom`, handed to it in `NS_NEXT_DEBUG_SECRET`, in its environment

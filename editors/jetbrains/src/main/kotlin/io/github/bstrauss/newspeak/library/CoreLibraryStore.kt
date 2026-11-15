@@ -19,9 +19,13 @@ import kotlin.io.path.name
  * in a directory named by its fingerprint, as `ns-next shipped-sources`
  * writes them: `core-library/`'s layout, and a `fingerprint` file. A
  * directory is written once, through a staging directory moved into place,
- * so that no reader ever sees one half written and two IDEs writing the
- * same fingerprint at once keep one of the two; its files are made
- * read-only, as the binary's own text is nothing to edit.
+ * so that no reader ever sees one half written -- a write the IDE's exit
+ * or a crash cut short leaves only a staging directory, which the pruning
+ * deletes; its files are made read-only, as the binary's own text is
+ * nothing to edit. Within the IDE every write runs on one thread, for all
+ * its projects; a directory that appears in place while one is written
+ * could only come from another process using the same system directory,
+ * and is taken when it holds the fingerprint.
  *
  * Every use of a directory sets the time of its [MARKER] ([touch]); a
  * directory unused for [UNUSED_LIMIT] is deleted by [prune] unless an open
@@ -54,7 +58,7 @@ class CoreLibraryStore(val root: Path) {
             try {
                 Files.move(staging, directory, StandardCopyOption.ATOMIC_MOVE)
             } catch (exception: IOException) {
-                // Another IDE moved the same sources into place first.
+                // Defensive: only another process using this system directory could have put it there meanwhile.
                 if (!holds(directory, fingerprint)) throw exception
                 return Ensured(directory, extracted = false)
             }

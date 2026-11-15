@@ -20,7 +20,10 @@ private val LOG = Logger.getInstance("#io.github.bstrauss.newspeak.library.CoreL
  * directory of [store] to the file of the same path in [directory], the
  * library the project shows now, at the same line and with the same
  * settings: the user put them on the binary's module, which the new
- * directory holds. Whether the line can still take one is the agent's and
+ * directory holds. A breakpoint's description, its group and its links
+ * to dependent breakpoints are not carried over: the platform reads and
+ * writes them only through internal API (`XBreakpointBase`,
+ * `XDependentBreakpointManager`), which the plugin does not use. Whether the line can still take one is the agent's and
  * the language server's to say, as for any breakpoint. One whose file has
  * no counterpart -- a module renamed or removed -- is left where it is
  * and logged. Called on the event dispatch thread.

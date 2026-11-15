@@ -1810,10 +1810,19 @@ not hold its sources yet, has it write them there with `ns-next
 shipped-sources <directory>` ([core-library.md](core-library.md), "The
 shipped sources as files"): into a staging directory first, whose files
 are made read-only and which is then moved into place, so that no reader
-sees a directory half written and two IDEs writing one fingerprint keep
-one (`CoreLibraryStore`). It looks as the project opens
+sees a directory half written; a write the IDE's exit or a crash cut short
+leaves only a staging directory, which the pruning deletes
+(`CoreLibraryStore`). The library is shown only in a Newspeak project:
+one whose content holds a `.ns` file or a `newspeak.json`, asked of the
+file indexes once the project is indexed (`isNewspeakProject`), or one
+that debugs a Newspeak program; a project that gains its first such file
+later shows it from its next opening, its next apply of the settings or
+its first debug session. It looks as the project opens
 (`NewspeakCoreLibraryStartup`), as the settings are applied and as a
-debug session starts, every look on one thread of the application's own,
+debug session starts -- which waits for the look, bounded at 60 s, before
+it sends any breakpoint, so that breakpoints moved to a rebuilt binary's
+library are sent from their new files -- every look on one thread of the
+application's own, for all projects,
 so that the event dispatch thread never waits for `ns-next` and no two
 looks write or prune at once; a failure -- no binary set, one that cannot
 be started, an older one without the command -- is logged and leaves the
@@ -1840,11 +1849,18 @@ are kept with the project, as every breakpoint is. When a project's look
 shows another fingerprint directory than it showed, its line breakpoints
 in every other fingerprint directory's files move to the file of the same
 path in the new one, at the same line, with their pass count, block
-column, enablement, suspend policy and condition (`moveLineBreakpoints`);
+column, temporariness, enablement, suspend policy, condition and logging
+(`moveLineBreakpoints`); its description, its group and its links to
+dependent breakpoints stay behind, since the platform reads and writes
+them only through internal API (`XBreakpointBase`,
+`XDependentBreakpointManager`), which the plugin does not use;
 whether the line still takes one is the language server's and the agent's
 to say, as for any breakpoint. One whose file has no counterpart -- a
 module renamed or removed -- stays where it is and is logged. The
-debugger sends a library file's breakpoints by the module's name and opens
+debugger sends a library file's breakpoints by the module's name, so a
+program module named like a shipped one (a `Kernel` of its own) takes a
+breakpoint set in the library's file of that name (`docs/OPEN-WORK.md`);
+it opens
 the library's file for a stop in a shipped module whose text is its own
 ([debugger.md](debugger.md), "The JetBrains plugin").
 
@@ -2009,7 +2025,9 @@ The server's own tests are described under its section, above ("Testing").
   library shown is the settings' binary's, `platform/` a folder, a module
   the library's source and the `fingerprint` file not in the library; a
   breakpoint in the library's `Kernel.ns`, in `Array>>do:`, stops the real
-  runtime at each element, and one in its `Manifest.ns` stops a project's
+  runtime at each element, one in an older fingerprint's `Kernel.ns` is
+  moved by the session's look before it is sent and stops in the new
+  library's file, and one in its `Manifest.ns` stops a project's
   manifest as it answers a module;
   a hidden frame is drawn greyed and the program's frame not; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
@@ -2045,7 +2063,9 @@ The server's own tests are described under its section, above ("Testing").
   below it. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
   line breakpoints of an older fingerprint move to the same files of the
   new one with their settings, one without a counterpart stays, and the
-  new library's own is kept;
+  new library's own is kept. `NewspeakProjectTest`: a project with a
+  `.ns` file or a `newspeak.json` is a Newspeak project, one with neither
+  is not;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`

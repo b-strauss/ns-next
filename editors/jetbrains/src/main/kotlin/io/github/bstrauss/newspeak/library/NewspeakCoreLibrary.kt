@@ -4,11 +4,17 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.psi.search.FileTypeIndex
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
+import io.github.bstrauss.newspeak.NewspeakFileType
+import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 import com.intellij.openapi.roots.AdditionalLibraryRootsListener
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
@@ -34,27 +40,61 @@ import kotlin.io.path.name
  * the settings name, which every run of the project starts, taken from that
  * binary (`ns-next shipped-sources`) into the IDE's system directory, a
  * directory per fingerprint ([CoreLibraryStore]), and shown under External
- * Libraries ([NewspeakCoreLibraryRootsProvider]). It is looked at afresh as
- * the project opens, as the settings change and as a debug session starts,
- * which is a use of the directory too; when the fingerprint changed, the
- * line breakpoints in an older directory's files move to the new one's
- * ([moveLineBreakpoints]). Every look runs on one thread of the
- * application's own, so that two projects never write or prune at once
- * and the event dispatch thread never waits for `ns-next`. A failure is
- * logged and leaves the library out.
+ * Libraries ([NewspeakCoreLibraryRootsProvider]) -- only in a Newspeak
+ * project, one holding a `.ns` file or a `newspeak.json`
+ * ([isNewspeakProject]), or one that debugs a Newspeak program. It is
+ * looked at afresh as the project opens, as the settings change and as a
+ * debug session starts, which is a use of the directory too; when the
+ * fingerprint changed, the line breakpoints in an older directory's files
+ * move to the new one's ([moveLineBreakpoints]). Every look runs on one
+ * thread of the application's own, so that no two projects write or prune
+ * at once and the event dispatch thread never waits for `ns-next`. A
+ * failure is logged and leaves the library out.
  */
 @Service(Service.Level.PROJECT)
 class NewspeakCoreLibrary(private val project: Project) : Disposable {
-    /** The directory shown, the one the settings' `ns-next` wrote; null while there is none. */
+    /**
+     * The directory shown, the one the settings' `ns-next` wrote; null
+     * while there is none. Written on the event dispatch thread only, as
+     * the project's disposal runs, so that a disposed project is never
+     * recorded as using a directory.
+     */
     @Volatile
     var directory: Path? = null
         private set
 
+    /** Whether the project is a Newspeak project, which alone shows the library; decided by [decideAndRefresh] and by a debug session. */
+    @Volatile
+    private var newspeak = false
+
     /** Looks at the binary again on the library's thread; the future answers the directory, or null for none. */
     fun refresh(): Future<Path?> = EXECUTOR.submit<Path?> { refreshNow() }
 
+    /** As [refresh], for a project that debugs a Newspeak program, which makes it a Newspeak project. */
+    fun refreshForDebugging(): Future<Path?> {
+        newspeak = true
+        return refresh()
+    }
+
+    /**
+     * Decides whether the project is a Newspeak project once its files are
+     * indexed, without holding the library's thread meanwhile, then looks
+     * at the binary.
+     */
+    fun decideAndRefresh() {
+        ReadAction.nonBlocking<Boolean> { isNewspeakProject(project) }
+            .inSmartMode(project)
+            .expireWith(this)
+            .submit(AppExecutorUtil.getAppExecutorService())
+            .onSuccess { decided ->
+                if (decided) newspeak = true
+                refresh()
+            }
+    }
+
     private fun refreshNow(): Path? {
         if (project.isDisposed) return null
+        if (!newspeak) return show(null)
         val runtime = when (val location = locateRuntime(NewspeakSettings.getInstance().state.runtimePath)) {
             is RuntimeLocation.Found -> location.path
             is RuntimeLocation.ConfiguredPathMissing -> {
@@ -74,24 +114,31 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
         } catch (exception: IOException) {
             LOG.warn("the use of ${ensured.directory} could not be recorded", exception)
         }
-        show(ensured.directory)
-        STORE.prune(Instant.now(), IN_USE.values.toSet())
-        return ensured.directory
+        val shown = show(ensured.directory)
+        STORE.prune(Instant.now(), IN_USE.values.toSet() + listOfNotNull(shown))
+        return shown
     }
 
-    /** Shows [shown] as the library, and moves the line breakpoints into it when it is another directory. */
+    /**
+     * Shows [shown] as the library, and moves the line breakpoints into it
+     * when it is another directory; answers what is shown, null for a
+     * project disposed meanwhile.
+     */
     private fun show(shown: Path?): Path? {
         val previous = directory
-        if (shown == previous) return shown
+        if (shown == previous) return if (project.isDisposed) null else shown
         val oldRoots = previous?.let(LocalFileSystem.getInstance()::findFileByNioFile)?.let(::listOf).orEmpty()
         val newRoot = shown?.let(LocalFileSystem.getInstance()::refreshAndFindFileByNioFile)
         // Written outside the IDE, the files are seen only once refreshed.
         newRoot?.let { root -> VfsUtil.markDirtyAndRefresh(false, true, true, root) }
-        if (shown == null) IN_USE.remove(project) else IN_USE[project] = shown
-        directory = shown
+        var recorded = false
         ApplicationManager.getApplication().invokeAndWait(
             {
+                // Disposal runs here too: after it, nothing may record the project again.
                 if (project.isDisposed) return@invokeAndWait
+                if (shown == null) IN_USE.remove(project) else IN_USE[project] = shown
+                directory = shown
+                recorded = true
                 WriteAction.run<RuntimeException> {
                     AdditionalLibraryRootsListener.fireAdditionalLibraryChanged(
                         project,
@@ -105,7 +152,7 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
             },
             ModalityState.nonModal(),
         )
-        return shown
+        return if (recorded) shown else null
     }
 
     /** The root of the library shown, as a file; null while there is none or it is gone. */
@@ -123,6 +170,11 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
             null
         } ?: return null
         return LocalFileSystem.getInstance().findFileByNioFile(path) ?: LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
+    }
+
+    /** Forgets the directory shown, so that the next look shows it anew, as after the IDE's start; for the tests. Called on the event dispatch thread. */
+    internal fun forgetTheDirectoryShown() {
+        directory = null
     }
 
     override fun dispose() {
@@ -162,4 +214,16 @@ class NewspeakCoreLibrary(private val project: Project) : Disposable {
             return place.relative.fileName.toString().takeIf { name -> name.endsWith(".ns") }
         }
     }
+}
+
+/**
+ * Whether [project] is a Newspeak project: its content holds a `.ns` file
+ * or a `newspeak.json`. Asked of the file indexes, in a read action once
+ * the project is indexed; a project that gains its first such file later
+ * shows the library from its next opening, or its first debug session.
+ */
+internal fun isNewspeakProject(project: Project): Boolean {
+    val scope = GlobalSearchScope.projectScope(project)
+    return FileTypeIndex.containsFileOfType(NewspeakFileType, scope) ||
+        FilenameIndex.getVirtualFilesByName(PROJECT_FILE_NAME, scope).isNotEmpty()
 }

@@ -20,6 +20,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
@@ -33,6 +34,7 @@ import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
+import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.frame.XCompositeNode
@@ -329,10 +331,11 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val time = checkNotNull(platform.findChild("TimeFactory.ns"))
         val fingerprint = checkNotNull(root.findChild(CoreLibraryStore.FINGERPRINT_FILE))
         val index = ProjectFileIndex.getInstance(project)
-        ReadAction.run<Throwable> {
-            assertTrue("a module is the library's source", index.isInLibrarySource(time))
-            assertFalse("the store's own files are not shown", index.isInLibrary(fingerprint))
+        val (source, inLibrary) = ReadAction.computeBlocking<Pair<Boolean, Boolean>, RuntimeException> {
+            index.isInLibrarySource(time) to index.isInLibrary(fingerprint)
         }
+        assertTrue("a module is the library's source", source)
+        assertFalse("the store's own files are not shown", inLibrary)
     }
 
     /** A shipped frame whose text is the library's file's opens that file, where its breakpoints stand. */
@@ -358,10 +361,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
     fun testABreakpointInTheLibrarysKernelStopsTheProgram() {
         val library = libraryDirectory()
         val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
-        val lines = Files.readString(library.resolve("Kernel.ns")).lines()
-        val size = lines.indexOfFirst { line -> line.contains("count = vmMirror collectionSize: self ifFail:") }
-        assertTrue("Array>>do:", size >= 0)
-        val body = size + lines.drop(size).indexOfFirst { line -> line.trim() == "action value: (self at: index)." }
+        val body = arrayDoBody(library)
         val program = program("Walker", WALKER)
         toggleBreakpoint(kernel, line = body + 1)
         val debugging = debug(program)
@@ -375,6 +375,53 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertTrue(debugging.output(), debugging.output().contains("12"))
+    }
+
+    /**
+     * A breakpoint in an older fingerprint's `Kernel.ns` -- the binary
+     * rebuilt with other shipped sources since the library was shown -- is
+     * moved by the session's look at the library before the session sends
+     * it, and stops the program in the new library's file.
+     */
+    fun testASessionSendsTheBreakpointsMovedToTheBinarysLibrary() {
+        val library = libraryDirectory()
+        val older = NewspeakCoreLibrary.STORE.root.resolve(OLDER_FINGERPRINT)
+        try {
+            Files.createDirectories(older)
+            // Only the library shown is a root of the project; the older directory is the test's own.
+            VfsRootAccess.allowRootAccess(testRootDisposable, older.toString())
+            Files.copy(library.resolve("Kernel.ns"), older.resolve("Kernel.ns"))
+            Files.writeString(older.resolve(CoreLibraryStore.FINGERPRINT_FILE), "$OLDER_FINGERPRINT\n")
+            val olderKernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(older.resolve("Kernel.ns")))
+            val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
+            val body = arrayDoBody(library)
+            toggleBreakpoint(olderKernel, line = body + 1)
+            onEdt { NewspeakCoreLibrary.getInstance(project).forgetTheDirectoryShown() }
+
+            val debugging = debug(program("Walker", WALKER))
+            val position = debugging.nextPause()
+            assertEquals(kernel, position.file)
+            assertEquals(body, position.line)
+            val breakpoints = XDebuggerManager.getInstance(project).breakpointManager.allBreakpoints
+                .filterIsInstance<XLineBreakpoint<*>>()
+            assertEquals(listOf(kernel.url), breakpoints.map { breakpoint -> breakpoint.fileUrl })
+            runInEdtAndWait {
+                val manager = XDebuggerManager.getInstance(project).breakpointManager
+                WriteAction.run<Throwable> { manager.allBreakpoints.forEach(manager::removeBreakpoint) }
+            }
+            onEdt { debugging.session.resume() }
+            debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        } finally {
+            CoreLibraryStore.deleteRecursively(older)
+        }
+    }
+
+    /** The line, counted from 0, of `Array>>do:`'s loop body in [library]'s `Kernel.ns`. */
+    private fun arrayDoBody(library: Path): Int {
+        val lines = Files.readString(library.resolve("Kernel.ns")).lines()
+        val size = lines.indexOfFirst { line -> line.contains("count = vmMirror collectionSize: self ifFail:") }
+        assertTrue("Array>>do:", size >= 0)
+        return size + lines.drop(size).indexOfFirst { line -> line.trim() == "action value: (self at: index)." }
     }
 
     /**
@@ -407,7 +454,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     /** The project's library, written from the settings' binary if it is not yet. */
     private fun libraryDirectory(): Path =
-        checkNotNull(NewspeakCoreLibrary.getInstance(project).refresh().get(WAIT_SECONDS, TimeUnit.SECONDS)) { "no library" }
+        checkNotNull(NewspeakCoreLibrary.getInstance(project).refreshForDebugging().get(WAIT_SECONDS, TimeUnit.SECONDS)) { "no library" }
 
     /** A module text other than any shipped one is shown by reference, whether or not a library is shown. */
     fun testAModuleShownByReferenceIsOneReadOnlyFileAcrossStops() {
@@ -918,6 +965,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
               {"id":2,"name":"Program>>main:args:","line":0,"column":0}
             ],"totalFrames":2}
         """.trimIndent()
+
+        /** A fingerprint no binary has, an older library's in the tests. */
+        const val OLDER_FINGERPRINT = "ffffffffffffffff"
 
         /** The files the store writes, each a shipped source. */
         val SHIPPED_FILES = listOf(

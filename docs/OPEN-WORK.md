@@ -3297,6 +3297,17 @@ program's subclass of `String` as an argument, the error of a
   `structure/NewspeakStructureViewFactory.kt`).
   [editor-support.md](design/editor-support.md), "Structure" ("Known
   behaviours"). Noted 2026-10-04.
+- **A breakpoint in the core library's file lands in a program module of
+  the same name.** The plugin sends a line breakpoint in the library's
+  `Kernel.ns` by the name `Kernel.ns`, and the agent's
+  `Sources::module_named_by` (`crates/ns-cli/src/debug/sources.rs`)
+  prefers a program module of that name -- a project's own `Kernel` -- to
+  the shipped one, so the breakpoint is set in the program's module at the
+  library file's line. A stop there still opens the program's file, since
+  the plugin maps a frame onto the library only when the texts are equal.
+  The source a library file is sent as must name the shipped module
+  unambiguously. [editor-support.md](design/editor-support.md), "The core
+  library". Noted 2026-11-15.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
   (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.

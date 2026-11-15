@@ -42,6 +42,6 @@ class NewspeakSettingsConfigurable : BoundConfigurable(NewspeakBundle.message("s
     override fun apply() {
         super.apply()
         restartNewspeakServers()
-        ProjectManager.getInstance().openProjects.forEach { project -> NewspeakCoreLibrary.getInstance(project).refresh() }
+        ProjectManager.getInstance().openProjects.forEach { project -> NewspeakCoreLibrary.getInstance(project).decideAndRefresh() }
     }
 }
