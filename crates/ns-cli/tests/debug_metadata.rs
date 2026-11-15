@@ -11,7 +11,9 @@
 //! statements the language server is answered
 //! (`Interpreter::breakable_statements`) are exactly the statements a
 //! `SetBreakpoints` lands on under the optimized lowering, and each lands
-//! on itself under the reference lowering.
+//! on itself under the reference lowering; and so are those it is
+//! answered for a document holding a shipped module's text
+//! (`Interpreter::shipped_breakable_statements`), once per lowering.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -20,7 +22,7 @@ use std::time::Duration;
 use libtest_mimic::{Arguments, Failed, Trial};
 use ns_runtime::{
     BreakableStatement, BreakpointState, Command, Event, HostSignal, Interpreter, LineBreakpoint,
-    Lowering,
+    Lowering, ModuleName,
 };
 use ns_syntax::Span;
 
@@ -52,6 +54,12 @@ fn main() {
                 ));
             }
         }
+    }
+    for (lowering_name, lowering) in LOWERINGS {
+        trials.push(Trial::test(
+            format!("shipped_breakable_statements_agree_with_the_breakpoints::{lowering_name}"),
+            move || shipped_breakable_statements_agree_with_the_breakpoints(lowering),
+        ));
     }
     trials.push(Trial::test(
         "debug_metadata::floor",
@@ -164,33 +172,121 @@ fn breakable_statements_agree_with_the_breakpoints(
     for resolved in &resolved_modules {
         interpreter.load_module(resolved);
     }
-    // Each breakpoint's offset, and the statement it lands on.
-    let expected: Vec<Vec<(u32, Option<Span>)>> = breakable
+    let modules: Vec<Landings<'_>> = resolved_modules
         .iter()
-        .map(|statements| {
-            let at_starts = statements
-                .iter()
-                .map(|breakable| (breakable.statement.start, Some(breakable.statement)));
-            if lowering == Lowering::Reference {
-                return at_starts.collect();
-            }
-            let first = (0, statements.first().map(|breakable| breakable.statement));
-            let just_past = statements.iter().enumerate().map(|(index, breakable)| {
-                let next = statements.get(index + 1);
-                (
-                    breakable.statement.start + 1,
-                    next.map(|next| next.statement),
-                )
-            });
-            std::iter::once(first)
-                .chain(at_starts)
-                .chain(just_past)
-                .collect()
+        .zip(&breakable)
+        .map(|(resolved, statements)| Landings {
+            module: ModuleName::program(resolved.module.root_class.name.name.clone()),
+            source: &resolved.source,
+            expected: expected_landings(statements, lowering),
         })
         .collect();
+    breakpoints_land_as_expected(&mut interpreter, &modules)
+}
+
+/// Every breakable statement of each shipped module the language server
+/// is answered for a document holding its text
+/// (`Interpreter::shipped_breakable_statements`), asked before any lazy
+/// one is built, is where a `SetBreakpoints` at its start lands once all
+/// are built under `lowering`, as `breakable_statements_agree_with_the_breakpoints`
+/// holds a program's modules to it; an interpreter of the other lowering
+/// answers the same.
+fn shipped_breakable_statements_agree_with_the_breakpoints(
+    lowering: Lowering,
+) -> Result<(), Failed> {
+    let names: Vec<&str> = ns_runtime::shipped_source_files()
+        .iter()
+        .filter(|file| ns_runtime::shipped_module_named_by_text(file.text) == Some(file.name))
+        .map(|file| file.name)
+        .collect();
+    if names.len() < 7 {
+        return Err(format!("only {names:?} are shipped modules").into());
+    }
+    let other = match lowering {
+        Lowering::Optimized => Lowering::Reference,
+        Lowering::Reference => Lowering::Optimized,
+    };
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    interpreter.set_jit_enabled(false);
+    let mut other_interpreter = Interpreter::bootstrap_with(other);
+    let mut modules = Vec::with_capacity(names.len());
+    for name in names {
+        let statements = interpreter
+            .shipped_breakable_statements(name)
+            .ok_or_else(|| format!("{name}: no breakable statements are answered"))?;
+        if statements.is_empty() {
+            return Err(format!("{name}: no statement is breakable").into());
+        }
+        if other_interpreter
+            .shipped_breakable_statements(name)
+            .as_ref()
+            != Some(&statements)
+        {
+            return Err(
+                format!("{name}: an interpreter of the other lowering answers otherwise").into(),
+            );
+        }
+        let text = ns_runtime::shipped_module_source(name).unwrap_or_default();
+        modules.push(Landings {
+            module: ModuleName::shipped(name),
+            source: text,
+            expected: expected_landings(&statements, lowering),
+        });
+    }
+    // Builds every lazy shipped module, so that a breakpoint in one
+    // resolves rather than staying pending.
+    interpreter.check_debug_metadata(true)?;
+    breakpoints_land_as_expected(&mut interpreter, &modules)
+}
+
+/// Each breakpoint's offset for `statements`, and the statement it lands
+/// on under `lowering`: at each start, the statement itself; and under the
+/// optimized lowering, at the module's start the first, and just past a
+/// statement's start the next, or none after the last.
+fn expected_landings(
+    statements: &[BreakableStatement],
+    lowering: Lowering,
+) -> Vec<(u32, Option<Span>)> {
+    let at_starts = statements
+        .iter()
+        .map(|breakable| (breakable.statement.start, Some(breakable.statement)));
+    if lowering == Lowering::Reference {
+        return at_starts.collect();
+    }
+    let first = (0, statements.first().map(|breakable| breakable.statement));
+    let just_past = statements.iter().enumerate().map(|(index, breakable)| {
+        let next = statements.get(index + 1);
+        (
+            breakable.statement.start + 1,
+            next.map(|next| next.statement),
+        )
+    });
+    std::iter::once(first)
+        .chain(at_starts)
+        .chain(just_past)
+        .collect()
+}
+
+/// The breakpoints a module is set, each beside where it should land.
+struct Landings<'text> {
+    /// The module.
+    module: ModuleName,
+    source: &'text str,
+    /// Each breakpoint's offset and the statement it should land on.
+    expected: Vec<(u32, Option<Span>)>,
+}
+
+/// A `SetBreakpoints` of each of `modules` lands every breakpoint where it
+/// is expected, once a run serves them.
+fn breakpoints_land_as_expected(
+    interpreter: &mut Interpreter,
+    modules: &[Landings<'_>],
+) -> Result<(), Failed> {
     let remote = interpreter.attach_debugger();
-    for (resolved, expected) in resolved_modules.iter().zip(&expected) {
-        let module = resolved.module.root_class.name.name.clone();
+    for Landings {
+        module, expected, ..
+    } in modules
+    {
         remote.send(Command::SetBreakpoints {
             module: module.clone(),
             breakpoints: expected
@@ -201,7 +297,7 @@ fn breakable_statements_agree_with_the_breakpoints(
         // Taken off again before anything runs, so that no breakpoint
         // stops the run that serves them.
         remote.send(Command::SetBreakpoints {
-            module,
+            module: module.clone(),
             breakpoints: Vec::new(),
         });
     }
@@ -214,8 +310,12 @@ fn breakable_statements_agree_with_the_breakpoints(
         Err(HostSignal::Return) => return Err("a non-local return escaped".into()),
         Err(HostSignal::Error(error)) => return Err(error.message.into()),
     }
-    for (resolved, expected) in resolved_modules.iter().zip(&expected) {
-        let module = &resolved.module.root_class.name.name;
+    for Landings {
+        module,
+        source,
+        expected,
+    } in modules
+    {
         let states = breakpoints_of(&remote, module)?;
         if !breakpoints_of(&remote, module)?.is_empty() {
             return Err(format!("{module}: the second set was not empty").into());
@@ -227,11 +327,8 @@ fn breakable_statements_agree_with_the_breakpoints(
         {
             return Err(format!(
                 "{module}: the breakpoints landed on {:?}, the breakable statements say {:?}",
-                describe(&resolved.source, landed),
-                describe(
-                    &resolved.source,
-                    expected.iter().map(|(_, statement)| *statement)
-                ),
+                describe(source, landed),
+                describe(source, expected.iter().map(|(_, statement)| *statement)),
             )
             .into());
         }
@@ -261,14 +358,14 @@ fn resolved_text(source: &str) -> Result<ns_runtime::ResolvedModule, Failed> {
 /// The VM's answer to the next `SetBreakpoints` of `module`.
 fn breakpoints_of(
     remote: &ns_runtime::DebugRemote,
-    module: &str,
+    module: &ModuleName,
 ) -> Result<Vec<BreakpointState>, Failed> {
     loop {
         match remote.next_event(EVENT_TIMEOUT) {
             Some(Event::Breakpoints {
                 module: reported,
                 breakpoints,
-            }) if reported == module => return Ok(breakpoints),
+            }) if reported == *module => return Ok(breakpoints),
             Some(Event::Breakpoints { .. }) => {}
             other => {
                 return Err(

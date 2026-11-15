@@ -17,7 +17,7 @@ use indoc::indoc;
 use ns_runtime::debugger::FrameKind;
 use ns_runtime::debugger::{
     BreakpointId, BreakpointState, ClassName, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState, ModuleTextAnswer,
+    MethodBreakpointState, ModuleName, ModuleTextAnswer,
 };
 use ns_runtime::JitStatistics;
 use ns_runtime::{
@@ -162,6 +162,7 @@ fn expect_paused(remote: &DebugRemote) {
         Some(Event::Stopped {
             reason: StopReason::Pause,
             returned: None,
+            ..
         }) => {}
         other => panic!("a stop for the pause was expected, not {other:?}"),
     }
@@ -284,6 +285,7 @@ fn a_remote_split_in_two_serves_from_two_threads() {
             Ok(Event::Stopped {
                 reason: StopReason::Pause,
                 returned: None,
+                ..
             }) => {}
             other => panic!("a stop for the pause was expected, not {other:?}"),
         }
@@ -1574,7 +1576,7 @@ ns_runtime::for_each_lowering! {
                 .unwrap_or_else(|| panic!("{} is located", frames[index].name))
         };
         let looping = located(innermost);
-        assert_eq!(looping.module, "Stacked");
+        assert_eq!(looping.module.name, "Stacked");
         // The loop's statement, or its condition's, the statement of an
         // inlined block, which the loop's back edge jumps to.
         assert!(
@@ -1845,7 +1847,7 @@ ns_runtime::for_each_lowering! {
             .location
             .clone()
             .expect("the factory is located");
-        assert_eq!(location.module, "Factories");
+        assert_eq!(location.module.name, "Factories");
         assert_eq!(location.statement.text(FACTORIES), "x: first y: second");
         assert_eq!(names(&variables), ["self", "first", "second"]);
         assert_eq!(value_of(&variables, "first").label, "3");
@@ -1987,7 +1989,7 @@ ns_runtime::for_each_lowering! {
             .location
             .clone()
             .expect("the superseded method is located");
-        assert_eq!(location.module, "Adding");
+        assert_eq!(location.module.name, "Adding");
         assert_eq!(location.statement.text(ADDING), "^block value: count");
         assert_eq!(names(&method), ["self", "count", "items", "block"]);
         assert_eq!(value_of(&method, "count").label, "5");
@@ -2289,10 +2291,21 @@ fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
     set_line_breakpoints(remote, module, breakpoints);
 }
 
+/// The module a test names `name`: a shipped one when the binary ships a
+/// module of that name -- no test's program declares one -- and the
+/// program's otherwise.
+fn module_named(name: &str) -> ModuleName {
+    if ns_runtime::shipped_module_source(name).is_some() {
+        ModuleName::shipped(name)
+    } else {
+        ModuleName::program(name)
+    }
+}
+
 /// Sets the line breakpoints of `module` to `breakpoints`.
 fn set_line_breakpoints(remote: &DebugRemote, module: &str, breakpoints: Vec<LineBreakpoint>) {
     remote.send(Command::SetBreakpoints {
-        module: String::from(module),
+        module: module_named(module),
         breakpoints,
     });
 }
@@ -2304,7 +2317,7 @@ fn expect_breakpoints(remote: &DebugRemote, module: &str) -> Vec<BreakpointState
         Some(Event::Breakpoints {
             module: reported,
             breakpoints,
-        }) if reported == module => breakpoints,
+        }) if reported.name == module => breakpoints,
         other => panic!("the breakpoints of {module} were expected, not {other:?}"),
     }
 }
@@ -2336,6 +2349,7 @@ fn expect_breakpoint_stop(remote: &DebugRemote) -> Vec<BreakpointId> {
         Some(Event::Stopped {
             reason: StopReason::Breakpoint { ids },
             returned: None,
+            ..
         }) => ids,
         other => panic!("a stop at a breakpoint was expected, not {other:?}"),
     }
@@ -2380,7 +2394,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(THREE_STATEMENTS), "count:: count + 10");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module, "Lines");
+        assert_eq!(location.module.name, "Lines");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2414,7 +2428,7 @@ ns_runtime::for_each_lowering! {
         );
         let answered = events
             .iter()
-            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module == "Lines"))
+            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module.name == "Lines"))
             .expect("the removal is answered");
         let stale: Vec<&Event> = events[answered..]
             .iter()
@@ -2743,7 +2757,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(TRANSCRIPT_FACTORY), "^Transcript new");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module, "TranscriptFactory");
+        assert_eq!(location.module.name, "TranscriptFactory");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2899,7 +2913,7 @@ fn reports_no_breakpoint(events: &[Event], module: &str) -> bool {
         matches!(
             event,
             Event::Breakpoints { module: reported, breakpoints }
-                if reported == module && breakpoints.is_empty()
+                if reported.name == module && breakpoints.is_empty()
         )
     })
 }
@@ -3482,6 +3496,7 @@ fn step(remote: &DebugRemote, command: Command) -> Option<ValueDescription> {
         Some(Event::Stopped {
             reason: StopReason::Step,
             returned,
+            ..
         }) => returned,
         other => panic!("a stop of the step was expected, not {other:?}"),
     }
@@ -3631,7 +3646,8 @@ ns_runtime::for_each_lowering! {
     /// run's entry stops at its first statement, a step's stop, whether
     /// the step was over, into or out. A step over or into from the last
     /// slot initializer stops at the initializer's statement first; none
-    /// stops in the factory, which is passed over (decision 12).
+    /// stops in the factory on the way out, which a step passes over
+    /// past its entry (decision 12).
     fn a_step_that_leaves_its_run_stops_at_the_next_run_s_first_statement(lowering) {
         for command in [Command::StepOver, Command::StepInto, Command::StepOut] {
             let name = command.name();
@@ -3903,7 +3919,7 @@ ns_runtime::for_each_lowering! {
 
 /// Sends `selector` to an instance of `INITIALIZING` under `lowering`, a
 /// breakpoint on the line of `breakpoint`, and from its stop takes
-/// `command` until the program stands at `last`, at most twelve times:
+/// `command` until the program stands at `last`, at most sixteen times:
 /// answers every stop the steps made, as its frame's name and statement,
 /// and the run's answer.
 fn initializing_stops(
@@ -3922,7 +3938,7 @@ fn initializing_stops(
         move |remote| {
             expect_first_stop(remote, "Initializing");
             let mut stops = Vec::new();
-            while stops.len() < 12 {
+            while stops.len() < 16 {
                 step(remote, command.clone());
                 let stood = standing(remote, INITIALIZING);
                 let done = stood.0 == last.0 && stood.1 == last.1;
@@ -4015,11 +4031,14 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A step into from an instantiation whose class applies a mixin by a
-    /// `<:` clause goes through every level's initializer in the order
-    /// the program runs them (§6.1, §6.2): the check of the `<:` clause,
-    /// the superclass clause and the superclass's initializer, from its
-    /// own superclass clause on, the `<:` clause's message and the mixin's
-    /// initializer, then the class's own slot.
+    /// `<:` clause stops in the factory, then goes through every level's
+    /// initializer in the order the program runs them (§6.1, §6.2): the
+    /// check of the `<:` clause, the superclass clause and the
+    /// superclass's initializer, at its header first, then from its first
+    /// slot initializer on -- its clause, which stands for `Object new`,
+    /// is none a step stops at -- the `<:` clause's message and the
+    /// mixin's initializer, at the mixin's header first, then the class's
+    /// own slot.
     fn a_step_into_goes_through_a_mixin_application_s_initializers_in_order(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -4031,12 +4050,14 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
+                ("Mixed class>>new", "Mixed"),
                 ("Mixed initializer", "Extra new"),
                 ("Mixed initializer", "Base new"),
                 ("Base initializer", "Base"),
                 ("Base initializer", "a ::= 1."),
                 ("Base initializer", "a:: a + 1"),
                 ("Mixed initializer", "Extra new"),
+                ("Extra initializer", "Extra"),
                 ("Extra initializer", "public c ::= 3."),
                 ("Extra initializer", "c:: c + 1"),
                 ("Mixed initializer", "public d ::= 4."),
@@ -4050,10 +4071,11 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A step into from an instantiation whose superclass clause's
-    /// argument sends a method of the module enters that method where the
-    /// program runs it, in the superclass clause, and goes on through the
-    /// rest of the clause, the superclass's initializer and the class's
-    /// own.
+    /// argument sends a method of the module stops in the factory, then
+    /// enters that method where the program runs it, in the superclass
+    /// clause, and goes on through the rest of the clause -- only the
+    /// clause's own initialization of the superclass takes the header
+    /// stop -- the superclass's initializer and the class's own.
     fn a_step_into_enters_a_method_a_superclass_clause_sends(lowering) {
         let (stops, answer) = initializing_stops(
             lowering,
@@ -4065,10 +4087,11 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
+                ("Clause class>>new", "Clause"),
                 ("Clause initializer", "Setup withSetup: setupValue"),
                 ("Initializing>>setupValue", "^5"),
                 ("Clause initializer", "Setup withSetup: setupValue"),
-                ("Setup initializer", "Setup"),
+                ("Setup initializer", "withSetup: value"),
                 ("Setup initializer", "public e ::= value."),
                 ("Clause initializer", "public f ::= 6."),
                 ("Initializing>>clause", "made:: Clause new"),
@@ -4076,6 +4099,1112 @@ ns_runtime::for_each_lowering! {
             ]
         );
         assert_eq!(answer, 11);
+    }
+}
+
+/// Classes instantiated within a run, each by a factory a step into
+/// stops in: one with a factory pattern and a superclass clause, one with
+/// a factory pattern and no clause written, one whose initializer has no
+/// statement, and a body-less declaration; a chain of three levels, each
+/// with a factory pattern, the lowest from `Object`; a class whose clause
+/// names `Object new` explicitly, one whose superclass is shipped, and
+/// one whose own level runs nothing, so that its factory pushes its
+/// superclass's initializer; and a superclass whose initializer has no
+/// statement a step stops at, only a slot without an initializer, whose
+/// subclass's slot then sends one of its methods.
+const HEADERS: &str = indoc! {"
+    class Headers = Object new () (
+      class Lowest new: a = (
+        | public low ::= a. |
+      ) ()
+      class Middle new: b = Lowest new: b + 1 (
+        | public middle ::= b. |
+      ) ()
+      class Highest new: c = Middle new: c + 1 (
+        | public high ::= c. |
+      ) ()
+      class Explicit = Object new (
+        | public seven ::= 7. |
+      ) ()
+      class Failure = Error new (
+        | public code ::= 9. |
+      ) ()
+      class Thin = Marker new () ()
+      class Hollow new: h = (
+        | public hollow |
+      ) (
+        public seed = (
+          ^5
+        )
+      )
+      class Filled = Hollow new: 1 (
+        | public filled ::= seed. |
+      ) ()
+      class Basis new: a = (
+        | public base ::= a. |
+      ) ()
+      class Punkt x: ax y: ay = Basis new: ax (
+        |
+          public x ::= ax.
+          public y ::= ay.
+        |
+      ) ()
+      class Bare x: ax = (
+        | public x ::= ax. |
+      ) ()
+      class Empty = () ()
+      class Marker = (
+        | public mark ::= 7. |
+      ) ()
+      class Applied = Basis new: 5 <: Marker new.
+      public point = (
+        | pt |
+        pt:: Punkt x: 1 y: 2.
+        ^pt x + pt y
+      )
+      public bare = (
+        | made |
+        made:: Bare x: 3.
+        ^made x
+      )
+      public empty = (
+        | made |
+        made:: Empty new.
+        ^4
+      )
+      public applied = (
+        | made |
+        made:: Applied new.
+        ^made mark + made base
+      )
+      public chain = (
+        | made |
+        made:: Highest new: 1.
+        ^made low + made middle + made high
+      )
+      public explicit = (
+        | made |
+        made:: Explicit new.
+        ^made seven
+      )
+      public failure = (
+        | made |
+        made:: Failure new.
+        ^made code
+      )
+      public thin = (
+        | made |
+        made:: Thin new.
+        ^made mark
+      )
+      public filled = (
+        | made |
+        made:: Filled new.
+        ^made filled
+      )
+    ) : ()
+"};
+
+/// Sends `selector` to an instance of `HEADERS` under `lowering`, a
+/// breakpoint on the line of `breakpoint`, and from its stop takes each
+/// of `commands` in turn: answers every stop they made, as its frame's
+/// name and statement, and the run's answer.
+fn header_stops(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+    commands: Vec<Command>,
+) -> (Vec<(String, String)>, i64) {
+    header_stops_filtered(lowering, selector, breakpoint, commands, true)
+}
+
+/// `header_stops`, the shipped filter as `shipped` says: a stop in a
+/// shipped frame is read in the kernel's text.
+fn header_stops_filtered(
+    lowering: Lowering,
+    selector: &'static str,
+    breakpoint: &str,
+    commands: Vec<Command>,
+    shipped: bool,
+) -> (Vec<(String, String)>, i64) {
+    let offset = line_start(HEADERS, breakpoint);
+    stepped(
+        HEADERS,
+        lowering,
+        selector,
+        |remote| {
+            if !shipped {
+                remote.send(Command::SetStepFilters {
+                    shipped,
+                    classes: Vec::new(),
+                });
+            }
+            set_breakpoints(remote, "Headers", vec![offset]);
+        },
+        move |remote| {
+            if !shipped {
+                expect_step_filters_set(remote);
+            }
+            expect_first_stop(remote, "Headers");
+            let mut stops = Vec::new();
+            for command in commands {
+                step(remote, command);
+                stops.push(standing_in_either(remote, HEADERS));
+            }
+            continue_stopped(remote);
+            stops
+        },
+    )
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at an instantiation stops in the factory's frame, at
+    /// the class header's factory pattern, its variables the factory's
+    /// parameters as the sender passed them (decision 12).
+    fn a_step_into_an_instantiation_stops_in_the_factory(lowering) {
+        let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let ((frames, variables), answer) = stepped(
+            HEADERS,
+            lowering,
+            "point",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                step(remote, Command::StepInto);
+                let frames = stack_trace(remote);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                continue_stopped(remote);
+                (frames, variables)
+            },
+        );
+        assert_eq!(frames[0].name, "Punkt class>>x:y:");
+        assert_eq!(frames[0].kind, FrameKind::Factory);
+        assert_eq!(frames[1].name, "Headers>>point");
+        let location = frames[0].location.clone().expect("the factory is located");
+        assert_eq!(location.module.name, "Headers");
+        assert_eq!(location.statement.text(HEADERS), "x: ax y: ay");
+        assert_eq!(names(&variables), ["self", "ax", "ay"]);
+        assert_eq!(value_of(&variables, "ax").label, "1");
+        assert_eq!(value_of(&variables, "ay").label, "2");
+        assert_eq!(answer, 3);
+    }
+}
+
+/// `HEADERS`'s instance after two warming sends of `selector`, its
+/// debugger attached, and the remote.
+fn warmed_headers(lowering: Lowering, selector: &str) -> (Interpreter, Root, DebugRemote) {
+    let (mut interpreter, instance) = instance_of(HEADERS, lowering);
+    for _ in 0..2 {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern(selector), &[]),
+            "warm",
+        );
+    }
+    let remote = interpreter.attach_debugger();
+    (interpreter, instance, remote)
+}
+
+/// The ids of the breakpoints `Headers` was answered to have, in the
+/// order of their offsets.
+fn headers_breakpoint_ids(remote: &DebugRemote) -> Vec<BreakpointId> {
+    expect_breakpoints(remote, "Headers")
+        .iter()
+        .map(|state| state.id)
+        .collect()
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Terminate` at the factory's stop that a step into made by undoing
+    /// the initializer's push ends the run there, the initializer's frame
+    /// popped already; the interpreter runs the same send to its end
+    /// afterwards.
+    fn a_terminate_at_the_rewound_factory_stop_ends_the_run(lowering) {
+        let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let (mut interpreter, instance, remote) = warmed_headers(lowering, "point");
+        set_breakpoints(&remote, "Headers", vec![offset]);
+        let (top, result, remote) = debugged_by(
+            remote,
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                step(remote, Command::StepInto);
+                let top = stack_trace(remote)[0].name.clone();
+                remote.send(Command::Terminate);
+                top
+            },
+            || interpreter.send(&instance, Symbol::intern("point"), &[]),
+        );
+        assert_eq!(top, "Punkt class>>x:y:");
+        assert_terminated(result);
+        drop(remote);
+        let result = interpreter.send(&instance, Symbol::intern("point"), &[]);
+        assert_eq!(answered(&mut interpreter, result), 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A `Continue` at the rewound factory stop, no step in progress, goes
+    /// on into the initializer the factory pushes again, which runs once:
+    /// a breakpoint in it stops once, and the run answers as without the
+    /// debugger.
+    fn a_continue_at_the_rewound_factory_stop_runs_the_initializer_once(lowering) {
+        let sent = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let slot = line_start(HEADERS, "public x ::= ax.");
+        let (mut interpreter, instance, remote) = warmed_headers(lowering, "point");
+        set_breakpoints(&remote, "Headers", vec![sent, slot]);
+        let ((first, top, events, slot_id), result, _remote) = debugged_by(
+            remote,
+            |remote| {
+                let ids = headers_breakpoint_ids(remote);
+                let first = expect_breakpoint_stop(remote);
+                step(remote, Command::StepInto);
+                let top = stack_trace(remote)[0].name.clone();
+                continue_stopped(remote);
+                (first == [ids[0]], top, events_until_the_end(remote), ids[1])
+            },
+            || interpreter.send(&instance, Symbol::intern("point"), &[]),
+        );
+        assert!(first, "the first stop is the sender's breakpoint");
+        assert_eq!(top, "Punkt class>>x:y:");
+        let stops: Vec<_> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Stopped { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stops,
+            [StopReason::Breakpoint {
+                ids: vec![slot_id]
+            }]
+        );
+        assert_eq!(answered(&mut interpreter, result), 3);
+    }
+}
+
+/// The stops at a breakpoint at `Bare`'s initializer's first statement,
+/// its hit condition `condition`, once a step into stopped in `Bare`'s
+/// factory, by undoing the initializer's push, and the run continued.
+fn hits_after_the_rewind(lowering: Lowering, condition: HitCondition) -> usize {
+    let sent = line_start(HEADERS, "made:: Bare x: 3.");
+    let slot = line_start(HEADERS, "| public x ::= ax. |");
+    let (mut interpreter, instance, remote) = warmed_headers(lowering, "bare");
+    set_line_breakpoints(
+        &remote,
+        "Headers",
+        vec![
+            LineBreakpoint::at(sent),
+            LineBreakpoint {
+                offset: slot,
+                hit_condition: Some(condition),
+            },
+        ],
+    );
+    let (events, result, _remote) = debugged_by(
+        remote,
+        |remote| {
+            headers_breakpoint_ids(remote);
+            expect_breakpoint_stop(remote);
+            step(remote, Command::StepInto);
+            assert_eq!(stack_trace(remote)[0].name, "Bare class>>x:");
+            continue_stopped(remote);
+            events_until_the_end(remote)
+        },
+        || interpreter.send(&instance, Symbol::intern("bare"), &[]),
+    );
+    assert_eq!(answered(&mut interpreter, result), 3);
+    events
+        .iter()
+        .filter(|event| matches!(event, Event::Stopped { .. }))
+        .count()
+}
+
+ns_runtime::for_each_lowering! {
+    /// The initializer's push the rewind undid ran nothing, so its first
+    /// statement is hit once, by the push the factory makes again: a
+    /// breakpoint counting to its first hit stops, one counting to its
+    /// second does not.
+    fn a_hit_count_at_the_initializer_s_first_statement_counts_the_rewind_once(lowering) {
+        assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(1)), 1);
+        assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(2)), 0);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over, and a step into, at the factory's stop goes on to the
+    /// first statement of the class's initializer, which the factory
+    /// pushes: the superclass clause, when one is written.
+    fn a_step_from_the_factory_stops_at_the_superclass_clause(lowering) {
+        for command in [Command::StepOver, Command::StepInto] {
+            let name = command.name();
+            let commands = vec![Command::StepInto, command];
+            let (stops, answer) =
+                header_stops(lowering, "point", "pt:: Punkt x: 1 y: 2.", commands);
+            assert_eq!(
+                as_pairs(&stops),
+                [
+                    ("Punkt class>>x:y:", "x: ax y: ay"),
+                    ("Punkt initializer", "Basis new: ax"),
+                ],
+                "{name}"
+            );
+            assert_eq!(answer, 3, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the factory's stop of a class that writes no
+    /// superclass clause stops at its initializer's first slot
+    /// initializer, never at the clause that stands for `Object new`.
+    fn a_step_from_the_factory_without_a_clause_stops_at_the_first_slot(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "bare",
+            "made:: Bare x: 3.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Bare class>>x:", "x: ax"),
+                ("Bare initializer", "public x ::= ax."),
+                ("Headers>>bare", "made:: Bare x: 3"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the factory's stop of a class whose initializer has
+    /// no statement stops after the `new`, in the sender.
+    fn a_step_from_the_factory_of_an_empty_initializer_stops_after_the_new(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "empty",
+            "made:: Empty new.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Empty class>>new", "Empty"),
+                ("Headers>>empty", "made:: Empty new"),
+                ("Headers>>empty", "^4"),
+            ]
+        );
+        assert_eq!(answer, 4);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step out at the factory's stop runs the whole instantiation and
+    /// stops after the `new`, in the sender.
+    fn a_step_out_of_the_factory_stops_after_the_new(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "point",
+            "pt:: Punkt x: 1 y: 2.",
+            vec![Command::StepInto, Command::StepOut],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Headers>>point", "pt:: Punkt x: 1 y: 2"),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body-less declaration's factory is stopped in too, at the
+    /// class's name, and the next step stops at the first statement of
+    /// its initializer, which runs its `<:` clause's check first.
+    fn a_step_from_a_body_less_declaration_s_factory_stops_in_its_initializer(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "applied",
+            "made:: Applied new.",
+            vec![Command::StepInto, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Applied class>>new", "Applied"),
+                ("Applied initializer", "Marker new"),
+            ]
+        );
+        assert_eq!(answer, 12);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a superclass clause stops in the superclass's
+    /// initializer at its entry, before its first statement: placed at
+    /// the superclass's header pattern, its variables the factory's
+    /// parameters as the clause passed them (decision 12).
+    fn a_step_into_a_superclass_clause_stops_at_the_superclass_s_header(lowering) {
+        let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+        let ((stops, frames, variables), answer) = stepped(
+            HEADERS,
+            lowering,
+            "point",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let mut stops = Vec::new();
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, HEADERS));
+                }
+                let frames = stack_trace(remote);
+                let variables = variables(remote, Command::Variables { frame: 0 });
+                continue_stopped(remote);
+                (stops, frames, variables)
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Basis initializer", "new: a"),
+            ]
+        );
+        assert_eq!(frames[0].kind, FrameKind::Initializer);
+        assert_eq!(frames[1].name, "Punkt initializer");
+        assert_eq!(value_of(&variables, "a").label, "1");
+        assert_eq!(answer, 3);
+    }
+}
+
+/// The stops of nine steps into from `chain`'s instantiation: the
+/// factory, then each level's clause and the next level's header, down
+/// to the lowest level, whose clause stands for `Object new`, then each
+/// level's slot on the way back, and the place after the `new`.
+const CHAIN_STOPS: [(&str, &str); 9] = [
+    ("Highest class>>new:", "new: c"),
+    ("Highest initializer", "Middle new: c + 1"),
+    ("Middle initializer", "new: b"),
+    ("Middle initializer", "Lowest new: b + 1"),
+    ("Lowest initializer", "new: a"),
+    ("Lowest initializer", "public low ::= a."),
+    ("Middle initializer", "public middle ::= b."),
+    ("Highest initializer", "public high ::= c."),
+    ("Headers>>chain", "made:: Highest new: 1"),
+];
+
+ns_runtime::for_each_lowering! {
+    /// A step into at each superclass clause of a chain of three levels
+    /// stops at the next level's header, and the lowest level, which
+    /// inherits from `Object`, goes on to its own first statement, never
+    /// into `Object`'s initializer, with the shipped filter on and off.
+    fn a_step_into_goes_through_every_header_of_a_superclass_chain(lowering) {
+        for shipped in [true, false] {
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "chain",
+                "made:: Highest new: 1.",
+                vec![Command::StepInto; 9],
+                shipped,
+            );
+            assert_eq!(as_pairs(&stops), CHAIN_STOPS, "shipped filter {shipped}");
+            assert_eq!(answer, 6, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the header stop of the lowest level goes on to its
+    /// first statement, past the clause that stands for `Object new`,
+    /// never into `Object`, with the shipped filter on and off.
+    fn a_step_over_at_the_lowest_header_stops_at_its_first_statement(lowering) {
+        for shipped in [true, false] {
+            let mut commands = vec![Command::StepInto; 5];
+            commands.push(Command::StepOver);
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "chain",
+                "made:: Highest new: 1.",
+                commands,
+                shipped,
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                CHAIN_STOPS[..6],
+                "shipped filter {shipped}"
+            );
+            assert_eq!(answer, 6, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at a superclass clause runs the whole superclass chain
+    /// and stops at the subclass's next statement, and a step out at a
+    /// header stop goes back to the subclass's initializer, after its
+    /// clause.
+    fn a_step_over_a_clause_and_out_of_a_header_stop_in_the_subclass(lowering) {
+        let (over, answer) = header_stops(
+            lowering,
+            "chain",
+            "made:: Highest new: 1.",
+            vec![Command::StepInto, Command::StepInto, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&over),
+            [
+                ("Highest class>>new:", "new: c"),
+                ("Highest initializer", "Middle new: c + 1"),
+                ("Highest initializer", "public high ::= c."),
+            ]
+        );
+        assert_eq!(answer, 6);
+        let (out, answer) = header_stops(
+            lowering,
+            "chain",
+            "made:: Highest new: 1.",
+            vec![
+                Command::StepInto,
+                Command::StepInto,
+                Command::StepInto,
+                Command::StepOut,
+            ],
+        );
+        assert_eq!(
+            as_pairs(&out),
+            [
+                ("Highest class>>new:", "new: c"),
+                ("Highest initializer", "Middle new: c + 1"),
+                ("Middle initializer", "new: b"),
+                ("Highest initializer", "public high ::= c."),
+            ]
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over, and a step out, at the last statement of a
+    /// superclass's initializer goes on in the next level's initializer,
+    /// at the statement after its clause, and on to the place after the
+    /// `new`: no header stop on the way down.
+    fn a_step_from_a_superclass_s_last_statement_takes_no_header_stop(lowering) {
+        for command in [Command::StepOver, Command::StepOut] {
+            let name = command.name();
+            let (stops, answer) = header_stops(
+                lowering,
+                "chain",
+                "| public low ::= a. |",
+                vec![command; 3],
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                CHAIN_STOPS[6..],
+                "{name}"
+            );
+            assert_eq!(answer, 6, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step into at a clause that names `Object new` explicitly goes on
+    /// to the class's next statement: `Object` is no level a step stops
+    /// in, with the shipped filter on and off.
+    fn a_step_into_an_explicit_object_clause_stops_at_the_next_statement(lowering) {
+        for shipped in [true, false] {
+            let (stops, answer) = header_stops_filtered(
+                lowering,
+                "explicit",
+                "made:: Explicit new.",
+                vec![Command::StepInto; 3],
+                shipped,
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                [
+                    ("Explicit class>>new", "Explicit"),
+                    ("Explicit initializer", "Object new"),
+                    ("Explicit initializer", "public seven ::= 7."),
+                ],
+                "shipped filter {shipped}"
+            );
+            assert_eq!(answer, 7, "shipped filter {shipped}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A shipped superclass's header stop is filtered as any shipped
+    /// code: with the shipped filter on, a step into at the clause goes
+    /// on to the class's next statement; with it off, it stops at the
+    /// header of the shipped class whose initializer runs, and a step
+    /// begun there steps in that frame once the filter is switched on.
+    fn a_shipped_superclass_s_header_stop_comes_with_the_filter_off(lowering) {
+        let (filtered, answer) = header_stops(
+            lowering,
+            "failure",
+            "made:: Failure new.",
+            vec![Command::StepInto; 3],
+        );
+        assert_eq!(
+            as_pairs(&filtered),
+            [
+                ("Failure class>>new", "Failure"),
+                ("Failure initializer", "Error new"),
+                ("Failure initializer", "public code ::= 9."),
+            ]
+        );
+        assert_eq!(answer, 9);
+        let (unfiltered, answer) = header_stops_filtered(
+            lowering,
+            "failure",
+            "made:: Failure new.",
+            vec![Command::StepInto; 3],
+            false,
+        );
+        assert_eq!(
+            as_pairs(&unfiltered),
+            [
+                ("Failure class>>new", "Failure"),
+                ("Failure initializer", "Error new"),
+                ("Exception initializer", "Exception"),
+            ]
+        );
+        assert_eq!(answer, 9);
+        // A step begun at that header steps in its frame as in any other,
+        // the shipped filter switched on at the stop (decision 16): the
+        // step over stops at `Exception`'s first statement.
+        let offset = line_start(HEADERS, "made:: Failure new.");
+        let (stood, answer) = stepped(
+            HEADERS,
+            lowering,
+            "failure",
+            |remote| {
+                remote.send(Command::SetStepFilters {
+                    shipped: false,
+                    classes: Vec::new(),
+                });
+                set_breakpoints(remote, "Headers", vec![offset]);
+            },
+            |remote| {
+                expect_step_filters_set(remote);
+                expect_first_stop(remote, "Headers");
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: Vec::new(),
+                });
+                expect_step_filters_set(remote);
+                step(remote, Command::StepOver);
+                let stood = standing_in_either(remote, HEADERS);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        // `Exception = Object (`: its first statement is the clause it
+        // writes.
+        assert_eq!(
+            stood,
+            (
+                String::from("Exception initializer"),
+                String::from("Object")
+            )
+        );
+        assert_eq!(answer, 9);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step begun at a header stop whose class a class filter names,
+    /// set at the stop, steps in that initializer as in any frame the step
+    /// is begun in (decision 16): the step over stops at its first
+    /// statement.
+    fn a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered(lowering) {
+        let offset = line_start(HEADERS, "made:: Highest new: 1.");
+        let (stood, answer) = stepped(
+            HEADERS,
+            lowering,
+            "chain",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: module_named("Headers"),
+                        path: vec![String::from("Middle")],
+                    }],
+                });
+                expect_step_filters_set(remote);
+                step(remote, Command::StepOver);
+                let stood = standing(remote, HEADERS);
+                continue_stopped(remote);
+                stood
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("Middle initializer"),
+                String::from("Lowest new: b + 1")
+            )
+        );
+        assert_eq!(answer, 6);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step from the header stop of an initializer that runs nothing a
+    /// step stops at goes on in its sender, the step begun nowhere
+    /// filtered: with a class filter naming that class set at the header,
+    /// the step over stops at the sender's next statement, and the step
+    /// into there passes over the filtered method the statement sends,
+    /// which runs where the initializer ran, to the place after the `new`.
+    fn a_step_from_an_empty_header_stop_never_stops_in_a_filtered_call(lowering) {
+        let offset = line_start(HEADERS, "made:: Filled new.");
+        let (stops, answer) = stepped(
+            HEADERS,
+            lowering,
+            "filled",
+            |remote| set_breakpoints(remote, "Headers", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Headers");
+                let mut stops = Vec::new();
+                for _ in 0..3 {
+                    step(remote, Command::StepInto);
+                    stops.push(standing(remote, HEADERS));
+                }
+                remote.send(Command::SetStepFilters {
+                    shipped: true,
+                    classes: vec![ClassName {
+                        module: module_named("Headers"),
+                        path: vec![String::from("Hollow")],
+                    }],
+                });
+                expect_step_filters_set(remote);
+                for command in [Command::StepOver, Command::StepInto] {
+                    step(remote, command);
+                    stops.push(standing(remote, HEADERS));
+                }
+                continue_stopped(remote);
+                stops
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Filled class>>new", "Filled"),
+                ("Filled initializer", "Hollow new: 1"),
+                ("Hollow initializer", "new: h"),
+                ("Filled initializer", "public filled ::= seed."),
+                ("Headers>>filled", "made:: Filled new"),
+            ]
+        );
+        assert_eq!(answer, 5);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A line breakpoint on a superclass initializer's first statement,
+    /// which starts at its entry, stands where its header stop stands: a
+    /// `Continue` from the header stop stops at the breakpoint once, and
+    /// a step over from it makes one stop there, the breakpoint's, as the
+    /// step from a factory's stop does.
+    fn a_breakpoint_at_a_first_statement_at_the_entry_follows_the_header_stop(lowering) {
+        for command in [Command::Continue, Command::StepOver] {
+            let name = command.name();
+            let offsets = vec![
+                line_start(HEADERS, "made:: Highest new: 1."),
+                line_start(HEADERS, "class Middle new: b = Lowest new: b + 1 ("),
+            ];
+            let (stops, answer) = stepped(
+                HEADERS,
+                lowering,
+                "chain",
+                |remote| set_breakpoints(remote, "Headers", offsets),
+                move |remote| {
+                    let states = expect_breakpoints(remote, "Headers");
+                    let ids: Vec<BreakpointId> = states.iter().map(|state| state.id).collect();
+                    assert_eq!(ids.len(), 2);
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                    let mut stops = Vec::new();
+                    for _ in 0..3 {
+                        step(remote, Command::StepInto);
+                        stops.push(standing(remote, HEADERS));
+                    }
+                    remote.send(command);
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        other => panic!("the confirmation was expected, not {other:?}"),
+                    }
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                    stops.push(standing(remote, HEADERS));
+                    continue_stopped(remote);
+                    stops
+                },
+            );
+            assert_eq!(
+                as_pairs(&stops),
+                [
+                    ("Highest class>>new:", "new: c"),
+                    ("Highest initializer", "Middle new: c + 1"),
+                    ("Middle initializer", "new: b"),
+                    ("Middle initializer", "Lowest new: b + 1"),
+                ],
+                "{name}"
+            );
+            assert_eq!(answer, 6, "{name}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A factory whose own level runs nothing pushes its superclass's
+    /// initializer: the step from the factory stops at that class's
+    /// header, then at its first statement.
+    fn a_step_from_a_factory_into_a_superclass_s_initializer_stops_at_its_header(lowering) {
+        let (stops, answer) = header_stops(
+            lowering,
+            "thin",
+            "made:: Thin new.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Thin class>>new", "Thin"),
+                ("Marker initializer", "Marker"),
+                ("Marker initializer", "public mark ::= 7."),
+            ]
+        );
+        assert_eq!(answer, 7);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// With the shipped filter off, a step over at the factory's stop of
+    /// a class whose levels run nothing stops after the `new`, never in
+    /// `Object`'s initializer.
+    fn a_step_from_an_empty_factory_never_stops_in_object(lowering) {
+        let (stops, answer) = header_stops_filtered(
+            lowering,
+            "empty",
+            "made:: Empty new.",
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+            false,
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Empty class>>new", "Empty"),
+                ("Headers>>empty", "made:: Empty new"),
+                ("Headers>>empty", "^4"),
+            ]
+        );
+        assert_eq!(answer, 4);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A pause asked before a host run that instantiates a class stops
+    /// the run's factory at its entry, as the pause's stop, and a step
+    /// from there stops at the first statement of the initializer it
+    /// pushes.
+    fn a_pause_before_an_instantiation_stops_in_its_factory(lowering) {
+        let (mut interpreter, class) = load(TWO_RUNS, lowering);
+        let remote = interpreter.attach_debugger();
+        remote.pause();
+        let agent = |remote: &DebugRemote| {
+            expect_paused(remote);
+            let paused = standing(remote, TWO_RUNS);
+            let kind = stack_trace(remote)[0].kind.clone();
+            step(remote, Command::StepOver);
+            let stepped = standing(remote, TWO_RUNS);
+            continue_stopped(remote);
+            (paused, kind, stepped)
+        };
+        let ((paused, kind, stepped), result, _) =
+            debugged_by(remote, agent, || interpreter.instantiate(&class, &[]));
+        expect_ok(result, "instantiate");
+        assert_eq!(
+            paused,
+            (String::from("TwoRuns class>>new"), String::from("TwoRuns"))
+        );
+        assert_eq!(kind, FrameKind::Factory);
+        assert_eq!(
+            stepped,
+            (
+                String::from("TwoRuns initializer"),
+                String::from("Object new")
+            )
+        );
+    }
+}
+
+/// Sends `point` to an instance of `HEADERS` under `lowering` often
+/// enough that its factory and initializers are compiled -- the
+/// default JIT on -- then debugs one more send, a breakpoint at the
+/// instantiation, taking each of `commands` from its stop: answers every
+/// stop they made and the run's answer.
+fn warmed_header_stops(lowering: Lowering, commands: Vec<Command>) -> (Vec<(String, String)>, i64) {
+    let (mut interpreter, instance) = instance_of(HEADERS, lowering);
+    for _ in 0..1_000 {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("point"), &[]),
+            "warm",
+        );
+    }
+    let remote = interpreter.attach_debugger();
+    let offset = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
+    set_breakpoints(&remote, "Headers", vec![offset]);
+    let agent = move |remote: &DebugRemote| {
+        expect_first_stop(remote, "Headers");
+        let mut stops = Vec::new();
+        for command in commands {
+            step(remote, command);
+            stops.push(standing(remote, HEADERS));
+        }
+        continue_stopped(remote);
+        stops
+    };
+    let (stops, result, _) = debugged_by(remote, agent, || {
+        interpreter.send(&instance, Symbol::intern("point"), &[])
+    });
+    (stops, answered(&mut interpreter, result))
+}
+
+ns_runtime::for_each_lowering! {
+    /// The factory's stop and the step from it hold for a factory and
+    /// initializers machine code has compiled: the instantiation warmed a
+    /// thousand times first.
+    fn a_step_into_a_warmed_instantiation_stops_in_the_factory(lowering) {
+        let (stops, answer) = warmed_header_stops(
+            lowering,
+            vec![Command::StepInto, Command::StepOver, Command::StepOver],
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Punkt initializer", "public x ::= ax."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The header stop of a superclass clause, and the step from it,
+    /// hold for initializers machine code has compiled.
+    fn a_step_into_a_warmed_superclass_clause_stops_at_its_header(lowering) {
+        let (stops, answer) = warmed_header_stops(lowering, vec![Command::StepInto; 4]);
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Punkt initializer", "Basis new: ax"),
+                ("Basis initializer", "new: a"),
+                ("Basis initializer", "public base ::= a."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A line breakpoint on the initializer's first statement stands
+    /// where the step from the factory's stop goes: that stop is the
+    /// breakpoint's, made once, and the program then runs to its end.
+    fn a_breakpoint_at_the_initializer_s_first_statement_takes_the_step_from_the_factory(
+        lowering
+    ) {
+        let offsets = vec![
+            line_start(HEADERS, "made:: Bare x: 3."),
+            line_start(HEADERS, "| public x ::= ax. |"),
+        ];
+        let (stops, answer) = stepped(
+            HEADERS,
+            lowering,
+            "bare",
+            |remote| set_breakpoints(remote, "Headers", offsets),
+            |remote| {
+                let states = expect_breakpoints(remote, "Headers");
+                let ids: Vec<BreakpointId> = states.iter().map(|state| state.id).collect();
+                assert_eq!(ids.len(), 2);
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                let mut stops = Vec::new();
+                step(remote, Command::StepInto);
+                stops.push(standing(remote, HEADERS));
+                remote.send(Command::StepOver);
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Continued) => {}
+                    other => panic!("the confirmation of the step was expected, not {other:?}"),
+                }
+                assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                stops.push(standing(remote, HEADERS));
+                continue_stopped(remote);
+                stops
+            },
+        );
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("Bare class>>x:", "x: ax"),
+                ("Bare initializer", "public x ::= ax."),
+            ]
+        );
+        assert_eq!(answer, 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step carried into a host run that sends a factory -- a root's
+    /// instantiation after a run the step left (decision 17) -- stops in
+    /// the factory at the run's start, and the next step stops at the
+    /// first statement of the initializer it pushes.
+    fn a_step_carried_into_an_instantiation_stops_in_its_factory(lowering) {
+        let (mut interpreter, class) = load(TWO_RUNS, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let remote = interpreter.attach_debugger();
+        let offset = line_start(TWO_RUNS, "^x");
+        set_breakpoints(&remote, "TwoRuns", vec![offset]);
+        let agent = |remote: &DebugRemote| {
+            expect_first_stop(remote, "TwoRuns");
+            let mut stops = Vec::new();
+            for command in [Command::StepOver, Command::StepOver, Command::StepOver] {
+                step(remote, command);
+                stops.push(standing(remote, TWO_RUNS));
+            }
+            continue_stopped(remote);
+            stops
+        };
+        let (stops, result, _) = debugged_by(remote, agent, || {
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("main"), &[]),
+                "main",
+            );
+            interpreter.instantiate(&class, &[])
+        });
+        expect_ok(result, "instantiate");
+        assert_eq!(
+            as_pairs(&stops),
+            [
+                ("TwoRuns class>>new", "TwoRuns"),
+                ("TwoRuns initializer", "Object new"),
+                ("TwoRuns initializer", "first ::= 1."),
+            ]
+        );
     }
 }
 
@@ -4160,9 +5289,8 @@ fn stepped_into_empty(
 
 ns_runtime::for_each_lowering! {
     /// A step into a method whose body is empty stops in it, standing in
-    /// the body, as in any method it pushes: only a factory, known by its
-    /// frame's kind, is passed over (decision 12), never a body for having
-    /// no statement start.
+    /// the body, as in any method it pushes: a body is never passed over
+    /// for having no statement start.
     fn a_step_into_an_empty_body_stops_in_it(lowering) {
         let (stood, names) = stepped_into_empty(lowering, "run", "x:: self nothing.");
         assert_eq!(
@@ -6123,7 +7251,7 @@ fn standing_in_either(remote: &DebugRemote, source: &str) -> (String, String) {
         .location
         .clone()
         .unwrap_or_else(|| panic!("{} is located", top.name));
-    let text = if location.module == "Kernel" {
+    let text = if location.module.name == "Kernel" {
         KERNEL
     } else {
         source
@@ -6456,6 +7584,84 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// Sends the step `command` to the stopped program and waits for its
+/// stop, answering whether the stop says the step went on from another
+/// frame than the one it was taken in.
+fn step_elsewhere(remote: &DebugRemote, command: Command) -> bool {
+    remote.send(command);
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Continued) => {}
+        other => panic!("the confirmation of the step was expected, not {other:?}"),
+    }
+    match remote.next_event(EVENT_TIMEOUT) {
+        Some(Event::Stopped {
+            reason: StopReason::Step,
+            elsewhere,
+            ..
+        }) => elsewhere,
+        other => panic!("a stop of the step was expected, not {other:?}"),
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step's stop says whether the step went on from another frame:
+    /// not for a step over that stops in the frame it was taken in, though
+    /// a `do:` ran a block meanwhile; so for one that lands in the block's
+    /// next activation, which the agent's step by line tells from the
+    /// activation it left by it alone.
+    fn a_step_s_stop_says_whether_it_went_on_from_another_frame(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let (elsewhere, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                set_breakpoints(remote, "Collecting", Vec::new());
+                expect_breakpoints(remote, "Collecting");
+                let into = step_elsewhere(remote, Command::StepInto);
+                let over = step_elsewhere(remote, Command::StepOver);
+                let each = top_variable(remote, "each");
+                continue_stopped(remote);
+                (into, over, each)
+            },
+        );
+        assert_eq!(elsewhere, (false, true, String::from("2")));
+        assert_eq!(answer, 18);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the loop's statement stops after the loop in the
+    /// frame it was taken in, the blocks the `do:` ran meanwhile none of
+    /// its business: its stop says it went on nowhere else.
+    fn a_step_over_a_loop_says_it_stayed_in_its_frame(lowering) {
+        let offset = line_start(COLLECTING, "{1. 2. 3} do: [:each |");
+        let (elsewhere, answer) = stepped(
+            COLLECTING,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "Collecting", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "Collecting");
+                let elsewhere = step_elsewhere(remote, Command::StepOver);
+                let stood = standing(remote, COLLECTING);
+                continue_stopped(remote);
+                (elsewhere, stood)
+            },
+        );
+        assert_eq!(
+            elsewhere,
+            (
+                false,
+                (String::from("Collecting>>run"), String::from("^total"))
+            )
+        );
+        assert_eq!(answer, 18);
+    }
+}
+
 /// A `do:` over two thousand elements, whose block notes the 1,500th:
 /// long enough for the suspend stress mode to suspend `run` below the
 /// shipped `Array>>do:` before then.
@@ -6583,7 +7789,7 @@ ns_runtime::for_each_lowering! {
                 top.location.map(|location| location.module)
             },
         );
-        assert_eq!(module.as_deref(), Some("Kernel"));
+        assert_eq!(module, Some(ModuleName::shipped("Kernel")));
         assert_eq!(answer, 18);
     }
 }
@@ -6624,7 +7830,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("Helping"),
+                        module: module_named("Helping"),
                         path: vec![String::from("Helper")],
                     }],
                 });
@@ -6714,7 +7920,7 @@ ns_runtime::for_each_lowering! {
                 remote.send(Command::SetStepFilters {
                     shipped: true,
                     classes: vec![ClassName {
-                        module: String::from("HelpingTwice"),
+                        module: module_named("HelpingTwice"),
                         path: vec![String::from("Helper")],
                     }],
                 });
@@ -6831,7 +8037,7 @@ ns_runtime::for_each_lowering! {
                     let top = stack_trace(remote).remove(0);
                     let location = top.location.expect("the stop is located");
                     stops.push((
-                        location.module,
+                        location.module.name,
                         location.statement.text(BRANCHING).to_owned(),
                     ));
                     continue_stopped(remote);
@@ -7098,7 +8304,7 @@ fn method_breakpoint(
 ) -> MethodBreakpoint {
     MethodBreakpoint {
         class: ClassName {
-            module: String::from(module),
+            module: module_named(module),
             path: path.iter().map(|name| String::from(*name)).collect(),
         },
         class_side,
@@ -7230,7 +8436,7 @@ ns_runtime::for_each_lowering! {
                 set_breakpoints(remote, "Looping", Vec::new());
                 expect_breakpoints(remote, "Looping");
                 remote.send(Command::RunToPosition {
-                    module: String::from("Looping"),
+                    module: module_named("Looping"),
                     offset: cursor,
                 });
                 match remote.next_event(EVENT_TIMEOUT) {
@@ -7241,6 +8447,7 @@ ns_runtime::for_each_lowering! {
                     Some(Event::Stopped {
                         reason: StopReason::Step,
                         returned: None,
+                        ..
                     }) => {}
                     other => panic!("the run to cursor's stop was expected, not {other:?}"),
                 }
@@ -7275,7 +8482,7 @@ ns_runtime::for_each_lowering! {
                     let event = request(
                         remote,
                         Command::RunToPosition {
-                            module: String::from(module),
+                            module: module_named(module),
                             offset: past,
                         },
                     );
@@ -8439,7 +9646,7 @@ ns_runtime::for_each_lowering! {
     /// chain, and no other: the plain `Error` runs on.
     fn an_exception_class_filter_selects_by_class_chain(lowering) {
         let special = ClassName {
-            module: String::from("Classed"),
+            module: module_named("Classed"),
             path: vec![String::from("Special")],
         };
         let ((reason, after), result) = raised(
@@ -9336,6 +10543,7 @@ fn indexes_at_stops(remote: &DebugRemote, id: BreakpointId) -> Vec<String> {
             Some(Event::Stopped {
                 reason: StopReason::Breakpoint { ids },
                 returned: None,
+                ..
             }) => {
                 assert_eq!(ids, [id]);
                 let variables = variables(remote, Command::Variables { frame: 0 });
@@ -9766,14 +10974,24 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// What `Command::ModuleText` answers for `module`.
+/// What `Command::ModuleText` answers for the module a test names
+/// `module` (`module_named`).
 fn module_text(
     remote: &DebugRemote,
     module: &str,
     known_revision: Option<u64>,
 ) -> (u64, ModuleTextAnswer) {
+    module_text_of(remote, module_named(module), known_revision)
+}
+
+/// What `Command::ModuleText` answers for `module`.
+fn module_text_of(
+    remote: &DebugRemote,
+    module: ModuleName,
+    known_revision: Option<u64>,
+) -> (u64, ModuleTextAnswer) {
     let command = Command::ModuleText {
-        module: String::from(module),
+        module: module.clone(),
         known_revision,
     };
     match request(remote, command) {
@@ -9892,7 +11110,7 @@ fn a_shipped_module_not_built_yet_answers_its_shipped_text() {
 }
 
 #[test]
-fn a_program_module_named_like_a_shipped_one_answers_its_own_text() {
+fn a_program_module_and_the_shipped_one_of_its_name_answer_their_own_texts() {
     let source = indoc! {"
         class TimeFactory = Object new (
           | count ::= 0. |
@@ -9904,8 +11122,15 @@ fn a_program_module_named_like_a_shipped_one_answers_its_own_text() {
         ) : ()
     "};
     let expected = String::from(source);
-    let (_, text) = while_stopped(source, |remote| module_text(remote, "TimeFactory", None));
-    assert_eq!(text, ModuleTextAnswer::Text(expected));
+    let ((_, own), (_, shipped)) = while_stopped(source, |remote| {
+        (
+            module_text_of(remote, ModuleName::program("TimeFactory"), None),
+            module_text_of(remote, ModuleName::shipped("TimeFactory"), None),
+        )
+    });
+    assert_eq!(own, ModuleTextAnswer::Text(expected));
+    let shipped_text = ns_runtime::shipped_module_source("TimeFactory").expect("a shipped module");
+    assert_eq!(shipped, ModuleTextAnswer::Text(String::from(shipped_text)));
 }
 
 ns_runtime::for_each_lowering! {
@@ -10048,5 +11273,170 @@ ns_runtime::for_each_lowering! {
             answered(&mut interpreter, after),
             answered(&mut fresh, without)
         );
+    }
+}
+
+/// A program whose root is named `Kernel`, like the shipped module, whose
+/// `run` walks an array with the shipped `Array>>do:`.
+const OWN_KERNEL: &str = indoc! {"
+    class Kernel = Object new (
+      | sum ::= 0. |
+    ) (
+      public run = (
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// The offset of the start of the line of the shipped `Kernel.ns` that
+/// holds `Array>>do:`'s loop body.
+fn array_do_body() -> u32 {
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the shipped kernel");
+    let size = kernel
+        .find("count = vmMirror collectionSize: self ifFail:")
+        .expect("Array>>do:");
+    let body = size
+        + kernel[size..]
+            .find("action value: (self at: index).")
+            .expect("its loop body");
+    let start = kernel[..body].rfind('\n').map_or(0, |newline| newline + 1);
+    u32::try_from(start).expect("the kernel is small")
+}
+
+ns_runtime::for_each_lowering! {
+    /// A program module named like a shipped one is another module: the
+    /// shipped `Kernel`'s breakpoints stop only in shipped code and the
+    /// program's only in the program's, each frame's location names its own
+    /// module, and each module's text is its own.
+    fn a_program_root_named_kernel_is_another_module_than_the_shipped_kernel(lowering) {
+        let shipped = ModuleName::shipped("Kernel");
+        let own = ModuleName::program("Kernel");
+        let (stops, answer) = stepped(
+            OWN_KERNEL,
+            lowering,
+            "run",
+            |remote| {
+                remote.send(Command::SetBreakpoints {
+                    module: shipped.clone(),
+                    breakpoints: vec![LineBreakpoint::at(array_do_body())],
+                });
+                remote.send(Command::SetBreakpoints {
+                    module: own.clone(),
+                    breakpoints: vec![LineBreakpoint::at(line_start(OWN_KERNEL, "^sum"))],
+                });
+            },
+            |remote| {
+                let mut stops = Vec::new();
+                loop {
+                    let ended = run_finished();
+                    match remote.next_event(Duration::from_millis(10)) {
+                        Some(Event::Breakpoints { breakpoints, .. }) => {
+                            assert!(
+                                breakpoints.iter().all(|state| state.statement.is_some()),
+                                "every breakpoint resolves"
+                            );
+                        }
+                        Some(Event::Stopped { .. }) => {
+                            let top = stack_trace(remote).remove(0);
+                            let location = top.location.expect("the stop is located");
+                            let text = match request(
+                                remote,
+                                Command::ModuleText {
+                                    module: location.module.clone(),
+                                    known_revision: None,
+                                },
+                            ) {
+                                Event::ModuleText {
+                                    text: ModuleTextAnswer::Text(text),
+                                    ..
+                                } => text,
+                                other => panic!("a module's text was expected, not {other:?}"),
+                            };
+                            // `Array>>do:`'s loop body is a block of its own
+                            // under the reference lowering, inline under the
+                            // optimized one.
+                            let name = top.name.trim_start_matches("[] in ").to_owned();
+                            stops.push((name, location.module, text == OWN_KERNEL));
+                            continue_stopped(remote);
+                        }
+                        Some(other) => panic!("only stops were expected, not {other:?}"),
+                        None if ended => return stops,
+                        None => {}
+                    }
+                }
+            },
+        );
+        let in_shipped = (String::from("Array>>do:"), shipped, false);
+        let in_own = (String::from("Kernel>>run"), own, true);
+        assert_eq!(
+            stops,
+            [in_shipped.clone(), in_shipped.clone(), in_shipped, in_own]
+        );
+        // The two warming sends summed the array before.
+        assert_eq!(answer, 18);
+    }
+}
+
+/// An `ifTrue:` sent to an object that answers it by running its
+/// argument twice: the fallback closure of the block the compiler inlines
+/// runs in two activations of one sender, at one depth.
+const FALLING_TWICE: &str = indoc! {"
+    class FallingTwice = Object new (
+      | count ::= 0. |
+    ) (
+      public run = (
+        ^self check: Twice new
+      )
+      check: condition = (
+        count:: 1.
+        condition ifTrue: [
+          count:: count + 10].
+        ^count
+      )
+      public class Twice = Object new () (
+        public ifTrue: block = (
+          block value.
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A step over at the last statement of a fallback block its receiver
+    /// runs twice stops in the block's next activation, at the same depth
+    /// and in a frame of the same name, and its stop says it went on in
+    /// another activation than the one it was taken in, which the agent's
+    /// step by line tells apart by it alone.
+    fn a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere(lowering) {
+        let offset = line_start(FALLING_TWICE, "count:: count + 10].");
+        let ((elsewhere, stood, depths), answer) = stepped(
+            FALLING_TWICE,
+            lowering,
+            "run",
+            |remote| set_breakpoints(remote, "FallingTwice", vec![offset]),
+            |remote| {
+                expect_first_stop(remote, "FallingTwice");
+                set_breakpoints(remote, "FallingTwice", Vec::new());
+                expect_breakpoints(remote, "FallingTwice");
+                let before = stack_trace(remote).len();
+                let elsewhere = step_elsewhere(remote, Command::StepOver);
+                let stood = standing(remote, FALLING_TWICE);
+                let after = stack_trace(remote).len();
+                continue_stopped(remote);
+                (elsewhere, stood, (before, after))
+            },
+        );
+        assert_eq!(
+            stood,
+            (
+                String::from("[] in FallingTwice>>check:"),
+                String::from("count:: count + 10")
+            )
+        );
+        assert_eq!(depths.0, depths.1, "the same depth");
+        assert!(elsewhere, "the stop is in another activation");
+        assert_eq!(answer, 21);
     }
 }

@@ -6,7 +6,9 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
+import com.intellij.openapi.project.ProjectManager
 import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.lsp.restartNewspeakServers
 
 class NewspeakSettingsConfigurable : BoundConfigurable(NewspeakBundle.message("settings.display.name")) {
@@ -32,9 +34,14 @@ class NewspeakSettingsConfigurable : BoundConfigurable(NewspeakBundle.message("s
         }
     }
 
-    /** Restarts the language servers for a changed analyzer path; a changed ns-next path needs nothing, since every run reads it afresh. */
+    /**
+     * Restarts the language servers for a changed analyzer path, and looks
+     * at the ns-next the settings name for each open project's core
+     * library; a run needs nothing, since every run reads the path afresh.
+     */
     override fun apply() {
         super.apply()
         restartNewspeakServers()
+        ProjectManager.getInstance().openProjects.forEach { project -> NewspeakCoreLibrary.getInstance(project).decideAndRefresh() }
     }
 }

@@ -15,15 +15,18 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The files a session's frames are shown in. The agent names a program's
- * module by its file's path while its text is the file's, and every other
- * module -- a shipped one, an image's, one an install changed -- by a
- * reference whose `source` request answers its text, stable per module for
- * the session; such a module is shown read-only, as `<Module>.ns`, in one
- * file per reference for the session, so that every frame in it opens the
- * same editor.
+ * module by its file's path while its text is the file's, a shipped one by
+ * the path of its file in the core library the session handed it at
+ * `attach` -- the binary's own sources, whose breakpoints stand there --
+ * and every other module -- a shipped one without that library, an
+ * image's, one an install changed -- by a reference whose `source` request
+ * answers its text, stable per module for the session; such a module is
+ * shown read-only, as `<Module>.ns`, in one `LightVirtualFile` per
+ * reference for the session, so that every frame in it opens the same
+ * editor.
  */
 class NewspeakSources(private val client: DapClient) {
-    private val byReference = ConcurrentHashMap<Int, LightVirtualFile>()
+    private val byReference = ConcurrentHashMap<Int, VirtualFile>()
 
     /**
      * The file [source] names, or null for none the IDE can show. Blocks
@@ -45,9 +48,10 @@ class NewspeakSources(private val client: DapClient) {
 
     /**
      * How the agent names [file]: by its reference when this session showed
-     * it so, by its path when it is a file on disk; null for any other --
-     * a module's text an earlier session showed, say -- which the agent
-     * cannot name.
+     * it so, and by its path when it is a file on disk -- a program's, or a
+     * file of the core library, which the agent takes for the shipped module
+     * only in the library it was handed; null for any other -- a module's
+     * text an earlier session showed -- which the agent cannot name.
      */
     fun sourceOf(file: VirtualFile): JsonObject? {
         val reference = byReference.entries.firstOrNull { (_, shown) -> shown == file }?.key

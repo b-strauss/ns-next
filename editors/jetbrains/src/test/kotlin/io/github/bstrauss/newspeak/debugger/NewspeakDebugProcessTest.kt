@@ -11,13 +11,16 @@ import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
-import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
@@ -31,6 +34,7 @@ import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
+import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.frame.XCompositeNode
@@ -46,6 +50,10 @@ import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.library.CoreLibraryStore
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRoots
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRootsProvider
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
@@ -54,6 +62,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
+import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
@@ -104,7 +114,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) }
             }
             NewspeakSettings.getInstance().state.runtimePath = null
-            NioFiles.deleteRecursively(directory)
+            // The store's files are read-only, which Windows refuses to delete otherwise.
+            CoreLibraryStore.deleteRecursively(directory)
         } finally {
             super.tearDown()
         }
@@ -290,7 +301,220 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertTrue(agent.commands().toString(), agent.commands().contains("terminate"))
     }
 
+    fun testTheShippedSourcesAreWrittenOnceAndReused() {
+        val store = CoreLibraryStore(directory.resolve("store"))
+        val first = store.ensure(runtime)
+        assertTrue("written the first time", first.extracted)
+        assertEquals(store.fingerprintOf(runtime), first.directory.fileName.toString())
+        for (file in SHIPPED_FILES) {
+            val path = first.directory.resolve(file)
+            assertTrue(file, Files.isRegularFile(path))
+            assertFalse("$file is read-only", Files.isWritable(path))
+        }
+        val written = Files.getLastModifiedTime(first.directory.resolve("Kernel.ns"))
+
+        val second = store.ensure(runtime)
+        assertFalse("reused the second time", second.extracted)
+        assertEquals(first.directory, second.directory)
+        assertEquals(written, Files.getLastModifiedTime(second.directory.resolve("Kernel.ns")))
+        assertEquals("no staging directory is left", listOf(first.directory), Files.list(store.root).use { stream -> stream.toList() })
+    }
+
+    /** The library under External Libraries is the settings' binary's shipped sources, in `core-library/`'s layout. */
+    fun testTheLibraryShowsTheShippedSourcesOfTheSettingsBinary() {
+        val library = libraryDirectory()
+        assertEquals(NewspeakCoreLibrary.STORE.root.resolve(CoreLibraryStore(directory).fingerprintOf(runtime)), library)
+        val provider = AdditionalLibraryRootsProvider.EP_NAME.findExtensionOrFail(NewspeakCoreLibraryRootsProvider::class.java)
+        val shown = provider.getAdditionalProjectLibraries(project).single() as NewspeakCoreLibraryRoots
+        assertEquals("Newspeak Core Library", shown.presentableText)
+        val root = shown.sourceRoots.single()
+        assertEquals(library, root.toNioPath())
+        val platform = checkNotNull(root.findChild("platform")) { "platform/ is a folder" }
+        val time = checkNotNull(platform.findChild("TimeFactory.ns"))
+        val fingerprint = checkNotNull(root.findChild(CoreLibraryStore.FINGERPRINT_FILE))
+        val index = ProjectFileIndex.getInstance(project)
+        val (source, inLibrary) = ReadAction.computeBlocking<Pair<Boolean, Boolean>, RuntimeException> {
+            index.isInLibrarySource(time) to index.isInLibrary(fingerprint)
+        }
+        assertTrue("a module is the library's source", source)
+        assertFalse("the store's own files are not shown", inLibrary)
+    }
+
+    /**
+     * A project that is no Newspeak project shows no library, though the
+     * settings name a binary; its first debug session makes it one, and
+     * shows it.
+     */
+    fun testAProjectThatIsNoNewspeakProjectShowsNoLibrary() {
+        val library = NewspeakCoreLibrary.getInstance(project)
+        library.forgetTheProjectIsNewspeak()
+        assertNull(library.refresh().get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertNull(library.directory)
+        val provider = AdditionalLibraryRootsProvider.EP_NAME.findExtensionOrFail(NewspeakCoreLibraryRootsProvider::class.java)
+        assertEquals(emptyList<Any>(), provider.getAdditionalProjectLibraries(project).toList())
+
+        assertNotNull(libraryDirectory())
+        assertEquals(1, provider.getAdditionalProjectLibraries(project).size)
+    }
+
+    /**
+     * The pruning keeps the directory an open project shows however long
+     * ago its use was recorded, and deletes one no project shows that has
+     * been unused as long.
+     */
+    fun testThePruningKeepsTheDirectoryAnOpenProjectShows() {
+        val library = libraryDirectory()
+        val unused = NewspeakCoreLibrary.STORE.root.resolve(OLDER_FINGERPRINT)
+        try {
+            Files.createDirectories(unused)
+            Files.writeString(unused.resolve(CoreLibraryStore.FINGERPRINT_FILE), "$OLDER_FINGERPRINT\n")
+            val longAgo = Instant.now().minus(Duration.ofDays(400))
+            NewspeakCoreLibrary.STORE.touch(unused, longAgo)
+            NewspeakCoreLibrary.STORE.touch(library, longAgo)
+            NewspeakCoreLibrary.pruneUnused(Instant.now())
+            assertTrue("the open project's directory is kept", Files.isDirectory(library))
+            assertFalse("the unused one is deleted", Files.exists(unused))
+        } finally {
+            NewspeakCoreLibrary.STORE.touch(library)
+            if (Files.exists(unused)) CoreLibraryStore.deleteRecursively(unused)
+        }
+    }
+
+    /**
+     * The session hands the agent the library the project shows, absolute,
+     * at `attach`; a shipped frame the agent then shows by the path of the
+     * library's file opens that file, where its breakpoints stand, with no
+     * `source` request.
+     */
+    fun testTheAttachHandsTheAgentTheLibraryWhoseFilesShippedFramesOpen() {
+        val library = libraryDirectory()
+        val kernel = library.resolve("Kernel.ns")
+        val stack = JsonParser.parseString(SHIPPED_STACK).asJsonObject
+        stack.getAsJsonArray("stackFrames")[0].asJsonObject.add(
+            "source",
+            JsonObject().apply {
+                addProperty("name", "Kernel.ns")
+                addProperty("path", kernel.toString())
+            },
+        )
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> stack
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(library.toAbsolutePath().toString(), agent.requests("attach").single().get("coreLibrary").asString)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        val position = faked.debugging.nextPause()
+        assertEquals(LocalFileSystem.getInstance().findFileByNioFile(kernel), position.file)
+        assertEquals(1, position.line)
+        assertFalse("no source is asked for", agent.commands().contains("source"))
+    }
+
+    /** `Array>>do:`'s loop body, which `WALKER`'s `do:` reaches, stops the program at a breakpoint in the library's file. */
+    fun testABreakpointInTheLibrarysKernelStopsTheProgram() {
+        val library = libraryDirectory()
+        val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
+        val body = arrayDoBody(library)
+        val program = program("Walker", WALKER)
+        toggleBreakpoint(kernel, line = body + 1)
+        val debugging = debug(program)
+
+        for (element in 1..2) {
+            val position = debugging.nextPause()
+            assertEquals("the stop at element $element", kernel, position.file)
+            assertEquals(body, position.line)
+            onEdt { debugging.session.resume() }
+        }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue(debugging.output(), debugging.output().contains("12"))
+    }
+
+    /**
+     * A breakpoint in an older fingerprint's `Kernel.ns` -- the binary
+     * rebuilt with other shipped sources since the library was shown -- is
+     * moved by the session's look at the library before the session sends
+     * it, and stops the program in the new library's file.
+     */
+    fun testASessionSendsTheBreakpointsMovedToTheBinarysLibrary() {
+        val library = libraryDirectory()
+        val older = NewspeakCoreLibrary.STORE.root.resolve(OLDER_FINGERPRINT)
+        try {
+            Files.createDirectories(older)
+            // Only the library shown is a root of the project; the older directory is the test's own.
+            VfsRootAccess.allowRootAccess(testRootDisposable, older.toString())
+            Files.copy(library.resolve("Kernel.ns"), older.resolve("Kernel.ns"))
+            Files.writeString(older.resolve(CoreLibraryStore.FINGERPRINT_FILE), "$OLDER_FINGERPRINT\n")
+            val olderKernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(older.resolve("Kernel.ns")))
+            val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
+            val body = arrayDoBody(library)
+            toggleBreakpoint(olderKernel, line = body + 1)
+            onEdt { NewspeakCoreLibrary.getInstance(project).forgetTheDirectoryShown() }
+
+            val debugging = debug(program("Walker", WALKER))
+            val position = debugging.nextPause()
+            assertEquals(kernel, position.file)
+            assertEquals(body, position.line)
+            val breakpoints = XDebuggerManager.getInstance(project).breakpointManager.allBreakpoints
+                .filterIsInstance<XLineBreakpoint<*>>()
+            assertEquals(listOf(kernel.url), breakpoints.map { breakpoint -> breakpoint.fileUrl })
+            runInEdtAndWait {
+                val manager = XDebuggerManager.getInstance(project).breakpointManager
+                WriteAction.run<Throwable> { manager.allBreakpoints.forEach(manager::removeBreakpoint) }
+            }
+            onEdt { debugging.session.resume() }
+            debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        } finally {
+            CoreLibraryStore.deleteRecursively(older)
+        }
+    }
+
+    /** The line, counted from 0, of `Array>>do:`'s loop body in [library]'s `Kernel.ns`. */
+    private fun arrayDoBody(library: Path): Int {
+        val lines = Files.readString(library.resolve("Kernel.ns")).lines()
+        val size = lines.indexOfFirst { line -> line.contains("count = vmMirror collectionSize: self ifFail:") }
+        assertTrue("Array>>do:", size >= 0)
+        return size + lines.drop(size).indexOfFirst { line -> line.trim() == "action value: (self at: index)." }
+    }
+
+    /**
+     * The library's `Manifest.ns` is no shipped module to the VM but the
+     * program's own embedded one; a breakpoint there, sent by its name
+     * too, stops the project's manifest as it answers a module.
+     */
+    fun testABreakpointInTheLibrarysManifestStopsAProject() {
+        val library = libraryDirectory()
+        val manifest = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Manifest.ns")))
+        val line = Files.readString(library.resolve("Manifest.ns")).lines()
+            .indexOfFirst { text -> text.contains("((names at: index) = message selector) ifTrue:") }
+        assertTrue("Manifest>>doesNotUnderstand:", line >= 0)
+        program("App", SHARING)
+        program("Shared", SHARED)
+        Files.writeString(directory.resolve("newspeak.json"), """{"main": "App.ns", "modules": ["Shared.ns"]}""")
+        val projectFile = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory.resolve("newspeak.json")))
+        toggleBreakpoint(manifest, line = line + 1)
+        val debugging = debug(projectFile)
+
+        val position = debugging.nextPause()
+        assertEquals(manifest, position.file)
+        assertEquals(line, position.line)
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.output().contains("hello"))
+    }
+
+    /** The project's library, written from the settings' binary if it is not yet. */
+    private fun libraryDirectory(): Path =
+        checkNotNull(NewspeakCoreLibrary.getInstance(project).refreshForDebugging().get(WAIT_SECONDS, TimeUnit.SECONDS)) { "no library" }
+
+    /** A module text other than any shipped one is shown by reference, whether or not a library is shown. */
     fun testAModuleShownByReferenceIsOneReadOnlyFileAcrossStops() {
+        libraryDirectory()
         val faked = fakeSession()
         val agent = identifiedAgent(faked) { command, _ ->
             when (command) {
@@ -797,6 +1021,50 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
               {"id":2,"name":"Program>>main:args:","line":0,"column":0}
             ],"totalFrames":2}
         """.trimIndent()
+
+        /** A fingerprint no binary has, an older library's in the tests. */
+        const val OLDER_FINGERPRINT = "ffffffffffffffff"
+
+        /** The files the store writes, each a shipped source. */
+        val SHIPPED_FILES = listOf(
+            "Kernel.ns",
+            "Manifest.ns",
+            "PlatformFactory.ns",
+            "platform/TranscriptFactory.ns",
+            "platform/TimeFactory.ns",
+            "platform/CollectionsFactory.ns",
+            "platform/TypedArraysFactory.ns",
+            "platform/MirrorsFactory.ns",
+        )
+
+        /** A root whose `do:` runs `Array>>do:` over two elements. */
+        val WALKER = """
+            class Walker = Object new () (
+              public main: platform args: arguments = (
+                {1. 2} do: [:each | platform transcript show: each printString].
+                platform transcript newLine.
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A project's root that reaches `Shared` through its manifest. */
+        val SHARING = """
+            class App packageUsing: manifest = Object new (
+              | Shared = manifest Shared. |
+            ) (
+              public main: platform args: arguments = (
+                platform transcript show: Shared new greeting; newLine.
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        val SHARED = """
+            class Shared = Object new () (
+              public greeting = (
+                ^'hello'
+              )
+            ) : ()
+        """.trimIndent() + "\n"
 
         /** A root with two locals; line 6 prints the count. */
         val STOPS = """

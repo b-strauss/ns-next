@@ -36,9 +36,9 @@ use super::Interpreter;
 pub(crate) enum SafepointOutcome {
     /// The frame the stretch left, as it left it.
     Unchanged,
-    /// The suspend stress mode rebuilt the activation stack above the
-    /// run's floor: the running activation is a different stack frame,
-    /// whose state the loop reads again.
+    /// The debugger or the suspend stress mode rebuilt the activation
+    /// stack above the run's floor: the running activation is a different
+    /// stack frame, whose state the loop reads again.
     Rebuilt,
     /// The debugger terminated the run, which the loop ends through the
     /// unwinder from the top activation (`debugger::termination`).
@@ -94,17 +94,19 @@ impl Interpreter {
     /// and delete it, and the flag's load and branch with it, and the
     /// release binary that is measured would carry no poll at all.
     ///
-    /// Answers `SafepointOutcome::Rebuilt` when the suspend stress mode
-    /// rebuilt the activation stack above `floor`, the floor of the run
-    /// `vm::run` is in: every activation there suspended into its frame
-    /// and the top one resumed, so that the running activation is a
-    /// different stack frame and the loop must read its state again --
-    /// never in a release build -- and `SafepointOutcome::Terminate` when
-    /// the debugger terminated the run.
+    /// Answers `SafepointOutcome::Rebuilt` when the running activation is
+    /// a different stack frame and the loop must read its state again: the
+    /// debugger undid an initializer's push to stop a step in its factory
+    /// (`debugger::Served::Rebuilt`), or the suspend stress mode rebuilt
+    /// the activation stack above `floor`, the floor of the run `vm::run`
+    /// is in, every activation there suspended into its frame and the top
+    /// one resumed -- never in a release build -- and
+    /// `SafepointOutcome::Terminate` when the debugger terminated the run.
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
-        if self.serve_debugger(floor) == crate::debugger::Served::Terminate {
+        let served = self.serve_debugger(floor);
+        if served == crate::debugger::Served::Terminate {
             return SafepointOutcome::Terminate;
         }
         #[cfg(not(debug_assertions))]
@@ -144,15 +146,17 @@ impl Interpreter {
                 stressed = true;
             }
         }
-        // Only the debug build's suspend stress mode rebuilds the stack.
+        // The debugger rebuilds the stack when a step stops in a factory
+        // by undoing its initializer's push, and so does the debug build's
+        // suspend stress mode.
         #[cfg_attr(
             not(debug_assertions),
             allow(
                 unused_mut,
-                reason = "only the debug build's suspend stress mode rebuilds the stack"
+                reason = "after the debugger, only the debug build's suspend stress mode rebuilds the stack"
             )
         )]
-        let mut rebuilt = false;
+        let mut rebuilt = served == crate::debugger::Served::Rebuilt;
         // Under the invalidate stress mode, once optimized code spent its
         // countdown, the copies installed at earlier safepoints are freed,
         // but a backing-off body's, before this one installs the next
@@ -226,7 +230,7 @@ impl Interpreter {
                     // baseline code, its blocks made while every frame is
                     // where the exit left it: no frame is after this.
                     self.enter(crate::jit::deoptimize_stopped_at_poll);
-                    rebuilt = self.enter(|mutator| {
+                    rebuilt |= self.enter(|mutator| {
                         let running = mutator.heap.top_activation();
                         // A step follows the frames it names to where
                         // they are resumed.
@@ -298,7 +302,9 @@ impl Interpreter {
 }
 
 impl From<bool> for SafepointOutcome {
-    /// Whether the suspend stress mode rebuilt the stack.
+    /// Whether the stack was rebuilt -- by the debugger's undoing of an
+    /// initializer's push to stop in its factory, or by the suspend
+    /// stress mode.
     fn from(rebuilt: bool) -> SafepointOutcome {
         if rebuilt {
             SafepointOutcome::Rebuilt

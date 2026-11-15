@@ -9,9 +9,10 @@
 
 use ns_syntax::{ast, Span};
 
-use super::again::compile_unloaded_level;
+use super::again::{compile_unloaded_level, shipped_resolution};
 use crate::compiler::Lowering;
 use crate::debugger::breakpoints::breakable;
+use crate::interpreter::instantiate::ModuleSource;
 use crate::interpreter::Interpreter;
 use crate::types::ResolvedModule;
 
@@ -47,6 +48,34 @@ impl Interpreter {
     /// remains in the interpreter, so that a language server may ask for
     /// every version of a document it holds.
     pub fn breakable_statements(&mut self, resolved: &ResolvedModule) -> Vec<BreakableStatement> {
+        // As `load_module` compiles a module (`compile_root_mixin`).
+        let source = if resolved.kernel {
+            ModuleSource::CoreLibrary
+        } else {
+            ModuleSource::User
+        };
+        self.breakable_statements_as(resolved, source)
+    }
+
+    /// `breakable_statements` of the shipped module `name` -- its root
+    /// class's name, as `shipped_module_named_by_text` answers it -- as
+    /// the binary compiles it: from its own text and its boot's
+    /// resolution, the one whose mirror sends the running bodies make,
+    /// as the debugger compiles a shipped level again
+    /// (`metadata::again::shipped_resolution`), so that the answer is
+    /// where a breakpoint set in the shipped module lands. `None` for a
+    /// name no shipped module has. The module is not built: a lazy one
+    /// stays unbuilt until a program asks for it.
+    pub fn shipped_breakable_statements(&mut self, name: &str) -> Option<Vec<BreakableStatement>> {
+        let (resolved, source, _) = shipped_resolution(name)?;
+        Some(self.breakable_statements_as(&resolved, source))
+    }
+
+    fn breakable_statements_as(
+        &mut self,
+        resolved: &ResolvedModule,
+        source: ModuleSource,
+    ) -> Vec<BreakableStatement> {
         let mut spans: Vec<Span> = self.enter(|mutator| {
             // The lowering every program runs under. The reference
             // lowering compiles some statements to an instruction the
@@ -59,7 +88,8 @@ impl Interpreter {
             let lowering = Lowering::Optimized;
             let mut spans = Vec::new();
             for declaration in declarations(&resolved.module.root_class) {
-                let bodies = compile_unloaded_level(mutator, resolved, declaration, lowering);
+                let bodies =
+                    compile_unloaded_level(mutator, resolved, declaration, source, lowering);
                 spans.extend(breakable(&bodies).map(|(_, span, _)| span));
             }
             spans

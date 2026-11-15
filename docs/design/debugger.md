@@ -39,12 +39,17 @@
 > pops, or whose frame returns otherwise than to its caller's send, goes
 > on as a step into from the frame the program goes on in, the next host
 > run's first statement when the frame returns to the host (decision 17);
-> no step stops in a factory's frame, which every step passes over, and
-> every initializer's statements are stepped in the order they run
-> (decision 12); and no step lands in a frame the step filters filter, by
-> default the shipped modules' -- a stop it would make there goes on as a
-> step into from the first unfiltered frame below, and a step into's
-> request outlasts the pushes of filtered bodies (decision 16); run to
+> a step into an instantiation stops in the factory's frame, at the
+> class header's factory pattern, a step over or into there goes on to
+> the first statement of the initializer it pushes, a step into a
+> superclass clause or a `<:` clause's message stops at the entry of the
+> initializer it enters, at that class's header, `Object`'s never, every
+> initializer's statements are stepped in the order they run, and a step
+> on its way out passes over the factory to its caller (decision 12); and
+> no step lands in a frame the step filters filter, by default the shipped
+> modules' -- a stop it would make there goes on as a step into from the
+> first unfiltered frame below, and a step into's request outlasts the
+> pushes of filtered bodies (decision 16); run to
 > cursor stops at a position resolved as a line breakpoint is, in any
 > activation, once (decision 3); and a method breakpoint stops at its
 > method's entry and before each of its returns, and reports an exit an
@@ -505,7 +510,7 @@ The commands (`debugger::Command`):
   raised, so that an agent asks again only whether it changed. Served
   only at a stop, where the agent reads positions in it.
 
-The events (`debugger::Event`): `Stopped { reason, returned }`, the
+The events (`debugger::Event`): `Stopped { reason, returned, elsewhere }`, the
 program stopped and serves commands until a `Continue` or a `Terminate` --
 `StopReason::Pause`, `StopReason::Breakpoint { ids }`, the breakpoints
 standing at the statement it stopped at, `StopReason::Step`, a step's or
@@ -517,7 +522,10 @@ exception breakpoint's, `exits` the method breakpoints whose exit by an
 unwind it reports ("Exceptions", "Method breakpoints"); `returned`, at a
 step's stop, the value the stepping frame's last call answered, described
 as the stop's first value, and `None` at every other stop ("The return
-value of the last call"); `StackTrace`; `Variables`, the answer to both
+value of the last call"); `elsewhere`, at a step's stop, whether the
+step went on as a step into from where the program went on rather than
+from the frame it was taken in, so that it stands in another activation
+(decision 4), and `false` at every other stop; `StackTrace`; `Variables`, the answer to both
 `Variables` and `Children`; `Refused { command, reason }`, the command
 `Command::name` names not served; `Continued`; and `Breakpoints { module,
 breakpoints }`, the module's line breakpoints in the order of their
@@ -722,6 +730,9 @@ serves the pause bit; the bit stays set meanwhile, so that a body without
 metadata, which floods nothing, stops at the first safepoint as before,
 and the stop is made whatever the step filters say, as a pause's is
 (`a_pause_between_runs_stops_the_sent_method_at_its_first_statement`).
+A factory the host sends, which has no statement start, is stopped at
+its entry by a one-shot at its first instruction (decision 12;
+`a_pause_before_an_instantiation_stops_in_its_factory`).
 A step is no command either: one a run's end left in progress -- its
 frame returned to the host, or was popped there, without a stop -- goes
 on in the next run (decision 17). The run's end ends it, its frames gone,
@@ -807,7 +818,7 @@ the stack is the interpreter's word for word before the agent reads it
 of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
-The stop then sends `Stopped { reason, returned }` -- a pause's, a
+The stop then sends `Stopped { reason, returned, elsewhere }` -- a pause's, a
 breakpoint's with the ids standing at its slot, an exception
 breakpoint's ("Exceptions"), or a step's with the
 value of the last call, the first value of the stop's table ("Values the
@@ -921,8 +932,9 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
   (`FrameLocation`): the name of its module's root class, the innermost
   statement whose instructions hold its program counter -- an inlined
   block's statement inside its loop or conditional, the body's `source`
-  for the return it ends with -- or a factory's class header pattern
-  (decision 12), and for a frame below the top the receiver and selector
+  for the return it ends with -- or a factory's class header pattern,
+  and an initializer's at its header stop (decision 12), and for a frame
+  below the top the receiver and selector
   spans of the send it waits on; every span in the module's current text
   (decision 11). `None` without metadata (decision 5): a module without
   text, an image's without its source among them, or a body its text no
@@ -1030,7 +1042,8 @@ name, the lexical depth in frame scopes, and the place, a `VariablePlace`
 the vector held in a register of the frame or of one `hops` out), the
 body's own first, parameters before temporaries, then each enclosing
 scope's outward, and, for a factory, the header's factory pattern
-(`factory_pattern`). Every span is in the module's current text (decision
+(`factory_pattern`), for an initializer body the same, where its header
+stop stands (`header_pattern`). Every span is in the module's current text (decision
 11).
 
 - **Both lowerers collect.** The reference lowering is an independent
@@ -1108,6 +1121,11 @@ scope's outward, and, for a factory, the header's factory pattern
   name for a header that writes none. Any body that compiles alike with
   `compiler::factory_body` of the header's arity takes it, a factory body
   no mixin holds -- a host's `instantiate` builds its own -- included.
+  Each initializer body of the level, not its blocks, takes the same
+  place as its `header_pattern`, where its header stop stands; the
+  metadata's check (`metadata/check.rs`, decision 14) holds every
+  initializer body to having one within the text and every other body
+  to having none.
 - **Which lowering.** The cache compiles a level under the interpreter's
   lowering first, then under the other one only when the first left a
   body of the level unpaired, and keeps every pairing either found,
@@ -1611,8 +1629,37 @@ tests do not.
   initializer's last statement left past the factory, after the `new`
   in a run and in the next run's first statement after the root's
   instantiation; and a block a slot initializer runs left with the
-  factory's send. The agent's own test steps in from a loop's
-  line to its body and out to the line after the loop
+  factory's send. Of the factory (decision 12): a step into an
+  instantiation stopping in the factory at its header's pattern, its
+  parameters shown; a step over and a step into there stopping at the
+  superclass clause, at the first slot initializer of a class that
+  writes no clause, and after the `new` for an initializer with no
+  statement; a step out there stopping after the `new`; a body-less
+  declaration's factory; and a step carried into an instantiation's run
+  stopping in its factory, as does a pause asked before it; the stop and
+  the step from it after a thousand warming instantiations; a line
+  breakpoint on the initializer's first statement taking the step from
+  the factory's stop, once; and, through the agent, a stripped image's
+  factory stopped in as a frame without a line. Of the header stops
+  (decision 12): a step into a superclass clause stopping at the
+  superclass's header, its factory's parameters shown; a chain of three
+  levels stepped into header by header and back, never into `Object`,
+  with the shipped filter on and off, and a step over at the lowest
+  header; a step over a clause and a step out of a header stop; a step
+  over and out from a superclass's last statement taking no header stop;
+  an explicit `Object new` clause; a shipped superclass's header, only
+  with the filter off, and stepped in once a filter switched on at it
+  filters it, the shipped one or a class filter; a breakpoint at a first
+  statement at the entry after the header stop, by a continue and by a
+  step; a factory whose level runs nothing stopping at its
+  superclass's header; `Object` never stopped in from an empty class's
+  factory with the filter off; each `<:` clause's level at its mixin's
+  header; a clause whose argument sends; the warmed header stop; and,
+  through the agent, a stripped image's superclass header stopped at as
+  a frame without a line. The agent's own tests step in from a loop's
+  line to its body and out to the line after the loop, and reach the
+  factory's stop and the header stops as frames at the header pattern,
+  their parameters shown
   (`crates/ns-cli/tests/debug_adapter.rs`).
   Of the step filters (decision 16): a step into a `do:` over an array
   landing in its block; a step over at the block's last statement
@@ -1755,8 +1802,11 @@ tests do not.
   without lines; breakpoints set before `configurationDone`, in a
   shipped module, while running, as a block variant, with a pass count
   and on a comment line; a stop naming a replaced breakpoint; steps by
-  line and by statement, in and out, a line step over a one-line loop
-  and one a breakpoint ends mid-line; run to cursor; a function
+  line and by statement, in and out, a line step over a one-line loop,
+  one at a one-line block's statement and one at a one-line fallback
+  block's stopping in its next activation, and one a breakpoint ends
+  mid-line; a continue and a terminate at a
+  factory's stop; run to cursor; a function
   breakpoint; an uncaught exception's description; `pause` of a running
   loop and right after a `continue`; a stack trace while running
   refused; and a pending breakpoint reported once its module is built.
@@ -2151,18 +2201,49 @@ The metadata of a body lists:
   was taken by is an inlined form (decision 17).
 
 The agent steps by line for IntelliJ, over statement starts until the line
-or the frame changes, as the JDWP agent steps by its line table
+or the activation changes, as the JDWP agent steps by its line table
 (`stepControl_handleStep`,
 `jdk/src/jdk.jdwp.agent/share/native/libjdwp/stepControl.c:523-697`, the
 line comparison at `:640-669`, `findLineNumber` at `:130`): a `next` or
 `stepIn` by line -- DAP's default `granularity` -- sends the VM's
 `StepOver` or `StepInto` and, while the stop it makes is a step's in the
-frame the step began in -- the same stack depth and frame name -- on the
-line it began on, sends it again, reporting only the stop that leaves the
-line or the frame; a stop for any other reason -- a breakpoint, an
-exception, a pause -- ends the step at once and is reported as it is
+activation the step began in -- the same stack depth and frame name, the
+VM's step never having gone on from another frame -- on the line it began
+on, sends it again, reporting only the stop that leaves the line or the
+activation; a stop for any other reason -- a breakpoint, an exception, a
+pause -- ends the step at once and is reported as it is
 (`next_by_line_steps_over_a_whole_line`). A frame without a location ends
-it too, since no line can be compared. Each repetition reads the stop's
+it too, since no line can be compared. Depth and name cannot tell a
+block's next activation from the one the step left: a `next` at the
+statement of a one-line block a `do:` runs stands, after the VM's step
+over, in the next activation at the same depth, in a frame of the same
+name, on the same line, where decision 16 stops it. So the step's stop
+says whether the VM's step went on as a step into from where the program
+went on rather than from the frame it was taken in -- after that frame,
+or its caller, returned or unwound, past a filtered frame, at a handler,
+or into the next run (`Event::Stopped`'s `elsewhere`,
+`stepping::continue_as_step_into`) -- or whether the activation it was
+taken in left while the step stepped in another frame: a step taken in
+the top frame itself -- not at an exception's stop, which steps from the
+frame it shows below the machinery, nor for a step out that leaves the
+send that took a block -- that is the fallback closure of a block its
+creator's inlined form took steps in the creator, and a receiver that runs the block again makes a new
+activation at the same offset, at the same depth, in a frame of the same
+name, which only the first's return tells apart, noted by a one-shot that
+never stops where its caller goes on (`OneShot::leaves`,
+`stepping::note_origin`) and by `popped` for an unwind. A stop that went
+on elsewhere is another place, whatever its depth, name and line
+(`a_line_step_over_at_a_one_line_block_stops_in_its_next_activation`,
+`a_line_step_over_at_a_fallback_block_stops_in_its_next_activation`,
+`a_step_s_stop_says_whether_it_went_on_from_another_frame`,
+`a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere`).
+The agent places a stop by the first frame it shows, below an
+exception's hidden machinery, the frame the VM steps from
+(`a_line_step_from_a_halt_stop_leaves_the_line`). Statements
+on one line of one activation are still stepped over as one line, and so
+is a one-line loop whose block a step over passes, since the step goes
+on in the frame it was taken in (`a_line_step_over_a_one_line_loop_ends`,
+`a_step_over_a_loop_says_it_stayed_in_its_frame`). Each repetition reads the stop's
 frames and the top frame's module's text from the VM, the text by
 revision, so that a step over a line of several statements costs a round
 trip per statement and never a stop the client sees. A client may ask for
@@ -2388,33 +2469,147 @@ and has no source, yet stands on every stack between the sender of `C
 x: a` and `C`'s initializer. Its frame takes its metadata from the class
 header: its arguments are named as the factory's parameters in the
 header, it stands at the header's factory message pattern, and it has no
-statement start. No step stops in it: a step passes over it as over a
-frame the step filters filter (decision 16), whatever the filters say:
-a stop the step would make in it -- the return point an initializer's
-return, or a step out of one, reaches -- goes on as a step into from the
-factory itself (`stepping::went_on_past_filtered`), and a step into's
-request goes on through it to the initializer it pushes
-(`stepping::passes_over`, `held_step`, `sent_by_step`). The factory is
-known by its frame's kind (`stack::is_factory`, the stack trace's
-`FrameKind::Factory`), not by its having no statement start: an empty
-body (`nothing = ()`) has none either and a step into stops in it, at
-the body, as in any method it pushes
-(`a_step_into_an_empty_body_stops_in_it`); and a factory of an image
-without source, which has no metadata, is passed over too
-(`a_step_into_passes_over_a_stripped_image_s_factory`). So every
-initializer's statements are stepped, in the order the program runs
-them -- a `<:` clause's check, the superclass clause, the superclass's
-initializer, each `<:` clause's message and its level's initializer,
-the slot initializers and the body's statements -- a step over or out at
-a level's last statement stops at the next level's first, and from the
-last level's the step stops at the factory's return point in its
-caller, after the `new`, or, for a factory the host sent, at the next
-host run's first statement (decision 17;
+statement start. A step into at the instantiation stops in it, at its
+entry, as in any body it pushes, though it has none: its place is the
+pattern, its variables the factory's parameters as the sender passed
+them (decided with the user on 2026-11-15, the Java constructor
+pattern). A factory a frame sends runs its first two instructions as
+part of the send, the instance allocated and the initializer pushed,
+with no safepoint between (`Mutator::enter_factory_body`), so the held
+request meets the initializer's push first: the debugger undoes that
+push -- the initializer has run nothing, and the factory's
+`InitializeInstance` decides and pushes it again once the program goes
+on -- and stops in the factory, at its `InitializeInstance`, the run
+loop reading the frame on top again (`stepping::rewound_into_factory`,
+`HeldStep::StopInFactory`, `Served::Rebuilt`). Whatever goes on from
+that stop -- a step, a `Continue` with no step in progress, a
+`Terminate` -- goes on from the frame read again: a `Continue` runs the
+initializer pushed again once, a breakpoint at its first statement hit
+once and its hit count counted once, and a `Terminate` ends the run
+there
+(`a_continue_at_the_rewound_factory_stop_runs_the_initializer_once`,
+`a_hit_count_at_the_initializer_s_first_statement_counts_the_rewind_once`,
+`a_terminate_at_the_rewound_factory_stop_ends_the_run`; through the agent
+`a_continue_at_the_factory_stop_runs_the_program_to_its_end` and
+`a_terminate_at_the_factory_stop_ends_the_program`); a factory the host sends,
+the first activation of an instantiation's run, which a step the run
+before left goes on from (decision 17) or a pause asked before the run
+stops, stops at its first instruction through a one-shot
+(`stepping::stop_at_factory_entry`). Neither puts a
+test on the instantiation's path: the one is decided at the held step's
+safepoint, the other by a patch. A step over or into at that stop goes
+on, as a step into, to the initializer the factory pushes, and stops at
+its first statement -- the superclass clause when one is written, else
+the first `<:` clause's check or slot initializer: the clause that
+stands for `Object new` where a declaration writes none (§6.1), which
+the metadata places at the class's name, is none a step stops at
+(`stepping::first_stop`), and an initializer with no other statement
+lets the step stop after the `new`, where the factory returns; a step
+out stops after the `new` at once. On the way out the factory is passed
+over as a frame the step filters filter is (decision 16), whatever the
+filters say: a stop the step would make in it past its entry -- the
+return point an initializer's return, or a step out of one, reaches --
+goes on as a step into from the factory itself
+(`stepping::went_on_past_filtered`), which stops at the factory's
+return point in its caller. The factory is known by its frame's kind
+(`stack::is_factory`, the stack trace's `FrameKind::Factory`), with or
+without metadata: a factory of an image without source is stopped in
+as a frame without a line, and the next step goes on
+(`a_step_into_stops_in_a_stripped_image_s_factory`).
+
+Every other level has a stop of its own at its header, the same
+pattern's place one level up (decided with the user on 2026-11-15): a
+step into whose push is an initializer entered for another level than
+its sender's own -- by a superclass clause's `InitializeSuperclass`, by a
+`<:` clause's message's `InitializeAppliedLevel`, or by a factory whose
+own levels run nothing, which pushes the first initializer above them
+that does (`instantiate::enter_or_pass`) -- stops in it at its entry,
+before its first statement, placed at its declaration's factory pattern
+or name (`stepping::enters_at_header`, `HeldStep::StopAtHeader`), its
+variables the factory's parameters as the clause passed them. An
+initializer its own class's factory pushes has none: the factory's stop
+is that level's. A clause whose arguments send enters what they send
+first, as any statement does; only the clause's own initialization of
+the level takes the header stop. A step over or into at a header stop
+goes on to that initializer's first statement, as the push would have
+stopped it (`stepping::begin_at_header`, `first_stop`), the frame not
+let past its entry, since its first statement may start there, and a
+step out goes back to the sender after its clause; a step over at the
+clause runs the whole chain above it. The stop is told from a stop at
+the same index -- a breakpoint at a first statement that starts at
+index 0 -- by the stop itself, which places its frame at the header
+(`Standing::at_header` in `debugger/mod.rs`, the metadata's
+`header_pattern`), not by the frame, and it lets nothing past, so a
+breakpoint at the slot the frame fetches next is the next stop's: a
+`Continue` from the header stop stops there once, and a step over or
+into from it makes one stop there, reported as the breakpoint's, as the
+step from a factory's stop to a breakpoint at the initializer's first
+statement is
+(`a_breakpoint_at_a_first_statement_at_the_entry_follows_the_header_stop`).
+The step from a header stop is begun in the initializer, though it
+steps from its sender: a filter switched on at the stop that filters the
+initializer -- a shipped superclass's with the shipped filter off, a
+class filter naming it -- leaves the step stepping in it, as in any
+frame a step is begun in (decision 16; `Stepping::begun_in`,
+`a_step_from_a_header_stop_steps_in_its_frame_once_it_is_filtered`). The
+step names the initializer so only while the one-shot at its first
+statement waits, which it reaches before it can return: a return to its
+caller's send is reported to no step, so a name kept past it would name
+the next activation at its offset. An initializer that runs nothing a
+step stops at leaves the step to its sender, begun in no filtered frame
+(`a_step_from_an_empty_header_stop_never_stops_in_a_filtered_call`). An
+initializer without metadata, an image's without source, is stopped at
+its header as a frame without a line, and a step goes on from it as
+from any push without metadata
+(`a_step_into_stops_at_a_stripped_image_s_superclass_header`).
+`Object`'s initializer and `Top`'s never stop, whatever the step
+filters say, decided by the level they initialize, not by its being
+shipped: they keep the held request as a filtered frame does, and a
+stop in them goes on as one in a filtered frame
+(`stepping::passed_by_every_step`), so the header stops of a chain end
+at the last class that inherits from `Object` directly and an explicit
+`Object new` clause steps to the next statement. The rule is a guard no
+program reaches today: `Object`'s and `Top`'s levels need no
+initializer code and take no arguments, so the instantiation passes
+them without pushing their initializers (`instantiate::enter_or_pass`),
+and no step meets one; it keeps the decision should either level come
+to run code. A shipped superclass
+other than `Object` is filtered as any shipped code: its header stop
+comes only with the shipped filter off. Nothing of it is on the
+instantiation's path: the decision is the held step's, at the safepoint
+the push takes while a step into holds its request.
+
+So every initializer's statements are stepped, in the order the program
+runs them -- a `<:` clause's check, the superclass clause, the
+superclass's header and initializer, each `<:` clause's message and its
+level's header and initializer, the slot initializers and the body's
+statements -- a step over or out at a level's last statement stops at
+the next level's first after the clause that entered it, with no header
+stop on the way down, and from the last level's the step stops at the
+factory's return point in its caller, after the `new`, or, for a
+factory the host sent, at the next host run's first statement (decision
+17;
+`a_step_into_an_instantiation_stops_in_the_factory`,
+`a_step_from_the_factory_stops_at_the_superclass_clause`,
+`a_step_from_the_factory_without_a_clause_stops_at_the_first_slot`,
+`a_step_from_the_factory_of_an_empty_initializer_stops_after_the_new`,
+`a_step_out_of_the_factory_stops_after_the_new`,
+`a_step_from_a_body_less_declaration_s_factory_stops_in_its_initializer`,
+`a_step_carried_into_an_instantiation_stops_in_its_factory`,
 `a_step_over_goes_through_an_initializer_and_past_the_factory`,
 `a_step_over_from_a_superclass_s_initializer_stops_in_the_next_level_s`,
 `a_step_out_of_an_initializer_stops_in_the_next_level_s_then_after_the_new`,
 `a_step_into_goes_through_a_mixin_application_s_initializers_in_order`,
-`a_step_into_enters_a_method_a_superclass_clause_sends`). Its body is
+`a_step_into_enters_a_method_a_superclass_clause_sends`,
+`a_step_into_a_superclass_clause_stops_at_the_superclass_s_header`,
+`a_step_into_goes_through_every_header_of_a_superclass_chain`,
+`a_step_over_at_the_lowest_header_stops_at_its_first_statement`,
+`a_step_over_a_clause_and_out_of_a_header_stop_in_the_subclass`,
+`a_step_from_a_superclass_s_last_statement_takes_no_header_stop`,
+`a_step_into_an_explicit_object_clause_stops_at_the_next_statement`,
+`a_shipped_superclass_s_header_stop_comes_with_the_filter_off`,
+`a_step_from_a_factory_into_a_superclass_s_initializer_stops_at_its_header`,
+`a_step_from_an_empty_factory_never_stops_in_object`). A factory's body is
 equal by construction, `factory_body` of the same arity. Primordial
 Soup's `computeDebugInfo:` takes a factory's from the class header the
 same way (`primordialsoup/newspeak/Mirrors.ns:2756-2761`). Showing it without
@@ -2422,7 +2617,13 @@ names or position is rejected, since it would be the one frame of an
 ordinary program without a place; hiding it contradicts the
 specification's "accurate and complete stack traces" (§3.6,
 `newspeak-spec.pdf` p. 17) and would need rules of its own for step out,
-restart and force return.
+restart and force return. Passing over the factory at its push is
+rejected with the user: the factory is where the
+sender's arguments become the class's parameters, which the stop shows.
+Making `enter_factory_body` leave the factory to the run loop while a
+step holds its request, so that its push meets the safepoint, is
+rejected: it puts a test of the request word on every instantiation, a
+branch a program run without a debugger takes.
 
 ### 13. A frame shows named variables only
 
@@ -3265,8 +3466,16 @@ statement start: at once when its frame stands there, at index 0, and
 through a one-shot for the pushed frame at index 1 for a body -- a
 method's or a block's -- whose first instruction makes its indirection
 vector (`MakeVector`, emitted before the local initializers and outside
-every statement's range, `compiler/lower.rs`). A send answered by a
-primitive or a leaf pushes nothing, and the next one-shot stops.
+every statement's range, `compiler/lower.rs`), or, for an initializer
+of a declaration that writes no superclass clause, at the first
+statement start after the clause that stands for `Object new`, the
+step stopping where its frame goes on when there is none
+(`stepping::first_stop`). A factory's push stops in the factory, and
+the push of an initializer a clause entered stops at its entry, at its
+header, the step from there going on to its first statement;
+`Object`'s and `Top`'s initializers keep the request (decision 12). A send
+answered by a primitive or a leaf pushes nothing, and the next one-shot
+stops.
 
 ### Writing a frame
 
@@ -3808,10 +4017,53 @@ and keeps by revision, so that a later stop asks only whether it changed
 -- a shipped module's text is the binary's own
 (`ns_runtime::shipped_module_source`), never asked; a frame without a
 location shows no source and line 0. A program module whose current text
-is its file's as loaded is shown by the file's path, every other module --
-a shipped one, an image's, one an install changed -- by a
-`sourceReference`, stable per module for the session, whose `source`
-request answers the text. `scopes` gives a frame's `Locals` and, at a
+is its file's as loaded is shown by the file's path, a shipped module by
+the path of its file in the core library the client handed over at
+`attach`, and every other module -- a shipped one without that library,
+an image's, one an install changed -- by a `sourceReference`, stable per
+module for the session, whose `source` request answers the text.
+
+**The agent's sources.** A shipped module is a module of its own,
+whatever the program's names: a program may declare a module of a
+shipped module's name -- a `Kernel` of its own -- which is another
+module, and the debugging API names every module by its root's name and
+whether it is shipped (`ModuleName`: `FrameLocation::module`,
+`SetBreakpoints`, `RunToPosition`, `ModuleText`, `Event::Breakpoints`,
+`ClassName`), the VM resolving a breakpoint, a module's text, a method
+breakpoint, an exception filter and a step filter in that module's roots
+only (`ModuleName::names`, `breakpoints::module_roots`). The agent names
+a shipped module by its file's absolute path, never by a name or a marker
+(decided with the user on 2026-11-15): a client hands over the directory
+of shipped sources it shows as `attach`'s `coreLibrary`, absolute, which
+the agent takes only when the directory's `fingerprint` file is its own
+`shipped_sources_fingerprint()` -- else it says so in an `output` event
+and shows its shipped modules by reference -- and then maps
+`<directory>/<path>`, each path `shipped_source_files` records, to the
+shipped module, both ways, paths compared as a program file's are: a
+`setBreakpoints` source of that path names the shipped module only, and a
+shipped frame's `source` carries that path and no `sourceReference`. The
+library's `Manifest.ns` names the program's embedded manifest, a program
+module. A program module is named by its own file's path; a name,
+`<Module>.ns`, names only a program module that has no file -- an
+image's, the embedded manifest -- or one a stop showed by reference that
+is not shipped, never a shipped module, so that a program module named
+`Kernel` never takes the library's breakpoints and a shipped frame never
+shows the program's text
+(`a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints`,
+`a_shipped_module_is_never_named_by_its_name`,
+`a_core_library_of_another_fingerprint_is_ignored`,
+`a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
+A class name a client types -- a function breakpoint's, an exception
+filter's condition, a step filter -- names every module of its `Module`
+segment's name, the program's and the shipped one where both exist
+(`Sources::modules_of_class_name`), so that `Kernel.Error` reaches the
+shipped `Error` beside a program module `Kernel`, with no syntax of its
+own: a filter sends the VM a `ClassName` for each, and a function
+breakpoint one method breakpoint for each behind its one DAP id, verified
+while any of them is
+(`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
+`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
+`a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name`). `scopes` gives a frame's `Locals` and, at a
 step's stop, the top frame's `Return value`; `variables` pages a frame's
 variables and a value's children, as indexed ones where the VM says so
 (`ValueDescription::indexed`, by the object's shape); every
@@ -3824,8 +4076,9 @@ start of its line or, with a `column`, at that place of it, a block
 variant, in UTF-16 columns of the module's text as the agent knows it -- a
 program module's file as loaded until a stop read a newer current text, a
 shipped module's own, before any stop showed it too -- the module named by
-a source's path, its name `<Module>.ns` or its reference, and a source
-naming none answered unverified, "not a module of this program". A path
+a source's path, its reference, or, for a program module without a file,
+its name `<Module>.ns` ("The agent's sources"), and a source naming none
+answered unverified, "not a module of this program". A path
 names a module's file when both resolve to one canonical path, every `..`
 and symbolic link resolved, since the two are spelled independently: a
 project file names `../shared/Tree.ns` as written, a program may be
@@ -4045,7 +4298,10 @@ Debug on a Newspeak run configuration that runs a program
 ("Launching, the start and the end"), through
 `NewspeakDebuggeeProcessHandler`, a `KillableProcessHandler`. The debug
 process (`NewspeakDebugProcess.kt`) takes the connection within 30 s,
-initializes and attaches, and checks that the `process` event's
+waits, at most 60 s, for the look at the project's core library the
+session started with -- which moves the line breakpoints to a rebuilt
+binary's library before any is sent ([editor-support.md](editor-support.md),
+"The core library") -- initializes and attaches, and checks that the `process` event's
 `systemProcessId` is the PID of the process it started and its
 `nsNextSecret` the secret the runner made for that process -- 128 bits of
 `SecureRandom`, handed to it in `NS_NEXT_DEBUG_SECRET`, in its environment
@@ -4086,10 +4342,16 @@ balloon (`XDebugSession.reportMessage`, a warning), which the platform
 shows whichever of the session's tabs is in front, where the console holds
 the program's own streams and would mix the message into them
 (`testAnExceptionStopSaysWhichException`). A `NewspeakStackFrame` is
-placed through `NewspeakSources`: a program module's file by its path, any
-other module -- a shipped one, an image's, one an install changed -- as a
-read-only `LightVirtualFile` named `<Module>.ns` holding the `source`
-request's answer, one per reference for the session; a hidden frame
+placed through `NewspeakSources`: a file the agent names by its path -- a
+program module's, and a file of the core library the session handed the
+agent at `attach` (`coreLibrary`, the directory the project shows), where
+a shipped module's breakpoints stand ("The agent's sources";
+[editor-support.md](editor-support.md), "The core library") -- opened
+directly, and any other module -- a shipped one without the library, an
+image's, one an install changed -- by the `source` request's answer, read
+once per reference for the session, as a read-only `LightVirtualFile` of
+the name `<Module>.ns` holding the answer, one per reference for the
+session; a hidden frame
 (`presentationHint: "subtle"`) stays listed, drawn greyed. Its children
 are the `Return value` scope's value, at a step's stop, above the
 `Locals`; a `NewspeakValue` shows the agent's text and class of a value
@@ -4130,9 +4392,18 @@ time:
   "Breakable lines"). A line on which a block's first statement starts
   offers the line and each such block as variants; a block variant's
   breakpoint is sent with the `column` of that statement, the line's
-  without one. A module's file on disk is named by its `path`, a module
-  the session shows by reference -- a shipped one, as `<Module>.ns` --
-  by its `name`. The pass count (`NewspeakLineBreakpointProperties`,
+  without one. A file on disk is named by its `path` -- a program
+  module's, and a file of the core library, which the agent takes for the
+  shipped module, or for the program's embedded `Manifest`, only in the
+  library the session handed it ("The agent's sources"), so that a file
+  of any other fingerprint directory -- an older binary's text, which a
+  look that failed left breakpoints in -- names no module and its
+  breakpoints stay unverified; in a run of one module, which loads no
+  manifest, the agent answers a `Manifest.ns` breakpoint unverified -- and
+  a module the session shows by reference by its name. The breakpoints in the library's
+  files are kept with the project and follow it to a new fingerprint
+  ([editor-support.md](editor-support.md), "The core library"). Run to
+  Cursor names a library file the same way. The pass count (`NewspeakLineBreakpointProperties`,
   edited in the breakpoint's properties) is sent as the `hitCondition`,
   in the agent's forms ("Hit counts and temporary breakpoints"). The
   handler marks each breakpoint verified, or, where the agent set it at

@@ -287,7 +287,13 @@ sends.
 `Kernel.ns` resolves without errors this way: the `kernel` flag decides only
 whether a send to `vmMirror` is marked (`resolver/mod.rs`, `resolve_send`),
 never whether anything is an error — pinned by
-`the_editor_entry_resolves_the_kernel_without_the_mirror_mark`.
+`the_editor_entry_resolves_the_kernel_without_the_mirror_mark`. So does every
+other shipped module: the editor's resolution and the boot's share one walk,
+the kernel flag adding no error, and since the binary refuses to boot with a
+shipped module that does not resolve, a document holding a shipped module's text --
+the library the plugin shows, written by `ns-next shipped-sources` -- is
+published no diagnostic, and the core library has no hint ("Hints"); pinned
+over every shipped module by `a_shipped_module_s_text_is_the_shipped_module`.
 
 ### Classification
 
@@ -1136,10 +1142,36 @@ it ([debugger.md](debugger.md), "The JetBrains plugin").
 
 The answer is `Interpreter::breakable_statements`' over the resolved
 module, which compiles every level of it under the optimized lowering
-without loading or running anything, grouped by line. It is
-compiled on a worker thread of its own, which the server spawns at the
-first request and asks synchronously, handing it the document's text: the
-worker parses, resolves and compiles, and answers spans only, since an
+without loading or running anything, grouped by line.
+
+**A shipped module's text.** A document whose text is, byte for byte, a
+shipped module's (`ns_runtime::shipped_module_named_by_text`: `Kernel.ns`
+or a module of the shipped table, never `Manifest.ns`, which a program
+compiles as its own) is that shipped module: its answer is
+`Interpreter::shipped_breakable_statements`', which compiles the binary's
+own text with the boot's resolution -- the one that records the mirror
+sends -- and the boot's kind of module, as the debugger compiles a
+shipped level again for a breakpoint ([debugger.md](debugger.md),
+"Compiling the metadata again"), so the lines are where a breakpoint set
+in the module lands; a lazy module stays unbuilt. The document's text
+only selects which module is compiled, and only an exact copy selects
+one, so no text a user writes is resolved as shipped code (`CLAUDE.md`,
+"The VM mirror is a capability"); a text one byte away from a shipped
+module's is an ordinary module. `ns-cli`'s `debug_metadata` holds every
+shipped module's answer to where `SetBreakpoints` lands in the built
+module, under both lowerings
+(`shipped_breakable_statements_agree_with_the_breakpoints`). The
+comparison is against the analyzer's own shipped sources, so it holds
+only while the analyzer and the `ns-next` that runs are the same build:
+the plugin bundles the analyzer and takes `ns-next` from the settings,
+and when the two differ, the library's text -- the runtime's -- matches
+no shipped text of the analyzer's, `Kernel.ns` is answered as an
+ordinary module, and its breakable lines are only approximate
+(`docs/OPEN-WORK.md`).
+
+The answer is compiled on a worker thread of its own, which the server
+spawns at the first request and asks synchronously, handing it the
+document's text: the worker parses, resolves and compiles, and answers spans only, since an
 interpreter and the symbol interner are bound to the thread that made
 them. The worker bootstraps one interpreter, at its first module rather
 than at the server's start, so that an editor that never asks pays
@@ -1772,6 +1804,83 @@ the document symbols the structure view shares through
 `DocumentSymbolCache`; the run configuration's program a `newspeak.json` or
 a `.ns` module.
 
+### The core library
+
+The shipped modules -- `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`
+and `platform/`'s five -- are shown under External Libraries as the
+library "Newspeak Core Library" (`library/`), taken from the very
+`ns-next` the settings name, the binary every run of the project starts,
+so that what the editor shows is what runs (decided with the user on
+2026-11-15). `NewspeakCoreLibrary`, a project service, asks that binary
+`ns-next shipped-sources --fingerprint` and, when
+`<the IDE's system directory>/newspeak/core-library/<fingerprint>/` does
+not hold its sources yet, has it write them there with `ns-next
+shipped-sources <directory>` ([core-library.md](core-library.md), "The
+shipped sources as files"): into a staging directory first, whose files
+are made read-only and which is then moved into place, so that no reader
+sees a directory half written; a write the IDE's exit or a crash cut short
+leaves only a staging directory, which the pruning deletes
+(`CoreLibraryStore`). The library is shown only in a Newspeak project:
+one whose content holds a `.ns` file or a `newspeak.json`, asked of the
+file indexes once the project is indexed (`isNewspeakProject`), or one
+that debugs a Newspeak program; a project that gains its first such file
+later shows it from its next opening, its next apply of the settings or
+its first debug session. It looks as the project opens
+(`NewspeakCoreLibraryStartup`), as the settings are applied and as a
+debug session starts -- which waits for the look, bounded at 60 s, before
+it sends any breakpoint, so that breakpoints moved to a rebuilt binary's
+library are sent from their new files -- every look on one thread of the
+application's own, for all projects,
+so that the event dispatch thread never waits for `ns-next` and no two
+looks write or prune at once; a failure -- no binary set, one that cannot
+be started, an older one without the command -- is logged and leaves the
+library out. `NewspeakCoreLibraryRootsProvider` shows the directory in
+`core-library/`'s layout, `platform/` a folder, its `fingerprint` and use
+marker excluded (`NewspeakCoreLibraryRoots`, a `SyntheticLibrary`); the
+files are read-only on disk, so their editors are. The language server
+answers the breakable lines of a shipped module's file as the shipped
+module's ("Breakable lines") -- provided the bundled analyzer and the
+settings' `ns-next` are the same build, since only then is the library's
+text, the runtime's, one of the analyzer's shipped texts; a library of
+another build is answered as ordinary modules, its breakable lines
+approximate (`docs/OPEN-WORK.md`).
+
+**Pruning.** Every use of a fingerprint directory -- a look that shows
+it, a debug session against it -- sets the time of the marker
+`last-used` inside it. At every look the plugin deletes each fingerprint
+directory, and each staging directory a writer left, last used 30 days
+ago or earlier, but never one an open project shows, so that projects
+whose settings once named different binaries keep theirs; a directory
+never marked counts from its own time, and nothing else under the store
+is touched. A directory deleted while a project still had breakpoints in
+it is written again, at the same path, as soon as a project's binary has
+its fingerprint.
+
+**Breakpoints follow the library.** Line breakpoints in a library file
+are kept with the project, as every breakpoint is. When a project's look
+shows another fingerprint directory than it showed, its line breakpoints
+in every other fingerprint directory's files move to the file of the same
+path in the new one, at the same line, with their pass count, block
+column, temporariness, enablement, suspend policy, condition and logging
+(`moveLineBreakpoints`); its description, its group and its links to
+dependent breakpoints stay behind, since the platform reads and writes
+them only through internal API (`XBreakpointBase`,
+`XDependentBreakpointManager`), which the plugin does not use;
+whether the line still takes one is the language server's and the agent's
+to say, as for any breakpoint. One whose file has no counterpart -- a
+module renamed or removed -- stays where it is and is logged. The
+debugger hands the agent the directory the project shows at `attach`
+(`coreLibrary`), and sends a library file's breakpoints by the file's
+path, as any file's: the agent takes the path for the shipped module only
+in that directory, and only when its fingerprint is the binary's, so a
+program module named like a shipped one (a `Kernel` of its own) never
+takes a library breakpoint, and a file of any other fingerprint
+directory, which a look that failed or timed out leaves breakpoints in,
+names no module and its breakpoints stay unverified. A shipped frame
+comes with the library file's path, which the debugger opens directly
+([debugger.md](debugger.md), "The agent's sources", "The JetBrains
+plugin").
+
 ## Build and packaging
 
 - **Gradle project** under `editors/jetbrains/`, with the wrapper committed,
@@ -1926,7 +2035,21 @@ The server's own tests are described under its section, above ("Testing").
   before any configuration is sent; an exception's stop says which
   exception stopped it in the debugger's balloon; `stop()` keeps the
   connection until `terminate` is answered; a module shown by reference
-  is one read-only `LightVirtualFile` across two stops, asked for once;
+  is one read-only `LightVirtualFile` across two stops, asked for once,
+  while the `attach` hands the agent the library shown and a shipped frame
+  the agent shows by a library file's path opens that file;
+  and, for the core library: the store writes a fingerprint's directory
+  once, its files read-only and no staging left, and reuses it; the
+  library shown is the settings' binary's, `platform/` a folder, a module
+  the library's source and the `fingerprint` file not in the library; a
+  project that is no Newspeak project shows none until its first debug
+  session; the pruning keeps the directory an open project shows however
+  long ago its use was recorded and deletes an unused one; a
+  breakpoint in the library's `Kernel.ns`, in `Array>>do:`, stops the real
+  runtime at each element, one in an older fingerprint's `Kernel.ns` is
+  moved by the session's look before it is sent and stops in the new
+  library's file, and one in its `Manifest.ns` stops a project's
+  manifest as it answers a module;
   a hidden frame is drawn greyed and the program's frame not; and an
   `Array` of 150 elements shows 100, offers 50 more, and fetches them
   with `start` 100; an agent's `terminated` event or a close before any
@@ -1946,13 +2069,25 @@ The server's own tests are described under its section, above ("Testing").
   block's highlighted range and column the server's; and, through each
   handler over a scripted peer and a session that records what it is
   told: a pass count is sent as the `hitCondition` and a block variant's
-  column as the `column`, a breakpoint the agent moves says the line it
+  column as the `column`, a breakpoint in a file of a directory of
+  shipped sources is sent by the file's path and no name, a breakpoint the agent moves says the line it
   stops at and one it refuses its reason, a method breakpoint is sent by
   its name and pass count, and the exception breakpoints as the filters
   and the classes' options, "Any exception" for uncaught ones taking
   every class; against the real runtime, a temporary breakpoint in a loop
   stops once and is gone. A task of its own, `breakpointTypesTest`, with
   `debugProcessTest`'s inputs, which `check` depends on;
+- the core library's store and breakpoints, under `test`, which start no
+  binary: pruning (`CoreLibraryStoreTest`, plain JUnit over directories it
+  writes) deletes a directory unused for 31 days, keeps one used 29 days
+  ago, one in use however old and anything not the store's own, and a
+  touch counts as a use; and a file is placed by its fingerprint and its
+  path below it. `CoreLibraryBreakpointsTest`, on `BasePlatformTestCase`: the
+  line breakpoints of an older fingerprint move to the same files of the
+  new one with their settings, one without a counterpart stays, and the
+  new library's own is kept. `NewspeakProjectTest`: a project with a
+  `.ns` file or a `newspeak.json` is a Newspeak project, one with neither
+  is not;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
@@ -2120,7 +2255,9 @@ and resolves cleanly in a JetBrains IDE today.
 - **The debugger's paths into the platform** without a test: the real
   `newspeak/breakableLines` round trip through the platform's LSP client
   (the breakpoint types' test replaces the fetcher), a breakpoint in a
-  shipped module's read-only file, and the turning off and on that
+  module's read-only `LightVirtualFile`, the core library's node under
+  External Libraries as the project view draws it (the tests read the
+  provider and the file index), and the turning off and on that
   carries an edited pass count or exception box to a running session
   ([debugger.md](debugger.md), "The JetBrains plugin"); and the plugin
   starts no image, so `ns-next load --debug-connect` has no run

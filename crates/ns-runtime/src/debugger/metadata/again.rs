@@ -111,7 +111,7 @@ pub(crate) fn compile_level(
     // synthesized for a shipped declaration is not marked shipped.
     let root_mixin = mutator.heap.mixin(module_root)?;
     let (resolved, source, module_text) = if root_mixin.shipped {
-        shipped_resolution(root_mixin.name)?
+        shipped_resolution(root_mixin.name.as_str())?
     } else {
         let text = mutator.heap.module_source(module_root)?;
         let module = ns_syntax::parse(&text).ok()?;
@@ -174,19 +174,16 @@ pub(crate) fn compile_level(
 /// `SetBreakpoints` would resolve against had it been loaded, compiled by
 /// the same function `compile_level` compiles a loaded level again with.
 /// Each body is paired with itself, so that what is answered is exactly
-/// what a pairing would keep. Registers nothing and runs nothing.
+/// what a pairing would keep. `source` is the kind the module is compiled
+/// as when it is loaded: a shipped module's is its boot's
+/// (`shipped_resolution`). Registers nothing and runs nothing.
 pub(crate) fn compile_unloaded_level(
     mutator: &mut Mutator<'_>,
     resolved: &ResolvedModule,
     declaration: &ast::ClassDeclaration,
+    source: ModuleSource,
     lowering: Lowering,
 ) -> PairedBodies {
-    // As `load_module` compiles a module (`compile_root_mixin`).
-    let source = if resolved.kernel {
-        ModuleSource::CoreLibrary
-    } else {
-        ModuleSource::User
-    };
     let collector = MetadataCollector::new();
     let fresh = mutator.mixin_level(
         declaration,
@@ -229,12 +226,14 @@ fn declaration_id(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<MixinId>
     }
 }
 
-/// The name of the root class of the module `running` is declared in, as
-/// a frame's location names its module; `None` for a mixin no heap
-/// registered.
-pub(crate) fn module_name(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<String> {
+/// The module `running` is declared in, as a frame's location names it;
+/// `None` for a mixin no heap registered.
+pub(crate) fn module_name(
+    mutator: &Mutator<'_>,
+    running: &Rc<Mixin>,
+) -> Option<crate::debugger::ModuleName> {
     let (root, _) = declaration_path(mutator, running)?;
-    Some(root.name.to_string())
+    Some(crate::debugger::ModuleName::of(&root))
 }
 
 /// The root class of the module `running` is declared in, and the names
@@ -253,8 +252,9 @@ pub(crate) fn declaration_path(
 /// `name`, the boot's own (`interpreter::kernel::resolved_kernel`,
 /// `core_library::resolved_shipped_module`), so that the bodies' mirror
 /// sends are the same; `None` for a name no shipped module has.
-fn shipped_resolution(name: Symbol) -> Option<(Rc<ResolvedModule>, ModuleSource, Rc<str>)> {
-    let name = name.as_str();
+pub(crate) fn shipped_resolution(
+    name: &str,
+) -> Option<(Rc<ResolvedModule>, ModuleSource, Rc<str>)> {
     if name == KERNEL_MODULE {
         return Some((
             crate::interpreter::kernel::resolved_kernel(),
@@ -307,6 +307,7 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
             block_sends: Box::new([]),
             variables,
             factory_pattern: Some(position),
+            header_pattern: None,
         }),
     }
 }
@@ -344,7 +345,8 @@ impl Pairing<'_> {
     /// Pairs every body of `running`, one side of a level, with `fresh`,
     /// the same side compiled again, if it has one: methods by selector,
     /// the initializer bodies and the clause by field, the factory with
-    /// the header's.
+    /// the header's. An initializer body stands at the header too, at its
+    /// header stop (decision 12): its metadata takes the factory's place.
     fn side(&mut self, running: &Mixin, fresh: Option<&Mixin>) {
         for (selector, entry) in &running.methods {
             match entry {
@@ -352,7 +354,7 @@ impl Pairing<'_> {
                     let again = fresh
                         .and_then(|fresh| fresh.compiled_method(*selector))
                         .map(|method| Rc::clone(&method.code));
-                    self.family(&method.code, again);
+                    self.family(&method.code, again, None);
                 }
                 MethodEntry::Factory(factory) => {
                     if self.seen.insert(address(&factory.code)) {
@@ -369,12 +371,13 @@ impl Pairing<'_> {
             InitializerBody::Standalone,
         ] {
             if let Some(code) = kind.code_of(running) {
-                self.family(&code, fresh.and_then(|fresh| kind.code_of(fresh)));
+                let header = self.factory.metadata.factory_pattern;
+                self.family(&code, fresh.and_then(|fresh| kind.code_of(fresh)), header);
             }
         }
         if let Some(code) = &running.superclass_clause_code {
             let again = fresh.and_then(|fresh| fresh.superclass_clause_code.clone());
-            self.family(code, again);
+            self.family(code, again, None);
         }
     }
 
@@ -383,15 +386,31 @@ impl Pairing<'_> {
     /// alike gets no tables at all: a block's tables name its creators'
     /// registers, which only an equal root vouches for. A worklist, not a
     /// recursion: a running body may be an image's, whose nesting the
-    /// text compiled again does not bound.
-    fn family(&mut self, running: &Rc<CompiledCode>, again: Option<Rc<CompiledCode>>) {
+    /// text compiled again does not bound. `header` is where the root
+    /// stands at its header stop, an initializer's; its blocks have none.
+    fn family(
+        &mut self,
+        running: &Rc<CompiledCode>,
+        again: Option<Rc<CompiledCode>>,
+        header: Option<Span>,
+    ) {
         let again = again.filter(|again| compiles_alike(running, again));
+        let root = address(running);
         let mut pending = vec![(Rc::clone(running), again)];
         while let Some((running, again)) = pending.pop() {
             if !self.seen.insert(address(&running)) {
                 continue;
             }
             let metadata = again.as_ref().and_then(|again| self.take(again));
+            let metadata = match (metadata, header) {
+                (Some(metadata), Some(header)) if address(&running) == root => {
+                    Some(Rc::new(BodyMetadata {
+                        header_pattern: Some(header),
+                        ..(*metadata).clone()
+                    }))
+                }
+                (metadata, _) => metadata,
+            };
             let running_blocks = running.body().created_blocks();
             match &again {
                 // `compiles_alike` held every block to its counterpart.

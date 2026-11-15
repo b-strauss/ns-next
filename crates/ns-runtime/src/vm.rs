@@ -284,10 +284,11 @@ fn take_safepoint(
     at_loop_head: bool,
 ) -> AfterSafepoint {
     match interpreter.safepoint(floor) {
-        // The suspend stress mode put a different frame on top -- the
-        // running activation, suspended and resumed -- whose state the
-        // stretch wrote back before it left; it goes on interpreted, as a
-        // frame resumed does.
+        // A different frame is on top -- the running activation,
+        // suspended and resumed by the suspend stress mode, or the factory
+        // below it, whose initializer's push the debugger undid -- whose
+        // state the stretch wrote back before it left; it goes on
+        // interpreted, as a frame resumed does.
         SafepointOutcome::Rebuilt => {
             *frame = interpreter.enter(|mutator| {
                 let top = mutator

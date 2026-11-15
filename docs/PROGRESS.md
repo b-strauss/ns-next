@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md) |
+| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md) |
 
 ## Notes
 
@@ -7832,16 +7832,17 @@ with its test reproduced first.
   a step over of it would, under both lowerings, the metadata recording
   each send that takes a block and where its blocks lie; a stop after a
   body's last statement stands at that statement.
-- **A step passes over the factory and goes on in the next host run.**
-  A step over from a root's last slot initializer stopped nowhere, the
-  run ending under it, and a step stopped in the factory, a frame
-  without a statement. A step its host run's end leaves in progress goes
-  on in the program's next run, stopping at its first statement
-  (`stepping::run_ended`, `carry_into`); and no step stops in a factory,
-  known by its frame's kind, with or without metadata, which every step
-  passes over, so that every level's initializer is stepped in the order
-  §6.1 and §6.2 run them (decision 12); a pause asked between runs
-  reports the method exits the carried step would have.
+- **A step passes over the factory on its way out and goes on in the
+  next host run.** A step over from a root's last slot initializer
+  stopped nowhere, the run ending under it. A step its host run's end
+  leaves in progress goes on in the program's next run, stopping at its
+  first statement (`stepping::run_ended`, `carry_into`); a step leaving
+  an initializer passes over the factory, known by its frame's kind,
+  with or without metadata, to its caller, so that every level's
+  initializer is stepped in the order §6.1 and §6.2 run them (decision
+  12) -- a step into an instantiation stops in the factory, at its
+  header's pattern; a pause asked between runs reports the method exits
+  the carried step would have.
 
 Every commit ran `cargo xtask gates commit` (and `codegen` where its
 files changed); at `572f0379` every end-of-batch gate passed -- the
@@ -7858,9 +7859,9 @@ its findings are fixed (`875a1f0a` to `572f0379`).
   send that took it, however the block was passed, and stops where a
   step over of it would.
 - `fe1c9244`, `3b905461` -- a step goes on in the program's next run and
-  passes over the factory, stepping every initializer.
+  passes over the factory on its way out, stepping every initializer.
 - `177b924a` -- the factory known by its frame's kind: an empty body is
-  stepped into again, and a stripped image's factory passed over.
+  stepped into again.
 - `af6aedad` -- shadowed fields of two same-named mixins named by their
   paths, and no panic from a debugger query.
 - `875a1f0a` -- the whole-branch review's findings: a step out decided by
@@ -7878,3 +7879,82 @@ debugger needs to meet that principle, a profiler, a view of what a
 method compiles to and a developer tool like V8's `d8` ("Planned: editor
 support and the analyzer"); the play button's Debug through the
 platform's own launcher is untested ("Missing tests").
+
+## The debugger: header stops and the core library in the IDE (2026-11-15)
+
+[debugger.md](design/debugger.md), decision 12, "The JetBrains plugin";
+[core-library.md](design/core-library.md), "The shipped sources as
+files"; [editor-support.md](design/editor-support.md), "The core
+library", "Breakable lines".
+
+Decided with the user on 2026-11-15, on the branch
+`feature/debugger-header-stops`, after the IDE fixes above: the Java
+constructor pattern for instantiation, and the core library shown from
+the binary
+(`docs/superpowers/plans/2026-11-15-1326-debugger-header-stops.md`).
+
+- **A step into an instantiation stops in the factory**, placed at the
+  class header's factory pattern, its variables the factory's parameters
+  as the sender passed them; a step over or into there goes on to the
+  first statement of the class's own initializer, and a step out stops
+  after the `new`. A pause asked before an instantiation stops there too
+  (`stepping::rewound_into_factory`, `stop_at_factory_entry`).
+- **A step into a superclass clause or a `<:` clause's message stops at
+  the header of the class it enters**, at its factory pattern or name,
+  every level in the order the program runs them; `Object`'s and `Top`'s
+  initializers never stop, whatever the filters say
+  (`stepping::enters_at_header`, `passed_by_every_step`). Nothing of it
+  is on the instantiation's path: the decisions are the held step's, at
+  the safepoint.
+- **`ns-next shipped-sources`** writes the sources the binary embeds, in
+  `core-library/`'s layout, and answers their fingerprint.
+- **The analyzer takes a document with a shipped module's exact text as
+  that shipped module**: its breakable lines are those of the boot's own
+  compile (`Interpreter::shipped_breakable_statements`), and no user text
+  is ever resolved with the kernel's capability.
+- **The plugin's library "Newspeak Core Library"**, taken from the
+  `ns-next` it runs, keyed by fingerprint, read-only, in a Newspeak
+  project only; a fingerprint directory unused for 30 days is deleted,
+  and the line breakpoints of an old library's files move to the same
+  file in the new one.
+
+Every commit ran `cargo xtask gates commit` (`analyzer` for the
+analyzer's). The end-of-batch gates and `plugin-verification` passed at
+`1128abe8`: every stress suite, `run-corpus` "ran 6, failed 0, skipped
+205" plain and under each mode, `linux`, `aarch64` (457 s) and the
+plugin's verification (238 s). The stress suites now share the machine's
+cores, two test threads each on 24 (`1128abe8`): at 18 each, tests that
+wait on a process they start failed in a different mode at each run.
+
+- `add082a6`, `ef254bf2` -- the factory's frame stopped in by a step
+  into and by a pause.
+- `dca49454`, `20bce702`, `be36f072` -- the header stops, the step from
+  one stepping in its frame once it is filtered, and its frame named only
+  while its one-shot waits.
+- `6c545b87` -- the header stops through the debug adapter.
+- `4a18064c` -- `ns-next shipped-sources`.
+- `c84cb391` -- the analyzer treats a shipped module's text as shipped.
+- `511192d5`, `0d5be144` -- the shipped modules as a library in the IDE,
+  only in Newspeak projects, its look awaited by a session.
+- `eeb8888a` -- the branch review's fixes: a line step stops in a block's
+  next activation, which the step's stop now tells the agent of
+  (`Event::Stopped`'s `elsewhere`).
+- `4063f0fc` -- a continue, a terminate and a hit count at the rewound
+  factory stop.
+- `87d8dd43` -- only the shown library directory's files are named to the
+  agent.
+- `69ead1d8` -- a program module named like a shipped one never takes its
+  breakpoints: every module of the debugging API a `ModuleName`, and a
+  shipped module named by its file's path in the core library the client
+  hands over at `attach`.
+- `cfb1f0ad` -- a line step stops in a fallback block's next activation.
+- `9a431d50`, `c65883da` -- the step's origin noted only for a step taken
+  on top, a line step placed by the first frame a stop shows, and a typed
+  class name reaching the program's and the shipped module alike.
+- `12f049c8` -- the stress run's waits outlast a stalled process.
+- `1128abe8` -- the stress suites share the machine's cores.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects
+and gaps" (the library's flag never reset, its breakable lines needing
+the analyzer and `ns-next` to be one build) and "Missing tests" (the
+library under `runIde`).

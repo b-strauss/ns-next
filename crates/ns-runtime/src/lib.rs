@@ -48,8 +48,8 @@ pub use compiler::Lowering;
 pub use debugger::{
     BreakableStatement, BreakpointId, BreakpointState, ClassName, Command, DebugControl,
     DebugEvents, DebugRemote, Event, FrameDescription, FrameLocation, HitCondition, LineBreakpoint,
-    MethodBreakpoint, MethodBreakpointState, ModuleTextAnswer, SendLocation, StopReason,
-    ValueDescription, ValueId, Variable, VariableValue,
+    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, SendLocation,
+    StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
 
 /// Test helper: turns one test body into a module holding an `optimized` and
@@ -98,7 +98,10 @@ pub use heap::{
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,
     NewClosure, ObjectReference, ObjectShape, RegisterBase, Root, StackExhausted,
 };
-pub use interpreter::core_library::{shipped_module_source, MANIFEST_SOURCE};
+pub use interpreter::core_library::{
+    shipped_module_named_by_text, shipped_module_source, shipped_source_files,
+    shipped_sources_fingerprint, ShippedSourceFile, MANIFEST_SOURCE,
+};
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,
     HostResult, HostSignal, Interpreter, MethodSide, Mutator,

@@ -136,9 +136,10 @@ Rust 1.98.0, edition 2021, seven crates:
   machine code freed and its method's fast path switched off while it
   stands (`debugger/breakpoints.rs`: line, pending, run to cursor and
   method breakpoints, keyed by body); steps are one-shot breakpoints and
-  a request bit held until the next push, a frame left otherwise
-  reported by the unwinder and the run loop's cold arms, the shipped
-  modules filtered (`debugger/stepping.rs`), and a pause asked between
+  a request bit held until the next push, a push of a factory or of an
+  initializer entered at its class header stopped in, never `Object`'s,
+  a frame left otherwise reported by the unwinder and the run loop's cold
+  arms, the shipped modules filtered (`debugger/stepping.rs`), and a pause asked between
   runs stops the run's first activation at its first statement;
   exception breakpoints are decided by two mirror rows the kernel's
   handler search sends, a leaf and the exit that reads the handler it
@@ -196,7 +197,11 @@ Rust 1.98.0, edition 2021, seven crates:
   (`core-library.md`, "The embedded shipped code").
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
-  `load`, `bench`, `build`. A program is one `.ns` file or a project of several
+  `load`, `bench`, `build`, and `shipped-sources`, which writes the `.ns`
+  sources the binary embeds (`Manifest.ns` included) in `core-library/`'s
+  layout with a `fingerprint` file, prints that fingerprint, or prints them
+  as JSON (`commands/shipped_sources.rs`; `core-library.md`, "The shipped
+  sources as files"). A program is one `.ns` file or a project of several
   modules: a directory whose `newspeak.json` names them, the current directory
   when no program is given (`project.rs`, `program.rs`). The file is described
   by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
@@ -223,7 +228,9 @@ Rust 1.98.0, edition 2021, seven crates:
   (`--check` only lists the files that would change). The server's own
   request `newspeak/breakableLines` answers the lines a line breakpoint
   can stand on, and their block variants, from
-  `Interpreter::breakable_statements` (`breakable.rs`), compiled on a
+  `Interpreter::breakable_statements` (`breakable.rs`), and for a shipped
+  module's exact text from `Interpreter::shipped_breakable_statements`,
+  compiled on a
   worker thread of 64 MiB that bootstraps an interpreter of its own, and
   answered `null`, uncompiled, for a module nesting more than 20,000
   sends -- the chain guard, until the compiler walks a chain link by link
@@ -279,7 +286,9 @@ artifact (`--check` only says whether it is current).
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
 module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
 Code included, through the server's formatting), a structure view of its
-own over the server's document symbols, and the debugger (`debugger/`): a
+own over the server's document symbols, the shipped modules as the
+library "Newspeak Core Library", written by the `ns-next` it runs
+(`library/`), and the debugger (`debugger/`): a
 DAP client of its own (`dap/`, on the platform's Gson), Debug on a run
 configuration through an `XDebugProcess` that starts `ns-next run
 --debug-connect` against a socket it listens on and acts only on the
@@ -772,7 +781,8 @@ rewrites sources, and otherwise before the first group. "Every commit" is
 every commit that changes more than Markdown (check `git diff --stat`): a
 change to Rust, a test, a fixture, a golden, a `.ns` or a `Cargo.toml` runs
 its gates however small. The nextest profiles are `.config/nextest.toml`'s;
-every one runs on 18 threads.
+every one runs on 18 threads, but for the `stress` group's suites, which
+share the machine's cores among them (`stress_threads_each`).
 
 | Group | Runs | When |
 |---|---|---|
@@ -783,7 +793,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java and Python counterparts; needs a JDK (`JAVA_HOME` or `PATH`) and a `python` on `PATH`; profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the fifteen stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, in the nextest profile `stress` (`ns-syntax`, `ns-assembler` and `ns-memory` left out, the slowest tests started first) narrowed by the profiles `cargo xtask nextest-config` generates in `target/xtask/nextest.toml`: every mode but WIDE without the tests `xtask/unreached-tests.txt` lists, which make no interpreter and read no runtime switch, and without `debug_metadata`, WIDE without the listed tests that compile no body, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the fifteen stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, the machine's cores shared among them (two test threads each on 24 cores), in the nextest profile `stress` (`ns-syntax`, `ns-assembler` and `ns-memory` left out, the slowest tests started first) narrowed by the profiles `cargo xtask nextest-config` generates in `target/xtask/nextest.toml`: every mode but WIDE without the tests `xtask/unreached-tests.txt` lists, which make no interpreter and read no runtime switch, and without `debug_metadata`, WIDE without the listed tests that compile no body, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs without the tests `xtask/unreached-tests.txt` lists as reaching no platform-dependent code (the generated profile `platform`, written in the container by `cargo xtask nextest-config`), the doctests, and the Newspeak benchmark programs without their Java and Python counterparts, which run nothing that differs by platform (profile `benchmarks-newspeak`), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
 | `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it in the profile `platform`, as `linux` runs it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8 minutes | the end of a batch that changed the runtime |

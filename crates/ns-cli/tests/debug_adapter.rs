@@ -75,6 +75,36 @@ fn program(name: &str, source: &str) -> (ScratchDirectory, PathBuf) {
     (directory, path)
 }
 
+/// A scratch directory holding the binary's shipped sources, as `ns-next
+/// shipped-sources` writes them for a client's core library, and the
+/// directory's absolute path.
+fn core_library() -> (ScratchDirectory, PathBuf) {
+    let directory = ScratchDirectory::new("core-library");
+    let library = directory.join("library");
+    let (written, _, error) =
+        common::ns_next(&[OsStr::new("shipped-sources"), library.as_os_str()]);
+    assert!(written, "{error}");
+    let library = PathBuf::from(absolute(&library));
+    (directory, library)
+}
+
+/// The 1-based line of `Array>>do:`'s loop body in the shipped
+/// `Kernel.ns`, which a program's `do:` over an array reaches.
+fn array_do_body_line() -> u32 {
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the shipped kernel");
+    let lines: Vec<&str> = kernel.lines().collect();
+    let size = lines
+        .iter()
+        .position(|line| line.contains("count = vmMirror collectionSize: self ifFail:"))
+        .expect("Array>>do:");
+    let body = size
+        + lines[size..]
+            .iter()
+            .position(|line| line.trim() == "action value: (self at: index).")
+            .expect("its loop body");
+    u32::try_from(body + 1).expect("a line number")
+}
+
 fn names(events: &[Value]) -> Vec<String> {
     events
         .iter()
@@ -1125,29 +1155,19 @@ fn a_breakpoint_set_before_configuration_done_is_answered_and_stops() {
     assert_eq!(client.finish().stdout, "hi\n");
 }
 
+/// A breakpoint in the core library's `Kernel.ns`, named by that file's
+/// path, stops in the shipped `Array>>do:`, whose frame is shown by the
+/// same path.
 #[test]
 fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     let (_directory, path) = program("Walker", WALKER);
-    let kernel = std::fs::read_to_string(
-        common::repository_root().join("crates/ns-runtime/core-library/Kernel.ns"),
-    )
-    .expect("read Kernel.ns");
-    // `Array>>do:`'s loop body, which `WALKER`'s `do:` reaches.
-    let lines: Vec<&str> = kernel.lines().collect();
-    let size = lines
-        .iter()
-        .position(|line| line.contains("count = vmMirror collectionSize: self ifFail:"))
-        .expect("Array>>do:");
-    let body = size
-        + lines[size..]
-            .iter()
-            .position(|line| line.trim() == "action value: (self at: index).")
-            .expect("its loop body");
-    let line = u32::try_from(body + 1).expect("a line number");
+    let (_library_directory, library) = core_library();
+    let kernel = file_source(&library.join("Kernel.ns"));
+    let line = array_do_body_line();
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(false);
-    let breakpoints = client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[line]);
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let breakpoints = client.set_breakpoints(kernel.clone(), &[line]);
     assert_eq!(breakpoints[0]["verified"], true, "{breakpoints:?}");
     assert_eq!(breakpoints[0]["line"], line, "{breakpoints:?}");
     client.configuration_done();
@@ -1156,10 +1176,246 @@ fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
     assert_eq!(frames[0]["line"], line, "{frames:?}");
     assert_eq!(frames[0]["source"]["name"], "Kernel.ns", "{frames:?}");
-    client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[]);
+    assert_eq!(frames[0]["source"]["path"], kernel["path"], "{frames:?}");
+    assert!(
+        frames[0]["source"].get("sourceReference").is_none(),
+        "{frames:?}"
+    );
+    client.set_breakpoints(kernel, &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "12\n");
+}
+
+/// A program whose own root is named `Kernel`, like the shipped module:
+/// its line 4 runs a `do:` over an array, which the shipped `Array>>do:`
+/// runs, and its line 5 prints the sum.
+const OWN_KERNEL: &str = indoc! {"
+    class Kernel = Object new () (
+      public main: platform args: arguments = (
+        | sum ::= 0. |
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The top frame's name, line and source.
+fn top_placed(client: &mut DapClient) -> (Value, Value, Value) {
+    let frames = client.stack_frames(0, 1);
+    (
+        frames[0]["name"].clone(),
+        frames[0]["line"].clone(),
+        frames[0]["source"].clone(),
+    )
+}
+
+/// A program module named like a shipped one is another module: a
+/// breakpoint in the core library's `Kernel.ns` stops only in the shipped
+/// `Array>>do:`, shown by the library file's path, and one by the
+/// program's file only in the program's `Kernel`, shown by its own.
+#[test]
+fn a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let (_library_directory, library) = core_library();
+    let shipped = file_source(&library.join("Kernel.ns"));
+    let own = file_source(&path);
+    let body = array_do_body_line();
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let in_shipped = client.set_breakpoints(shipped.clone(), &[body]);
+    assert_eq!(in_shipped[0]["verified"], true, "{in_shipped:?}");
+    assert_eq!(in_shipped[0]["line"], body, "{in_shipped:?}");
+    let in_own = client.set_breakpoints(own.clone(), &[5]);
+    assert_eq!(in_own[0]["verified"], true, "{in_own:?}");
+    client.configuration_done();
+
+    for element in 1..=3 {
+        client.stopped("breakpoint");
+        let (name, line, source) = top_placed(&mut client);
+        assert_eq!(name, "Array>>do:", "the stop at element {element}");
+        assert_eq!(line, body, "the stop at element {element}");
+        assert_eq!(source["path"], shipped["path"], "{source}");
+        assert!(source.get("sourceReference").is_none(), "{source}");
+        client.succeed("continue", json!({ "threadId": 1 }));
+    }
+    client.stopped("breakpoint");
+    let (name, line, source) = top_placed(&mut client);
+    assert_eq!(name, "Kernel>>main:args:");
+    assert_eq!(line, 5);
+    assert_eq!(source["path"], own["path"], "{source}");
+    client.set_breakpoints(shipped, &[]);
+    client.set_breakpoints(own, &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// A program whose own root is named `Kernel`, like the shipped module,
+/// that signals the shipped `Error`.
+const OWN_KERNEL_FAILING: &str = indoc! {"
+    class Kernel = Object new () (
+      public main: platform args: arguments = (
+        Error signal: 'boom'.
+      )
+    ) : ()
+"};
+
+/// A function breakpoint whose class name's module both the program and
+/// the binary declare -- a program module `Kernel` -- is set in both: in
+/// the program's `Kernel` where it declares the method, and in the shipped
+/// `Kernel`'s classes, each behind the one DAP id.
+#[test]
+fn a_function_breakpoint_reaches_both_modules_of_its_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({
+            "breakpoints": [{ "name": "Kernel>>main:args:" }, { "name": "Kernel.Array>>do:" }],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], true, "{body}");
+    assert_eq!(breakpoints[1]["verified"], true, "{body}");
+    client.configuration_done();
+    let stopped = client.stopped("function breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[0]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client).0, json!("Kernel>>main:args:"));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    let stopped = client.stopped("function breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoints[1]["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(top_frame(&mut client).0, json!("Array>>do:"));
+    client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// An exception filter's class name whose module the program declares too
+/// names the shipped module's class as well: `Kernel.Error` with a program
+/// module `Kernel` stops the shipped `Error` signalled.
+#[test]
+fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL_FAILING);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setExceptionBreakpoints",
+        json!({
+            "filters": [],
+            "filterOptions": [{ "filterId": "uncaught", "condition": "Kernel.Error" }],
+        }),
+    );
+    client.configuration_done();
+    let stopped = client.stopped("exception");
+    assert_eq!(stopped["body"]["description"], "Error", "{stopped}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 1);
+}
+
+/// A step filter's class name whose module the program declares too
+/// filters the shipped module's class as well: with the shipped filter
+/// off, `Kernel.Array` with a program module `Kernel` keeps a step into the
+/// `do:` out of the shipped `Array>>do:`, so that it lands in the block.
+#[test]
+fn a_step_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(true);
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "classes": ["Kernel.Array"] }),
+    );
+    client.configuration_done();
+    client.stopped("entry");
+    // The entry stands at the local's initializer on line 3.
+    let by_statement = json!({ "threadId": 1, "granularity": "statement" });
+    client.succeed("stepIn", by_statement.clone());
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Kernel>>main:args:"), json!(4))
+    );
+    client.succeed("stepIn", by_statement);
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in Kernel>>main:args:"), json!(4))
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// Without a core library, a shipped module has no file the client could
+/// name, and its name names none: `Kernel.ns` by name is the program's
+/// file-less module of that name or nothing, never the shipped one.
+#[test]
+fn a_shipped_module_is_never_named_by_its_name() {
+    let (_directory, path) = program("Walker", WALKER);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let breakpoints =
+        client.set_breakpoints(json!({ "name": "Kernel.ns" }), &[array_do_body_line()]);
+    assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "12\n");
+}
+
+/// A core library whose fingerprint is not the binary's holds texts this
+/// binary does not run: the agent says so and does not use it -- its
+/// files name no module, and a shipped frame is shown by reference.
+#[test]
+fn a_core_library_of_another_fingerprint_is_ignored() {
+    let (_directory, path) = program("Walker", WALKER);
+    let (_library_directory, library) = core_library();
+    std::fs::write(library.join("fingerprint"), "0000000000000000\n").expect("another fingerprint");
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    let response = client.request(
+        "attach",
+        json!({ "stopOnEntry": true, "coreLibrary": absolute(&library) }),
+    );
+    assert_eq!(response["success"], true, "{response}");
+    let output = client.event("output");
+    let said = output["body"]["output"].as_str().unwrap_or_default();
+    assert!(said.contains("is not used"), "{output}");
+    client.event("initialized");
+    let kernel = file_source(&library.join("Kernel.ns"));
+    let breakpoints = client.set_breakpoints(kernel, &[array_do_body_line()]);
+    assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "classes": [] }),
+    );
+    client.configuration_done();
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let (name, _, source) = top_placed(&mut client);
+    assert_eq!(name, "Array>>do:");
+    assert!(source.get("path").is_none(), "{source}");
+    assert!(
+        source["sourceReference"].as_i64().is_some_and(|id| id > 0),
+        "{source}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
 }
 
 /// A root with a class of its own named `Array`, whose instance holds two
@@ -1568,6 +1824,170 @@ fn a_line_step_over_a_one_line_loop_ends() {
     assert_eq!(client.finish().stdout, "6\n");
 }
 
+/// A root whose line 5 is a `do:` over a one-line block, followed on line
+/// 6 by the statement after it.
+const ONE_LINE_BLOCK: &str = indoc! {"
+    class OneLineBlock = Object new (
+      | sum ::= 0. |
+    ) (
+      public main: platform args: arguments = (
+        {1. 2. 3} do: [:each | sum:: sum + each].
+        platform transcript show: sum printString; newLine.
+      )
+    ) : ()
+"};
+
+/// The value of `name` among the top frame's locals.
+fn top_local(client: &mut DapClient, name: &str) -> Value {
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    variable(&variables, name)["value"].clone()
+}
+
+/// A `next` by line at a one-line block's statement stops in the block's
+/// next activation, though it stands on the same line in a frame of the
+/// same name and depth: a new activation is another place.
+#[test]
+fn a_line_step_over_at_a_one_line_block_stops_in_its_next_activation() {
+    let (_directory, path) = program("OneLineBlock", ONE_LINE_BLOCK);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in OneLineBlock>>main:args:"), json!(5))
+    );
+    assert_eq!(top_local(&mut client, "each"), "1");
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("[] in OneLineBlock>>main:args:"), json!(5))
+    );
+    assert_eq!(top_local(&mut client, "each"), "2");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
+}
+
+/// A root whose line 6 sends `ifTrue:` with a one-line block to an object
+/// that runs it twice, from its lines 11 and 12: the block the compiler
+/// inlines runs as its fallback closure, twice at one depth.
+const FALLING_TWICE: &str = indoc! {"
+    class FallingTwice = Object new (
+      | count ::= 0. twice = Twice new. |
+    ) (
+      public main: platform args: arguments = (
+        | before |
+        twice ifTrue: [count:: count + 10].
+        platform transcript show: count printString; newLine.
+      )
+      public class Twice = Object new () (
+        public ifTrue: block = (
+          block value.
+          ^block value
+        )
+      )
+    ) : ()
+"};
+
+/// A `next` by line at a one-line fallback block's statement stops in the
+/// block's next activation, which its receiver's `ifTrue:` runs from its
+/// next line: a new activation is another place, though at the same
+/// depth, in a frame of the same name, on the same line.
+#[test]
+fn a_line_step_over_at_a_fallback_block_stops_in_its_next_activation() {
+    let (_directory, path) = program("FallingTwice", FALLING_TWICE);
+    let text = FALLING_TWICE.lines().nth(5).expect("line 6");
+    let column = text
+        .find("count:: count + 10")
+        .expect("the block's statement")
+        + 1;
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 6, "column": column }],
+        }),
+    );
+    assert_eq!(body["breakpoints"][0]["verified"], true, "{body}");
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 2);
+    assert_eq!(
+        frames[0]["name"], "[] in FallingTwice>>main:args:",
+        "{frames:?}"
+    );
+    assert_eq!(frames[0]["line"], 6, "{frames:?}");
+    assert_eq!(frames[1]["line"], 11, "{frames:?}");
+    client.succeed(
+        "setBreakpoints",
+        json!({ "source": file_source(&path), "breakpoints": [] }),
+    );
+
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 2);
+    assert_eq!(
+        frames[0]["name"], "[] in FallingTwice>>main:args:",
+        "{frames:?}"
+    );
+    assert_eq!(frames[0]["line"], 6, "{frames:?}");
+    assert_eq!(
+        frames[1]["line"], 12,
+        "the block's second activation: {frames:?}"
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "20\n");
+}
+
+/// A root whose line 4 halts and then runs two more statements, followed
+/// on line 5 by the statement after them.
+const HALTING: &str = indoc! {"
+    class Halting = Object new () (
+      public main: platform args: arguments = (
+        | first second |
+        self halt. first:: 1. second:: 2.
+        platform transcript show: (first + second) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A `next` by line from a `halt`'s stop, which stands in the shown frame
+/// below the exception's machinery, steps over the rest of the line in
+/// that frame and stops on the next line.
+#[test]
+fn a_line_step_from_a_halt_stop_leaves_the_line() {
+    let (_directory, path) = program("Halting", HALTING);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed("setExceptionBreakpoints", json!({ "filters": ["halt"] }));
+    client.configuration_done();
+    let stopped = client.stopped("exception");
+    assert_eq!(stopped["body"]["text"], "halt", "{stopped}");
+    client.succeed("next", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    let shown: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame.get("presentationHint").is_none())
+        .collect();
+    assert_eq!(shown[0]["name"], "Halting>>main:args:", "{frames:?}");
+    assert_eq!(shown[0]["line"], 5, "{frames:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
 /// A root whose line 4 sends `double:`, a method of its own.
 const CALLS: &str = indoc! {"
     class Calls = Object new () (
@@ -1671,12 +2091,12 @@ const PARTS: &str = indoc! {"
     ) : ()
 "};
 
-/// A step into passes over a factory in an image built without its
-/// source as well, where no body has metadata: the factory is known by
-/// its frame's kind (decision 12), and the step into from `main:args:`
-/// at `Part new` stops in `Part`'s initializer, never in `Part class>>new`.
+/// A step into stops in a factory in an image built without its source
+/// as well, where no body has metadata: the step into from `main:args:`
+/// at `Part new` stops in `Part class>>new`, a frame without a line, and
+/// the next step into goes on to `Part`'s initializer.
 #[test]
-fn a_step_into_passes_over_a_stripped_image_s_factory() {
+fn a_step_into_stops_in_a_stripped_image_s_factory() {
     let (directory, path) = program("Parts", PARTS);
     let image = directory.join("parts.nsi");
     let (built, _, error) = common::ns_next(&[
@@ -1693,23 +2113,32 @@ fn a_step_into_passes_over_a_stripped_image_s_factory() {
     // stands in `Part`'s superclass clause, which `Part new` runs first,
     // and a step into from there stops back in `main:args:`.
     let mut stops = Vec::new();
-    for _ in 0..2 {
+    let mut factory_lines = Vec::new();
+    for _ in 0..3 {
         client.succeed("stepIn", json!({ "threadId": 1 }));
         client.stopped("step");
-        let names: Vec<String> = client
-            .stack_frames(0, 0)
+        let frames = client.stack_frames(0, 0);
+        let names: Vec<String> = frames
             .iter()
             .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
             .collect();
+        factory_lines.extend(
+            frames
+                .iter()
+                .filter(|frame| frame["name"] == "Part class>>new")
+                .map(|frame| frame["line"].clone()),
+        );
         stops.push(names);
     }
     assert_eq!(
         stops,
         [
             vec!["Parts>>main:args:"],
+            vec!["Part class>>new", "Parts>>main:args:"],
             vec!["Part initializer", "Part class>>new", "Parts>>main:args:"],
         ]
     );
+    assert_eq!(factory_lines, [json!(0), json!(0)]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(
@@ -1717,6 +2146,245 @@ fn a_step_into_passes_over_a_stripped_image_s_factory() {
         "3
 "
     );
+}
+
+/// A root whose `main:args:` instantiates a nested class whose superclass
+/// clause names another nested class with a slot initializer.
+const DERIVED_PARTS: &str = indoc! {"
+    class DerivedParts = Object new () (
+      class Base = Object new (
+        | public base ::= 4. |
+      ) ()
+      class Part = Base new (
+        | public value ::= 3. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Part new.
+        platform transcript show: (made value + made base) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A step into a superclass clause stops at the superclass's header in an
+/// image built without its source as well: a frame without a line, at the
+/// superclass's initializer, which the next step into goes on from as from
+/// any push without metadata, back to the subclass's initializer once it
+/// returns. The steps from the entry go through the nested classes'
+/// superclass clauses first, which `Part new` evaluates before it sends
+/// the factory.
+#[test]
+fn a_step_into_stops_at_a_stripped_image_s_superclass_header() {
+    let (directory, path) = program("DerivedParts", DERIVED_PARTS);
+    let image = directory.join("derived.nsi");
+    let (built, _, error) = common::ns_next(&[
+        "build".as_ref(),
+        path.as_os_str(),
+        image.as_os_str(),
+        OsStr::new("--strip-source"),
+    ]);
+    assert!(built, "{error}");
+    let mut client = DapClient::connect_mode_of("load", &image);
+    client.start_session(true);
+    client.stopped("entry");
+    let mut stops = Vec::new();
+    let mut header_lines = Vec::new();
+    for _ in 0..7 {
+        client.succeed("stepIn", json!({ "threadId": 1 }));
+        client.stopped("step");
+        let frames = client.stack_frames(0, 0);
+        let names: Vec<String> = frames
+            .iter()
+            .map(|frame| frame["name"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        header_lines.extend(
+            frames
+                .iter()
+                .take(1)
+                .filter(|frame| frame["name"] == "Base initializer")
+                .map(|frame| frame["line"].clone()),
+        );
+        stops.push(names);
+    }
+    assert_eq!(
+        stops,
+        [
+            vec![
+                "Base superclass clause",
+                "Part superclass clause",
+                "DerivedParts>>main:args:"
+            ],
+            vec!["Part superclass clause", "DerivedParts>>main:args:"],
+            vec!["DerivedParts>>main:args:"],
+            vec!["Part class>>new", "DerivedParts>>main:args:"],
+            vec![
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+            vec![
+                "Base initializer",
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+            vec![
+                "Part initializer",
+                "Part class>>new",
+                "DerivedParts>>main:args:"
+            ],
+        ]
+    );
+    assert_eq!(header_lines, [json!(0)]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "7
+"
+    );
+}
+
+/// A root whose `main:args:` instantiates `Punkt`, whose header names a
+/// factory pattern and a superclass clause, itself a class with a factory
+/// pattern. The header patterns are on lines 2 and 5.
+const POINTS: &str = indoc! {"
+    class Points = Object new () (
+      class Basis new: a = (
+        | public base ::= a. |
+      ) ()
+      class Punkt x: ax y: ay = Basis new: ax (
+        | public y ::= ay. |
+      ) ()
+      public main: platform args: arguments = (
+        | made |
+        made:: Punkt x: 1 y: 2.
+        platform transcript show: (made y + made base) printString; newLine.
+      )
+    ) : ()
+"};
+
+/// A frame's name, line, column and end of its range.
+fn placed(frame: &Value) -> (String, i64, i64, i64, i64) {
+    let number = |key: &str| frame[key].as_i64().unwrap_or(-1);
+    (
+        frame["name"].as_str().unwrap_or_default().to_owned(),
+        number("line"),
+        number("column"),
+        number("endLine"),
+        number("endColumn"),
+    )
+}
+
+/// A step stop whose top frame is answered, after `request`.
+fn step_to_top(client: &mut DapClient, request: &str) -> Vec<Value> {
+    client.succeed(request, json!({ "threadId": 1 }));
+    client.stopped("step");
+    client.stack_frames(0, 0)
+}
+
+/// The header stops through the agent: a step into the instantiation stops
+/// in the factory, named as the stack trace names a factory and placed at
+/// the header's factory pattern, whose parameters are the frame's
+/// variables; a step over reaches the superclass clause, a step into the
+/// clause the superclass's header, and a step out goes back after the clause.
+#[test]
+fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    // The entry stands at `main:args:`'s statement. Reading `Punkt` for the
+    // first time evaluates its superclass clause, `Basis`, which the first step
+    // into enters; the second returns to the statement, at the instantiation.
+    step_to_top(&mut client, "stepIn");
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Points>>main:args:".into(), 10, 5, 10, 27)
+    );
+
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        frames.iter().map(placed).collect::<Vec<_>>(),
+        [
+            ("Punkt class>>x:y:".to_owned(), 5, 15, 5, 26),
+            ("Points>>main:args:".to_owned(), 10, 18, 10, 25),
+        ]
+    );
+    assert_eq!(frames[0]["source"]["path"], absolute(&path), "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "ax")["value"], "1", "{variables:?}");
+    assert_eq!(variable(&variables, "ay")["value"], "2", "{variables:?}");
+
+    let frames = step_to_top(&mut client, "next");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Punkt initializer".into(), 5, 29, 5, 42)
+    );
+    assert_eq!(frames.len(), 3, "{frames:?}");
+
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Basis initializer".into(), 2, 15, 2, 21)
+    );
+    assert_eq!(frames.len(), 4, "{frames:?}");
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(variable(&variables, "a")["value"], "1", "{variables:?}");
+
+    let frames = step_to_top(&mut client, "stepOut");
+    assert_eq!(
+        placed(&frames[0]),
+        ("Punkt initializer".into(), 6, 7, 6, 23)
+    );
+    assert_eq!(frames.len(), 3, "{frames:?}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "3
+"
+    );
+}
+
+/// A session of `POINTS` stopped by steps into at `Punkt`'s factory, which
+/// a step into from the sender reaches by undoing the initializer's push.
+fn at_the_factory_stop(path: &Path) -> DapClient {
+    let mut client = DapClient::connect_mode(path);
+    client.start_session(true);
+    client.stopped("entry");
+    step_to_top(&mut client, "stepIn");
+    step_to_top(&mut client, "stepIn");
+    let frames = step_to_top(&mut client, "stepIn");
+    assert_eq!(frames[0]["name"], "Punkt class>>x:y:", "{frames:?}");
+    client
+}
+
+/// A `continue` at the factory's stop runs the program to its end, the
+/// initializer the factory pushes again run once.
+#[test]
+fn a_continue_at_the_factory_stop_runs_the_program_to_its_end() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = at_the_factory_stop(&path);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+/// A `terminate` at the factory's stop ends the program there.
+#[test]
+fn a_terminate_at_the_factory_stop_ends_the_program() {
+    let (_directory, path) = program("Points", POINTS);
+    let mut client = at_the_factory_stop(&path);
+    client.succeed("terminate", json!({}));
+    assert_eq!(exit_code_reported(&mut client), 1);
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(1), "{}", finished.stderr);
+    assert_eq!(finished.stdout, "");
+    assert!(finished.stderr.contains(TERMINATED), "{}", finished.stderr);
 }
 
 /// A root whose line 5 is a loop of two statements, followed on line 8 by
@@ -1938,10 +2606,12 @@ fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
         .position(|line| line.contains("^vmMirror transcript: self show: text ifFail:"))
         .expect("`show:`'s body");
     let line = u32::try_from(line + 1).expect("a line number");
+    let (_library_directory, library) = core_library();
+    let transcript_file = file_source(&library.join("platform").join("TranscriptFactory.ns"));
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
-    client.attach(false);
-    let breakpoints = client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[line]);
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    let breakpoints = client.set_breakpoints(transcript_file.clone(), &[line]);
     assert_eq!(breakpoints[0]["verified"], false, "{breakpoints:?}");
     client.configuration_done();
     let changed = client.event("breakpoint");
@@ -1956,7 +2626,7 @@ fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
         json!([breakpoints[0]["id"]]),
         "{stopped}"
     );
-    client.set_breakpoints(json!({ "name": "TranscriptFactory.ns" }), &[]);
+    client.set_breakpoints(transcript_file, &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }

@@ -321,7 +321,8 @@ impl<'gc> Mutator<'gc> {
         self.note_module_built();
         // A breakpoint set before the module was loaded resolves now.
         if !self.has_no_breakpoints() {
-            crate::debugger::breakpoints::module_built(self, mixin.name.as_str());
+            let module = crate::debugger::ModuleName::of(&mixin);
+            crate::debugger::breakpoints::module_built(self, &module);
         }
         class
     }
@@ -699,7 +700,10 @@ impl<'gc> Mutator<'gc> {
     /// limit refuses raises from the factory's activation, as
     /// `InitializeInstance`'s send does. What is skipped is the switch to
     /// the factory before its first instruction, a safepoint at which no
-    /// program code runs on either side.
+    /// program code runs on either side; a step into that stops in the
+    /// factory there undoes the initializer's push at the next one
+    /// instead (`debugger::stepping::rewound_into_factory`), so that this
+    /// path tests nothing for the debugger.
     pub(crate) fn enter_factory_body(
         &mut self,
         factory: ActivationReference,
@@ -1355,7 +1359,7 @@ fn declared_factory_arity(view: ClassLevel<'_, '_>) -> Option<usize> {
 
 /// Where `InitializeInstance` stands in a factory body
 /// (`compiler::factory_body`).
-const FACTORY_INITIALIZE: usize = 1;
+pub(crate) const FACTORY_INITIALIZE: usize = 1;
 
 /// The two registers a factory body (`compiler::factory_body`) writes
 /// after its arguments.

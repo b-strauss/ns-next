@@ -14,20 +14,32 @@ use serde_json::{json, Value};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The timeout of the breakable lines' tests, for every answer they wait
-/// for after the start. They compile a module -- the first bootstraps the
-/// worker's interpreter -- and so run in the stress gate, alongside its
-/// fifteen other suites, where a test of 0.03 s took 9 to 34 s and one
-/// of 0.2 s more than 25 (and `disasm_arithmetic_initializer` 19.5 s for
-/// 0.03 s): merely slow, as nothing of theirs grows under a stress mode.
-/// Long enough not to fail a loaded machine, short enough that a server
-/// that never answers still fails the test.
-const COMPILING_TIMEOUT: Duration = Duration::from_secs(300);
+/// The timeout of every answer a test that compiles a module waits for,
+/// from `initialize` to `shutdown`. Such a test bootstraps the worker's
+/// interpreter, so it reaches the runtime and the stress gate runs it
+/// (`xtask/unreached-tests.txt` does not list it), alongside its fifteen
+/// other suites, where a test of 0.03 s took 9 to 34 s and one of 0.2 s
+/// more than 25 (and `disasm_arithmetic_initializer` 19.5 s for 0.03 s):
+/// merely slow, as nothing of theirs grows under a stress mode. The
+/// stall is the whole process's, not the compile's: three of these
+/// tests, whose answers take about 2 ms together on an idle machine,
+/// each ran 18 s there and timed out at once waiting 10 s for an
+/// `initialize` or a `shutdown`, which the server answers on its own
+/// thread without asking the worker. So every wait of such a test takes
+/// this timeout, not only those behind a compile. Long enough not to fail
+/// a loaded machine, short enough that a server that never answers still
+/// fails the test.
+const STRESS_TIMEOUT: Duration = Duration::from_secs(300);
 
+// The waiting helpers track their caller, so that a timeout names the
+// test's line that waited rather than the helper's.
+
+#[track_caller]
 fn receive(client: &Connection) -> Message {
     receive_within(client, TIMEOUT)
 }
 
+#[track_caller]
 fn receive_within(client: &Connection, timeout: Duration) -> Message {
     client
         .receiver
@@ -35,10 +47,12 @@ fn receive_within(client: &Connection, timeout: Duration) -> Message {
         .expect("the server answers within the timeout")
 }
 
+#[track_caller]
 fn request(client: &Connection, id: i32, method: &str, params: Value) -> Value {
     request_within(client, id, method, params, TIMEOUT)
 }
 
+#[track_caller]
 fn request_within(
     client: &Connection,
     id: i32,
@@ -78,10 +92,12 @@ fn notify(client: &Connection, method: &str, params: Value) {
         .expect("send a notification");
 }
 
+#[track_caller]
 fn next_diagnostics(client: &Connection) -> Value {
     next_diagnostics_within(client, TIMEOUT)
 }
 
+#[track_caller]
 fn next_diagnostics_within(client: &Connection, timeout: Duration) -> Value {
     loop {
         if let Message::Notification(notification) = receive_within(client, timeout) {
@@ -371,19 +387,45 @@ fn an_unknown_request_is_method_not_found() {
 }
 
 /// A server on its own thread, initialized, and the client end to drive it.
+#[track_caller]
 fn initialized_server() -> (Connection, std::thread::JoinHandle<Result<(), String>>) {
+    initialized_server_within(TIMEOUT)
+}
+
+/// `initialized_server`, waiting up to `timeout` for the server's answer.
+#[track_caller]
+fn initialized_server_within(
+    timeout: Duration,
+) -> (Connection, std::thread::JoinHandle<Result<(), String>>) {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || ns_analyzer::server::run(server).map_err(|error| error.to_string()))
         .expect("spawn the server");
-    request(&client, 1, "initialize", json!({ "capabilities": {} }));
+    request_within(
+        &client,
+        1,
+        "initialize",
+        json!({ "capabilities": {} }),
+        timeout,
+    );
     notify(&client, "initialized", json!({}));
     (client, server_thread)
 }
 
+#[track_caller]
 fn shut_down(client: &Connection, server_thread: std::thread::JoinHandle<Result<(), String>>) {
-    request(client, 1000, "shutdown", Value::Null);
+    shut_down_within(client, server_thread, TIMEOUT);
+}
+
+/// `shut_down`, waiting up to `timeout` for the server's answer.
+#[track_caller]
+fn shut_down_within(
+    client: &Connection,
+    server_thread: std::thread::JoinHandle<Result<(), String>>,
+    timeout: Duration,
+) {
+    request_within(client, 1000, "shutdown", Value::Null, timeout);
     notify(client, "exit", Value::Null);
     let outcome = server_thread
         .join()
@@ -578,10 +620,12 @@ fn a_fifo_answers_no_symbols_without_blocking() {
 }
 
 /// Opens `text` as `uri` and waits for the diagnostics the open publishes.
+#[track_caller]
 fn open_document(client: &Connection, uri: &str, text: &str) {
     open_document_within(client, uri, text, TIMEOUT);
 }
 
+#[track_caller]
 fn open_document_within(client: &Connection, uri: &str, text: &str, timeout: Duration) {
     notify(
         client,
@@ -591,6 +635,7 @@ fn open_document_within(client: &Connection, uri: &str, text: &str, timeout: Dur
     let _ = next_diagnostics_within(client, timeout);
 }
 
+#[track_caller]
 fn format_request(client: &Connection, id: i32, uri: &str, options: Value) -> Value {
     request(
         client,
@@ -789,13 +834,14 @@ fn a_hint_is_published_with_its_quick_fix_and_the_fix_for_the_file() {
     shut_down(&client, server_thread);
 }
 
+#[track_caller]
 fn breakable_lines(client: &Connection, id: i32, uri: &str) -> Value {
     request_within(
         client,
         id,
         "newspeak/breakableLines",
         json!({ "textDocument": { "uri": uri } }),
-        COMPILING_TIMEOUT,
+        STRESS_TIMEOUT,
     )
 }
 
@@ -865,8 +911,8 @@ fn breakable_lines_of_the_module(shift: u32) -> Value {
 
 #[test]
 fn breakable_lines_answer_each_statement_line_and_its_block_variants() {
-    let (client, server_thread) = initialized_server();
-    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
+    let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);
+    open_document_within(&client, URI, BREAKABLE, STRESS_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 2, URI),
         json!({ "version": 1, "lines": breakable_lines_of_the_module(0) })
@@ -876,7 +922,7 @@ fn breakable_lines_answer_each_statement_line_and_its_block_variants() {
         json!({ "version": 1, "lines": breakable_lines_of_the_module(0) }),
         "asked again, the same"
     );
-    shut_down(&client, server_thread);
+    shut_down_within(&client, server_thread, STRESS_TIMEOUT);
 }
 
 #[test]
@@ -891,7 +937,7 @@ fn a_document_that_does_not_parse_answers_null_lines() {
               public run = ( ^1
             ) : ()
         "},
-        COMPILING_TIMEOUT,
+        STRESS_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 2, unparsed),
@@ -906,7 +952,7 @@ fn a_document_that_does_not_parse_answers_null_lines() {
               public run = ( ^outer Missing foo )
             ) : ()
         "},
-        COMPILING_TIMEOUT,
+        STRESS_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 3, unresolved),
@@ -918,8 +964,8 @@ fn a_document_that_does_not_parse_answers_null_lines() {
 
 #[test]
 fn breakable_lines_follow_the_document_s_changes() {
-    let (client, server_thread) = initialized_server();
-    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
+    let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);
+    open_document_within(&client, URI, BREAKABLE, STRESS_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 2, URI)["lines"],
         breakable_lines_of_the_module(0)
@@ -932,12 +978,12 @@ fn breakable_lines_follow_the_document_s_changes() {
             "contentChanges": [{ "text": format!("/// A line above.\n{BREAKABLE}") }],
         }),
     );
-    let _ = next_diagnostics_within(&client, COMPILING_TIMEOUT);
+    let _ = next_diagnostics_within(&client, STRESS_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 3, URI),
         json!({ "version": 7, "lines": breakable_lines_of_the_module(1) })
     );
-    shut_down(&client, server_thread);
+    shut_down_within(&client, server_thread, STRESS_TIMEOUT);
 }
 
 #[test]
@@ -981,13 +1027,13 @@ fn a_chain_of(links: usize) -> String {
 /// overflowing a stack, which would abort the server.
 #[test]
 fn a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on() {
-    let (client, server_thread) = initialized_server();
+    let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);
     let at_cap = "file:///C:/work/AtTheCap.ns";
     open_document_within(
         &client,
         at_cap,
         &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS),
-        COMPILING_TIMEOUT,
+        STRESS_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 2, at_cap),
@@ -998,17 +1044,117 @@ fn a_chain_past_the_cap_answers_null_lines_and_the_server_serves_on() {
         &client,
         past_cap,
         &a_chain_of(ns_analyzer::breakable::MAX_NESTED_SENDS + 1),
-        COMPILING_TIMEOUT,
+        STRESS_TIMEOUT,
     );
     assert_eq!(
         breakable_lines(&client, 3, past_cap),
         json!({ "version": 1, "lines": null })
     );
-    open_document_within(&client, URI, BREAKABLE, COMPILING_TIMEOUT);
+    open_document_within(&client, URI, BREAKABLE, STRESS_TIMEOUT);
     assert_eq!(
         breakable_lines(&client, 4, URI),
         json!({ "version": 1, "lines": breakable_lines_of_the_module(0) }),
         "the server serves on"
     );
-    shut_down(&client, server_thread);
+    shut_down_within(&client, server_thread, STRESS_TIMEOUT);
+}
+
+/// Each line of a breakable lines' answer and how many variants it has.
+fn lines_and_variant_counts(lines: &Value) -> Vec<(u64, usize)> {
+    lines
+        .as_array()
+        .expect("lines are answered")
+        .iter()
+        .map(|entry| {
+            (
+                entry["line"].as_u64().expect("a line"),
+                entry["variants"].as_array().expect("variants").len(),
+            )
+        })
+        .collect()
+}
+
+/// What a breakable lines' answer of `statements` in `text` says of each
+/// line: the lines statements start on and the blocks whose first each
+/// is.
+fn expected_lines(statements: &[ns_runtime::BreakableStatement], text: &str) -> Vec<(u64, usize)> {
+    let index = ns_tooling::lines::LineIndex::new(text);
+    let mut lines: Vec<(u64, usize)> = Vec::new();
+    for statement in statements {
+        let line = u64::from(index.position(text, statement.statement.start).line);
+        if lines.last().is_none_or(|(last, _)| *last != line) {
+            lines.push((line, 0));
+        }
+        if let (Some(_), Some((_, variants))) = (statement.block, lines.last_mut()) {
+            *variants += 1;
+        }
+    }
+    lines
+}
+
+/// A document holding, byte for byte, the text of a shipped module, as
+/// the JetBrains plugin opens the library `ns-next shipped-sources`
+/// writes, is the shipped module: no diagnostic is published for it, and
+/// its breakable lines are the statements the binary's own compile of the
+/// module stops at (`Interpreter::shipped_breakable_statements`), which
+/// `ns-cli`'s `debug_metadata` holds to where a breakpoint lands. The
+/// shipped and the program-side answers are equal today, so this pins the
+/// behaviour, not which path answers; `debug_metadata` and the `ModuleSource`
+/// the shipped compile takes tell the paths apart.
+#[test]
+fn a_shipped_module_s_text_is_the_shipped_module() {
+    let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);
+    let mut interpreter = ns_runtime::Interpreter::bootstrap();
+    let shipped: Vec<_> = ns_runtime::shipped_source_files()
+        .into_iter()
+        .filter(|file| ns_runtime::shipped_module_named_by_text(file.text).is_some())
+        .collect();
+    assert!(shipped.len() >= 7, "only {} shipped modules", shipped.len());
+    for (id, file) in (2..).zip(shipped) {
+        let uri = format!("file:///C:/library/{}", file.path);
+        notify(
+            &client,
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": file.text } }),
+        );
+        let diagnostics = next_diagnostics_within(&client, STRESS_TIMEOUT);
+        assert_eq!(diagnostics["diagnostics"], json!([]), "{}", file.name);
+        let statements = interpreter
+            .shipped_breakable_statements(file.name)
+            .expect("a shipped module's statements");
+        assert!(!statements.is_empty(), "{}", file.name);
+        let answer = breakable_lines(&client, id, &uri);
+        assert_eq!(
+            lines_and_variant_counts(&answer["lines"]),
+            expected_lines(&statements, file.text),
+            "{}",
+            file.name
+        );
+    }
+    shut_down_within(&client, server_thread, STRESS_TIMEOUT);
+}
+
+/// A text one byte away from a shipped module's -- a line put above it
+/// -- is an ordinary module, its breakable lines its own compile's.
+#[test]
+fn a_text_one_byte_from_a_shipped_module_s_is_an_ordinary_module() {
+    let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the kernel's text");
+    let text = format!("\n{kernel}");
+    let uri = "file:///C:/work/Kernel.ns";
+    open_document_within(&client, uri, &text, STRESS_TIMEOUT);
+    let module = ns_syntax::parse(&text).expect("the text parses");
+    let resolved = ns_runtime::resolve(
+        module,
+        text.as_str().into(),
+        ns_runtime::SourceOrigin::File("Kernel.ns".into()),
+    )
+    .expect("the text resolves as a program's module");
+    let statements = ns_runtime::Interpreter::bootstrap().breakable_statements(&resolved);
+    let answer = breakable_lines(&client, 2, uri);
+    assert_eq!(
+        lines_and_variant_counts(&answer["lines"]),
+        expected_lines(&statements, &text)
+    );
+    shut_down_within(&client, server_thread, STRESS_TIMEOUT);
 }

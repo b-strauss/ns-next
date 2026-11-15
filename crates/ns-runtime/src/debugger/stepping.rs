@@ -18,11 +18,17 @@
 //! never lands in a frame the step filters filter -- by default the
 //! shipped modules' (decision 16): a stop it would make there goes on as
 //! a step into from the first unfiltered frame below, and a step into's
-//! request outlasts the pushes of filtered bodies -- nor in a factory's
-//! frame (decision 12), which it passes over from that frame itself
-//! (`passes_over`). A method an unwind leaves while a method breakpoint
-//! names it is reported by a step of the same kind (`method_left`), whose
-//! stop reports the method's exit where the program goes on.
+//! request outlasts the pushes of filtered bodies. A step into an
+//! instantiation stops in the factory's frame, at its entry, and goes on
+//! from there into the initializer it pushes, and one into a superclass
+//! clause or a `<:` clause's message stops at the entry of the
+//! initializer it enters, at its class's header, but `Object`'s and
+//! `Top`'s; on the way out it passes over the factory to its caller
+//! (decision 12, `rewound_into_factory`, `enters_at_header`,
+//! `went_on_past_filtered`). A method an unwind leaves while a method
+//! breakpoint names it is reported by a step of the same kind
+//! (`method_left`), whose stop reports the method's exit where the
+//! program goes on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,6 +45,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{register_written, CompiledCode, Instruction};
 use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
+use crate::interpreter::instantiate::FACTORY_INITIALIZE;
 use crate::interpreter::Mutator;
 use crate::types::{ActivationKind, BuiltinClass};
 use crate::Symbol;
@@ -177,6 +184,15 @@ pub(crate) struct Stepping {
     /// which it then steps in as in any other (`is_filtered`); decided as
     /// the step begins, whatever filters are set while it runs.
     started_filtered: bool,
+    /// The frame the step was begun in when that is not the stepping
+    /// frame: an initializer's at its header stop, whose step steps from
+    /// its sender (`begin_at_header`). A stop in it is a stop in the frame
+    /// the step was begun in (`went_on_past_filtered`). Set only while a
+    /// one-shot of the frame's own waits at its first statement, which it
+    /// reaches before any return: a return to its caller's send is
+    /// reported to no step, so the name must not outlive the frame's run
+    /// to that one-shot; every other way it leaves is reported (`popped`).
+    begun_in: Option<Holder>,
     /// The method breakpoints whose method an unwind left since the step
     /// began (`method_left`), which its stop reports as the method's exit.
     exits: Vec<BreakpointId>,
@@ -189,6 +205,25 @@ pub(crate) struct Stepping {
     /// Whether the step stands for a pause a host run started with
     /// (`stop_at_entry`): its stop is the pause's.
     at_entry: bool,
+    /// Whether the step went on as a step into from where the program
+    /// went on (`continue_as_step_into`): its frame or its return point's
+    /// caller left, a filtered frame was passed, a handler was found or
+    /// the next run started. Its stop then stands in another activation
+    /// than the one the step was taken in, though it may be one of the
+    /// same body at the same depth -- a block's next activation -- which
+    /// the agent's step by line tells apart by it (decision 4).
+    went_on_elsewhere: bool,
+    /// The activation the step was taken in when the step steps in
+    /// another frame -- a fallback closure of a block its creator's
+    /// inlined form took, whose creator is the stepping frame -- while it
+    /// has not left: its return is noted by a one-shot where its caller
+    /// goes on (`OneShot::leaves`), an unwind's pop by `popped`, since a
+    /// later stop in a block of the same body at the same offset may be
+    /// its next activation.
+    origin: Option<Holder>,
+    /// Whether `origin` left: the step's stop is then in another
+    /// activation (`went_on_elsewhere`).
+    origin_left: bool,
 }
 
 impl Stepping {
@@ -217,10 +252,14 @@ impl Stepping {
             suspended: Vec::new(),
             next_key: 0,
             started_filtered: false,
+            begun_in: None,
             exits: Vec::new(),
             #[cfg(debug_assertions)]
             waiting_on: None,
             at_entry: false,
+            went_on_elsewhere: false,
+            origin: None,
+            origin_left: false,
         }
     }
 }
@@ -239,6 +278,17 @@ pub(crate) enum HeldStep {
     GoOn,
     /// A push: the program stops in the pushed frame, where it stands.
     Stop,
+    /// A factory's push, which went on into its initializer's push with
+    /// no safepoint between (`Mutator::enter_factory_body`): the
+    /// initializer's push undone, the program stops in the factory, now
+    /// on top, at its `InitializeInstance` -- a frame other than the one
+    /// the run loop left, which it reads again (`rewound_into_factory`).
+    StopInFactory,
+    /// The push of a superclass's or an applied level's initializer by a
+    /// clause: the program stops in the pushed frame at its entry, before
+    /// its first statement, placed at its declaration's header
+    /// (`enters_at_header`, `begin_at_header`).
+    StopAtHeader,
 }
 
 /// Begins a step of `action` in the frame a stop stands in: the top
@@ -266,6 +316,19 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         StepAction::Over | StepAction::Into => None,
     };
     let step_from = left.as_ref().map_or(taken_in, SendLeft::frame);
+    // Only a step taken in the top frame itself may step in another: the
+    // creator of the fallback closure it runs (`note_origin`).
+    let taken_on_top = shown.is_none() && left.is_none();
+    // A factory has no statement of its own: a step over at its stop goes
+    // on, as a step into, to the initializer it pushes (decision 12).
+    let action = match (action, step_from) {
+        (StepAction::Over, Place::Running(frame))
+            if stack::is_factory(&mutator.heap, &StackFrame::Running(frame)) =>
+        {
+            StepAction::Into
+        }
+        _ => action,
+    };
     let passed = match &left {
         Some(SendLeft::Inlined { left, .. }) => Some(left),
         Some(SendLeft::Called { .. }) | None => None,
@@ -291,6 +354,9 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
     }
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = started_filtered;
+    }
+    if taken_on_top {
+        note_origin(mutator, top);
     }
     settle(mutator);
     // The top frame fetches the slot it stands at again as it goes on,
@@ -754,6 +820,7 @@ fn stop_after_send<'gc>(
         holder,
         stops: true,
         records: true,
+        leaves: false,
     };
     patch(mutator, code, after, one_shot);
     if let Some(stepping) = &mut mutator.stepping {
@@ -770,7 +837,9 @@ fn stop_after_send<'gc>(
 /// it runs anything, so the first one-shot it reaches is its first
 /// statement's; that stop is the pause's (`is_at_entry`) and serves the
 /// pause bit, which stays set meanwhile, so that a body without metadata,
-/// which floods nothing, still stops at the first safepoint. It stops in
+/// which floods nothing, still stops at the first safepoint. A factory
+/// the host sends, which has no statement start, is stopped at its entry
+/// (`stop_at_factory_entry`). It stops in
 /// the entry frame whatever the step filters say, as a pause stops where
 /// the program is. The method exits of a step the run before carried
 /// (`run_ended`), `exits`, are the pause's stop's to report, as a pause
@@ -793,6 +862,9 @@ pub(crate) fn stop_at_entry(
         stepping.started_filtered = true;
         stepping.at_entry = true;
     }
+    // A factory the host sends has no statement start: the pause stops it
+    // at its entry, as a step carried into its run does.
+    stop_at_factory_entry(mutator, entry);
     keep_exits(mutator, exits);
     settle(mutator);
 }
@@ -901,6 +973,13 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
             stepping.after_send = Some((Holder::Left, index));
         }
     }
+    if stepping.begun_in.is_some_and(gone) {
+        stepping.begun_in = None;
+    }
+    if stepping.origin.is_some_and(gone) {
+        stepping.origin = None;
+        stepping.origin_left = true;
+    }
     stepping.between.retain(|(held, _)| !gone(*held));
     mutator.breakpoints.forget_one_shot_holders(gone);
 }
@@ -975,8 +1054,97 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
         mutator.breakpoints.count_step_from_suspended();
     }
     start(mutator, StepAction::Into, place, place, returned, None);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.went_on_elsewhere = true;
+    }
+    if let Place::Running(frame) = place {
+        stop_at_factory_entry(mutator, frame);
+    }
     keep_exits(mutator, exits);
     settle(mutator);
+}
+
+/// Whether the step in progress went on as a step into from another frame
+/// than the one it was taken in (`Stepping::went_on_elsewhere`), or the
+/// activation it was taken in left while the step stepped in another
+/// frame (`Stepping::origin_left`): its stop stands in another activation.
+/// Read by the step's stop before it ends the step.
+pub(crate) fn went_on_elsewhere(mutator: &Mutator<'_>) -> bool {
+    mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| stepping.went_on_elsewhere || stepping.origin_left)
+}
+
+/// Notes `top`, the activation a step was just begun in, as its origin
+/// when the step steps in another frame -- the creator of the fallback
+/// closure `top` runs -- and patches where `top`'s caller goes on with a
+/// one-shot that notes its return and never stops: a block a receiver
+/// runs again may stop the step in a new activation at `top`'s offset, at
+/// the same depth, which only that return tells from `top`.
+fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
+    let origin = Holder::Running(top);
+    let steps_elsewhere = mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| !stepping.frame.is(origin));
+    if !steps_elsewhere {
+        return;
+    }
+    let Some((caller, code, point)) = return_slot(mutator, origin) else {
+        return;
+    };
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.origin = Some(origin);
+    }
+    let one_shot = OneShot {
+        holder: caller,
+        stops: false,
+        records: false,
+        leaves: true,
+    };
+    patch(mutator, &code, point, one_shot);
+}
+
+/// The activation a step was taken in returned to its caller
+/// (`OneShot::leaves`).
+pub(crate) fn origin_returned(mutator: &mut Mutator<'_>) {
+    if let Some(stepping) = &mut mutator.stepping {
+        if stepping.origin.take().is_some() {
+            stepping.origin_left = true;
+        }
+    }
+}
+
+/// A step into that goes on from `frame`, when `frame` is a factory's
+/// that has not run yet -- the first activation of a host run that sends
+/// a factory, which a step the run before left goes on from (decision
+/// 17), or which a pause asked before the run stops (`stop_at_entry`) --
+/// stops at its entry, as one that pushes the factory does
+/// (`held_step`): the factory's one place, since it has no statement
+/// start for the flood to patch. A one-shot at its first instruction,
+/// which it fetches next, makes the stop. A filtered factory -- a shipped
+/// class's -- is none a step stops in.
+fn stop_at_factory_entry(mutator: &mut Mutator<'_>, frame: ActivationReference) {
+    let heap = &mutator.heap;
+    if !stack::is_factory(heap, &StackFrame::Running(frame))
+        || heap.activation_program_counter(frame) != 0
+        || is_filtered(mutator, &StackFrame::Running(frame))
+    {
+        return;
+    }
+    let code = mutator.heap.activation_code(frame);
+    patch(
+        mutator,
+        &code,
+        0,
+        OneShot {
+            holder: Holder::Running(frame),
+            stops: true,
+            records: false,
+            leaves: false,
+        },
+    );
 }
 
 /// The handler search found the handler of the `on:do:` activation
@@ -1215,13 +1383,17 @@ pub(crate) fn take_exits(mutator: &mut Mutator<'_>) -> Vec<BreakpointId> {
 /// -- as a step into from the first unfiltered frame below
 /// (`continue_as_step_into`). A frame the step was begun in, stopped
 /// there by a breakpoint or with the filter off, is stepped in as any
-/// other, and so is a block the compiler lowered inline in it. A
-/// factory's frame -- at its return point after a step over at its
-/// initializer's last statement -- is passed over too, whatever the
-/// filters say and wherever the step began (decision 12): the step goes
-/// on as a step into from that frame, whose return point in its caller,
-/// or the next run's start when it returns to the host, is where it
-/// stops.
+/// other -- an initializer at its header stop too, whose step steps from
+/// its sender (`Stepping::begun_in`) -- and so is a block the compiler
+/// lowered inline in it. A
+/// factory's frame past its entry -- at its return point after a step
+/// over or out at its initializer's last statement -- is passed over too,
+/// whatever the filters say and wherever the step began (decision 12):
+/// the step goes on as a step into from that frame, whose return point
+/// in its caller, or the next run's start when it returns to the host, is
+/// where it stops. Its entry, the one place a step stops in it, is not
+/// passed (`stop_at_factory_entry`). So is `Object`'s initializer, and
+/// `Top`'s, always (`passed_by_every_step`).
 pub(crate) fn went_on_past_filtered(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -1229,26 +1401,23 @@ pub(crate) fn went_on_past_filtered(
     let Some(stepping) = &mutator.stepping else {
         return false;
     };
-    let (frame, started_filtered) = (stepping.frame, stepping.started_filtered);
-    let passes = stack::is_factory(&mutator.heap, &StackFrame::Running(activation))
-        || (!(started_filtered && takes(mutator, frame, activation))
+    let (frame, started_filtered, begun_in) =
+        (stepping.frame, stepping.started_filtered, stepping.begun_in);
+    let begun_here = |mutator: &Mutator<'_>| {
+        takes(mutator, frame, activation)
+            || begun_in.is_some_and(|begun| begun.is(Holder::Running(activation)))
+    };
+    let past_a_factory_s_entry = stack::is_factory(&mutator.heap, &StackFrame::Running(activation))
+        && mutator.heap.activation_program_counter(activation) > 0;
+    let passes = past_a_factory_s_entry
+        || passed_by_every_step(mutator, activation)
+        || (!(started_filtered && begun_here(mutator))
             && is_filtered(mutator, &StackFrame::Running(activation)));
     if !passes {
         return false;
     }
     continue_as_step_into(mutator, activation);
     true
-}
-
-/// Whether a step into's request goes on through `frame` to the frames it
-/// pushes rather than stopping in it: the step filters filter it
-/// (decision 16), or it is a factory's (decision 12). The factory is
-/// known by its frame's kind, never by its body's having no statement
-/// start: an empty body has none either and is stepped into as any
-/// other, and a factory of an image without source has no metadata to
-/// say so.
-fn passes_over(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
-    is_filtered(mutator, frame) || stack::is_factory(&mutator.heap, frame)
 }
 
 /// Whether the step filters filter `frame` (decision 16): its body is a
@@ -1286,7 +1455,7 @@ fn decide_filtered(mutator: &Mutator<'_>, frame: &StackFrame, filters: &StepFilt
     };
     (filters.shipped && root.shipped)
         || filters.classes.iter().any(|class| {
-            class.module == root.name.as_str()
+            class.module.names(&root)
                 && class.path.len() <= path.len()
                 && class
                     .path
@@ -1335,10 +1504,16 @@ fn first_unfiltered<'gc>(mutator: &Mutator<'gc>, from: ActivationReference) -> O
 /// is no push either, nor a frame between the one the step was taken in
 /// and the stepping frame, which was there already. The push stops at the
 /// pushed body's first statement start: here, where its frame stands at
-/// index 0, or at a one-shot at index 1 for a body whose first
-/// instruction makes its indirection vector (`MakeVector`, emitted before
-/// every statement). Anything else -- a backward jump, a caller resumed
-/// -- goes on without stopping.
+/// index 0, or at a one-shot at the first statement start a later
+/// instruction begins (`first_stop`). A factory's push stops in the
+/// factory, at its entry, though it has no statement start (decision 12):
+/// here, when the run loop switched to it, or, when the send went on at
+/// once into the initializer's push, in the factory again once that push
+/// is undone (`rewound_into_factory`); the push of an initializer a clause
+/// entered stops at its entry, its header stop (`enters_at_header`); and
+/// `Object`'s and `Top`'s initializers keep the request, as a filtered
+/// body does (`passed_by_every_step`). Anything else -- a backward jump, a
+/// caller resumed -- goes on without stopping.
 pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     let Some(stepping) = &mutator.stepping else {
         drop_request(mutator);
@@ -1366,20 +1541,57 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     if was_there || inline_code_of_step(mutator, top) {
         return HeldStep::GoOn;
     }
-    // A filtered body keeps the request, as does a factory: the step goes
-    // on through it to the next body it pushes that it stops in, itself or
-    // through others.
-    if passes_over(mutator, &StackFrame::Running(top)) || !sent_by_step(mutator, top) {
+    if rewound_into_factory(mutator, top) {
+        drop_request(mutator);
+        return HeldStep::StopInFactory;
+    }
+    // A filtered body keeps the request: the step goes on through it to
+    // the next body it pushes that it stops in, itself or through others.
+    // So does `Object`'s initializer, and `Top`'s, whatever the filters.
+    if is_filtered(mutator, &StackFrame::Running(top))
+        || passed_by_every_step(mutator, top)
+        || !sent_by_step(mutator, top)
+    {
         return HeldStep::GoOn;
     }
-    let code = mutator.heap.activation_code(top);
     drop_request(mutator);
-    let first = usize::from(
-        code.instruction_count() > 1
-            && matches!(code.instruction(0), Instruction::MakeVector { .. }),
-    );
-    if mutator.heap.activation_program_counter(top) >= first {
-        return HeldStep::Stop;
+    if enters_at_header(mutator, top) {
+        return HeldStep::StopAtHeader;
+    }
+    match stop_at_first(mutator, top, true) {
+        FirstStop::Standing => HeldStep::Stop,
+        FirstStop::Patched | FirstStop::Nowhere => HeldStep::GoOn,
+    }
+}
+
+/// Where `stop_at_first` stops a pushed frame.
+enum FirstStop {
+    /// It stands at its first statement start: the safepoint stops it.
+    Standing,
+    /// At a one-shot for it at its first statement start.
+    Patched,
+    /// Nowhere in it: it runs nothing a step stops at.
+    Nowhere,
+}
+
+/// Stops `top`, a frame the step pushed, at its first statement start
+/// (`first_stop`): `Standing` when it stands there already and
+/// `standing_stops` -- the safepoint stops it there -- and otherwise a
+/// one-shot there, which the frame reaches as it goes on, or fetches next
+/// when it stands there. An initializer with nothing but the clause that
+/// stands for `Object new` runs nothing a step stops at: nothing is set,
+/// and the step stops where the stepping frame goes on, after the `new`.
+fn stop_at_first(
+    mutator: &mut Mutator<'_>,
+    top: ActivationReference,
+    standing_stops: bool,
+) -> FirstStop {
+    let code = mutator.heap.activation_code(top);
+    let Some(first) = first_stop(mutator, top, &code) else {
+        return FirstStop::Nowhere;
+    };
+    if standing_stops && mutator.heap.activation_program_counter(top) >= first {
+        return FirstStop::Standing;
     }
     if let Some(stepping) = &mut mutator.stepping {
         // The value the stepping frame's last call answered is not the
@@ -1394,18 +1606,234 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
             holder: Holder::Running(top),
             stops: true,
             records: false,
+            leaves: false,
         },
     );
     settle(mutator);
-    HeldStep::GoOn
+    FirstStop::Patched
+}
+
+/// Whether `top` is the initializer a factory the step pushed went on
+/// into with no safepoint between, and its push is undone: a factory sent
+/// from a frame runs its first two instructions as part of the send
+/// (`Mutator::enter_factory_body`), so the first safepoint after the
+/// factory's push is its initializer's, the factory standing at its
+/// `InitializeInstance` (`instantiate::FACTORY_INITIALIZE`). The step
+/// stops in the factory there, its one place (decision 12): the
+/// initializer, which has run nothing -- its frame stands at index 0,
+/// never reified -- is popped as an unwind pops a frame, and the factory
+/// runs its `InitializeInstance` again once the program goes on, which
+/// decides and pushes the same initializer, since deciding it changes
+/// nothing and the instance is in its register already. Every other push
+/// is left alone: a factory the run loop switched to stopped at its own
+/// push, and a filtered one -- a shipped class's -- passes, its
+/// initializer with it.
+fn rewound_into_factory(mutator: &mut Mutator<'_>, top: ActivationReference) -> bool {
+    let heap = &mutator.heap;
+    let fresh_initializer = matches!(heap.activation_kind(top), ActivationKind::Initializer(..))
+        && heap.activation_program_counter(top) == 0
+        && heap.activation_reified(top).is_none()
+        && heap.activation_suspended_sender(top).is_none();
+    if !fresh_initializer {
+        return false;
+    }
+    let Some(factory) = heap.activation_sender(top) else {
+        return false;
+    };
+    let at_its_initializer = stack::is_factory(heap, &StackFrame::Running(factory))
+        && heap.activation_program_counter(factory) == FACTORY_INITIALIZE;
+    let steps_in_it = mutator
+        .stepping
+        .as_ref()
+        .is_some_and(|stepping| stepping.frame.is(Holder::Running(factory)));
+    if !at_its_initializer
+        || steps_in_it
+        || is_filtered(mutator, &StackFrame::Running(factory))
+        || !sent_by_step(mutator, factory)
+    {
+        return false;
+    }
+    mutator.pop_for_unwind_as::<false>(top);
+    true
+}
+
+/// Whether `top`, an initializer a step into just pushed, stops at its
+/// header (decision 12): it stands at its entry and was entered for
+/// another level than its sender's own -- its sender, an initializer,
+/// stands at a superclass clause's `InitializeSuperclass` or a `<:`
+/// clause's `InitializeAppliedLevel`, or a factory of another class, whose
+/// own levels run nothing (`instantiate::enter_or_pass`), pushed the
+/// first initializer above them that does. An initializer its own class's
+/// factory pushes has no header stop: the factory's stop is that level's,
+/// and the step from it stops at the initializer's first statement.
+fn enters_at_header(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
+    let heap = &mutator.heap;
+    let ActivationKind::Initializer(level, _) = heap.activation_kind(top) else {
+        return false;
+    };
+    if heap.activation_program_counter(top) != 0 {
+        return false;
+    }
+    let (kind, code) = match sender_of(mutator, top) {
+        Some(Place::Running(sender)) => {
+            (heap.activation_kind(sender), heap.activation_code(sender))
+        }
+        Some(Place::Suspended(sender)) => match heap.frame_code(sender) {
+            Some(code) => (heap.frame_kind(sender).activation_kind(), code),
+            None => return false,
+        },
+        None => return false,
+    };
+    match kind {
+        ActivationKind::Factory(class) => !class.same(level),
+        ActivationKind::Initializer(..) => {
+            let Some(sender) = sender_of(mutator, top) else {
+                return false;
+            };
+            let index = place_program_counter(mutator, sender);
+            index < code.instruction_count()
+                && matches!(
+                    code.instruction(index),
+                    Instruction::InitializeSuperclass { .. }
+                        | Instruction::InitializeAppliedLevel { .. }
+                )
+        }
+        ActivationKind::Method(_)
+        | ActivationKind::Closure(_)
+        | ActivationKind::TopLevel
+        | ActivationKind::SuperclassClause(_) => false,
+    }
+}
+
+/// Whether `activation` runs `Object`'s initializer or `Top`'s, which no
+/// step stops in, whatever the step filters say (decided with the user on
+/// 2026-11-15): the header stops of a superclass chain end at the last
+/// class that inherits from `Object` directly. Decided by the level the
+/// initializer initializes, the kernel's `Object` or `Top`, not by its
+/// module's being shipped.
+fn passed_by_every_step(mutator: &Mutator<'_>, activation: ActivationReference) -> bool {
+    let ActivationKind::Initializer(level, _) = mutator.heap.activation_kind(activation) else {
+        return false;
+    };
+    [BuiltinClass::Object, BuiltinClass::Top]
+        .into_iter()
+        .any(|kind| mutator.builtin_class(kind).same(level))
+}
+
+/// Begins a step of `action` at an initializer's header stop
+/// (`HeldStep::StopAtHeader`), which stands at the initializer's entry. A
+/// step out leaves the initializer as from any stop, for its sender after
+/// the clause. A step over or into goes on, as a step into from the
+/// sender, the level whose clause pushed the initializer, to the
+/// initializer's first statement (`first_stop`), as the push would have
+/// stopped it: the frame stands at its entry, which is not let past,
+/// since its first statement may start there; an initializer with nothing
+/// but the clause that stands for `Object new` lets the step stop where
+/// the sender goes on, after its clause. An initializer without metadata
+/// -- an image's without source -- has no statement start to tell its
+/// header from: its header stop is the one its push makes, and the step
+/// goes on from it as from that.
+pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
+    let top = mutator.heap.top_activation();
+    // The metadata first, which may compile, before any handle is read.
+    let placed = top.is_some_and(|top| stack::running_body(mutator, top).2.is_some());
+    let sender = top.and_then(|top| sender_of(mutator, top));
+    let (Some(top), Some(sender), StepAction::Over | StepAction::Into, true) =
+        (top, sender, action, placed)
+    else {
+        begin(mutator, action, None);
+        return;
+    };
+    let started_filtered = is_filtered(mutator, &StackFrame::Running(top));
+    end(mutator);
+    // `top` stands above the sender but is left out of `between`, which
+    // only a held request reads: the request is dropped at once.
+    start(mutator, StepAction::Into, sender, sender, None, None);
+    // The push the request waits for has happened: the header stop was
+    // its stop.
+    drop_request(mutator);
+    // The step was begun in the initializer, and steps in it as in any
+    // other frame should the filters filter it (decision 16) -- only while
+    // a one-shot of its own waits in it, which it reaches before it can
+    // return: a return to its caller's send reports no pop (`popped`), so
+    // a name of it kept past its return would name the next activation
+    // pushed at its offset. An initializer that runs nothing a step stops
+    // at leaves the step to its sender, begun nowhere filtered.
+    if let FirstStop::Patched = stop_at_first(mutator, top, false) {
+        if let Some(stepping) = &mut mutator.stepping {
+            stepping.started_filtered = started_filtered;
+            stepping.begun_in = Some(Holder::Running(top));
+        }
+    }
+    settle(mutator);
+}
+
+/// The index a step into stops at in `top`, the frame it just pushed,
+/// running `code`: its first statement start -- index 0, or index 1 for a
+/// body whose first instruction makes its indirection vector
+/// (`MakeVector`, emitted before every statement) -- but for an
+/// initializer of a declaration that writes no superclass clause, whose
+/// first statement is the clause that stands for `Object new` (§6.1),
+/// placed at the class's name: no step stops there, and the push stops at
+/// the first statement start after it, `None` when there is none. The
+/// metadata says where the statements are; a body without it, an image's
+/// without source, stops where it stands.
+fn first_stop(
+    mutator: &mut Mutator<'_>,
+    top: ActivationReference,
+    code: &Rc<CompiledCode>,
+) -> Option<usize> {
+    let first = usize::from(
+        code.instruction_count() > 1
+            && matches!(code.instruction(0), Instruction::MakeVector { .. }),
+    );
+    if !matches!(
+        mutator.heap.activation_kind(top),
+        ActivationKind::Initializer(..)
+    ) {
+        return Some(first);
+    }
+    let (_, origin, metadata) = stack::running_body(mutator, top);
+    let (Some(origin), Some(metadata)) = (origin, metadata) else {
+        return Some(first);
+    };
+    let writes_no_clause = origin
+        .mixin
+        .declaration
+        .as_ref()
+        .is_some_and(|declaration| declaration.superclass.is_none());
+    let clause = (0..code.instruction_count())
+        .find(|index| {
+            matches!(
+                code.instruction(*index),
+                Instruction::InitializeSuperclass { .. }
+            )
+        })
+        .and_then(|index| u32::try_from(index).ok());
+    let (true, Some(clause)) = (writes_no_clause, clause) else {
+        return Some(first);
+    };
+    let Some(implicit) = metadata
+        .statements
+        .iter()
+        .filter(|entry| entry.instructions.contains(&clause))
+        .max_by_key(|entry| entry.instructions.len())
+    else {
+        return Some(first);
+    };
+    metadata
+        .statements
+        .iter()
+        .map(|entry| entry.instructions.start)
+        .filter(|start| *start >= implicit.instructions.end)
+        .min()
+        .and_then(|start| usize::try_from(start).ok())
 }
 
 /// Whether the step's frame, or a block the step flooded for it, sent to
-/// `top`: its sender is one of them, or a frame the step passes over --
-/// one the step filters filter, or a factory's (`passes_over`) -- whose
-/// sender is, and so on down: the shipped `do:` the stepping frame sent,
-/// which runs a block of the program, or the factory that runs the
-/// initializer of the class it sent `new` to. A frame between the one the
+/// `top`: its sender is one of them, or a frame the step filters filter
+/// whose sender is, and so on down: the shipped `do:` the stepping frame
+/// sent, which runs a block of the program. A frame between the one the
 /// step was taken in and the stepping frame, and a frame the step stops
 /// in, end the walk: what they send is not the step's.
 fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
@@ -1425,7 +1853,7 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
                 if stepping_frame.is(held) || inline_code_of_step(mutator, activation) {
                     return true;
                 }
-                if is_between(held) || !passes_over(mutator, &StackFrame::Running(activation)) {
+                if is_between(held) || !is_filtered(mutator, &StackFrame::Running(activation)) {
                     return false;
                 }
                 match sender_of(mutator, activation) {
@@ -1445,7 +1873,7 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
                 }
                 let heap = &mutator.heap;
                 let root = heap.stash(Value::object(heap.frame_object(frame)));
-                if !passes_over(mutator, &StackFrame::Suspended(root)) {
+                if !is_filtered(mutator, &StackFrame::Suspended(root)) {
                     return false;
                 }
                 match heap.frame_sender(frame) {
@@ -1557,6 +1985,8 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
     named.extend(stepping.between.iter().map(|(held, _)| *held));
     named.extend(stepping.return_point.map(|(caller, _)| caller));
     named.extend(stepping.after_send.map(|(holder, _)| holder));
+    named.extend(stepping.begun_in);
+    named.extend(stepping.origin);
     // Walked over the live activations, which alone may be read: a handle
     // the step holds is compared, never read through.
     let mut next = mutator.heap.top_activation();
@@ -1639,7 +2069,8 @@ fn hold<'gc>(mutator: &mut Mutator<'gc>, frame: FrameReference<'gc>) -> u32 {
 }
 
 /// Every name `from` of the step's is `onto` from here on: the stepping
-/// frame's, its return point's and its one-shots'.
+/// frame's, its return point's, the frame it was begun in, its origin and
+/// its one-shots'.
 fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
     if let Some(stepping) = &mut mutator.stepping {
         if stepping.frame.is(from) {
@@ -1660,6 +2091,12 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
             if holder.is(from) {
                 stepping.after_send = Some((onto, index));
             }
+        }
+        if stepping.begun_in.is_some_and(|begun| begun.is(from)) {
+            stepping.begun_in = Some(onto);
+        }
+        if stepping.origin.is_some_and(|origin| origin.is(from)) {
+            stepping.origin = Some(onto);
         }
     }
     mutator.breakpoints.rename_one_shots(from, onto);
@@ -1857,6 +2294,7 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
                 holder: frame,
                 stops: true,
                 records: false,
+                leaves: false,
             };
             patch(mutator, &body, index, one_shot);
         }
@@ -1865,6 +2303,7 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
                 holder: frame,
                 stops: false,
                 records: true,
+                leaves: false,
             };
             patch(mutator, &body, index, one_shot);
         }
@@ -1948,35 +2387,51 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
 /// which the one-shot waits for (`resumed`). None for a frame without a
 /// caller.
 fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
+    let Some((caller, code, point)) = return_slot(mutator, frame) else {
+        return;
+    };
+    let one_shot = OneShot {
+        holder: caller,
+        stops: true,
+        records: true,
+        leaves: false,
+    };
+    patch(mutator, &code, point, one_shot);
+    if let Some(stepping) = &mut mutator.stepping {
+        stepping.return_point = Some((caller, point));
+    }
+}
+
+/// Where `frame`'s return goes on: its caller -- running, or suspended and
+/// held by the step -- that caller's body and the index after the call it
+/// stands at; `None` for a frame with no caller, or whose caller stands at
+/// no call.
+fn return_slot(
+    mutator: &mut Mutator<'_>,
+    frame: Holder,
+) -> Option<(Holder, Rc<CompiledCode>, usize)> {
     let heap = &mutator.heap;
     let sender = match frame {
         Holder::Running(activation) => match heap.activation_suspended_sender(activation) {
             Some(suspended) => Err(suspended),
-            None => match heap.activation_sender(activation) {
-                Some(caller) => Ok(caller),
-                None => return,
-            },
+            None => Ok(heap.activation_sender(activation)?),
         },
         Holder::Suspended(key) => {
-            let Some(own) = mutator.stepping.as_ref().and_then(|stepping| {
+            let own = mutator.stepping.as_ref().and_then(|stepping| {
                 stepping
                     .suspended
                     .iter()
                     .find(|(held, _)| *held == key)
                     .and_then(|(_, root)| heap.fetch(root).as_object())
                     .and_then(|object| heap.object_frame(object))
-            }) else {
-                return;
-            };
-            let Some(sender) = heap.frame_sender(own) else {
-                return;
-            };
+            })?;
+            let sender = heap.frame_sender(own)?;
             match heap.frame_activation(sender) {
                 Some(caller) => Ok(caller),
                 None => Err(sender),
             }
         }
-        Holder::Left => return,
+        Holder::Left => return None,
     };
     let (caller, standing, code) = match sender {
         Ok(caller) => (
@@ -1985,9 +2440,7 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
             heap.activation_code(caller),
         ),
         Err(suspended) => {
-            let Some(code) = heap.frame_code(suspended) else {
-                return;
-            };
+            let code = heap.frame_code(suspended)?;
             let standing = heap.frame_stored_program_counter(suspended);
             (Holder::Suspended(hold(mutator, suspended)), standing, code)
         }
@@ -1995,17 +2448,9 @@ fn set_return_point(mutator: &mut Mutator<'_>, frame: Holder) {
     let point = standing + 1;
     if point >= code.instruction_count() || call_destination(&code.instruction(standing)).is_none()
     {
-        return;
+        return None;
     }
-    let one_shot = OneShot {
-        holder: caller,
-        stops: true,
-        records: true,
-    };
-    patch(mutator, &code, point, one_shot);
-    if let Some(stepping) = &mut mutator.stepping {
-        stepping.return_point = Some((caller, point));
-    }
+    Some((caller, code, point))
 }
 
 /// Patches slot `index` of `code` with `one_shot`, giving the body a code

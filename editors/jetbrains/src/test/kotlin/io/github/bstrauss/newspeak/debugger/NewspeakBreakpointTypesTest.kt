@@ -17,6 +17,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
@@ -32,6 +33,8 @@ import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.library.CoreLibraryStore
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
@@ -180,6 +183,34 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         )
         assertEquals(listOf("setBreakpointVerified 5", "setBreakpointVerified 4"), session.calls)
         assertSame(counted, handler.breakpointOf(1))
+    }
+
+    /**
+     * A breakpoint in a file of a directory of shipped sources is sent by
+     * the file's path, never by the module's name: the agent takes the path
+     * for the shipped module only in the library the session handed it, so
+     * that a program module of the same name never takes it, and one of a
+     * library the project does not show -- an older binary's -- for none.
+     */
+    fun testABreakpointInALibraryFileIsSentByItsPath() {
+        val library = NewspeakCoreLibrary.STORE.root.resolve("00000000000000ef")
+        try {
+            Files.createDirectories(library)
+            VfsRootAccess.allowRootAccess(testRootDisposable, library.toString())
+            Files.writeString(library.resolve("Kernel.ns"), LINES)
+            val kernel = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Kernel.ns")))
+            val breakpoint = addLineBreakpoint(kernel, 3, NewspeakLineBreakpointProperties())
+            val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true}]}""").asJsonObject }
+            val handler = NewspeakLineBreakpointHandler(RecordingSession().proxy)
+            handler.registerBreakpoint(breakpoint)
+            handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+            val source = agent.requests("setBreakpoints").single().getAsJsonObject("source")
+            assertEquals(kernel.toNioPath().toString(), source.get("path").asString)
+            assertNull("no name", source.get("name"))
+            runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.removeBreakpoint(breakpoint) } }
+        } finally {
+            CoreLibraryStore.deleteRecursively(library)
+        }
     }
 
     fun testAMovedBreakpointShowsTheLineItStopsAtAndARefusedOneItsMessage() {

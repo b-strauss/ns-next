@@ -3173,6 +3173,29 @@ ns-next has none of yet
 exist; the boundary they cross does not"); they are enforced anyway, because
 the specification requires them of every value.
 
+### The shipped sources as files
+
+The sources are embedded text (`include_str!`), and a tool that browses them
+-- the JetBrains plugin's library "Newspeak Core Library", an agent with a
+shell -- takes them from the very binary that runs, so that the text it shows
+is the text the debugger's lines refer to. `ns-next shipped-sources
+<directory>` writes every embedded `.ns`, `Manifest.ns` included, under its
+path below `crates/ns-runtime/core-library/` (`Kernel.ns`, `Manifest.ns`,
+`PlatformFactory.ns`, `platform/*.ns`), byte for byte the binary's text, and
+a file `fingerprint` holding `ns-next shipped-sources --fingerprint`'s line.
+`--json` prints `{ "fingerprint", "modules": [ { "name", "path", "text" } ] }`
+instead of writing. The command creates the directory, overwrites only its
+own files and refuses a directory holding anything else, so a mistyped path
+loses nothing. The paths are recorded beside the `include_str!`s
+(`core_library.rs`, `shipped_source_files`), and
+`tests/shipped_source_files.rs` holds them to the directory.
+
+The fingerprint (`shipped_sources_fingerprint`) is FNV-1a over each file's
+path and text, as sixteen hexadecimal digits. It is not the library
+fingerprint of "The embedded shipped code": that one leaves `Manifest.ns`
+out, since an edit to it changes no shipped code, while a copy of the
+sources keyed by a fingerprint must change with every text it holds.
+
 ### The embedded shipped code
 
 The shipped modules' compiled code is produced ahead of time and embedded

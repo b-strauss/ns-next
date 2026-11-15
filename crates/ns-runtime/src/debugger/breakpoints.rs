@@ -22,7 +22,7 @@ use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
 use super::remote::{
     BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, MethodBreakpoint,
-    MethodBreakpointState, StopReason,
+    MethodBreakpointState, ModuleName, StopReason,
 };
 use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
 use super::Attachments;
@@ -150,8 +150,8 @@ struct MethodBreakpointEntry {
 
 /// The line breakpoints of one module.
 struct ModuleBreakpoints {
-    /// The name of the module's root class.
-    name: String,
+    /// The module, a program's or a shipped one.
+    name: ModuleName,
     lines: Vec<LineBreakpointRecord>,
 }
 
@@ -252,6 +252,10 @@ pub(crate) struct OneShot {
     /// slot answered, the value of the last call a step reports
     /// (`stepping::record`).
     pub(crate) records: bool,
+    /// Whether taking it says the activation the step was taken in has
+    /// returned: it stands where that activation's caller goes on
+    /// (`stepping::origin_returned`).
+    pub(crate) leaves: bool,
 }
 
 /// The slot a stop that resumes goes past once: the activation standing
@@ -991,7 +995,7 @@ impl Breakpoints {
 /// fast path.
 pub(crate) fn set_line_breakpoints(
     mutator: &mut Mutator<'_>,
-    module: String,
+    module: ModuleName,
     requested: Vec<LineBreakpoint>,
 ) -> Event {
     let table = &mut mutator.breakpoints;
@@ -1041,17 +1045,17 @@ pub(crate) fn set_line_breakpoints(
     }
 }
 
-/// The module whose root class is named `name` was built, or its bodies
+/// The module `name` names was built, or its bodies
 /// replaced by an install: its line and method breakpoints are resolved
 /// against its current bodies, and a change reported unasked. A slot of a
 /// body no longer current keeps its patch, so that a frame still running
 /// it stops there.
-pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
+pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &ModuleName) {
     if let Some(position) = mutator
         .breakpoints
         .modules
         .iter()
-        .position(|held| held.name == name)
+        .position(|held| held.name == *name)
     {
         resolve_and_report(mutator, position);
     }
@@ -1059,7 +1063,7 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &str) {
         .breakpoints
         .methods
         .iter()
-        .any(|entry| entry.method.class.module == name)
+        .any(|entry| entry.method.class.module == *name)
     {
         let before: Vec<bool> = mutator
             .breakpoints
@@ -1119,7 +1123,7 @@ pub(crate) fn set_method_breakpoints(
 /// or no statement at or after the offset, otherwise.
 pub(crate) fn run_to(
     mutator: &mut Mutator<'_>,
-    module: &str,
+    module: &ModuleName,
     offset: u32,
 ) -> Result<(), &'static str> {
     let Some(resolution) = resolve(mutator, module, &[offset]) else {
@@ -1157,10 +1161,10 @@ pub(crate) fn run_to(
 /// returns of the blocks the compiler lowered inline in it. One whose
 /// method is gone keeps its patches on the bodies it patched, which
 /// frames may still run, and is no longer verified.
-fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&str>) {
+fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&ModuleName>) {
     for position in 0..mutator.breakpoints.methods.len() {
         let entry = &mutator.breakpoints.methods[position];
-        if module.is_some_and(|module| entry.method.class.module != module) {
+        if module.is_some_and(|module| entry.method.class.module != *module) {
             continue;
         }
         let request = entry.method.clone();
@@ -1196,7 +1200,7 @@ fn find_methods(
         let named = mutator
             .heap
             .mixin(root)
-            .is_some_and(|root| root.name.as_str() == request.class.module)
+            .is_some_and(|root| request.class.module.names(&root))
             && path.len() == request.class.path.len()
             && path
                 .iter()
@@ -1407,7 +1411,7 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
 
 /// The ids of the root mixins, instance sides, named `name`: the modules
 /// whose root class is, as `FrameLocation::module` names a module.
-fn module_roots(mutator: &Mutator<'_>, name: &str) -> Vec<MixinId> {
+fn module_roots(mutator: &Mutator<'_>, name: &ModuleName) -> Vec<MixinId> {
     mutator
         .heap
         .mixin_ids()
@@ -1417,34 +1421,33 @@ fn module_roots(mutator: &Mutator<'_>, name: &str) -> Vec<MixinId> {
                 && mutator
                     .heap
                     .mixin(*id)
-                    .is_some_and(|mixin| !mixin.is_class_side() && mixin.name.as_str() == name)
+                    .is_some_and(|mixin| !mixin.is_class_side() && name.names(&mixin))
         })
         .collect()
 }
 
-/// The current text of the module whose root class is named `name`: a
-/// built program module's, as the last install left it, which a program
-/// module named like a shipped one keeps for itself; otherwise the shipped
-/// module's shipped text, which needs no build, taken from the binary's
-/// tables and never from the heap. `None` for a name neither has, and for
-/// a program module without text (an image built with its source
-/// stripped).
-pub(crate) fn module_text(mutator: &Mutator<'_>, name: &str) -> Option<String> {
-    let program = module_roots(mutator, name)
-        .into_iter()
-        .find(|id| mutator.heap.mixin(*id).is_some_and(|mixin| !mixin.shipped));
-    if let Some(root) = program {
-        return mutator.heap.module_source(root);
+/// The current text of the module `name` names: a built program
+/// module's, as the last install left it; a shipped module's shipped
+/// text, which needs no build, taken from the binary's tables and never
+/// from the heap. `None` for a module neither has, and for a program
+/// module without text (an image built with its source stripped).
+pub(crate) fn module_text(mutator: &Mutator<'_>, name: &ModuleName) -> Option<String> {
+    if name.shipped {
+        let shipped = name.name == KERNEL_MODULE
+            || SHIPPED_MODULES
+                .iter()
+                .any(|shipped| shipped.name == name.name);
+        return shipped.then(|| String::from(&*shipped_module_text(&name.name)));
     }
-    (name == KERNEL_MODULE || SHIPPED_MODULES.iter().any(|shipped| shipped.name == name))
-        .then(|| String::from(&*shipped_module_text(name)))
+    let root = module_roots(mutator, name).into_iter().next()?;
+    mutator.heap.module_source(root)
 }
 
 /// Resolves `offsets` against every current body of the module whose
 /// root class is named `name`: for each, the first statement starting at
 /// or after it, and the slot of every body with a statement of that span.
 /// `None` while no module of that name is built.
-fn resolve(mutator: &mut Mutator<'_>, name: &str, offsets: &[u32]) -> Option<Resolution> {
+fn resolve(mutator: &mut Mutator<'_>, name: &ModuleName, offsets: &[u32]) -> Option<Resolution> {
     let (bodies, fast_path_methods) = module_bodies(mutator, name)?;
     let walked = bodies.iter().map(|(code, _)| address(code)).collect();
     let statements: Vec<Option<Span>> = offsets
@@ -1470,7 +1473,7 @@ fn resolve(mutator: &mut Mutator<'_>, name: &str, offsets: &[u32]) -> Option<Res
 /// built.
 fn module_bodies(
     mutator: &mut Mutator<'_>,
-    name: &str,
+    name: &ModuleName,
 ) -> Option<(PairedBodies, HashMap<usize, Rc<MixinMethod>>)> {
     let ids = mutator.heap.mixin_ids();
     let roots = module_roots(mutator, name);

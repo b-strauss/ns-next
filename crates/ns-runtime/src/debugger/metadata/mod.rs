@@ -44,6 +44,13 @@ pub(crate) struct BodyMetadata {
     /// and no statement start, so this is its one position. `None` for
     /// every body the lowerers compile.
     pub(crate) factory_pattern: Option<Span>,
+    /// Where an initializer's frame stands at its header stop, its entry
+    /// before its first statement that a step into a superclass clause or
+    /// a `<:` clause's message makes: its declaration's header, as the
+    /// factory's `factory_pattern` gives it (decision 12). Set when the
+    /// level is compiled again, for an initializer body itself, not its
+    /// blocks; `None` for every other body.
+    pub(crate) header_pattern: Option<Span>,
 }
 
 /// A place a line breakpoint or a step stops at: the instructions one

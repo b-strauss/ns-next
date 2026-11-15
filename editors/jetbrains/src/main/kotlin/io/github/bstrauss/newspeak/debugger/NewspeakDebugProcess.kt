@@ -34,11 +34,14 @@ import io.github.bstrauss.newspeak.debugger.dap.DapOutputEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapProcessEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
+import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
 /**
@@ -107,12 +110,14 @@ class NewspeakDebugProcess(
     override fun createConsole(): ExecutionConsole = console ?: super.createConsole()
 
     override fun sessionInitialized() {
-        work.execute(::connect)
+        // A use of the library, and a look at whether the binary's sources changed since the project opened, while the runtime starts.
+        val library = NewspeakCoreLibrary.getInstance(session.project).refreshForDebugging()
+        work.execute { connect(library) }
     }
 
     // ---- The start ----
 
-    private fun connect() {
+    private fun connect(library: Future<Path?>) {
         val connection = try {
             DapConnection.accept(serverSocket, ACCEPT_MILLISECONDS)
         } catch (_: SocketTimeoutException) {
@@ -125,6 +130,7 @@ class NewspeakDebugProcess(
         } finally {
             serverSocket.close()
         }
+        awaitLibrary(library)
         val client = DapClient(connection)
         this.client = client
         sources = NewspeakSources(client)
@@ -148,12 +154,42 @@ class NewspeakDebugProcess(
             addProperty("pathFormat", "path")
         }
         client.request("initialize", initialize)
-            .thenCompose { _ -> client.request("attach", JsonObject().apply { addProperty("stopOnEntry", false) }) }
+            .thenCompose { _ -> client.request("attach", attachArguments()) }
             .whenComplete { _, failure ->
                 if (failure != null && causeOf(failure) !is DapConnectionClosedException) {
                     work.execute { fail(NewspeakBundle.message("debugger.error.start", messageOf(failure))) }
                 }
             }
+    }
+
+    /**
+     * `attach`'s arguments: the core library the project shows, its
+     * directory absolute, by which the agent names and shows the shipped
+     * modules (`coreLibrary`); none while the project shows none.
+     */
+    internal fun attachArguments(): JsonObject = JsonObject().apply {
+        addProperty("stopOnEntry", false)
+        NewspeakCoreLibrary.getInstance(session.project).directory?.let { directory ->
+            addProperty("coreLibrary", directory.toAbsolutePath().toString())
+        }
+    }
+
+    /**
+     * Waits, bounded, for the session's look at the core library: when the
+     * binary was rebuilt with other shipped sources, it moves the line
+     * breakpoints to the new library's files, which the session must send
+     * rather than the old ones. Before the client exists, so that nothing
+     * is sent meanwhile; a look that fails or takes too long leaves the
+     * breakpoints where they are.
+     */
+    private fun awaitLibrary(library: Future<Path?>) {
+        try {
+            library.get(LIBRARY_SECONDS, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (exception: Exception) {
+            LOG.warn("the debug session starts without its look at the core library", exception)
+        }
     }
 
     /**
@@ -466,6 +502,9 @@ class NewspeakDebugProcess(
 
         /** Bounds each answer a stop waits for, so that a stalled connection cannot hold the session's thread. */
         const val ANSWER_SECONDS = 30L
+
+        /** Bounds the wait for the core library's look, which writes it when the binary's sources are new. */
+        const val LIBRARY_SECONDS = 60L
 
         /** How long a stopped session keeps the connection for its `terminate` to be answered. */
         const val STOP_GRACE_SECONDS = 10L

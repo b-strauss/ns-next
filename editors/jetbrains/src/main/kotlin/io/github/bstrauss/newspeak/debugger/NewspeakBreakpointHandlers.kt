@@ -134,9 +134,11 @@ abstract class NewspeakBreakpointHandler<B : XBreakpoint<*>>(
 }
 
 /**
- * Line breakpoints, a file's set at a time. A program's module is named by
- * its file's path; a module shown by reference -- a shipped one, as
- * `<Module>.ns` -- by that name, which is how the agent knows it.
+ * Line breakpoints, a file's set at a time. A file on disk is named by its
+ * path -- a program's module's file, and a file of the core library, which
+ * the agent takes for the shipped module only in the library the session
+ * handed it, so that no program module of a shipped module's name ever
+ * takes its breakpoints -- and a module shown by reference by its name.
  */
 class NewspeakLineBreakpointHandler(session: XDebugSession) :
     NewspeakBreakpointHandler<NewspeakLineBreakpoint>(NewspeakLineBreakpointType::class.java, session) {
@@ -182,15 +184,13 @@ class NewspeakLineBreakpointHandler(session: XDebugSession) :
         }
     }
 
-    private companion object {
-        /** How the agent names the file at [fileUrl]: by path on disk, by name for a module's text shown by reference. */
-        fun sourceOf(fileUrl: String): JsonObject? {
-            if (fileUrl.startsWith("file:")) {
-                return JsonObject().apply { addProperty("path", Path.of(VfsUtilCore.urlToPath(fileUrl)).toString()) }
-            }
-            val name = fileUrl.substringAfterLast('/').takeIf { name -> name.endsWith(".ns") } ?: return null
-            return JsonObject().apply { addProperty("name", name) }
+    /** How the agent names the file at [fileUrl]: by path for a file on disk, by name for a module's text shown by reference. */
+    private fun sourceOf(fileUrl: String): JsonObject? {
+        if (fileUrl.startsWith("file:")) {
+            return JsonObject().apply { addProperty("path", Path.of(VfsUtilCore.urlToPath(fileUrl)).toString()) }
         }
+        val name = fileUrl.substringAfterLast('/').takeIf { name -> name.endsWith(".ns") } ?: return null
+        return JsonObject().apply { addProperty("name", name) }
     }
 }
 

@@ -3297,6 +3297,28 @@ program's subclass of `String` as an argument, the error of a
   `structure/NewspeakStructureViewFactory.kt`).
   [editor-support.md](design/editor-support.md), "Structure" ("Known
   behaviours"). Noted 2026-10-04.
+- **The core library's breakable lines need the analyzer and `ns-next` to
+  be one build.** The plugin bundles `ns-next-analyzer` and takes
+  `ns-next` from the settings; the library's files are the runtime's
+  shipped sources, and the analyzer answers a file as a shipped module
+  only when its text is, byte for byte, one of its own shipped texts. When
+  the two binaries are different builds whose shipped sources differ,
+  `Kernel.ns` and the others are answered as ordinary modules: their
+  breakable lines are approximate, a line breakpoint may be refused where
+  the runtime would take it, or offered where it moves. The analyzer
+  would need the runtime's shipped sources -- the fingerprint directory
+  the plugin shows, or the runtime's binary itself -- to compile a
+  library file as that build's shipped module.
+  [editor-support.md](design/editor-support.md), "Breakable lines", "The
+  core library". Noted 2026-11-15.
+- **A project the plugin once took for a Newspeak project keeps its
+  core library.** `NewspeakCoreLibrary`'s `newspeak` flag is set when the
+  project's files say so, or when a debug session starts, and never reset:
+  a project whose `newspeak.json` is deleted, or whose last `.ns` file is
+  removed, shows the library until the IDE restarts. The flag would have
+  to be decided again at every refresh.
+  [editor-support.md](design/editor-support.md), "The core library".
+  Noted 2026-11-15.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
   (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
@@ -3463,6 +3485,16 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **The core library as the IDE draws it** (noted 2026-11-15, with the
+  header stops and the library). No `runIde` check was made of the
+  "Newspeak Core Library" node under External Libraries -- its folders,
+  its name, the files excluded that are not `.ns` -- nor of the library's
+  editors being read-only; the tests check the provider, the file index
+  and the files' writability on disk. A line breakpoint in a
+  `LightVirtualFile`, the module a source shown by reference opens when no
+  library file has its text, is untested as well. A check under `runIde`
+  recorded in [editor-support.md](design/editor-support.md) beside the
+  earlier ones would close the first two.
 - **The play button's Debug through the platform's own launcher** (noted
   2026-11-15, with the debugger's IDE fixes). `NewspeakRunAction` starts a
   configuration through `ProgramRunnerUtil.executeConfiguration`, and its
@@ -3624,6 +3656,16 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The stress group's wall time grew when its suites began sharing the
+  cores (2026-11-15, `1128abe8`): at two test threads each, the sixteen
+  suites ended between 329 s (NO_JIT) and 1,323 s (COLLECT), so the group
+  took 1,323 s against about 820 s at 18 threads each -- the shorter
+  suites end early and leave their cores idle while COLLECT, PAUSE, STEP
+  and MOVES run on two threads apiece. Giving each suite threads by its
+  measured length (`xtask`'s `stress_threads_each`, the total still the
+  machine's threads) would recover most of it without the 288 processes
+  that stalled the tests that wait on a process they start
+  (`docs/design/README.md`, "Gates").
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
   support.arm.com page, as the convention asks, but the pages' paths

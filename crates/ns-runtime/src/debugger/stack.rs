@@ -23,6 +23,7 @@ use crate::interpreter::Mutator;
 use crate::mixin::{MethodEntry, Mixin};
 use crate::types::ActivationKind;
 use crate::{Root, Value};
+use ns_syntax::Span;
 
 /// One frame of the stopped run, as the stop keeps it between commands.
 pub(crate) enum StackFrame {
@@ -236,11 +237,14 @@ pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
 }
 
 /// The descriptions of the run's `frames`, innermost first, every frame
-/// whose index `hidden` holds hidden.
+/// whose index `hidden` holds hidden, the innermost placed at its
+/// declaration's header when the stop is its header stop, `at_header`
+/// (decision 12).
 pub(crate) fn stack_trace(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
     hidden: Range<usize>,
+    at_header: bool,
     values: &mut StopValues,
 ) -> Vec<FrameDescription> {
     let mut descriptions = Vec::with_capacity(frames.len());
@@ -258,7 +262,15 @@ pub(crate) fn stack_trace(
                 // A frame below the top waits on the send at its program
                 // counter; the top one stands wherever the stretch left it.
                 let waiting = index > 0;
-                location(mutator, origin, metadata, &code, program_counter, waiting)
+                let header = (at_header && index == 0)
+                    .then_some(metadata.header_pattern)
+                    .flatten();
+                let standing = Standing {
+                    program_counter,
+                    waiting,
+                    header,
+                };
+                location(mutator, origin, metadata, &code, standing)
             });
         let receiver = values.describe(mutator, frame.receiver(&mutator.heap));
         descriptions.push(FrameDescription {
@@ -507,18 +519,34 @@ fn frame_name<'gc>(
     }
 }
 
+/// Where in its body a frame stands, as `location` places it.
+struct Standing {
+    /// The index it stands at.
+    program_counter: usize,
+    /// Whether it waits on the send at that index, below the top.
+    waiting: bool,
+    /// Its declaration's header, for an initializer at its header stop.
+    header: Option<Span>,
+}
+
 /// Where a frame stands in its module's current text: the innermost
-/// statement holding `program_counter` -- a factory's header pattern --
-/// and, for a frame `waiting` on a send, that send's receiver and
-/// selector. `None` for a declaration no heap registered.
+/// statement holding its program counter -- a factory's header pattern,
+/// and an initializer's at its header stop, which stands before its
+/// first statement however its first instruction is placed -- and, for a
+/// frame waiting on a send, that send's receiver and selector. `None` for
+/// a declaration no heap registered.
 fn location(
     mutator: &Mutator<'_>,
     origin: &BodyOrigin,
     metadata: &BodyMetadata,
     code: &CompiledCode,
-    program_counter: usize,
-    waiting: bool,
+    standing: Standing,
 ) -> Option<FrameLocation> {
+    let Standing {
+        program_counter,
+        waiting,
+        header,
+    } = standing;
     let module = module_name(mutator, &origin.mixin)?;
     let program_counter = u32::try_from(program_counter).ok()?;
     // Inlined blocks' statements lie inside their statement's range: the
@@ -527,7 +555,7 @@ fn location(
     // ends with, where a step out of a block its last statement's send
     // took stops -- stands at the outermost statement it follows, the one
     // the program just ran, rather than at the whole body.
-    let statement = metadata.factory_pattern.or_else(|| {
+    let statement = metadata.factory_pattern.or(header).or_else(|| {
         let holding = metadata
             .statements
             .iter()
