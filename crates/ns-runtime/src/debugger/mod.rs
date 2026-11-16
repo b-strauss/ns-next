@@ -18,6 +18,7 @@
 //! (`exceptions.rs`).
 
 pub(crate) mod breakpoints;
+mod conditions;
 pub(crate) mod evaluation;
 pub(crate) mod exceptions;
 pub(crate) mod metadata;
@@ -30,7 +31,7 @@ pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
-    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
+    LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
     SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
 
@@ -92,6 +93,11 @@ pub(crate) struct Debugger {
     /// with the debugger: an evaluation whose debugger is gone ends
     /// unanswered, and the program goes on.
     stop: Option<Stop>,
+    /// The reach of a breakpoint's slot whose condition or log expression
+    /// an evaluation runs for, kept until the safepoint the evaluation's
+    /// end asks for goes on deciding it (`Interpreter::decide`). Dropped
+    /// with the debugger, as the stop is.
+    deciding: Option<conditions::Deciding>,
 }
 
 /// A stop, as the commands it serves read it: what `stop_standing` decided
@@ -282,7 +288,8 @@ impl StressReader {
             | Event::MethodBreakpoints(_)
             | Event::StepFiltersSet
             | Event::ExceptionBreakpointsSet
-            | Event::ModuleText { .. } => {}
+            | Event::ModuleText { .. }
+            | Event::Logged { .. } => {}
         }
     }
 }
@@ -515,6 +522,7 @@ impl Interpreter {
             events: event_sender,
             next_value_id: 0,
             stop: None,
+            deciding: None,
         });
         DebugRemote::new(
             command_sender,
@@ -535,7 +543,7 @@ impl Interpreter {
     /// whatever made the stop (`Hits::reason`). A remote that is gone
     /// detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
-        if let Some(served) = self.serve_evaluation() {
+        if let Some(served) = self.serve_evaluation(floor) {
             return served;
         }
         let (bits, mut breakpoint, exception) = self.enter(|mutator| {
@@ -612,51 +620,18 @@ impl Interpreter {
             };
             return self.stop_standing(reason, None, floor, CommandSource::Remote, standing);
         }
-        if let Some(breakpoint) = breakpoint {
-            // A stop only a step's one-shot made, in a frame the step
-            // filters filter, is not made: the step goes on from the first
-            // unfiltered frame below, and the frame fetches the slot it
-            // stands at again, past it once.
-            let filtered = self.has_agent()
-                && breakpoint.hits.only_a_step()
-                && self.enter(|mutator| {
-                    stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
-                });
-            if filtered {
-                self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
-            } else if self.has_agent() {
-                // The stop serves a pause asked meanwhile too, and ends a
-                // step, whatever made it.
-                self.clear_debugger_bits(DEBUGGER_PAUSE);
-                let (reason, returned, elsewhere) = self.enter(|mutator| {
-                    let unwound = stepping::take_exits(mutator);
-                    let at_entry = stepping::is_at_entry(mutator);
-                    let elsewhere = stepping::went_on_elsewhere(mutator);
-                    let returned = stepping::end(mutator);
-                    // A slot only a step's one-shot or the run to cursor
-                    // stopped at is the step's stop, which reports the
-                    // value of the last call -- or the pause's, for the
-                    // one-shot a pause pending at a run's start set; a
-                    // breakpoint the debugger set there makes it the
-                    // breakpoint's.
-                    match breakpoint.hits.reason(unwound) {
-                        Some(reason) => (reason, None, false),
-                        None if at_entry => (StopReason::Pause, None, false),
-                        None => (StopReason::Step, returned, elsewhere),
-                    }
-                });
-                let source = self.step_agent();
-                let standing = Standing {
-                    elsewhere,
-                    ..Standing::ON_TOP
-                };
-                // The frame fetches the patched slot again as it goes on:
-                // the breakpoint it stopped at lets it past once.
-                let after = AfterStop {
-                    past: Some(breakpoint.slot),
-                    rebuilt: false,
-                };
-                return self.stop_owing(reason, returned, floor, source, standing, after);
+        if let Some(mut breakpoint) = breakpoint {
+            if !breakpoint.conditions.is_empty() {
+                if self.debugger.is_some() {
+                    let deciding = conditions::Deciding::new(breakpoint, floor);
+                    return self.decide(deciding);
+                }
+                // The debugger whose breakpoints they are is gone, and its
+                // breakpoints with it.
+                breakpoint.conditions.clear();
+            }
+            if let Some(served) = self.serve_breakpoint(breakpoint, floor, None) {
+                return served;
             }
         }
         let bits = self.enter(|mutator| mutator.heap.debugger_bits());
@@ -748,12 +723,11 @@ impl Interpreter {
     /// program run on (`Served::Abort`). `None` when no stop is kept: the
     /// answer of an evaluation whose debugger is gone waits for nobody,
     /// and goes with the run (`evaluation::run_ended`).
-    fn serve_evaluation(&mut self) -> Option<Served> {
-        let kept = self
-            .debugger
-            .as_ref()
-            .is_some_and(|debugger| debugger.stop.is_some());
-        if !kept {
+    fn serve_evaluation(&mut self, floor: usize) -> Option<Served> {
+        let (kept, deciding) = self.debugger.as_ref().map_or((false, false), |debugger| {
+            (debugger.stop.is_some(), debugger.deciding.is_some())
+        });
+        if !kept && !deciding {
             return None;
         }
         if !self.enter(|mutator| evaluation::has_ended(mutator)) {
@@ -767,6 +741,26 @@ impl Interpreter {
                 return Some(self.abort_evaluation());
             }
             return Some(Served::GoOn);
+        }
+        if deciding {
+            // The program is not stopped: a pause asked meanwhile stops it
+            // at a later safepoint, once the decision went on.
+            self.clear_debugger_bits(DEBUGGER_STOP);
+            let mut deciding = self
+                .debugger
+                .as_mut()
+                .and_then(|debugger| debugger.deciding.take())
+                .expect("internal: the decision is kept");
+            debug_assert_eq!(
+                deciding.floor, floor,
+                "internal: a decision outlived its run"
+            );
+            self.enter(|mutator| {
+                let outcome = evaluation::take_outcome(mutator)
+                    .expect("internal: an evaluation that ended holds its answer");
+                deciding.evaluated(mutator, outcome);
+            });
+            return Some(self.decide(deciding));
         }
         self.clear_debugger_bits(DEBUGGER_STOP | DEBUGGER_PAUSE);
         // A stop is kept only while its evaluation runs or its answer
@@ -809,6 +803,128 @@ impl Interpreter {
         });
         self.answer(&mut stop.source, answer);
         Some(self.serve_stop(stop))
+    }
+
+    /// Goes on deciding the conditions of a breakpoint's slot
+    /// (`conditions::Deciding`): the next condition or log expression's
+    /// evaluation begun, the decision kept for the safepoint its end asks
+    /// for (`Served::Evaluate`) -- a frame of optimized code its poll left
+    /// going on in baseline code first, as before a stop -- or, all of
+    /// them decided, the stop made or the slot gone past
+    /// (`decided`).
+    fn decide(&mut self, mut deciding: conditions::Deciding) -> Served {
+        let begun = self.enter(|mutator| {
+            crate::jit::deoptimize_stopped_at_poll(mutator);
+            deciding.advance(mutator)
+        });
+        if begun {
+            if let Some(debugger) = &mut self.debugger {
+                debugger.deciding = Some(deciding);
+            }
+            return Served::Evaluate;
+        }
+        let floor = deciding.floor;
+        self.decided(deciding.decided(), floor)
+    }
+
+    /// Makes the stop `decision` says, or lets the frame past its slot: a
+    /// reach where no breakpoint holds, no condition failed, no pause
+    /// aborted one and no step stops goes past it as a resumed stop's
+    /// token lets it, so that its conditions are not evaluated again; a
+    /// failure stops for every breakpoint that failed
+    /// (`StopReason::ConditionFailed`), a pause that aborted a condition
+    /// where nothing else stops as a pause, and otherwise the stop is the
+    /// breakpoints', as the arm's would be (`serve_breakpoint`). The commands served while the conditions
+    /// ran may have removed the breakpoints it would be for: then it is
+    /// not made, and the frame's fetch of the slot again decides nothing
+    /// this reach decided (`PendingStop::decided_standing`).
+    fn decided(&mut self, decision: conditions::Decision, floor: usize) -> Served {
+        let conditions::Decision {
+            stop,
+            failed,
+            error,
+            aborted,
+        } = decision;
+        if stop.hits.only_a_step() && !stop.step_stops && failed.is_empty() && !aborted {
+            self.enter(|mutator| mutator.breakpoints.go_past_once(stop.slot));
+            return Served::GoOn;
+        }
+        let Some((stop, failed)) =
+            self.enter(|mutator| stop.decided_standing(&mut mutator.breakpoints, failed, aborted))
+        else {
+            return Served::GoOn;
+        };
+        let reason = if !failed.is_empty() {
+            Some(StopReason::ConditionFailed {
+                ids: failed,
+                error: error.unwrap_or_default(),
+            })
+        } else if aborted && stop.hits.only_a_step() && !stop.step_stops {
+            Some(StopReason::Pause)
+        } else {
+            None
+        };
+        self.serve_breakpoint(stop, floor, reason)
+            .unwrap_or(Served::GoOn)
+    }
+
+    /// Makes the stop a `Breakpoint` arm decided, its conditions decided
+    /// if it had any, for `reason` if given and else for what made it --
+    /// answering how the program goes on -- but for one only a step's
+    /// one-shot made in a frame the step filters filter, which is not
+    /// made: the step goes on from the first unfiltered frame below, and
+    /// the frame fetches the slot it stands at again, past it once. `None`
+    /// when no stop is made.
+    fn serve_breakpoint(
+        &mut self,
+        breakpoint: breakpoints::PendingStop,
+        floor: usize,
+        reason: Option<StopReason>,
+    ) -> Option<Served> {
+        let filtered = self.has_agent()
+            && reason.is_none()
+            && breakpoint.hits.only_a_step()
+            && self.enter(|mutator| {
+                stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
+            });
+        if filtered {
+            self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
+            return None;
+        }
+        if !self.has_agent() {
+            return None;
+        }
+        // The stop serves a pause asked meanwhile too, and ends a step,
+        // whatever made it.
+        self.clear_debugger_bits(DEBUGGER_PAUSE);
+        let (reason, returned, elsewhere) = self.enter(|mutator| {
+            let unwound = stepping::take_exits(mutator);
+            let at_entry = stepping::is_at_entry(mutator);
+            let elsewhere = stepping::went_on_elsewhere(mutator);
+            let returned = stepping::end(mutator);
+            // A slot only a step's one-shot or the run to cursor stopped
+            // at is the step's stop, which reports the value of the last
+            // call -- or the pause's, for the one-shot a pause pending at
+            // a run's start set; a breakpoint the debugger set there makes
+            // it the breakpoint's.
+            match (reason, breakpoint.hits.reason(unwound)) {
+                (Some(reason), _) | (None, Some(reason)) => (reason, None, false),
+                (None, None) if at_entry => (StopReason::Pause, None, false),
+                (None, None) => (StopReason::Step, returned, elsewhere),
+            }
+        });
+        let source = self.step_agent();
+        let standing = Standing {
+            elsewhere,
+            ..Standing::ON_TOP
+        };
+        // The frame fetches the patched slot again as it goes on: the
+        // breakpoint it stopped at lets it past once.
+        let after = AfterStop {
+            past: Some(breakpoint.slot),
+            rebuilt: false,
+        };
+        Some(self.stop_owing(reason, returned, floor, source, standing, after))
     }
 
     /// Aborts the running evaluation (`evaluation::abort`): the run loop
@@ -1386,6 +1502,10 @@ impl Interpreter {
         // its way to the floor, and the stop kept for it; the depth limit
         // keeps the evaluation's raise until the run ended.
         self.enter(evaluation::terminated);
+        // So does a decision of conditions an evaluation ran for.
+        if let Some(debugger) = &mut self.debugger {
+            debugger.deciding = None;
+        }
         if let Some(debugger) = &mut self.debugger
             && let Some(stop) = debugger.stop.take()
         {

@@ -142,6 +142,8 @@ pub(crate) fn parse_method_name(
             class_side,
             selector: selector.to_string(),
             hit_condition: None,
+            condition: None,
+            log: None,
         })
         .collect())
 }
@@ -476,6 +478,8 @@ impl Agent {
                 Ok(LineBreakpoint {
                     offset,
                     hit_condition,
+                    condition: None,
+                    log: None,
                 })
             })
             .collect();
@@ -763,6 +767,8 @@ mod tests {
                 class_side: false,
                 selector: "at:put:".to_string(),
                 hit_condition: None,
+                condition: None,
+                log: None,
             }
         );
         let class_side = method(" Module.Inner class >> new ");

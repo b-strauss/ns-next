@@ -213,6 +213,14 @@ pub struct MethodBreakpoint {
     /// while the debugger is attached from the moment the breakpoint is
     /// set; `None` stops at every one.
     pub hit_condition: Option<HitCondition>,
+    /// An expression evaluated in the frame at each hit before the hit is
+    /// counted: only a hit at which it answers `true` is counted and
+    /// decided by `hit_condition`; `None` counts every hit.
+    pub condition: Option<String>,
+    /// What the breakpoint logs, a logpoint's message, instead of
+    /// stopping: sent as `Event::Logged` at every hit that would stop;
+    /// `None` stops.
+    pub log: Option<Vec<LogPart>>,
 }
 
 /// A line breakpoint as `Command::SetBreakpoints` asks for it.
@@ -224,6 +232,10 @@ pub struct LineBreakpoint {
     /// statement is a hit, counted while the debugger is attached from the
     /// moment the breakpoint is set; `None` stops at every one.
     pub hit_condition: Option<HitCondition>,
+    /// As `MethodBreakpoint::condition`.
+    pub condition: Option<String>,
+    /// As `MethodBreakpoint::log`.
+    pub log: Option<Vec<LogPart>>,
 }
 
 impl LineBreakpoint {
@@ -232,8 +244,21 @@ impl LineBreakpoint {
         LineBreakpoint {
             offset,
             hit_condition: None,
+            condition: None,
+            log: None,
         }
     }
+}
+
+/// A part of a logpoint's message (`docs/design/debugger.md`, "Hit counts
+/// and temporary breakpoints").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogPart {
+    /// Text logged as it is.
+    Text(String),
+    /// An expression evaluated in the frame at the hit, as a condition is,
+    /// whose `printString` is logged.
+    Expression(String),
 }
 
 /// Which hits of a breakpoint stop, by the hit's number, the first being
@@ -415,6 +440,12 @@ pub enum Event {
     /// The answer to `Command::SetVariable`: the variable as
     /// `Command::Variables` now shows it. The program is still stopped.
     VariableSet(Variable),
+    /// The logpoint `breakpoint` was hit where it holds, and logs `text`,
+    /// its message's parts joined; sent unasked, and the program goes on.
+    Logged {
+        breakpoint: BreakpointId,
+        text: String,
+    },
 }
 
 /// What `Event::ModuleText` says of a module's text.
@@ -477,6 +508,13 @@ pub enum StopReason {
     /// on resumes it with nil, which its `halt` answers. `exits` as for
     /// `Exception`.
     Halt { exits: Vec<BreakpointId> },
+    /// The program reached the statement the breakpoints `ids` stand at,
+    /// and their condition or log expression did not compile or raised an
+    /// error, which `error` describes -- the first's, when several failed.
+    ConditionFailed {
+        ids: Vec<BreakpointId>,
+        error: String,
+    },
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.

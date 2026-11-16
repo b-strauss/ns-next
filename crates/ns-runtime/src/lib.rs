@@ -48,7 +48,7 @@ pub use compiler::Lowering;
 pub use debugger::{
     BreakableStatement, BreakpointId, BreakpointState, ClassName, Command, DebugControl,
     DebugEvents, DebugRemote, Event, FrameDescription, FrameLocation, HitCondition, LineBreakpoint,
-    MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
+    LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
     SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
 

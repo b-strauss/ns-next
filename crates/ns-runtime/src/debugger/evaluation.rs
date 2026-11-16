@@ -100,7 +100,20 @@ pub(crate) fn compile(
     frame: usize,
     text: &str,
 ) -> Result<Rc<CompiledCode>, String> {
-    compile_with(mutator, stop, frame, |_| parsed(text))
+    let frames = stop.frames(mutator);
+    let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
+    compile_with(mutator, stack_frame, |_| parsed(text))
+}
+
+/// `text` compiled as `compile` compiles it, standing in `frame`: a
+/// breakpoint's condition or log expression, in the frame that reached
+/// the breakpoint (`debugger::conditions`).
+pub(crate) fn compile_in(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+    text: &str,
+) -> Result<Rc<CompiledCode>, String> {
+    compile_with(mutator, frame, |_| parsed(text))
 }
 
 /// The assignment `name:: expression` compiled as `compile` compiles an
@@ -121,7 +134,9 @@ pub(crate) fn compile_assignment(
     name: &str,
     expression: &str,
 ) -> Result<Rc<CompiledCode>, String> {
-    compile_with(mutator, stop, frame, |metadata| {
+    let frames = stop.frames(mutator);
+    let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
+    compile_with(mutator, stack_frame, |metadata| {
         let shown = metadata
             .variables
             .iter()
@@ -189,16 +204,13 @@ fn assignment(name: &str, expression: &str) -> Result<ast::CodeBody, String> {
     Ok(body)
 }
 
-/// `compile` of the code body `body` answers for the frame's metadata, or
-/// its refusal.
+/// `compile` of the code body `body` answers for the metadata of
+/// `stack_frame`, or its refusal.
 fn compile_with(
     mutator: &mut Mutator<'_>,
-    stop: &mut Stop,
-    frame: usize,
+    stack_frame: &StackFrame,
     body: impl FnOnce(&BodyMetadata) -> Result<ast::CodeBody, String>,
 ) -> Result<Rc<CompiledCode>, String> {
-    let frames = stop.frames(mutator);
-    let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
     // Decided before the metadata is asked for, which compiles the body
     // again: a shipped frame is refused whatever its body.
     let origin = stack::origin(&mutator.heap, stack_frame).ok_or(NO_SOURCE)?;
@@ -341,6 +353,16 @@ pub(crate) fn begin<'gc>(
 ) -> Result<(), &'static str> {
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
+    begin_in(mutator, stack_frame, code, arguments)
+}
+
+/// `begin` in `stack_frame`, the frame `code` was compiled for.
+pub(crate) fn begin_in<'gc>(
+    mutator: &mut Mutator<'gc>,
+    stack_frame: &StackFrame,
+    code: Rc<CompiledCode>,
+    arguments: &[Value<'gc>],
+) -> Result<(), &'static str> {
     if let StackFrame::Running(activation) = stack_frame {
         mutator.heap.nil_tainted_registers(*activation);
         mutator.heap.clear_compiled(*activation);

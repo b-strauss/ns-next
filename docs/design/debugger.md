@@ -84,9 +84,11 @@
 > with a depth reserve of its own, and a pause aborts it
 > ("Evaluation"), and sets a stopped frame's variable, refusing one a
 > block may already hold a copy of ("Writing a frame", "Assigning a
-> captured variable"). Everything else is planned: conditional
-> breakpoints and logpoints, watches, smart step into, restart frame and
-> force return (stage 5, next), hot swap and
+> captured variable"), and decides a breakpoint's condition and a
+> logpoint's message, each an evaluation in the frame that reached it
+> ("Hit counts and temporary breakpoints"). Everything else is planned:
+> conditions and logpoints in the agent and the plugin, watches, smart
+> step into, restart frame and force return (stage 5, next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
@@ -498,10 +500,12 @@ The commands (`debugger::Command`):
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
-  `LineBreakpoint { offset, hit_condition }`: a byte offset into the
-  module's current text ("A breakpoint names a source position") and which
-  of its hits stop, every one for `None` ("Hit counts and temporary
-  breakpoints"); answered by `Event::Breakpoints`. A configuration
+  `LineBreakpoint { offset, hit_condition, condition, log }`: a byte
+  offset into the module's current text ("A breakpoint names a source
+  position"), which of its hits stop, every one for `None`, the
+  condition a hit is counted only where it answers `true`, and the
+  message, `LogPart`s, a logpoint logs instead of stopping ("Hit counts
+  and temporary breakpoints"); answered by `Event::Breakpoints`. A configuration
   command: served wherever commands are taken, at a stop, at a safepoint
   while the program runs, and at the start and the end of a run.
 - `SetStepFilters { shipped, classes }` -- replaces the step filters
@@ -517,8 +521,9 @@ The commands (`debugger::Command`):
 - `SetMethodBreakpoints(Vec<MethodBreakpoint>)` -- replaces every method
   breakpoint ("Method breakpoints"), each naming a method by its
   `class`, a `ClassName` as the step filters name a declaration, its
-  side (`class_side`) and its `selector`, and its `hit_condition` as a
-  line breakpoint's, which counts each entry and each exit; answered by
+  side (`class_side`) and its `selector`, and its `hit_condition`,
+  `condition` and `log` as a line breakpoint's, which count and decide
+  each entry and each exit; answered by
   `Event::MethodBreakpoints`, a configuration command served as
   `SetBreakpoints` is.
 - `SetExceptionBreakpoints { uncaught, caught, halt, classes }` --
@@ -553,7 +558,11 @@ and `StopReason::MethodExit { id, others }`, a method breakpoint's
 ("Method breakpoints"), or `StopReason::Exception { class_name,
 description, caught, exits }` and `StopReason::Halt { exits }`, an
 exception breakpoint's, `exits` the method breakpoints whose exit by an
-unwind it reports ("Exceptions", "Method breakpoints"); `returned`, at a
+unwind it reports ("Exceptions", "Method breakpoints"), or
+`StopReason::ConditionFailed { ids, error }`, the breakpoints standing
+there whose condition or log expression did not compile or raised an
+error, and the first failure's description ("Hit counts and temporary
+breakpoints"); `returned`, at a
 step's stop, a `ReturnedValue`: the value the stepping frame's last call
 answered, described as the stop's first value, and the call that answered
 it as a reader names it, a `String`; `None` at every other stop ("The
@@ -573,8 +582,9 @@ resolves or an install moves one; `StepFiltersSet`, the answer to
 (`verified`) -- in the order they were set, the answer to
 `SetMethodBreakpoints`, and sent unasked when a module's build or an
 install changes whether one is verified; `ExceptionBreakpointsSet`,
-the answer to `SetExceptionBreakpoints`; and `ModuleText`, the answer to
-`ModuleText`. `Continue`, the three steps, `RunToPosition`, `StackTrace`,
+the answer to `SetExceptionBreakpoints`; `ModuleText`, the answer to
+`ModuleText`; and `Logged { breakpoint, text }`, sent unasked where a
+logpoint holds, its message made, while the program goes on. `Continue`, the three steps, `RunToPosition`, `StackTrace`,
 `Variables`, `Children` and `ModuleText` are served only at a stop; one
 that arrives while the program runs is refused with "the program is
 running", and one queued between runs is dropped and refused
@@ -3198,9 +3208,9 @@ decides"), so the check would cost every send of every fast-path method.
 **Partial:** the stop and the going past are built for every patched
 slot -- a line breakpoint's, a method breakpoint's, a step's and run to
 cursor's one-shots, and the breakpoint stress mode's -- and so are hit
-counts, and an evaluation goes past every slot uncounted; conditions and
-logpoints, and what a restart, a forced return and edit-and-continue do
-with the token, are planned.
+counts, conditions and logpoints, and an evaluation goes past every slot
+uncounted; what a restart, a forced return and edit-and-continue do
+with the token is planned.
 
 A `Breakpoint` slot shares the run loop's out-of-line arm of the
 simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an arm
@@ -3210,8 +3220,13 @@ call hands the decision to `interpreter/` (`vm.rs` holds no dispatch
 logic): `interpreter::breakpoint::reached`, `#[cold]`, which answers
 `BreakpointDecision::Execute` with the slot's original or
 `BreakpointDecision::Stop`, having counted a hit of each breakpoint
-standing there ("Hit counts and temporary breakpoints"); planned, it also
-evaluates a condition or logs. A slot it does not stop at it goes past as
+standing there ("Hit counts and temporary breakpoints"). A breakpoint
+with a condition or a log it neither counts nor decides, since no code
+runs in the arm: it records the stop with those breakpoints left to the
+safepoint (`PendingStop::conditions`), which evaluates each in the
+reaching frame and then counts, logs, and stops or lets the frame past
+the slot (`debugger/conditions.rs`, "Hit counts and temporary
+breakpoints"). A slot it does not stop at it goes past as
 a resumed stop's token lets it past (`gone_past`), so that what a stop
 there would owe is owed all the same. Going on, the arm replaces the
 fetched slot by the original and re-enters the loop's `match` with it --
@@ -3377,7 +3392,10 @@ and the compiler alone knows where a statement compiled to an instruction.
 
 **Built** (`HitCondition`, `Breakpoints::count_hits`,
 `interpreter/breakpoint.rs`; the agent's parsing,
-`crates/ns-cli/src/debug/breakpoints.rs`).
+`crates/ns-cli/src/debug/breakpoints.rs`), and so are conditions and
+logpoints in the VM (`LineBreakpoint::condition` and `log`,
+`debugger/conditions.rs`; tests `conditions::*` in
+`crates/ns-runtime/tests/debugger.rs`); the agent passes neither yet.
 
 Decided with the user on 2026-11-14 for stage 4. A breakpoint's hit
 condition -- DAP's `hitCondition`, IntelliJ's pass count -- is counted by
@@ -3435,8 +3453,55 @@ breakpoint counted at the reach but not holding, beside one a
 JDWP counts in-process the same way, its `Count` modifier decremented at
 each event and the event reported at zero
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/eventFilter.c:482-488`).
-Stage 5's condition is decided in the same place, before the count, as
-JDWP applies `Count` after the other filters. A temporary breakpoint needs
+
+A breakpoint's condition -- DAP's `condition`, IntelliJ's -- is decided
+by the VM too, before the count, as JDWP applies `Count` after the other
+filters, and evaluated exactly once per hit, never again by the IDE, so
+that a condition with a side effect sees every hit once
+(`a_condition_is_evaluated_once_per_hit`). `LineBreakpoint::condition`
+and `MethodBreakpoint::condition` carry its text, `log` a logpoint's
+message, parts of text and expressions (`LogPart`). The `Breakpoint`
+arm, where no code may run, leaves every breakpoint with a condition or
+a log standing at the slot to the safepoint, uncounted
+(`PendingStop::conditions`), and records the stop even when nothing else
+stops there. The safepoint evaluates each condition in the frame that
+reached the slot, an evaluation as `Command::Evaluate` runs one
+("Evaluation"), one at a time: it begins the evaluation and keeps the
+decision in the `Debugger` (`conditions::Deciding`) as it keeps a stop,
+the run loop runs it, and the safepoint its end asks for goes on with
+the next (`Interpreter::decide`). A breakpoint whose condition answers
+`true`, and only `true`, is counted and decided by its hit condition;
+one whose condition answers anything else is neither counted nor stopped
+for (`a_condition_counts_before_the_hit_condition`). A logpoint that
+holds has its message's expressions evaluated the same way, each as
+`(expression) printString`, whose `String` joins the text, and sends
+`Event::Logged` with the message instead of stopping
+(`a_logpoint_logs_without_stopping`). A condition or log expression
+that does not compile -- a `^` among its causes, as in every evaluation
+-- or raises an error stops the program at the slot with
+`StopReason::ConditionFailed`, naming every breakpoint that failed there
+and the first failure's description, as IntelliJ stops when a condition
+fails (`a_failing_condition_stops_and_says_why`). A reach none of whose
+breakpoints holds and no step stops at goes past the slot as a resumed
+stop's token lets it (`PastOnce`); otherwise the stop is made as the
+arm's would be, every condition decided first, and the commands served
+while they ran -- a `SetBreakpoints` -- may have removed some of what it
+is for. A stop not made remembers what the reach decided, the
+conditions that did not hold and the logpoints that logged among the
+passed (`CountedReach`), so that the fetch of the slot again evaluates
+none of them twice; a condition not yet evaluated when an exception's
+stop is made instead is evaluated by that fetch, once. A pause asked
+while a condition runs aborts it ("Evaluation", "Aborting") and stops
+the program at the slot, as the pause's stop. Each expression is
+compiled once per breakpoint, body and slot and kept on the
+breakpoint's record (`CompiledConditions`), dropped with the
+breakpoint and at every install, which changes the text it was resolved
+against. Where no frame stands at the slot, nothing is evaluated: a
+step into's stop at a pushed frame's first statement is made before any
+code runs, and neither evaluates, counts nor names a conditional
+breakpoint standing there, which it lets the frame past; a method's exit
+by an unwind has popped the frame its condition would read, and a
+conditional method breakpoint neither counts nor reports it. A temporary breakpoint needs
 nothing of the agent or the VM: IntelliJ's debugger session removes a
 breakpoint marked to be removed once hit when it reports the stop, which
 the `stopped` event's `hitBreakpointIds` tell it.
@@ -3588,12 +3653,14 @@ expression runs, whether or not it writes.
 
 ### Evaluation
 
-**Partial:** evaluating an expression at a stop is built
+**Built:** evaluating an expression at a stop
 (`Command::Evaluate`, answered by `Event::Evaluated`;
 `debugger/evaluation.rs`; tests `evaluation::*` in
 `crates/ns-runtime/tests/debugger.rs`): where it lies, how it returns,
 the frame it reads, its errors, its depth reserve and aborting it,
-below; hot conditions are planned. `compiler/evaluation.rs`
+below; and a breakpoint's condition and log, evaluated the same way at
+the safepoint a reach leaves for ("Hot conditions"; "Hit counts and
+temporary breakpoints"). `compiler/evaluation.rs`
 parses it as a code body standing alone (`ns_syntax::parse_code_body`),
 `resolver::resolve_evaluation` resolves it -- a marked label is the
 block's parameter, a name of the frame's variable table
@@ -3741,14 +3808,21 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   its base, or as far as L and its reserve allow when the base lies far
   below L. JDI and pdb give an evaluation no room beyond the program's
   limit; their limit's headroom, like ours, is for the error's handler.
-- **Hot conditions.** A breakpoint's condition and a logpoint's message are
-  compiled once per breakpoint and frame layout and cached; still, every
-  hit leaves the stretch and runs an evaluation, so a conditional
-  breakpoint in a hot loop slows that loop, and the body, which exits at
-  every hit, is abandoned by the JIT's exit decay, correctly. A condition
-  that raises an error stops at the breakpoint and reports the error, as
-  IntelliJ does; a condition evaluated at the depth limit has the
-  evaluation's reserve, as every evaluation does.
+- **Hot conditions.** A breakpoint's condition and a logpoint's message
+  are compiled once per breakpoint, body and slot and kept on the
+  breakpoint's record (`CompiledConditions`); still, every hit leaves the
+  stretch for the safepoint and runs an evaluation, whose frame goes on
+  interpreted, so a conditional breakpoint in a hot loop slows that loop:
+  the body exits at its patched slot at every pass, as for any
+  breakpoint (`a_condition_in_a_compiled_loop_is_decided`, ten thousand
+  passes). A condition that raises an error stops at the breakpoint and
+  reports the error, as IntelliJ does; a condition evaluated at the
+  depth limit has the evaluation's reserve, as every evaluation does.
+  While a condition runs, the stop is not made yet: the `Debugger` keeps
+  the decision (`conditions::Deciding`) where it keeps a stop for an
+  evaluation, the safepoints within it serve the commands queued
+  meanwhile, a pause aborts it, and a pause asked after it ended stops
+  the program at the next safepoint, the program not being stopped.
 - **Aborting.** An evaluation the user cancels is stopped by the agent's
   pause bit (`DebugControl::pause`): the safepoint the pause makes,
   finding an evaluation running at the kept stop

@@ -1659,7 +1659,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         // that error as an evaluation does.
         Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
         Event::VariableSet(_) => command == "SetVariable",
-        Event::Stopped { .. } => false,
+        Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }
 
@@ -1711,6 +1711,11 @@ fn stopped_body(
             body.reason = "exception";
             body.text = Some("halt".to_string());
             body.hit_breakpoint_ids = named(&mut exits.iter());
+        }
+        StopReason::ConditionFailed { ids, error } => {
+            body.reason = "breakpoint";
+            body.text = Some(error.clone());
+            body.hit_breakpoint_ids = named(&mut ids.iter());
         }
     }
     body
