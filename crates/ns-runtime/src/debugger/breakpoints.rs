@@ -614,15 +614,15 @@ impl Breakpoints {
     /// reach's breakpoints twice.
     #[cfg(debug_assertions)]
     pub(crate) fn move_past_once(&mut self, from: ActivationReference, onto: ActivationReference) {
-        if let Some(past) = &mut self.past_once {
-            if past.activation.same(from) {
-                past.activation = onto;
-            }
+        if let Some(past) = &mut self.past_once
+            && past.activation.same(from)
+        {
+            past.activation = onto;
         }
-        if let Some(reach) = &mut self.counted_reach {
-            if reach.activation.same(from) {
-                reach.activation = onto;
-            }
+        if let Some(reach) = &mut self.counted_reach
+            && reach.activation.same(from)
+        {
+            reach.activation = onto;
         }
     }
 
@@ -755,10 +755,10 @@ impl Breakpoints {
     pub(crate) fn rename_one_shots(&mut self, from: Holder, onto: Holder) {
         for patch in self.patches.values_mut() {
             for kind in &mut patch.kinds {
-                if let PatchKind::OneShot(one_shot) = kind {
-                    if one_shot.holder.same_frame(from) {
-                        one_shot.holder = onto;
-                    }
+                if let PatchKind::OneShot(one_shot) = kind
+                    && one_shot.holder.same_frame(from)
+                {
+                    one_shot.holder = onto;
                 }
             }
         }
@@ -770,10 +770,10 @@ impl Breakpoints {
     pub(crate) fn forget_one_shot_holders(&mut self, gone: impl Fn(Holder) -> bool) {
         for patch in self.patches.values_mut() {
             for kind in &mut patch.kinds {
-                if let PatchKind::OneShot(one_shot) = kind {
-                    if gone(one_shot.holder) {
-                        one_shot.holder = Holder::Left;
-                    }
+                if let PatchKind::OneShot(one_shot) = kind
+                    && gone(one_shot.holder)
+                {
+                    one_shot.holder = Holder::Left;
                 }
             }
         }
@@ -833,12 +833,12 @@ impl Breakpoints {
         if !held {
             patch.kinds.push(kind);
         }
-        if let Some(method) = method.filter(|method| method.fast_path().is_some()) {
-            if !self.switched_off.contains_key(&address(code)) {
-                method.switch_fast_path(false);
-                self.fast_paths_switched = true;
-                self.switched_off.insert(address(code), Rc::clone(method));
-            }
+        if let Some(method) = method.filter(|method| method.fast_path().is_some())
+            && !self.switched_off.contains_key(&address(code))
+        {
+            method.switch_fast_path(false);
+            self.fast_paths_switched = true;
+            self.switched_off.insert(address(code), Rc::clone(method));
         }
         if code.is_patched(index) {
             return;

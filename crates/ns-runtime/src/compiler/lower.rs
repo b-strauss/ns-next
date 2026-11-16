@@ -1483,10 +1483,10 @@ impl<'a> Lowerer<'a> {
             InlineForm::WhileTrue { condition, body }
             | InlineForm::WhileFalse { condition, body } => (None, Some(condition), Some(body)),
         };
-        if let Some(receiver) = receiver {
-            if self.writes_register(receiver, register, inlined_depth) {
-                return true;
-            }
+        if let Some(receiver) = receiver
+            && self.writes_register(receiver, register, inlined_depth)
+        {
+            return true;
         }
         self.inlined_blocks_write_register(
             [first, second].into_iter().flatten(),
@@ -2012,14 +2012,14 @@ impl<'a> Lowerer<'a> {
     /// Records a send that takes `blocks`, which the body goes on from at
     /// `after` once the send has answered, when the metadata is collected.
     fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: u32, inlined: bool) {
-        if let Some(collected) = self.collected.as_mut() {
-            if !blocks.is_empty() {
-                collected.block_sends.push(BlockSendEntry {
-                    blocks: blocks.into(),
-                    inlined,
-                    after,
-                });
-            }
+        if let Some(collected) = self.collected.as_mut()
+            && !blocks.is_empty()
+        {
+            collected.block_sends.push(BlockSendEntry {
+                blocks: blocks.into(),
+                inlined,
+                after,
+            });
         }
     }
 

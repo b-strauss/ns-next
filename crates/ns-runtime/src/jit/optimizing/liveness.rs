@@ -420,10 +420,10 @@ fn block_exits(graph: &Graph, block: BlockId, entry: &[Binding]) -> Vec<(BlockId
     let mut bindings = entry.to_vec();
     let mut exits = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
-        if let Some(fallback) = node.fallback() {
-            if graph.block(block).exit_position(fallback) == Some(index) {
-                exits.push((fallback, bindings.clone()));
-            }
+        if let Some(fallback) = node.fallback()
+            && graph.block(block).exit_position(fallback) == Some(index)
+        {
+            exits.push((fallback, bindings.clone()));
         }
         bind(&mut bindings, node);
     }
@@ -623,10 +623,9 @@ fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals 
                     value: Some(value),
                     clean: false,
                 } = binding
+                    && *joined == Binding::FRAME_WORD
                 {
-                    if *joined == Binding::FRAME_WORD {
-                        reads.push((end_definition, *value, Need::Anywhere));
-                    }
+                    reads.push((end_definition, *value, Need::Anywhere));
                 }
             }
         }

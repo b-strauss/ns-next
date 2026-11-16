@@ -62,19 +62,19 @@ pub(crate) fn check_body_less_value_class<'gc>(
         });
     }
     let heap = mutator.heap();
-    if let Some(level_enclosing) = heap.class_enclosing(class) {
-        if !super::instantiate::is_a_value(mutator, level_enclosing) {
-            // The level is named for the class its clause named, as a
-            // level of a declaration with a body is: the class object's
-            // own name is the declaration's.
-            let level_name = heap
-                .class_named(class)
-                .and_then(|named| heap.class_name(named));
-            return Some(ValueClassRefusal::NonValueEnclosingObject {
-                level: level_name,
-                offender: level_enclosing,
-            });
-        }
+    if let Some(level_enclosing) = heap.class_enclosing(class)
+        && !super::instantiate::is_a_value(mutator, level_enclosing)
+    {
+        // The level is named for the class its clause named, as a
+        // level of a declaration with a body is: the class object's
+        // own name is the declaration's.
+        let level_name = heap
+            .class_named(class)
+            .and_then(|named| heap.class_name(named));
+        return Some(ValueClassRefusal::NonValueEnclosingObject {
+            level: level_name,
+            offender: level_enclosing,
+        });
     }
     heap.class_superclass(class)
         .and_then(|superclass| check_levels(mutator, superclass))
@@ -123,14 +123,14 @@ fn check_levels<'gc>(
                 }
             };
         }
-        if let Some(level_enclosing) = heap.class_enclosing(class) {
-            if !super::instantiate::is_a_value(mutator, level_enclosing) {
-                let level_name = heap.class_name(class);
-                return Some(ValueClassRefusal::NonValueEnclosingObject {
-                    level: level_name,
-                    offender: level_enclosing,
-                });
-            }
+        if let Some(level_enclosing) = heap.class_enclosing(class)
+            && !super::instantiate::is_a_value(mutator, level_enclosing)
+        {
+            let level_name = heap.class_name(class);
+            return Some(ValueClassRefusal::NonValueEnclosingObject {
+                level: level_name,
+                offender: level_enclosing,
+            });
         }
         level = heap.class_superclass(class);
     }

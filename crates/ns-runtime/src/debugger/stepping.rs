@@ -444,14 +444,14 @@ impl LeftBlocks {
 fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<SendLeft<'gc>> {
     let (code, _, metadata) = place_body(mutator, taken_in);
     let standing = place_program_counter(mutator, taken_in);
-    if let Some(metadata) = metadata.as_deref() {
-        if let Some(entry) = inline_send_around(metadata, standing) {
-            return Some(SendLeft::Inlined {
-                frame: taken_in,
-                join: join_stop(&code, metadata, entry),
-                left: left_blocks(&code, entry),
-            });
-        }
+    if let Some(metadata) = metadata.as_deref()
+        && let Some(entry) = inline_send_around(metadata, standing)
+    {
+        return Some(SendLeft::Inlined {
+            frame: taken_in,
+            join: join_stop(&code, metadata, entry),
+            left: left_blocks(&code, entry),
+        });
     }
     let creator = creator_of(mutator, taken_in)?;
     let callee = callee_of(mutator, taken_in, creator)?;
@@ -967,15 +967,15 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
     if gone(stepping.frame) {
         stepping.frame = Holder::Left;
     }
-    if let Some((caller, index)) = stepping.return_point {
-        if gone(caller) {
-            stepping.return_point = Some((Holder::Left, index));
-        }
+    if let Some((caller, index)) = stepping.return_point
+        && gone(caller)
+    {
+        stepping.return_point = Some((Holder::Left, index));
     }
-    if let Some((holder, index)) = stepping.after_send {
-        if gone(holder) {
-            stepping.after_send = Some((Holder::Left, index));
-        }
+    if let Some((holder, index)) = stepping.after_send
+        && gone(holder)
+    {
+        stepping.after_send = Some((Holder::Left, index));
     }
     if stepping.begun_in.is_some_and(gone) {
         stepping.begun_in = None;
@@ -1113,10 +1113,10 @@ fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
 /// The activation a step was taken in returned to its caller
 /// (`OneShot::leaves`).
 pub(crate) fn origin_returned(mutator: &mut Mutator<'_>) {
-    if let Some(stepping) = &mut mutator.stepping {
-        if stepping.origin.take().is_some() {
-            stepping.origin_left = true;
-        }
+    if let Some(stepping) = &mut mutator.stepping
+        && stepping.origin.take().is_some()
+    {
+        stepping.origin_left = true;
     }
 }
 
@@ -1763,11 +1763,11 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
     // a name of it kept past its return would name the next activation
     // pushed at its offset. An initializer that runs nothing a step stops
     // at leaves the step to its sender, begun nowhere filtered.
-    if let FirstStop::Patched = stop_at_first(mutator, top, false) {
-        if let Some(stepping) = &mut mutator.stepping {
-            stepping.started_filtered = started_filtered;
-            stepping.begun_in = Some(Holder::Running(top));
-        }
+    if let FirstStop::Patched = stop_at_first(mutator, top, false)
+        && let Some(stepping) = &mut mutator.stepping
+    {
+        stepping.started_filtered = started_filtered;
+        stepping.begun_in = Some(Holder::Running(top));
     }
     settle(mutator);
 }
@@ -2134,15 +2134,15 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
                 *position = None;
             }
         }
-        if let Some((caller, index)) = stepping.return_point {
-            if caller.same_frame(from) {
-                stepping.return_point = Some((onto, index));
-            }
+        if let Some((caller, index)) = stepping.return_point
+            && caller.same_frame(from)
+        {
+            stepping.return_point = Some((onto, index));
         }
-        if let Some((holder, index)) = stepping.after_send {
-            if holder.same_frame(from) {
-                stepping.after_send = Some((onto, index));
-            }
+        if let Some((holder, index)) = stepping.after_send
+            && holder.same_frame(from)
+        {
+            stepping.after_send = Some((onto, index));
         }
         if stepping
             .begun_in
@@ -2428,10 +2428,9 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
             argument_sources,
             ..
         } = instruction
+            && (*receiver_register == register || argument_sources.contains(&register))
         {
-            if *receiver_register == register || argument_sources.contains(&register) {
-                return true;
-            }
+            return true;
         }
         if register_written(instruction) == Some(register) {
             return false;

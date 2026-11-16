@@ -1602,13 +1602,13 @@ impl OpenGroups {
         if let Some(closer) = closer_of(kind) {
             self.opened_at[closer_slot(closer)].push(self.depth);
             self.depth += 1;
-        } else if is_closer(kind) {
-            if let Some(&group) = self.opened_at[closer_slot(kind)].last() {
-                self.depth = group;
-                for depths in &mut self.opened_at {
-                    while depths.last().is_some_and(|depth| *depth >= group) {
-                        depths.pop();
-                    }
+        } else if is_closer(kind)
+            && let Some(&group) = self.opened_at[closer_slot(kind)].last()
+        {
+            self.depth = group;
+            for depths in &mut self.opened_at {
+                while depths.last().is_some_and(|depth| *depth >= group) {
+                    depths.pop();
                 }
             }
         }

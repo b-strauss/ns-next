@@ -229,12 +229,11 @@ pub(crate) struct ShiftedRegion {
 impl Relocation for Shift {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
         for region in &self.regions {
-            if region.source.contains(&offset.get()) {
-                if let Some(moved) =
+            if region.source.contains(&offset.get())
+                && let Some(moved) =
                     NonZeroU64::new(offset.get() - region.source.start + region.destination)
-                {
-                    return moved;
-                }
+            {
+                return moved;
             }
         }
         unreachable!("internal: a moved handle names an object in no occupied region")

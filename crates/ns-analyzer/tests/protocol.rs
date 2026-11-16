@@ -100,10 +100,10 @@ fn next_diagnostics(client: &Connection) -> Value {
 #[track_caller]
 fn next_diagnostics_within(client: &Connection, timeout: Duration) -> Value {
     loop {
-        if let Message::Notification(notification) = receive_within(client, timeout) {
-            if notification.method == "textDocument/publishDiagnostics" {
-                return notification.params;
-            }
+        if let Message::Notification(notification) = receive_within(client, timeout)
+            && notification.method == "textDocument/publishDiagnostics"
+        {
+            return notification.params;
         }
     }
 }

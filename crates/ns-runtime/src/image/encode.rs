@@ -1492,22 +1492,22 @@ fn encode_value<'gc>(
         writer.write_f64(float);
         return Ok(());
     }
-    if let Some((world_index, entry)) = context.shipped(object) {
-        if entry.name.kind == ShippedKind::ModuleInstance {
-            // A module instance holds the core library's state -- the kernel
-            // holds the mirror -- so only a frame of shipped code, whose
-            // registers legitimately hold one, may name it.
-            if position != NamePosition::FrameRegister {
-                return Err(format!(
-                    "image encoding refuses the module instance {} outside a frame: it holds \
+    if let Some((world_index, entry)) = context.shipped(object)
+        && entry.name.kind == ShippedKind::ModuleInstance
+    {
+        // A module instance holds the core library's state -- the kernel
+        // holds the mirror -- so only a frame of shipped code, whose
+        // registers legitimately hold one, may name it.
+        if position != NamePosition::FrameRegister {
+            return Err(format!(
+                "image encoding refuses the module instance {} outside a frame: it holds \
                      the core library's state",
-                    entry.name.module.as_str()
-                ));
-            }
-            writer.write_u8(VALUE_SHIPPED_MODULE);
-            writer.write_u32(context.table.used.index_of(world_index));
-            return Ok(());
+                entry.name.module.as_str()
+            ));
         }
+        writer.write_u8(VALUE_SHIPPED_MODULE);
+        writer.write_u32(context.table.used.index_of(world_index));
+        return Ok(());
     }
     if context.heap.is_class(object) {
         writer.write_u8(VALUE_CLASS_TAG);

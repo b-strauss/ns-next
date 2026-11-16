@@ -1586,15 +1586,14 @@ impl<'tree> Planner<'tree> {
             .filter(|_| self.limits.inline_blocks)
         {
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
-                if let SnapshotInstruction::MakeClosure { block, .. } = instruction {
-                    if scope.ways[program_counter] == CompiledWay::Runs
-                        && self.tree.blocks.contains_key(block)
-                    {
-                        eliminated.insert((
-                            ScopeId::of_index(index),
-                            program_counter_u32(program_counter),
-                        ));
-                    }
+                if let SnapshotInstruction::MakeClosure { block, .. } = instruction
+                    && scope.ways[program_counter] == CompiledWay::Runs
+                    && self.tree.blocks.contains_key(block)
+                {
+                    eliminated.insert((
+                        ScopeId::of_index(index),
+                        program_counter_u32(program_counter),
+                    ));
                 }
             }
         }
@@ -1685,13 +1684,11 @@ impl<'tree> Planner<'tree> {
                 .parent
                 .is_some_and(|(parent, _)| !self.scopes[parent.index()].alive);
             if scope.alive && (dropped(index, scope) || parent_dead) {
-                if let Some(parent) = scope.plan.parent {
-                    if let Some(SiteDecision::Unguarded(slot)) = self.decisions.get_mut(&parent) {
-                        if matches!(slot, Some((_, _, ArmPlan::Inline { callee })) if callee.index() == index)
-                        {
-                            *slot = None;
-                        }
-                    }
+                if let Some(parent) = scope.plan.parent
+                    && let Some(SiteDecision::Unguarded(slot)) = self.decisions.get_mut(&parent)
+                    && matches!(slot, Some((_, _, ArmPlan::Inline { callee })) if callee.index() == index)
+                {
+                    *slot = None;
                 }
                 self.scopes[index].alive = false;
                 self.total = self.total.saturating_sub(self.scopes[index].weight);

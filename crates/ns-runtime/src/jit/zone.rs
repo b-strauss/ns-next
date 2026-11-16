@@ -518,10 +518,10 @@ impl JitState {
             let dispatching = body
                 .dispatching
                 .map(|dispatching| CodeOffset(start + dispatching.entry));
-            if let Some(code) = &code {
-                if self.named_body(code) == Some(index) {
-                    code.jit.forget();
-                }
+            if let Some(code) = &code
+                && self.named_body(code) == Some(index)
+            {
+                code.jit.forget();
             }
             if self.mark_free(number, FreedBy::BetweenCompactions) {
                 indices.push(number);
@@ -1126,14 +1126,13 @@ impl JitState {
             if body.free {
                 // A row naming a freed copy would name whichever body
                 // takes its index now.
-                if let (Some(key), Some(code)) = (body.key, body.code.upgrade()) {
-                    if code
+                if let (Some(key), Some(code)) = (body.key, body.code.upgrade())
+                    && code
                         .jit
                         .copy_row(key)
                         .is_some_and(|row| row.body as usize == old_index)
-                    {
-                        code.jit.set_copy_body(key, super::NO_BODY);
-                    }
+                {
+                    code.jit.set_copy_body(key, super::NO_BODY);
                 }
                 renumbered.push(None);
                 continue;

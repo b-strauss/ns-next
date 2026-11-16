@@ -700,12 +700,12 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
             while let Some((code_id, sites, depth)) = pending.pop() {
                 // Its blocks, walked as its own sends are.
                 for instruction in &by_id[&code_id].instructions {
-                    if let snapshot::SnapshotInstruction::MakeClosure { block, .. } = instruction {
-                        if walked.insert(*block) {
-                            let (fed_block, block_sites) = fed(by_id[block]);
-                            blocks.insert(*block, fed_block);
-                            pending.push((*block, block_sites, depth));
-                        }
+                    if let snapshot::SnapshotInstruction::MakeClosure { block, .. } = instruction
+                        && walked.insert(*block)
+                    {
+                        let (fed_block, block_sites) = fed(by_id[block]);
+                        blocks.insert(*block, fed_block);
+                        pending.push((*block, block_sites, depth));
                     }
                 }
                 for (site, arms, accessor) in sites {
@@ -775,10 +775,10 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
             // walked: the plan takes it, and its own sends trap.
             for (_, _, arms) in &tree_sites {
                 for (_, callee) in arms {
-                    if let CalleeFacts::Method { snapshot, .. } = callee {
-                        if walked.insert(snapshot.code_id) {
-                            callees.push((**snapshot).clone());
-                        }
+                    if let CalleeFacts::Method { snapshot, .. } = callee
+                        && walked.insert(snapshot.code_id)
+                    {
+                        callees.push((**snapshot).clone());
                     }
                 }
             }

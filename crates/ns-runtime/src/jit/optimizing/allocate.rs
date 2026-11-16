@@ -806,12 +806,12 @@ impl Allocator<'_> {
                 || !intervals.register_uses[value.index()].is_empty();
             loaded.then(|| self.take_register(definition, use_position, &operands, &mut moves))
         });
-        if let Some(fallback) = node.fallback() {
-            if graph.block(block).exit_position(fallback) == Some(index) {
-                // Taken before the fast path writes its result, with every
-                // move before it made.
-                self.exits.insert((block, fallback), self.state.clone());
-            }
+        if let Some(fallback) = node.fallback()
+            && graph.block(block).exit_position(fallback) == Some(index)
+        {
+            // Taken before the fast path writes its result, with every
+            // move before it made.
+            self.exits.insert((block, fallback), self.state.clone());
         }
         // A trap is taken where a fallback would be.
         if node.trap().is_some() {

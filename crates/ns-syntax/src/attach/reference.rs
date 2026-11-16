@@ -530,18 +530,19 @@ impl<'tree> Builder<'tree, '_> {
             span,
             ..
         } = class;
-        if let Some(side) = class_side.as_ref() {
-            if side.members.is_empty() && self.drop_if_empty(side.delimiters) {
-                // The `:` before the side's `(`.
-                if let Some(Delimiters { open, .. }) = side.delimiters {
-                    let open_index = self
-                        .tokens
-                        .partition_point(|token| token.span.start < open.start);
-                    if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index]) {
-                        if colon.kind == TokenKind::Colon {
-                            self.dropped.push(colon.span);
-                        }
-                    }
+        if let Some(side) = class_side.as_ref()
+            && side.members.is_empty()
+            && self.drop_if_empty(side.delimiters)
+        {
+            // The `:` before the side's `(`.
+            if let Some(Delimiters { open, .. }) = side.delimiters {
+                let open_index = self
+                    .tokens
+                    .partition_point(|token| token.span.start < open.start);
+                if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index])
+                    && colon.kind == TokenKind::Colon
+                {
+                    self.dropped.push(colon.span);
                 }
             }
         }

@@ -397,14 +397,15 @@ fn derived_equality<'gc>(
     // leaf before class objects became values: answered here without
     // building the walk wherever the walk's first step would decide. Only
     // for class objects.
-    if let (Some(first), Some(second)) = (left.as_object(), right.as_object()) {
-        if mutator.heap().is_class(first) && mutator.heap().is_class(second) {
-            if first.same(second) {
-                return Some(true);
-            }
-            if !classes_can_be_equal(mutator, first, second) {
-                return Some(false);
-            }
+    if let (Some(first), Some(second)) = (left.as_object(), right.as_object())
+        && mutator.heap().is_class(first)
+        && mutator.heap().is_class(second)
+    {
+        if first.same(second) {
+            return Some(true);
+        }
+        if !classes_can_be_equal(mutator, first, second) {
+            return Some(false);
         }
     }
     // The root pair is examined before the stack is used, so a pair its

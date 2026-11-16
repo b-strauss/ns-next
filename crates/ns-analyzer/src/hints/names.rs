@@ -117,10 +117,10 @@ pub(super) fn assigned_in<'tree>(
 ) -> HashSet<&'tree str> {
     let mut assigned = HashSet::new();
     let mut visit = |node: Node<'tree>| {
-        if let Node::Expression(expression) = node {
-            if let ExpressionKind::Assign { target, .. } = &expression.kind {
-                assigned.insert(target.name.as_str());
-            }
+        if let Node::Expression(expression) = node
+            && let ExpressionKind::Assign { target, .. } = &expression.kind
+        {
+            assigned.insert(target.name.as_str());
         }
     };
     each_node_in_slots(slots, &mut visit);

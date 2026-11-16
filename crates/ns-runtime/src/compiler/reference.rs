@@ -1123,18 +1123,18 @@ impl<'a> Body<'a> {
         self.emit(build(destination, CallSite::UNCACHED));
         // Not emitted when the body is too large, and `finish` keeps none
         // of it.
-        if self.code.len() > index {
-            if let Some(collected) = self.collected.as_mut() {
-                collected.sends.push(SendEntry {
-                    index: Self::target(index),
-                    call_site: Some(CallSite::UNCACHED),
-                    receiver: spans.receiver,
-                    selector: spans.selector.into(),
-                    call: spans.call,
-                    parenthesize_receiver: spans.parenthesize_receiver,
-                    setter: spans.setter,
-                });
-            }
+        if self.code.len() > index
+            && let Some(collected) = self.collected.as_mut()
+        {
+            collected.sends.push(SendEntry {
+                index: Self::target(index),
+                call_site: Some(CallSite::UNCACHED),
+                receiver: spans.receiver,
+                selector: spans.selector.into(),
+                call: spans.call,
+                parenthesize_receiver: spans.parenthesize_receiver,
+                setter: spans.setter,
+            });
         }
         destination
     }
@@ -1185,14 +1185,14 @@ impl<'a> Body<'a> {
     /// Records a send that takes `blocks`, which the body goes on from at
     /// `after` once the send has answered, when the metadata is collected.
     fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: usize, inlined: bool) {
-        if let Some(collected) = self.collected.as_mut() {
-            if !blocks.is_empty() {
-                collected.block_sends.push(BlockSendEntry {
-                    blocks: blocks.into(),
-                    inlined,
-                    after: Self::target(after),
-                });
-            }
+        if let Some(collected) = self.collected.as_mut()
+            && !blocks.is_empty()
+        {
+            collected.block_sends.push(BlockSendEntry {
+                blocks: blocks.into(),
+                inlined,
+                after: Self::target(after),
+            });
         }
     }
 

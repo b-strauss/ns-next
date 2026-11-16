@@ -65,18 +65,17 @@ fn build_methods(
         method.class_accessor = class_accessor_root.and_then(|root| {
             crate::compiler::primitive_method::recognize_class_accessor(declaration, bindings, root)
         });
-        if kernel_block {
-            if let Some(marker) =
+        if kernel_block
+            && let Some(marker) =
                 crate::compiler::unwind_marker::recognize(declaration, &method.code)
-            {
-                let mut code = (*method.code).clone();
-                code.unwind_marker = Some(marker);
-                // The clone is a body of its own, so the tables move to it.
-                if let Some(collector) = collector {
-                    collector.rekey(&method.code, &code);
-                }
-                method.code = Rc::new(code);
+        {
+            let mut code = (*method.code).clone();
+            code.unwind_marker = Some(marker);
+            // The clone is a body of its own, so the tables move to it.
+            if let Some(collector) = collector {
+                collector.rekey(&method.code, &code);
             }
+            method.code = Rc::new(code);
         }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
         debug_assert!(
@@ -367,10 +366,10 @@ impl<'gc> Mutator<'gc> {
         // A body-less root is the level its `<:` clause added
         // (`object-model.md`, "Mixin application"), named for it and with
         // its factory.
-        if let (false, Some((top, _))) = (mixin.has_body, &top) {
-            if !applied.is_empty() {
-                return *top;
-            }
+        if let (false, Some((top, _))) = (mixin.has_body, &top)
+            && !applied.is_empty()
+        {
+            return *top;
         }
         let (superclass, super_application) = top.unzip();
         let application = self.apply_mixin(mixin, super_application.as_ref());
@@ -1432,14 +1431,14 @@ fn check_arity<'gc>(
     declared_arity: Option<usize>,
     factory_arguments: Arguments<'_, 'gc>,
 ) -> Result<(), Signal<'gc>> {
-    if let Some(declared_arity) = declared_arity {
-        if factory_arguments.len() != declared_arity {
-            return Err(factory_arity_error(
-                class,
-                declared_arity,
-                factory_arguments.len(),
-            ));
-        }
+    if let Some(declared_arity) = declared_arity
+        && factory_arguments.len() != declared_arity
+    {
+        return Err(factory_arity_error(
+            class,
+            declared_arity,
+            factory_arguments.len(),
+        ));
     }
     Ok(())
 }

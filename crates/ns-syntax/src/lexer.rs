@@ -152,13 +152,12 @@ impl<'a> Lexer<'a> {
         self.position = first_line_break(&self.bytes[start..])
             .map_or(self.bytes.len(), |length| start + length);
         let span = Span::from_offsets(start, self.position);
-        if let Some(previous) = self.comments.last_mut() {
-            if previous.kind == CommentKind::Line
-                && continues_line_block(self.source, previous.span, start)
-            {
-                previous.span = previous.span.merge(span);
-                return;
-            }
+        if let Some(previous) = self.comments.last_mut()
+            && previous.kind == CommentKind::Line
+            && continues_line_block(self.source, previous.span, start)
+        {
+            previous.span = previous.span.merge(span);
+            return;
         }
         self.comments.push(Comment {
             kind: CommentKind::Line,

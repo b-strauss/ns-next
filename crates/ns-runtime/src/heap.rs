@@ -1592,11 +1592,12 @@ fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
     // A frame that ends inside the lowest window -- a sender whose callee
     // lies on its slots, as down a deep recursion -- only lowers its start:
     // the window above it begins past the lowest's end.
-    if let Some(lowest) = claimed.last_mut() {
-        if lowest.start <= window.end && window.end <= lowest.end {
-            lowest.start = window.start;
-            return;
-        }
+    if let Some(lowest) = claimed.last_mut()
+        && lowest.start <= window.end
+        && window.end <= lowest.end
+    {
+        lowest.start = window.start;
+        return;
     }
     claim_merging(claimed, window);
 }
@@ -5309,11 +5310,10 @@ impl<'gc> Heap<'gc> {
         object: ObjectReference<'gc>,
         feedback_base: FeedbackBase,
     ) {
-        if let Some(words) = self.pointer_words_mut(object, Format::Closure) {
-            if words.len() >= closure_field::COUNT {
-                words[closure_field::FEEDBACK_BASE] =
-                    count_word(feedback_base.raw() as usize).bits();
-            }
+        if let Some(words) = self.pointer_words_mut(object, Format::Closure)
+            && words.len() >= closure_field::COUNT
+        {
+            words[closure_field::FEEDBACK_BASE] = count_word(feedback_base.raw() as usize).bits();
         }
     }
 
@@ -6045,27 +6045,26 @@ impl<'gc> Heap<'gc> {
         code: &Rc<CompiledCode>,
         method: Option<&Rc<MixinMethod>>,
     ) -> CodeId {
-        if let Some((epoch, id)) = code.code_id_cache.get() {
-            if epoch == self.code_table_epoch {
-                // An epoch is renewed whenever rows are freed, so a cached
-                // id of the current epoch still names its own body.
-                debug_assert!(
-                    self.tables
-                        .codes
-                        .get(id.index())
-                        .and_then(Option::as_ref)
-                        .is_some_and(|entry| Rc::ptr_eq(&entry.code, code)),
-                    "internal: a body's cached id names another row: rows were freed without renewing the epoch"
-                );
-                if let Some(method) = method {
-                    if let Some(entry) = self.tables.codes[id.index()].as_mut() {
-                        if entry.method.is_none() {
-                            entry.method = Some(method.clone());
-                        }
-                    }
-                }
-                return id;
+        if let Some((epoch, id)) = code.code_id_cache.get()
+            && epoch == self.code_table_epoch
+        {
+            // An epoch is renewed whenever rows are freed, so a cached
+            // id of the current epoch still names its own body.
+            debug_assert!(
+                self.tables
+                    .codes
+                    .get(id.index())
+                    .and_then(Option::as_ref)
+                    .is_some_and(|entry| Rc::ptr_eq(&entry.code, code)),
+                "internal: a body's cached id names another row: rows were freed without renewing the epoch"
+            );
+            if let Some(method) = method
+                && let Some(entry) = self.tables.codes[id.index()].as_mut()
+                && entry.method.is_none()
+            {
+                entry.method = Some(method.clone());
             }
+            return id;
         }
         self.register_code_uncached(code, method)
     }
@@ -6201,10 +6200,10 @@ impl<'gc> Heap<'gc> {
         let id = self.known_mixin_id(mixin);
         let mut level = Some(class);
         while let Some(current) = level {
-            if let Some(application) = self.class_application_entry(current) {
-                if self.same_mixin(&application.mixin, mixin, id) {
-                    return Some(read(application));
-                }
+            if let Some(application) = self.class_application_entry(current)
+                && self.same_mixin(&application.mixin, mixin, id)
+            {
+                return Some(read(application));
             }
             level = self.class_superclass(current);
         }
@@ -6719,10 +6718,10 @@ impl<'gc> Heap<'gc> {
         level: ClassReference<'gc>,
         body: InitializerBody,
     ) -> Option<Rc<Mixin>> {
-        if body == InitializerBody::Full {
-            if let Some(declaration) = self.class_body_less_declaration(level) {
-                return Some(declaration.clone());
-            }
+        if body == InitializerBody::Full
+            && let Some(declaration) = self.class_body_less_declaration(level)
+        {
+            return Some(declaration.clone());
         }
         self.class_application(level)
             .map(|application| application.mixin.clone())
@@ -12382,11 +12381,11 @@ impl<'gc> Heap<'gc> {
         let mut replaced = 0;
         let mut replace = |fields: &mut [Word]| {
             for field in fields {
-                if let Some(offset) = field.object_offset() {
-                    if let Some(value) = values.get(&offset.get()) {
-                        *field = *value;
-                        replaced += 1;
-                    }
+                if let Some(offset) = field.object_offset()
+                    && let Some(value) = values.get(&offset.get())
+                {
+                    *field = *value;
+                    replaced += 1;
                 }
             }
         };
@@ -12501,11 +12500,11 @@ impl<'gc> Heap<'gc> {
     /// again and the text keeps one object.
     pub(crate) fn prune_canonical_symbols(&mut self) {
         for index in 0..self.canonical_symbols.len() {
-            if let Some(object) = self.canonical_symbols[index] {
-                if !self.header(object).marked() {
-                    self.symbol_of.remove(&object.offset.get());
-                    self.canonical_symbols[index] = None;
-                }
+            if let Some(object) = self.canonical_symbols[index]
+                && !self.header(object).marked()
+            {
+                self.symbol_of.remove(&object.offset.get());
+                self.canonical_symbols[index] = None;
             }
         }
         let mut program_symbols = std::mem::take(&mut self.program_symbols);
@@ -12682,10 +12681,10 @@ impl<'gc> Heap<'gc> {
             };
             for range in ranges {
                 for position in range.start + block.start..range.end + block.start {
-                    if let Some(target) = Word::from_bits(words[position]).object_offset() {
-                        if !Header(words[header_index(target)]).marked() {
-                            marker.push(target);
-                        }
+                    if let Some(target) = Word::from_bits(words[position]).object_offset()
+                        && !Header(words[header_index(target)]).marked()
+                    {
+                        marker.push(target);
                     }
                 }
             }
@@ -12839,10 +12838,10 @@ impl<'gc> Heap<'gc> {
     fn push_ephemeron_fields(&self, offset: NonZeroU64, marker: &mut mark::Marker) {
         let words = self.space.words();
         for bits in &words[self.field_range(offset)] {
-            if let Some(target) = Word::from_bits(*bits).object_offset() {
-                if !Header(words[header_index(target)]).marked() {
-                    marker.push(target);
-                }
+            if let Some(target) = Word::from_bits(*bits).object_offset()
+                && !Header(words[header_index(target)]).marked()
+            {
+                marker.push(target);
             }
         }
     }
@@ -12861,10 +12860,10 @@ impl<'gc> Heap<'gc> {
         let fields = self.field_range(offset);
         let words = self.space.words_mut();
         for position in fields {
-            if let Some(target) = Word::from_bits(words[position]).object_offset() {
-                if !Header(words[header_index(target)]).marked() {
-                    words[position] = Word::NIL.bits();
-                }
+            if let Some(target) = Word::from_bits(words[position]).object_offset()
+                && !Header(words[header_index(target)]).marked()
+            {
+                words[position] = Word::NIL.bits();
             }
         }
     }

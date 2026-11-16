@@ -174,17 +174,16 @@ pub(crate) fn root_clause_defect(
                     clause.span,
                 ));
             }
-            if let Some(message) = clause.messages.first() {
-                if !matches!(&message.selector, ast::Selector::Unary(selector) if selector == "new")
-                {
-                    return Some((
-                        RootClauseDefect::SuperclassMessage {
-                            clause: clause_as_written(clause),
-                            selector: selector_name(&message.selector).to_string(),
-                        },
-                        clause.span,
-                    ));
-                }
+            if let Some(message) = clause.messages.first()
+                && !matches!(&message.selector, ast::Selector::Unary(selector) if selector == "new")
+            {
+                return Some((
+                    RootClauseDefect::SuperclassMessage {
+                        clause: clause_as_written(clause),
+                        selector: selector_name(&message.selector).to_string(),
+                    },
+                    clause.span,
+                ));
             }
             (named == "Value").then_some(clause.span)
         }

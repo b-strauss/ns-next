@@ -149,10 +149,10 @@ fn spawn_pump(
         .name("ns-next debugger events".to_string())
         .spawn(move || {
             loop {
-                if let Some(event) = events.next_event(PUMP_SLICE) {
-                    if inputs.send(agent::Input::Event(event)).is_err() {
-                        return;
-                    }
+                if let Some(event) = events.next_event(PUMP_SLICE)
+                    && inputs.send(agent::Input::Event(event)).is_err()
+                {
+                    return;
                 }
                 if detached.load(Ordering::SeqCst) {
                     return;

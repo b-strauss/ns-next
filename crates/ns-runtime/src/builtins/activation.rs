@@ -306,10 +306,9 @@ fn next_active_handler<'gc>(
         if let Some(UnwindMarker::Handler {
             active_register, ..
         }) = walked.unwind_marker(&mutator.heap)
+            && walked.local(&mutator.heap, active_register).as_boolean() == Some(true)
         {
-            if walked.local(&mutator.heap, active_register).as_boolean() == Some(true) {
-                return Some(walked.reified(&mut mutator.heap));
-            }
+            return Some(walked.reified(&mut mutator.heap));
         }
     }
 }

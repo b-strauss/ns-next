@@ -280,14 +280,14 @@ fn owning_its_arguments<'gc>(
 /// lowering its activation is exempt exactly when that rule's condition holds
 /// (`docs/design/compiler.md`, "How the limit counts").
 fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
-    if let Some(object) = block.as_object() {
-        if mutator.heap().is_closure(object) {
-            return Step::Block {
-                closure: object,
-                arguments: StepArguments::ControlFlow,
-                then: Continuation::Deliver,
-            };
-        }
+    if let Some(object) = block.as_object()
+        && mutator.heap().is_closure(object)
+    {
+        return Step::Block {
+            closure: object,
+            arguments: StepArguments::ControlFlow,
+            then: Continuation::Deliver,
+        };
     }
     Step::Value(block)
 }

@@ -360,10 +360,10 @@ fn check_frame_lifetimes(
         };
         let ends = block.end.successors();
         for node in &block.nodes {
-            if let Some(fallback) = node.fallback() {
-                if !ends.contains(&fallback) {
-                    check_inputs(&set, fallback)?;
-                }
+            if let Some(fallback) = node.fallback()
+                && !ends.contains(&fallback)
+            {
+                check_inputs(&set, fallback)?;
             }
             for value in node.uses() {
                 if !contains(&set, value) {
@@ -372,10 +372,10 @@ fn check_frame_lifetimes(
             }
             apply(node, &mut set);
         }
-        if let Some(value) = block.end.uses() {
-            if !contains(&set, value) {
-                return Err(across(value));
-            }
+        if let Some(value) = block.end.uses()
+            && !contains(&set, value)
+        {
+            return Err(across(value));
         }
         for successor in ends {
             check_inputs(&set, successor)?;
@@ -405,10 +405,10 @@ fn leaving_sets(block: &Block, top: ValueSet) -> Vec<(BlockId, ValueSet)> {
     let ends = block.end.successors();
     let mut leaving = Vec::new();
     for node in &block.nodes {
-        if let Some(fallback) = node.fallback() {
-            if !ends.contains(&fallback) {
-                leaving.push((fallback, set.clone()));
-            }
+        if let Some(fallback) = node.fallback()
+            && !ends.contains(&fallback)
+        {
+            leaving.push((fallback, set.clone()));
         }
         apply(node, &mut set);
     }

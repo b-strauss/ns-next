@@ -1037,10 +1037,10 @@ fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
     for instruction in &code.instructions() {
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             numbers.extend(call_site_numbers(block));
-        } else if let Some(site) = instruction.call_site() {
-            if site != CallSite::UNCACHED {
-                numbers.push(site.number);
-            }
+        } else if let Some(site) = instruction.call_site()
+            && site != CallSite::UNCACHED
+        {
+            numbers.push(site.number);
         }
     }
     numbers

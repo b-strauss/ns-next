@@ -3056,10 +3056,10 @@ impl JitState {
         };
         let (entry, other) = self.body_lookup.entries_of(offset);
         for each in [entry, other] {
-            if let Some(index) = each.get().checked_sub(1) {
-                if holds(index as usize) {
-                    return Some(index);
-                }
+            if let Some(index) = each.get().checked_sub(1)
+                && holds(index as usize)
+            {
+                return Some(index);
             }
         }
         #[cfg(test)]
@@ -4439,10 +4439,10 @@ impl JitState {
         for (index, body) in self.bodies.iter().enumerate() {
             // Only the body its slot names, so that each slot's count is
             // halved once: one freed, or compiled anew since, is not.
-            if let Some(code) = body.code.upgrade() {
-                if self.named_body(&code) == Some(index) {
-                    code.jit.decay_exits();
-                }
+            if let Some(code) = body.code.upgrade()
+                && self.named_body(&code) == Some(index)
+            {
+                code.jit.decay_exits();
             }
             // Optimized code's own count, halved as its baseline code's
             // is, so that a rare exit of it does not add up to its
@@ -5141,10 +5141,10 @@ fn point_budget_words(mutator: &mut Mutator<'_>) {
 pub(crate) fn budgets_before_collection(mutator: &Mutator<'_>) -> IdentityMap<usize, i64> {
     let mut budgets = IdentityMap::default();
     for body in mutator.jit.bodies.iter().filter(|body| !body.free) {
-        if let Some(code) = body.code.upgrade() {
-            if let Some(budget) = mutator.heap.armed_optimization_budget(&code) {
-                budgets.insert(Rc::as_ptr(&code) as usize, budget);
-            }
+        if let Some(code) = body.code.upgrade()
+            && let Some(budget) = mutator.heap.armed_optimization_budget(&code)
+        {
+            budgets.insert(Rc::as_ptr(&code) as usize, budget);
         }
     }
     budgets
@@ -5518,13 +5518,12 @@ fn inlined_into_a_copy_below(mutator: &Mutator<'_>, activation: ActivationRefere
         };
         let code = heap.activation_code(sender);
         let key = activation_key(heap, &code, sender);
-        if let Some(copy) = mutator.jit.optimized_for(&code, key) {
-            if bodies
+        if let Some(copy) = mutator.jit.optimized_for(&code, key)
+            && bodies
                 .iter()
                 .all(|body| copy.dependencies.code_ids.contains(body))
-            {
-                return true;
-            }
+        {
+            return true;
         }
         bodies.push(heap.activation_code_id(sender));
         frame = sender;
@@ -5900,10 +5899,10 @@ fn request_optimization<'gc>(
     code: &Rc<CompiledCode>,
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
 ) {
-    if let Some((receiver, current_class)) = frame {
-        if request_copy(mutator, code, receiver, current_class) {
-            return;
-        }
+    if let Some((receiver, current_class)) = frame
+        && request_copy(mutator, code, receiver, current_class)
+    {
+        return;
     }
     request(mutator, OptimizationRequest::uncustomized(code));
 }
@@ -8421,10 +8420,10 @@ impl JitState {
             if body.free || body.tier != Tier::Optimized {
                 continue;
             }
-            if let Some(code) = body.code.upgrade() {
-                if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
-                    codes.push(code);
-                }
+            if let Some(code) = body.code.upgrade()
+                && !codes.iter().any(|known| Rc::ptr_eq(known, &code))
+            {
+                codes.push(code);
             }
         }
         codes
@@ -10561,10 +10560,10 @@ mod tests {
                 let mut current = Some(twice_object);
                 let mut steps: u16 = 0;
                 while let Some(level) = current {
-                    if let Some(application) = mutator.heap.class_application(level) {
-                        if Rc::ptr_eq(&application.mixin, &mixin) {
-                            levels.push((steps, application.dispatch_ids.instances));
-                        }
+                    if let Some(application) = mutator.heap.class_application(level)
+                        && Rc::ptr_eq(&application.mixin, &mixin)
+                    {
+                        levels.push((steps, application.dispatch_ids.instances));
                     }
                     current = mutator.heap.class_superclass(level);
                     steps += 1;

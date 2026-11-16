@@ -1374,11 +1374,11 @@ fn reaches_before_an_exit(code: &CompiledCode, exits: &[bool], transfers: &[bool
             if successor <= program_counter {
                 return true;
             }
-            if let Some(seen) = reached.get_mut(successor as usize) {
-                if !*seen {
-                    *seen = true;
-                    pending.push(successor);
-                }
+            if let Some(seen) = reached.get_mut(successor as usize)
+                && !*seen
+            {
+                *seen = true;
+                pending.push(successor);
             }
         }
     }

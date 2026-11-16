@@ -414,18 +414,18 @@ fn replay(
             for operand in node.uses() {
                 in_register(&replay, allocation, operand, use_position)?;
             }
-            if let Node::FrameRead { register, .. } = node {
-                if !replay.in_sync(usize::from(*register)) {
-                    return Err(VerifyError::StaleFrameWord {
-                        register: *register,
-                        position: use_position,
-                    });
-                }
+            if let Node::FrameRead { register, .. } = node
+                && !replay.in_sync(usize::from(*register))
+            {
+                return Err(VerifyError::StaleFrameWord {
+                    register: *register,
+                    position: use_position,
+                });
             }
-            if let Some(fallback) = node.fallback() {
-                if graph.block(*block).exit_position(fallback) == Some(index) {
-                    enters(&replay, graph, allocation, (*block, fallback), None)?;
-                }
+            if let Some(fallback) = node.fallback()
+                && graph.block(*block).exit_position(fallback) == Some(index)
+            {
+                enters(&replay, graph, allocation, (*block, fallback), None)?;
             }
             // The trap's cold write-back, replayed on its way out.
             if node.trap().is_some() {

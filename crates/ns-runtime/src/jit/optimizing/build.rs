@@ -648,10 +648,10 @@ pub(crate) fn compiled_ways(
         if choice.may_fall_through() && instruction.falls_through() {
             work.push(index + 1);
         }
-        if choice.keeps_target() {
-            if let Some(target) = instruction.jump_target() {
-                work.push(target as usize);
-            }
+        if choice.keeps_target()
+            && let Some(target) = instruction.jump_target()
+        {
+            work.push(target as usize);
         }
     }
     ways
@@ -1514,15 +1514,14 @@ impl Laying<'_, '_> {
         let owner = &self.graph_scopes[scope.0 as usize];
         let original =
             self.snapshots[scope.0 as usize].instructions[program_counter as usize].clone();
-        if let SnapshotInstruction::MakeClosure { destination, .. } = original {
-            if let Some(BlockPlan::Eliminated(block)) =
+        if let SnapshotInstruction::MakeClosure { destination, .. } = original
+            && let Some(BlockPlan::Eliminated(block)) =
                 self.plan.blocks.get(&(scope, program_counter))
-            {
-                return Pending::Eliminated {
-                    destination: physical(owner.offset, destination),
-                    block: *block,
-                };
-            }
+        {
+            return Pending::Eliminated {
+                destination: physical(owner.offset, destination),
+                block: *block,
+            };
         }
         if owner.parent.is_some() {
             let block_scope = self.plan.scopes[scope.0 as usize].block_of.is_some();
@@ -2878,13 +2877,13 @@ impl<'flat> Builder<'flat> {
             // A register a back edge of an earlier build refuted takes its
             // phi though every way in agrees: the back edge brings another
             // value.
-            if !loop_changes && !self.forced_phis[block].contains(register) {
-                if let Some(first) = bindings.first() {
-                    if bindings.iter().all(|binding| binding == first) {
-                        state[register] = *first;
-                        continue;
-                    }
-                }
+            if !loop_changes
+                && !self.forced_phis[block].contains(register)
+                && let Some(first) = bindings.first()
+                && bindings.iter().all(|binding| binding == first)
+            {
+                state[register] = *first;
+                continue;
             }
             let value = self.new_value(None);
             let inputs = predecessors

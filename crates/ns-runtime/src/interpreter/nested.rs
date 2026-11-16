@@ -153,15 +153,14 @@ pub(crate) fn nested_class<'gc>(
     declaring_class: ClassReference<'gc>,
     cached_field: u32,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if cached_field != NO_CACHED_FIELD {
-        if let Some(cached) = receiver
+    if cached_field != NO_CACHED_FIELD
+        && let Some(cached) = receiver
             .as_object()
             .and_then(|object| mutator.heap.instance_field(object, cached_field as usize))
-        {
-            if !cached.is_nil() && !is_creation_in_progress(cached) {
-                return Ok(Step::Value(cached));
-            }
-        }
+        && !cached.is_nil()
+        && !is_creation_in_progress(cached)
+    {
+        return Ok(Step::Value(cached));
     }
     let Some((receiver_object, index, cached)) = cache_slot(mutator, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
@@ -331,10 +330,10 @@ pub(crate) fn after_clause<'gc>(
         Some(declaring_class),
         Some(superclass),
     );
-    if let Some(refusal) = value_class_refusal {
-        if !mutator.record_value_class_refusal(class, refusal) {
-            unreachable!("internal: a nested class is a class object");
-        }
+    if let Some(refusal) = value_class_refusal
+        && !mutator.record_value_class_refusal(class, refusal)
+    {
+        unreachable!("internal: a nested class is a class object");
     }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
@@ -384,10 +383,10 @@ fn body_less_class<'gc>(
     } else {
         None
     };
-    if let Some(refusal) = value_class_refusal {
-        if !mutator.record_value_class_refusal(class, refusal) {
-            unreachable!("internal: a nested class is a class object");
-        }
+    if let Some(refusal) = value_class_refusal
+        && !mutator.record_value_class_refusal(class, refusal)
+    {
+        unreachable!("internal: a nested class is a class object");
     }
     crate::interpreter::locals::store_instance_field(
         &mut mutator.heap,

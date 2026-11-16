@@ -206,10 +206,10 @@ pub(crate) fn unwind_signal<'gc>(
     signal: Signal<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
-    if let Signal::Error(error) = &signal {
-        if let Some(outcome) = start_signalling(mutator, error, floor) {
-            return outcome;
-        }
+    if let Signal::Error(error) = &signal
+        && let Some(outcome) = start_signalling(mutator, error, floor)
+    {
+        return outcome;
     }
     let pending = match signal {
         Signal::Return(target, value) => PendingUnwind {
@@ -735,19 +735,19 @@ impl<'gc> Mutator<'gc> {
         block: Value<'gc>,
         then: Box<PendingUnwind<'gc>>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        if let Some(closure) = block.as_object() {
-            if self.heap.is_closure(closure) {
-                return self.push_step(
-                    Step::Block {
-                        closure,
-                        arguments: StepArguments::Owned(Vec::new()),
-                        then: Continuation::Unwind(then),
-                    },
-                    Arguments::NONE,
-                    None,
-                    false,
-                );
-            }
+        if let Some(closure) = block.as_object()
+            && self.heap.is_closure(closure)
+        {
+            return self.push_step(
+                Step::Block {
+                    closure,
+                    arguments: StepArguments::Owned(Vec::new()),
+                    then: Continuation::Unwind(then),
+                },
+                Arguments::NONE,
+                None,
+                false,
+            );
         }
         let marked = self
             .heap

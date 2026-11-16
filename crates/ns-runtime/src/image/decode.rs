@@ -2078,14 +2078,14 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 });
             }
         }
-        if let Some(register) = register_written(instruction) {
-            if register < code.argument_count {
-                return Err(DecodeError::ArgumentRegisterWritten {
-                    depth: 0,
-                    register,
-                    argument_count: code.argument_count,
-                });
-            }
+        if let Some(register) = register_written(instruction)
+            && register < code.argument_count
+        {
+            return Err(DecodeError::ArgumentRegisterWritten {
+                depth: 0,
+                register,
+                argument_count: code.argument_count,
+            });
         }
         // The base and every source are among `own_registers`; the slots
         // past the base are not, and the send writes each one it copies a
@@ -2127,13 +2127,13 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 }
             }
         }
-        if let Some(target) = jump_target(instruction) {
-            if target as usize >= instructions.len() {
-                return Err(DecodeError::JumpTargetOutOfRange {
-                    target,
-                    instructions: instructions.len(),
-                });
-            }
+        if let Some(target) = jump_target(instruction)
+            && target as usize >= instructions.len()
+        {
+            return Err(DecodeError::JumpTargetOutOfRange {
+                target,
+                instructions: instructions.len(),
+            });
         }
     }
     // Last, on a body every register and target of which is in range: a
@@ -4001,10 +4001,9 @@ fn rebuild_applications<'gc>(
                 context.mutator,
                 declaration_enclosing,
                 object,
-            ) {
-                if !context.mutator.record_value_class_refusal(object, refusal) {
-                    unreachable!("internal: a pending class record fills a class object");
-                }
+            ) && !context.mutator.record_value_class_refusal(object, refusal)
+            {
+                unreachable!("internal: a pending class record fills a class object");
             }
             continue;
         }
@@ -4018,10 +4017,9 @@ fn rebuild_applications<'gc>(
             context.mutator,
             enclosing,
             superclass_class,
-        ) {
-            if !context.mutator.record_value_class_refusal(object, refusal) {
-                unreachable!("internal: a pending class record fills a class object");
-            }
+        ) && !context.mutator.record_value_class_refusal(object, refusal)
+        {
+            unreachable!("internal: a pending class record fills a class object");
         }
     }
     Ok(())
@@ -4336,10 +4334,10 @@ fn check_class_references<'gc>(
     for frame in frames {
         let current_class = heap.frame_current_class(*frame);
         let kind = heap.frame_kind(*frame);
-        if let FrameKind::Closure(closure) = &kind {
-            if !heap.is_closure(*closure) {
-                return Err(DecodeError::NotAClosureReference);
-            }
+        if let FrameKind::Closure(closure) = &kind
+            && !heap.is_closure(*closure)
+        {
+            return Err(DecodeError::NotAClosureReference);
         }
         let kind_class = match &kind {
             FrameKind::Initializer(class, _)
@@ -5299,15 +5297,15 @@ pub fn decode_graph_section<'gc>(
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
         }
-        if let Some((applied, _)) = applied_clause {
-            if !heap.class_set_applied_clause(*object, applied) {
-                unreachable!("internal: a class record fills a class object");
-            }
+        if let Some((applied, _)) = applied_clause
+            && !heap.class_set_applied_clause(*object, applied)
+        {
+            unreachable!("internal: a class record fills a class object");
         }
-        if let Some(this_class) = this_class {
-            if !heap.class_set_this_class(*object, this_class) {
-                unreachable!("internal: a metaclass record fills a class object");
-            }
+        if let Some(this_class) = this_class
+            && !heap.class_set_this_class(*object, this_class)
+        {
+            unreachable!("internal: a metaclass record fills a class object");
         }
         // A heap holds one object per symbol, and so does an image of one:
         // a second record of the same text is refused, not merged

@@ -373,10 +373,10 @@ impl DapClient {
             let ended = child.try_wait().ok().flatten();
             let written = String::from_utf8_lossy(&stderr.lock().expect("stderr")).to_string();
             // Only a whole line: the token may still be on its way.
-            if let Some(start) = written.find(LISTENING_PREFIX) {
-                if let Some(length) = written[start..].find('\n') {
-                    break parse_listening_line(&written[start..start + length]);
-                }
+            if let Some(start) = written.find(LISTENING_PREFIX)
+                && let Some(length) = written[start..].find('\n')
+            {
+                break parse_listening_line(&written[start..start + length]);
             }
             if let Some(status) = ended {
                 panic!("ns-next ended ({status}) before it listened: {written}");
@@ -481,13 +481,13 @@ impl DapClient {
     pub fn attach_racing_the_deadline(&mut self, attempts: u32) {
         for _ in 0..attempts {
             let arguments = json!({ "token": self.token() });
-            if let Ok(seq) = self.connection.try_send("attach", arguments) {
-                if let Some(response) = self.connection.response_or_close(seq) {
-                    assert_eq!(response["success"], true, "{response}");
-                    self.event("process");
-                    self.event("initialized");
-                    return;
-                }
+            if let Ok(seq) = self.connection.try_send("attach", arguments)
+                && let Some(response) = self.connection.response_or_close(seq)
+            {
+                assert_eq!(response["success"], true, "{response}");
+                self.event("process");
+                self.event("initialized");
+                return;
             }
             self.reconnect();
         }

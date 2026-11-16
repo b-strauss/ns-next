@@ -124,10 +124,10 @@ impl ScopeStack {
     /// the enclosing classes.
     pub(super) fn resolve_setter(&self, name: Symbol) -> Option<Binding> {
         for (depth, scope) in self.scopes.iter().rev().enumerate() {
-            if let Some(entry) = scope.names.get(&name) {
-                if entry.has_setter {
-                    return Some(binding_at(depth, entry.index));
-                }
+            if let Some(entry) = scope.names.get(&name)
+                && entry.has_setter
+            {
+                return Some(binding_at(depth, entry.index));
             }
         }
         None

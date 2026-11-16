@@ -14,7 +14,7 @@ ns-syntax = { path = "../ns-syntax" }
 # The spend of a body's budget is held to the two instructions on x64's
 # hot path it was designed as, read back by the disassembler
 # `ns-assembler`'s encodings are held to.
-iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+iced-x86.workspace = true
 indoc.workspace = true
 libtest-mimic.workspace = true
 

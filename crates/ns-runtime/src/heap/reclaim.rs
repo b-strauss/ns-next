@@ -57,22 +57,21 @@ impl GatheredIds {
         {
             self.applications.insert(row);
         }
-        if let Some((mixin, _, _)) = small_integer(applied_clause).and_then(AppliedClause::unpack) {
-            if let Ok(row) = u32::try_from(mixin.index()) {
-                if (row as usize) < self.mixin_rows {
-                    self.applied_clauses.insert(row);
-                }
-            }
+        if let Some((mixin, _, _)) = small_integer(applied_clause).and_then(AppliedClause::unpack)
+            && let Ok(row) = u32::try_from(mixin.index())
+            && (row as usize) < self.mixin_rows
+        {
+            self.applied_clauses.insert(row);
         }
     }
 
     /// A marked closure's code-id and feedback-base words, as stored.
     pub(super) fn closure_words(&mut self, code: u64, feedback_base: u64) {
         self.frame_word(code);
-        if let Some(raw) = small_integer(feedback_base).and_then(row_of) {
-            if raw != FeedbackBase::NOT_ASSIGNED.raw() {
-                self.feedback_bases.insert(raw);
-            }
+        if let Some(raw) = small_integer(feedback_base).and_then(row_of)
+            && raw != FeedbackBase::NOT_ASSIGNED.raw()
+        {
+            self.feedback_bases.insert(raw);
         }
     }
 
@@ -200,10 +199,10 @@ impl Heap<'_> {
     /// `prune_canonical_symbols` is, for the same reason.
     pub(crate) fn prune_mixin_objects(&mut self) {
         for index in 0..self.mixin_objects.len() {
-            if let Some(object) = self.mixin_objects[index] {
-                if !self.header(object).marked() {
-                    self.mixin_objects[index] = None;
-                }
+            if let Some(object) = self.mixin_objects[index]
+                && !self.header(object).marked()
+            {
+                self.mixin_objects[index] = None;
             }
         }
     }
@@ -451,13 +450,12 @@ impl Heap<'_> {
             crate::hash::IdentityMap::default();
         for (id, version) in &versions {
             *structural.entry(mixin_key(version)).or_default() += 1;
-            if let Some(class_side) = &version.class_side {
-                if self
+            if let Some(class_side) = &version.class_side
+                && self
                     .known_mixin_id(class_side)
                     .is_some_and(|class_side_id| same_tree(*id, class_side_id))
-                {
-                    *structural.entry(mixin_key(class_side)).or_default() += 1;
-                }
+            {
+                *structural.entry(mixin_key(class_side)).or_default() += 1;
             }
         }
         for (instance_side, synthesized) in memo {
@@ -508,10 +506,10 @@ impl Heap<'_> {
             }
         }
         for (version, count) in self.tables.superseded.iter().zip(&counts.superseded) {
-            if let Some((id, inside)) = count {
-                if Rc::strong_count(version) > *inside {
-                    held.insert(mixin_row_number(*id));
-                }
+            if let Some((id, inside)) = count
+                && Rc::strong_count(version) > *inside
+            {
+                held.insert(mixin_row_number(*id));
             }
         }
         held

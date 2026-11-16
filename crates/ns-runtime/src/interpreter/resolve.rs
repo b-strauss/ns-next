@@ -424,19 +424,18 @@ impl<'gc> Mutator<'gc> {
                             if let Some(object) = arguments
                                 .try_get(&self.heap, usize::from(position))
                                 .and_then(|value| value.as_object())
+                                && self.heap().is_closure(object)
                             {
-                                if self.heap().is_closure(object) {
-                                    let block_arguments = if receiver.as_boolean().is_some() {
-                                        StepArguments::ControlFlow
-                                    } else {
-                                        StepArguments::Owned(Vec::new())
-                                    };
-                                    return Ok(Step::Block {
-                                        closure: object,
-                                        arguments: block_arguments,
-                                        then: Continuation::Deliver,
-                                    });
-                                }
+                                let block_arguments = if receiver.as_boolean().is_some() {
+                                    StepArguments::ControlFlow
+                                } else {
+                                    StepArguments::Owned(Vec::new())
+                                };
+                                return Ok(Step::Block {
+                                    closure: object,
+                                    arguments: block_arguments,
+                                    then: Continuation::Deliver,
+                                });
                             }
                         }
                         // `cull:`'s rule, as `Closure>>cull:` states it: the
@@ -449,21 +448,19 @@ impl<'gc> Mutator<'gc> {
                             if let Some(object) = arguments
                                 .try_get(&self.heap, usize::from(position))
                                 .and_then(|value| value.as_object())
-                            {
-                                if let Some(parameter_count) =
+                                && let Some(parameter_count) =
                                     self.heap().closure_parameter_count(object)
-                                {
-                                    let block_arguments = if parameter_count == 0 {
-                                        Vec::new()
-                                    } else {
-                                        vec![receiver]
-                                    };
-                                    return Ok(Step::Block {
-                                        closure: object,
-                                        arguments: StepArguments::Owned(block_arguments),
-                                        then: Continuation::Deliver,
-                                    });
-                                }
+                            {
+                                let block_arguments = if parameter_count == 0 {
+                                    Vec::new()
+                                } else {
+                                    vec![receiver]
+                                };
+                                return Ok(Step::Block {
+                                    closure: object,
+                                    arguments: StepArguments::Owned(block_arguments),
+                                    then: Continuation::Deliver,
+                                });
                             }
                         }
                         None => {}

@@ -347,15 +347,13 @@ fn measure(listing: impl BufRead, names: &[&str]) -> std::io::Result<HashMap<Str
             });
             continue;
         }
-        if let Some(function) = &current {
-            if is_instruction(&line) {
-                if let Some(stretch) = stretches
-                    .get_mut(function)
-                    .and_then(|stretches| stretches.last_mut())
-                {
-                    stretch.push(line);
-                }
-            }
+        if let Some(function) = &current
+            && is_instruction(&line)
+            && let Some(stretch) = stretches
+                .get_mut(function)
+                .and_then(|stretches| stretches.last_mut())
+        {
+            stretch.push(line);
         }
     }
     Ok(stretches
@@ -538,24 +536,21 @@ fn wide_loads_over_narrower_stores(instructions: &[String]) -> usize {
             continue;
         }
         let (destination, source) = operands.split_once(", ").unwrap_or((operands, ""));
-        if writes_its_first_operand(mnemonic) {
-            if let Some(store) = stack_operand(destination) {
-                stores.push(depth.normalized(store));
-                continue;
-            }
+        if writes_its_first_operand(mnemonic)
+            && let Some(store) = stack_operand(destination)
+        {
+            stores.push(depth.normalized(store));
+            continue;
         }
         if WIDE_LOADS.contains(&mnemonic)
             && (destination.starts_with("xmm") || destination.starts_with("ymm"))
+            && let Some(load) = stack_operand(source).map(|load| depth.normalized(load))
+            && load.width >= 16
+            && stores
+                .iter()
+                .any(|store| store.width < load.width && store.overlaps(&load))
         {
-            if let Some(load) = stack_operand(source).map(|load| depth.normalized(load)) {
-                if load.width >= 16
-                    && stores
-                        .iter()
-                        .any(|store| store.width < load.width && store.overlaps(&load))
-                {
-                    count += 1;
-                }
-            }
+            count += 1;
         }
     }
     count

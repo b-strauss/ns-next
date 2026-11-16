@@ -94,10 +94,10 @@ impl Mutator<'_> {
             if std::mem::replace(flag, true) {
                 continue;
             }
-            if let Some(application) = self.heap.application(index) {
-                if let Some(superclass) = &application.superclass {
-                    work.push(superclass.index());
-                }
+            if let Some(application) = self.heap.application(index)
+                && let Some(superclass) = &application.superclass
+            {
+                work.push(superclass.index());
             }
             if let Some(successor) = self.heap.successor(index) {
                 work.push(successor);

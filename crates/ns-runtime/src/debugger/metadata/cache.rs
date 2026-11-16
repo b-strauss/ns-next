@@ -150,10 +150,10 @@ impl Cache {
     /// `text`, kept from here on. Compared rather than trusted, since a
     /// full collection may reclaim a root's id for another module.
     pub(super) fn module_text(&mut self, root: MixinId, text: String) -> Rc<str> {
-        if let Some(kept) = self.texts.get(&root) {
-            if **kept == *text {
-                return Rc::clone(kept);
-            }
+        if let Some(kept) = self.texts.get(&root)
+            && **kept == *text
+        {
+            return Rc::clone(kept);
         }
         let text: Rc<str> = Rc::from(text);
         self.texts.insert(root, Rc::clone(&text));

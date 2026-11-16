@@ -651,12 +651,11 @@ fn accessed_classes(heap: &Heap<'_>, root: &Rc<Mixin>) -> HashSet<Symbol> {
     let mut pending: Vec<Rc<Mixin>> = vec![Rc::clone(root)];
     while let Some(mixin) = pending.pop() {
         for entry in mixin.methods.values() {
-            if let MethodEntry::Compiled(method) = entry {
-                if method.access == AccessModifier::Public {
-                    if let Some(accessor) = &method.class_accessor {
-                        accessed.insert(accessor.class_name);
-                    }
-                }
+            if let MethodEntry::Compiled(method) = entry
+                && method.access == AccessModifier::Public
+                && let Some(accessor) = &method.class_accessor
+            {
+                accessed.insert(accessor.class_name);
             }
         }
         pending.extend(heap.nested_mixins(&mixin));
@@ -920,12 +919,11 @@ mod tests {
                 .clone();
             let mut handed_out: HashSet<String> = HashSet::new();
             for entry in object_mixin.methods.values() {
-                if let MethodEntry::Compiled(method) = entry {
-                    if let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) =
+                if let MethodEntry::Compiled(method) = entry
+                    && let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) =
                         method.recognized_fast_path()
-                    {
-                        handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
-                    }
+                {
+                    handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
                 }
             }
             let platform = root_mixin("PlatformFactory");
@@ -935,10 +933,10 @@ mod tests {
                 .find(|nested| nested.name.as_str() == "KernelNamespace")
                 .expect("PlatformFactory declares KernelNamespace");
             for entry in kernel_namespace.methods.values() {
-                if let MethodEntry::Compiled(method) = entry {
-                    if method.access == AccessModifier::Public {
-                        handed_out.insert(method.selector.as_str().to_string());
-                    }
+                if let MethodEntry::Compiled(method) = entry
+                    && method.access == AccessModifier::Public
+                {
+                    handed_out.insert(method.selector.as_str().to_string());
                 }
             }
             let mut for_shipped_modules: Vec<String> = heap

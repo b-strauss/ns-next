@@ -228,12 +228,12 @@ impl FreeRanges {
         self.free_sites += size as usize;
         let mut start = start;
         let mut size = size;
-        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
-            if before_start + before_size == start {
-                self.ranges.remove(&before_start);
-                start = before_start;
-                size += before_size;
-            }
+        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back()
+            && before_start + before_size == start
+        {
+            self.ranges.remove(&before_start);
+            start = before_start;
+            size += before_size;
         }
         if let Some(after_size) = self.ranges.remove(&(start + size)) {
             size += after_size;
@@ -668,12 +668,12 @@ impl InlineCaches {
             }
             let range = base.index()..base.index() + size as usize;
             for entry in &mut sites[range.clone()] {
-                if let Target::Polymorphic { block, .. } = entry.target {
-                    if let Some(slots) = pool.get_mut(block as usize) {
-                        *slots = CacheEntry::vacant_block();
-                        cells.vacate_blocks(block as usize..block as usize + 1);
-                        free_blocks.push(block);
-                    }
+                if let Target::Polymorphic { block, .. } = entry.target
+                    && let Some(slots) = pool.get_mut(block as usize)
+                {
+                    *slots = CacheEntry::vacant_block();
+                    cells.vacate_blocks(block as usize..block as usize + 1);
+                    free_blocks.push(block);
                 }
                 *entry = CacheEntry::vacant();
             }
@@ -2502,10 +2502,10 @@ fn cached<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if let Some(target) = site_target(mutator, index, key.guard) {
-        if let Some((resolved, base)) = materialize(mutator, target, key) {
-            return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
-        }
+    if let Some(target) = site_target(mutator, index, key.guard)
+        && let Some((resolved, base)) = materialize(mutator, target, key)
+    {
+        return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
     }
     miss(
         mutator,
@@ -2617,10 +2617,10 @@ fn decided_miss<'gc, Answer>(
         LexicalClass::NotComputed
     };
     if key.guard != DispatchId::NONE {
-        if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
-            if let Some((found, base)) = materialize(mutator, target, key) {
-                return hit(mutator, found, base);
-            }
+        if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard)
+            && let Some((found, base)) = materialize(mutator, target, key)
+        {
+            return hit(mutator, found, base);
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
             let lexical_class = lexical_of(mutator);
@@ -2631,14 +2631,14 @@ fn decided_miss<'gc, Answer>(
             .caches
             .global_get(key.guard, selector, key.rule)
             .cloned();
-        if let Some(target) = global {
-            if let Some((found, base)) = materialize(mutator, target.clone(), key) {
-                let cell = cell_for(mutator, key, &target);
-                mutator
-                    .caches
-                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
-                return hit(mutator, found, base);
-            }
+        if let Some(target) = global
+            && let Some((found, base)) = materialize(mutator, target.clone(), key)
+        {
+            let cell = cell_for(mutator, key, &target);
+            mutator
+                .caches
+                .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+            return hit(mutator, found, base);
         }
     }
     let found = resolve(mutator, known_lexical_class);
@@ -2974,10 +2974,10 @@ fn decided<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> (Resolved<'gc>, FeedbackBase) {
-    if let Some(target) = site_target(mutator, index, key.guard) {
-        if let Some(found) = materialize(mutator, target, key) {
-            return found;
-        }
+    if let Some(target) = site_target(mutator, index, key.guard)
+        && let Some(found) = materialize(mutator, target, key)
+    {
+        return found;
     }
     decided_miss(
         mutator,
@@ -3257,10 +3257,11 @@ impl InlineCaches {
                 if let Instruction::MakeClosure { code: block, .. } = instruction {
                     pending.push(Rc::clone(block));
                 }
-                if let Some(site) = instruction.call_site() {
-                    if site != CallSite::UNCACHED && sent_selector(instruction) == Some(sent) {
-                        numbers.push(site.number);
-                    }
+                if let Some(site) = instruction.call_site()
+                    && site != CallSite::UNCACHED
+                    && sent_selector(instruction) == Some(sent)
+                {
+                    numbers.push(site.number);
                 }
             }
         }
