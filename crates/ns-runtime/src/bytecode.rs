@@ -1584,13 +1584,6 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
 /// target (`jump_target`). A send resumes at the next instruction however
 /// its callee returns, and an instruction that forces a future runs again
 /// from where it stands, so neither adds an edge.
-#[cfg_attr(
-    not(any(test, ns_jit)),
-    expect(
-        dead_code,
-        reason = "read by the baseline compiler, built only where `cfg(ns_jit)` is set, and the tests"
-    )
-)]
 pub(crate) fn successors(
     index: u32,
     instruction: &Instruction,
@@ -1617,13 +1610,6 @@ pub(crate) fn successors(
 /// which a breakpoint's patch leaves as they were, and runs only at a
 /// stop, so it is a worklist over the decoded body rather than a pass over
 /// the eight-byte encoding the run loop fetches.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the debugger's assignment of a variable calls it from task 5 of stage 5 on"
-    )
-)]
 pub(crate) fn may_have_run(code: &CompiledCode, indices: &[u32], program_counter: u32) -> bool {
     let length = code.instruction_count();
     // A counter outside the body is reached by no path, and would answer

@@ -82,10 +82,11 @@
 > with its defaults costs a running program nothing measurable ("What
 > stage 4 moved"). The VM evaluates an expression in a stopped frame,
 > with a depth reserve of its own, and a pause aborts it
-> ("Evaluation"). Everything else is planned: conditional breakpoints
-> and logpoints, watches and setting
-> variables, smart step into, restart frame and force return (stage 5,
-> next), hot swap and
+> ("Evaluation"), and sets a stopped frame's variable, refusing one a
+> block may already hold a copy of ("Writing a frame", "Assigning a
+> captured variable"). Everything else is planned: conditional
+> breakpoints and logpoints, watches, smart step into, restart frame and
+> force return (stage 5, next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
@@ -481,8 +482,17 @@ The commands (`debugger::Command`):
   program still stopped, or refused with "no frame at that index", "the
   frame is the core library's", "the frame's source is not known", "the
   expression does not compile: <message>", "<name> is not assignable",
-  "a ^ cannot leave an evaluation" or, at the depth limit, "the stack has
-  no room for the evaluation".
+  "a ^ cannot leave an evaluation", "<name> is captured by a block made
+  before this point" ("Assigning a captured variable") or, at the depth
+  limit, "the stack has no room for the evaluation".
+- `SetVariable { frame, name, expression }` -- sets the variable `name`
+  of the activation at index `frame` to what `expression` answers, by
+  evaluating `name:: (expression)` as `Evaluate` does ("Writing a
+  frame"); answered by `Event::VariableSet`, the variable as `Variables`
+  now shows it, by `Event::Evaluated` with the error the expression ended
+  with, or refused as `Evaluate` is, "<name> is not assignable" also for
+  a name that is not an assignable variable the frame shows -- `self`
+  among them.
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
@@ -851,8 +861,8 @@ handle is live, and nothing pushes or pops until the program goes on. The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
-stack at a stop", "Values the IDE holds"), `Evaluate` ("Evaluation") and
-the configuration commands until a
+stack at a stop", "Values the IDE holds"), `Evaluate` ("Evaluation"),
+`SetVariable` ("Writing a frame") and the configuration commands until a
 `Continue`, a step or a `Terminate`; a step begins there
 (`stepping::begin`), is answered by `Continued` and goes on as a
 `Continue` does. A command the stop serves was queued with its
@@ -865,10 +875,12 @@ exception's and hides its machinery, a caught one's, a header stop --,
 the run's floor, the agent it serves, the values it handed out, the
 frames it walked and what it owes the program once it goes on -- the
 slot its frame stands at, gone past once, and whether the run loop reads
-the frame on top again (`AfterStop`). An `Evaluate` leaves it with
-`Served::Evaluate`, kept in the `Debugger` while the expression runs, and
-the safepoint the evaluation's end asks for serves it again
-(`Interpreter::serve_evaluation`): it answers `Evaluated` and goes on
+the frame on top again (`AfterStop`). An `Evaluate` or a `SetVariable`
+leaves it with `Served::Evaluate`, kept in the `Debugger` while the
+expression runs, with the name of the variable a `SetVariable` sets
+(`Stop::setting`), and the safepoint the evaluation's end asks for serves
+it again (`Interpreter::serve_evaluation`): it answers `Evaluated`, or
+`VariableSet` for a `SetVariable` whose expression answered, and goes on
 serving, its value ids still valid, with no second `Stopped`. Its frames
 are walked again after an evaluation, which may have moved them, and the
 slot it owes the top frame is named by the top frame as it is then.
@@ -927,8 +939,9 @@ its receiver and, from its body's metadata ("Compiling the metadata
 again"), the statement and the send it stands at in its module's current
 text and its named variables over its whole lexical chain (decisions 10,
 12 and 13); a frame whose body has no metadata shows its arguments and its
-registers below the first scratch register, by number. Writing a frame is
-stage 5's ("Writing a frame").
+registers below the first scratch register, by number. Writing a frame --
+an evaluation's assignment, a variable set -- is stage 5's ("Writing a
+frame").
 
 The run's frames (`stack::frames`) are walked from the top activation
 through each sender down to the run's floor
@@ -2407,11 +2420,12 @@ machine code, and for the pause it would take late.
 **Partial:** an expression is resolved and compiled as a block in a
 stopped frame's scope (`resolver::resolve_evaluation`,
 `compiler/evaluation.rs`) and run at a stop (`Command::Evaluate`,
-`debugger/evaluation.rs`; "Evaluation"); breakpoint conditions, log
-messages, watches and `setVariable` are planned.
+`debugger/evaluation.rs`; "Evaluation") and as a variable's new value
+(`Command::SetVariable`; "Writing a frame"); breakpoint conditions, log
+messages and watches are planned.
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
-watch, `setVariable` as `name := expression` -- is resolved and compiled as
+watch, `setVariable` as `name:: (expression)` -- is resolved and compiled as
 if it were a block standing at the frame's stored `program_counter` -- a
 statement start, or a return point mid-statement -- its outer frame the
 stopped frame, reified for it. It reads and writes the frame's
@@ -3539,9 +3553,24 @@ stops.
 
 ### Writing a frame
 
-**Partial:** a frame an evaluation reads and writes is built
-(`debugger::evaluation::begin`); setting a variable, a restart and a
-forced return are planned.
+**Partial:** a frame an evaluation reads and writes, and setting a
+variable, are built (`debugger::evaluation::begin`,
+`Command::SetVariable`); a restart and a forced return are planned.
+
+A variable is set by an evaluation: `Command::SetVariable { frame, name,
+expression }` compiles `name:: (expression)` in the frame
+(`debugger::evaluation::compile_assignment`), on lines of their own so
+that a line comment ending the expression leaves the parenthesis closed,
+and runs it as `Evaluate` runs an expression. The name must be the
+variable the frame shows under it -- the innermost of the name, which the
+assignment's resolution names too -- and assignable, or the command is
+refused as not assignable before any text is composed, so that no name
+is read as source; an assignment to a variable a block may already hold
+a copy of is refused as an evaluated one is ("Assigning a captured
+variable"). Its answer, `Event::VariableSet`, is the variable holding
+the value the assignment answered, which is what it wrote; an expression
+that ends with an error answers `Event::Evaluated` with it, the variable
+unwritten.
 
 Reading a compiled frame needs nothing; a frame whose variable is set, or
 that is restarted or forced to return, goes on in the interpreter -- a stop
@@ -3745,13 +3774,6 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
 
 ### Assigning a captured variable
 
-**Partial:** the variable table names, for each of a body's own
-assignable locals, the `MakeClosure`s that copy it
-(`debugger::metadata::VariableEntry::copied_by`, held to the code by the
-metadata check), and `bytecode::may_have_run` answers whether one of them
-may have run before a program counter; the refusal of the assignment is
-planned.
-
 Closure conversion copies a captured mutable local into the closure
 unless something can write it once a block holds it
 (`compiler/capture.rs`, `needs_vector`): a local a block writes, one
@@ -3774,7 +3796,36 @@ the capture, as IntelliJ refuses a local a lambda captured; in a block's
 own frame the variable is a copy, and is always refused (decided with
 the user on 2026-11-16). A variable in the indirection vector, a register
 no block captures, and a copied variable before its capture are
-assigned. The reference lowering copies nothing and refuses nothing, so
+assigned.
+
+The variable table (`debugger::metadata::VariableEntry::copied_by`,
+held to the code by the metadata check) names, for each of a body's own
+assignable locals, the `MakeClosure`s that copy it, and
+`bytecode::may_have_run` answers whether one of them may have run
+before a program counter. Where an evaluation is compiled, each variable
+of the stopped frame's table is decided by its place
+(`debugger::evaluation::assignabilities`) and handed to the resolver as
+`resolver::Assignability`: a `Captured` one is what an assignment of its
+name names -- it declares a setter, unlike a parameter, which the
+assignment passes by -- and the assignment is refused with "<name> is
+captured by a block made before this point", in an `Evaluate` and a
+`SetVariable` alike. A register of the frame's own body is refused once
+one of its `MakeClosure`s may have run before the frame's stored program
+counter; a register of the frame that holds an enclosing variable is a
+copy the frame was handed, and refused, as is an enclosing frame's
+register short of the declaring frame (`Outer` with fewer hops than the
+variable's depth), a copy a block between was handed; the declaring
+frame's own register (`Outer` as far as the depth) is decided by that
+frame's own entry for it at its program counter in its body
+(`debugger::stack::outer_frame`), refused whenever a block copies it once
+that frame returned, and refused, too, where neither the frame nor its
+entry is found; a vector variable is assigned. Pinned by
+`a_copied_variable_is_refused_after_its_capture`,
+`a_copied_variable_is_assigned_before_its_capture`,
+`a_copy_in_a_block_s_frame_is_refused` and
+`an_evaluated_assignment_to_a_captured_variable_is_refused`.
+
+The reference lowering copies nothing and refuses nothing, so
 the lowerings differ in what the debugger allows, never in what an
 assignment it allows makes the program do. Primordial Soup and the
 Newspeak IDE assign the most local copy and leave the others stale

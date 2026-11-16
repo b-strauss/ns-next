@@ -16,8 +16,8 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children`, `ModuleText` and `Evaluate` are
-/// served only
+/// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate` and
+/// `SetVariable` are served only
 /// while the program is stopped; one that arrives while it runs is refused
 /// (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
@@ -157,9 +157,26 @@ pub enum Command {
     /// breakpoint it meets, and the program stays stopped. Served only
     /// while the program is stopped; answered by `Event::Evaluated`, or by
     /// `Event::Refused` for a frame index past the stack, a frame of the
-    /// core library, a frame whose source is not known, or an expression
-    /// that does not compile.
+    /// core library, a frame whose source is not known, an expression
+    /// that does not compile, or one that assigns a variable a block may
+    /// already hold a copy of (`docs/design/debugger.md`, "Assigning a
+    /// captured variable").
     Evaluate { frame: usize, expression: String },
+    /// Sets the variable `name` of the frame at index `frame` of the stack
+    /// trace to what `expression` answers, evaluated as `Evaluate`
+    /// evaluates `name:: (expression)`. Served only while the program is
+    /// stopped; answered by `Event::VariableSet`, by `Event::Evaluated`
+    /// with the error the expression ended with, or by `Event::Refused`
+    /// for what `Evaluate` refuses, a name that is not an assignable
+    /// variable of the frame -- `"<name> is not assignable"` -- and a
+    /// variable a block may already hold a copy of -- `"<name> is captured
+    /// by a block made before this point"` (`docs/design/debugger.md`,
+    /// "Assigning a captured variable").
+    SetVariable {
+        frame: usize,
+        name: String,
+        expression: String,
+    },
 }
 
 /// What an evaluation answered (`Command::Evaluate`).
@@ -328,6 +345,7 @@ impl Command {
             Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
             Command::ModuleText { .. } => "ModuleText",
             Command::Evaluate { .. } => "Evaluate",
+            Command::SetVariable { .. } => "SetVariable",
         }
     }
 }
@@ -393,6 +411,9 @@ pub enum Event {
     /// The answer to `Command::Evaluate`, once the evaluation ended; the
     /// program is still stopped, at the stop it was evaluated at.
     Evaluated(Evaluation),
+    /// The answer to `Command::SetVariable`: the variable as
+    /// `Command::Variables` now shows it. The program is still stopped.
+    VariableSet(Variable),
 }
 
 /// What `Event::ModuleText` says of a module's text.

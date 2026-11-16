@@ -31,9 +31,23 @@ pub(crate) struct FrameVariable {
     pub(crate) name: Symbol,
     /// Where the stopped frame reads it.
     pub(crate) place: VariablePlace,
-    /// Whether an assignment may write it: a mutable local's, never a
-    /// parameter's or an immutable local's (§3.6).
-    pub(crate) assignable: bool,
+    /// Whether an assignment may write it.
+    pub(crate) assignability: Assignability,
+}
+
+/// Whether an evaluated assignment may write a frame variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Assignability {
+    /// A mutable local no block holds a copy of.
+    Assignable,
+    /// A parameter or an immutable local (§3.6): it declares no setter, so
+    /// an assignment passes it by for one further out of the same name.
+    NotAssignable,
+    /// A mutable local a block may already hold a copy of, which the
+    /// assignment would leave stale (`docs/design/debugger.md`, "Assigning
+    /// a captured variable"): it declares a setter, so an assignment names
+    /// it, and is refused.
+    Captured,
 }
 
 /// What an expression evaluated in a stopped frame is resolved against
@@ -491,8 +505,9 @@ impl Resolver<'_> {
     /// assignable is passed by for one further out of the same name; one
     /// with none to pass on to, and a marked label, are refused -- the
     /// frame's own variable, never a slot of the same name, is what the
-    /// user means. `None` outside an evaluation, and for a name the frame
-    /// does not hold.
+    /// user means -- and so is the mutable local it names when a block may
+    /// already hold a copy of it. `None` outside an evaluation, and for a
+    /// name the frame does not hold.
     fn frame_variable_target(&self, name: Symbol) -> Option<Result<u16, String>> {
         let evaluating = self.evaluating.as_ref()?;
         let refusal = || Err(format!("{name} {}", crate::debugger::NOT_ASSIGNABLE));
@@ -506,10 +521,16 @@ impl Resolver<'_> {
             .filter(|(_, variable)| variable.name == name)
             .peekable();
         named.peek()?;
-        Some(match named.find(|(_, variable)| variable.assignable) {
-            Some((position, _)) => Ok(frame_variable_index(position)),
-            None => refusal(),
-        })
+        Some(
+            match named.find(|(_, variable)| variable.assignability != Assignability::NotAssignable)
+            {
+                Some((_, variable)) if variable.assignability == Assignability::Captured => {
+                    Err(format!("{name} {}", crate::debugger::CAPTURED))
+                }
+                Some((position, _)) => Ok(frame_variable_index(position)),
+                None => refusal(),
+            },
+        )
     }
 
     fn resolve_expression(

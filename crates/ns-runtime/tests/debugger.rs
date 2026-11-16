@@ -12886,4 +12886,277 @@ mod evaluation {
             assert_eq!(answer, 41);
         }
     }
+
+    /// What setting `name` of the frame at index `frame` to what
+    /// `expression` answers answers.
+    fn set_variable(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> Event {
+        request(
+            remote,
+            Command::SetVariable {
+                frame,
+                name: name.to_owned(),
+                expression: expression.to_owned(),
+            },
+        )
+    }
+
+    /// The label `name` of the frame at index `frame` shows once set to
+    /// what `expression` answers, which it must be.
+    fn set_label(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> String {
+        match set_variable(remote, frame, name, expression) {
+            Event::VariableSet(variable) => {
+                assert_eq!(variable.name, name);
+                shown(&variable).label.clone()
+            }
+            other => panic!("{name} was expected to be set, not {other:?}"),
+        }
+    }
+
+    /// Why setting `name` of the frame at index `frame` is refused, which
+    /// it must be.
+    fn set_refusal(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> String {
+        match set_variable(remote, frame, name, expression) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "SetVariable");
+                reason
+            }
+            other => panic!("setting {name} was expected to be refused, not {other:?}"),
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable set at a stop holds the value the expression
+        /// answered, which the variables show and the program then reads.
+        fn a_variable_set_is_seen_by_the_program(lowering) {
+            let ((set, read), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    let set = set_label(remote, 0, "count", "6 + 1");
+                    let variables = variables(remote, Command::Variables { frame: 0 });
+                    (set, value_of(&variables, "count").label.clone())
+                },
+            );
+            assert_eq!(set, "7");
+            assert_eq!(read, "7");
+            assert_eq!(answer, 7);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable set in a loop that ran in machine code is what the
+        /// loop's next pass reads: the frame goes on interpreted with it.
+        fn a_variable_set_in_a_compiled_loop_is_seen_by_the_next_iteration(lowering) {
+            let (mut interpreter, instance, _) = compiled(COUNTING_DOWN, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COUNTING_DOWN, "self bump.");
+            let (set, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CountingDown", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CountingDown"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == method("loop:"))
+                        .expect("the loop's method is on the stack");
+                    let set = set_label(remote, frame, "left", "1");
+                    continue_stopped(remote);
+                    set
+                },
+            );
+            assert_eq!(set, "1");
+            assert_eq!(
+                answered(&mut interpreter, result),
+                2001,
+                "the pass the stop was in is the last"
+            );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A parameter is never set.
+        fn a_parameter_is_not_assignable(lowering) {
+            let (reason, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| set_refusal(remote, 0, "value", "3"),
+            );
+            assert_eq!(reason, "value is not assignable");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// A mutable local the optimized lowering copies into a block, which
+    /// its method keeps and answers the value of.
+    const CAPTURING: &str = indoc! {"
+        class Capturing = Object new (
+          | captured ::= nil. |
+        ) (
+          public run = (
+            | x ::= 1. |
+            self note: x.
+            captured:: [
+              self sink: x.
+              x].
+            self sink: 0.
+            ^captured value
+          )
+          note: value = (
+            ^value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The captured variable is refused after the block that copies it was
+    /// made: the copy would keep the old value.
+    #[test]
+    fn a_copied_variable_is_refused_after_its_capture() {
+        let (reason, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Optimized,
+            "Capturing",
+            "self sink: 0.",
+            |remote| set_refusal(remote, 0, "x", "5"),
+        );
+        assert_eq!(reason, "x is captured by a block made before this point");
+        assert_eq!(answer, 1);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The captured variable is set before the block that copies it is
+        /// made, and the block's copy holds the new value.
+        fn a_copied_variable_is_assigned_before_its_capture(lowering) {
+            let (set, answer) = stopped_at(
+                CAPTURING,
+                lowering,
+                "Capturing",
+                "self note: x.",
+                |remote| set_label(remote, 0, "x", "5"),
+            );
+            assert_eq!(set, "5");
+            assert_eq!(answer, 5);
+        }
+    }
+
+    /// The reference lowering copies nothing: the variable is set after
+    /// the block was made, and the block reads it.
+    #[test]
+    fn a_copied_variable_is_assigned_under_the_reference_lowering() {
+        let (set, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Reference,
+            "Capturing",
+            "self sink: 0.",
+            |remote| set_label(remote, 0, "x", "5"),
+        );
+        assert_eq!(set, "5");
+        assert_eq!(answer, 5);
+    }
+
+    /// In a block's own frame a copied variable is the block's copy, which
+    /// is never set.
+    #[test]
+    fn a_copy_in_a_block_s_frame_is_refused() {
+        let (reason, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Optimized,
+            "Capturing",
+            "self sink: x.",
+            |remote| set_refusal(remote, 0, "x", "5"),
+        );
+        assert_eq!(reason, "x is captured by a block made before this point");
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering a block reads its method's variable
+    /// where the method keeps it: set from the block's frame, the block
+    /// reads the new value.
+    #[test]
+    fn a_method_s_variable_is_set_from_its_block_under_the_reference_lowering() {
+        let (set, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Reference,
+            "Capturing",
+            "self sink: x.",
+            |remote| set_label(remote, 0, "x", "5"),
+        );
+        assert_eq!(set, "5");
+        assert_eq!(answer, 5);
+    }
+
+    /// An evaluated assignment is refused where setting the variable is:
+    /// after the capture in the method's frame, and in the block's frame.
+    #[test]
+    fn an_evaluated_assignment_to_a_captured_variable_is_refused() {
+        let at_method = line_start(CAPTURING, "self sink: 0.");
+        let in_block = line_start(CAPTURING, "self sink: x.");
+        let ((in_method, in_its_block), answer) = debugged_answering(
+            CAPTURING,
+            Lowering::Optimized,
+            |remote| set_breakpoints(remote, "Capturing", vec![in_block, at_method]),
+            |remote| {
+                let ids: Vec<BreakpointId> = expect_breakpoints(remote, "Capturing")
+                    .iter()
+                    .map(|breakpoint| breakpoint.id)
+                    .collect();
+                assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                let in_method = refusal(remote, 0, "x:: 5");
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                let in_its_block = refusal(remote, 0, "x:: 5");
+                continue_stopped(remote);
+                (in_method, in_its_block)
+            },
+        );
+        assert_eq!(in_method, "x is captured by a block made before this point");
+        assert_eq!(
+            in_its_block,
+            "x is captured by a block made before this point"
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// A local a block writes, which lives in an indirection vector its
+    /// copies share.
+    const VECTORING: &str = indoc! {"
+        class Vectoring = Object new (
+          | adding ::= nil. |
+        ) (
+          public run = (
+            | count ::= 0. |
+            adding:: [:each | count:: count + each].
+            self note: count.
+            adding value: 1.
+            ^count
+          )
+          note: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A variable a block shares through its vector is set after the
+        /// block was made, and the block reads the new value.
+        fn a_vector_variable_is_assigned_and_the_block_sees_it(lowering) {
+            let (set, answer) = stopped_at(
+                VECTORING,
+                lowering,
+                "Vectoring",
+                "self note: count.",
+                |remote| set_label(remote, 0, "count", "5"),
+            );
+            assert_eq!(set, "5");
+            assert_eq!(answer, 6);
+        }
+    }
 }

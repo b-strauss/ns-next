@@ -125,7 +125,9 @@ mod tests {
     use crate::compiler::Lowering;
     use crate::debugger::metadata::{MetadataCollector, VariablePlace, VectorHolder};
     use crate::resolver::sends::EnclosingClass;
-    use crate::resolver::{EvaluationScope, FrameVariable, own_member_names, resolve_evaluation};
+    use crate::resolver::{
+        Assignability, EvaluationScope, FrameVariable, own_member_names, resolve_evaluation,
+    };
     use crate::types::Binding;
 
     /// A frame stopped in a method: the variables its metadata names, and
@@ -176,7 +178,11 @@ mod tests {
             .map(|entry| FrameVariable {
                 name: entry.name,
                 place: entry.place,
-                assignable: !parameters.contains(&entry.name),
+                assignability: if parameters.contains(&entry.name) {
+                    Assignability::NotAssignable
+                } else {
+                    Assignability::Assignable
+                },
             })
             .collect();
         let classes = chain

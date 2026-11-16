@@ -259,6 +259,93 @@ pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
     frame.read(heap).code(heap)
 }
 
+/// The program counter `frame` stores: the instruction it goes on from.
+pub(crate) fn program_counter(heap: &Heap<'_>, frame: &StackFrame) -> u32 {
+    u32::try_from(frame.read(heap).program_counter(heap))
+        .expect("internal: a program counter fits its frame word")
+}
+
+/// The frame `hops` closures' captured frames out from a stopped frame,
+/// as `Reader::outer` reaches it.
+pub(crate) struct OuterFrame {
+    /// Its body.
+    code: Rc<CompiledCode>,
+    /// The body's metadata, `None` where it has none.
+    metadata: Option<Rc<BodyMetadata>>,
+    /// The program counter it stands at while its activation runs or is
+    /// suspended; `None` once it returned.
+    program_counter: Option<u32>,
+}
+
+impl OuterFrame {
+    /// Whether a block may already hold a copy of the local the frame's
+    /// body keeps in `register`: one of the `MakeClosure`s its entry names
+    /// may have run before the frame's program counter, or, once the frame
+    /// returned, any of them. A register its table names no local of is
+    /// answered as copied, as is every register of a body without
+    /// metadata: nothing says otherwise.
+    pub(crate) fn may_have_copied(&self, register: u16) -> bool {
+        let Some(metadata) = &self.metadata else {
+            return true;
+        };
+        let Some(entry) = metadata
+            .variables
+            .iter()
+            .find(|entry| entry.depth == 0 && entry.place == VariablePlace::Register(register))
+        else {
+            return true;
+        };
+        !entry.copied_by.is_empty()
+            && self.program_counter.is_none_or(|program_counter| {
+                crate::bytecode::may_have_run(&self.code, &entry.copied_by, program_counter)
+            })
+    }
+}
+
+/// The frame `hops` closures' captured frames out from `frame` (`hops`
+/// above 0), its body's metadata compiled again on the first ask; `None`
+/// where a hop finds no captured frame or the frame names no body.
+pub(crate) fn outer_frame(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+    hops: u16,
+) -> Option<OuterFrame> {
+    let (code, origin, program_counter) = {
+        let heap = &mutator.heap;
+        let mut target = frame.read(heap).captured(heap)?;
+        for _ in 1..hops {
+            target = heap.frame_captured(target)?;
+        }
+        let code = heap.frame_code(target)?;
+        let (read, program_counter) = match heap.frame_activation(target) {
+            Some(activation) => (
+                Frame::Running(activation),
+                Some(heap.activation_program_counter(activation)),
+            ),
+            // A frame object names its kind and class alike whether its
+            // activation is suspended or returned.
+            None => (
+                Frame::Suspended(target),
+                heap.frame_is_suspended(target)
+                    .then(|| heap.frame_stored_program_counter(target)),
+            ),
+        };
+        let origin = origin_of(heap, read, &code);
+        let program_counter = program_counter.map(|program_counter| {
+            u32::try_from(program_counter).expect("internal: a program counter fits its frame word")
+        });
+        (code, origin, program_counter)
+    };
+    let metadata = origin
+        .as_ref()
+        .and_then(|origin| Cache::metadata(mutator, &code, origin));
+    Some(OuterFrame {
+        code,
+        metadata,
+        program_counter,
+    })
+}
+
 /// The descriptions of the run's `frames`, innermost first, every frame
 /// whose index `hidden` holds hidden, the innermost placed at its
 /// declaration's header when the stop is its header stop, `at_header`

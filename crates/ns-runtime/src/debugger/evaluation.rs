@@ -14,21 +14,22 @@
 //! remote's departure, aborts it (`abort`): the debugger's termination
 //! signal, unwound from the top, which its base ends.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::PoisonError;
 
 use super::metadata::again::{declaration_chain, module_name};
-use super::stack::{self, StackFrame};
-use super::{NO_SUCH_FRAME, NOT_ASSIGNABLE, RETURN_FROM_AN_EVALUATION, Stop};
-use crate::bytecode::CompiledCode;
+use super::metadata::{BodyMetadata, VariablePlace};
+use super::stack::{self, OuterFrame, StackFrame};
+use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, RETURN_FROM_AN_EVALUATION, Stop};
+use crate::bytecode::{CompiledCode, may_have_run};
 use crate::heap::{ActivationReference, NewClosure};
 use crate::interpreter::{
     Arguments, EVALUATION_DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator, Step,
     StepArguments,
 };
 use crate::resolver::sends::EnclosingClass;
-use crate::resolver::{EvaluationScope, FrameVariable, resolve_evaluation};
+use crate::resolver::{Assignability, EvaluationScope, FrameVariable, resolve_evaluation};
 use crate::types::{Continuation, NewspeakError};
 use crate::{Root, Symbol, Value};
 
@@ -82,12 +83,54 @@ pub(crate) enum Outcome {
 /// declaration its body belongs to, so that it obeys access control as the
 /// frame's method does. Refused, with the reason, for a frame index past
 /// the stack, a frame of the core library, a frame whose source is not
-/// known, and an expression that does not compile.
+/// known, and an expression that does not compile -- an assignment a
+/// block may already hold a copy of the variable before among its causes
+/// (`assignabilities`).
 pub(crate) fn compile(
     mutator: &mut Mutator<'_>,
     stop: &mut Stop,
     frame: usize,
     text: &str,
+) -> Result<Rc<CompiledCode>, String> {
+    compile_with(mutator, stop, frame, |_| Ok(text.to_owned()))
+}
+
+/// `name:: (expression)` compiled as `compile` compiles an expression in
+/// the frame at index `frame` of `stop`'s stack: what
+/// `Command::SetVariable` evaluates. `name` must be the variable the frame
+/// shows under it -- the innermost of the name, which the assignment then
+/// names too -- and assignable: anything else -- `self`, a parameter, an
+/// immutable local, a name the frame does not hold -- is refused as not
+/// assignable, before the text is composed, so that no name is read as
+/// source.
+pub(crate) fn compile_assignment(
+    mutator: &mut Mutator<'_>,
+    stop: &mut Stop,
+    frame: usize,
+    name: &str,
+    expression: &str,
+) -> Result<Rc<CompiledCode>, String> {
+    compile_with(mutator, stop, frame, |metadata| {
+        let shown = metadata
+            .variables
+            .iter()
+            .find(|entry| entry.name.as_str() == name);
+        match shown {
+            // On lines of its own, so that a line comment ending the
+            // expression leaves the parenthesis closed.
+            Some(entry) if entry.assignable => Ok(format!("{name}:: (\n{expression}\n)")),
+            _ => Err(format!("{name} {NOT_ASSIGNABLE}")),
+        }
+    })
+}
+
+/// `compile` of the text `text` answers for the frame's metadata, or its
+/// refusal.
+fn compile_with(
+    mutator: &mut Mutator<'_>,
+    stop: &mut Stop,
+    frame: usize,
+    text: impl FnOnce(&BodyMetadata) -> Result<String, String>,
 ) -> Result<Rc<CompiledCode>, String> {
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
@@ -98,8 +141,9 @@ pub(crate) fn compile(
     if module.shipped {
         return Err(String::from(SHIPPED_FRAME));
     }
-    let (_, _, metadata) = stack::body(mutator, stack_frame);
+    let (code, _, metadata) = stack::body(mutator, stack_frame);
     let metadata = metadata.ok_or(NO_SOURCE)?;
+    let text = text(&metadata)?;
     let chain: Vec<(Symbol, HashSet<Symbol>)> =
         declaration_chain(mutator, &origin.mixin).ok_or(NO_SOURCE)?;
     let classes: Vec<EnclosingClass<'_>> = chain
@@ -109,16 +153,18 @@ pub(crate) fn compile(
             members,
         })
         .collect();
+    let assignabilities = assignabilities(mutator, stack_frame, &code, &metadata);
     let variables: Vec<FrameVariable> = metadata
         .variables
         .iter()
-        .map(|entry| FrameVariable {
+        .zip(assignabilities)
+        .map(|(entry, assignability)| FrameVariable {
             name: entry.name,
             place: entry.place,
-            assignable: entry.assignable,
+            assignability,
         })
         .collect();
-    let expression = crate::compiler::evaluation::parse_expression(text)
+    let expression = crate::compiler::evaluation::parse_expression(&text)
         .map_err(|message| format!("{DOES_NOT_COMPILE}{message}"))?;
     let scope = EvaluationScope {
         classes: &classes,
@@ -126,9 +172,12 @@ pub(crate) fn compile(
         labels: &[],
     };
     let bindings = resolve_evaluation(&expression, &scope).map_err(|message| {
-        // The two refusals the debugger names itself stand as they are;
-        // every other is the compiler's.
-        if message == RETURN_FROM_AN_EVALUATION || message.ends_with(NOT_ASSIGNABLE) {
+        // The refusals the debugger names itself stand as they are; every
+        // other is the compiler's.
+        if message == RETURN_FROM_AN_EVALUATION
+            || message.ends_with(NOT_ASSIGNABLE)
+            || message.ends_with(CAPTURED)
+        {
             message
         } else {
             format!("{DOES_NOT_COMPILE}{message}")
@@ -141,6 +190,66 @@ pub(crate) fn compile(
         &[],
         mutator.lowering,
     ))
+}
+
+/// Whether an assignment evaluated in `frame`, which runs `code` with
+/// `metadata`, may write each of the variables of its table, in the
+/// table's order (`docs/design/debugger.md`, "Assigning a captured
+/// variable"): a parameter and an immutable local never; a mutable local
+/// unless a block may already hold a copy of it, which the assignment
+/// would leave stale. Where that lies is decided by the variable's place:
+///
+/// - a vector variable's copies share its slot, and it is assigned;
+/// - a register of the frame's own body is copied by the `MakeClosure`s
+///   its entry names, and refused once one of them may have run before the
+///   frame's program counter (`bytecode::may_have_run`);
+/// - a register of the frame's that holds an enclosing variable is a copy
+///   the frame was handed, and refused, as is the register of an enclosing
+///   frame between that holds one (`Outer` short of the declaring frame);
+/// - the declaring frame's own register (`Outer` as far as the variable's
+///   depth) is decided by that frame's own entry for it, at its program
+///   counter in its body, and refused whenever a block copies it once that
+///   frame returned -- or when the frame or its entry cannot be found.
+///
+/// Under the reference lowering no body copies a variable, and nothing is
+/// refused for a copy.
+fn assignabilities(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+    code: &CompiledCode,
+    metadata: &BodyMetadata,
+) -> Vec<Assignability> {
+    let program_counter = stack::program_counter(&mutator.heap, frame);
+    // One frame per depth, asked once for every variable it declares.
+    let mut outer_frames: HashMap<u16, Option<OuterFrame>> = HashMap::new();
+    metadata
+        .variables
+        .iter()
+        .map(|entry| {
+            if !entry.assignable {
+                return Assignability::NotAssignable;
+            }
+            let captured = match entry.place {
+                VariablePlace::Vector { .. } => false,
+                VariablePlace::Register(_) if entry.depth == 0 => {
+                    !entry.copied_by.is_empty()
+                        && may_have_run(code, &entry.copied_by, program_counter)
+                }
+                VariablePlace::Register(_) => true,
+                VariablePlace::Outer { hops, register } if hops == entry.depth => outer_frames
+                    .entry(hops)
+                    .or_insert_with(|| stack::outer_frame(mutator, frame, hops))
+                    .as_ref()
+                    .is_none_or(|outer| outer.may_have_copied(register)),
+                VariablePlace::Outer { .. } => true,
+            };
+            if captured {
+                Assignability::Captured
+            } else {
+                Assignability::Assignable
+            }
+        })
+        .collect()
 }
 
 /// Begins evaluating `code`, compiled by `compile` for the frame at index

@@ -74,6 +74,12 @@ pub(crate) const RETURN_FROM_AN_EVALUATION: &str = "a ^ cannot leave an evaluati
 /// `"<name> is not assignable"`.
 pub(crate) const NOT_ASSIGNABLE: &str = "is not assignable";
 
+/// What follows a variable's name in the refusal of an assignment a block
+/// may already hold a copy of the variable before:
+/// `"<name> is captured by a block made before this point"`
+/// (`docs/design/debugger.md`, "Assigning a captured variable").
+pub(crate) const CAPTURED: &str = "is captured by a block made before this point";
+
 /// The VM's end of an attached debugger, held by its `Interpreter`.
 pub(crate) struct Debugger {
     commands: Receiver<Command>,
@@ -115,6 +121,9 @@ pub(crate) struct Stop {
     after: AfterStop,
     /// Whether an evaluation ran at the stop.
     evaluated: bool,
+    /// The name of the variable the running evaluation sets
+    /// (`Command::SetVariable`), whose value it answers as the variable.
+    setting: Option<String>,
 }
 
 impl Stop {
@@ -267,6 +276,7 @@ impl StressReader {
             }
             Event::Stopped { .. }
             | Event::Evaluated(_)
+            | Event::VariableSet(_)
             | Event::Continued
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
@@ -766,10 +776,11 @@ impl Interpreter {
             .as_mut()
             .and_then(|debugger| debugger.stop.take())
             .expect("internal: the stop is kept");
+        let setting = stop.setting.take();
         let answer = self.enter(|mutator| {
             let outcome = evaluation::take_outcome(mutator)
                 .expect("internal: an evaluation that ended holds its answer");
-            match outcome {
+            let answer = match outcome {
                 evaluation::Outcome::Value(value) => {
                     Evaluation::Value(stop.values.describe(mutator, mutator.heap.fetch(&value)))
                 }
@@ -785,9 +796,18 @@ impl Interpreter {
                     }
                 }
                 evaluation::Outcome::Aborted => Evaluation::Aborted,
+            };
+            match (setting, answer) {
+                // The assignment answers the value it wrote, which the
+                // variable now holds and `Variables` shows.
+                (Some(name), Evaluation::Value(value)) => Event::VariableSet(Variable {
+                    name,
+                    value: VariableValue::Shown(value),
+                }),
+                (_, answer) => Event::Evaluated(answer),
             }
         });
-        self.answer(&mut stop.source, Event::Evaluated(answer));
+        self.answer(&mut stop.source, answer);
         Some(self.serve_stop(stop))
     }
 
@@ -958,7 +978,8 @@ impl Interpreter {
                 | Command::ModuleText { .. }
                 | Command::Variables { .. }
                 | Command::Children { .. }
-                | Command::Evaluate { .. }) => {
+                | Command::Evaluate { .. }
+                | Command::SetVariable { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -1018,7 +1039,8 @@ impl Interpreter {
             | Command::ModuleText { .. }
             | Command::Variables { .. }
             | Command::Children { .. }
-            | Command::Evaluate { .. } => {
+            | Command::Evaluate { .. }
+            | Command::SetVariable { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -1115,6 +1137,7 @@ impl Interpreter {
             frames: None,
             after,
             evaluated: false,
+            setting: None,
         };
         self.answer(
             &mut stop.source,
@@ -1265,23 +1288,23 @@ impl Interpreter {
                     Some(children) => self.answer(&mut stop.source, Event::Variables(children)),
                     None => self.refuse(&mut stop.source, &command, NO_SUCH_VALUE),
                 },
-                Command::Evaluate { frame, expression } => {
-                    match self.begin_evaluation(&mut stop, frame, &expression) {
+                command @ (Command::Evaluate { .. } | Command::SetVariable { .. }) => {
+                    match self.begin_evaluation(&mut stop, &command) {
                         Ok(()) => {
                             // Kept for the evaluation, whose run may move
                             // the frames before the stop serves again.
                             stop.evaluated = true;
                             stop.frames = None;
+                            stop.setting = match command {
+                                Command::SetVariable { name, .. } => Some(name),
+                                _ => None,
+                            };
                             if let Some(debugger) = &mut self.debugger {
                                 debugger.stop = Some(stop);
                             }
                             return Served::Evaluate;
                         }
-                        Err(reason) => self.refuse(
-                            &mut stop.source,
-                            &Command::Evaluate { frame, expression },
-                            &reason,
-                        ),
+                        Err(reason) => self.refuse(&mut stop.source, &command, &reason),
                     }
                 }
                 command @ (Command::SetBreakpoints { .. }
@@ -1316,20 +1339,27 @@ impl Interpreter {
         if rebuilt { Served::Rebuilt } else { served }
     }
 
-    /// Compiles `expression` in the frame at index `frame` of `stop`'s
-    /// stack and pushes it (`evaluation::compile`, `evaluation::begin`);
-    /// the refusal's reason otherwise. Only a stop the attached debugger
-    /// serves can be kept for an evaluation.
-    fn begin_evaluation(
-        &mut self,
-        stop: &mut Stop,
-        frame: usize,
-        expression: &str,
-    ) -> Result<(), String> {
+    /// Compiles what `command` -- an `Evaluate` or a `SetVariable` --
+    /// evaluates in the frame it names of `stop`'s stack and pushes it
+    /// (`evaluation::compile`, `evaluation::compile_assignment`,
+    /// `evaluation::begin`); the refusal's reason otherwise. Only a stop
+    /// the attached debugger serves can be kept for an evaluation.
+    fn begin_evaluation(&mut self, stop: &mut Stop, command: &Command) -> Result<(), String> {
         if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
             return Err(String::from(NOT_KEPT));
         }
-        let code = self.enter(|mutator| evaluation::compile(mutator, stop, frame, expression))?;
+        let (frame, code) = self.enter(|mutator| match command {
+            Command::Evaluate { frame, expression } => {
+                evaluation::compile(mutator, stop, *frame, expression).map(|code| (*frame, code))
+            }
+            Command::SetVariable {
+                frame,
+                name,
+                expression,
+            } => evaluation::compile_assignment(mutator, stop, *frame, name, expression)
+                .map(|code| (*frame, code)),
+            _ => unreachable!("internal: only an `Evaluate` and a `SetVariable` evaluate"),
+        })?;
         self.enter(|mutator| evaluation::begin(mutator, stop, frame, code, &[]))
             .map_err(String::from)
     }
@@ -1485,7 +1515,8 @@ impl Interpreter {
                     | Command::ModuleText { .. }
                     | Command::Variables { .. }
                     | Command::Children { .. }
-                    | Command::Evaluate { .. }),
+                    | Command::Evaluate { .. }
+                    | Command::SetVariable { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

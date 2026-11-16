@@ -1655,7 +1655,10 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::ModuleText { module, .. } => {
             command == "ModuleText" && pending.module.as_ref() == Some(module)
         }
-        Event::Evaluated(_) => command == "Evaluate",
+        // A `SetVariable` whose expression ended with an error answers
+        // that error as an evaluation does.
+        Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
+        Event::VariableSet(_) => command == "SetVariable",
         Event::Stopped { .. } => false,
     }
 }
