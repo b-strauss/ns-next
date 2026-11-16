@@ -3672,9 +3672,11 @@ marked. Every value a stop hands out carries whether it is withheld: it
 is when it was reached through a shipped activation or through a field a
 shipped mixin declares -- the platform object's private `vmMirror`,
 which the variables view shows, among them -- or is a value the
-bulk-forward leaf refuses (`builtins/reflection.rs`'s
-`may_be_forwarded`), the mirror and the kernel instance included; a
-child inherits its parent's withholding. The mirrors withhold what they
+shipped world withholds from every program (`Mutator::is_withheld`:
+the VM mirror and every recorded shipped module instance, the kernel's
+among them); a child inherits its parent's withholding. A `String`, an
+`Array` or a number a program frame shows is marked like any value: the
+rule is the way a value came, not its class. The mirrors withhold what they
 reach through a shipped level by the same rule. An object refused on one
 way can be marked where the program's own frames or fields show it. The
 Newspeak IDE's workspace scope, which binds `_` in every evaluation to
