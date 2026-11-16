@@ -12749,7 +12749,9 @@ mod evaluation {
     const NEAR_THE_LIMIT: i64 = 99_990;
 
     /// A recursion that stops a few activations below the depth limit, a
-    /// recursion of a chosen depth and one without end.
+    /// recursion of a chosen depth, one without end, and one that loops
+    /// without end at its bottom, inside an `ensure:` whose block counts
+    /// its runs.
     fn deep_source() -> String {
         assert_eq!(
             ns_runtime::interpreter::MAX_ACTIVATION_DEPTH,
@@ -12757,7 +12759,9 @@ mod evaluation {
             "the stop stands a few activations below the depth limit"
         );
         indoc::formatdoc! {"
-            class Deep = Object new () (
+            class Deep = Object new (
+              | marks ::= 0. spins ::= 0. |
+            ) (
               public run = (
                 ^self down: 1
               )
@@ -12774,6 +12778,14 @@ mod evaluation {
               )
               recurseForever = (
                 ^self recurseForever + 1
+              )
+              descend: left = (
+                left = 0 ifTrue: [
+                  ^[[true] whileTrue: [spins:: spins + 1]] ensure: [marks:: marks + 1]].
+                ^(self descend: left - 1) + 1
+              )
+              public marked = (
+                ^marks
               )
             ) : ()
         "}
@@ -12806,6 +12818,35 @@ mod evaluation {
                 "{description}"
             );
             assert_eq!(answer, NEAR_THE_LIMIT);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate while an evaluation near the depth limit runs past
+        /// L runs the evaluation's `ensure:` block, which lies past L: the
+        /// evaluation's raise of the limit stands until the run ended.
+        fn a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block(lowering) {
+            let source = deep_source();
+            let offset = line_start(&source, "^depth");
+            let (mut interpreter, class) = interpreted(&source, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Deep", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Deep"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    remote.send(Command::Evaluate {
+                        frame: 0,
+                        expression: String::from("self descend: 500"),
+                    });
+                    thread::sleep(PAUSE_DELAY);
+                    remote.send(Command::Terminate);
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "marked"), 1);
         }
     }
 

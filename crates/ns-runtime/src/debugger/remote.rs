@@ -635,7 +635,7 @@ pub struct DebugRemote {
 /// handle's drop asks for with the commands bit, so that a program that
 /// runs without a stop -- an evaluation that never ends among them, which
 /// the departure aborts -- notices it too. Dropping the control alone
-/// therefore detaches the debugger at once, and dropping `DebugEvents`
+/// therefore detaches the debugger at the next safepoint, and dropping `DebugEvents`
 /// alone at the next event the VM cannot send.
 pub struct DebugControl {
     /// `None` only within `drop`, which lets it go before it arms the

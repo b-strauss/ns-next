@@ -903,7 +903,12 @@ error (`HostSignal::Error`; `terminate_runs_the_pending_ensure_blocks`,
 
 Dropping the remote detaches the debugger. The VM notices it where it next
 talks to the remote -- a command channel found disconnected while draining
-or while stopped, or an event that cannot be sent -- and
+or while stopped, or an event that cannot be sent -- and the last
+control's drop makes that next talk come soon: it closes the command
+channel and then arms the commands bit (`Drop for DebugControl`), so that
+a running program drains, finds the channel disconnected and detaches at
+its next safepoint, and an evaluation running at a stop, which may never
+end, is aborted there ("Evaluation", "Aborting"). Then
 `detach_debugger` makes no attachment current and clears every debugger
 bit under one hold of the arming lock, removes every breakpoint, each
 slot given its original back but one the breakpoint stress mode patched
@@ -912,7 +917,8 @@ filters and the exception breakpoints back to their default, then drops
 the debugger. A stopped
 program goes on as after a `Continue`, and a running one is never stopped
 again (`a_dropped_remote_lets_the_program_finish`,
-`a_remote_dropped_while_stopped_lets_the_program_finish`).
+`a_remote_dropped_while_stopped_lets_the_program_finish`,
+`a_detach_during_an_evaluation_aborts_it`).
 
 ### Reading the stack at a stop
 
@@ -3728,7 +3734,10 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   aborts the evaluation, and the program runs on. A `Command::Terminate`
   while it runs ends the run as at any safepoint, the evaluation
   unanswered, its `ensure:` blocks and the program's run once on the way
-  to the floor. A pause that comes after the evaluation ended is moot.
+  to the floor, the depth limit keeping the evaluation's raise until the
+  run ended (`evaluation::terminated`), since those blocks are pushed
+  where the evaluation's frames stood, which may lie past L
+  (`a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block`). A pause that comes after the evaluation ended is moot.
   Pinned by `an_endless_evaluation_is_aborted_by_a_pause`,
   `a_detach_during_an_evaluation_aborts_it` and
   `a_terminate_during_an_evaluation_ends_the_program`. A renderer past

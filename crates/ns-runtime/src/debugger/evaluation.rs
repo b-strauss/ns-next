@@ -290,12 +290,22 @@ pub(crate) fn has_ended(mutator: &Mutator<'_>) -> bool {
     mutator.breakpoints.evaluated.is_some()
 }
 
-/// The run ended, or the debugger terminates it: an evaluation still
-/// running ends with it unanswered, its base popped by the termination's
-/// unwind, which goes past it to the run's floor, and an answer no stop
-/// took -- its debugger detached meanwhile -- goes too.
+/// The run ended: an evaluation still running ended with it unanswered,
+/// the depth limit's raise goes, and an answer no stop took -- its
+/// debugger detached meanwhile -- goes too.
 pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
     set_running(mutator, None, 0);
+    mutator.breakpoints.evaluated = None;
+}
+
+/// The debugger terminates the run: an evaluation still running ends
+/// with it unanswered, its base popped by the termination's unwind, which
+/// goes past it to the run's floor. The depth limit keeps its raise until
+/// the run ended (`run_ended`): the `ensure:` blocks that unwind runs
+/// above the base push where the evaluation's frames stood, which may lie
+/// past L, and would be refused with L's error otherwise.
+pub(crate) fn terminated(mutator: &mut Mutator<'_>) {
+    mutator.breakpoints.set_evaluation(None);
     mutator.breakpoints.evaluated = None;
 }
 

@@ -1353,8 +1353,9 @@ impl Interpreter {
         // stop in one of them after the termination.
         self.enter(stepping::end);
         // So does an evaluation, unanswered, whose base the unwind pops on
-        // its way to the floor, and the stop kept for it.
-        self.enter(evaluation::run_ended);
+        // its way to the floor, and the stop kept for it; the depth limit
+        // keeps the evaluation's raise until the run ended.
+        self.enter(evaluation::terminated);
         if let Some(debugger) = &mut self.debugger
             && let Some(stop) = debugger.stop.take()
         {
