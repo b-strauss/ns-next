@@ -51,7 +51,7 @@ lists everything that is still to be done.
 
 ## Requirements
 
-Rust 1.98.0, pinned by `rust-toolchain.toml` — `rustup` picks it up automatically.
+Rust 1.100.0 (edition 2024), pinned by `rust-toolchain.toml` — `rustup` picks it up automatically.
 The test suites run under `cargo-nextest`, installed once per machine with
 `cargo install cargo-nextest --locked`. The `codegen` gate needs `cargo-show-asm`
 (`cargo install cargo-show-asm --locked`) and the target `x86_64-pc-windows-msvc`;

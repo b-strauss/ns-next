@@ -2,7 +2,7 @@
 
 `ns-next` is a native Rust runtime for [Newspeak](https://newspeaklanguage.org/):
 lexer, parser, resolver, bytecode compiler and register VM, and a versioned image
-format. Rust 1.98.0, edition 2021.
+format. Rust 1.100.0, edition 2024.
 
 This folder is the **living description of how the system is designed and how much
 of it exists**. It is updated in place. There is no series of dated design

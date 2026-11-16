@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, seven crates:
+Rust 1.100.0, edition 2024, seven crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   the AST is lossless except for layout -- parentheses, literal spellings,
@@ -754,7 +754,7 @@ still recurses (`OPEN-WORK.md`) (`frontend.md`, "Recovery", rule 7).
 
 The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
 The gates need, beyond that, the rustup targets of `memory`
-(`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`) and `release-checks`
+(`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `aarch64-pc-windows-msvc`) and `release-checks`
 (`aarch64-pc-windows-msvc`, `aarch64-apple-darwin`), `cargo-show-asm` for
 `codegen` and a JDK and a `python` on `PATH` for `benchmarks`. `linux` and `aarch64` need Docker
 (Docker Desktop, or a Docker engine on x86_64); everything else they need,
@@ -791,7 +791,7 @@ share the machine's threads among them by their measured lengths
 | `analyzer` | the hints' behaviour oracle, profile `hints` | a commit touching `crates/ns-analyzer` |
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
-| `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
+| `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and `aarch64-pc-windows-msvc`, a target whose tests take no code zone measurement | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java and Python counterparts; needs a JDK (`JAVA_HOME` or `PATH`) and a `python` on `PATH`; profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the fifteen stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, the machine's threads shared among them by each suite's measured length (32 on 24 cores, one to four a suite; `xtask/src/main.rs`'s `STRESS_SUITE_SECONDS`), in the nextest profile `stress` (`ns-syntax`, `ns-assembler` and `ns-memory` left out, the slowest tests started first) narrowed by the profiles `cargo xtask nextest-config` generates in `target/xtask/nextest.toml`: every mode but WIDE without the tests `xtask/unreached-tests.txt` lists, which make no interpreter and read no runtime switch, and without `debug_metadata`, WIDE without the listed tests that compile no body, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
@@ -883,7 +883,8 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`
   (not `pc`), `arguments`, `argument_count` (not `num_args`), `ObjectReference`
   (not `ObjRef`). Exceptions: type parameters and lifetimes (`T`, `'a`, `'gc`);
-  the words `ok`, `id`, `min`, `max`, `temp`, `And`, `Or`; names the workspace
+  the words `ok`, `id`, `min`, `max`, `temp`, `And`, `Or`; `u8`, the byte
+  readers' and writers' method beside `u16`, `u32` and `u64`; names the workspace
   does not declare (`str`, `len()`, `fmt`, `Rc`, `Err`); and names bound to a
   file or interface (`vm`, `disasm`, `g1`/`g2`). Clippy's `min_ident_chars`
   enforces the short ones. Code samples in plans follow the same rule.

@@ -8048,3 +8048,37 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Missing tests"
 plugin's paths into the platform without a test
 ([editor-support.md](design/editor-support.md), "Plugin testing and
 gates").
+
+## Rust 1.100.0 and edition 2024 (2026-11-16)
+
+The pinned toolchain goes from 1.98.0 to 1.100.0 (`rust-toolchain.toml`,
+the workspace's `rust-version`, the Docker image), and the workspace from
+edition 2021 to 2024 with resolver 3. No program's outcome changed. The
+plan is `docs/superpowers/plans/2026-11-16-0025-toolchain-and-edition.md`,
+with a survey of what 1.99, 1.100 and the edition allow, what was taken
+up, and why the rest was not (the never type, the `Allocator` API,
+`extern "custom"`, `become`, which is still experimental).
+
+- **Clippy 1.100** holds function names to `min_ident_chars` too. The
+  workspace's two-letter constructors and predicates are named for what
+  they take (`Roles::of_abi`, `Holder::same_frame`,
+  `LineBreakpoint::at_offset`, `LineEnding::first_in`, ...), and `u8` is
+  allowed beside `u16` to `u64`. The `codegen` budgets hold unchanged
+  under LLVM 23.
+- **The migration**: `cargo fix --edition` on the host and, for the
+  library crates, on the Linux, Apple and Windows-on-ARM targets. The 39
+  tail-expression drop-order warnings all name drops that only release
+  memory, so 2024's order stands. `expr_2021` and one `if let` rescoping
+  were undone. The brand's `compile_fail` doctests still fail for the
+  reasons they name.
+- **The formatting** in style edition 2024 is one commit of its own,
+  listed in `.git-blame-ignore-revs`.
+- **Let chains**: every `if` nested in an `if let` with nothing else in
+  it became one chain.
+- **The new APIs**: `trim_prefix`/`trim_suffix`,
+  `String::from_utf8_lossy_owned`, `bool::toggle`, `LocalKey::update`
+  and `Cell::update`, `DropGuard`, `Vec::from_fn`; `iced-x86` is one
+  workspace dependency.
+- **The `memory` gate** lints `ns-memory` for Windows on ARM too. Its
+  tests' code-zone measurements, which only x64 Windows runs, are
+  compiled only there.

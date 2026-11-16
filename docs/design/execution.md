@@ -11035,8 +11035,8 @@ inheritance, and a JIT recovers registers from it with a simulated stack
 caches in the stream contradict "a cache records what the lookup decided; it
 never decides" and the code one mixin shares with every application of it.
 Computed goto and threading have no stable Rust form: `become`, which a
-tail-call-threaded loop needs, is experimental in Rust 1.98.0 (checked on
-2026-10-02; [OPEN-WORK.md](../OPEN-WORK.md) holds the experiment that would
+tail-call-threaded loop needs, is experimental in Rust 1.100.0 (checked on
+2026-11-16; [OPEN-WORK.md](../OPEN-WORK.md) holds the experiment that would
 size its gain). What carries over is what all three share: constants with
 their own opcodes, an integer immediate, sends specialized by arity, and
 everything rare or wide kept out of the common form.
@@ -11608,7 +11608,7 @@ layout settle and that macro assembler exists
 ([OPEN-WORK.md](../OPEN-WORK.md), "Open design questions").
 Before that, a tail-call interpreter -- a handler per instruction, each
 ending in a guaranteed tail call to the next, which Rust gives only with
-`become`, unstable in October 2026 -- would measure the gain of fixed
+`become`, unstable in Rust 1.100.0 (November 2026) -- would measure the gain of fixed
 registers without a generated tier (the same question in OPEN-WORK.md).
 
 Steps 1 to 6 of the road give a very good interpreter on a modern object
@@ -15847,7 +15847,7 @@ lookup's remembered answers ("The code zone").
   2026-11-04): an x86_64 image (`xtask/docker/Dockerfile`), so that rustc
   runs natively and only the AArch64 binaries are emulated; the base
   image by its digest, every Ubuntu package from the archive's snapshot
-  at one moment (`APT::Snapshot`), Rust 1.98.0 with both targets,
+  at one moment (`APT::Snapshot`), Rust 1.100.0 with both targets,
   rustup-init, `cargo-nextest` and QEMU by their versions, a headless
   OpenJDK 25 for the benchmarks' Java counterparts and the snapshot's
   `python3`, named `python` by `python-is-python3`, for their Python
