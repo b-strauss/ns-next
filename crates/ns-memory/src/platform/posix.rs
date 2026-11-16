@@ -631,7 +631,7 @@ pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
 pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
     // `libc` does not declare it; it is the compiler runtime's, which every
     // Rust program links.
-    extern "C" {
+    unsafe extern "C" {
         fn __clear_cache(start: *mut libc::c_char, end: *mut libc::c_char);
     }
     let start = address.cast_mut();
