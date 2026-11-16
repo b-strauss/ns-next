@@ -36,13 +36,17 @@ return"); over DAP's `evaluate`, `setVariable`, `stepInTargets`,
 JetBrains plugin"). Stages 1 to 4 are built (2026-11-11 to 2026-11-14;
 "The debugging API at the safepoint", "Launching, the start and the
 end", "The JetBrains plugin"): from stage 4 the debugger is usable in
-the IDE. Stage 5 needs a plan of its own, and the open questions it
-meets decided first, one at a time: access control in evaluation,
-marking objects, evaluation at the depth limit, restart and force return
-beyond the plain case, restart and the indirection vector, assigning a
-captured variable, and the memory view and folding the shipped modules'
-frames, which the proposal puts in stage 5 ([debugger.md](design/debugger.md),
-"Open questions").
+the IDE. Stage 5 also marks objects and names them in later
+evaluations ("Marking objects"), shows the memory view ("The memory
+view") and folds the shipped frames ("Folding the shipped frames").
+It needs a plan of its own; the open questions it met are decided
+(2026-11-16): access control in evaluation, marking objects, evaluation
+at the depth limit, restart and force return beyond the plain case,
+restart and the indirection vector, assigning a captured variable, and
+which further IntelliJ features stage 5 takes
+([debugger.md](design/debugger.md), "Evaluation never reaches the VM
+mirror", "Evaluation", "Restart frame and force return", "Assigning a
+captured variable", "Planned: the order of building it").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1882,20 +1886,21 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   likewise stops after it ran ([debugger.md](design/debugger.md),
   "Exceptions"). The rest, in this order: evaluation as a block in the
   stop's scope, conditional breakpoints and logpoints, watches and setting
-  variables, smart step into, restart frame, force return ("Next" above);
-  hot swap, edit-and-continue and `ActivationMirror`. The time a step took,
+  variables, marking objects, smart step into, restart frame, force
+  return, the memory view and folding the shipped frames ("Next" above);
+  hot swap, edit-and-continue and `ActivationMirror`; after stage 6,
+  attaching to an `ns-next` started without `--debug`
+  ([debugger.md](design/debugger.md), "Planned: the order of building
+  it"). The time a step took,
   shown inline, stays planned in no stage yet (decided with the user on
   2026-11-15; [debugger.md](design/debugger.md), "The time a step took").
   "Create Method" for an uncaught `MessageNotUnderstood`, and the forced
   `nil` from `Object>>doesNotUnderstand:` when it is declined, need stage
   5's forced return and stage 6's install; until then going on from such a
   stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It
-  needs no yield path out of `vm::run`. Still to decide, each before the
-  stage that needs it: watchpoints on slots, access control in evaluation,
-  marking objects, evaluation at the depth limit, restart and force return
-  beyond the plain case, restart and the indirection vector, assigning a
-  captured variable, the memory view, folding shipped frames and attaching
-  ([debugger.md](design/debugger.md), "Open questions").
+  needs no yield path out of `vm::run`. Still to decide, before a stage
+  takes it: watchpoints on slots ([debugger.md](design/debugger.md),
+  "Open questions").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description

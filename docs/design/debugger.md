@@ -222,11 +222,13 @@ what Newspeak's liveness requires beyond it.
   send it stands at, frames below the top included;
 - receiver, arguments, locals, slots and the elements of collections,
   lazily and paged; labels as a Newspeak programmer reads them;
-- marking an object and naming it in later evaluations (open, "Open
-  questions");
+- marking an object and naming it in later evaluations ("Marking
+  objects");
 - the value the last call returned, shown after a step over or a step out;
 - the memory view: the instances of a class and the objects that refer to
-  one (open, "Open questions").
+  one ("The memory view");
+- the shipped modules' frames folded in the stack ("Folding the shipped
+  frames").
 
 **Changing**
 
@@ -2372,7 +2374,8 @@ creator's registers with (`LoadOuterLocal`, `StoreOuterLocal`, counted in
 `outer_reach`), and finds each variable by the variable table: an
 assignment reaches the frame, a parameter or immutable local is refused by
 the resolver as anywhere else, an assignment to a mutable local a block
-captured by copy is refused ("Assigning a captured variable" below), and a
+may already have copied is refused ("Assigning a captured variable"
+below), and a
 variable not live at the stop reads `nil`, never its register's leftover.
 It runs on the stopped thread above the frame as ordinary program code,
 without the VM mirror; breakpoints it meets are skipped, as IntelliJ skips
@@ -3541,17 +3544,38 @@ principle", requires.
   signals (`CannotReturn`), the program's frames untouched. Machine
   code's cut already exits for a home below its stretch's entry frame
   (`jit/cut.rs`), so the interpreter's unwinder is the one place that
-  changes. A stop at the depth limit leaves no room to
-  evaluate: the evaluation takes a reserve of its own, or is refused there
-  ("Open questions").
+  changes.
+- **At the depth limit.** An evaluation has a depth reserve of its own
+  (decided with the user on 2026-11-16), since the stop that needs one
+  most is an exception breakpoint on the stack overflow itself, where
+  every watch, condition and renderer would otherwise fail. While it
+  runs, the depth limit is `max(L, base + E)`, the base the evaluation's
+  base frame's counted depth and E 1,000 counted activations: far below
+  L nothing changes, at L the evaluation has E. A VM error within it
+  takes the signalling reserve above that limit as it would above L
+  ("The depth limit", [execution.md](execution.md)). The limit is raised
+  in `DepthLimit` as holding the reserve raises it, so the push's check
+  stays its one compare; the cold `push_past_the_limit` alone reads the
+  evaluation's limit. Whatever the evaluation overruns -- its limit and
+  reserve, or the stack reservation's room -- never ends the run: where
+  a program's overrun answers `Signal::Terminate`, an overrun inside an
+  evaluation is unwound to the evaluation's base frame, its `ensure:`
+  blocks run, and answered as the evaluation's error, the program's
+  frames untouched. Evaluations do not nest -- an evaluation skips
+  breakpoints, so no stop arises within one -- so the stack holds at
+  most L + `DEPTH_RESERVE` + E counted activations, plus the reserve of
+  an error signalled within the evaluation, and the frame bound of
+  "The depth limit" grows by that term. JDI and pdb give an evaluation
+  no room beyond the program's limit; their limit's headroom, like
+  ours, is for the error's handler.
 - **Hot conditions.** A breakpoint's condition and a logpoint's message are
   compiled once per breakpoint and frame layout and cached; still, every
   hit leaves the stretch and runs an evaluation, so a conditional
   breakpoint in a hot loop slows that loop, and the body, which exits at
   every hit, is abandoned by the JIT's exit decay, correctly. A condition
   that raises an error stops at the breakpoint and reports the error, as
-  IntelliJ does; a condition evaluated at the depth limit follows the
-  depth limit's open question.
+  IntelliJ does; a condition evaluated at the depth limit has the
+  evaluation's reserve, as every evaluation does.
 - **Aborting.** An evaluation or a renderer past its limit, or one the user
   cancels, is stopped by the agent's pause bit; the stop unwinds the
   evaluation to its base frame, running its `ensure:` blocks, and answers
@@ -3567,14 +3591,27 @@ indirection vector instead. Such a copy is read-only by
 construction ([execution.md](execution.md), "Closure conversion"). An
 assignment through evaluation -- in the home frame or in the block's --
 would write one copy and leave the others stale, and the reference
-lowering, which does not copy, would behave differently. So the variable
-table records, for each mutable local, whether a block of its family
-captured it by copy, and an assignment to such a variable is refused with
-a message naming the capture, as IntelliJ refuses a local a lambda
-captured; a variable in the indirection vector and a register no block
-captured are assigned. Whether it could instead be moved into a
-by-reference layout through edit-and-continue is open ("Open
-questions").
+lowering, which does not copy, would behave differently. A copy exists
+only once its `MakeClosure` has run, though, and an assignment before
+it reaches every copy the body will make. So the variable table records,
+for each mutable local and each stop location, whether a `MakeClosure`
+that copies it may have run before the location -- a forward analysis
+over the body's control flow, a loop's back edge included, since a
+capture later in a loop's body may have run in an earlier iteration --
+and an assignment where one may have is refused with a message naming
+the capture, as IntelliJ refuses a local a lambda captured; in a block's
+own frame the variable is a copy, and is always refused (decided with
+the user on 2026-11-16). A variable in the indirection vector, a register
+no block captures, and a copied variable before its capture are
+assigned. The reference lowering copies nothing and refuses nothing, so
+the lowerings differ in what the debugger allows, never in what an
+assignment it allows makes the program do. Primordial Soup and the
+Newspeak IDE assign the most local copy and leave the others stale
+(`Newspeak2PrimordialSoupCompilation.ns:2084`,
+`newspeak/ActivationMirrors.ns:344`), which would make the lowerings'
+outputs differ. Moving the frame into a layout where the variable lives
+in a vector, through edit-and-continue, would not reach a copy a block
+already made, which names no frame when its `outer_reach` is 0.
 
 ### Evaluation never reaches the VM mirror
 
@@ -3586,10 +3623,92 @@ stored into a program object. So evaluation in a frame whose body belongs
 to a shipped module is refused; the IDE shows such a frame's variables,
 read by the agent and held as `Root`s, which never enter the program. A
 value the IDE shows enters the program only through an expression the user
-typed in a program frame, and an object reached only through a shipped
-activation can be neither marked nor named in one. `ActivationMirror`
+typed in a program frame, and an object reached through a shipped
+activation or a shipped mixin's field can be neither marked nor named in
+one ("Marking objects"). `ActivationMirror`
 withholds every value of a shipped activation, as the mirrors withhold
 what they reach through a shipped level.
+
+An expression obeys access control as the frame's method does (decided
+with the user on 2026-11-16): resolved as a block in the frame's scope,
+its sends to `self`, `super`, `outer` and the implicit receiver reach
+what the method's would, and an ordinary send to any other object finds
+public methods only (§5.5, *lookupPublic*). No send ignores access: the
+platform object every program holds keeps the mirror in a private slot
+(`PlatformFactory.ns`, `vmMirror`), so `platform vmMirror` evaluated
+without access control would hand the mirror to the program, and a send
+that ignored access for program classes alone would need a send kind of
+its own in the instructions, the lookup, the caches and the JIT, and
+would let an evaluation tell a proxy from its object, which §5.5's
+protected `doesNotUnderstand:` rules out. A private slot of another
+object is still seen: the variables view reads it through the agent,
+never through the program. Primordial Soup and the Newspeak IDE compile
+the expression in the frame's method's mixin for the same reason
+(`primordialsoup/newspeak/Mirrors.ns:49-64`,
+`newspeak/ActivationMirrors.ns:343-372`), and Soup's VM checks a public
+lookup on an ordinary send (`vm/interpreter.cc:246`); IntelliJ ignores
+access in Java, which has no capability to keep.
+
+### Marking objects
+
+An object the IDE shows can be marked with a label and named in every
+later evaluation of the session as `<label>_DebugLabel`, as IntelliJ's
+Mark Object does (decided with the user on 2026-11-16). The names an
+expression uses that are marked labels become parameters of the
+expression's block, and the debugger passes the marked objects as its
+arguments -- the way Primordial Soup's `evaluate:with:` binds the names
+of its scope map (`primordialsoup/newspeak/Mirrors.ns:81-95`,
+`Newspeak2PrimordialSoupCompilation.ns:2128-2134`); no instruction is
+added. The suffix keeps a label from shadowing anything: a parameter
+named by the bare label would hide a frame variable, a slot or an
+implicit receiver send of the same name, while `label_DebugLabel` is an
+identifier (§3, `id`) no program is expected to spell. A marked object
+is held as a `Root` across stops, until it is unmarked or the attachment
+ends, as a pinned value is ("Values the IDE holds"), and its label shows
+wherever the variables view shows it.
+
+A value whose way into the IDE passed through shipped code cannot be
+marked. Every value a stop hands out carries whether it is withheld: it
+is when it was reached through a shipped activation or through a field a
+shipped mixin declares -- the platform object's private `vmMirror`,
+which the variables view shows, among them -- or is a value the
+bulk-forward leaf refuses (`builtins/reflection.rs`'s
+`may_be_forwarded`), the mirror and the kernel instance included; a
+child inherits its parent's withholding. The mirrors withhold what they
+reach through a shipped level by the same rule. An object refused on one
+way can be marked where the program's own frames or fields show it. The
+Newspeak IDE's workspace scope, which binds `_` in every evaluation to
+an object with the platform and the IDE behind it
+(`newspeak/squeak/WorkspaceManagerForSqueak.ns`, `workspaceScope`), is
+the way not taken: it would put what the VM mirror guards within an
+expression's reach.
+
+### The memory view
+
+At a stop the IDE can ask for the instances of a class and for the
+objects that refer to one (decided with the user on 2026-11-16, in stage
+5), as IntelliJ's memory view asks JDWP's `InstanceCounts`, `Instances`
+and `ReferringObjects`, and as the Newspeak IDE's workspace offers
+`instancesOf:`, `pointersTo:` and `pathTo:`
+(`newspeak/squeak/WorkspaceManagerForSqueak.ns`). Both are a walk of the
+object space at the stop, where no Newspeak code runs and so nothing
+collects. A class object exists per enclosing instance in Newspeak
+([object-model.md](object-model.md), "Three layers, not one"), so the
+counts are grouped by mixin -- by declaration -- and within a mixin by
+application, never by class object. The objects found are values a
+stop holds, as the variables view's are ("Values the IDE holds"), and
+an instance of a class a shipped mixin declares is withheld ("Marking
+objects"): shown, but never marked, so that no walk puts a private
+kernel object or the mirror within an expression's reach.
+
+### Folding the shipped frames
+
+The agent marks a frame of a shipped module's body with DAP's
+`presentationHint` `subtle`, and its source with `deemphasize`, and the
+plugin folds each run of such frames in the stack, as IntelliJ hides
+library frames (decided with the user on 2026-11-16, in stage 5). Which
+frames are shipped is the test the step filter already makes (decision
+16).
 
 ### Exceptions
 
@@ -3754,26 +3873,58 @@ itself -- goes on as it was, past the handler, to its next statement.
   between the copied values and `local_count`, while the scratch registers
   are tainted at index 0 anyway. A block's copied values stay
   (Primordial Soup's restart, `primordialsoup/newspeak/Mirrors.ns:2325-2353`).
-  The frame restarts at `program_counter` 0, not at its first statement:
-  under the optimized lowering a body with vector variables makes its
-  indirection vector at index 0, outside every statement's range, so a
-  restart makes a fresh vector. Blocks made in the first run keep the
-  vector and the copies they had and do not see the reset variables, while
-  under the reference lowering, whose blocks read the frame's registers,
-  they do -- a difference between the lowerings to be decided ("Open
-  questions"). Restarting an initializer, a superclass clause or a frame in
-  `InitializeSlot`'s work would run slot initializers twice, so it is
-  refused ("Open questions").
-- **Force return** unwinds to the frame and answers a value to its sender,
-  defined for a frame whose return is `Continuation::Deliver`; for
-  `NestedClass` (which expects a class), `VmErrorSignalled`, `Reexecute`
-  and `Unwind` it is refused ("Open questions"); a `ReturnToSuspended`
-  wraps another continuation, so force return looks through it to the
-  continuation it wraps and decides by that one. It is refused for an
-  initializer's frame, whose caller stands at an initializer invocation
-  -- the slots it has not initialized would stay uninitialized -- and for
-  an unwind marker's activation (`on:do:`, `ensure:`, `ifCurtailed:`),
-  whose ensure block it would skip.
+  Under the optimized lowering a body with vector variables makes its
+  indirection vector at index 0, outside every statement's range; a
+  restart there would make a fresh vector, and blocks made in the first
+  run would keep the old one and see neither the reset nor any later
+  assignment, while under the reference lowering, whose blocks read the
+  frame's registers, they see both. So a restart reuses the frame's
+  vector (decided with the user on 2026-11-16): it nils the vector's
+  elements -- a vector variable's own register is always `nil`, so
+  nilling the named temporaries alone would not reset it -- and restarts
+  at index 1, past `MakeVector`, and the first run's blocks see the reset
+  and every later assignment, as the reference lowering's do. What
+  remains between the lowerings is a variable closure conversion copied,
+  one nothing writes once a block holds it: a first-run block keeps its
+  copy, where the reference lowering's reads the register the restart
+  nils and the second run assigns again, so the two differ only for such
+  a block run between the restart and that assignment, or where the
+  second run assigns another value. Pharo's `Context>>restart` and
+  Primordial Soup's restart (`Mirrors.ns:2341-2353`) start before the
+  bytecode that makes the vector, and so disconnect the first run's
+  blocks from every variable; neither has a second lowering to agree
+  with. Updating the copies instead is not possible: a block of
+  `outer_reach` 0 holds nothing that names the frame it came from. Every program frame can be restarted (decided with the
+  user on 2026-11-16): an initializer's, a slot initializer's within it
+  included, runs its prologue, its superclass's initialization and its
+  slot initializers again, overwriting the slots; a superclass clause's
+  evaluates the clause again, its `NestedClass` continuation waiting for
+  the value as before; a factory's allocates a fresh instance, an
+  instance of the first run that escaped staying as far initialized as
+  it got. Each runs its side effects again, as every restart does.
+- **Force return** unwinds to the frame and answers a value to its
+  sender, defined for every program frame (decided with the user on
+  2026-11-16), by its continuation: `Deliver` hands the value to the send,
+  a factory's included, so the value becomes the factory send's; a
+  superclass clause's `NestedClass` takes the value as the superclass,
+  and `after_clause` signals for a value that is no class what it
+  signals for a clause that answered one; an `ensure:` or `ifCurtailed:`
+  block the unwinder started (`Unwind`) has its value dropped and the
+  unwind carried on, as when it ends. A `ReturnToSuspended` wraps
+  another continuation, so force return looks through it to the
+  continuation it wraps and decides by that one. An initializer's frame
+  takes no value: it answers `self`, as its end does, and the slots it
+  has not initialized stay `nil` -- the state an initializer that raised
+  an error leaves an instance in, should its `self` have escaped. The
+  other continuations are shipped code's: `VmErrorSignalled` is the
+  kernel's `signal`, `Reexecute` its `resolve`, and the unwind markers
+  `on:do:`, `ensure:` and `ifCurtailed:` are kernel methods, so the
+  shipped frames' rule below refuses them. Primordial Soup restarts and
+  returns from every activation, initializers included, refusing only to
+  cross an unwind-protect activation
+  (`primordialsoup/newspeak/Mirrors.ns:2323-2340`, `:2373-2387`,
+  `:2467-2473`), which the unwinder here runs the blocks of; JDWP's
+  `PopFrames` and `ForceEarlyReturn` accept a constructor's frame.
 - **Shipped frames.** Setting a variable, restarting and forcing a return
   are refused in a shipped module's frame, as evaluation is: forcing
   `signal` or an `ensure:` marker to return would break the kernel's own
@@ -4332,41 +4483,6 @@ The proposal is a proposal.
   accesses the slot patched, or its layout level marked. Proposal: patch
   the own-slot instructions of the slot's level, found through the
   metadata.
-- **Access control in evaluation.** Whether `evaluate` obeys private and
-  protected as the frame's method would. Proposal: as the frame's method
-  would, since the expression is resolved as a block in its scope; IntelliJ
-  ignores access in Java. The question bears on the VM mirror's capability:
-  an evaluation that ignored access in a program frame could send private
-  messages to kernel objects the program holds, which the kernel's access
-  modifiers keep from it today.
-- **Marking objects.** Whether an object can be marked and named in later
-  evaluations. Proposal: yes, within the rule that a value reached only
-  through a shipped activation cannot be marked.
-- **Evaluation at the depth limit.** A reserve of its own, or refused.
-- **Restart and force return beyond the plain case.** Whether a restart of
-  an initializer or a superclass clause, a forced return for the other
-  `Continuation`s, of an initializer's frame or of an unwind marker's
-  activation, are defined rather than refused.
-- **Restart and the indirection vector.** A restart at `program_counter`
-  0 makes a fresh vector, so blocks made in the first run keep the old
-  vector under the optimized lowering, while under the reference lowering
-  they see the reset variables. Proposal: restart reuses the frame's
-  vector, its elements nilled, restarting at index 1 past `MakeVector`, so
-  blocks of the first run see the reset of the vector variables; a value a
-  first-run block copied it keeps, where the reference lowering's blocks
-  read the frame's register, which the restart nils -- a difference
-  between the lowerings that remains, for a variable nothing writes once a
-  block holds it. (A vector variable's own register is always `nil`, so
-  nilling the named temporaries alone does not reset it.)
-- **Assigning a captured variable.** Refused, as proposed above, or the
-  frame moved into a layout where the variable lives in a vector, through
-  edit-and-continue, so that the assignment reaches every copy. Proposal:
-  refused, as IntelliJ refuses a captured Java local.
-- **Further IntelliJ features.** The memory view (the instances of a
-  class, and the objects referring to one, through a walk of the heap at a
-  stop), folding the shipped modules' frames in the stack, and attaching
-  to an `ns-next` already running. Proposal: the memory view and folding
-  in stage 5, attaching after stage 6.
 
 ## The JetBrains plugin
 
@@ -4645,6 +4761,13 @@ JetBrains plugin"). The stages keep their numbers, which the text above
 refers to.
 
 5. Evaluation, conditional breakpoints and logpoints, watches and setting
-   variables, smart step into, restart frame and force return.
+   variables, marking objects, smart step into, restart frame and force
+   return, the memory view, and folding the shipped frames.
 6. Hot swap, then edit-and-continue of running activations;
    `ActivationMirror` for programs.
+
+After stage 6: attaching to an `ns-next` started without `--debug`,
+through a trigger of each platform's -- a signal on POSIX, a named event
+on Windows -- that starts the agent, as the JVM's Attach API does, and an
+authentication that has no secret from the launch (decided with the user
+on 2026-11-16; its own questions are decided then).
