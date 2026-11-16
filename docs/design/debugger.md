@@ -4793,6 +4793,75 @@ The proposal is a proposal.
   the own-slot instructions of the slot's level, found through the
   metadata.
 
+## Planned: the MCP server
+
+An agent such as Claude debugs a program through `ns-next mcp`, a Model
+Context Protocol server over standard input and output, whose tools
+drive a debug session (decided with the user on 2026-11-17, in stage 5,
+before the plugin's stage-5 work). A debugging session is a dialogue --
+stop, look, choose the next step in the same state -- which an agent
+whose every command is a separate call cannot hold with a process of its
+own; the client keeps an MCP server alive for its whole session. A
+command-line client of the debugger, driven by a file of commands, is
+the way not taken: every question would run the program from its start.
+
+- **The program runs in a child.** Each `debug_start` starts `ns-next
+  run --debug-connect` against a socket the server listens on, as the
+  plugin does, and the server is a DAP client of the agent
+  (`crates/ns-cli/src/debug/`): it uses the requests the plugin uses,
+  the program writes to its own standard streams, which the server
+  reads, and a crash ends the child, never the server. Running the
+  program inside the server would put the program's output on the
+  stream the protocol owns and take the server down with a crash.
+- **The tools.** One session at a time; a new `debug_start` ends the
+  last. `debug_start(program, breakpoints?, stop_on_entry?, arguments?,
+  runtime?, wait?)`, `debug_breakpoints`, `debug_continue(wait?)`,
+  `debug_step(kind: over | into | out, target?, wait?)`,
+  `debug_step_targets`, `debug_run_to(location, wait?)`,
+  `debug_pause`, `debug_wait(seconds)`, `debug_stack`,
+  `debug_variables(frame | reference)`, `debug_evaluate(expression,
+  frame?)`, `debug_set_variable(name, value, frame?)`,
+  `debug_frame(action: restart | return, frame, value?)`,
+  `debug_memory(class? | referrers_of?)`, `debug_mark(reference?,
+  label)` and `debug_stop`. A breakpoint is a location (`<path>:<line>`)
+  or a method (`Class>>selector`), each with an optional condition, log
+  message or hit condition. No tool reads source: the agent reads files
+  itself.
+- **A stop is a summary in text.** A tool that lets the program go on
+  answers, at the next stop, one compact block: the reason and the
+  location, a few source lines around it, the top frame's variables with
+  short values, the stack on one line, and the program's output since the
+  last answer; an exception's class and text at an exception's stop, the
+  exit status and the rest of the output at the end. A structured value
+  carries a reference (`[ref 4]`) that `debug_variables` expands; long
+  values and deep stacks are cut, saying how to see more. Text, not
+  JSON: it is what an agent reads, in fewer tokens, and as precise.
+- **Every location is an absolute path** with its line and column, in
+  answers and in arguments alike, so that the agent opens it as it is
+  and two modules of one name never meet. The shipped modules are files
+  too: `debug_start` writes the started binary's embedded sources with
+  `ns-next shipped-sources` into a directory named by their fingerprint
+  and hands it to the agent at the attach, as the plugin's library is,
+  so that a frame in `Kernel.ns` names a file whose text is the running
+  binary's. A location that names no module of the program or of the
+  shipped ones is refused, saying so.
+- **Waiting.** A tool that lets the program go on waits for the next
+  stop at most `wait` seconds (30 by default) and otherwise answers that
+  the program runs, with its output so far; `debug_pause` stops it where
+  it is and answers the stop, `debug_wait` waits on. An evaluation that
+  does not end within the wait is aborted by the pause and answered so.
+- **Starting it.** `.mcp.json` at the repository's root registers
+  `target/debug/ns-next mcp`. The server copies its executable into a
+  directory below the temporary directory named by a hash of its bytes
+  and runs from there, and `debug_start` starts the binary at the path
+  the server was started from -- the current build -- copied the same
+  way, unless `runtime` names another: on Windows a running executable
+  cannot be replaced, and neither the server nor a session may keep
+  `cargo build` from writing `target`. A change to the program's runtime
+  thus takes effect at the next `debug_start`; a change to the server
+  itself, at the client's next connection. Each stop names the binary it
+  runs and its fingerprint.
+
 ## The JetBrains plugin
 
 The plugin speaks DAP through a client of its own
