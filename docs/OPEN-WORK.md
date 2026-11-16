@@ -2323,6 +2323,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `disasm`/`inspect` are its first pieces
   ([compiler.md](design/compiler.md), "Reading the output"); the tracing
   and the printing are flags of `ns-next`, as `d8`'s are.
+- **The IDE's debug session as MCP tools** (asked for by the user on
+  2026-11-17; after the debugger's stage 5, not designed yet): the
+  plugin contributes the tools of `ns-next mcp` -- `debug_step`,
+  `debug_evaluate` and the rest, with the same stop summary -- to the
+  JetBrains IDE's own MCP server, acting on the IDE's running debug
+  session (`XDebugSession`) rather than on a child of their own, so that
+  an agent steps, evaluates and sets breakpoints while the user watches
+  the editor follow and can take over at any point. It matters because
+  `ns-next mcp` debugs on its own, out of the user's sight, and the IDE's
+  debugger alone is the user's; the two meet only here. Open: the
+  platform's extension point for contributed MCP tools and the IDE
+  versions that offer it, whether the tools and the summary are shared
+  with `ns-next mcp` as code or as a specification, and how the agent's
+  commands and the user's interleave in one session
+  ([debugger.md](design/debugger.md), "Planned: the MCP server", "The
+  JetBrains plugin").
 
 [editor-support.md](design/editor-support.md), "Planned later".
 
