@@ -58,7 +58,7 @@ These follow from the design and the code as it is; each is stated once here and
   - `pub(crate) struct BodyFacts { pub(crate) argument_count: u16, pub(crate) local_count: u16, pub(crate) register_count: u16, pub(crate) kind: CodeKind, pub(crate) family_size: u32, pub(crate) copied_count: u16, pub(crate) addresses_own_slots: bool, pub(crate) declaration_code: bool, pub(crate) unwind_marker: bool, pub(crate) frame_register_count: usize }` with `impl BodyFacts { pub(crate) fn of(code: &CompiledCode) -> BodyFacts }` -- in `jit/optimizing/snapshot.rs`, re-exported for `sends.rs`.
   - `pub(crate) enum SnapshotInstruction` -- one variant per `Instruction` variant, same fields, but `MakeClosure { destination: u16, block: CodeId, parameter_count: u16, copied: Vec<u16> }`.
   - `pub(crate) struct Snapshot { pub(crate) code_id: CodeId, pub(crate) facts: BodyFacts, pub(crate) feedback_base: FeedbackBase, pub(crate) instructions: Vec<SnapshotInstruction> }` with `pub(crate) fn take(code: &CompiledCode, heap: &Heap, feedback_base: FeedbackBase) -> Snapshot`.
-  - `fn sends::prologue(body: &mut BodyAssembler, facts: &BodyFacts)`, `fn sends::call_slots(facts: &BodyFacts, instruction: &SnapshotInstruction) -> …` (the same answer as today, from the snapshot form; the baseline converts its `Instruction` through `SnapshotInstruction::of_instruction`).
+  - `fn sends::prologue(body: &mut BodyAssembler, facts: &BodyFacts)`, `fn sends::call_slots(facts: &BodyFacts, instruction: &SnapshotInstruction) -> …` (the same answer as today, from the snapshot form; the baseline converts its `Instruction` through `SnapshotInstruction::of`).
   - `impl SnapshotInstruction { pub(crate) fn of(instruction: &Instruction, heap: &Heap) -> SnapshotInstruction }`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -95,7 +95,7 @@ fn a_snapshot_names_a_closure_s_block_by_its_code_id() {
 Run: `cargo nextest run -p ns-runtime snapshot`
 Expected: FAIL to compile (`Snapshot` not defined).
 
-- [ ] **Step 3: Implement `BodyFacts`, `SnapshotInstruction`, `Snapshot::take`; move `prologue` and `call_slots` onto `BodyFacts` and `SnapshotInstruction`; the baseline builds its facts with `BodyFacts::of_code` and its instructions with `SnapshotInstruction::of_instruction` where those two functions need them**
+- [ ] **Step 3: Implement `BodyFacts`, `SnapshotInstruction`, `Snapshot::take`; move `prologue` and `call_slots` onto `BodyFacts` and `SnapshotInstruction`; the baseline builds its facts with `BodyFacts::of` and its instructions with `SnapshotInstruction::of` where those two functions need them**
 
 The heap's code id table answers the block's `CodeId` (the call `heap.code_id` stands for whatever `heap/tables.rs` names it; use the existing accessor).
 
@@ -272,7 +272,7 @@ Expected: PASS.
 ```rust
 #[test]
 fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
-    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of_abi(Abi::Win64));
+    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of(Abi::Win64));
     let metadata = metadata(&graph, &allocation);
     let send = metadata.points.iter().find(|point| point.program_counter == 2).unwrap();
     assert!(send.locations.iter().all(|(_, location)| *location == Location::FrameWord));
@@ -281,14 +281,14 @@ fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
 #[test]
 fn a_loop_counter_stays_in_a_register_across_the_loop() {
     // The counting loop of Task 3's test, with no send in it.
-    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of_abi(Abi::Win64));
+    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of(Abi::Win64));
     assert!(matches!(allocation.location_of(counter_phi, loop_end_position), Location::Register(_)));
 }
 
 #[test]
 fn more_live_values_than_registers_spill_the_farthest_used() {
     // Ten values live at once on Win64, which has eight allocatable registers.
-    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of_abi(Abi::Win64));
+    let allocation = allocate(&graph, &intervals(&graph, &order), &Roles::of(Abi::Win64));
     assert_eq!(allocation.in_frame_word_at(peak_position), 2);
     assert!(verify_allocation(&graph, &allocation, &metadata(&graph, &allocation)).is_ok());
 }
@@ -298,7 +298,7 @@ fn every_built_graph_allocates_and_verifies_on_both_abis() {
     for snapshot in corpus_of_bodies() {
         for abi in [Abi::Win64, Abi::SystemV, Abi::Aapcs64] {
             let graph = build(&snapshot);
-            let allocation = allocate(&graph, &intervals(&graph, &block_order(&graph)), &Roles::of_abi(abi));
+            let allocation = allocate(&graph, &intervals(&graph, &block_order(&graph)), &Roles::of(abi));
             assert!(verify_allocation(&graph, &allocation, &metadata(&graph, &allocation)).is_ok());
         }
     }

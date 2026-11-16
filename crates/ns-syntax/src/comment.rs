@@ -114,7 +114,7 @@ fn line_text(raw: &str) -> String {
 
 fn block_text(raw: &str) -> String {
     let inner = raw.trim_prefix("(*");
-    let inner = inner.strip_suffix("*)").unwrap_or(inner);
+    let inner = inner.trim_suffix("*)");
     let lines: Vec<&str> = lines(inner).collect();
     let Some((first, rest)) = lines.split_first() else {
         return String::new();

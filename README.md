@@ -128,7 +128,7 @@ cargo xtask gates analyzer
 cargo xtask gates images
 # every golden with a two-entry global cache
 cargo xtask gates caches
-# a commit touching crates/ns-memory: its clippy for Linux and macOS
+# a commit touching crates/ns-memory: its clippy for Linux, macOS and Windows on ARM
 cargo xtask gates memory
 # the benchmark programs verified at full size, and their Java and Python
 # counterparts; needs a JDK and a `python` on PATH

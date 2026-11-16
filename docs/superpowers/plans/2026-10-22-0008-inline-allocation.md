@@ -1448,7 +1448,7 @@ impl LevelFacts {
 }
 ```
 
-     Add `pub level_facts: LevelFacts` to `MixinApplication`, documented "set by `Heap::register_application` from `mixin`". `register_application` sets it with `LevelFacts::of_mixin(&application.mixin)`. The other literals (`types.rs`, `dispatch.rs`) set `LevelFacts::of_mixin(&mixin)` from the mixin they hold. `InstantiationFacts::factory_arity` above reads `application.level_facts.factory_arity`.
+     Add `pub level_facts: LevelFacts` to `MixinApplication`, documented "set by `Heap::register_application` from `mixin`". `register_application` sets it with `LevelFacts::of(&application.mixin)`. The other literals (`types.rs`, `dispatch.rs`) set `LevelFacts::of(&mixin)` from the mixin they hold. `InstantiationFacts::factory_arity` above reads `application.level_facts.factory_arity`.
   2. In `heap.rs`:
 
 ```rust
@@ -1472,7 +1472,7 @@ impl LevelFacts {
      - **`class_has_initializer_code`:** reads `class_level_facts(class).is_some_and(|facts| facts.needs_initializer_code)`.
 
      The walk's shape, its order and every error text stay as they are. Only where the facts come from changes.
-  4. Test, in `instantiate.rs`'s tests, `level_facts_agree_with_the_mixin`: for every application of a loaded module's chain (walk `superclass` from a class's application up), assert `application.level_facts == LevelFacts::of_mixin(&application.mixin)`. The goldens, under both lowerings, pin the behaviour.
+  4. Test, in `instantiate.rs`'s tests, `level_facts_agree_with_the_mixin`: for every application of a loaded module's chain (walk `superclass` from a class's application up), assert `application.level_facts == LevelFacts::of(&application.mixin)`. The goldens, under both lowerings, pin the behaviour.
 
 - [ ] **Step 6: Run the tests and the suite in debug** (the cross-check runs on every fast instantiation of every golden):
 
