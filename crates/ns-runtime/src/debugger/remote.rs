@@ -6,6 +6,7 @@
 //! the VM's thread, so everything that crosses is text and numbers, and a
 //! value is named by a `ValueId` the stop that handed it out resolves.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -612,7 +613,8 @@ pub struct ValueDescription {
 
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),
 /// which may move to another thread. Dropping it detaches the debugger: the
-/// program runs on, a stopped one included.
+/// program runs on, a stopped one included, an evaluation running at a
+/// stop aborted.
 ///
 /// It is served from another thread than the one running the interpreter:
 /// a stop blocks the running thread until a `Continue` or a `Terminate`
@@ -629,13 +631,20 @@ pub struct DebugRemote {
 /// threads of an agent command the VM at once, each through its own handle.
 ///
 /// The VM notices that every handle is gone where it next takes commands:
-/// at a safepoint that finds the commands bit, or at a stop, whose wait for
-/// a command ends. Dropping the control alone therefore detaches the
-/// debugger at the next stop or drain, and dropping `DebugEvents` alone at
-/// the next event the VM cannot send.
-#[derive(Clone)]
+/// at a stop, whose wait for a command ends, or at the safepoint the last
+/// handle's drop asks for with the commands bit, so that a program that
+/// runs without a stop -- an evaluation that never ends among them, which
+/// the departure aborts -- notices it too. Dropping the control alone
+/// therefore detaches the debugger at once, and dropping `DebugEvents`
+/// alone at the next event the VM cannot send.
 pub struct DebugControl {
-    commands: Sender<Command>,
+    /// `None` only within `drop`, which lets it go before it arms the
+    /// commands bit, so that the safepoint that finds the bit finds the
+    /// channel closed.
+    commands: Option<Sender<Command>>,
+    /// How many handles of this control live, shared among its clones:
+    /// the last one's drop arms the bit.
+    handles: Arc<AtomicUsize>,
     words: MachineWords,
     /// The interpreter's arming lock: held across the two writes that arm
     /// the poll, so that the VM's clearing of a bit cannot fall between
@@ -663,7 +672,8 @@ impl DebugRemote {
     ) -> DebugRemote {
         DebugRemote {
             control: DebugControl {
-                commands,
+                commands: Some(commands),
+                handles: Arc::new(AtomicUsize::new(1)),
                 words,
                 arming,
                 attachment,
@@ -711,7 +721,11 @@ impl DebugControl {
     /// Queued before the bit is set, so that the safepoint that finds the
     /// bit finds the command; a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {
-        if self.commands.send(command).is_ok() {
+        if self
+            .commands
+            .as_ref()
+            .is_some_and(|commands| commands.send(command).is_ok())
+        {
             self.arm(DEBUGGER_COMMANDS);
         }
     }
@@ -732,6 +746,33 @@ impl DebugControl {
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+}
+
+impl Clone for DebugControl {
+    fn clone(&self) -> DebugControl {
+        self.handles.fetch_add(1, Ordering::Relaxed);
+        DebugControl {
+            commands: self.commands.clone(),
+            handles: Arc::clone(&self.handles),
+            words: self.words.clone(),
+            arming: Arc::clone(&self.arming),
+            attachment: self.attachment,
+        }
+    }
+}
+
+impl Drop for DebugControl {
+    /// The last handle gone, the channel is closed first and the commands
+    /// bit armed after, so that the next safepoint finds the departure
+    /// and detaches the debugger -- every handle's sender dropped before
+    /// its count is taken off, the last count's taker sees them all
+    /// closed.
+    fn drop(&mut self) {
+        drop(self.commands.take());
+        if self.handles.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.arm(DEBUGGER_COMMANDS);
+        }
     }
 }
 

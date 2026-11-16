@@ -12573,4 +12573,276 @@ mod evaluation {
             assert_eq!(answer, 103);
         }
     }
+
+    /// A statement that calls `sink:` inside an `ensure:` whose block the
+    /// program counts, and the slots an evaluation at `sink:` loops on and
+    /// cleans up.
+    const ABORTING: &str = indoc! {"
+        class Aborting = Object new (
+          | holder ::= 0. cleanups ::= 0. ensures ::= 0. |
+        ) (
+          public run = (
+            [self sink: 1] ensure: [ensures:: ensures + 1].
+            ^cleanups
+          )
+          sink: value = (
+            ^value
+          )
+          public cleaned = (
+            ^cleanups
+          )
+          public ensured = (
+            ^ensures
+          )
+        ) : ()
+    "};
+
+    /// An expression that never ends, inside an `ensure:` whose block
+    /// marks the holder cleaned and counts its runs.
+    const ENDLESS: &str = "[[true] whileTrue: [holder:: holder + 1]] ensure: [holder:: #cleaned. cleanups:: cleanups + 1]";
+
+    /// The small integer `selector` answers, sent to `instance`.
+    fn sent_integer(interpreter: &mut Interpreter, instance: &Root, selector: &str) -> i64 {
+        let answer = expect_ok(
+            interpreter.send(instance, Symbol::intern(selector), &[]),
+            selector,
+        );
+        small_integer(interpreter, &answer)
+    }
+
+    /// Stops `ABORTING` at `sink:` and starts the endless expression
+    /// there, its answer not waited for.
+    fn start_endless(remote: &DebugRemote) {
+        let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+        assert_eq!(expect_breakpoint_stop(remote), [id]);
+        remote.send(Command::Evaluate {
+            frame: 0,
+            expression: ENDLESS.to_owned(),
+        });
+        thread::sleep(PAUSE_DELAY);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A pause while an evaluation runs aborts it: the unwind to its
+        /// base runs its `ensure:` block, the stop answers that it was
+        /// aborted, and the program stays stopped, serving the next
+        /// command.
+        fn an_endless_evaluation_is_aborted_by_a_pause(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((aborted, cleaned), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.pause();
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    let cleaned = value_label(remote, 0, "holder == #cleaned");
+                    continue_stopped(remote);
+                    (aborted, cleaned)
+                },
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert_eq!(cleaned, "true");
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate while an evaluation runs ends the run, every
+        /// pending `ensure:` block of the evaluation and of the program
+        /// run once.
+        fn a_terminate_during_an_evaluation_ends_the_program(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.send(Command::Terminate);
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "cleaned"), 1);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A remote dropped while an evaluation runs aborts the
+        /// evaluation, its `ensure:` block run once, and the program runs
+        /// on to its end.
+        fn a_detach_during_an_evaluation_aborts_it(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            set_breakpoints(&remote, "Aborting", vec![offset]);
+            let agent = thread::spawn(move || {
+                start_endless(&remote);
+                drop(remote);
+            });
+            let result = run(&mut interpreter, &instance);
+            agent.join().expect("the remote's thread");
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    /// A recursion without end, which overflows the depth limit.
+    const OVERFLOWING: &str = indoc! {"
+        class Overflowing = Object new () (
+          public run = (
+            ^self down: 1
+          )
+          down: depth = (
+            ^(self down: depth + 1) + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// At an exception breakpoint's stop at the depth limit's own
+        /// error, an evaluation in the frame below the machinery has room:
+        /// the evaluation's reserve.
+        fn an_evaluation_at_a_stack_overflow_has_room(lowering) {
+            let (evaluated, result) = raised(
+                OVERFLOWING,
+                lowering,
+                |_, remote| set_exception_breakpoints(remote, true, false, false, Vec::new()),
+                |remote| {
+                    expect_exception_breakpoints_set(remote);
+                    expect_stop(remote);
+                    let frames = stack_trace(remote);
+                    let shown = frames
+                        .iter()
+                        .position(|frame| !frame.hidden)
+                        .expect("a frame below the machinery is shown");
+                    assert_eq!(frames[shown].name, "Overflowing>>down:");
+                    let evaluated = evaluate(remote, shown, "depth printString");
+                    continue_stopped(remote);
+                    evaluated
+                },
+            );
+            assert!(
+                matches!(evaluated, Evaluation::Value(_)),
+                "the evaluation answered a value, not {evaluated:?}"
+            );
+            assert_eq!(
+                result,
+                Err(String::from("stack overflow: recursion too deep"))
+            );
+        }
+    }
+
+    /// The depth `Deep`'s recursion stops at, at a breakpoint in `stop:`:
+    /// a few activations below the depth limit.
+    const NEAR_THE_LIMIT: i64 = 99_990;
+
+    /// A recursion that stops a few activations below the depth limit, a
+    /// recursion of a chosen depth and one without end.
+    fn deep_source() -> String {
+        assert_eq!(
+            ns_runtime::interpreter::MAX_ACTIVATION_DEPTH,
+            100_000,
+            "the stop stands a few activations below the depth limit"
+        );
+        indoc::formatdoc! {"
+            class Deep = Object new () (
+              public run = (
+                ^self down: 1
+              )
+              down: depth = (
+                depth = {NEAR_THE_LIMIT} ifTrue: [^self stop: depth].
+                ^self down: depth + 1
+              )
+              stop: depth = (
+                ^depth
+              )
+              countDown: left = (
+                left = 0 ifTrue: [^0].
+                ^(self countDown: left - 1) + 1
+              )
+              recurseForever = (
+                ^self recurseForever + 1
+              )
+            ) : ()
+        "}
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation at a stop a few activations below the depth limit
+        /// has its own reserve: a recursion of 500 activations answers.
+        fn an_evaluation_near_the_depth_limit_has_its_reserve(lowering) {
+            let source = deep_source();
+            let (label, answer) = stopped_at(&source, lowering, "Deep", "^depth", |remote| {
+                value_label(remote, 0, "self countDown: 500")
+            });
+            assert_eq!(label, "500");
+            assert_eq!(answer, NEAR_THE_LIMIT);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation near the depth limit that overruns its own
+        /// reserve answers the depth limit's error, and the program goes
+        /// on to its end.
+        fn an_evaluation_near_the_depth_limit_that_overruns_is_its_error(lowering) {
+            let source = deep_source();
+            let (description, answer) = stopped_at(&source, lowering, "Deep", "^depth", |remote| {
+                error_description(remote, 0, "self recurseForever")
+            });
+            assert!(
+                description.contains("stack overflow: recursion too deep"),
+                "{description}"
+            );
+            assert_eq!(answer, NEAR_THE_LIMIT);
+        }
+    }
+
+    /// A method stopped far from the depth limit, and a recursion without
+    /// end.
+    const RECURSING_FOREVER: &str = indoc! {"
+        class RecursingForever = Object new () (
+          public run = (
+            self sink: 41.
+            ^41
+          )
+          sink: value = (
+            ^value
+          )
+          recurseForever = (
+            ^self recurseForever + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A recursion without end inside an evaluation at an ordinary
+        /// stop is the evaluation's error, never the run's end: continuing
+        /// runs the program to its normal end.
+        fn a_recursion_inside_an_evaluation_is_its_error(lowering) {
+            let (description, answer) = stopped_at(
+                RECURSING_FOREVER,
+                lowering,
+                "RecursingForever",
+                "^value",
+                |remote| error_description(remote, 0, "self recurseForever"),
+            );
+            assert!(
+                description.contains("stack overflow: recursion too deep"),
+                "{description}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
 }

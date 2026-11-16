@@ -20,9 +20,7 @@ use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
 
-use super::{
-    DEPTH_RESERVE, EvaluationResult, MAX_ACTIVATION_DEPTH, Mutator, Signal, Step, StepArguments,
-};
+use super::{DEPTH_RESERVE, EvaluationResult, Mutator, Signal, Step, StepArguments};
 
 /// Where an unwind stopped.
 pub(crate) enum UnwindOutcome<'gc> {
@@ -558,8 +556,10 @@ pub(crate) fn non_boolean_condition<'gc>(
 /// activation where the error arose -- with the continuation that ends the
 /// run should `signal` ever return (`Continuation::VmErrorSignalled`).
 ///
-/// An error raised within `DEPTH_RESERVE` activations of the depth limit,
-/// the limit's own error included, takes the reserve first, unless a
+/// An error raised within `DEPTH_RESERVE` activations of the depth limit
+/// -- the raised one of an expression the debugger evaluates, while it
+/// runs (`Mutator::ordinary_depth_limit`) --, the limit's own error
+/// included, takes the reserve first, unless a
 /// `signal` already holds it: `signal`'s activation and everything it runs
 /// may then go that far past the limit, until it is gone
 /// (`Mutator::depth_reserve_held`). Far from the limit nothing is taken, so
@@ -583,7 +583,7 @@ fn start_signalling<'gc>(
         Ok(step) => step,
     };
     let taking = !mutator.depth_reserve_held()
-        && (mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+        && (mutator.heap.counted_depth() >= mutator.ordinary_depth_limit() - DEPTH_RESERVE
             || mutator.heap.stack_is_within_the_reserve_of_its_limit());
     let sender = mutator.heap.top_activation();
     let taking = taking && sender.is_some();
@@ -671,7 +671,10 @@ impl<'gc> Mutator<'gc> {
     ///
     /// Walks the activations from the top of the stack towards the run's
     /// base, the suspended ones included (`WalkedActivation::sender`): once
-    /// per run, since an overrun ends it.
+    /// per run, since an overrun ends it. Inside an expression the debugger
+    /// evaluates, the overrun ends the evaluation, so the walk stops at its
+    /// base: an error the program was signalling below it when it stopped
+    /// is not the evaluation's.
     pub(crate) fn overrun_of_the_reserve(
         &self,
         header: &ActivationHeader<'gc>,
@@ -683,6 +686,9 @@ impl<'gc> Mutator<'gc> {
         let mut above = None;
         let mut current = self.heap.top_activation().map(WalkedActivation::Live);
         while let Some(activation) = current {
+            if self.breakpoints.evaluating() && activation.is_evaluation_base(&self.heap) {
+                break;
+            }
             if let Some(error) = activation.signalled_vm_error(&self.heap) {
                 if !self.is_finding_its_handler(activation.receiver(&self.heap)) {
                     break;

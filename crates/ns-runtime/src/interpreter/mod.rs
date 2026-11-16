@@ -118,7 +118,9 @@ pub struct HostError {
 /// at most one per level of block nesting above each counted one, the stack
 /// holds at most 129 x (L + `DEPTH_RESERVE`) frames -- 128 being the
 /// parser's nesting ceiling, which `image::decode` holds an artifact to as
-/// well (`docs/design/execution.md`, "The depth limit").
+/// well -- and while the debugger evaluates an expression at a stop
+/// 129 x (L + 2 x `DEPTH_RESERVE` + `EVALUATION_DEPTH_RESERVE`)
+/// (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 
 /// How far past L the stack may grow while a VM error raised near L is
@@ -136,6 +138,17 @@ pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 /// unsignalled, since signalling needs the room that has just run out
 /// (`Mutator::overrun_of_the_reserve`).
 pub const DEPTH_RESERVE: usize = 1_000;
+
+/// How many counted activations an expression the debugger evaluates may
+/// push above its base, however close to L the stop stands: while it runs
+/// the limit is `max(L, base + EVALUATION_DEPTH_RESERVE)`, the base its
+/// base frame's counted depth, and a VM error within it takes
+/// `DEPTH_RESERVE` above that. The stop that needs it most is an exception
+/// breakpoint on the stack overflow itself, where every watch would fail
+/// otherwise (`docs/design/debugger.md`, "Evaluation", "At the depth
+/// limit"). Evaluations do not nest, so the stack holds at most one such
+/// term above L and its reserve.
+pub(crate) const EVALUATION_DEPTH_RESERVE: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
@@ -2089,7 +2102,10 @@ impl<'gc> Mutator<'gc> {
     /// activation count does not bound. While the reserve is held -- a VM
     /// error's `signal` is running or being pushed -- the run ends instead,
     /// as an overrun of the reserve does, so that a `signal` the
-    /// reservation refuses in turn cannot raise the error again.
+    /// reservation refuses in turn cannot raise the error again -- inside
+    /// an expression the debugger evaluates, the evaluation ends instead,
+    /// at its base, which no termination but the debugger's own passes
+    /// (`interpreter::unwind`, `at_evaluation_base`).
     #[cold]
     #[inline(never)]
     fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
@@ -2100,12 +2116,17 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// A counted push at or past L. While a VM error's `signal` holds the
-    /// reserve, the push is allowed up to `DEPTH_RESERVE` further; past it,
-    /// the run ends (`overrun_of_the_reserve`). Otherwise it is refused
-    /// with L's error, which the unwinder signals -- taking the reserve --
-    /// unless it is the push of the `doesNotUnderstand:` that has just
-    /// taken it (`take_depth_reserve_for_does_not_understand`).
+    /// A counted push at or past L. Below the limit an evaluation the
+    /// debugger runs raised (`ordinary_depth_limit`) it goes ahead. While a
+    /// VM error's `signal` holds the reserve, the push is allowed up to
+    /// `DEPTH_RESERVE` further; past it, the run ends
+    /// (`overrun_of_the_reserve`) -- or, inside an evaluation, the
+    /// evaluation: the termination's unwind ends at its base, which answers
+    /// the overrun's error (`interpreter::unwind`, `at_evaluation_base`).
+    /// Otherwise it is refused with L's error, which the unwinder signals
+    /// -- taking the reserve -- unless it is the push of the
+    /// `doesNotUnderstand:` that has just taken it
+    /// (`take_depth_reserve_for_does_not_understand`).
     #[cold]
     #[inline(never)]
     fn push_past_the_limit(
@@ -2114,14 +2135,17 @@ impl<'gc> Mutator<'gc> {
         arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        let depth = self.heap.counted_depth();
+        let limit = self.ordinary_depth_limit();
         // The push that makes a freshly taken reserve held is asked about
         // first: `depth_reserve_held` would find nothing above its activation
         // yet, and forget it.
-        let refusal = if !self.pushes_the_reserves_does_not_understand(&header)
+        let refusal = if depth >= limit
+            && !self.pushes_the_reserves_does_not_understand(&header)
             && !self.depth_reserve_held()
         {
             recursion_too_deep(&header)
-        } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
+        } else if depth < limit + DEPTH_RESERVE {
             return self
                 .heap
                 .push_activation(*header, arguments, temporaries)
@@ -2135,6 +2159,15 @@ impl<'gc> Mutator<'gc> {
         // anything before its push has succeeded -- a nested class's
         // creation is marked only then -- so nothing is undone here.
         Err(refusal)
+    }
+
+    /// The depth limit a counted push meets while the reserve is free: L,
+    /// or the higher limit an expression the debugger evaluates has while
+    /// it runs (`EVALUATION_DEPTH_RESERVE`). Read only on the cold paths:
+    /// the push's own check compares with L, which the evaluation's limit
+    /// never undercuts.
+    pub(crate) fn ordinary_depth_limit(&self) -> usize {
+        MAX_ACTIVATION_DEPTH + self.heap.evaluation_depth_raise()
     }
 
     /// Whether the depth limit's reserve is held: its activation is still
@@ -2240,7 +2273,7 @@ impl<'gc> Mutator<'gc> {
         defining_class: ClassReference<'gc>,
     ) {
         if !defining_class.same(self.builtin_class(BuiltinClass::Object))
-            || (self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || (self.heap.counted_depth() < self.ordinary_depth_limit() - DEPTH_RESERVE
                 && !self.heap.stack_is_within_the_reserve_of_its_limit())
             || self.depth_reserve_held()
         {

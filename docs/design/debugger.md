@@ -80,9 +80,10 @@
 > IntelliJ's debugger over a DAP client of its own, with line, method and
 > exception breakpoints ("The JetBrains plugin"). An attached debugger
 > with its defaults costs a running program nothing measurable ("What
-> stage 4 moved"). The VM evaluates an expression in a stopped frame
-> ("Evaluation"). Everything else is planned: its abort and depth
-> reserve, conditional breakpoints and logpoints, watches and setting
+> stage 4 moved"). The VM evaluates an expression in a stopped frame,
+> with a depth reserve of its own, and a pause aborts it
+> ("Evaluation"). Everything else is planned: conditional breakpoints
+> and logpoints, watches and setting
 > variables, smart step into, restart frame and force return (stage 5,
 > next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
@@ -426,8 +427,12 @@ splits the remote (`DebugRemote::into_parts`) into its two halves: a
 and `Sync`, so that several threads command the VM each through its own
 handle, and a `DebugEvents`, which moves to the thread that waits for the
 VM's events. The VM notices that every control is gone where it next
-takes commands -- a drain or a stop -- and that the events are gone at
-the next event it cannot send; either detaches the debugger.
+takes commands -- a drain or a stop -- which the last control's drop
+asks for, closing the command channel and then arming the commands bit
+(`Drop for DebugControl`), so that a program that runs on without a
+stop, an endless evaluation among them, notices too; and that the events
+are gone at the next event it cannot send; either detaches the
+debugger.
 
 Attaching again replaces the debugger: the earlier one's channels go with
 it, the commands still queued in them included, its pause and commands
@@ -3548,8 +3553,8 @@ expression runs, whether or not it writes.
 (`Command::Evaluate`, answered by `Event::Evaluated`;
 `debugger/evaluation.rs`; tests `evaluation::*` in
 `crates/ns-runtime/tests/debugger.rs`): where it lies, how it returns,
-the frame it reads and its errors, below; the depth reserve, hot
-conditions and aborting are planned. `compiler/evaluation.rs`
+the frame it reads, its errors, its depth reserve and aborting it,
+below; hot conditions are planned. `compiler/evaluation.rs`
 parses it as a code body standing alone (`ns_syntax::parse_code_body`),
 `resolver::resolve_evaluation` resolves it -- a marked label is the
 block's parameter, a name of the frame's variable table
@@ -3593,8 +3598,7 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   (`Interpreter::serve_evaluation`), which answers `Evaluated` and serves
   on. `Event::Stopped` is sent once per stop, `Event::Evaluated` once per
   evaluation. While the evaluation runs a safepoint serves the commands
-  queued meanwhile; a pause there is dropped, the program being stopped
-  already. The variant is named in [image-format.md](image-format.md),
+  queued meanwhile, and a pause aborts it ("Aborting" below). The variant is named in [image-format.md](image-format.md),
   "Planned: suspend and resume", for completeness; no image is written
   while an evaluation runs, so it is never encoded, and the encoder,
   which writes dead frames only, has no match over continuations.
@@ -3662,24 +3666,42 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   most is an exception breakpoint on the stack overflow itself, where
   every watch, condition and renderer would otherwise fail. While it
   runs, the depth limit is `max(L, base + E)`, the base the evaluation's
-  base frame's counted depth and E 1,000 counted activations: far below
-  L nothing changes, at L the evaluation has E. A VM error within it
-  takes the signalling reserve above that limit as it would above L
-  ("The depth limit", [execution.md](execution.md)). The limit is raised
-  in `DepthLimit` as holding the reserve raises it, so the push's check
-  stays its one compare; the cold `push_past_the_limit` alone reads the
-  evaluation's limit. Whatever the evaluation overruns -- its limit and
-  reserve, or the stack reservation's room -- never ends the run: where
-  a program's overrun answers `Signal::Terminate`, an overrun inside an
-  evaluation is unwound to the evaluation's base frame, its `ensure:`
-  blocks run, and answered as the evaluation's error, the program's
-  frames untouched. Evaluations do not nest -- an evaluation skips
-  breakpoints, so no stop arises within one -- so the stack holds at
-  most L + `DEPTH_RESERVE` + E counted activations, plus the reserve of
-  an error signalled within the evaluation, and the frame bound of
-  "The depth limit" grows by that term. JDI and pdb give an evaluation
-  no room beyond the program's limit; their limit's headroom, like
-  ours, is for the error's handler.
+  base frame's counted depth and E 1,000 counted activations
+  (`EVALUATION_DEPTH_RESERVE` in `interpreter/mod.rs`): far below L
+  nothing changes, at L the evaluation has E. `evaluation::begin`
+  raises it before the base's push, which a stop at L would otherwise
+  refuse, and its end gives it back. A VM error within it takes the
+  signalling reserve above that limit as it would above L
+  (`unwind::start_signalling` and the kernel's `doesNotUnderstand:` read
+  it through `Mutator::ordinary_depth_limit`; "The depth limit",
+  [execution.md](execution.md)); a reserve the program held at the stop
+  -- its own overflow's `signal`, still searching -- stays held and
+  raises the evaluation's limit the same way. The raise is a term of the
+  heap's beside the limit `set_depth_limit` sets
+  (`Heap::raise_depth_limit_for_evaluation`), which
+  `synchronize_depth_limit` adds into `DepthLimit`, so the push's check
+  stays its one compare against L and machine code's against the word;
+  the cold `push_past_the_limit` alone reads the evaluation's limit.
+  Whatever the evaluation overruns -- its limit and reserve, or the
+  stack reservation's room -- never ends the run: where a program's
+  overrun answers `Signal::Terminate`, that termination inside an
+  evaluation is unwound to the evaluation's base frame, which ends every
+  termination but the debugger's own, its `ensure:` blocks run, and
+  answered as the evaluation's error, the program's frames untouched;
+  the error is picked by `overrun_of_the_reserve`'s walk, which stops at
+  the base, so that the program's own error below it is never the
+  evaluation's (`an_evaluation_near_the_depth_limit_that_overruns_is_its_error`,
+  `an_evaluation_at_a_stack_overflow_has_room`). Evaluations do not
+  nest -- an evaluation skips breakpoints, so no stop arises within one
+  -- so the stack holds at most L + `DEPTH_RESERVE` + E counted
+  activations, plus the reserve of an error signalled within the
+  evaluation, and the frame bound of "The depth limit" grows by that
+  term. The native stack's need does not: the stop is a safepoint,
+  where no compiled frame holds a return address, so machine code
+  within the evaluation nests at most E + `DEPTH_RESERVE` frames above
+  its base, or as far as L and its reserve allow when the base lies far
+  below L. JDI and pdb give an evaluation no room beyond the program's
+  limit; their limit's headroom, like ours, is for the error's handler.
 - **Hot conditions.** A breakpoint's condition and a logpoint's message are
   compiled once per breakpoint and frame layout and cached; still, every
   hit leaves the stretch and runs an evaluation, so a conditional
@@ -3688,10 +3710,29 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   that raises an error stops at the breakpoint and reports the error, as
   IntelliJ does; a condition evaluated at the depth limit has the
   evaluation's reserve, as every evaluation does.
-- **Aborting.** An evaluation or a renderer past its limit, or one the user
-  cancels, is stopped by the agent's pause bit; the stop unwinds the
-  evaluation to its base frame, running its `ensure:` blocks, and answers
-  that it was aborted.
+- **Aborting.** An evaluation the user cancels is stopped by the agent's
+  pause bit (`DebugControl::pause`): the safepoint the pause makes,
+  finding an evaluation running at the kept stop
+  (`Interpreter::serve_evaluation`), marks it aborted
+  (`evaluation::abort`) and answers `Served::Abort`, which the run loop
+  takes as a termination -- the debugger's termination signal unwound
+  from the top activation (`vm::terminate_at_safepoint`) -- but for the
+  termination flag, which it leaves clear, so that the evaluation's base
+  ends the unwind: every `ensure:` block above the base runs, and the
+  stop answers `Event::Evaluated(Evaluation::Aborted)`, whatever an
+  `ensure:` block raised on the way, and serves on, the program still
+  stopped. The remote's departure aborts it too: the last handle of a
+  `DebugControl` closes the command channel and arms the commands bit as
+  it drops, so that even an evaluation that never ends reaches a
+  safepoint that finds the channel closed, detaches the debugger and
+  aborts the evaluation, and the program runs on. A `Command::Terminate`
+  while it runs ends the run as at any safepoint, the evaluation
+  unanswered, its `ensure:` blocks and the program's run once on the way
+  to the floor. A pause that comes after the evaluation ended is moot.
+  Pinned by `an_endless_evaluation_is_aborted_by_a_pause`,
+  `a_detach_during_an_evaluation_aborts_it` and
+  `a_terminate_during_an_evaluation_ends_the_program`. A renderer past
+  its limit will be stopped the same way.
 
 ### Assigning a captured variable
 

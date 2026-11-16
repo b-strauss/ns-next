@@ -9,7 +9,10 @@
 //! stop, and the safepoint that serves it re-enters the kept stop
 //! before the frame below runs another instruction. While it runs its
 //! base ends the handler search and every unwind from within it
-//! (`interpreter::unwind`), and nothing stops.
+//! (`interpreter::unwind`), nothing stops, and the depth limit is raised
+//! for its own reserve (`EVALUATION_DEPTH_RESERVE`). A pause, or the
+//! remote's departure, aborts it (`abort`): the debugger's termination
+//! signal, unwound from the top, which its base ends.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -20,7 +23,10 @@ use super::stack::{self, StackFrame};
 use super::{NO_SUCH_FRAME, NOT_ASSIGNABLE, RETURN_FROM_AN_EVALUATION, Stop};
 use crate::bytecode::CompiledCode;
 use crate::heap::{ActivationReference, NewClosure};
-use crate::interpreter::{Arguments, FeedbackBase, Mutator, Step, StepArguments};
+use crate::interpreter::{
+    Arguments, EVALUATION_DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator, Step,
+    StepArguments,
+};
 use crate::resolver::sends::EnclosingClass;
 use crate::resolver::{EvaluationScope, FrameVariable, resolve_evaluation};
 use crate::types::{Continuation, NewspeakError};
@@ -54,6 +60,10 @@ pub(crate) struct RunningEvaluation {
     /// the `terminate:` leaf runs within it (`exception_unhandled`), for
     /// the unwind that ends at the base to answer.
     exception: Option<Root>,
+    /// Whether the debugger aborted it (`abort`): the unwind that ends at
+    /// its base, the termination's signal, answers that it was aborted,
+    /// whatever an `ensure:` block it ran raised on the way.
+    aborted: bool,
 }
 
 /// What an evaluation answered, held until the stop takes it.
@@ -63,6 +73,7 @@ pub(crate) enum Outcome {
         description: String,
         exception: Option<Root>,
     },
+    Aborted,
 }
 
 /// `text` compiled as a block standing in the frame at index `frame` of
@@ -143,7 +154,10 @@ pub(crate) fn compile(
 /// over it, is pushed above every live frame's window, whichever frame it
 /// evaluates in -- a frame below the top has its callees above it -- with
 /// `Continuation::Evaluated`. Breakpoints, exception breakpoints and the
-/// unwinder see the evaluation from here until its base is popped.
+/// unwinder see the evaluation from here until its base is popped, and
+/// the depth limit is `max(L, base + EVALUATION_DEPTH_RESERVE)`, the base
+/// its base frame's counted depth -- raised before the push, which a stop
+/// at the limit would otherwise refuse.
 /// Refused for a frame index past the stack, and when the stack has no
 /// room for the push.
 pub(crate) fn begin<'gc>(
@@ -168,7 +182,16 @@ pub(crate) fn begin<'gc>(
         feedback_base: FeedbackBase::NOT_ASSIGNED,
     });
     let sender = mutator.heap.top_activation();
-    mutator.breakpoints.evaluation = Some(RunningEvaluation { exception: None });
+    let base = mutator.heap.counted_depth() + 1;
+    let raise = (base + EVALUATION_DEPTH_RESERVE).saturating_sub(MAX_ACTIVATION_DEPTH);
+    set_running(
+        mutator,
+        Some(RunningEvaluation {
+            exception: None,
+            aborted: false,
+        }),
+        raise,
+    );
     mutator.breakpoints.evaluated = None;
     let pushed = mutator.push_step(
         Step::Block {
@@ -181,7 +204,7 @@ pub(crate) fn begin<'gc>(
         false,
     );
     if pushed.is_err() {
-        mutator.breakpoints.evaluation = None;
+        set_running(mutator, None, 0);
         return Err(NO_ROOM);
     }
     Ok(())
@@ -198,17 +221,22 @@ pub(crate) fn returned<'gc>(mutator: &mut Mutator<'gc>, value: Value<'gc>) -> Ac
 
 /// An error ended the evaluation, popped down to below its base
 /// (`interpreter::unwind`): the error is its answer, described with the
-/// exception whose default action ended it, when one did. Answers the
-/// frame the evaluation stood above, as `returned` does.
+/// exception whose default action ended it, when one did -- or, when the
+/// debugger aborted it, that it was aborted. Answers the frame the
+/// evaluation stood above, as `returned` does.
 pub(crate) fn ended_by<'gc>(
     mutator: &mut Mutator<'gc>,
     error: &NewspeakError<'gc>,
 ) -> ActivationReference {
-    let exception = mutator
+    let (exception, aborted) = mutator
         .breakpoints
-        .evaluation
-        .as_mut()
-        .and_then(|evaluation| evaluation.exception.take());
+        .evaluation_mut()
+        .map_or((None, false), |evaluation| {
+            (evaluation.exception.take(), evaluation.aborted)
+        });
+    if aborted {
+        return end(mutator, Outcome::Aborted);
+    }
     let description = match &exception {
         Some(exception) => {
             let described = mutator.heap.describe(mutator.heap.fetch(exception));
@@ -234,8 +262,21 @@ pub(crate) fn exception_unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Va
         return;
     }
     let exception = mutator.heap.stash(exception);
-    if let Some(evaluation) = mutator.breakpoints.evaluation.as_mut() {
+    if let Some(evaluation) = mutator.breakpoints.evaluation_mut() {
         evaluation.exception = Some(exception);
+    }
+}
+
+/// The debugger aborts the running evaluation -- a pause asked while it
+/// runs, or the remote gone: the termination's signal the safepoint
+/// unwinds from the top runs every `ensure:` block above the base and
+/// ends there (`interpreter::unwind`'s `at_evaluation_base`), and the
+/// evaluation answers that it was aborted (`ended_by`). Anything it held
+/// for its answer goes.
+pub(crate) fn abort(mutator: &mut Mutator<'_>) {
+    if let Some(evaluation) = mutator.breakpoints.evaluation_mut() {
+        evaluation.aborted = true;
+        evaluation.exception = None;
     }
 }
 
@@ -254,8 +295,19 @@ pub(crate) fn has_ended(mutator: &Mutator<'_>) -> bool {
 /// unwind, which goes past it to the run's floor, and an answer no stop
 /// took -- its debugger detached meanwhile -- goes too.
 pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
-    mutator.breakpoints.evaluation = None;
+    set_running(mutator, None, 0);
     mutator.breakpoints.evaluated = None;
+}
+
+/// Begins (`Some`) or ends (`None`) the running evaluation, the depth
+/// limit raised by `raise` while it runs, and given back once it ended.
+fn set_running(mutator: &mut Mutator<'_>, evaluation: Option<RunningEvaluation>, raise: usize) {
+    debug_assert!(
+        evaluation.is_some() || raise == 0,
+        "only a running evaluation raises the limit"
+    );
+    mutator.breakpoints.set_evaluation(evaluation);
+    mutator.heap.raise_depth_limit_for_evaluation(raise);
 }
 
 /// The evaluation is over, `outcome` its answer: nothing it does is
@@ -263,7 +315,7 @@ pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
 /// attached debugger's arming lock, as an exception breakpoint asks for
 /// its stop. Answers the frame it stood above, now the top.
 fn end(mutator: &mut Mutator<'_>, outcome: Outcome) -> ActivationReference {
-    mutator.breakpoints.evaluation = None;
+    set_running(mutator, None, 0);
     mutator.breakpoints.evaluated = Some(outcome);
     let arming = mutator.breakpoints.arming();
     {

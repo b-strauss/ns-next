@@ -41,7 +41,9 @@ pub(crate) enum SafepointOutcome {
     /// stack frame, whose state the loop reads again.
     Rebuilt,
     /// The debugger terminated the run, which the loop ends through the
-    /// unwinder from the top activation (`debugger::termination`).
+    /// unwinder from the top activation (`debugger::termination`), or
+    /// aborted an evaluation, whose base ends the same unwind
+    /// (`debugger::Served::Abort`).
     Terminate,
 }
 
@@ -103,12 +105,16 @@ impl Interpreter {
     /// the activation stack above `floor`, the floor of the run `vm::run`
     /// is in, every activation there suspended into its frame and the top
     /// one resumed -- never in a release build -- and
-    /// `SafepointOutcome::Terminate` when the debugger terminated the run.
+    /// `SafepointOutcome::Terminate` when the debugger terminated the run
+    /// or aborted an evaluation.
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
         let served = self.serve_debugger(floor);
-        if served == crate::debugger::Served::Terminate {
+        if matches!(
+            served,
+            crate::debugger::Served::Terminate | crate::debugger::Served::Abort
+        ) {
             return SafepointOutcome::Terminate;
         }
         #[cfg(not(debug_assertions))]

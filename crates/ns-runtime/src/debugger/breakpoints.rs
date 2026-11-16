@@ -80,8 +80,14 @@ pub(crate) struct Breakpoints {
     /// until its base is popped (`super::evaluation`): while it runs every
     /// breakpoint is gone past uncounted and nothing stops. On the
     /// `Mutator`, as the stop's tokens are, since the arms, the leaves and
-    /// the unwinder that read it run inside an entry.
-    pub(super) evaluation: Option<super::evaluation::RunningEvaluation>,
+    /// the unwinder that read it run inside an entry. Set through
+    /// `set_evaluation`, which keeps `follows_unwinds` with it.
+    evaluation: Option<super::evaluation::RunningEvaluation>,
+    /// Whether the unwinder tells the debugger of the frames it pops: a
+    /// method breakpoint is set or an evaluation runs. One word, updated
+    /// wherever either changes, so that an unwind's start in a program
+    /// run without either reads one word.
+    follows_unwinds: bool,
     /// What the evaluation answered, from its end until the stop it was
     /// asked at takes it.
     pub(super) evaluated: Option<super::evaluation::Outcome>,
@@ -576,7 +582,28 @@ impl Breakpoints {
     /// whose base ends every unwind.
     #[inline(always)]
     pub(crate) fn follows_unwinds(&self) -> bool {
-        !self.methods.is_empty() || self.evaluation.is_some()
+        self.follows_unwinds
+    }
+
+    /// Recomputes `follows_unwinds` after the method breakpoints or the
+    /// evaluation changed.
+    fn refresh_follows_unwinds(&mut self) {
+        self.follows_unwinds = !self.methods.is_empty() || self.evaluation.is_some();
+    }
+
+    /// Begins (`Some`) or ends (`None`) the expression the debugger
+    /// evaluates.
+    pub(super) fn set_evaluation(
+        &mut self,
+        evaluation: Option<super::evaluation::RunningEvaluation>,
+    ) {
+        self.evaluation = evaluation;
+        self.refresh_follows_unwinds();
+    }
+
+    /// The expression the debugger evaluates, while it runs.
+    pub(super) fn evaluation_mut(&mut self) -> Option<&mut super::evaluation::RunningEvaluation> {
+        self.evaluation.as_mut()
     }
 
     /// The debugger terminated the run (`true`), or the run ended
@@ -1133,6 +1160,7 @@ pub(crate) fn set_method_breakpoints(
         })
         .collect();
     table.methods = methods;
+    table.refresh_follows_unwinds();
     resolve_methods(mutator, None);
     mutator.breakpoints.sweep();
     settle(mutator);
@@ -1323,6 +1351,7 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.remove_kinds(|kind| !kind.is_stress(), |_| false);
     table.modules.clear();
     table.methods.clear();
+    table.refresh_follows_unwinds();
     table.reported_home = None;
     table.past_once = None;
     table.counted_reach = None;

@@ -366,9 +366,12 @@ fn after_safepoint(
 /// The debugger terminated the run at the safepoint the stretch left
 /// `frame` for: the termination is raised in the top activation and
 /// handed to the one unwinder, as a leaf's termination is, so that every
-/// pending `ensure:` block runs on the way to the floor. Answers the run's
-/// result once the unwind popped the floor, or `None` with `frame` the
-/// block the unwind runs next, which the loop goes on with, interpreted.
+/// pending `ensure:` block runs on the way to the floor -- or aborted an
+/// evaluation, whose base ends the unwind and leaves the frame it stood
+/// above stopped where it was, interpreted. Answers the run's result once
+/// the unwind popped the floor, or `None` with `frame` the block the
+/// unwind runs next, or the stopped frame, which the loop goes on with,
+/// interpreted.
 #[cold]
 #[inline(never)]
 fn terminate_at_safepoint(
@@ -395,7 +398,9 @@ fn terminate_at_safepoint(
         Transfer::Switched => {
             // A termination's unwind switches only to an `ensure:` or
             // `ifCurtailed:` block it pushed (`switch_to`), which starts
-            // interpreted: no frame it switches to resumes machine code.
+            // interpreted, or to the frame an aborted evaluation stood
+            // above, which goes on interpreted: no frame it switches to
+            // resumes machine code.
             *frame =
                 FrameRegisters::of_activation(mutator, handoff.activation, handoff.program_counter);
             None

@@ -115,8 +115,6 @@ pub(crate) struct Stop {
     after: AfterStop,
     /// Whether an evaluation ran at the stop.
     evaluated: bool,
-    /// The evaluation running, while the stop is kept for it.
-    pub(crate) evaluation: Option<PendingEvaluation>,
 }
 
 impl Stop {
@@ -126,9 +124,6 @@ impl Stop {
             .get_or_insert_with(|| stack::frames(mutator, self.floor))
     }
 }
-
-/// An evaluation a kept stop waits for.
-pub(crate) struct PendingEvaluation;
 
 /// What a stop owes the program once it goes on.
 #[derive(Clone, Copy, Default)]
@@ -467,6 +462,12 @@ pub(crate) enum Served {
     /// the evaluation, whose end asks for the stop that serves the kept
     /// one again.
     Evaluate,
+    /// The evaluation the kept stop waits for is aborted: the run loop
+    /// unwinds from the top activation with the termination's signal, as
+    /// for `Terminate`, and the evaluation's base ends the unwind
+    /// (`evaluation::abort`), whose end asks for the stop that serves the
+    /// kept one again -- or, the remote gone, lets the program run on.
+    Abort,
 }
 
 impl Interpreter {
@@ -729,12 +730,14 @@ impl Interpreter {
     /// Serves the safepoints of an evaluation a stop began, which the stop
     /// is kept for (`Debugger::stop`): once the evaluation ended -- its
     /// end asked for this safepoint -- the kept stop answers its result
-    /// and serves the agent again, without a second `Event::Stopped`;
-    /// while it runs, a safepoint serves the commands queued meanwhile,
-    /// and a pause is moot, since the program is stopped already. `None`
-    /// when no stop is kept: the answer of an evaluation whose debugger is
-    /// gone waits for nobody, and goes with the run
-    /// (`evaluation::run_ended`).
+    /// and serves the agent again, without a second `Event::Stopped`, a
+    /// pause asked meanwhile moot, since the program is stopped; while it
+    /// runs, a safepoint serves the commands queued meanwhile -- a
+    /// terminate ends the run -- and a pause aborts it, as does the
+    /// remote's departure, which detaches the debugger and lets the
+    /// program run on (`Served::Abort`). `None` when no stop is kept: the
+    /// answer of an evaluation whose debugger is gone waits for nobody,
+    /// and goes with the run (`evaluation::run_ended`).
     fn serve_evaluation(&mut self) -> Option<Served> {
         let kept = self
             .debugger
@@ -748,17 +751,25 @@ impl Interpreter {
             if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
                 return Some(self.terminate());
             }
-            if bits & DEBUGGER_PAUSE != 0 {
+            let detached = self.debugger.is_none();
+            if detached || bits & DEBUGGER_PAUSE != 0 {
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
+                return Some(self.abort_evaluation());
             }
             return Some(Served::GoOn);
         }
-        self.clear_debugger_bits(DEBUGGER_STOP);
-        let mut stop = self.debugger.as_mut()?.stop.take()?;
-        stop.evaluation = None;
+        self.clear_debugger_bits(DEBUGGER_STOP | DEBUGGER_PAUSE);
+        // A stop is kept only while its evaluation runs or its answer
+        // waits, and only the debugger that keeps it takes the answer.
+        let mut stop = self
+            .debugger
+            .as_mut()
+            .and_then(|debugger| debugger.stop.take())
+            .expect("internal: the stop is kept");
         let answer = self.enter(|mutator| {
-            let outcome = evaluation::take_outcome(mutator)?;
-            Some(match outcome {
+            let outcome = evaluation::take_outcome(mutator)
+                .expect("internal: an evaluation that ended holds its answer");
+            match outcome {
                 evaluation::Outcome::Value(value) => {
                     Evaluation::Value(stop.values.describe(mutator, mutator.heap.fetch(&value)))
                 }
@@ -773,10 +784,23 @@ impl Interpreter {
                         exception: stop.values.describe(mutator, exception),
                     }
                 }
-            })
-        })?;
+                evaluation::Outcome::Aborted => Evaluation::Aborted,
+            }
+        });
         self.answer(&mut stop.source, Event::Evaluated(answer));
         Some(self.serve_stop(stop))
+    }
+
+    /// Aborts the running evaluation (`evaluation::abort`): the run loop
+    /// unwinds with the termination's signal from the top activation, a
+    /// frame of optimized code its poll left going on in baseline code
+    /// first, as for a termination (`terminate`).
+    fn abort_evaluation(&mut self) -> Served {
+        self.enter(|mutator| {
+            evaluation::abort(mutator);
+            crate::jit::deoptimize_stopped_at_poll(mutator);
+        });
+        Served::Abort
     }
 
     /// Stops the program as a pause does, for the pause stress mode, with
@@ -1091,7 +1115,6 @@ impl Interpreter {
             frames: None,
             after,
             evaluated: false,
-            evaluation: None,
         };
         self.answer(
             &mut stop.source,
@@ -1247,7 +1270,6 @@ impl Interpreter {
                         Ok(()) => {
                             // Kept for the evaluation, whose run may move
                             // the frames before the stop serves again.
-                            stop.evaluation = Some(PendingEvaluation);
                             stop.evaluated = true;
                             stop.frames = None;
                             if let Some(debugger) = &mut self.debugger {

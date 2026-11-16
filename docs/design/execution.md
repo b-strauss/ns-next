@@ -9935,7 +9935,10 @@ stack holds at most 129 × (L + `DEPTH_RESERVE`) frames, the reserve below
 included, 13.0 million, whose headers alone take about 1.36 GB
 (`frame_header::COUNT`, 13 words, 104 bytes, each, in every build), before
 their registers, a suspended activation's frame object counted in its frame's
-place; the reservation the frames lie in is the net beneath L (below). Only
+place; while the debugger evaluates an expression at a stop, at most
+129 × (L + 2 × `DEPTH_RESERVE` + `EVALUATION_DEPTH_RESERVE`), 13.3 million
+frames, about 1.38 GB of headers ("Inside an evaluation" below); the
+reservation the frames lie in is the net beneath L (below). Only
 code that carries `SendInlinable` gets there — the reference lowering's, or an
 artifact's — recursing through 128 nested control-flow blocks at every level;
 the optimized lowering never emits it, so under it the stack holds at most L
@@ -10010,6 +10013,28 @@ could only end the run as L, uncatchable and under the wrong name.
   was; only a counted push at L reaches the cold `push_past_the_limit`,
   which refuses it with L's error unless the reserve is held, and allows it
   up to L + `DEPTH_RESERVE` if it is.
+- **Inside an evaluation.** An expression the debugger evaluates at a
+  stop has a reserve of its own, `EVALUATION_DEPTH_RESERVE`, 1,000
+  counted activations (decided with the user on 2026-11-16;
+  [debugger.md](debugger.md), "Evaluation", "At the depth limit"):
+  while it runs the limit is `max(L, base + EVALUATION_DEPTH_RESERVE)`,
+  the base its base frame's counted depth, which
+  `Mutator::ordinary_depth_limit` answers to the cold paths --
+  `push_past_the_limit` and the two that take the reserve -- and the
+  heap adds into the `DepthLimit` word
+  (`Heap::raise_depth_limit_for_evaluation`); the push's own check
+  still compares with L. A VM error within it takes `DEPTH_RESERVE`
+  above that limit, and an overrun of either, or of the reservation's
+  room, ends the evaluation rather than the run: its termination is
+  unwound to the evaluation's base, which answers it as the
+  evaluation's error. Evaluations do not nest, and the base lies at
+  most at L + `DEPTH_RESERVE`, the program's own reserve held at the
+  stop, so the stack holds at most L + 2 × `DEPTH_RESERVE` +
+  `EVALUATION_DEPTH_RESERVE` counted activations. The native stack's
+  need (`jit::NATIVE_STACK_NEED`) does not grow: a stop is a safepoint,
+  where no compiled frame keeps a return address, and the evaluation's
+  compiled frames nest above its base no deeper than L and its reserve
+  allow.
 - **What an overrun ends with.** A push past the reserve answers
   `Signal::Terminate`, so the run ends at once and uncatchably, running the
   pending `ensure:` blocks on the way, with the error

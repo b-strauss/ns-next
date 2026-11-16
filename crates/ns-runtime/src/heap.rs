@@ -2297,8 +2297,15 @@ pub struct Heap<'gc> {
     machine_words: MachineWords,
     /// The limit `set_depth_limit` was last given, which the
     /// `MachineWord::DepthLimit` word holds while no request bit that
-    /// lowers it is set (`synchronize_depth_limit`).
+    /// lowers it is set (`synchronize_depth_limit`), raised by
+    /// `evaluation_depth_raise`.
     depth_limit: usize,
+    /// How far an expression the debugger evaluates raises the depth
+    /// limit while it runs, 0 otherwise: its own reserve above its base
+    /// (`docs/design/debugger.md`, "Evaluation", "At the depth limit").
+    /// Kept beside `depth_limit`, so that a reserve taken or given back
+    /// within the evaluation keeps it.
+    evaluation_depth_raise: usize,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
     /// top the allocation already has in hand, so the hot path pays one
@@ -2771,6 +2778,7 @@ impl<'gc> Heap<'gc> {
             }),
             machine_words,
             depth_limit: crate::interpreter::MAX_ACTIVATION_DEPTH,
+            evaluation_depth_raise: 0,
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -7222,6 +7230,26 @@ impl<'gc> Heap<'gc> {
         self.synchronize_depth_limit();
     }
 
+    /// Raises the depth limit by `raise` while an expression the debugger
+    /// evaluates runs, and gives it back with 0 once it ended: the limit
+    /// `set_depth_limit` sets, the reserve held or free, stands that much
+    /// higher in the word machine code compares a push against.
+    pub(crate) fn raise_depth_limit_for_evaluation(&mut self, raise: usize) {
+        self.evaluation_depth_raise = raise;
+        self.synchronize_depth_limit();
+    }
+
+    /// How far a running evaluation raises the depth limit, 0 while none
+    /// runs (`raise_depth_limit_for_evaluation`).
+    pub(crate) fn evaluation_depth_raise(&self) -> usize {
+        self.evaluation_depth_raise
+    }
+
+    /// The depth limit the word holds while no request lowers it.
+    fn raised_depth_limit(&self) -> usize {
+        self.depth_limit + self.evaluation_depth_raise
+    }
+
     /// The word of the machine words `word` names, for a test.
     #[cfg(test)]
     pub(crate) fn machine_word(&self, word: MachineWord) -> u64 {
@@ -10003,7 +10031,8 @@ impl<'gc> Heap<'gc> {
 
     /// Writes the depth limit's word after every write of the request
     /// word and of the limit: 0 while a bit of `LOWERS_DEPTH_LIMIT` is
-    /// set, the limit `set_depth_limit` last set otherwise. A compiled
+    /// set, the limit `set_depth_limit` last set otherwise, raised while
+    /// an evaluation runs (`raise_depth_limit_for_evaluation`). A compiled
     /// callee's prologue compares the depth count with that one word, so a
     /// pending request refuses every compiled push without a compare of
     /// its own, and the interpreter takes the push and the safepoint
@@ -10025,7 +10054,7 @@ impl<'gc> Heap<'gc> {
         let limit = if lowered(&self.machine_words) {
             0
         } else {
-            self.depth_limit as u64
+            self.raised_depth_limit() as u64
         };
         self.machine_words.set(MachineWord::DepthLimit, limit);
         MachineWords::fence();
@@ -11049,7 +11078,7 @@ impl<'gc> Heap<'gc> {
             .get(MachineWord::DepthCount)
             .saturating_sub(u64::from(inlined));
         let end = words.get(MachineWord::OrdinaryStackEnd);
-        depth.saturating_add(u64::from(chain)) <= self.depth_limit as u64
+        depth.saturating_add(u64::from(chain)) <= self.raised_depth_limit() as u64
             && register_base.saturating_add(u64::from(extent)) <= end
     }
 
