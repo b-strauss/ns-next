@@ -97,7 +97,9 @@ impl Interpreter {
     /// Answers `SafepointOutcome::Rebuilt` when the running activation is
     /// a different stack frame and the loop must read its state again: the
     /// debugger undid an initializer's push to stop a step in its factory
-    /// (`debugger::Served::Rebuilt`), or the suspend stress mode rebuilt
+    /// (`debugger::Served::Rebuilt`) or pushed an evaluation above every
+    /// frame (`debugger::Served::Evaluate`), in every build, or the
+    /// suspend stress mode rebuilt
     /// the activation stack above `floor`, the floor of the run `vm::run`
     /// is in, every activation there suspended into its frame and the top
     /// one resumed -- never in a release build -- and
@@ -147,8 +149,8 @@ impl Interpreter {
             }
         }
         // The debugger rebuilds the stack when a step stops in a factory
-        // by undoing its initializer's push, and so does the debug build's
-        // suspend stress mode.
+        // by undoing its initializer's push and when it pushes an
+        // evaluation, and so does the debug build's suspend stress mode.
         #[cfg_attr(
             not(debug_assertions),
             allow(
@@ -156,7 +158,10 @@ impl Interpreter {
                 reason = "after the debugger, only the debug build's suspend stress mode rebuilds the stack"
             )
         )]
-        let mut rebuilt = served == crate::debugger::Served::Rebuilt;
+        let mut rebuilt = matches!(
+            served,
+            crate::debugger::Served::Rebuilt | crate::debugger::Served::Evaluate
+        );
         // Under the invalidate stress mode, once optimized code spent its
         // countdown, the copies installed at earlier safepoints are freed,
         // but a backing-off body's, before this one installs the next

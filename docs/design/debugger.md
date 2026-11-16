@@ -80,9 +80,11 @@
 > IntelliJ's debugger over a DAP client of its own, with line, method and
 > exception breakpoints ("The JetBrains plugin"). An attached debugger
 > with its defaults costs a running program nothing measurable ("What
-> stage 4 moved"). Everything else is planned: evaluation, conditional
-> breakpoints and logpoints, watches and setting variables, smart step
-> into, restart frame and force return (stage 5, next), hot swap and
+> stage 4 moved"). The VM evaluates an expression in a stopped frame
+> ("Evaluation"). Everything else is planned: its abort and depth
+> reserve, conditional breakpoints and logpoints, watches and setting
+> variables, smart step into, restart frame and force return (stage 5,
+> next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
@@ -99,7 +101,8 @@
 > `Interpreter::attach_debugger`, `serve_debugger`, the service between
 > runs, the stop, a module's text by revision, the arming lock `Arming`,
 > the pause stress mode's `StressReader`, the step stress mode's
-> `StepReader` and `StepStress`; `breakpoints.rs`: the breakpoint table,
+> `StepReader` and `StepStress`; `evaluation.rs`: an expression compiled
+> in a stopped frame, pushed and its end; `breakpoints.rs`: the breakpoint table,
 > line breakpoints, the one-shots, the hit counts and the breakpoint
 > stress mode's patches; `stepping.rs`: the step in progress,
 > `Stepping`; `exceptions.rs`: the exception breakpoints, decided by the
@@ -372,8 +375,9 @@ the end"). A program stops for a pause, at a line breakpoint, a run
 to cursor's target or a method breakpoint's entry or exit ("Stopping at
 and going past a breakpoint", "Method breakpoints"), where a step arrives
 ("Step over in recursion and blocks"), and at an exception an exception
-breakpoint takes ("Exceptions"); no evaluation or write of a frame
-exists yet, and a stop only reads.
+breakpoint takes ("Exceptions"); at a stop an expression is evaluated in
+a stopped frame, and may write its variables ("Evaluation"), which is
+the one write of a frame that exists yet.
 
 ### The attachment and the remote
 
@@ -383,7 +387,8 @@ the interpreter and answers its remote, a `DebugRemote`
 thread. The two ends talk through two `std::sync::mpsc` channels, the
 commands to the VM and the events back; the interpreter holds the VM's
 end (`Interpreter::debugger`, a `debugger::Debugger`: the command
-receiver, the event sender and the id the next stop's first value takes).
+receiver, the event sender, the id the next stop's first value takes and
+the stop an evaluation left to run, kept for it ("Evaluation")).
 The remote holds besides a clone of the heap's machine words
 (`Heap::machine_words_handle`), through which it arms the poll, and the
 interpreter's arming lock with the number of the attachment that handed it
@@ -463,6 +468,16 @@ The commands (`debugger::Command`):
 - `Children { value, start, count }` -- `count` children of a value the
   stop handed out, from the `start`th; answered by `Event::Variables`, or
   refused with "no value of this stop has that id".
+- `Evaluate { frame, expression }` -- the expression, assigning with
+  `::`, evaluated as a block standing in the activation at index `frame`
+  of the stack trace (decision 8, "Evaluation"); answered by
+  `Event::Evaluated` -- `Evaluation::Value`, a value of the stop, or
+  `Evaluation::Error`, the error that ended it and its exception -- the
+  program still stopped, or refused with "no frame at that index", "the
+  frame is the core library's", "the frame's source is not known", "the
+  expression does not compile: <message>", "<name> is not assignable",
+  "a ^ cannot leave an evaluation" or, at the depth limit, "the stack has
+  no room for the evaluation".
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
@@ -831,14 +846,27 @@ handle is live, and nothing pushes or pops until the program goes on. The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
-stack at a stop", "Values the IDE holds") and the configuration
-commands until a
+stack at a stop", "Values the IDE holds"), `Evaluate` ("Evaluation") and
+the configuration commands until a
 `Continue`, a step or a `Terminate`; a step begins there
 (`stepping::begin`), is answered by `Continued` and goes on as a
 `Continue` does. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
 clears it and finds the queue empty. A pause asked while stopped likewise
 stays set, and stops the program again at the next safepoint.
+
+The stop is a `debugger::Stop`: where it stands -- whether it is an
+exception's and hides its machinery, a caught one's, a header stop --,
+the run's floor, the agent it serves, the values it handed out, the
+frames it walked and what it owes the program once it goes on -- the
+slot its frame stands at, gone past once, and whether the run loop reads
+the frame on top again (`AfterStop`). An `Evaluate` leaves it with
+`Served::Evaluate`, kept in the `Debugger` while the expression runs, and
+the safepoint the evaluation's end asks for serves it again
+(`Interpreter::serve_evaluation`): it answers `Evaluated` and goes on
+serving, its value ids still valid, with no second `Stopped`. Its frames
+are walked again after an evaluation, which may have moved them, and the
+slot it owes the top frame is named by the top frame as it is then.
 
 ### Continuing and terminating
 
@@ -2367,7 +2395,9 @@ machine code, and for the pause it would take late.
 
 **Partial:** an expression is resolved and compiled as a block in a
 stopped frame's scope (`resolver::resolve_evaluation`,
-`compiler/evaluation.rs`); running it at a stop is planned.
+`compiler/evaluation.rs`) and run at a stop (`Command::Evaluate`,
+`debugger/evaluation.rs`; "Evaluation"); breakpoint conditions, log
+messages, watches and `setVariable` are planned.
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
 watch, `setVariable` as `name := expression` -- is resolved and compiled as
@@ -2400,20 +2430,20 @@ local a lambda captured -- the case refused here too.
 
 ### 9. A stop waits at the run loop's safepoint
 
-**Partial:** the stop is built for a pause, a breakpoint of every kind
-and a step ("Serving at the safepoint", "The stop", "Stopping at and
-going past a breakpoint"), serving the stack, values and breakpoints;
-evaluating is planned.
+**Built** (`debugger/mod.rs`): the stop is made for a pause, a
+breakpoint of every kind and a step ("Serving at the safepoint", "The
+stop", "Stopping at and going past a breakpoint"), and serves the stack,
+values, breakpoints and evaluations ("Evaluation").
 
 A breakpoint, a step's stop or a pause leaves its stretch for the run
 loop's safepoint, as a collection request does, and there calls the
 debugging API, which blocks on a channel and serves the agent's commands --
 reading the stack and values, setting breakpoints, evaluating -- answering
 on another; no handle is live there, and nothing pushes or pops while it
-waits. Evaluating will push the expression's activation and
-return into the loop, its return carried back into the stop by a
-`Continuation` variant of its own: the trampoline every send uses, never a
-re-entry of the loop from Rust ([execution.md](execution.md), "No re-entry
+waits. Evaluating pushes the expression's activation and
+returns into the loop, its return carried back into the stop by a
+`Continuation` variant of its own (`Continuation::Evaluated`): the
+trampoline every send uses, never a re-entry of the loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). The debugger therefore needs no yield path out of `vm::run`;
 that remains the image's need, for a snapshot taken mid-execution
 ([image-format.md](image-format.md), "Planned: suspend and resume").
@@ -3141,8 +3171,9 @@ decides"), so the check would cost every send of every fast-path method.
 **Partial:** the stop and the going past are built for every patched
 slot -- a line breakpoint's, a method breakpoint's, a step's and run to
 cursor's one-shots, and the breakpoint stress mode's -- and so are hit
-counts; conditions and logpoints, and what a restart, a forced return,
-edit-and-continue and an evaluation do with the token, are planned.
+counts, and an evaluation goes past every slot uncounted; conditions and
+logpoints, and what a restart, a forced return and edit-and-continue do
+with the token, are planned.
 
 A `Breakpoint` slot shares the run loop's out-of-line arm of the
 simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an arm
@@ -3184,8 +3215,11 @@ it unexecuted, and when its slot is restored. The suspend stress mode,
 which resumes the stopped frame at another offset, moves it there.
 Planned: a restart, a forced return and edit-and-continue drop it
 explicitly, since a restart does not pop its activation and would
-otherwise skip the breakpoint at its first statement, and breakpoints
-skipped during an evaluation neither consume nor drop it. A
+otherwise skip the breakpoint at its first statement. Breakpoints an
+evaluation goes past neither consume nor drop it: the arm decides so
+before it takes the tokens (`Breakpoints::evaluating`), and the stop
+names the top frame afresh once the evaluation is over, the suspend
+stress mode having perhaps resumed it elsewhere meanwhile. A
 `Continuation::Reexecute` runs a caller's instruction again at the same
 index once a future it met is resolved (`vm::reexecute`); when that
 instruction is a patched one, `interpreter::breakpoint::reexecuting` sets
@@ -3494,87 +3528,135 @@ stops.
 
 ### Writing a frame
 
+**Partial:** a frame an evaluation reads and writes is built
+(`debugger::evaluation::begin`); setting a variable, a restart and a
+forced return are planned.
+
 Reading a compiled frame needs nothing; a frame whose variable is set, or
 that is restarted or forced to return, goes on in the interpreter -- a stop
 at an optimized poll having been deoptimized first ("The stop"): its
 compiled mark is cleared (`Heap::clear_compiled`, as the run loop does
 where it gives a frame to the interpreter), as
 [liveness-and-reflection.md](liveness-and-reflection.md), "The unifying
-principle", requires.
+principle", requires. A frame an expression is evaluated in is one such:
+the evaluation may write it, so its mark is cleared before the
+expression runs, whether or not it writes.
 
 ### Evaluation
 
-**Partial:** the expression's compilation is built. `compiler/evaluation.rs`
+**Partial:** evaluating an expression at a stop is built
+(`Command::Evaluate`, answered by `Event::Evaluated`;
+`debugger/evaluation.rs`; tests `evaluation::*` in
+`crates/ns-runtime/tests/debugger.rs`): where it lies, how it returns,
+the frame it reads and its errors, below; the depth reserve, hot
+conditions and aborting are planned. `compiler/evaluation.rs`
 parses it as a code body standing alone (`ns_syntax::parse_code_body`),
 `resolver::resolve_evaluation` resolves it -- a marked label is the
 block's parameter, a name of the frame's variable table
 `Binding::FrameVariable`, every other name resolved against the stopped
-body's class chain, an assignment to a parameter, an immutable local or
-a label refused as not assignable, and every `^` refused, nested blocks
-included -- and both lowerings compile it as a block whose frame
-variables are reached one hop past its own frames, where the stopped
-frame's variable table places them: a register by `LoadOuterLocal` and
-`StoreOuterLocal`, a vector variable through its vector. Pushing,
-returning, errors, the depth reserve and aborting are planned.
+body's class chain (`metadata::again::declaration_chain`, read from the
+module's current text as the frame's metadata is), an assignment to a
+parameter, an immutable local or a label refused as not assignable
+(`VariableEntry::assignable`, which both lowerings' collectors record),
+and every `^` refused, nested blocks included -- and both lowerings
+compile it as a block whose frame variables are reached one hop past its
+own frames, where the stopped frame's variable table places them: a
+register by `LoadOuterLocal` and `StoreOuterLocal`, a vector variable
+through its vector. It is refused, the program still stopped, in a frame
+of the core library ("Evaluation never reaches the VM mirror"), in a
+frame whose source is not known -- a module without text, a body its text
+no longer compiles to, a top-level frame -- and when it does not compile:
+`"the expression does not compile: <message>"`, `"<name> is not
+assignable"` or `"a ^ cannot leave an evaluation"`.
 
 - **Where it lies.** The expression's activation is pushed above every
-  live frame's whole register window (`Mutator::push_above`), whichever
-  frame it evaluates in: IntelliJ evaluates in any selected frame, and a
-  frame below the top has its callees above its window; at a statement
-  start inside an inlined block, scratch registers of the enclosing
-  expression may still be live in the stopped frame too.
-- **How it returns.** Its return must not go through `resume_caller`: the
+  live frame's whole register window (`Mutator::push_step`, which lays
+  every activation that does not take a send's own arguments above the
+  top frame's window), whichever frame it evaluates in: IntelliJ
+  evaluates in any selected frame, and a frame below the top has its
+  callees above its window; at a statement start inside an inlined
+  block, scratch registers of the enclosing expression may still be live
+  in the stopped frame too.
+- **How it returns.** Its return does not go through `resume_caller`: the
   stopped frame's slot is not a send, and `send_destination` would reach
-  its `unreachable!`. The new `Continuation` variant records the result,
-  requests a safepoint, and so re-enters the stop's command loop, which
-  finds the evaluation's frame gone. The run loop has to learn, in every
-  build, that the stack changed at the safepoint -- which
-  `Interpreter::safepoint` answers today only for the suspend stress mode
-  (`SafepointOutcome::Rebuilt`), never in a release build -- when the
-  debugger pushes the evaluation's frame and when it returns. The variant is named in
-  [image-format.md](image-format.md), "Planned: suspend and resume", for
-  completeness; no image is written while an evaluation runs, so it is
-  never encoded.
-- **The frame it reads.** Reifying the stopped frame clears its compiled
-  mark first, so that it goes on interpreted -- a frame the debugger may
-  write needs no machine code; the run loop could enter a reified frame in
-  its body's reifying twin (`jit::entry_of_frame`), so this is a choice,
-  not a necessity; a stop at an optimized poll is
-  deoptimized before ("The stop"). The debugger makes
-  the expression's closure itself, as a `MakeClosure` in the frame would,
-  the stopped frame its creator, so that `LoadOuterLocal` and
-  `StoreOuterLocal` at depth 1 reach the frame's registers. A block the
-  expression creates can escape (`[count]` stored away), so the
-  frame is marked as `MakeClosure` marks a creator whose block has an
-  `outer_reach` above 0, or it would drop its registers when it returns and
-  the block would read `nil` at exit status 0.
+  its `unreachable!`. `Continuation::Evaluated`, the base activation's,
+  records the result (`evaluation::returned`), asks for a stop
+  (`Heap::request_debugger_stop`, under the arming lock, as an exception
+  breakpoint asks), and switches to the frame below at the program
+  counter it stopped at, delivering nothing (`vm::evaluated`), so that
+  the safepoint the request makes is taken before that frame runs
+  another instruction, interpreted. The stop is left for the evaluation
+  with `Served::Evaluate`, kept in the `Debugger` ("The stop"), which
+  `Interpreter::safepoint` answers as `SafepointOutcome::Rebuilt`, in
+  every build, so that the run loop reads the evaluation's frame, now on
+  top; the safepoint the end asks for re-enters the kept stop
+  (`Interpreter::serve_evaluation`), which answers `Evaluated` and serves
+  on. `Event::Stopped` is sent once per stop, `Event::Evaluated` once per
+  evaluation. While the evaluation runs a safepoint serves the commands
+  queued meanwhile; a pause there is dropped, the program being stopped
+  already. The variant is named in [image-format.md](image-format.md),
+  "Planned: suspend and resume", for completeness; no image is written
+  while an evaluation runs, so it is never encoded, and the encoder,
+  which writes dead frames only, has no match over continuations.
+- **The frame it reads.** The stopped frame loses the registers the
+  leftover analysis finds tainted at the program counter it stores
+  (`Heap::nil_tainted_registers`, below the window of the frame above
+  it), so that a variable not live at the stop reads nil, never a word a
+  callee or a popped frame left; it is reified and its compiled mark
+  cleared, so that it goes on interpreted -- a frame the debugger may
+  write needs no machine code; the run loop could enter a reified frame
+  in its body's reifying twin (`jit::entry_of_frame`), so this is a
+  choice, not a necessity; a stop at an optimized poll is deoptimized
+  before ("The stop"). The debugger makes the expression's closure
+  itself, as a `MakeClosure` in the frame would, the stopped frame its
+  creator, so that `LoadOuterLocal` and `StoreOuterLocal` at depth 1
+  reach the frame's registers. A block the expression creates can escape
+  (`[count]` stored away), so the frame is marked as `MakeClosure` marks
+  a creator whose block has an `outer_reach` above 0
+  (`Heap::frame_retain_registers`, which marks a suspended frame's
+  record too), or it would drop its registers when it returns and the
+  block would read `nil` at exit status 0
+  (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`).
+  While it runs, every `Breakpoint` arm goes past its slot uncounted
+  (`Breakpoints::evaluating`), as IntelliJ skips breakpoints in an
+  evaluation, no method's exit by an unwind is counted, no exception
+  breakpoint stops, and no step is in progress, the stop having ended it.
 - **Its errors.** The handler search walks below the expression into the
   program's own `on:do:` frames, and a program's handler would catch the
   expression's error and unwind the program's frames. So the evaluation's
   base frame ends the handler search (decided with the user on
-  2026-11-16): an exception no handler within the expression takes runs
+  2026-11-16; `next_active_handler` in `builtins/activation.rs`), and a
+  search that starts below it -- an exception the program signalled
+  before the stop, which the expression passes on -- finds no handler:
+  an exception no handler within the expression takes runs
   its `defaultAction` as it would in the program, and where that ends
   the run -- `Exception>>defaultAction` does, through the `terminate:`
   leaf -- the unwind ends at the base, and the evaluation answers the
   error, the exception object held at the leaf so that it can be
-  inspected; `retry` and `pass` cannot cross the base. A handler for
-  every `Exception` at the base, which answered the exception itself,
-  is the way not taken: a program class may override `defaultAction`
-  and have `signal` answer its value -- a resumable `Missing` whose
-  `defaultAction` answers 0, or an `Error` whose does -- and the
-  expression must answer what the same code answers in the program,
-  where a handler at the base would answer the exception; the Newspeak
-  IDE's `on: Error do:` at its base (`newspeak/ActivationMirrors.ns:368`)
-  cuts off the same for an `Error`. The `^` is refused by the
-  expression's compiler, and the evaluation's
-  base frame is an unwind barrier the unwinder stops at: a program block
-  the expression calls whose `^` would return to a home below the
-  evaluation -- `b value` for a `b` holding `[^1]` -- is stopped there,
-  and the evaluation answers the error a return to a home it cannot reach
-  signals (`CannotReturn`), the program's frames untouched. Machine
-  code's cut already exits for a home below its stretch's entry frame
-  (`jit/cut.rs`), so the interpreter's unwinder is the one place that
-  changes.
+  inspected (`Evaluation::Error`, its description the exception's class
+  and text, `an instance of MessageNotUnderstood: an object does not
+  understand #secret`); `retry` and `pass` cannot cross the base. A
+  handler for every `Exception` at the base, which answered the exception
+  itself, is the way not taken: a program class may override
+  `defaultAction` and have `signal` answer its value -- a resumable
+  `Missing` whose `defaultAction` answers 0, or an `Error` whose does --
+  and the expression must answer what the same code answers in the
+  program, where a handler at the base would answer the exception
+  (`an_overridden_default_action_answers_as_in_the_program`); the
+  Newspeak IDE's `on: Error do:` at its base
+  (`newspeak/ActivationMirrors.ns:368`) cuts off the same for an
+  `Error`. The `^` is refused by the expression's compiler, and the
+  evaluation's base frame is an unwind barrier the unwinder stops at
+  (`interpreter/unwind.rs`, `at_evaluation_base`, reached only while the
+  debugger follows unwinds, which it does while an evaluation runs): a
+  program block the expression calls whose `^` would return to a home
+  below the evaluation -- `b value` for a `b` holding `[^1]` -- is
+  stopped there, and the evaluation answers the error a return to a home
+  it cannot reach signals (`CannotReturn`, signalled from the base), the
+  program's frames untouched. Only the debugger's own termination goes
+  past the base, to the run's floor. Machine code's cut already exits for
+  a home below its stretch's entry frame (`jit/cut.rs`), so the
+  interpreter's unwinder is the one place that changes.
 - **At the depth limit.** An evaluation has a depth reserve of its own
   (decided with the user on 2026-11-16), since the stop that needs one
   most is an exception breakpoint on the stack overflow itself, where
@@ -3659,7 +3741,10 @@ capability"). An expression evaluated in a shipped module's frame -- a
 frame of `Kernel.ns` a step into reached -- would resolve `vmMirror` as
 the frame's slot and could hand the mirror to the program, as its result
 stored into a program object. So evaluation in a frame whose body belongs
-to a shipped module is refused; the IDE shows such a frame's variables,
+to a shipped module is refused, before the body's metadata is compiled
+again (`debugger::evaluation::compile`, "the frame is the core
+library's"; `an_evaluation_in_a_shipped_frame_is_refused`); the IDE
+shows such a frame's variables,
 read by the agent and held as `Root`s, which never enter the program. A
 value the IDE shows enters the program only through an expression the user
 typed in a program frame, and an object reached through a shipped

@@ -285,8 +285,9 @@ fn take_safepoint(
 ) -> AfterSafepoint {
     match interpreter.safepoint(floor) {
         // A different frame is on top -- the running activation,
-        // suspended and resumed by the suspend stress mode, or the factory
-        // below it, whose initializer's push the debugger undid -- whose
+        // suspended and resumed by the suspend stress mode, the factory
+        // below it, whose initializer's push the debugger undid, or an
+        // expression the debugger pushed to evaluate above it -- whose
         // state the stretch wrote back before it left; it goes on
         // interpreted, as a frame resumed does.
         SafepointOutcome::Rebuilt => {
@@ -2726,6 +2727,9 @@ fn apply_continuation<'gc>(
             breakpoint::frame_left(mutator, None);
             return reexecute(mutator, floor, handoff);
         }
+        // An expression the debugger evaluated answered: out of line, as
+        // only a debugged program's evaluation returns this way.
+        Continuation::Evaluated => return evaluated(mutator, value, handoff),
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
             // step. Only a superclass clause's class is a value here, handed
@@ -2780,6 +2784,26 @@ fn return_to_suspended<'gc>(
     breakpoint::returning_to_suspended(mutator);
     mutator.resume_frame(sender);
     apply_continuation(mutator, then, counted, value, floor, handoff)
+}
+
+/// The block of an expression the debugger evaluated returned `value`:
+/// the value is recorded as the evaluation's answer and a stop asked for
+/// (`debugger::evaluation::returned`), and the loop switches to the frame
+/// below at the program counter it stopped at, without delivering
+/// anything to it -- it stands at no send -- so that the safepoint the
+/// switch takes, before that frame runs another instruction, re-enters
+/// the stop the evaluation was asked at. The frame goes on interpreted,
+/// as a frame whose instruction runs again does (`reexecute`).
+#[cold]
+#[inline(never)]
+fn evaluated<'gc>(
+    mutator: &mut Mutator<'gc>,
+    value: Value<'gc>,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let stopped = crate::debugger::evaluation::returned(mutator, value);
+    let program_counter = mutator.heap.activation_program_counter(stopped);
+    handoff.switch_to(mutator, stopped, program_counter)
 }
 
 /// Writes a callee's value into the send `caller` is stopped at, and resumes
@@ -3430,8 +3454,11 @@ fn unwind<'gc>(
                 return finish(mutator, target, value, floor, handoff);
             }
             // Where the target starts again is the unwinder's to decide, and
-            // it stored it; the loop resumes the target there.
-            UnwindOutcome::Restarted { target } => {
+            // it stored it; the loop resumes the target there. A frame an
+            // evaluation's error left stopped is resumed where it stopped,
+            // the safepoint it asked for taken first.
+            UnwindOutcome::Restarted { target }
+            | UnwindOutcome::EvaluationEnded { stopped: target } => {
                 let program_counter = mutator.heap.activation_program_counter(target);
                 return handoff.switch_to(mutator, target, program_counter);
             }

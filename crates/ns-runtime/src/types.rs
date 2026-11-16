@@ -440,6 +440,16 @@ pub enum Continuation<'gc> {
     /// applied as before, and control then goes to the sender, resumed in
     /// turn. Boxed, as every continuation that carries state is.
     ReturnToSuspended(Box<ReturnToSuspended<'gc>>),
+    /// The block of an expression the debugger evaluates at a stop
+    /// returned (`debugger::evaluation`): its value is the evaluation's
+    /// answer, which the stop it was evaluated at serves, re-entered at
+    /// the safepoint the return asks for before the frame below runs
+    /// another instruction (`vm::evaluated`). The frame below stands at
+    /// no send, so nothing is delivered to it. The activation is the
+    /// evaluation's base, which ends the handler search and every unwind
+    /// from above (`docs/design/debugger.md`, "Evaluation"). No image is
+    /// written while an evaluation runs, so it is never encoded.
+    Evaluated,
 }
 
 /// What a resumed activation returns to when its sender is suspended

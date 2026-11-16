@@ -23,8 +23,8 @@ use crate::bytecode::{
     Literal as BytecodeLiteral, register_written, registers_read,
 };
 use crate::debugger::metadata::{
-    BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
-    TakenBlock, VariableEntry, VariablePlace, VectorHolder,
+    BlockPlace, BlockSendEntry, BodyMetadata, DeclaredVariable, MetadataCollector, SendEntry,
+    StatementEntry, TakenBlock, VariableEntry, VariablePlace, VectorHolder, declared_variables,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -296,10 +296,10 @@ struct Body<'a> {
     /// `lower.rs`'s `Lowerer` does; no instruction depends on it.
     collector: Option<&'a MetadataCollector>,
     collected: Option<Collected>,
-    /// The variable names of every body this one is nested in, outermost
+    /// The variables of every body this one is nested in, outermost
     /// first, parallel to `enclosing_argument_counts`; empty when no
     /// metadata is collected.
-    enclosing_variable_names: Vec<Rc<[Symbol]>>,
+    enclosing_variable_names: Vec<Rc<[DeclaredVariable]>>,
     /// Where the stopped frame keeps each variable an evaluated expression
     /// names (`Binding::FrameVariable`), for the expression's body and every
     /// block in it; `None` outside an evaluation (`super::evaluation`).
@@ -308,9 +308,9 @@ struct Body<'a> {
 
 /// The tables a collecting `Body` builds as it lowers.
 struct Collected {
-    /// The body's own variable names by resolver index: its parameters,
-    /// then its temporaries.
-    names: Rc<[Symbol]>,
+    /// The body's own variables by resolver index: its parameters, then
+    /// its temporaries.
+    names: Rc<[DeclaredVariable]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
     block_sends: Vec<BlockSendEntry>,
@@ -352,14 +352,7 @@ impl<'a> Body<'a> {
                 collector,
                 parameters,
             }) => {
-                let names = parameters
-                    .into_iter()
-                    .chain(
-                        temporaries
-                            .iter()
-                            .map(|temporary| Symbol::intern(&temporary.name.name)),
-                    )
-                    .collect();
+                let names = declared_variables(parameters, temporaries);
                 let collected = Collected {
                     names,
                     statements: Vec::new(),
@@ -1332,13 +1325,17 @@ impl<'a> Body<'a> {
     /// into a closure, so every enclosing variable is read through the
     /// captured frames, in the register its declaring body keeps it in
     /// (`docs/design/debugger.md`, decision 10).
-    fn collected_variables(&self, names: &[Symbol]) -> Vec<VariableEntry> {
-        let own = names.iter().enumerate().map(|(index, name)| VariableEntry {
-            name: *name,
-            depth: 0,
-            place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
-            copied_by: Box::new([]),
-        });
+    fn collected_variables(&self, names: &[DeclaredVariable]) -> Vec<VariableEntry> {
+        let own = names
+            .iter()
+            .enumerate()
+            .map(|(index, declared)| VariableEntry {
+                name: declared.name,
+                assignable: declared.assignable,
+                depth: 0,
+                place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
+                copied_by: Box::new([]),
+            });
         let enclosing = self
             .enclosing_variable_names
             .iter()
@@ -1352,8 +1349,9 @@ impl<'a> Body<'a> {
                 names
                     .iter()
                     .enumerate()
-                    .map(move |(index, name)| VariableEntry {
-                        name: *name,
+                    .map(move |(index, declared)| VariableEntry {
+                        name: declared.name,
+                        assignable: declared.assignable,
                         depth,
                         place: VariablePlace::Outer {
                             hops: depth,

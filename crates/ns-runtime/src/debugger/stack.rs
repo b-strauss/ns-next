@@ -212,6 +212,28 @@ fn body_of<'gc>(
     (code, origin, metadata)
 }
 
+/// `body_of` for any frame of the stop: what an evaluation compiles in
+/// (`evaluation::compile`).
+pub(crate) fn body(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, frame)
+}
+
+/// The frame object of `frame`: a running activation's, reified for it,
+/// or the one a suspended activation lives in.
+pub(crate) fn reified<'gc>(heap: &mut Heap<'gc>, frame: &StackFrame) -> FrameReference<'gc> {
+    match frame.read(heap) {
+        Frame::Running(activation) => heap.reify(activation),
+        Frame::Suspended(frame) => frame,
+    }
+}
+
 /// Which declaration's member `frame` runs (`origin_of`), read without
 /// its metadata: what a step filter decides by (`stepping::is_filtered`).
 pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> {

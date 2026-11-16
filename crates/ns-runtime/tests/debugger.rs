@@ -11822,3 +11822,755 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answer, 21);
     }
 }
+
+/// Evaluating an expression at a stop (`docs/design/debugger.md`, decision
+/// 8, "Evaluation"): every test stops at a line breakpoint and evaluates
+/// in a stopped frame, and each one's path holds `evaluation`.
+mod evaluation {
+    use super::*;
+    use ns_runtime::debugger::Evaluation;
+
+    /// What evaluating `expression` in the frame at index `frame` answers.
+    fn evaluate(remote: &DebugRemote, frame: usize, expression: &str) -> Evaluation {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Evaluated(evaluation) => evaluation,
+            other => panic!("the evaluation of {expression} was expected, not {other:?}"),
+        }
+    }
+
+    /// The label of the value `expression` answers in the frame at index
+    /// `frame`, which must answer one.
+    fn value_label(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Value(value) => value.label,
+            other => panic!("{expression} was expected to answer a value, not {other:?}"),
+        }
+    }
+
+    /// The description of the error `expression` answers in the frame at
+    /// index `frame`, which must answer one.
+    fn error_description(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Error { description, .. } => description,
+            other => panic!("{expression} was expected to answer an error, not {other:?}"),
+        }
+    }
+
+    /// Why evaluating `expression` in the frame at index `frame` is
+    /// refused, which it must be.
+    fn refusal(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "Evaluate");
+                reason
+            }
+            other => {
+                panic!("the evaluation of {expression} was expected to be refused, not {other:?}")
+            }
+        }
+    }
+
+    /// Runs `source`'s `run` under `lowering`, the JIT off, stopped at the
+    /// line breakpoint on the line of the module `module` that holds
+    /// `line`: `agent` serves the first stop, which is continued once it
+    /// answered. Answers what `agent` answered and the small integer the
+    /// run answered.
+    fn stopped_at<T: Send + 'static>(
+        source: &str,
+        lowering: Lowering,
+        module: &'static str,
+        line: &str,
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let offset = line_start(source, line);
+        debugged_answering(
+            source,
+            lowering,
+            |remote| set_breakpoints(remote, module, vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, module));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let answer = agent(remote);
+                continue_stopped(remote);
+                answer
+            },
+        )
+    }
+
+    /// `debugged`, answering the small integer the run answered.
+    fn debugged_answering<T: Send + 'static>(
+        source: &str,
+        lowering: Lowering,
+        configure: impl FnOnce(&DebugRemote),
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let (mut interpreter, class) = interpreted(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(&mut interpreter, &instance, configure, agent);
+        (answer, answered(&mut interpreter, result))
+    }
+
+    /// A method whose local the tests read and write, a private method of
+    /// the receiver and one of another object.
+    const EVALUATING: &str = indoc! {"
+        class Evaluating = Object new (
+          | other = Other new. |
+        ) (
+          class Other = Object new () (
+            private secret = (
+              ^7
+            )
+          )
+          public run = (
+            | count ::= 41. |
+            self sink: count.
+            ^count
+          )
+          sink: value = (
+            ^value
+          )
+          private secret = (
+            ^5
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An expression reads a local of the stopped frame.
+        fn an_evaluation_reads_a_local(lowering) {
+            let (label, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "count + 1"),
+            );
+            assert_eq!(label, "42");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An assignment in an expression writes the stopped frame's
+        /// local, which the program then reads.
+        fn an_evaluation_writes_a_local_the_program_then_sees(lowering) {
+            let (label, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "count:: 7"),
+            );
+            assert_eq!(label, "7");
+            assert_eq!(answer, 7);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a frame below the top reads that frame's
+        /// local, not the top frame's.
+        fn an_evaluation_in_a_frame_below_the_top_reads_that_frame(lowering) {
+            let ((below, top), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| {
+                    (
+                        value_label(remote, 1, "count"),
+                        value_label(remote, 0, "value + 1"),
+                    )
+                },
+            );
+            assert_eq!(below, "41");
+            assert_eq!(top, "42");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An implicit receiver send of an expression reaches what the
+        /// stopped method's would: the receiver's private method.
+        fn an_implicit_receiver_send_reaches_a_private_method(lowering) {
+            let (label, _) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "secret"),
+            );
+            assert_eq!(label, "5");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An ordinary send of an expression to another object finds its
+        /// public methods only: another object's private method is not
+        /// understood, and that error is the evaluation's answer.
+        fn a_private_method_of_another_object_is_not_understood(lowering) {
+            let (description, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| error_description(remote, 0, "other secret"),
+            );
+            assert!(
+                description.contains("MessageNotUnderstood") && description.contains("secret"),
+                "{description}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An error an expression raises is its answer, and the program
+        /// goes on as it would have without it.
+        fn an_error_is_the_result_and_the_program_goes_on(lowering) {
+            let ((description, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    let description = error_description(remote, 0, "1 / 0");
+                    (description, value_label(remote, 0, "count"))
+                },
+            );
+            assert!(!description.is_empty());
+            assert_eq!(label, "41", "the stop serves on after the error");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// A send inside a protected block, whose handler notes a catch.
+    const HANDLING: &str = indoc! {"
+        class Handling = Object new (
+          | caught ::= 0. |
+        ) (
+          public run = (
+            [self sink: 1] on: Error do: [:error | caught:: 1].
+            ^caught
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A handler of the program's below the evaluation does not catch
+        /// the evaluation's error: the evaluation's base ends the handler
+        /// search.
+        fn a_program_handler_below_does_not_catch_the_evaluation_s_error(lowering) {
+            let (description, answer) = stopped_at(
+                HANDLING,
+                lowering,
+                "Handling",
+                "^value",
+                |remote| error_description(remote, 0, "nil foo"),
+            );
+            assert!(description.contains("foo"), "{description}");
+            assert_eq!(answer, 0, "the program's handler never ran");
+        }
+    }
+
+    /// An error the program signals and an inner handler hands to `sink:`,
+    /// inside an outer handler that notes a catch.
+    const PASSING: &str = indoc! {"
+        class Passing = Object new (
+          | outerCaught ::= 0. |
+        ) (
+          public run = (
+            [[Error new signal] on: Error do: [:error | self sink: error]]
+              on: Error
+              do: [:error | outerCaught:: 1].
+            ^outerCaught
+          )
+          sink: error = (
+            ^error
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// The search of an exception the program signalled before the
+        /// stop, which an expression passes on, finds none of the
+        /// program's handlers: they lie below the evaluation's base.
+        fn a_pass_of_the_program_s_exception_finds_no_handler_below_the_evaluation(lowering) {
+            let (description, answer) = stopped_at(
+                PASSING,
+                lowering,
+                "Passing",
+                "^error",
+                |remote| error_description(remote, 0, "error pass"),
+            );
+            assert!(description.contains("Error"), "{description}");
+            assert_eq!(answer, 0, "the program's outer handler never ran");
+        }
+    }
+
+    /// A block whose `^` returns from `run`, held while `run` still runs.
+    const RETURNING: &str = indoc! {"
+        class Returning = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            holder:: [^1].
+            self sink: 2.
+            ^0
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// What the stack trace shows of each frame, value ids aside.
+    fn frame_shapes(remote: &DebugRemote) -> Vec<(FrameKind, String, usize)> {
+        stack_trace(remote)
+            .into_iter()
+            .map(|frame| (frame.kind, frame.name, frame.program_counter))
+            .collect()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block the expression runs whose `^` would return to a home
+        /// below the evaluation cannot return there: the evaluation answers
+        /// `CannotReturn`, and the program's frames are as they were.
+        fn a_caret_to_a_home_below_is_cannot_return(lowering) {
+            let ((before, description, after), answer) = stopped_at(
+                RETURNING,
+                lowering,
+                "Returning",
+                "^value",
+                |remote| {
+                    let before = frame_shapes(remote);
+                    let description = error_description(remote, 0, "holder value");
+                    (before, description, frame_shapes(remote))
+                },
+            );
+            assert!(description.contains("CannotReturn"), "{description}");
+            assert_eq!(before, after);
+            assert_eq!(answer, 0);
+        }
+    }
+
+    /// `tick` counts its calls; `run` calls it once, after `sink:`.
+    const TICKING: &str = indoc! {"
+        class Ticking = Object new (
+          | ticks ::= 0. |
+        ) (
+          public run = (
+            self sink: 0.
+            self tick.
+            ^ticks
+          )
+          tick = (
+            ticks:: ticks + 1.
+            ^ticks
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation goes past every breakpoint it meets, uncounted: a
+        /// breakpoint whose hit condition names the first hit still stops
+        /// at the program's first call after the evaluation called it.
+        fn an_evaluation_skips_breakpoints(lowering) {
+            let at_sink = line_start(TICKING, "^value");
+            let in_tick = line_start(TICKING, "ticks:: ticks + 1.");
+            let (label, answer) = debugged_answering(
+                TICKING,
+                lowering,
+                |remote| {
+                    set_line_breakpoints(
+                        remote,
+                        "Ticking",
+                        vec![
+                            LineBreakpoint::at_offset(at_sink),
+                            LineBreakpoint {
+                                offset: in_tick,
+                                hit_condition: Some(HitCondition::Equal(1)),
+                            },
+                        ],
+                    );
+                },
+                |remote| {
+                    let ids: Vec<BreakpointId> = expect_breakpoints(remote, "Ticking")
+                        .iter()
+                        .map(|breakpoint| breakpoint.id)
+                        .collect();
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                    let label = value_label(remote, 0, "self tick");
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                    continue_stopped(remote);
+                    label
+                },
+            );
+            assert_eq!(label, "1");
+            assert_eq!(answer, 2);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation in a loop that ran in machine code reads the pass
+        /// the frame stopped at, and the frame goes on from it.
+        fn an_evaluation_in_a_compiled_loop_reads_the_iteration(lowering) {
+            let (mut interpreter, instance, _) = compiled(COMPILED_LOOP, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COMPILED_LOOP, "self bump].");
+            let (labels, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CompiledLoop", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CompiledLoop"));
+                    let mut labels = Vec::new();
+                    for _ in 0..3 {
+                        assert_eq!(expect_breakpoint_stop(remote), [id]);
+                        labels.push(value_label(remote, 0, "index * 10 + count"));
+                        continue_stopped(remote);
+                    }
+                    labels
+                },
+            );
+            assert_eq!(labels, ["2010", "2021", "2032"]);
+            assert_eq!(answered(&mut interpreter, result), 2003);
+        }
+    }
+
+    /// A method whose array an evaluation outlives a collection beside.
+    const COLLECTING: &str = indoc! {"
+        class Collecting = Object new () (
+          public run = (
+            | items = Array new: 2. |
+            items at: 1 put: 'kept'.
+            self sink: items.
+            ^items size
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The labels of `variables`' values, `None` for one not available.
+    fn labels(variables: &[Variable]) -> Vec<Option<String>> {
+        variables
+            .iter()
+            .map(|variable| variable.value.shown().map(|value| value.label.clone()))
+            .collect()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The values a stop handed out, and the stopped frame, survive a
+        /// collection an evaluation's allocations make: the variables read
+        /// alike after it, and a value handed out before it still answers
+        /// its children.
+        fn a_collection_during_an_evaluation_keeps_the_stop_s_values(lowering) {
+            let ((before, label, after, children), answer) = stopped_at(
+                COLLECTING,
+                lowering,
+                "Collecting",
+                "self sink: items.",
+                |remote| {
+                    let before = variables(remote, Command::Variables { frame: 0 });
+                    let items = value_of(&before, "items").id;
+                    let label = value_label(
+                        remote,
+                        0,
+                        "1 to: 200000 do: [:index | Array new: 10]. items size",
+                    );
+                    let after = variables(remote, Command::Variables { frame: 0 });
+                    let children = variables(
+                        remote,
+                        Command::Children {
+                            value: items,
+                            start: 0,
+                            count: 2,
+                        },
+                    );
+                    (labels(&before), label, labels(&after), labels(&children))
+                },
+            );
+            assert_eq!(label, "2");
+            assert_eq!(before, after);
+            assert_eq!(children.len(), 2);
+            assert!(
+                children[0].as_deref().is_some_and(|label| label.contains("kept")),
+                "{children:?}"
+            );
+            assert_eq!(answer, 2);
+        }
+    }
+
+    /// `compute`'s local, which a block an evaluation stores may read
+    /// after `compute` returned.
+    const STORING: &str = indoc! {"
+        class Storing = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            self compute.
+            ^holder value
+          )
+          compute = (
+            | count ::= 41. |
+            self sink: count.
+            count:: count + 1.
+            ^count
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block an expression stores away reads the stopped frame's
+        /// variable after the frame returned: its last value, never nil.
+        fn a_block_an_evaluation_stored_reads_the_frame_after_it_returned(lowering) {
+            let (stored, answer) = stopped_at(
+                STORING,
+                lowering,
+                "Storing",
+                "self sink: count.",
+                |remote| match evaluate(remote, 0, "holder:: [count]") {
+                    Evaluation::Value(value) => value.class_name,
+                    other => panic!("the store was expected to answer the block, not {other:?}"),
+                },
+            );
+            assert!(!stored.is_empty());
+            assert_eq!(answer, 42);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a frame of the core library is refused: it
+        /// could reach the VM mirror.
+        fn an_evaluation_in_a_shipped_frame_is_refused(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (reason, answer) = debugged_answering(
+                QUICK,
+                lowering,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let reason = refusal(remote, 0, "trueBlock");
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(reason, "the frame is the core library's");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression that does not parse is refused, the program still
+        /// stopped.
+        fn a_malformed_expression_is_refused(lowering) {
+            let ((reason, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| (refusal(remote, 0, "count +"), value_label(remote, 0, "count")),
+            );
+            assert!(
+                reason.starts_with("the expression does not compile: "),
+                "{reason}"
+            );
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An assignment to a parameter of the stopped frame is refused,
+        /// as it is in the frame's own code: the compiler holds a
+        /// parameter's register unchanged.
+        fn an_assignment_to_a_parameter_in_an_evaluation_is_refused(lowering) {
+            let ((reason, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| (refusal(remote, 0, "value:: 3"), value_label(remote, 0, "value")),
+            );
+            assert_eq!(reason, "value is not assignable");
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// An exception whose default action answers 0, signalled by a method
+    /// the program never calls.
+    const DEFAULTING: &str = indoc! {"
+        class Defaulting = Object new () (
+          public class Missing = Exception new () (
+            public defaultAction = (
+              ^0
+            )
+          )
+          public run = (
+            self sink: 1.
+            ^1
+          )
+          lookUp = (
+            ^Missing new signal + 5
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An exception no handler within the expression takes runs its
+        /// default action as it would in the program: one that answers a
+        /// value lets `signal` answer it.
+        fn an_overridden_default_action_answers_as_in_the_program(lowering) {
+            let (label, answer) = stopped_at(
+                DEFAULTING,
+                lowering,
+                "Defaulting",
+                "self sink: 1.",
+                |remote| value_label(remote, 0, "self lookUp"),
+            );
+            assert_eq!(label, "5");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    /// A loop counting down a local of its own, which sends `bump` once a
+    /// pass: `warm` runs it 2,000 times, `run` three.
+    const COUNTING_DOWN: &str = indoc! {"
+        class CountingDown = Object new (
+          | count ::= 0. |
+        ) (
+          public warm = (
+            ^self loop: 2000
+          )
+          public run = (
+            ^self loop: 3
+          )
+          loop: turns = (
+            | left ::= turns. |
+            [left > 0] whileTrue: [
+              self bump.
+              left:: left - 1].
+            ^count
+          )
+          bump = (
+            count:: count + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation in a frame below the top that ran in machine code
+        /// -- the loop, waiting on its send of `bump`, which a breakpoint
+        /// stops in -- reads and writes that frame, which goes on
+        /// interpreted with the written value.
+        fn an_evaluation_in_a_compiled_frame_below_the_top_writes_it(lowering) {
+            let (mut interpreter, instance, _) = compiled(COUNTING_DOWN, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COUNTING_DOWN, "count:: count + 1");
+            let ((read, written), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CountingDown", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CountingDown"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == method("loop:"))
+                        .expect("the loop's method is on the stack");
+                    let answers = (
+                        value_label(remote, frame, "left + turns"),
+                        value_label(remote, frame, "left:: 1"),
+                    );
+                    continue_stopped(remote);
+                    answers
+                },
+            );
+            assert_eq!(read, "6");
+            assert_eq!(written, "1");
+            assert_eq!(
+                answered(&mut interpreter, result),
+                2001,
+                "the pass the stop was in is the last"
+            );
+        }
+    }
+
+    /// A block, a real closure, that writes its home method's local.
+    const BLOCKING: &str = indoc! {"
+        class Blocking = Object new () (
+          public run = (
+            | count ::= 40. |
+            self twice: [:each |
+              count:: count + each].
+            ^count
+          )
+          twice: block = (
+            block value: 1.
+            block value: 2.
+            ^nil
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a stopped block's frame reads its home
+        /// method's variable, wherever the block reaches it, and an
+        /// assignment there reaches the home.
+        fn an_evaluation_in_a_stopped_block_reads_its_home_s_variable(lowering) {
+            let offset = line_start(BLOCKING, "count:: count + each].");
+            let ((read, sum, written), answer) = debugged_answering(
+                BLOCKING,
+                lowering,
+                |remote| set_breakpoints(remote, "Blocking", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Blocking"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let answers = (
+                        value_label(remote, 0, "count"),
+                        value_label(remote, 0, "count + each"),
+                        value_label(remote, 0, "count:: 100"),
+                    );
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                    answers
+                },
+            );
+            assert_eq!(read, "40");
+            assert_eq!(sum, "41");
+            assert_eq!(written, "100");
+            assert_eq!(answer, 103);
+        }
+    }
+}

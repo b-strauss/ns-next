@@ -1655,6 +1655,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::ModuleText { module, .. } => {
             command == "ModuleText" && pending.module.as_ref() == Some(module)
         }
+        Event::Evaluated(_) => command == "Evaluate",
         Event::Stopped { .. } => false,
     }
 }

@@ -996,9 +996,11 @@ impl Interpreter {
                     mutator.breakpoints.drop_past_once();
                     // A step the run's end left goes on in the program's
                     // next run, its frames gone. An exception's stop no
-                    // poll served goes with the run, and its request bit.
+                    // poll served goes with the run, and its request bit,
+                    // and so does an evaluation's answer no stop took.
                     crate::debugger::stepping::run_ended(mutator);
                     crate::debugger::exceptions::drop_pending(mutator);
+                    crate::debugger::evaluation::run_ended(mutator);
                 });
                 result
             }
@@ -2989,6 +2991,9 @@ impl<'gc> Mutator<'gc> {
             Continuation::ReturnToSuspended(_) => unreachable!(
                 "internal: the run loop resumes a suspended sender before it applies the continuation"
             ),
+            Continuation::Evaluated => {
+                unreachable!("internal: vm::finish ends an evaluation itself")
+            }
         }
     }
 

@@ -58,6 +58,13 @@ pub(crate) fn reached(
     index: usize,
 ) -> BreakpointDecision {
     let code = mutator.heap.activation_code(activation);
+    // An evaluation goes past every breakpoint, counting none, as
+    // IntelliJ's evaluation skips them -- and before the tokens are taken:
+    // they belong to the stopped frame below, which fetches its slot again
+    // once the evaluation is over.
+    if mutator.breakpoints.evaluating() {
+        return BreakpointDecision::Execute(code.original(index));
+    }
     let body = address(&code);
     let earlier = mutator
         .breakpoints
@@ -300,22 +307,25 @@ fn exit_is_taken(
 }
 
 /// Whether the debugger hears of the frames an unwind pops: only a step in
-/// progress and a method breakpoint do. The unwinder asks once, as it
-/// starts or carries on; a pop's report can start a step only when one of
-/// them already holds, so the answer stands for the whole unwind.
+/// progress, a method breakpoint and an evaluation, whose base ends every
+/// unwind from within it, do. The unwinder asks once, as it starts or
+/// carries on; a pop's report can start a step only when one of them
+/// already holds, and nothing an unwind pops starts an evaluation, so the
+/// answer stands for the whole unwind.
 pub(crate) fn follows_unwinds(mutator: &Mutator<'_>) -> bool {
-    mutator.stepping.is_some() || mutator.breakpoints.has_method_breakpoints()
+    mutator.stepping.is_some() || mutator.breakpoints.follows_unwinds()
 }
 
 /// The unwinder is about to pop `top`, for an unwind other than a
 /// termination the debugger follows (`follows_unwinds`): the method
 /// breakpoints whose method it is a body of, whose exit the pop is
-/// (`left_by_unwind`). Empty while no method breakpoint is set.
+/// (`left_by_unwind`). Empty while no method breakpoint is set, and while
+/// an evaluation runs, which counts no breakpoint.
 pub(crate) fn leaving_by_unwind(
     mutator: &Mutator<'_>,
     top: ActivationReference,
 ) -> Vec<BreakpointId> {
-    if !mutator.breakpoints.has_method_breakpoints() {
+    if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
         return Vec::new();
     }
     exits_of(mutator, top)
@@ -353,7 +363,7 @@ pub(crate) fn returning_by_unwind<'gc>(
     home: ActivationReference,
     frame: FrameReference<'gc>,
 ) {
-    if !mutator.breakpoints.has_method_breakpoints() {
+    if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
         return;
     }
     report_return(mutator, home, frame);

@@ -76,6 +76,15 @@ pub(crate) struct Breakpoints {
     /// pending `ensure:` blocks: an exception one of them raises stops
     /// nothing, as the termination ends a step.
     terminating: bool,
+    /// The expression the debugger evaluates at a stop, from its push
+    /// until its base is popped (`super::evaluation`): while it runs every
+    /// breakpoint is gone past uncounted and nothing stops. On the
+    /// `Mutator`, as the stop's tokens are, since the arms, the leaves and
+    /// the unwinder that read it run inside an entry.
+    pub(super) evaluation: Option<super::evaluation::RunningEvaluation>,
+    /// What the evaluation answered, from its end until the stop it was
+    /// asked at takes it.
+    pub(super) evaluated: Option<super::evaluation::Outcome>,
     /// The method exits of the step a host run's end left in progress,
     /// which goes on in the program's next run (`stepping::run_ended`);
     /// `None` while no step is carried.
@@ -553,6 +562,21 @@ impl Breakpoints {
     /// Whether the debugger terminated the run in progress.
     pub(crate) fn terminating(&self) -> bool {
         self.terminating
+    }
+
+    /// Whether an expression the debugger evaluates is running.
+    #[inline(always)]
+    pub(crate) fn evaluating(&self) -> bool {
+        self.evaluation.is_some()
+    }
+
+    /// Whether the unwinder tells the debugger of the frames it pops,
+    /// beside a step in progress (`interpreter::breakpoint::follows_unwinds`):
+    /// while a method breakpoint is set, and while an evaluation runs,
+    /// whose base ends every unwind.
+    #[inline(always)]
+    pub(crate) fn follows_unwinds(&self) -> bool {
+        !self.methods.is_empty() || self.evaluation.is_some()
     }
 
     /// The debugger terminated the run (`true`), or the run ended

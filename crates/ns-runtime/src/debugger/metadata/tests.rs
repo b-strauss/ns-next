@@ -94,9 +94,18 @@ fn first_block(code: &CompiledCode) -> Rc<CompiledCode> {
 fn variable(name: &str, depth: u16, place: VariablePlace) -> VariableEntry {
     VariableEntry {
         name: Symbol::intern(name),
+        assignable: true,
         depth,
         place,
         copied_by: Box::new([]),
+    }
+}
+
+/// `variable`, for a parameter, which no assignment writes.
+fn parameter(name: &str, depth: u16, place: VariablePlace) -> VariableEntry {
+    VariableEntry {
+        assignable: false,
+        ..variable(name, depth, place)
     }
 }
 
@@ -418,7 +427,7 @@ fn a_block_s_variables_cover_its_whole_lexical_chain() {
     assert_eq!(
         metadata.variables.to_vec(),
         vec![
-            variable("p", 0, VariablePlace::Register(0)),
+            parameter("p", 0, VariablePlace::Register(0)),
             copied_by(
                 variable("t", 0, VariablePlace::Register(t_register)),
                 &closure_indices(&code),
@@ -457,8 +466,8 @@ fn a_block_s_variables_cover_its_whole_lexical_chain() {
     assert_eq!(
         block_metadata.variables.to_vec(),
         vec![
-            variable("b", 0, VariablePlace::Register(0)),
-            variable(
+            parameter("b", 0, VariablePlace::Register(0)),
+            parameter(
                 "p",
                 1,
                 VariablePlace::Outer {
@@ -493,8 +502,8 @@ fn the_innermost_of_a_shadowed_name_comes_first() {
     assert_eq!(
         block_metadata.variables.to_vec(),
         vec![
-            variable("t", 0, VariablePlace::Register(0)),
-            variable(
+            parameter("t", 0, VariablePlace::Register(0)),
+            parameter(
                 "t",
                 1,
                 VariablePlace::Outer {
@@ -698,7 +707,7 @@ fn a_variable_an_enclosing_block_was_handed_is_read_from_that_block() {
     assert_eq!(
         inner_metadata.variables.to_vec(),
         vec![
-            variable(
+            parameter(
                 "p",
                 2,
                 VariablePlace::Outer {
@@ -811,7 +820,7 @@ fn an_initializer_s_prologue_slots_and_lazy_getter_are_collected() {
     }
     assert_eq!(
         metadata.variables.to_vec(),
-        vec![variable("a", 0, VariablePlace::Register(0))]
+        vec![parameter("a", 0, VariablePlace::Register(0))]
     );
     let clause = mixin
         .superclass_clause_code
@@ -901,7 +910,7 @@ fn both_lowerings_name_the_same_variables_of_a_block() {
     assert_eq!(
         reference_method_metadata.variables.to_vec(),
         vec![
-            variable("p", 0, VariablePlace::Register(0)),
+            parameter("p", 0, VariablePlace::Register(0)),
             variable("t", 0, VariablePlace::Register(temporary(1))),
             variable("u", 0, VariablePlace::Register(temporary(2))),
         ]
@@ -920,8 +929,8 @@ fn both_lowerings_name_the_same_variables_of_a_block() {
     assert_eq!(
         reference_block.variables.to_vec(),
         vec![
-            variable("b", 0, VariablePlace::Register(0)),
-            variable("p", 1, outer(0)),
+            parameter("b", 0, VariablePlace::Register(0)),
+            parameter("p", 1, outer(0)),
             variable("t", 1, outer(temporary(1))),
             variable("u", 1, outer(temporary(2))),
         ]
@@ -939,9 +948,9 @@ fn both_lowerings_name_the_same_variables_of_a_block() {
     assert_eq!(
         reference_inner.variables.to_vec(),
         vec![
-            variable("c", 0, VariablePlace::Register(0)),
-            variable("b", 1, outer(0)),
-            variable("p", 2, twice_out(0)),
+            parameter("c", 0, VariablePlace::Register(0)),
+            parameter("b", 1, outer(0)),
+            parameter("p", 2, twice_out(0)),
             variable("t", 2, twice_out(temporary(1))),
             variable("u", 2, twice_out(temporary(2))),
         ]
@@ -1417,8 +1426,8 @@ crate::for_each_lowering! {
             assert_eq!(
                 metadata.variables.to_vec(),
                 vec![
-                    variable("a", 0, VariablePlace::Register(0)),
-                    variable("b", 0, VariablePlace::Register(1)),
+                    parameter("a", 0, VariablePlace::Register(0)),
+                    parameter("b", 0, VariablePlace::Register(1)),
                 ]
             );
             assert!(metadata.statements.is_empty());

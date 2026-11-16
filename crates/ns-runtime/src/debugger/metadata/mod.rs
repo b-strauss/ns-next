@@ -135,12 +135,47 @@ pub(crate) enum BlockPlace {
     Called { send: u32, closure: u32 },
 }
 
+/// A variable a body declares, as a collecting lowerer lists it by
+/// resolver index -- its parameters, then its temporaries -- for its own
+/// variable table and those of the blocks it encloses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeclaredVariable {
+    pub(crate) name: Symbol,
+    /// See `VariableEntry::assignable`.
+    pub(crate) assignable: bool,
+}
+
+/// The variables a body of `parameters` and `temporaries` declares, in
+/// resolver order: no parameter is assignable, and a temporary is unless
+/// it is declared immutable (§3.6).
+pub(crate) fn declared_variables(
+    parameters: Vec<Symbol>,
+    temporaries: &[ns_syntax::ast::SlotDeclaration],
+) -> Rc<[DeclaredVariable]> {
+    parameters
+        .into_iter()
+        .map(|name| DeclaredVariable {
+            name,
+            assignable: false,
+        })
+        .chain(temporaries.iter().map(|temporary| DeclaredVariable {
+            name: Symbol::intern(&temporary.name.name),
+            assignable: temporary.mutability != ns_syntax::ast::SlotMutability::Immutable,
+        }))
+        .collect()
+}
+
 /// A named variable in scope over the whole body: an inlined block
 /// declares none, so every variable a body names is in scope from its
 /// start, `nil` until written (decision 13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariableEntry {
     pub(crate) name: Symbol,
+    /// Whether an assignment may write it: a mutable local's, never a
+    /// parameter's or an immutable local's (§3.6), wherever it lives --
+    /// what an expression evaluated in the frame is held to
+    /// (`resolver::FrameVariable`).
+    pub(crate) assignable: bool,
     /// The lexical distance in frame scopes from the body to the scope
     /// that declares the variable: 0 for the body's own, inlined scopes
     /// not counted.

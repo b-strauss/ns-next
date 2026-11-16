@@ -9526,6 +9526,70 @@ impl<'gc> Heap<'gc> {
         )
     }
 
+    /// Whether `activation` is the base of an expression the debugger
+    /// evaluates (`Continuation::Evaluated`): the frame the handler search
+    /// and every unwind from within the expression end at. Read only while
+    /// an evaluation runs, never on a program's own path.
+    pub(crate) fn activation_is_evaluation_base(&self, activation: ActivationReference) -> bool {
+        matches!(
+            self.activation_own_continuation(activation),
+            Continuation::Evaluated
+        )
+    }
+
+    /// `activation_is_evaluation_base` for the activation `frame` holds,
+    /// married or suspended.
+    pub(crate) fn frame_is_evaluation_base(&self, frame: FrameReference<'gc>) -> bool {
+        if let Some(activation) = self.frame_activation(frame) {
+            return self.activation_is_evaluation_base(activation);
+        }
+        matches!(
+            self.frame_suspended_continuation(frame),
+            Some(Continuation::Evaluated)
+        )
+    }
+
+    /// Nils every register of `activation`'s window the leftover analysis
+    /// finds tainted before the program counter it stores -- what the
+    /// collector's pre-pass nils before a trace (`trace_stack`) -- below
+    /// the window of the frame above it, which is that frame's to decide:
+    /// so that a block the debugger makes over the frame, which reads its
+    /// registers by reference, reads nil where the frame keeps nothing,
+    /// never a word a callee or a popped frame left.
+    pub(crate) fn nil_tainted_registers(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        let code = self.activation_code(activation);
+        let Ok(program_counter) = u32::try_from(self.activation_program_counter(activation)) else {
+            unreachable!("internal: a program counter fits its frame word");
+        };
+        let start = self.stack.frame_start(activation.offset);
+        let end = self.stack.window_end(activation.offset).min(
+            self.activation_above(activation)
+                .map_or(usize::MAX, |above| self.activation_position(above)),
+        );
+        let header = activation.offset as usize..activation.offset as usize + frame_header::COUNT;
+        let tainted = code.tainted_before(program_counter).to_vec();
+        for register in tainted.into_iter().flatten() {
+            let slot = start + usize::from(register);
+            if slot < end && !header.contains(&slot) {
+                self.stack.frames.set_word(slot, Word::NIL.bits());
+            }
+        }
+    }
+
+    /// Marks the activation of `frame`, married or suspended, as one whose
+    /// registers survive its return (`retain_registers`): a block the
+    /// debugger made reads them by reference.
+    pub(crate) fn frame_retain_registers(&mut self, frame: FrameReference<'gc>) {
+        if let Some(activation) = self.frame_activation(frame) {
+            self.retain_registers(activation);
+        } else if let Some(row) = self.suspension_row(frame)
+            && let Some(Some(suspension)) = self.suspensions.rows.get_mut(row)
+        {
+            suspension.retains_registers = true;
+        }
+    }
+
     /// The VM error `activation` is the `signal` of, if the unwinder pushed
     /// it to signal one (`Continuation::VmErrorSignalled`).
     pub(crate) fn activation_signalled_vm_error(

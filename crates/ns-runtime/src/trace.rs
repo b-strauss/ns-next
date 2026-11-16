@@ -55,7 +55,7 @@ impl Trace for ActivationKind<'_> {
 impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            Continuation::Deliver | Continuation::Reexecute => {}
+            Continuation::Deliver | Continuation::Reexecute | Continuation::Evaluated => {}
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
             Continuation::VmErrorSignalled(error) => {

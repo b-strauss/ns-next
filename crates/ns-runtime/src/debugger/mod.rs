@@ -18,6 +18,7 @@
 //! (`exceptions.rs`).
 
 pub(crate) mod breakpoints;
+pub(crate) mod evaluation;
 pub(crate) mod exceptions;
 pub(crate) mod metadata;
 mod remote;
@@ -28,7 +29,7 @@ mod values;
 pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
-    Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
+    Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
     MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
     SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
 };
@@ -51,8 +52,13 @@ const TERMINATED: &str = "the debugger terminated the program";
 /// Why the program cannot serve a command that only a stop serves.
 const RUNNING: &str = "the program is running";
 
-/// Why a stop refuses `Variables` for a frame index past its stack.
+/// Why a stop refuses `Variables` or `Evaluate` for a frame index past its
+/// stack.
 const NO_SUCH_FRAME: &str = "no frame at that index";
+
+/// Why a stop a stress mode's reader serves refuses `Evaluate`: only an
+/// attached debugger's stop is kept while an evaluation runs.
+const NOT_KEPT: &str = "only a debugger's stop evaluates";
 
 /// Why a stop refuses `Children` for a value it did not hand out.
 const NO_SUCH_VALUE: &str = "no value of this stop has that id";
@@ -75,6 +81,64 @@ pub(crate) struct Debugger {
     /// The id the next stop's first value takes, past every id the stops
     /// before handed out (`values::StopValues`).
     next_value_id: u32,
+    /// The stop an evaluation left to run, kept until the safepoint the
+    /// evaluation's end asks for re-enters it (`Served::Evaluate`). Dropped
+    /// with the debugger: an evaluation whose debugger is gone ends
+    /// unanswered, and the program goes on.
+    stop: Option<Stop>,
+}
+
+/// A stop, as the commands it serves read it: what `stop_standing` decided
+/// of where it stands, the values it handed out, the frames it walked, the
+/// agent it serves and what it owes the program once it goes on. Kept by
+/// the `Debugger` while an evaluation it began runs, and served again when
+/// the evaluation ends, so that the stop and its value ids outlast every
+/// evaluation made at it.
+pub(crate) struct Stop {
+    /// Whether the stop is an exception's, or a `Halt`'s, which hides the
+    /// exception's machinery.
+    exceptional: bool,
+    /// Whether it is a caught exception's, standing in its handler.
+    caught: bool,
+    /// See `Standing::at_header`.
+    at_header: bool,
+    /// The run's base (`stack.rs`).
+    floor: usize,
+    source: CommandSource,
+    values: StopValues,
+    /// The run's frames, walked at the first command that reads them --
+    /// nothing pushes or pops while the program is stopped -- and walked
+    /// again after an evaluation, which may have moved them (the suspend
+    /// stress mode suspends every activation at a safepoint).
+    frames: Option<Vec<stack::StackFrame>>,
+    /// What the stop owes once the program goes on.
+    after: AfterStop,
+    /// Whether an evaluation ran at the stop.
+    evaluated: bool,
+    /// The evaluation running, while the stop is kept for it.
+    pub(crate) evaluation: Option<PendingEvaluation>,
+}
+
+impl Stop {
+    /// The run's frames, walked now if no command read them yet.
+    pub(crate) fn frames(&mut self, mutator: &Mutator<'_>) -> &[stack::StackFrame] {
+        self.frames
+            .get_or_insert_with(|| stack::frames(mutator, self.floor))
+    }
+}
+
+/// An evaluation a kept stop waits for.
+pub(crate) struct PendingEvaluation;
+
+/// What a stop owes the program once it goes on.
+#[derive(Clone, Copy, Default)]
+struct AfterStop {
+    /// The slot the stopped frame stands at, which it fetches again as it
+    /// goes on and goes past once (`Breakpoints::go_past_once`).
+    past: Option<breakpoints::PastOnce>,
+    /// Whether the run loop reads the frame on top again: a step stopped
+    /// in a factory by undoing its initializer's push.
+    rebuilt: bool,
 }
 
 /// The lock under which the poll is armed and the debugger's bits are
@@ -207,6 +271,7 @@ impl StressReader {
                 )
             }
             Event::Stopped { .. }
+            | Event::Evaluated(_)
             | Event::Continued
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
@@ -397,6 +462,11 @@ pub(crate) enum Served {
     /// stopped in a factory by undoing its initializer's push
     /// (`stepping::HeldStep::StopInFactory`).
     Rebuilt,
+    /// The stop pushed an evaluation and is kept (`Debugger::stop`): the
+    /// run loop reads the frame on top again, as for `Rebuilt`, and runs
+    /// the evaluation, whose end asks for the stop that serves the kept
+    /// one again.
+    Evaluate,
 }
 
 impl Interpreter {
@@ -433,6 +503,7 @@ impl Interpreter {
             commands: command_receiver,
             events: event_sender,
             next_value_id: 0,
+            stop: None,
         });
         DebugRemote::new(
             command_sender,
@@ -453,6 +524,9 @@ impl Interpreter {
     /// whatever made the stop (`Hits::reason`). A remote that is gone
     /// detaches the debugger, and the program runs on.
     pub(crate) fn serve_debugger(&mut self, floor: usize) -> Served {
+        if let Some(served) = self.serve_evaluation() {
+            return served;
+        }
         let (bits, mut breakpoint, exception) = self.enter(|mutator| {
             (
                 mutator.heap.debugger_bits(),
@@ -565,13 +639,13 @@ impl Interpreter {
                     elsewhere,
                     ..Standing::ON_TOP
                 };
-                let served = self.stop_standing(reason, returned, floor, source, standing);
                 // The frame fetches the patched slot again as it goes on:
                 // the breakpoint it stopped at lets it past once.
-                if served == Served::GoOn {
-                    self.enter(|mutator| mutator.breakpoints.go_past_once(breakpoint.slot));
-                }
-                return served;
+                let after = AfterStop {
+                    past: Some(breakpoint.slot),
+                    rebuilt: false,
+                };
+                return self.stop_owing(reason, returned, floor, source, standing, after);
             }
         }
         let bits = self.enter(|mutator| mutator.heap.debugger_bits());
@@ -643,16 +717,66 @@ impl Interpreter {
             };
             let reason = reason.unwrap_or(StopReason::Step);
             let source = self.step_agent();
-            let served = self.stop_standing(reason, None, floor, source, stood);
-            if let (Served::GoOn, Some(standing)) = (served, standing) {
-                self.enter(|mutator| mutator.breakpoints.go_past_once(standing));
-            }
-            return match (held, served) {
-                (HeldStep::StopInFactory, Served::GoOn) => Served::Rebuilt,
-                _ => served,
+            let after = AfterStop {
+                past: standing,
+                rebuilt: matches!(held, HeldStep::StopInFactory),
             };
+            return self.stop_owing(reason, None, floor, source, stood, after);
         }
         Served::GoOn
+    }
+
+    /// Serves the safepoints of an evaluation a stop began, which the stop
+    /// is kept for (`Debugger::stop`): once the evaluation ended -- its
+    /// end asked for this safepoint -- the kept stop answers its result
+    /// and serves the agent again, without a second `Event::Stopped`;
+    /// while it runs, a safepoint serves the commands queued meanwhile,
+    /// and a pause is moot, since the program is stopped already. `None`
+    /// when no stop is kept: the answer of an evaluation whose debugger is
+    /// gone waits for nobody, and goes with the run
+    /// (`evaluation::run_ended`).
+    fn serve_evaluation(&mut self) -> Option<Served> {
+        let kept = self
+            .debugger
+            .as_ref()
+            .is_some_and(|debugger| debugger.stop.is_some());
+        if !kept {
+            return None;
+        }
+        if !self.enter(|mutator| evaluation::has_ended(mutator)) {
+            let bits = self.enter(|mutator| mutator.heap.debugger_bits());
+            if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
+                return Some(self.terminate());
+            }
+            if bits & DEBUGGER_PAUSE != 0 {
+                self.clear_debugger_bits(DEBUGGER_PAUSE);
+            }
+            return Some(Served::GoOn);
+        }
+        self.clear_debugger_bits(DEBUGGER_STOP);
+        let mut stop = self.debugger.as_mut()?.stop.take()?;
+        stop.evaluation = None;
+        let answer = self.enter(|mutator| {
+            let outcome = evaluation::take_outcome(mutator)?;
+            Some(match outcome {
+                evaluation::Outcome::Value(value) => {
+                    Evaluation::Value(stop.values.describe(mutator, mutator.heap.fetch(&value)))
+                }
+                evaluation::Outcome::Error {
+                    description,
+                    exception,
+                } => {
+                    let exception = exception
+                        .map_or_else(Value::nil, |exception| mutator.heap.fetch(&exception));
+                    Evaluation::Error {
+                        description,
+                        exception: stop.values.describe(mutator, exception),
+                    }
+                }
+            })
+        })?;
+        self.answer(&mut stop.source, Event::Evaluated(answer));
+        Some(self.serve_stop(stop))
     }
 
     /// Stops the program as a pause does, for the pause stress mode, with
@@ -809,7 +933,8 @@ impl Interpreter {
                 | Command::StackTrace
                 | Command::ModuleText { .. }
                 | Command::Variables { .. }
-                | Command::Children { .. }) => {
+                | Command::Children { .. }
+                | Command::Evaluate { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -868,7 +993,8 @@ impl Interpreter {
             | Command::StackTrace
             | Command::ModuleText { .. }
             | Command::Variables { .. }
-            | Command::Children { .. } => {
+            | Command::Children { .. }
+            | Command::Evaluate { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -904,8 +1030,28 @@ impl Interpreter {
         reason: StopReason,
         returned: Option<Returned>,
         floor: usize,
-        mut source: CommandSource,
+        source: CommandSource,
         standing: Standing,
+    ) -> Served {
+        self.stop_owing(
+            reason,
+            returned,
+            floor,
+            source,
+            standing,
+            AfterStop::default(),
+        )
+    }
+
+    /// `stop_standing`, owing the program `after` once it goes on.
+    fn stop_owing(
+        &mut self,
+        reason: StopReason,
+        returned: Option<Returned>,
+        floor: usize,
+        source: CommandSource,
+        standing: Standing,
+        after: AfterStop,
     ) -> Served {
         let Standing {
             in_handler,
@@ -935,19 +1081,38 @@ impl Interpreter {
                 ReturnedValue { call, value }
             })
         });
+        let mut stop = Stop {
+            exceptional,
+            caught,
+            at_header,
+            floor,
+            source,
+            values,
+            frames: None,
+            after,
+            evaluated: false,
+            evaluation: None,
+        };
         self.answer(
-            &mut source,
+            &mut stop.source,
             Event::Stopped {
                 reason,
                 returned,
                 elsewhere,
             },
         );
-        // The run's frames, walked at the first command that reads them:
-        // nothing pushes or pops while the program is stopped.
-        let mut frames = None;
+        self.serve_stop(stop)
+    }
+
+    /// Serves `stop`'s commands until the agent continues, steps or
+    /// terminates the program, or begins an evaluation, for which the
+    /// stop is kept (`Served::Evaluate`) and served again once the
+    /// evaluation ended (`serve_evaluation`). Once the program goes on,
+    /// the stop pays what it owes (`AfterStop`), and the next stop's ids
+    /// begin past this one's.
+    fn serve_stop(&mut self, mut stop: Stop) -> Served {
         let served = loop {
-            let command = match &mut source {
+            let command = match &mut stop.source {
                 CommandSource::Remote => {
                     let Some(debugger) = &self.debugger else {
                         // The remote is gone: as a `Continue`.
@@ -966,7 +1131,7 @@ impl Interpreter {
             };
             match command {
                 Command::Continue => {
-                    self.answer(&mut source, Event::Continued);
+                    self.answer(&mut stop.source, Event::Continued);
                     break Served::GoOn;
                 }
                 command @ (Command::StepOver | Command::StepInto | Command::StepOut) => {
@@ -980,10 +1145,11 @@ impl Interpreter {
                     // never in the machinery above it the debugger chose
                     // to stop in; a caught one's steps in the handler it
                     // stands in, which it shows first.
+                    let shows_below = stop.exceptional && !stop.caught;
+                    let at_header = stop.at_header;
                     self.enter(|mutator| {
-                        let shown = (exceptional && !caught).then(|| {
-                            let frames =
-                                frames.get_or_insert_with(|| stack::frames(mutator, floor));
+                        let shown = shows_below.then(|| {
+                            let frames = stop.frames(mutator);
                             let first = exceptions::first_shown(mutator, frames);
                             frames.get(first)
                         });
@@ -993,17 +1159,17 @@ impl Interpreter {
                             stepping::begin(mutator, action, shown.flatten());
                         }
                     });
-                    self.answer(&mut source, Event::Continued);
+                    self.answer(&mut stop.source, Event::Continued);
                     break Served::GoOn;
                 }
                 Command::RunToPosition { module, offset } => {
                     match self.enter(|mutator| breakpoints::run_to(mutator, &module, offset)) {
                         Ok(()) => {
-                            self.answer(&mut source, Event::Continued);
+                            self.answer(&mut stop.source, Event::Continued);
                             break Served::GoOn;
                         }
                         Err(reason) => self.refuse(
-                            &mut source,
+                            &mut stop.source,
                             &Command::RunToPosition { module, offset },
                             reason,
                         ),
@@ -1011,16 +1177,24 @@ impl Interpreter {
                 }
                 Command::Terminate => break self.terminate(),
                 Command::StackTrace => {
+                    let (exceptional, caught, at_header) =
+                        (stop.exceptional, stop.caught, stop.at_header);
                     let descriptions = self.enter(|mutator| {
-                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
+                        let Stop {
+                            frames,
+                            values,
+                            floor,
+                            ..
+                        } = &mut stop;
+                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, *floor));
                         let hidden = if exceptional {
                             exceptions::hidden(mutator, frames, caught)
                         } else {
                             0..0
                         };
-                        stack::stack_trace(mutator, frames, hidden, at_header, &mut values)
+                        stack::stack_trace(mutator, frames, hidden, at_header, values)
                     });
-                    self.answer(&mut source, Event::StackTrace(descriptions));
+                    self.answer(&mut stop.source, Event::StackTrace(descriptions));
                 }
                 Command::ModuleText {
                     module,
@@ -1040,39 +1214,102 @@ impl Interpreter {
                             text,
                         }
                     });
-                    self.answer(&mut source, event);
+                    self.answer(&mut stop.source, event);
                 }
                 Command::Variables { frame } => {
                     match self.enter(|mutator| {
-                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, floor));
-                        stack::variables(mutator, frames, frame, &mut values)
+                        let Stop {
+                            frames,
+                            values,
+                            floor,
+                            ..
+                        } = &mut stop;
+                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, *floor));
+                        stack::variables(mutator, frames, frame, values)
                     }) {
-                        Some(variables) => self.answer(&mut source, Event::Variables(variables)),
-                        None => self.refuse(&mut source, &command, NO_SUCH_FRAME),
+                        Some(variables) => {
+                            self.answer(&mut stop.source, Event::Variables(variables));
+                        }
+                        None => self.refuse(&mut stop.source, &command, NO_SUCH_FRAME),
                     }
                 }
                 Command::Children {
                     value,
                     start,
                     count,
-                } => match self.enter(|mutator| values.children(mutator, value, start, count)) {
-                    Some(children) => self.answer(&mut source, Event::Variables(children)),
-                    None => self.refuse(&mut source, &command, NO_SUCH_VALUE),
+                } => match self.enter(|mutator| stop.values.children(mutator, value, start, count))
+                {
+                    Some(children) => self.answer(&mut stop.source, Event::Variables(children)),
+                    None => self.refuse(&mut stop.source, &command, NO_SUCH_VALUE),
                 },
+                Command::Evaluate { frame, expression } => {
+                    match self.begin_evaluation(&mut stop, frame, &expression) {
+                        Ok(()) => {
+                            // Kept for the evaluation, whose run may move
+                            // the frames before the stop serves again.
+                            stop.evaluation = Some(PendingEvaluation);
+                            stop.evaluated = true;
+                            stop.frames = None;
+                            if let Some(debugger) = &mut self.debugger {
+                                debugger.stop = Some(stop);
+                            }
+                            return Served::Evaluate;
+                        }
+                        Err(reason) => self.refuse(
+                            &mut stop.source,
+                            &Command::Evaluate { frame, expression },
+                            &reason,
+                        ),
+                    }
+                }
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
                 | Command::SetStepFilters { .. }
                 | Command::SetExceptionBreakpoints { .. }) => {
-                    self.configure(&mut source, command);
+                    self.configure(&mut stop.source, command);
                 }
             }
         };
         // The next stop's ids begin past this one's, so that none of
         // this stop's names a value there.
         if let Some(debugger) = &mut self.debugger {
-            debugger.next_value_id = values.next_first();
+            debugger.next_value_id = stop.values.next_first();
         }
-        served
+        if served != Served::GoOn {
+            return served;
+        }
+        let AfterStop { past, rebuilt } = stop.after;
+        if let Some(mut past) = past {
+            let evaluated = stop.evaluated;
+            self.enter(|mutator| {
+                // The frame the stop stands in is the top one, which an
+                // evaluation leaves on top, but may have moved: the
+                // suspend stress mode resumes it elsewhere.
+                if evaluated && let Some(top) = mutator.heap.top_activation() {
+                    past.activation = top;
+                }
+                mutator.breakpoints.go_past_once(past);
+            });
+        }
+        if rebuilt { Served::Rebuilt } else { served }
+    }
+
+    /// Compiles `expression` in the frame at index `frame` of `stop`'s
+    /// stack and pushes it (`evaluation::compile`, `evaluation::begin`);
+    /// the refusal's reason otherwise. Only a stop the attached debugger
+    /// serves can be kept for an evaluation.
+    fn begin_evaluation(
+        &mut self,
+        stop: &mut Stop,
+        frame: usize,
+        expression: &str,
+    ) -> Result<(), String> {
+        if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
+            return Err(String::from(NOT_KEPT));
+        }
+        let code = self.enter(|mutator| evaluation::compile(mutator, stop, frame, expression))?;
+        self.enter(|mutator| evaluation::begin(mutator, stop, frame, code, &[]))
+            .map_err(String::from)
     }
 
     /// The run ends: a pause still pending is moot, so its bit goes, and
@@ -1093,6 +1330,14 @@ impl Interpreter {
         // the depth limit for the `ensure:` blocks the unwind runs, and
         // stop in one of them after the termination.
         self.enter(stepping::end);
+        // So does an evaluation, unanswered, whose base the unwind pops on
+        // its way to the floor, and the stop kept for it.
+        self.enter(evaluation::run_ended);
+        if let Some(debugger) = &mut self.debugger
+            && let Some(stop) = debugger.stop.take()
+        {
+            debugger.next_value_id = stop.values.next_first();
+        }
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         Served::Terminate
     }
@@ -1216,7 +1461,8 @@ impl Interpreter {
                     | Command::StackTrace
                     | Command::ModuleText { .. }
                     | Command::Variables { .. }
-                    | Command::Children { .. }),
+                    | Command::Children { .. }
+                    | Command::Evaluate { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

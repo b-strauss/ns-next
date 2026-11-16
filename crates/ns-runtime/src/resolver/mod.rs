@@ -6,7 +6,6 @@ mod scope;
 pub(crate) mod sends;
 
 pub use classes::RootShape;
-#[cfg(test)]
 pub(crate) use classes::own_member_names;
 pub use classes::root_class_is_value;
 pub(crate) use classes::{root_clause_defect, root_shape};
@@ -39,13 +38,6 @@ pub(crate) struct FrameVariable {
 
 /// What an expression evaluated in a stopped frame is resolved against
 /// (`docs/design/debugger.md`, decision 8, "Marking objects").
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the debugger's evaluation calls it from task 3 of stage 5 on"
-    )
-)]
 pub(crate) struct EvaluationScope<'a> {
     /// The stopped body's declaration chain, innermost first: an implicit
     /// receiver send of the expression is resolved as the body's own are.
@@ -74,13 +66,6 @@ struct Evaluating<'a> {
 /// error is the answer: an assignment to a variable that is not assignable,
 /// a `^` anywhere, nested blocks included -- the block has no home a return
 /// could leave for -- or any error a module's walk reports.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the debugger's evaluation calls it from task 3 of stage 5 on"
-    )
-)]
 pub(crate) fn resolve_evaluation(
     expression: &ast::CodeBody,
     scope: &EvaluationScope,

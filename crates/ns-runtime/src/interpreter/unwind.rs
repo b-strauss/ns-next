@@ -51,6 +51,11 @@ pub(crate) enum UnwindOutcome<'gc> {
     Signalling(ActivationReference),
     /// Popped down to the run's floor: the run ends with this.
     Exit(EvaluationResult<'gc>),
+    /// Popped the base of an expression the debugger evaluated, which an
+    /// error ended (`at_evaluation_base`): the loop goes on with `stopped`,
+    /// the frame below, from the program counter it stopped at, where the
+    /// safepoint the end asked for re-enters the stop.
+    EvaluationEnded { stopped: ActivationReference },
 }
 
 /// An activation a walk from the top of the stack towards the run's base
@@ -178,6 +183,15 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// Whether the activation is the base of an expression the debugger
+    /// evaluates (`Continuation::Evaluated`).
+    pub(crate) fn is_evaluation_base(self, heap: &Heap<'gc>) -> bool {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_is_evaluation_base(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_is_evaluation_base(frame),
+        }
+    }
+
     /// `signalled_vm_error` without cloning the error of a live frame.
     pub(crate) fn signals_a_vm_error(self, heap: &Heap<'gc>) -> bool {
         match self {
@@ -290,7 +304,7 @@ pub(crate) fn unwind<'gc>(
 /// `unwind`, the debugger's reports made only when `FOLLOWED`.
 fn unwind_from<'gc, const FOLLOWED: bool>(
     mutator: &mut Mutator<'gc>,
-    pending: PendingUnwind<'gc>,
+    mut pending: PendingUnwind<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     loop {
@@ -304,6 +318,17 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             .heap
             .top_activation()
             .expect("internal: a stack deeper than the floor has a top");
+        // Only a followed unwind can meet an evaluation's base: one runs
+        // only while the debugger follows unwinds.
+        if FOLLOWED
+            && mutator.breakpoints.evaluating()
+            && mutator.heap.activation_is_evaluation_base(top)
+        {
+            pending = match at_evaluation_base(mutator, top, pending, floor) {
+                Ok(outcome) => return outcome,
+                Err(pending) => pending,
+            };
+        }
         let arrived = pending
             .target
             .and_then(|frame| mutator.heap.frame_activation(frame))
@@ -337,6 +362,51 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             pop_followed(mutator, top, &pending.action);
         } else {
             mutator.pop_for_unwind_as::<false>(top);
+        }
+    }
+}
+
+/// An unwind reached `base`, the base of an expression the debugger
+/// evaluates, on top of the stack: no unwind from within the expression
+/// crosses it, so that the program's frames below are untouched
+/// (`docs/design/debugger.md`, "Evaluation", "Its errors"). A termination
+/// -- an exception's default action ended the run -- pops the base and
+/// ends the evaluation with its error, the program staying stopped; a
+/// return or a restart aims at a frame below, which it cannot reach from
+/// the evaluation, and so signals `CannotReturn` from the base, as a `^`
+/// to a home that has returned does. Only the debugger's own termination
+/// goes on past the base (`Err`), to the run's floor.
+#[cold]
+#[inline(never)]
+fn at_evaluation_base<'gc>(
+    mutator: &mut Mutator<'gc>,
+    base: ActivationReference,
+    pending: PendingUnwind<'gc>,
+    floor: usize,
+) -> Result<UnwindOutcome<'gc>, PendingUnwind<'gc>> {
+    if mutator.breakpoints.terminating() {
+        return Err(pending);
+    }
+    let error = match pending.action {
+        UnwindAction::Terminate(error) => {
+            mutator.pop_for_unwind(base);
+            let stopped = crate::debugger::evaluation::ended_by(mutator, &error);
+            return Ok(UnwindOutcome::EvaluationEnded { stopped });
+        }
+        UnwindAction::Return(value) => NewspeakError::cannot_return(
+            Symbol::CARET,
+            value,
+            value,
+            "cannotReturn: the enclosing method activation is outside the evaluation",
+        ),
+        UnwindAction::Restart => dead_activation_error(Symbol::intern("restart"), Value::nil()),
+    };
+    match start_signalling(mutator, &error, floor) {
+        Some(outcome) => Ok(outcome),
+        None => {
+            mutator.pop_for_unwind(base);
+            let stopped = crate::debugger::evaluation::ended_by(mutator, &error);
+            Ok(UnwindOutcome::EvaluationEnded { stopped })
         }
     }
 }

@@ -25,13 +25,6 @@ use crate::types::Binding;
 
 /// `text` parsed as a code body standing alone -- temporaries, then
 /// statements -- or the parser's first error.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the debugger's evaluation calls it from task 3 of stage 5 on"
-    )
-)]
 pub(crate) fn parse_expression(text: &str) -> Result<ast::CodeBody, String> {
     ns_syntax::parse_code_body(text).map_err(|diagnostics| {
         diagnostics
@@ -54,13 +47,6 @@ pub(crate) fn parse_expression(text: &str) -> Result<ast::CodeBody, String> {
 /// hop further for each frame between. So the body's `outer_reach` is at
 /// least 1 whenever it names a frame variable, and the frame keeps its
 /// registers for it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the debugger's evaluation calls it from task 3 of stage 5 on"
-    )
-)]
 pub(crate) fn compile_evaluation(
     expression: &ast::CodeBody,
     bindings: &Rc<HashMap<Span, Binding>>,

@@ -15,7 +15,8 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only
+/// `StackTrace`, `Variables`, `Children`, `ModuleText` and `Evaluate` are
+/// served only
 /// while the program is stopped; one that arrives while it runs is refused
 /// (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
@@ -146,6 +147,37 @@ pub enum Command {
         module: ModuleName,
         known_revision: Option<u64>,
     },
+    /// Evaluates `expression` -- a code body, temporaries then statements,
+    /// assigning with `::` -- as a block standing in the frame at index
+    /// `frame` of the stack trace (`docs/design/debugger.md`, decision 8):
+    /// it reads and writes the frame's variables, and its implicit
+    /// receiver sends reach what the frame's method's would. It runs on
+    /// the stopped program's thread above every frame, going past every
+    /// breakpoint it meets, and the program stays stopped. Served only
+    /// while the program is stopped; answered by `Event::Evaluated`, or by
+    /// `Event::Refused` for a frame index past the stack, a frame of the
+    /// core library, a frame whose source is not known, or an expression
+    /// that does not compile.
+    Evaluate { frame: usize, expression: String },
+}
+
+/// What an evaluation answered (`Command::Evaluate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Evaluation {
+    /// The expression's value, held for the stop as every value it hands
+    /// out.
+    Value(ValueDescription),
+    /// An exception no handler within the expression took, whose default
+    /// action ended the evaluation as it would have ended the run: its
+    /// `description` names the exception's class and gives its text, and
+    /// `exception` is the exception itself -- nil for an error the VM
+    /// ended the evaluation with that no exception carried.
+    Error {
+        description: String,
+        exception: ValueDescription,
+    },
+    /// The evaluation was stopped before it answered.
+    Aborted,
 }
 
 /// A method a method breakpoint names: by its selector, the class
@@ -294,6 +326,7 @@ impl Command {
             Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
             Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
             Command::ModuleText { .. } => "ModuleText",
+            Command::Evaluate { .. } => "Evaluate",
         }
     }
 }
@@ -356,6 +389,9 @@ pub enum Event {
         revision: u64,
         text: ModuleTextAnswer,
     },
+    /// The answer to `Command::Evaluate`, once the evaluation ended; the
+    /// program is still stopped, at the stop it was evaluated at.
+    Evaluated(Evaluation),
 }
 
 /// What `Event::ModuleText` says of a module's text.
