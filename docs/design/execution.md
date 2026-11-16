@@ -9755,6 +9755,77 @@ and `master` as shipped, without `target-cpu`, so that whether
 x86-64-v2 pays on the Rust side is not measured
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
+### What Rust 1.100.0 moved
+
+The branch that raised the toolchain from 1.98.0 to 1.100.0 (LLVM 22 to
+23) and moved the workspace to edition 2024, measured against `master`
+(rustc 1.98.0) by the protocol of "What removing the re-entries moved":
+on the Core Ultra 9 285K, three builds a side with the alignment pin and
+the block and code-zone layouts a, b and c, each with debug information
+for the check that `vm::run` spans 45.0, 48.4 and 52.0 KB on both sides
+with 447 calls and no `run_stretch` or `vm::run` closure of its own; three
+rounds in one sitting, the binaries rotated each round, every process
+held to the eight performance cores (the mask `0xC03C03`);
+`--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and
+`--iterations 8` for the rest. Each cell is a side's medians per build
+pooled by geometric mean, in milliseconds.
+
+| Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.105 | 0.104–0.105 | 0.105 | 0.104–0.107 | +0.7% | no |
+| `CD` | 2519.537 | 2488.442–2539.550 | 2525.206 | 2508.858–2540.049 | +0.2% | no |
+| `DeltaBlue` | 164.637 | 163.952–165.995 | 165.522 | 164.875–166.320 | +0.5% | no |
+| `DeltaBlueTon80` | 2.185 | 2.182–2.187 | 2.199 | 2.166–2.241 | +0.6% | no |
+| `Havlak` | 787.468 | 784.883–792.350 | 790.319 | 788.724–791.363 | +0.4% | no |
+| `Json` | 2.420 | 2.392–2.444 | 2.469 | 2.439–2.502 | +2.0% | no |
+| `List` | 0.060 | 0.059–0.061 | 0.059 | 0.059–0.060 | -1.3% | no |
+| `Mandelbrot` | 444.717 | 443.631–445.383 | 445.264 | 444.732–445.812 | +0.1% | no |
+| `NBody` | 263.959 | 262.688–265.583 | 262.558 | 262.047–263.253 | -0.5% | no |
+| `Permute` | 0.072 | 0.071–0.074 | 0.071 | 0.071–0.071 | -1.1% | no |
+| `Queens` | 0.076 | 0.075–0.076 | 0.075 | 0.074–0.075 | -1.3% | no |
+| `Richards` | 11.391 | 11.310–11.538 | 11.066 | 10.937–11.132 | -2.9% | faster |
+| `RichardsTon80` | 1.324 | 1.307–1.343 | 1.333 | 1.315–1.365 | +0.7% | no |
+| `Sieve` | 0.363 | 0.328–0.414 | 0.407 | 0.341–0.452 | +12.2% | no |
+| `Storage` | 0.528 | 0.508–0.546 | 0.508 | 0.505–0.514 | -3.8% | no |
+| `Towers` | 0.251 | 0.245–0.258 | 0.254 | 0.252–0.258 | +1.5% | no |
+| `bench_block` | 0.280 | 0.275–0.286 | 0.277 | 0.273–0.281 | -1.0% | no |
+| `bench_loop` | 0.079 | 0.078–0.079 | 0.079 | 0.079–0.080 | +0.5% | no |
+| `bench_megamorphic` | 0.712 | 0.698–0.719 | 0.710 | 0.702–0.722 | -0.2% | no |
+| `bench_recursion` | 0.523 | 0.490–0.541 | 0.488 | 0.465–0.537 | -6.6% | no |
+| `bench_send` | 0.083 | 0.079–0.085 | 0.079 | 0.079–0.079 | -4.1% | no |
+| `bench_signal` | 19.502 | 19.281–19.740 | 19.379 | 19.198–19.512 | -0.6% | no |
+| `bench_while` | 3.236 | 3.145–3.427 | 3.246 | 3.156–3.418 | +0.3% | no |
+
+The geometric mean over the twenty-three sources is -0.21%, the builds
+2.300, 2.307 and 2.285 against `master`'s 2.310, 2.287 and 2.309, and no
+row is separated slower. Richards, the one row separated, runs 2.9%
+faster. Json's +2.0% is not separated. Forty iterations of it, three
+rounds over all six builds in the same sitting, measured +0.3% with the
+ranges overlapping (1.986–1.994 against 1.981–1.990 ms); Sieve -0.9%,
+Towers +0.1% and `bench_send` +0.4% likewise.
+
+The first measurement of the branch, before the fix, measured +1.30%,
+with Json 3.4% slower at forty iterations in every build. The JIT's
+counts were identical on both sides. A profile put the difference in
+`builtins::execute`, which every leaf enters: 4,325 samples against
+3,547. Under fat LTO, LLVM 23 had made it save all of `xmm6`..`xmm15` in
+its prologue against LLVM 22's three. That is fourteen more 16-byte
+stores and loads on every leaf, paid for the registers of an `Array`'s
+vectorized `copyFrom:to:` and of a value's equality walk, which made its
+set of assumed pairs, reading the thread's random keys, on every `=`.
+
+`collections::copy_range` is now never inlined, and the set is made at
+its first insert. Never inlining the equality walk instead cost Richards
+2.3%, since its `=` is hot there ("Keeping the hot path in registers").
+`execute` saves five registers now. The codegen gate did not see the
+saves, since the library's listing it reads is compiled without the
+binary's LTO and saves two there ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**Not covered**: Linux x64 and AArch64; `master` built with 1.100.0,
+which would separate the compiler's share from the edition's and the
+refactors'. The JIT's machine code is the macro assembler's and the
+same on both sides, so what moved is the Rust that LLVM compiles.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -11258,6 +11329,17 @@ Four rules keep the path in registers, and a gate holds them.
   the out-of-line pieces of the loop, `vm::place_arguments` and
   `vm::run_wide`, are `#[inline(never)]`, since inlined they cost
   `vm::run` its registers ("What contiguous arguments moved").
+- **The leaf dispatcher carries no heavy leaf.** Every leaf enters
+  `builtins::execute`, and under Windows' calling convention a function
+  saves and restores each of `xmm6`..`xmm15` it touches, so the
+  registers of any leaf that fat LTO inlines into it are paid by every
+  other leaf. Under LLVM 23 an `Array`'s vectorized `copyFrom:to:` made it
+  save all ten, against three under LLVM 22, and `Json` ran 3.4% slower:
+  `collections::copy_range` is `#[inline(never)]`. A value's equality
+  walk made its set of assumed pairs on every `=`, reading the thread's
+  random keys; that set is made at its first insert instead, so the walk
+  stays inlined, which Richards needs (`builtins/mod.rs`, `execute`; "What
+  Rust 1.100.0 moved").
 - **The codegen gate holds the result.** `cargo xtask gates codegen`
   (`xtask/src/codegen.rs`; [README.md](README.md), "Gates") reads the
   release listing of `ns-runtime` and holds each out-of-line function of

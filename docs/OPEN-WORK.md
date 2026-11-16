@@ -3651,6 +3651,14 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The codegen gate does not see what fat LTO inlines (noted 2026-11-16).
+  `xtask/src/codegen.rs` reads `cargo asm`'s listing of `ns-runtime`'s
+  lib, which is compiled without the binaries' cross-crate LTO. Under
+  LLVM 23, `builtins::execute` saved two XMM registers in that listing
+  and all ten in `ns-next.exe`, so the gate passed a 3.4% slowdown of
+  Json that only a measurement found ([execution.md](design/execution.md),
+  "What Rust 1.100.0 moved"). Holding the binary's listing, and counting
+  a hot function's saved XMM registers, would catch it.
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
   support.arm.com page, as the convention asks, but the pages' paths

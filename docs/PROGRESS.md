@@ -8082,3 +8082,10 @@ up, and why the rest was not (the never type, the `Allocator` API,
 - **The `memory` gate** lints `ns-memory` for Windows on ARM too. Its
   tests' code-zone measurements, which only x64 Windows runs, are
   compiled only there.
+- **The measurement** against `master`: -0.21% on the geometric mean,
+  nothing slower, Richards 2.9% faster ([execution.md](design/execution.md),
+  "What Rust 1.100.0 moved"). It first showed Json 3.4% slower. LLVM 23
+  made the leaf dispatcher `builtins::execute` save all ten callee-saved
+  XMM registers, so an `Array`'s `copyFrom:to:` is no longer inlined
+  into it, and the value equality walk makes its set of assumed pairs
+  only when it needs one.
