@@ -13,15 +13,15 @@
 //! scheduling steps, not Rust calling back into Newspeak. An activation with
 //! no marker costs one test.
 
-use super::breakpoint;
 use super::Arguments;
+use super::breakpoint;
+use crate::Symbol;
 use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
-use crate::Symbol;
 
 use super::{
-    EvaluationResult, Mutator, Signal, Step, StepArguments, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH,
+    DEPTH_RESERVE, EvaluationResult, MAX_ACTIVATION_DEPTH, Mutator, Signal, Step, StepArguments,
 };
 
 /// Where an unwind stopped.
@@ -206,10 +206,10 @@ pub(crate) fn unwind_signal<'gc>(
     signal: Signal<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
-    if let Signal::Error(error) = &signal {
-        if let Some(outcome) = start_signalling(mutator, error, floor) {
-            return outcome;
-        }
+    if let Signal::Error(error) = &signal
+        && let Some(outcome) = start_signalling(mutator, error, floor)
+    {
+        return outcome;
     }
     let pending = match signal {
         Signal::Return(target, value) => PendingUnwind {
@@ -735,19 +735,19 @@ impl<'gc> Mutator<'gc> {
         block: Value<'gc>,
         then: Box<PendingUnwind<'gc>>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        if let Some(closure) = block.as_object() {
-            if self.heap.is_closure(closure) {
-                return self.push_step(
-                    Step::Block {
-                        closure,
-                        arguments: StepArguments::Owned(Vec::new()),
-                        then: Continuation::Unwind(then),
-                    },
-                    Arguments::NONE,
-                    None,
-                    false,
-                );
-            }
+        if let Some(closure) = block.as_object()
+            && self.heap.is_closure(closure)
+        {
+            return self.push_step(
+                Step::Block {
+                    closure,
+                    arguments: StepArguments::Owned(Vec::new()),
+                    then: Continuation::Unwind(then),
+                },
+                Arguments::NONE,
+                None,
+                false,
+            );
         }
         let marked = self
             .heap
@@ -796,12 +796,12 @@ mod tests {
     use crate::interpreter::Arguments;
     use std::rc::Rc;
 
-    use super::{unwind, UnwindOutcome};
+    use super::{UnwindOutcome, unwind};
+    use crate::Interpreter;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use crate::heap::ActivationHeader;
     use crate::interpreter::FeedbackBase;
     use crate::types::*;
-    use crate::Interpreter;
 
     /// A body that returns its first register: nothing here runs it.
     fn trivial_code() -> Rc<CompiledCode> {

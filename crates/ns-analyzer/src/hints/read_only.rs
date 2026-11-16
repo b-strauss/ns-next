@@ -10,8 +10,8 @@
 //! own or an earlier slot's initializer would read nil where the `::=`
 //! local, shared with the closure, gives the later value.
 
-use ns_syntax::ast::{SlotDeclaration, SlotMutability};
 use ns_syntax::Span;
+use ns_syntax::ast::{SlotDeclaration, SlotMutability};
 
 use super::edits::{self, Edit};
 use super::names;

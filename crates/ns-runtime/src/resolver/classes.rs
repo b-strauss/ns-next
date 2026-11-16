@@ -8,8 +8,8 @@ use std::collections::HashSet;
 
 use ns_syntax::ast;
 
-use crate::mixin::RootClauseDefect;
 use crate::Symbol;
+use crate::mixin::RootClauseDefect;
 
 /// The members one side of a class declaration *declares*, each under its
 /// full selector, in declaration order and with any repeats kept -- what
@@ -174,17 +174,16 @@ pub(crate) fn root_clause_defect(
                     clause.span,
                 ));
             }
-            if let Some(message) = clause.messages.first() {
-                if !matches!(&message.selector, ast::Selector::Unary(selector) if selector == "new")
-                {
-                    return Some((
-                        RootClauseDefect::SuperclassMessage {
-                            clause: clause_as_written(clause),
-                            selector: selector_name(&message.selector).to_string(),
-                        },
-                        clause.span,
-                    ));
-                }
+            if let Some(message) = clause.messages.first()
+                && !matches!(&message.selector, ast::Selector::Unary(selector) if selector == "new")
+            {
+                return Some((
+                    RootClauseDefect::SuperclassMessage {
+                        clause: clause_as_written(clause),
+                        selector: selector_name(&message.selector).to_string(),
+                    },
+                    clause.span,
+                ));
             }
             (named == "Value").then_some(clause.span)
         }

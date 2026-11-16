@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use indoc::indoc;
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -100,10 +100,10 @@ fn next_diagnostics(client: &Connection) -> Value {
 #[track_caller]
 fn next_diagnostics_within(client: &Connection, timeout: Duration) -> Value {
     loop {
-        if let Message::Notification(notification) = receive_within(client, timeout) {
-            if notification.method == "textDocument/publishDiagnostics" {
-                return notification.params;
-            }
+        if let Message::Notification(notification) = receive_within(client, timeout)
+            && notification.method == "textDocument/publishDiagnostics"
+        {
+            return notification.params;
         }
     }
 }

@@ -604,15 +604,19 @@ mod tests {
             let replacement = mutator.heap_mut().allocate_instance(class, 0);
             let root = mutator.heap().stash(Value::object(platform));
             assert!(super::forward_identity(mutator, &[platform], &[replacement]).is_ok());
-            assert!(mutator
-                .platform_singleton
-                .and_then(Value::as_object)
-                .is_some_and(|object| object.same(replacement)));
-            assert!(mutator
-                .heap()
-                .fetch(&root)
-                .as_object()
-                .is_some_and(|object| object.same(replacement)));
+            assert!(
+                mutator
+                    .platform_singleton
+                    .and_then(Value::as_object)
+                    .is_some_and(|object| object.same(replacement))
+            );
+            assert!(
+                mutator
+                    .heap()
+                    .fetch(&root)
+                    .as_object()
+                    .is_some_and(|object| object.same(replacement))
+            );
         });
     }
 }

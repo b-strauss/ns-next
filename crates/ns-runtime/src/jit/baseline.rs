@@ -9,8 +9,8 @@
 
 use ns_assembler::{Condition, Label, Register};
 
-use crate::builtins::primitive::{mirror_entry, MachineCall};
-use crate::bytecode::{successors, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::builtins::primitive::{MachineCall, mirror_entry};
+use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, successors};
 use crate::heap::Immediate;
 use crate::interpreter::FeedbackBase;
 
@@ -128,7 +128,7 @@ pub(crate) enum BodyRole {
 impl BodyRole {
     /// The role of `code`, compiled as the body of `method` when it is
     /// one's.
-    pub(crate) fn of(code: &CompiledCode, is_method: bool) -> BodyRole {
+    pub(crate) fn of_code(code: &CompiledCode, is_method: bool) -> BodyRole {
         match (is_method, code.kind) {
             (true, _) => BodyRole::Method,
             (false, CodeKind::Method) => BodyRole::Factory,
@@ -251,7 +251,7 @@ pub(crate) struct ScopeFacts {
 impl ScopeFacts {
     /// The facts of a body of `facts` whose sends' cells are found from
     /// `feedback_base`, lowered as `role`, `inlined_depth` scopes deep.
-    pub(crate) fn of(
+    pub(crate) fn of_body(
         facts: &BodyFacts,
         feedback_base: FeedbackBase,
         role: BodyRole,
@@ -1255,7 +1255,7 @@ pub(crate) fn compile(
         (start, rows_word)
     });
     if copy == BodyCopy::Lean {
-        sends::prologue(&mut body, &BodyFacts::of(code));
+        sends::prologue(&mut body, &BodyFacts::of_code(code));
     }
     let mut exits = Vec::with_capacity(usize::from(count));
     let mut transfers = Vec::with_capacity(usize::from(count));
@@ -1374,11 +1374,11 @@ fn reaches_before_an_exit(code: &CompiledCode, exits: &[bool], transfers: &[bool
             if successor <= program_counter {
                 return true;
             }
-            if let Some(seen) = reached.get_mut(successor as usize) {
-                if !*seen {
-                    *seen = true;
-                    pending.push(successor);
-                }
+            if let Some(seen) = reached.get_mut(successor as usize)
+                && !*seen
+            {
+                *seen = true;
+                pending.push(successor);
             }
         }
     }
@@ -1656,11 +1656,11 @@ pub(super) fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowe
 mod tests {
     use crate::builtins::numbers::checked_floor_divide;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-    use crate::heap::{fits_small_integer, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::heap::{Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, fits_small_integer};
     use crate::interpreter::FeedbackBase;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
-    use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::MachineExit;
+    use crate::jit::stubs::testing::Machine;
 
     fn method(instructions: Vec<Instruction>, argument_count: u16) -> CompiledCode {
         CompiledCode::new(
@@ -1785,7 +1785,7 @@ mod tests {
     /// runs nothing.
     #[test]
     fn a_sends_call_maps_its_return_address_to_the_send() {
-        use ns_assembler::aarch64::{X10, X9};
+        use ns_assembler::aarch64::{X9, X10};
         use ns_assembler::x64::{RAX, RCX};
 
         a_sends_call_maps_its_return_address_under(

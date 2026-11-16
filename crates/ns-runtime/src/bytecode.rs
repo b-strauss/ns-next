@@ -1379,7 +1379,7 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
 /// it would be read past every check that holds a body to what its
 /// callees may have left (`docs/design/compiler.md`, "What a callee
 /// leaves").
-pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> + '_ {
+pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> {
     let (fixed, listed): ([Option<u16>; 2], &[u16]) = match instruction {
         Instruction::Move { source, .. }
         | Instruction::StoreLocal { source, .. }
@@ -1591,7 +1591,10 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
         reason = "read by the baseline compiler, built only where `cfg(ns_jit)` is set, and the tests"
     )
 )]
-pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {
+pub(crate) fn successors(
+    index: u32,
+    instruction: &Instruction,
+) -> impl Iterator<Item = u32> + use<> {
     let next = if falls_through(instruction) {
         index.checked_add(1)
     } else {
@@ -2536,10 +2539,12 @@ method foo: (args 1, registers 4)
         assert!(code.instruction(send).is_identical_to(&instruction));
         let after = code.instructions();
         assert_eq!(after.len(), instructions.len());
-        assert!(after
-            .iter()
-            .zip(&instructions)
-            .all(|(after, before)| after.is_identical_to(before)));
+        assert!(
+            after
+                .iter()
+                .zip(&instructions)
+                .all(|(after, before)| after.is_identical_to(before))
+        );
         assert_eq!(code.cached_send(send), cached_send);
         assert!(code.is_send(send));
         assert!(code.is_patched(send) && code.has_patches());
@@ -2579,7 +2584,7 @@ method foo: (args 1, registers 4)
     fn every_slot_patched_in_any_order_keeps_its_original() {
         let (code, _) = method_with_a_send();
         let count = code.instruction_count();
-        let slots: Vec<CompactInstruction> = (0..count).map(|index| code.slot(index)).collect();
+        let slots: Vec<CompactInstruction> = Vec::from_fn(count, |index| code.slot(index));
         let interleaved = |index: usize| (index * 7 + 3) % count;
         let order: Vec<usize> = if count % 7 == 0 {
             (0..count).rev().collect()

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{repository_root, ScratchDirectory};
+use common::{ScratchDirectory, repository_root};
 use indoc::indoc;
 use std::path::Path;
 use std::process::{Command, Output};

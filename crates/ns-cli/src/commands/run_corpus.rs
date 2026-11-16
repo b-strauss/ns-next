@@ -249,8 +249,8 @@ fn run_one(executable: &Path, project: &Path, lowering: &str) -> Result<RunOutco
         .map_err(|error| format!("could not run {}: {error}", executable.display()))?;
     Ok(RunOutcome {
         status: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: without_jit_warning(String::from_utf8_lossy(&out.stderr).into_owned()),
+        stdout: String::from_utf8_lossy_owned(out.stdout),
+        stderr: without_jit_warning(String::from_utf8_lossy_owned(out.stderr)),
     })
 }
 
@@ -328,8 +328,8 @@ fn run_one_binary(
         .map_err(|error| format!("could not load {}: {error}", executable.display()))?;
     Ok(RunOutcome {
         status: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: without_jit_warning(String::from_utf8_lossy(&out.stderr).into_owned()),
+        stdout: String::from_utf8_lossy_owned(out.stdout),
+        stderr: without_jit_warning(String::from_utf8_lossy_owned(out.stderr)),
     })
 }
 

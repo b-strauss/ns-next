@@ -429,11 +429,7 @@ impl ArbitraryInteger {
         // The magnitude is rounded, then the sign applied: rounding to
         // nearest is symmetric, so negating afterwards is exact.
         let magnitude = conversion::to_f64(&self.magnitude);
-        if self.negative {
-            -magnitude
-        } else {
-            magnitude
-        }
+        if self.negative { -magnitude } else { magnitude }
     }
 
     pub fn to_decimal_string(&self) -> String {
@@ -769,9 +765,11 @@ mod tests {
             ArbitraryInteger::from_parts(true, vec![0, 0]),
             ArbitraryInteger::zero()
         );
-        assert!(!ArbitraryInteger::from_i64(5)
-            .subtract(&ArbitraryInteger::from_i64(5))
-            .is_negative());
+        assert!(
+            !ArbitraryInteger::from_i64(5)
+                .subtract(&ArbitraryInteger::from_i64(5))
+                .is_negative()
+        );
         assert_eq!(ArbitraryInteger::zero().negated(), ArbitraryInteger::zero());
     }
 

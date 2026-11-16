@@ -492,9 +492,11 @@ mod tests {
         let text = std::fs::read_to_string(crate::repository_root().join(LIST)).expect("the list");
         let unreached = parse_list(&text).expect("a list");
         assert!(!unreached.is_empty());
-        assert!(unreached
-            .keys()
-            .all(|test| !test.binary.starts_with(NEVER_LISTED)));
+        assert!(
+            unreached
+                .keys()
+                .all(|test| !test.binary.starts_with(NEVER_LISTED))
+        );
     }
 
     #[test]

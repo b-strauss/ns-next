@@ -62,15 +62,15 @@ use crate::heap::{ApplicationIndex, Immediate};
 use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{DispatchId, QuickConstant};
 
+use super::Speculation;
 use super::graph::{
-    tainted_at, Block, BlockId, ClassRecipe, ClassStart, End, Graph, GraphScope, HeaderBinding,
-    IndexedKind, Node, Phi, ScopeId, ValueId, ValueKind, FRAME_BOUND,
+    Block, BlockId, ClassRecipe, ClassStart, End, FRAME_BOUND, Graph, GraphScope, HeaderBinding,
+    IndexedKind, Node, Phi, ScopeId, ValueId, ValueKind, tainted_at,
 };
 use super::plan::{AlwaysInlined, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::SnapshotTree;
 use super::verify::immediate_dominators;
-use super::Speculation;
 
 /// The input of a loop head's phi whose back edge is not seen yet.
 const UNFILLED: ValueId = ValueId(u32::MAX);
@@ -648,10 +648,10 @@ pub(crate) fn compiled_ways(
         if choice.may_fall_through() && instruction.falls_through() {
             work.push(index + 1);
         }
-        if choice.keeps_target() {
-            if let Some(target) = instruction.jump_target() {
-                work.push(target as usize);
-            }
+        if choice.keeps_target()
+            && let Some(target) = instruction.jump_target()
+        {
+            work.push(target as usize);
         }
     }
     ways
@@ -1514,15 +1514,14 @@ impl Laying<'_, '_> {
         let owner = &self.graph_scopes[scope.0 as usize];
         let original =
             self.snapshots[scope.0 as usize].instructions[program_counter as usize].clone();
-        if let SnapshotInstruction::MakeClosure { destination, .. } = original {
-            if let Some(BlockPlan::Eliminated(block)) =
+        if let SnapshotInstruction::MakeClosure { destination, .. } = original
+            && let Some(BlockPlan::Eliminated(block)) =
                 self.plan.blocks.get(&(scope, program_counter))
-            {
-                return Pending::Eliminated {
-                    destination: physical(owner.offset, destination),
-                    block: *block,
-                };
-            }
+        {
+            return Pending::Eliminated {
+                destination: physical(owner.offset, destination),
+                block: *block,
+            };
         }
         if owner.parent.is_some() {
             let block_scope = self.plan.scopes[scope.0 as usize].block_of.is_some();
@@ -1778,7 +1777,7 @@ impl Laying<'_, '_> {
 /// check is expressed (`Laying::expressed`): only `class` has none. A
 /// `SmallInteger` row that also takes a `Float` argument is both its
 /// fast path and its mixed operation; every other row machine code
-/// computes a float operation of is that operation (`FloatOperation::of`),
+/// computes a float operation of is that operation (`FloatOperation::of_primitive`),
 /// whose arm the plan takes only for the receivers its row's operation
 /// is for (`plan::expressed`).
 fn expressed_primitive(
@@ -1786,7 +1785,7 @@ fn expressed_primitive(
     argument_count: usize,
     checks: bool,
 ) -> Option<Expressed> {
-    let float = FloatOperation::of(primitive)
+    let float = FloatOperation::of_primitive(primitive)
         .filter(|operation| operation.argument_count() == argument_count);
     let expressed = match (primitive, argument_count) {
         (Primitive::Object(ObjectPrimitive::Class), 0) => return Some(Expressed::ClassOf),
@@ -2219,7 +2218,7 @@ impl RegisterSet {
         }
     }
 
-    fn registers(&self) -> impl Iterator<Item = usize> + '_ {
+    fn registers(&self) -> impl Iterator<Item = usize> {
         (0..self.words.len() * 64).filter(|register| self.contains(*register))
     }
 }
@@ -2802,7 +2801,12 @@ impl<'flat> Builder<'flat> {
         // A register's word keeps its generation where every way in agrees
         // on it and no pass around a loop through the block writes it;
         // elsewhere a read made before the block is not the word after it.
-        for register in 0..self.register_count {
+        for (register, word_generation) in state
+            .generations
+            .iter_mut()
+            .enumerate()
+            .take(self.register_count)
+        {
             let mut generations = forward
                 .iter()
                 .map(|predecessor| self.edge_state(*predecessor, block).generations[register]);
@@ -2811,7 +2815,7 @@ impl<'flat> Builder<'flat> {
             let written_around = self.loops[block]
                 .as_ref()
                 .is_some_and(|facts| facts.written.contains(register));
-            state.generations[register] = match agreed {
+            *word_generation = match agreed {
                 Some(generation) if !written_around => generation,
                 _ => self.new_generation(),
             };
@@ -2873,13 +2877,13 @@ impl<'flat> Builder<'flat> {
             // A register a back edge of an earlier build refuted takes its
             // phi though every way in agrees: the back edge brings another
             // value.
-            if !loop_changes && !self.forced_phis[block].contains(register) {
-                if let Some(first) = bindings.first() {
-                    if bindings.iter().all(|binding| binding == first) {
-                        state[register] = *first;
-                        continue;
-                    }
-                }
+            if !loop_changes
+                && !self.forced_phis[block].contains(register)
+                && let Some(first) = bindings.first()
+                && bindings.iter().all(|binding| binding == first)
+            {
+                state[register] = *first;
+                continue;
             }
             let value = self.new_value(None);
             let inputs = predecessors
@@ -3145,11 +3149,7 @@ impl<'flat> Builder<'flat> {
                 // A branch to the next instruction goes there either way.
                 let taken_block = target.unwrap_or(other);
                 let pick = |outcome: Outcome| {
-                    if outcome == taken {
-                        taken_block
-                    } else {
-                        other
-                    }
+                    if outcome == taken { taken_block } else { other }
                 };
                 Some(End::Branch {
                     program_counter,
@@ -3910,22 +3910,22 @@ mod tests {
     use ns_syntax::Span;
 
     use super::build_speculating as build;
+    use crate::Symbol;
     use crate::bytecode::{
         CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::FeedbackBase;
+    use crate::jit::CustomizationKey;
     use crate::jit::optimizing::graph::{BlockId, Definition, End, Graph, Node, ValueKind};
     use crate::jit::optimizing::snapshot::{
-        tainted_before_each, BodyFacts, Customization, SiteFacts, Snapshot, SnapshotInstruction,
+        BodyFacts, Customization, SiteFacts, Snapshot, SnapshotInstruction, tainted_before_each,
     };
     use crate::jit::optimizing::verify::verify;
     use crate::jit::optimizing::{
-        corpus_of_bodies, shipped_bodies, unrun_every_site, unrun_site, Speculation,
+        Speculation, corpus_of_bodies, shipped_bodies, unrun_every_site, unrun_site,
     };
-    use crate::jit::CustomizationKey;
     use crate::mixin::DispatchId;
-    use crate::Symbol;
 
     /// The snapshot of a method of `instructions`, none of which makes a
     /// closure, with registers to spare.
@@ -3941,7 +3941,7 @@ mod tests {
         );
         Snapshot {
             code_id: CodeId::from_raw(0),
-            facts: BodyFacts::of(&code),
+            facts: BodyFacts::of_code(&code),
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             instructions: code
                 .instructions()
@@ -4079,11 +4079,13 @@ mod tests {
         );
         // Nothing merges after a send: every block has one way in but the
         // loop's head.
-        assert!(graph
-            .blocks
-            .iter()
-            .filter(|block| !block.loop_head)
-            .all(|block| block.predecessors.len() <= 1));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .filter(|block| !block.loop_head)
+                .all(|block| block.predecessors.len() <= 1)
+        );
     }
 
     /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 new: r5. r3 < r5] whileTrue.
@@ -4645,10 +4647,11 @@ mod tests {
             unreachable!("matched above");
         };
         let edge = graph.block(target);
-        assert!(edge
-            .nodes
-            .iter()
-            .all(|node| matches!(node, Node::FrameRead { .. })));
+        assert!(
+            edge.nodes
+                .iter()
+                .all(|node| matches!(node, Node::FrameRead { .. }))
+        );
         assert!(
             matches!(edge.end, End::Jump(failure) if graph.block(failure).program_counter == 1)
         );
@@ -4735,21 +4738,27 @@ mod tests {
                 ..
             }
         )));
-        assert!(!graph_nodes
-            .iter()
-            .any(|node| matches!(node, Node::Frame { .. })));
+        assert!(
+            !graph_nodes
+                .iter()
+                .any(|node| matches!(node, Node::Frame { .. }))
+        );
     }
 
     #[test]
     fn a_shared_body_keeps_its_own_slot_template() {
         let graph = build(&snapshot_of(own_slot_read()));
         let graph_nodes = nodes(&graph);
-        assert!(graph_nodes
-            .iter()
-            .any(|node| matches!(node, Node::Frame { .. })));
-        assert!(!graph_nodes
-            .iter()
-            .any(|node| matches!(node, Node::OwnSlotLoad { .. })));
+        assert!(
+            graph_nodes
+                .iter()
+                .any(|node| matches!(node, Node::Frame { .. }))
+        );
+        assert!(
+            !graph_nodes
+                .iter()
+                .any(|node| matches!(node, Node::OwnSlotLoad { .. }))
+        );
     }
 
     /// A lazy slot's getter: its slot returned once filled, its
@@ -5027,9 +5036,11 @@ mod tests {
                 site: 6
             }
         );
-        assert!(nodes(&graph)
-            .iter()
-            .all(|node| !matches!(node, Node::Frame { .. })));
+        assert!(
+            nodes(&graph)
+                .iter()
+                .all(|node| !matches!(node, Node::Frame { .. }))
+        );
     }
 
     /// `Speculation::None` builds stage 1's graph whatever the feedback
@@ -5047,10 +5058,12 @@ mod tests {
             unrecorded.sites.fill(None);
             let graph = super::build(&unrun, Speculation::None);
             assert_eq!(graph, super::build(&unrecorded, Speculation::None));
-            assert!(graph
-                .values
-                .iter()
-                .all(|value| value.kind == ValueKind::Unknown));
+            assert!(
+                graph
+                    .values
+                    .iter()
+                    .all(|value| value.kind == ValueKind::Unknown)
+            );
             for block in &graph.blocks {
                 assert!(!matches!(block.end, End::Trap { .. }));
                 assert!(!matches!(
@@ -5060,10 +5073,12 @@ mod tests {
                         ..
                     }
                 ));
-                assert!(block
-                    .nodes
-                    .iter()
-                    .all(|node| !matches!(node, Node::IntegerBinary { fallback: None, .. })));
+                assert!(
+                    block
+                        .nodes
+                        .iter()
+                        .all(|node| !matches!(node, Node::IntegerBinary { fallback: None, .. }))
+                );
             }
             built += 1;
         }
@@ -5101,21 +5116,21 @@ pub(crate) mod inlining_tests {
     use indoc::indoc;
 
     use super::build_inlined;
+    use crate::Symbol;
     use crate::bytecode::{CallSite, Instruction, Literal};
     use crate::heap::{CodeId, Immediate};
     use crate::jit::optimizing::graph::{
         BlockId, Definition, End, Graph, HeaderBinding, IndexedKind, Node, ScopeId, ValueId,
         ValueKind,
     };
-    use crate::jit::optimizing::plan::{plan, plan_with, ArmPlan, FallThrough, InliningPlan};
+    use crate::jit::optimizing::plan::{ArmPlan, FallThrough, InliningPlan, plan, plan_with};
     use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
     use crate::jit::optimizing::tree::{CalleeFacts, SnapshotTree};
     use crate::jit::optimizing::verify::verify;
     use crate::jit::optimizing::{
-        inlining_corpus, ran_site, test_receiver, test_snapshot_with_arguments, test_tree,
-        tree_of_run, Speculation, SWEEP_LIMITS,
+        SWEEP_LIMITS, Speculation, inlining_corpus, ran_site, test_receiver,
+        test_snapshot_with_arguments, test_tree, tree_of_run,
     };
-    use crate::Symbol;
 
     /// The plan of `tree` and its graph, speculating.
     fn built(tree: &SnapshotTree) -> (InliningPlan, Graph) {
@@ -5206,21 +5221,25 @@ pub(crate) mod inlining_tests {
             graph.definition(value),
             Definition::Node(Node::IntegerBinary { .. })
         ));
-        assert!(graph
-            .blocks
-            .iter()
-            .filter(|block| block.scope == ScopeId(1))
-            .flat_map(|block| &block.nodes)
-            .any(|node| matches!(
-                node,
-                Node::Copy { destination_register, source }
-                    if *destination_register == destination && *source == value
-            )));
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .all(|node| !matches!(node, Node::Frame { .. })));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .filter(|block| block.scope == ScopeId(1))
+                .flat_map(|block| &block.nodes)
+                .any(|node| matches!(
+                    node,
+                    Node::Copy { destination_register, source }
+                        if *destination_register == destination && *source == value
+                ))
+        );
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .all(|node| !matches!(node, Node::Frame { .. }))
+        );
     }
 
     const TWO_RETURNS: &str = indoc! {"
@@ -5651,15 +5670,17 @@ pub(crate) mod inlining_tests {
             .scope(ScopeId(1))
             .header_register(HeaderBinding::Receiver);
         assert_eq!(header, 20);
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .any(|node| matches!(
-                node,
-                Node::Copy { destination_register, source }
-                    if *destination_register == header && source == receiver
-            )));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .any(|node| matches!(
+                    node,
+                    Node::Copy { destination_register, source }
+                        if *destination_register == header && source == receiver
+                ))
+        );
     }
 
     /// `root` whose lexical send at `program_counter`, its site 0, is
@@ -5801,10 +5822,11 @@ pub(crate) mod inlining_tests {
         assert!(!edges.is_empty(), "{graph:#?}");
         for edge in edges {
             assert_eq!(edge.scope, ScopeId::ROOT);
-            assert!(edge
-                .nodes
-                .iter()
-                .all(|node| matches!(node, Node::FrameRead { .. })));
+            assert!(
+                edge.nodes
+                    .iter()
+                    .all(|node| matches!(node, Node::FrameRead { .. }))
+            );
         }
     }
 
@@ -5930,11 +5952,13 @@ pub(crate) mod inlining_tests {
         // The arm is its sender's, at the send: no scope, no frame node.
         assert_eq!(graph.block(arm).scope, ScopeId::ROOT);
         assert_eq!(graph.scopes.len(), 1);
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .all(|node| !matches!(node, Node::Frame { .. })));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .all(|node| !matches!(node, Node::Frame { .. }))
+        );
     }
 
     #[test]
@@ -5964,11 +5988,13 @@ pub(crate) mod inlining_tests {
                 if *word == Immediate::small_integer(5).expect("small").bits()
         ));
         assert_eq!(returned(&graph), object, "a setter answers its receiver");
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .any(|node| node.calls_leaf()));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .any(|node| node.calls_leaf())
+        );
     }
 
     #[test]
@@ -6044,13 +6070,15 @@ pub(crate) mod inlining_tests {
             .flat_map(|block| &block.nodes)
             .filter(|node| matches!(node, Node::IndexedStore { .. }))
             .collect();
-        let [Node::IndexedStore {
-            kind,
-            object,
-            source,
-            program_counter,
-            ..
-        }] = stores[..]
+        let [
+            Node::IndexedStore {
+                kind,
+                object,
+                source,
+                program_counter,
+                ..
+            },
+        ] = stores[..]
         else {
             panic!("one store: {graph:#?}");
         };
@@ -6095,10 +6123,12 @@ pub(crate) mod inlining_tests {
             plan.sites[&(ScopeId::ROOT, 0)].fall_through,
             FallThrough::Unguarded
         );
-        assert!(graph
-            .blocks
-            .iter()
-            .all(|block| !matches!(block.end, End::TypeCase { .. })));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .all(|block| !matches!(block.end, End::TypeCase { .. }))
+        );
         let Definition::Node(Node::FieldLoad { object, field, .. }) =
             graph.definition(returned(&graph))
         else {
@@ -6123,11 +6153,13 @@ pub(crate) mod inlining_tests {
         let plan = plan(&tree, Speculation::None);
         let graph = build_inlined(&tree, &plan, Speculation::None);
         assert_eq!(verify(&graph), Ok(()));
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .all(|node| node.trap().is_none()));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .all(|node| node.trap().is_none())
+        );
     }
 
     /// A site that trapped sends its arms with a check: the check failed
@@ -6141,11 +6173,13 @@ pub(crate) mod inlining_tests {
             .expect("a site")
             .trapped = true;
         let (_, graph) = built(&tree);
-        assert!(graph
-            .blocks
-            .iter()
-            .flat_map(|block| &block.nodes)
-            .all(|node| !matches!(node, Node::TrapIfNil { .. } | Node::FieldLoad { .. })));
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .all(|node| !matches!(node, Node::TrapIfNil { .. } | Node::FieldLoad { .. }))
+        );
     }
 
     /// Every graph the inlining corpus's trees plan, speculating and not,
@@ -6240,12 +6274,14 @@ pub(crate) mod inlining_tests {
         let tree = tree_of_run(FLOATS, "add:");
         let (_, graph) = built(&tree);
         let send = send_of(&tree.root, "+");
-        let [Node::FloatOperation {
-            operation,
-            program_counter,
-            argument,
-            ..
-        }] = float_operations(&graph)[..]
+        let [
+            Node::FloatOperation {
+                operation,
+                program_counter,
+                argument,
+                ..
+            },
+        ] = float_operations(&graph)[..]
         else {
             panic!("one float operation: {graph:#?}");
         };
@@ -6294,7 +6330,7 @@ pub(crate) mod inlining_tests {
     /// fast path alone; `asFloat` and `Number`'s `/` are float operations.
     #[test]
     fn a_small_integer_row_with_a_mixed_counterpart_is_both() {
-        use super::{expressed_primitive, Expressed};
+        use super::{Expressed, expressed_primitive};
         use crate::builtins::primitive::{IntegerPrimitive, NumberPrimitive, Primitive};
         use crate::bytecode::IntegerOperation;
         use crate::jit::float_operations::{FloatComparison, FloatOperation, FloatReceiver};

@@ -10,7 +10,7 @@
 //! methods").
 
 use super::Arguments;
-use crate::builtins::primitive::{mirror_entry, MirrorEntry, MirrorPrimitive, MIRROR};
+use crate::builtins::primitive::{MIRROR, MirrorEntry, MirrorPrimitive, mirror_entry};
 use crate::heap::Heap;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
@@ -280,14 +280,14 @@ fn owning_its_arguments<'gc>(
 /// lowering its activation is exempt exactly when that rule's condition holds
 /// (`docs/design/compiler.md`, "How the limit counts").
 fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
-    if let Some(object) = block.as_object() {
-        if mutator.heap().is_closure(object) {
-            return Step::Block {
-                closure: object,
-                arguments: StepArguments::ControlFlow,
-                then: Continuation::Deliver,
-            };
-        }
+    if let Some(object) = block.as_object()
+        && mutator.heap().is_closure(object)
+    {
+        return Step::Block {
+            closure: object,
+            arguments: StepArguments::ControlFlow,
+            then: Continuation::Deliver,
+        };
     }
     Step::Value(block)
 }
@@ -306,7 +306,7 @@ fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
 
 #[cfg(test)]
 mod tests {
-    use crate::builtins::primitive::{mirror_primitive_named, MIRROR};
+    use crate::builtins::primitive::{MIRROR, mirror_primitive_named};
     use crate::interpreter::Arguments;
     use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 

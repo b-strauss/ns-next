@@ -80,10 +80,10 @@ fn run_loaded(
     arguments: &[String],
     statistics: Statistics,
 ) -> ExitCode {
-    if let Some(link) = link {
-        if link.wait_for_configuration(&mut loaded.interpreter) == HostStart::Terminate {
-            return debug::report_terminated();
-        }
+    if let Some(link) = link
+        && link.wait_for_configuration(&mut loaded.interpreter) == HostStart::Terminate
+    {
+        return debug::report_terminated();
     }
     let application = match program::instantiate_application(program, loaded, link) {
         Ok(application) => application,

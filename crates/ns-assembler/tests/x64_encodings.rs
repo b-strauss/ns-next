@@ -4,8 +4,8 @@
 
 use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, IntelFormatter, Mnemonic};
 use ns_assembler::{
-    x64, Assembled, Assembler, AssemblyError, Condition, Encoder, FloatArithmetic, FloatRegister,
-    Label, Memory, Register, Rounding, Width, X64,
+    Assembled, Assembler, AssemblyError, Condition, Encoder, FloatArithmetic, FloatRegister, Label,
+    Memory, Register, Rounding, Width, X64, x64,
 };
 
 const QUADWORD_NAMES: [&str; 16] = [
@@ -924,9 +924,11 @@ fn every_byte_of_a_fill_with_stops_is_a_breakpoint() {
     assert_eq!(code.len(), 4, "appended, the bytes before kept");
     for start in 1..code.len() {
         let instructions = decode(&code[start..]);
-        assert!(instructions
-            .iter()
-            .all(|instruction| instruction.mnemonic() == Mnemonic::Int3));
+        assert!(
+            instructions
+                .iter()
+                .all(|instruction| instruction.mnemonic() == Mnemonic::Int3)
+        );
         assert_eq!(instructions.len(), code.len() - start);
     }
 }

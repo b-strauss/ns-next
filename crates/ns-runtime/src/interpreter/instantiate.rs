@@ -6,18 +6,18 @@ use super::Arguments;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::debugger::metadata::MetadataCollector;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassLevel, Heap, Root};
 use crate::mixin::{
-    slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
-    MixinApplicationClause, MixinMethod, MixinSlot,
+    ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot, slot_accessors,
 };
 use crate::types::*;
-use crate::Symbol;
 
 use super::{
     HostError, HostResult, HostSignal, HostStart, Interpreter, Mutator, Signal, Step, StepArguments,
@@ -65,18 +65,17 @@ fn build_methods(
         method.class_accessor = class_accessor_root.and_then(|root| {
             crate::compiler::primitive_method::recognize_class_accessor(declaration, bindings, root)
         });
-        if kernel_block {
-            if let Some(marker) =
+        if kernel_block
+            && let Some(marker) =
                 crate::compiler::unwind_marker::recognize(declaration, &method.code)
-            {
-                let mut code = (*method.code).clone();
-                code.unwind_marker = Some(marker);
-                // The clone is a body of its own, so the tables move to it.
-                if let Some(collector) = collector {
-                    collector.rekey(&method.code, &code);
-                }
-                method.code = Rc::new(code);
+        {
+            let mut code = (*method.code).clone();
+            code.unwind_marker = Some(marker);
+            // The clone is a body of its own, so the tables move to it.
+            if let Some(collector) = collector {
+                collector.rekey(&method.code, &code);
             }
+            method.code = Rc::new(code);
         }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
         debug_assert!(
@@ -279,7 +278,7 @@ impl Interpreter {
                             "cannot instantiate {}: it is not a class",
                             mutator.heap.describe(value)
                         ),
-                    })))
+                    })));
                 }
             };
             let factory_arguments: Vec<Value> = factory_arguments
@@ -321,7 +320,7 @@ impl<'gc> Mutator<'gc> {
         self.note_module_built();
         // A breakpoint set before the module was loaded resolves now.
         if !self.has_no_breakpoints() {
-            let module = crate::debugger::ModuleName::of(&mixin);
+            let module = crate::debugger::ModuleName::of_root(&mixin);
             crate::debugger::breakpoints::module_built(self, &module);
         }
         class
@@ -367,10 +366,10 @@ impl<'gc> Mutator<'gc> {
         // A body-less root is the level its `<:` clause added
         // (`object-model.md`, "Mixin application"), named for it and with
         // its factory.
-        if let (false, Some((top, _))) = (mixin.has_body, &top) {
-            if !applied.is_empty() {
-                return *top;
-            }
+        if let (false, Some((top, _))) = (mixin.has_body, &top)
+            && !applied.is_empty()
+        {
+            return *top;
         }
         let (superclass, super_application) = top.unzip();
         let application = self.apply_mixin(mixin, super_application.as_ref());
@@ -890,7 +889,7 @@ impl<'gc> Mutator<'gc> {
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
                     &display_name,
-                    Instantiated::of(&self.heap, class, application),
+                    Instantiated::of_class(&self.heap, class, application),
                     refusal,
                 )));
             }
@@ -1221,7 +1220,7 @@ impl<'gc> Mutator<'gc> {
     /// level a clause added is entered.
     fn passes(&self, level: ClassReference<'gc>, view: ClassLevel<'_, 'gc>) -> Option<Pass> {
         let (facts, own_level) = match view.body_less_declaration() {
-            Some(declaration) => (Some(crate::mixin::LevelFacts::of(declaration)), 0),
+            Some(declaration) => (Some(crate::mixin::LevelFacts::of_mixin(declaration)), 0),
             None if view.is_applied_level() => return None,
             None => (view.level_facts(), 1),
         };
@@ -1432,14 +1431,14 @@ fn check_arity<'gc>(
     declared_arity: Option<usize>,
     factory_arguments: Arguments<'_, 'gc>,
 ) -> Result<(), Signal<'gc>> {
-    if let Some(declared_arity) = declared_arity {
-        if factory_arguments.len() != declared_arity {
-            return Err(factory_arity_error(
-                class,
-                declared_arity,
-                factory_arguments.len(),
-            ));
-        }
+    if let Some(declared_arity) = declared_arity
+        && factory_arguments.len() != declared_arity
+    {
+        return Err(factory_arity_error(
+            class,
+            declared_arity,
+            factory_arguments.len(),
+        ));
     }
     Ok(())
 }
@@ -1620,7 +1619,7 @@ struct Instantiated {
 }
 
 impl Instantiated {
-    fn of<'gc>(
+    fn of_class<'gc>(
         heap: &Heap<'gc>,
         class: ClassReference<'gc>,
         application: &crate::mixin::MixinApplication,
@@ -1762,7 +1761,7 @@ fn value_class_refusal_error<'gc>(
     let Instantiated {
         name: instantiated,
         selector,
-    } = Instantiated::of(heap, class, application);
+    } = Instantiated::of_class(heap, class, application);
     let Some(refusal) = heap.class_value_refusal(class) else {
         unreachable!("internal: value_class_refusal_error called for a class with no refusal");
     };
@@ -2266,7 +2265,7 @@ mod tests {
             while let Some(application) = level {
                 assert_eq!(
                     application.level_facts,
-                    LevelFacts::of(&application.mixin),
+                    LevelFacts::of_mixin(&application.mixin),
                     "{}",
                     application.mixin.name
                 );
@@ -2345,10 +2344,12 @@ mod tests {
                 assert!(!text.is_shared(), "{} owns its text", mixin.name);
             }
             let inner_text = inner.text.as_ref().expect("built from source");
-            assert!(inner_class_side
-                .text
-                .as_ref()
-                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
+            assert!(
+                inner_class_side
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| Rc::ptr_eq(text, inner_text))
+            );
         });
     }
 
@@ -2400,10 +2401,12 @@ mod tests {
             assert!(inner.class_side.is_none(), "Inner declares no class side");
             let class_side = mutator.metaclass_mixin(&inner);
             let inner_text = inner.text.as_ref().expect("built from source");
-            assert!(class_side
-                .text
-                .as_ref()
-                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
+            assert!(
+                class_side
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| Rc::ptr_eq(text, inner_text))
+            );
         });
     }
 

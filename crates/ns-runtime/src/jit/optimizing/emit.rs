@@ -52,12 +52,12 @@ use super::metadata::{Metadata, PollSource};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use crate::heap::{CodeId, Heap, Immediate};
 use crate::interpreter::inline_cache::FeedbackBase;
-use crate::jit::baseline::{lower, BodyAssembler, Lowering, ScopeFacts, TwinTransfer};
+use crate::jit::baseline::{BodyAssembler, Lowering, ScopeFacts, TwinTransfer, lower};
 use crate::jit::float_operations::FloatOperation;
 use crate::jit::floats::{self, FloatRegisters};
 use crate::jit::macro_assembler::KnownSmallIntegers;
 use crate::jit::stubs::ExitKind;
-use crate::jit::{closures, sends, Refusal};
+use crate::jit::{Refusal, closures, sends};
 
 /// A body's optimized code, as `optimizing::compile` answers it for the
 /// JIT to install beside the body's baseline code.
@@ -1514,8 +1514,8 @@ mod tests {
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
     use crate::jit::optimizing::snapshot::{Customization, Snapshot, SnapshotInstruction};
     use crate::jit::optimizing::{
-        compile, corpus_of_bodies, shipped_bodies, test_send, test_snapshot_with_arguments,
-        unrun_every_site, unrun_site, Speculation,
+        Speculation, compile, corpus_of_bodies, shipped_bodies, test_send,
+        test_snapshot_with_arguments, unrun_every_site, unrun_site,
     };
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::{BlockWord, MachineExit};

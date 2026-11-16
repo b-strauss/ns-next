@@ -12,7 +12,7 @@
 
 use super::machine_words::{MachineWord, MachineWords};
 use super::space::reserve_falling_back;
-use super::{out_of_memory, Word};
+use super::{Word, out_of_memory};
 use ns_memory::{MemoryError, Reservation};
 
 /// How much address space a heap's frame stack reserves. Reserved space
@@ -50,21 +50,15 @@ thread_local! {
 /// included, so that no later test on the thread inherits the small stack.
 #[cfg(test)]
 pub(crate) fn with_stack_reservation<T>(bytes: usize, body: impl FnOnce() -> T) -> T {
-    struct ResetOverride;
-    impl Drop for ResetOverride {
-        fn drop(&mut self) {
-            STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(None));
-        }
-    }
-    STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(Some(bytes)));
-    let _reset = ResetOverride;
+    STACK_RESERVATION_OVERRIDE.set(Some(bytes));
+    let _reset = core::mem::DropGuard::new((), |()| STACK_RESERVATION_OVERRIDE.set(None));
     body()
 }
 
 /// The reservation a new stack takes.
 pub(super) fn stack_reservation() -> usize {
     #[cfg(test)]
-    if let Some(bytes) = STACK_RESERVATION_OVERRIDE.with(|cell| cell.get()) {
+    if let Some(bytes) = STACK_RESERVATION_OVERRIDE.get() {
         return bytes;
     }
     STACK_RESERVATION
@@ -266,7 +260,7 @@ impl FrameFlags {
         if !word.is_non_negative_small_integer() {
             return None;
         }
-        let found = FrameFlags::of(word);
+        let found = FrameFlags::of_word(word);
         (found.word().bits() == word.bits() && found.with_generation(self.generation) == self)
             .then_some(found.generation)
     }
@@ -295,7 +289,7 @@ impl FrameFlags {
     /// The flags a header's flags word holds; `word` must be one `word`
     /// answered.
     #[inline(always)]
-    pub(super) fn of(word: Word) -> FrameFlags {
+    pub(super) fn of_word(word: Word) -> FrameFlags {
         let payload = number_of(word);
         FrameFlags {
             kind_tag: (payload & KIND_TAG_MASK) as u8,
@@ -1014,7 +1008,7 @@ mod tests {
                             let _ = generation;
                             let word = flags.word();
                             assert!(word.is_non_negative_small_integer());
-                            assert_eq!(FrameFlags::of(word), flags);
+                            assert_eq!(FrameFlags::of_word(word), flags);
                         }
                     }
                 }

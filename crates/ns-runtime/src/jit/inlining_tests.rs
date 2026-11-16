@@ -7,8 +7,8 @@
 use indoc::indoc;
 
 use crate::heap::{ActivationReference, CodeId, Heap};
-use crate::interpreter::inline_cache::MethodSide;
 use crate::interpreter::Mutator;
+use crate::interpreter::inline_cache::MethodSide;
 use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
 /// The object a frame word named when the frame left its optimized code
@@ -719,9 +719,9 @@ fn the_prologue_refuses_within_the_deepest_chain_of_the_limit() {
     use crate::heap::machine_words::MachineWord;
     use crate::jit::baseline::BodyRole;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
-    use crate::jit::optimizing::{compile_tree, tree_of_run, Speculation};
-    use crate::jit::stubs::testing::Machine;
+    use crate::jit::optimizing::{Speculation, compile_tree, tree_of_run};
     use crate::jit::stubs::MachineExit;
+    use crate::jit::stubs::testing::Machine;
 
     let tree = tree_of_run(
         indoc! {"
@@ -810,9 +810,9 @@ fn the_prologue_holds_the_room_to_the_deepest_extent() {
     use crate::jit::baseline::BodyRole;
     use crate::jit::leaves::Leaf;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
-    use crate::jit::optimizing::{compile_tree, tree_of_run, Speculation};
-    use crate::jit::stubs::testing::Machine;
+    use crate::jit::optimizing::{Speculation, compile_tree, tree_of_run};
     use crate::jit::stubs::MachineExit;
+    use crate::jit::stubs::testing::Machine;
 
     let tree = tree_of_run(
         indoc! {"
@@ -1017,7 +1017,7 @@ fn a_push_enters_no_copy_whose_inlined_scopes_pass_the_stack_s_end() {
 /// is the interpreter's.
 #[test]
 fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_send() {
-    use crate::jit::optimizing::plan::{plan, FallThrough, Limits};
+    use crate::jit::optimizing::plan::{FallThrough, Limits, plan};
     use crate::jit::optimizing::tree::SnapshotTree;
 
     let source = indoc! {"
@@ -1216,7 +1216,7 @@ fn a_setter_arm_stores_through_the_barrier() {
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::graph::Node;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::{tree_of_run, Speculation};
+    use crate::jit::optimizing::{Speculation, tree_of_run};
 
     // What the copy compiles: the setter's store, which calls the barrier's
     // leaf.
@@ -1619,18 +1619,12 @@ const A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY: &str = indoc! {"
 /// the interpreter's.
 #[test]
 fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
-    use crate::jit::optimizing::plan::{plan, BlockPlan, Limits};
+    use crate::jit::optimizing::plan::{BlockPlan, Limits, plan};
     use crate::jit::optimizing::snapshot::SUPER_SENDS_READ_AS_NEVER_RUN;
     use crate::jit::optimizing::tree::SnapshotTree;
 
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            SUPER_SENDS_READ_AS_NEVER_RUN.set(false);
-        }
-    }
     SUPER_SENDS_READ_AS_NEVER_RUN.set(true);
-    let _reset = Reset;
+    let _reset = core::mem::DropGuard::new((), |()| SUPER_SENDS_READ_AS_NEVER_RUN.set(false));
     let source = A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY;
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))

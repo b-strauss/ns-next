@@ -54,7 +54,7 @@ use ns_memory::{CodeOffset, CodeWriter, EntryBlock};
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
-use crate::interpreter::{FeedbackBase, Mutator, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
+use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 
 /// The code zone's size unless a test asks for another. A first guess
@@ -669,7 +669,7 @@ impl CustomizationKey {
     /// The key of an activation on `receiver` at `current_class`; `None`
     /// where either has no application with a minted id -- a class object
     /// only a crafted image makes -- which no copy is made for.
-    fn of<'gc>(
+    fn of_activation<'gc>(
         heap: &Heap<'gc>,
         receiver: Value<'gc>,
         current_class: Option<ClassReference<'gc>>,
@@ -911,8 +911,8 @@ impl JitSlot {
     fn decay_exits(&self) -> u32 {
         let exits = self.exits.get() / 2;
         self.exits.set(exits);
-        self.abandonments.set(self.abandonments.get() / 2);
-        self.optimized_traps.set(self.optimized_traps.get() / 2);
+        self.abandonments.update(|abandonments| abandonments / 2);
+        self.optimized_traps.update(|traps| traps / 2);
         for copy in self.copies.borrow_mut().iter_mut() {
             copy.traps /= 2;
         }
@@ -3056,16 +3056,14 @@ impl JitState {
         };
         let (entry, other) = self.body_lookup.entries_of(offset);
         for each in [entry, other] {
-            if let Some(index) = each.get().checked_sub(1) {
-                if holds(index as usize) {
-                    return Some(index);
-                }
+            if let Some(index) = each.get().checked_sub(1)
+                && holds(index as usize)
+            {
+                return Some(index);
             }
         }
         #[cfg(test)]
-        self.body_lookup
-            .searches
-            .set(self.body_lookup.searches.get() + 1);
+        self.body_lookup.searches.update(|searches| searches + 1);
         // Installed in ascending order, so the body holding the offset, if
         // one does, is the last that starts at or before it.
         let after = self.bodies.partition_point(|body| body.start <= offset);
@@ -3313,7 +3311,7 @@ impl CopyDependencies {
     /// applications' guards read from `heap` at the install's safepoint,
     /// where the tree its plan was made from was taken.
     #[cfg(ns_jit)]
-    fn of(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
+    fn of_relied_on(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
         let mut applications: Vec<DispatchId> = relied_on.guards.clone();
         for index in &relied_on.applications {
             if let Some(application) = heap.application(*index) {
@@ -3984,7 +3982,7 @@ pub(crate) enum Stubbed<'method> {
 /// arguments than a closure stub shifts past, a `doesNotUnderstand:`
 /// handler -- and where there is no zone: the interpreter runs the send.
 pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
-    use crate::builtins::primitive::{mirror_entry, BlockPrimitive, MachineCall, Primitive};
+    use crate::builtins::primitive::{BlockPrimitive, MachineCall, Primitive, mirror_entry};
     use crate::interpreter::resolve::Chain;
     use crate::mixin::{AccessorKind, MethodFastPath, QuickConstant};
     let zone = state.zone.as_ref()?;
@@ -4439,16 +4437,16 @@ impl JitState {
         for (index, body) in self.bodies.iter().enumerate() {
             // Only the body its slot names, so that each slot's count is
             // halved once: one freed, or compiled anew since, is not.
-            if let Some(code) = body.code.upgrade() {
-                if self.named_body(&code) == Some(index) {
-                    code.jit.decay_exits();
-                }
+            if let Some(code) = body.code.upgrade()
+                && self.named_body(&code) == Some(index)
+            {
+                code.jit.decay_exits();
             }
             // Optimized code's own count, halved as its baseline code's
             // is, so that a rare exit of it does not add up to its
             // abandonment over a long run either.
             if body.tier == Tier::Optimized && !body.free {
-                body.exits.set(body.exits.get() / 2);
+                body.exits.update(|exits| exits / 2);
             }
         }
         let mut revived = 0;
@@ -4545,7 +4543,7 @@ pub(crate) fn entry_key<'gc>(
     if !code.jit.has_installed_copy() {
         return None;
     }
-    CustomizationKey::of(heap, receiver, current_class)
+    CustomizationKey::of_activation(heap, receiver, current_class)
 }
 
 /// `entry_key` for `activation`, read off its frame's header.
@@ -4558,7 +4556,7 @@ fn activation_key(
         return None;
     }
     let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
-    CustomizationKey::of(heap, receiver, current_class)
+    CustomizationKey::of_activation(heap, receiver, current_class)
 }
 
 /// Counts an entry into `code`, an activation with `feedback_base` of
@@ -4807,7 +4805,7 @@ fn assemble(
 ) -> Result<baseline::BaselineBody, Refusal> {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(settings.counting);
-    let role = baseline::BodyRole::of(code, method.is_some());
+    let role = baseline::BodyRole::of_code(code, method.is_some());
     baseline::compile(
         code,
         macro_assembler,
@@ -5141,10 +5139,10 @@ fn point_budget_words(mutator: &mut Mutator<'_>) {
 pub(crate) fn budgets_before_collection(mutator: &Mutator<'_>) -> IdentityMap<usize, i64> {
     let mut budgets = IdentityMap::default();
     for body in mutator.jit.bodies.iter().filter(|body| !body.free) {
-        if let Some(code) = body.code.upgrade() {
-            if let Some(budget) = mutator.heap.armed_optimization_budget(&code) {
-                budgets.insert(Rc::as_ptr(&code) as usize, budget);
-            }
+        if let Some(code) = body.code.upgrade()
+            && let Some(budget) = mutator.heap.armed_optimization_budget(&code)
+        {
+            budgets.insert(Rc::as_ptr(&code) as usize, budget);
         }
     }
     budgets
@@ -5369,7 +5367,7 @@ fn optimization_due<'gc>(
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
 ) -> bool {
     let key = frame.and_then(|(receiver, current_class)| {
-        CustomizationKey::of(&mutator.heap, receiver, current_class)
+        CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
     });
     if let Some(key) = key {
         match code.jit.copy_row(key) {
@@ -5518,13 +5516,12 @@ fn inlined_into_a_copy_below(mutator: &Mutator<'_>, activation: ActivationRefere
         };
         let code = heap.activation_code(sender);
         let key = activation_key(heap, &code, sender);
-        if let Some(copy) = mutator.jit.optimized_for(&code, key) {
-            if bodies
+        if let Some(copy) = mutator.jit.optimized_for(&code, key)
+            && bodies
                 .iter()
                 .all(|body| copy.dependencies.code_ids.contains(body))
-            {
-                return true;
-            }
+        {
+            return true;
         }
         bodies.push(heap.activation_code_id(sender));
         frame = sender;
@@ -5666,7 +5663,7 @@ fn recompilable(
     let (key, current_class) = if customized {
         let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
         (
-            CustomizationKey::of(heap, receiver, current_class),
+            CustomizationKey::of_activation(heap, receiver, current_class),
             current_class,
         )
     } else {
@@ -5844,7 +5841,7 @@ fn request_recompilee(
         mutator.jit.statistics.recompilees_above += 1;
         let code = mutator.heap.activation_code(triggering);
         let key = frame_of(mutator, &code, triggering).and_then(|(receiver, current_class)| {
-            CustomizationKey::of(&mutator.heap, receiver, current_class)
+            CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
         });
         let version = code.jit.optimized_version(key);
         mutator
@@ -5900,10 +5897,10 @@ fn request_optimization<'gc>(
     code: &Rc<CompiledCode>,
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
 ) {
-    if let Some((receiver, current_class)) = frame {
-        if request_copy(mutator, code, receiver, current_class) {
-            return;
-        }
+    if let Some((receiver, current_class)) = frame
+        && request_copy(mutator, code, receiver, current_class)
+    {
+        return;
     }
     request(mutator, OptimizationRequest::uncustomized(code));
 }
@@ -5923,7 +5920,7 @@ fn request_copy<'gc>(
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
 ) -> bool {
-    let Some(key) = CustomizationKey::of(&mutator.heap, receiver, current_class) else {
+    let Some(key) = CustomizationKey::of_activation(&mutator.heap, receiver, current_class) else {
         return false;
     };
     if code.jit.copy_row(key).is_none() {
@@ -6143,7 +6140,7 @@ fn optimize(
     macro_assembler.set_count_down_at_entry(countdown);
     #[cfg(test)]
     macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
-    let role = baseline::BodyRole::of(code, method.is_some());
+    let role = baseline::BodyRole::of_code(code, method.is_some());
     // What the copy inlined -- its scopes, type-case arms, eliminated
     // blocks and sites -- counted once it is installed.
     let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
@@ -6162,7 +6159,7 @@ fn optimize(
             u64::from(optimized.inlined_sites),
         );
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
-        let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
+        let dependencies = CopyDependencies::of_relied_on(&mutator.heap, &optimized.relied_on);
         install_optimized(
             &mut mutator.jit,
             code,
@@ -6469,7 +6466,10 @@ fn verify_blocks_at_poll_entries(
                 assert!(
                     home.locations.iter().any(|(own, location)| {
                         own == register
-                            && matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                            && matches!(
+                                location,
+                                Location::FrameWord | Location::EliminatedBlock(_)
+                            )
                     }),
                     "internal: a block live at a poll copies r{register}, which the frame does not keep there"
                 );
@@ -8418,10 +8418,10 @@ impl JitState {
             if body.free || body.tier != Tier::Optimized {
                 continue;
             }
-            if let Some(code) = body.code.upgrade() {
-                if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
-                    codes.push(code);
-                }
+            if let Some(code) = body.code.upgrade()
+                && !codes.iter().any(|known| Rc::ptr_eq(known, &code))
+            {
+                codes.push(code);
             }
         }
         codes
@@ -8844,7 +8844,7 @@ mod tests {
 
     #[test]
     fn the_entries_a_revival_waits_for_double_up_to_their_cap() {
-        use super::{revival_entries, REVIVAL_ENTRIES};
+        use super::{REVIVAL_ENTRIES, revival_entries};
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 1), 4096);
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 2), 8192);
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 5), 65_536);
@@ -8960,8 +8960,8 @@ mod tests {
 
     #[test]
     fn a_copy_speculates_up_to_its_last_version() {
-        use super::optimizing::Speculation;
         use super::LAST_VERSION;
+        use super::optimizing::Speculation;
         assert_eq!(Speculation::at_version(0), Speculation::Traps);
         assert_eq!(Speculation::at_version(LAST_VERSION), Speculation::Traps);
         assert_eq!(Speculation::at_version(LAST_VERSION + 1), Speculation::None);
@@ -9037,7 +9037,7 @@ mod tests {
         use crate::jit::stubs::{ExitKind, MachineExit};
         use ns_memory::CodeOffset;
 
-        use crate::jit::{compile_twin, install, machine_entry, note_entry, JitState};
+        use crate::jit::{JitState, compile_twin, install, machine_entry, note_entry};
 
         fn body() -> Rc<CompiledCode> {
             Rc::new(CompiledCode::new(
@@ -9159,9 +9159,11 @@ mod tests {
             assert!(machine_entry(&state, &code).is_some());
             assert!(code.jit.push_is_armed(), "a push enters it");
             assert!(state.is_entered_here(&code));
-            assert!(state
-                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
-                .is_some());
+            assert!(
+                state
+                    .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                    .is_some()
+            );
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
@@ -9190,9 +9192,11 @@ mod tests {
             enter_twice(&mut state, &code);
             assert!(machine_entry(&state, &code).is_some());
             assert!(code.jit.push_is_armed(), "a push enters it");
-            assert!(state
-                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
-                .is_some());
+            assert!(
+                state
+                    .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                    .is_some()
+            );
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
@@ -9513,9 +9517,11 @@ mod tests {
                 state.body_at(first_start, heap).is_none(),
                 "the stubs' code, or the padding after them"
             );
-            assert!(state
-                .body_at(address(ns_memory::CodeOffset(1)), heap)
-                .is_none());
+            assert!(
+                state
+                    .body_at(address(ns_memory::CodeOffset(1)), heap)
+                    .is_none()
+            );
             assert!(state.body_at(0, heap).is_none(), "outside the zone");
             // A body that died answers nothing, never another body. (The
             // two above live on in the heap's code rows, which `body_at`
@@ -9605,7 +9611,7 @@ mod tests {
         #[test]
         fn only_exits_that_say_something_of_the_code_count() {
             use crate::jit::stubs::MachineExit;
-            use crate::jit::{exit_counts, ExitCircumstances};
+            use crate::jit::{ExitCircumstances, exit_counts};
             let plain = ExitCircumstances::default();
             let at_the_bound = MachineExit::PushRefused {
                 at_the_bound: true,
@@ -10253,7 +10259,7 @@ mod tests {
         fn a_receiver_guarded_cell_names_its_copy() {
             use crate::interpreter::inline_cache::{CacheEntry, Target};
             use crate::interpreter::resolve::Chain;
-            use crate::jit::{cell_entry, CustomizationKey};
+            use crate::jit::{CustomizationKey, cell_entry};
 
             let source = ONE_METHOD_ON_TWO_APPLICATIONS;
             let module = ns_syntax::parse(source).expect("parse");
@@ -10497,7 +10503,7 @@ mod tests {
         fn a_receiver_guarded_cell_at_each_level_names_that_level_s_copy() {
             use crate::interpreter::inline_cache::{CacheEntry, Target};
             use crate::interpreter::resolve::Chain;
-            use crate::jit::{cell_entry, CustomizationKey};
+            use crate::jit::{CustomizationKey, cell_entry};
 
             let source = ONE_MIXIN_APPLIED_TWICE;
             let module = ns_syntax::parse(source).expect("parse");
@@ -10552,10 +10558,10 @@ mod tests {
                 let mut current = Some(twice_object);
                 let mut steps: u16 = 0;
                 while let Some(level) = current {
-                    if let Some(application) = mutator.heap.class_application(level) {
-                        if Rc::ptr_eq(&application.mixin, &mixin) {
-                            levels.push((steps, application.dispatch_ids.instances));
-                        }
+                    if let Some(application) = mutator.heap.class_application(level)
+                        && Rc::ptr_eq(&application.mixin, &mixin)
+                    {
+                        levels.push((steps, application.dispatch_ids.instances));
                     }
                     current = mutator.heap.class_superclass(level);
                     steps += 1;
@@ -11220,10 +11226,10 @@ mod cross_assembly_tests {
     use std::rc::Rc;
 
     use super::macro_assembler::Abi;
-    use super::{assemble, baseline, stubs, targets, CompileSettings, FeedbackBase};
+    use super::{CompileSettings, FeedbackBase, assemble, baseline, stubs, targets};
+    use crate::Lowering;
     use crate::bytecode::{CompiledCode, Instruction};
     use crate::mixin::{MethodEntry, Mixin, MixinMethod};
-    use crate::Lowering;
 
     /// The bytes of an assembled stub are whole AArch64 instructions.
     fn assert_instructions(name: &str, bytes: &[u8]) {

@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use super::control_flow::{self, InlineForm};
 use super::simultaneous;
@@ -73,7 +73,7 @@ impl Captures {
     }
 
     #[cfg(test)]
-    pub(crate) fn keys(&self) -> impl Iterator<Item = BodyKey> + '_ {
+    pub(crate) fn keys(&self) -> impl Iterator<Item = BodyKey> {
         self.bodies.keys().copied()
     }
 }

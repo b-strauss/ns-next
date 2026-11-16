@@ -3,11 +3,11 @@
 //! class's header is walked for the closures in it but is no section, as
 //! its slots get no hint.
 
+use ns_syntax::Span;
 use ns_syntax::ast::{
     ClassDeclaration, CodeBody, Expression, ExpressionKind, Member, MessagePattern, Module,
     SlotDeclaration, SlotMutability, Statement, StatementKind,
 };
-use ns_syntax::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SectionKind {

@@ -4,7 +4,7 @@
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::{
-    Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind, SMALL_INTEGER_MAX,
+    Heap, HostResult, HostSignal, Interpreter, Root, SMALL_INTEGER_MAX, Symbol, Value, ValueKind,
 };
 
 /// Parses+resolves a one-class module and loads it (via a freshly

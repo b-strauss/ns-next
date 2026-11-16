@@ -13,7 +13,7 @@
 //! (`Node::calls_leaf`).
 use std::ops::Range;
 
-use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
+use crate::bytecode::{HEADER_REGISTERS, IntegerOperation};
 use crate::heap::{ApplicationIndex, CodeId, Immediate};
 use crate::jit::float_operations::FloatOperation;
 use crate::mixin::DispatchId;
@@ -809,10 +809,10 @@ impl Block {
     pub(crate) fn successors(&self) -> Vec<BlockId> {
         let mut successors = self.end.successors();
         for node in &self.nodes {
-            if let Some(fallback) = node.fallback() {
-                if !successors.contains(&fallback) {
-                    successors.push(fallback);
-                }
+            if let Some(fallback) = node.fallback()
+                && !successors.contains(&fallback)
+            {
+                successors.push(fallback);
             }
         }
         successors
@@ -1039,7 +1039,7 @@ impl Graph {
 
     /// The blocks that head a loop, in block order.
     #[cfg(test)]
-    pub(crate) fn loop_heads(&self) -> impl Iterator<Item = BlockId> + '_ {
+    pub(crate) fn loop_heads(&self) -> impl Iterator<Item = BlockId> {
         self.blocks
             .iter()
             .enumerate()

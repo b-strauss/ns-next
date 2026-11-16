@@ -14,22 +14,22 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
-use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PROC_NOT_FOUND, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_PROC_NOT_FOUND, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, VirtualAlloc, VirtualFree, VirtualProtect, MEMORY_MAPPED_VIEW_ADDRESS,
-    MEM_COMMIT, MEM_DECOMMIT, MEM_EXTENDED_PARAMETER, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
-    MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, PAGE_EXECUTE_READ,
-    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE,
-    UNMAP_VIEW_OF_FILE_FLAGS, VIRTUAL_ALLOCATION_TYPE,
+    CreateFileMappingW, MEM_COMMIT, MEM_DECOMMIT, MEM_EXTENDED_PARAMETER, MEM_PRESERVE_PLACEHOLDER,
+    MEM_RELEASE, MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER,
+    MEMORY_MAPPED_VIEW_ADDRESS, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+    PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE, UNMAP_VIEW_OF_FILE_FLAGS,
+    VIRTUAL_ALLOCATION_TYPE, VirtualAlloc, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThreadStackLimits, SetThreadStackGuarantee,
 };
+use windows_sys::core::BOOL;
 
 use crate::Protection;
 
@@ -282,7 +282,7 @@ pub(crate) fn code_zone_support() -> Result<(), &'static str> {
 #[cfg(test)]
 pub(crate) fn executable_view_is_writable(mapping: &CodeMapping, committed: usize) -> bool {
     use windows_sys::Win32::System::Memory::{
-        VirtualQuery, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY,
+        MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY, VirtualQuery,
     };
     let writable_protections = [
         PAGE_READWRITE,
@@ -348,7 +348,7 @@ impl CodeMapping {
     }
 
     /// How many chunks' sections are open. For tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     pub(crate) fn open_sections(&self) -> usize {
         self.sections
             .borrow()

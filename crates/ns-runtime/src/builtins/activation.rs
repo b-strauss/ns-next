@@ -16,7 +16,7 @@ use crate::builtins::primitive::{ActivationPrimitive, Primitive};
 use crate::bytecode::{CodeKind, UnwindMarker};
 use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::unwind::WalkedActivation;
-use crate::interpreter::{unwind, Signal, Step};
+use crate::interpreter::{Signal, Step, unwind};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -306,10 +306,9 @@ fn next_active_handler<'gc>(
         if let Some(UnwindMarker::Handler {
             active_register, ..
         }) = walked.unwind_marker(&mutator.heap)
+            && walked.local(&mutator.heap, active_register).as_boolean() == Some(true)
         {
-            if walked.local(&mutator.heap, active_register).as_boolean() == Some(true) {
-                return Some(walked.reified(&mut mutator.heap));
-            }
+            return Some(walked.reified(&mut mutator.heap));
         }
     }
 }

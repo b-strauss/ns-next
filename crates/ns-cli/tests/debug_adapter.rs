@@ -13,7 +13,7 @@ use std::time::Duration;
 use common::ScratchDirectory;
 use dap::DapClient;
 use indoc::indoc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The line a terminated program's host send reports.
 const TERMINATED: &str = "Uncaught Newspeak error: the debugger terminated the program";

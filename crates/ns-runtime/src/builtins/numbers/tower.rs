@@ -11,11 +11,11 @@ use crate::interpreter::Arguments;
 use std::cmp::Ordering;
 
 use crate::builtins::primitive::{NumberPrimitive, Primitive};
-use crate::numeric::{numeric_hash, Rational};
+use crate::numeric::{Rational, numeric_hash};
 use crate::types::*;
 use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 
-use super::{type_mismatch, Accepted};
+use super::{Accepted, type_mismatch};
 
 /// A number, read out of its representation once.
 #[derive(Debug, Clone)]
@@ -283,7 +283,7 @@ fn integer_compute(
         Arithmetic::Divide => {
             return Rational::new(dividend.clone(), divisor.clone())
                 .map(Outcome::Rational)
-                .ok_or(DivisionByZero)
+                .ok_or(DivisionByZero);
         }
         Arithmetic::FloorDivide => dividend.floor_divide(divisor).ok_or(DivisionByZero)?,
         Arithmetic::Modulo => dividend.floor_modulo(divisor).ok_or(DivisionByZero)?,
@@ -490,7 +490,7 @@ pub(crate) fn execute_number<'gc>(
 mod tests {
     use std::cmp::Ordering;
 
-    use super::{equal, hash, order, Operand};
+    use super::{Operand, equal, hash, order};
     use crate::numeric::Rational;
     use crate::{ArbitraryInteger, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
 
@@ -601,7 +601,7 @@ mod tests {
     /// it must answer what the tower answers for every pair it takes.
     #[test]
     fn the_float_fast_path_agrees_with_the_tower() {
-        use super::{compute, exact_double, Arithmetic, Outcome};
+        use super::{Arithmetic, Outcome, compute, exact_double};
         let samples = samples();
         let floats = samples.iter().filter_map(|sample| match sample {
             Operand::Float(float) => Some(*float),
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn the_rounding_divisions_agree_with_their_definitions() {
-        use super::{compute, Arithmetic};
+        use super::{Arithmetic, compute};
         let integer = |value: i64| Operand::Small(value);
         let fraction = |numerator: i128, denominator: i128| {
             Operand::Fraction(
@@ -723,12 +723,14 @@ mod tests {
             .expect("non-zero")
         );
         assert!(compute(Arithmetic::Divide, &integer(1), &integer(0)).is_err());
-        assert!(compute(
-            Arithmetic::Modulo,
-            &Operand::Float(1.5),
-            &Operand::Float(0.0)
-        )
-        .is_err());
+        assert!(
+            compute(
+                Arithmetic::Modulo,
+                &Operand::Float(1.5),
+                &Operand::Float(0.0)
+            )
+            .is_err()
+        );
         assert!(matches!(
             compute(Arithmetic::Divide, &Operand::Float(1.0), &integer(0)),
             Ok(super::Outcome::Float(value)) if value == f64::INFINITY

@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
 use crate::Symbol;
 
@@ -21,8 +21,8 @@ use crate::Symbol;
 /// where the object model reads as a whole, and because `lib.rs`'s
 /// `pub use types::*` is how the rest of the workspace names them.
 pub use crate::heap::{
-    fits_small_integer, ClassReference, FrameReference, ObjectReference, Value, ValueKind, Word,
-    SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
+    ClassReference, FrameReference, ObjectReference, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, Value,
+    ValueKind, Word, fits_small_integer,
 };
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing
@@ -645,7 +645,7 @@ mod tests {
         name: &str,
     ) -> Rc<crate::mixin::MixinApplication> {
         let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,

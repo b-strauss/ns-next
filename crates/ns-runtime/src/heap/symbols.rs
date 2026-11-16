@@ -97,7 +97,7 @@ impl<'gc> ProgramSymbols<'gc> {
     }
 
     /// Every symbol the table holds.
-    pub(crate) fn objects(&self) -> impl Iterator<Item = ObjectReference<'gc>> + '_ {
+    pub(crate) fn objects(&self) -> impl Iterator<Item = ObjectReference<'gc>> {
         self.by_hash.values().flatten().copied()
     }
 

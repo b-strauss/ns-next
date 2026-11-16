@@ -12,9 +12,9 @@
 //! against instruction words assembled by hand from the Arm manual.
 
 use ns_assembler::{
-    aarch64, Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition,
-    Encoder, FloatArithmetic, FloatRegister, Label, LabelReference, Memory, Register, Rounding,
-    Width,
+    Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition, Encoder,
+    FloatArithmetic, FloatRegister, Label, LabelReference, Memory, Register, Rounding, Width,
+    aarch64,
 };
 use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction};

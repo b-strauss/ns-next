@@ -10,16 +10,17 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use super::control_flow;
-use super::lower::{lower_literal, selector_of, taken_block_spans, Collecting, SendSpans};
+use super::lower::{Collecting, SendSpans, lower_literal, selector_of, taken_block_spans};
 use super::simultaneous;
+use crate::Symbol;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
-    register_written, registers_read, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
-    Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
+    Literal as BytecodeLiteral, register_written, registers_read,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
@@ -27,7 +28,6 @@ use crate::debugger::metadata::{
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
-use crate::Symbol;
 
 type Bindings = Rc<HashMap<Span, Binding>>;
 
@@ -56,14 +56,14 @@ pub(crate) fn compile_mixin_bodies(
     collector: Option<&MetadataCollector>,
 ) {
     let own = Rc::new(initializer(mixin, bindings, None, collector));
-    mixin.initializer_code = Some(match super::Prologue::of(mixin, true) {
+    mixin.initializer_code = Some(match super::Prologue::of_mixin(mixin, true) {
         Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue), collector)),
         None => Rc::clone(&own),
     });
     mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
-        super::Prologue::of(mixin, false)
+        super::Prologue::of_mixin(mixin, false)
             .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue), collector)))
     };
     mixin.own_initializer_code = Some(own);
@@ -794,11 +794,18 @@ impl<'a> Body<'a> {
         match self.binding(target.span) {
             Some(Binding::Local(index)) => {
                 let slot = self.local_register(0, index);
-                self.emit(Instruction::StoreLocal { source: value_register, slot });
+                self.emit(Instruction::StoreLocal {
+                    source: value_register,
+                    slot,
+                });
             }
             Some(Binding::OuterLocal { depth, index }) => {
                 let index = self.local_register(depth, index);
-                self.emit(Instruction::StoreOuterLocal { source: value_register, depth, index });
+                self.emit(Instruction::StoreOuterLocal {
+                    source: value_register,
+                    depth,
+                    index,
+                });
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
@@ -826,7 +833,7 @@ impl<'a> Body<'a> {
 
     fn send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         match self.binding(send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -902,7 +909,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -926,7 +933,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendInlinable {
                 selector,
@@ -965,7 +972,7 @@ impl<'a> Body<'a> {
         let condition_register = self.block(condition, None);
         let body_register = self.block(body, None);
         let loop_start = self.code.len();
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         let condition_send = self.code.len();
         let condition_value = self.value_send(condition_register, spans);
         let not_boolean_jump = self.code.len();
@@ -1116,18 +1123,18 @@ impl<'a> Body<'a> {
         self.emit(build(destination, CallSite::UNCACHED));
         // Not emitted when the body is too large, and `finish` keeps none
         // of it.
-        if self.code.len() > index {
-            if let Some(collected) = self.collected.as_mut() {
-                collected.sends.push(SendEntry {
-                    index: Self::target(index),
-                    call_site: Some(CallSite::UNCACHED),
-                    receiver: spans.receiver,
-                    selector: spans.selector.into(),
-                    call: spans.call,
-                    parenthesize_receiver: spans.parenthesize_receiver,
-                    setter: spans.setter,
-                });
-            }
+        if self.code.len() > index
+            && let Some(collected) = self.collected.as_mut()
+        {
+            collected.sends.push(SendEntry {
+                index: Self::target(index),
+                call_site: Some(CallSite::UNCACHED),
+                receiver: spans.receiver,
+                selector: spans.selector.into(),
+                call: spans.call,
+                parenthesize_receiver: spans.parenthesize_receiver,
+                setter: spans.setter,
+            });
         }
         destination
     }
@@ -1178,14 +1185,14 @@ impl<'a> Body<'a> {
     /// Records a send that takes `blocks`, which the body goes on from at
     /// `after` once the send has answered, when the metadata is collected.
     fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: usize, inlined: bool) {
-        if let Some(collected) = self.collected.as_mut() {
-            if !blocks.is_empty() {
-                collected.block_sends.push(BlockSendEntry {
-                    blocks: blocks.into(),
-                    inlined,
-                    after: Self::target(after),
-                });
-            }
+        if let Some(collected) = self.collected.as_mut()
+            && !blocks.is_empty()
+        {
+            collected.block_sends.push(BlockSendEntry {
+                blocks: blocks.into(),
+                inlined,
+                after: Self::target(after),
+            });
         }
     }
 
@@ -1457,10 +1464,12 @@ mod tests {
                 .any(|instruction| matches!(instruction, Instruction::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
             "{code:?}"
         );
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::SendPublic { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SendPublic { .. }))
+        );
     }
 
     #[test]
@@ -1653,10 +1662,12 @@ mod tests {
             instruction,
             Instruction::SendPublic { selector, .. } if selector.as_str() == "stringSize:ifFail:"
         )));
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. }))
+        );
     }
 
     #[test]

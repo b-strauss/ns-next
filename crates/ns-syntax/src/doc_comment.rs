@@ -2,7 +2,7 @@
 //! The same grammar is read by the JetBrains plugin
 //! (`NewspeakDocTags`), so a rule changed here changes there.
 
-use crate::comment::{lines, Comment, CommentKind};
+use crate::comment::{Comment, CommentKind, lines};
 use crate::span::Span;
 
 /// A `///` comment read as documentation.
@@ -88,7 +88,7 @@ impl DocComment {
             let trimmed = line.text.trim_start();
             let head = if in_fence { None } else { tag_head(line) };
             if trimmed.starts_with("```") {
-                in_fence = !in_fence;
+                in_fence.toggle();
             }
             match (head, tag_lines.last_mut()) {
                 (Some(head), _) => tag_lines.push((head, vec![line.text])),
@@ -194,11 +194,7 @@ fn doc_lines(span: Span, source: &str) -> Vec<DocLine<'_>> {
 
 /// The width of the line break `rest` starts with: `\r\n` is one break.
 fn line_break_width(rest: &str) -> usize {
-    if rest.starts_with("\r\n") {
-        2
-    } else {
-        1
-    }
+    if rest.starts_with("\r\n") { 2 } else { 1 }
 }
 
 /// The head of `line` if it is a tag line: its trimmed text starts with

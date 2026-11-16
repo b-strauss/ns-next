@@ -91,14 +91,13 @@ pub(crate) fn checked_range<'gc>(
     let start_bound = bound(start)?;
     let stop_bound = bound(stop)?;
     // `start` is tested first, so that `start - 1` cannot overflow.
-    if let (Some(first), Some(last)) = (start_bound, stop_bound) {
-        if first >= 1 && last >= first - 1 {
-            if let (Ok(first), Ok(last)) = (usize::try_from(first), usize::try_from(last)) {
-                if last <= size {
-                    return Ok(first - 1..last);
-                }
-            }
-        }
+    if let (Some(first), Some(last)) = (start_bound, stop_bound)
+        && first >= 1
+        && last >= first - 1
+        && let (Ok(first), Ok(last)) = (usize::try_from(first), usize::try_from(last))
+        && last <= size
+    {
+        return Ok(first - 1..last);
     }
     let describe = |bound: Option<i64>, argument: Option<Value<'gc>>| match bound {
         Some(number) => number.to_string(),
@@ -139,14 +138,13 @@ pub(crate) fn source_start<'gc>(
         Some(IntegerArgument::Large { .. }) => None,
         None => return Err(not_an_integer(heap, receiver, selector, start)),
     };
-    if let Some(Ok(first)) = position.map(usize::try_from) {
-        if first >= 1
-            && (first - 1)
-                .checked_add(count)
-                .is_some_and(|end| end <= source_size)
-        {
-            return Ok(first - 1);
-        }
+    if let Some(Ok(first)) = position.map(usize::try_from)
+        && first >= 1
+        && (first - 1)
+            .checked_add(count)
+            .is_some_and(|end| end <= source_size)
+    {
+        return Ok(first - 1);
     }
     let described = match position {
         Some(number) => number.to_string(),
@@ -170,6 +168,12 @@ pub(crate) fn source_start<'gc>(
 
 /// `copyFrom:to:` on an `Array`: a new Array of the elements in the range.
 /// `None` when the receiver is no Array.
+///
+/// Never inlined: `builtins::execute`, which every leaf enters, would take
+/// on the registers its vectorized copy needs -- under Windows' calling
+/// convention all of `xmm6`..`xmm15` saved and restored on every leaf, the
+/// hottest `at:` and `size` included (`builtins::execute`).
+#[inline(never)]
 fn copy_range<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,

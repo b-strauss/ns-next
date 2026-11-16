@@ -5,10 +5,10 @@
 //! `Mutator::decide_send`.
 
 use super::Arguments;
+use crate::Symbol;
 use crate::dispatch::{self, LexicalOrigin};
 use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
-use crate::Symbol;
 
 use super::{Mutator, Signal, Step};
 

@@ -19,5 +19,6 @@ min-ident-chars-threshold = 2
 # are words.
 # `'a` and `'_`: the lint counts a lifetime with its quote, and lifetimes keep
 # the convention too. `Rc`: std's name, flagged where it is imported. `vm`: a
-# module name, and module names are not renamed.
-allowed-idents-below-min-chars = ["T", "R", "E", "id", "ok", "Or", "'a", "'_", "Rc", "vm"]
+# module name, and module names are not renamed. `u8`: std's name, which the
+# byte readers' and writers' methods take beside `u16`, `u32` and `u64`.
+allowed-idents-below-min-chars = ["T", "R", "E", "id", "ok", "Or", "'a", "'_", "Rc", "vm", "u8"]

@@ -285,10 +285,10 @@ fn qualifiers(
     let path = |id: MixinId, from_root: bool| {
         let (root, path) = mutator.path_from_module_root(id);
         let mut names: Vec<String> = path.iter().map(ToString::to_string).collect();
-        if from_root || names.is_empty() {
-            if let Some(root) = mutator.heap.mixin(root) {
-                names.insert(0, root.name.to_string());
-            }
+        if (from_root || names.is_empty())
+            && let Some(root) = mutator.heap.mixin(root)
+        {
+            names.insert(0, root.name.to_string());
         }
         names.join(".")
     };
@@ -389,7 +389,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let mixin = Rc::new(Mixin::empty(Symbol::intern("Unregistered")));
-            let level_facts = LevelFacts::of(&mixin);
+            let level_facts = LevelFacts::of_mixin(&mixin);
             let application = mutator.heap.register_application(MixinApplication {
                 index: crate::heap::ApplicationIndex::UNREGISTERED,
                 mixin,

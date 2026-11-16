@@ -734,7 +734,13 @@ const fn radix_six_kernel<const PRIME: u64, const INVERSE: bool, const TWIDDLE: 
     mut fourth: u64,
     mut fifth: u64,
     mut sixth: u64,
-    [twiddle, twiddle_squared, twiddle_cubed, twiddle_fourth, twiddle_fifth]: [u64; 5],
+    [
+        twiddle,
+        twiddle_squared,
+        twiddle_cubed,
+        twiddle_fourth,
+        twiddle_fifth,
+    ]: [u64; 5],
 ) -> [u64; 6] {
     if !INVERSE && TWIDDLE {
         second = Montgomery::<PRIME>::multiply(twiddle, second);
@@ -1382,8 +1388,9 @@ pub(super) fn multiply_accumulate_by_transform(
 #[cfg(test)]
 mod tests {
     use super::{
-        bits_per_digit_for, multiply_accumulate_by_transform, multiply_accumulate_three_primes,
-        multiply_accumulate_two_primes, TransformPlan, FIRST_PRIME, SECOND_PRIME, THIRD_PRIME,
+        FIRST_PRIME, SECOND_PRIME, THIRD_PRIME, TransformPlan, bits_per_digit_for,
+        multiply_accumulate_by_transform, multiply_accumulate_three_primes,
+        multiply_accumulate_two_primes,
     };
     use crate::arbitrary_integer::addition::add_magnitudes;
     use crate::arbitrary_integer::multiplication::multiply_schoolbook;

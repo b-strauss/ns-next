@@ -12,7 +12,7 @@ description = "The abstract machine operations ns-next's JIT emits, and their en
 # formatter are all the tests use; the encoder and the other formatters stay
 # out of the build.
 [dev-dependencies]
-iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+iced-x86.workspace = true
 # The AArch64 encodings are held to `yaxpeax-arm` as the x64 ones to iced,
 # so a wrong field shows as the wrong instruction text. Its decoder and its
 # text are all the tests use; its serde support stays out of the build.

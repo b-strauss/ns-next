@@ -5,9 +5,9 @@
 use std::rc::Rc;
 
 use super::comments::{
-    after, before, before_line_break, leading_on_its_line, on_its_line, OwnTokens,
+    OwnTokens, after, before, before_line_break, leading_on_its_line, on_its_line,
 };
-use super::document::{concat, group, hard_line, indent, line, text, Document};
+use super::document::{Document, concat, group, hard_line, indent, line, text};
 use super::expressions::{as_written, expression, message, statement};
 use crate::ast::{
     AccessModifier, AttachedComment, ClassBody, ClassDeclaration, CodeBody, Member, MessagePattern,

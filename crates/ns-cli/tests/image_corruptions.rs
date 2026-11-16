@@ -16,7 +16,7 @@
 use libtest_mimic::{Arguments, Trial};
 
 mod common;
-use common::{golden, ns_next, ScratchDirectory};
+use common::{ScratchDirectory, golden, ns_next};
 
 /// How many trials share the sweep.
 const PARTS: usize = 8;

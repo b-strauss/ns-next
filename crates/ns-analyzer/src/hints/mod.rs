@@ -13,10 +13,10 @@ mod names;
 mod read_only;
 mod walk;
 
-pub use edits::{apply, Edit};
+pub use edits::{Edit, apply};
 
-use ns_syntax::ast::Module;
 use ns_syntax::Span;
+use ns_syntax::ast::Module;
 use walk::{Scope, Section};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

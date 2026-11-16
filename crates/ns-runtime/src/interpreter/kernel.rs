@@ -355,10 +355,10 @@ impl<'gc> Mutator<'gc> {
         let mut built: Vec<ClassReference<'gc>> =
             applied_classes.iter().map(|(_, class)| *class).collect();
         built.extend(levels);
-        if shape.applies_value {
-            if let Some(level) = superclass {
-                built.push(level);
-            }
+        if shape.applies_value
+            && let Some(level) = superclass
+        {
+            built.push(level);
         }
         built.push(kernel_class);
         self.give_existing_class_objects_metaclasses(&built);
@@ -450,7 +450,9 @@ impl<'gc> Mutator<'gc> {
             let class = self.builtin_class(kind);
             let field = hidden_slot_of(self, kernel, kind);
             debug_assert!(
-                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
+                self.heap
+                    .instance_field(kernel, field)
+                    .is_some_and(|value| value.is_nil()),
                 "internal: Kernel's initializer touched the nested class {kind:?} before the bootstrap could fill it"
             );
             if !self
@@ -470,7 +472,9 @@ impl<'gc> Mutator<'gc> {
             };
             let field = hidden_slot_of_mixin(self, kernel, mixin);
             debug_assert!(
-                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
+                self.heap
+                    .instance_field(kernel, field)
+                    .is_some_and(|value| value.is_nil()),
                 "internal: Kernel's initializer touched the nested class {} before the bootstrap could fill it",
                 mixin.name
             );
@@ -533,13 +537,12 @@ impl<'gc> Mutator<'gc> {
         kernel: ObjectReference<'gc>,
         kernel_class: ClassReference<'gc>,
     ) {
-        if let Some(metaclass) = self.heap.class_metaclass(class) {
-            if !self
+        if let Some(metaclass) = self.heap.class_metaclass(class)
+            && !self
                 .heap
                 .class_set_lexical_context(metaclass, Some(kernel), Some(kernel_class))
-            {
-                unreachable!("internal: a metaclass is a class object");
-            }
+        {
+            unreachable!("internal: a metaclass is a class object");
         }
     }
 }
@@ -2739,10 +2742,12 @@ mod tests {
             let class = indexed_collection_class(mutator, kernel)
                 .expect("the kernel phase fills IndexedCollection's hidden slot");
             let collection = mutator.builtin_class(BuiltinClass::Collection);
-            assert!(mutator
-                .heap()
-                .class_superclass(class)
-                .is_some_and(|superclass| superclass.same(collection)));
+            assert!(
+                mutator
+                    .heap()
+                    .class_superclass(class)
+                    .is_some_and(|superclass| superclass.same(collection))
+            );
         });
     }
 

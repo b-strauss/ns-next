@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::IntegerOperation;

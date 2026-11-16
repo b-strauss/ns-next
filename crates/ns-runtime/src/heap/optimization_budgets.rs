@@ -316,7 +316,7 @@ impl OptimizationBudgets {
 
 #[cfg(test)]
 mod tests {
-    use super::{OptimizationBudgets, CAPACITY_ROWS, PARKED};
+    use super::{CAPACITY_ROWS, OptimizationBudgets, PARKED};
     use crate::heap::CodeId;
 
     fn id(index: usize) -> CodeId {

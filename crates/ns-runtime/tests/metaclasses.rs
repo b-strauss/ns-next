@@ -67,18 +67,22 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
             .expect("every class object has a metaclass");
         let class_class = mutator.builtin_class(BuiltinClass::Class);
         let heap = mutator.heap();
-        assert!(heap
-            .class_this_class(metaclass)
-            .is_some_and(|this_class| this_class.same(class_object)));
-        assert!(heap
-            .class_superclass(metaclass)
-            .is_some_and(|superclass| superclass.same(class_class)));
+        assert!(
+            heap.class_this_class(metaclass)
+                .is_some_and(|this_class| this_class.same(class_object))
+        );
+        assert!(
+            heap.class_superclass(metaclass)
+                .is_some_and(|superclass| superclass.same(class_class))
+        );
         let metaclass_application = heap.class_application(metaclass).expect("an application");
         let class_application = heap.class_application(class_class).expect("an application");
-        assert!(metaclass_application
-            .superclass
-            .as_ref()
-            .is_some_and(|superclass| Rc::ptr_eq(superclass, &class_application)));
+        assert!(
+            metaclass_application
+                .superclass
+                .as_ref()
+                .is_some_and(|superclass| Rc::ptr_eq(superclass, &class_application))
+        );
     });
 }
 

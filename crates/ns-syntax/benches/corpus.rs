@@ -152,11 +152,11 @@ fn main() -> ExitCode {
 
     print_modules(&modules, &options);
     print_totals(&modules, options.rounds);
-    if let Some(path) = &options.csv {
-        if let Err(error) = write_csv(path, &modules) {
-            eprintln!("error: cannot write {}: {error}", path.display());
-            return ExitCode::FAILURE;
-        }
+    if let Some(path) = &options.csv
+        && let Err(error) = write_csv(path, &modules)
+    {
+        eprintln!("error: cannot write {}: {error}", path.display());
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }

@@ -5,18 +5,18 @@ mod classes;
 mod scope;
 pub(crate) mod sends;
 
-pub use classes::root_class_is_value;
 pub use classes::RootShape;
+pub use classes::root_class_is_value;
 pub(crate) use classes::{root_clause_defect, root_shape};
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
-use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
 use crate::Symbol;
+use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
 
 use scope::{LocalScope, ScopeStack};
 use sends::EnclosingClass;

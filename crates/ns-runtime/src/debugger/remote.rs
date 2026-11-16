@@ -177,7 +177,7 @@ pub struct LineBreakpoint {
 
 impl LineBreakpoint {
     /// A breakpoint at `offset` that stops at every hit.
-    pub fn at(offset: u32) -> LineBreakpoint {
+    pub fn at_offset(offset: u32) -> LineBreakpoint {
         LineBreakpoint {
             offset,
             hit_condition: None,
@@ -246,7 +246,7 @@ impl ModuleName {
 
 impl ModuleName {
     /// The module whose root is `root`.
-    pub(crate) fn of(root: &crate::mixin::Mixin) -> ModuleName {
+    pub(crate) fn of_root(root: &crate::mixin::Mixin) -> ModuleName {
         ModuleName {
             name: root.name.to_string(),
             shipped: root.shipped,

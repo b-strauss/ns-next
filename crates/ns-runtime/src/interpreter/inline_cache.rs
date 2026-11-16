@@ -16,6 +16,7 @@ use std::hash::BuildHasher;
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
@@ -27,12 +28,11 @@ use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
-use crate::Symbol;
 
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
-use cells::{Cell, Cells, ChainStart, GlobalRow, CHAIN_START_BITS, VACANT_GUARD};
+use cells::{CHAIN_START_BITS, Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,12 +228,12 @@ impl FreeRanges {
         self.free_sites += size as usize;
         let mut start = start;
         let mut size = size;
-        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
-            if before_start + before_size == start {
-                self.ranges.remove(&before_start);
-                start = before_start;
-                size += before_size;
-            }
+        if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back()
+            && before_start + before_size == start
+        {
+            self.ranges.remove(&before_start);
+            start = before_start;
+            size += before_size;
         }
         if let Some(after_size) = self.ranges.remove(&(start + size)) {
             size += after_size;
@@ -668,12 +668,12 @@ impl InlineCaches {
             }
             let range = base.index()..base.index() + size as usize;
             for entry in &mut sites[range.clone()] {
-                if let Target::Polymorphic { block, .. } = entry.target {
-                    if let Some(slots) = pool.get_mut(block as usize) {
-                        *slots = CacheEntry::vacant_block();
-                        cells.vacate_blocks(block as usize..block as usize + 1);
-                        free_blocks.push(block);
-                    }
+                if let Target::Polymorphic { block, .. } = entry.target
+                    && let Some(slots) = pool.get_mut(block as usize)
+                {
+                    *slots = CacheEntry::vacant_block();
+                    cells.vacate_blocks(block as usize..block as usize + 1);
+                    free_blocks.push(block);
                 }
                 *entry = CacheEntry::vacant();
             }
@@ -1051,7 +1051,7 @@ impl InlineCaches {
     /// word 0 (`verify_cells`), and the global cache's rows, a thousand,
     /// are mostly vacant.
     #[cfg(all(ns_jit, debug_assertions))]
-    pub(crate) fn cell_entries(&self) -> impl Iterator<Item = u64> + '_ {
+    pub(crate) fn cell_entries(&self) -> impl Iterator<Item = u64> {
         let cell_entry = |words: &[u64; cells::CELL_WORDS]| Cell::from_words(words).entry;
         let sites = self.cells.site_words(self.sites.len());
         let blocks = self.cells.block_words(self.pool.len());
@@ -2502,10 +2502,10 @@ fn cached<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if let Some(target) = site_target(mutator, index, key.guard) {
-        if let Some((resolved, base)) = materialize(mutator, target, key) {
-            return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
-        }
+    if let Some(target) = site_target(mutator, index, key.guard)
+        && let Some((resolved, base)) = materialize(mutator, target, key)
+    {
+        return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
     }
     miss(
         mutator,
@@ -2617,10 +2617,10 @@ fn decided_miss<'gc, Answer>(
         LexicalClass::NotComputed
     };
     if key.guard != DispatchId::NONE {
-        if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
-            if let Some((found, base)) = materialize(mutator, target, key) {
-                return hit(mutator, found, base);
-            }
+        if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard)
+            && let Some((found, base)) = materialize(mutator, target, key)
+        {
+            return hit(mutator, found, base);
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
             let lexical_class = lexical_of(mutator);
@@ -2631,14 +2631,14 @@ fn decided_miss<'gc, Answer>(
             .caches
             .global_get(key.guard, selector, key.rule)
             .cloned();
-        if let Some(target) = global {
-            if let Some((found, base)) = materialize(mutator, target.clone(), key) {
-                let cell = cell_for(mutator, key, &target);
-                mutator
-                    .caches
-                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
-                return hit(mutator, found, base);
-            }
+        if let Some(target) = global
+            && let Some((found, base)) = materialize(mutator, target.clone(), key)
+        {
+            let cell = cell_for(mutator, key, &target);
+            mutator
+                .caches
+                .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+            return hit(mutator, found, base);
         }
     }
     let found = resolve(mutator, known_lexical_class);
@@ -2974,10 +2974,10 @@ fn decided<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> (Resolved<'gc>, FeedbackBase) {
-    if let Some(target) = site_target(mutator, index, key.guard) {
-        if let Some(found) = materialize(mutator, target, key) {
-            return found;
-        }
+    if let Some(target) = site_target(mutator, index, key.guard)
+        && let Some(found) = materialize(mutator, target, key)
+    {
+        return found;
     }
     decided_miss(
         mutator,
@@ -3257,10 +3257,11 @@ impl InlineCaches {
                 if let Instruction::MakeClosure { code: block, .. } = instruction {
                     pending.push(Rc::clone(block));
                 }
-                if let Some(site) = instruction.call_site() {
-                    if site != CallSite::UNCACHED && sent_selector(instruction) == Some(sent) {
-                        numbers.push(site.number);
-                    }
+                if let Some(site) = instruction.call_site()
+                    && site != CallSite::UNCACHED
+                    && sent_selector(instruction) == Some(sent)
+                {
+                    numbers.push(site.number);
                 }
             }
         }
@@ -3851,9 +3852,11 @@ mod tests {
             Some(chains[2])
         );
         global.clear();
-        assert!(guards
-            .iter()
-            .all(|guard| global.get(*guard, selector, CacheRule::Public).is_none()));
+        assert!(
+            guards
+                .iter()
+                .all(|guard| global.get(*guard, selector, CacheRule::Public).is_none())
+        );
     }
 
     /// Two entries that agree on guard and selector but carry a different
@@ -4038,8 +4041,8 @@ mod tests {
         freed.guards.extend([guard(0), guard(2)]);
         freed.applications.insert(level(1));
         caches.forget_freed(&freed);
-        for index in base..base + 3 {
-            assert!(matches!(caches.sites[index].target, Target::Vacant));
+        for site in &caches.sites[base..base + 3] {
+            assert!(matches!(site.target, Target::Vacant));
         }
         assert!(!matches!(caches.sites[base + 3].target, Target::Vacant));
         assert!(matches!(
@@ -4048,13 +4051,17 @@ mod tests {
         ));
         assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
         assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
-        assert!(caches
-            .global_get(guard(0), selector, CacheRule::Public)
-            .is_none());
+        assert!(
+            caches
+                .global_get(guard(0), selector, CacheRule::Public)
+                .is_none()
+        );
         assert!(caches.global_get(guard(1), selector, lexical).is_none());
-        assert!(caches
-            .global_get(guard(1), selector, CacheRule::Public)
-            .is_some());
+        assert!(
+            caches
+                .global_get(guard(1), selector, CacheRule::Public)
+                .is_some()
+        );
         assert!(!caches.slot_level_verified(guard(1), level(1)));
         assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }

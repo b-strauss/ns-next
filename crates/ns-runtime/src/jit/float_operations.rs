@@ -1,5 +1,5 @@
 //! Which `Float` operations machine code computes, and what each is
-//! (`FloatOperation::of`): the classification the baseline's float row
+//! (`FloatOperation::of_primitive`): the classification the baseline's float row
 //! stub and optimized code's graph, plan and nodes share. It is apart
 //! from `floats`, which emits the operations, because the optimizing
 //! tier's graph and plan are compiled on every target, a target without
@@ -11,7 +11,7 @@ use ns_assembler::FloatArithmetic;
 use crate::builtins::primitive::{FloatPrimitive, IntegerPrimitive, NumberPrimitive, Primitive};
 
 /// A `Float` operation machine code computes: a row of decision 4's
-/// groups (`FloatOperation::of`).
+/// groups (`FloatOperation::of_primitive`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FloatOperation {
     /// `+ - * /` of a `Float` receiver with a `Float` or `SmallInteger`
@@ -64,7 +64,7 @@ pub(crate) enum FloatComparison {
 impl FloatOperation {
     /// The operation `primitive`'s row computes in machine code, or
     /// `None` for a row it leaves to its leaf.
-    pub(crate) fn of(primitive: Primitive) -> Option<FloatOperation> {
+    pub(crate) fn of_primitive(primitive: Primitive) -> Option<FloatOperation> {
         use FloatOperation::{Arithmetic, Compare};
         let arithmetic = |operation, receiver| {
             Some(Arithmetic {
@@ -180,9 +180,9 @@ impl FloatOperation {
 #[cfg(test)]
 mod tests {
     use super::FloatOperation;
-    use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
+    use crate::builtins::primitive::{MIRROR, MachineCall, RowStub};
 
-    /// `FloatOperation::of` answers an operation for exactly the rows
+    /// `FloatOperation::of_primitive` answers an operation for exactly the rows
     /// machine code computes `Float` operations for: `Float`'s binary
     /// operations, its one-instruction unary ones and its roundings, and
     /// the mixed rows of a `SmallInteger` receiver, `Integer`'s and
@@ -191,7 +191,7 @@ mod tests {
     fn every_float_row_has_its_operation() {
         let mut found: Vec<&str> = MIRROR
             .iter()
-            .filter(|entry| FloatOperation::of(entry.primitive).is_some())
+            .filter(|entry| FloatOperation::of_primitive(entry.primitive).is_some())
             .map(|entry| entry.selector)
             .collect();
         found.sort_unstable();
@@ -230,7 +230,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(found, expected);
         for entry in MIRROR {
-            if let Some(operation) = FloatOperation::of(entry.primitive) {
+            if let Some(operation) = FloatOperation::of_primitive(entry.primitive) {
                 assert_eq!(
                     operation.argument_count(),
                     entry.leaf_arity(),
@@ -251,7 +251,7 @@ mod tests {
         for entry in MIRROR {
             let has_stub = entry.machine_call == MachineCall::Stub(RowStub::Float);
             assert_eq!(
-                FloatOperation::of(entry.primitive).is_some(),
+                FloatOperation::of_primitive(entry.primitive).is_some(),
                 has_stub,
                 "{}",
                 entry.selector

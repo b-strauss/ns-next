@@ -323,7 +323,7 @@ fn read_class_record(
             return Err(decode::DecodeError::InvalidTag {
                 what: "mixin reference",
                 tag,
-            })
+            });
         }
     })
 }
@@ -341,7 +341,7 @@ fn read_mixin_record(
             return Err(decode::DecodeError::InvalidTag {
                 what: "mixin reference",
                 tag,
-            })
+            });
         }
     };
     Ok(match reader.read_u8()? {
@@ -414,7 +414,7 @@ fn read_frame_record(
             return Err(decode::DecodeError::InvalidTag {
                 what: "frame kind",
                 tag,
-            })
+            });
         }
     };
     let (kind, code_offset) = match reader.read_u8()? {
@@ -428,7 +428,7 @@ fn read_frame_record(
             return Err(decode::DecodeError::InvalidTag {
                 what: "frame body",
                 tag,
-            })
+            });
         }
     };
     let program_counter = reader.read_u32()?;
@@ -600,7 +600,7 @@ fn walk_graph(
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",
                     tag,
-                })
+                });
             }
         };
         objects.push(format!("class {class}, hash {hash}, {body}"));
@@ -621,7 +621,7 @@ fn walk_graph(
                 return Err(decode::DecodeError::InvalidTag {
                     what: "tag-named hash",
                     tag,
-                })
+                });
             }
         };
         tag_named.push(format!("{who} hash {}", reader.read_u32()?));

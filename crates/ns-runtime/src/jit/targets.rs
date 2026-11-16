@@ -35,19 +35,19 @@
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
+use super::SHIFTED_SLOTS;
 use super::float_operations::FloatOperation;
 use super::floats::{self, FloatRegisters};
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
-use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
-use super::SHIFTED_SLOTS;
-use crate::builtins::primitive::{MachineCall, RowStub, MIRROR, ROW_STUB_COUNT};
+use super::stubs::{BlockWord, ExitKind, emit_miss, finish_stub};
+use crate::builtins::primitive::{MIRROR, MachineCall, ROW_STUB_COUNT, RowStub};
 use crate::heap::machine_words::MachineWord;
+use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, CHAIN_START_BITS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES,
     ROW_WORDS, VACANT_GUARD,
 };
-use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::{RULE_TAG_BITS, RULE_TAG_LEXICAL, RULE_TAG_MASK};
 use crate::mixin::AccessorKind;
 
@@ -285,7 +285,7 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
 /// `Roles::dispatching_baseline`: compares the receiver's dispatch id and
 /// the current class's application word with each row
 /// (`heap/optimized_copies.rs`) -- the key a copy was customized for, as
-/// `CustomizationKey::of` reads it off the frame the prologue writes --
+/// `CustomizationKey::of_activation` reads it off the frame the prologue writes --
 /// and goes on in the first copy whose row holds both, or in the body's
 /// baseline code when none does. A vacant row's receiver word is no
 /// dispatch id, so no row is tested for vacancy.
@@ -300,7 +300,7 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
 /// compiled while the JIT counts jumps to, and one that counts nothing,
 /// so that a body compiled while nobody counts pays nothing for it.
 pub(crate) fn assemble_dispatching_stub(abi: Abi, counting: bool) -> Assembled {
-    use crate::heap::optimized_copies::{RowWord, DISPATCHING_ROWS, ROW_BYTES};
+    use crate::heap::optimized_copies::{DISPATCHING_ROWS, ROW_BYTES, RowWord};
     let mut macro_assembler = MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(counting);
     let roles = macro_assembler.roles();
@@ -1351,7 +1351,7 @@ fn emit_row_stub(
     assembler.enter_called();
     // A unary operation's send has no slot 0, so its stub reads none.
     // Only a float stub's row has one (`every_row_with_a_float_operation_has_the_float_stub`).
-    let float_operation = FloatOperation::of(MIRROR[row].primitive);
+    let float_operation = FloatOperation::of_primitive(MIRROR[row].primitive);
     if float_operation.is_none_or(|operation| operation.argument_count() > 0) {
         assembler.load(Width::Word64, index, argument_slot(roles, 0));
     }
@@ -1465,13 +1465,13 @@ mod tests {
     use ns_assembler::Memory;
 
     use super::emit_group;
+    use crate::Symbol;
     use crate::heap::optimized_copies::{DISPATCHING_ROWS, ROW_WORDS, VACANT};
-    use crate::interpreter::inline_cache::{rule_word, CacheRule, GlobalCache};
+    use crate::interpreter::inline_cache::{CacheRule, GlobalCache, rule_word};
     use crate::jit::macro_assembler::Abi;
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::{BlockWord, ExitKind, MachineExit};
     use crate::mixin::DispatchId;
-    use crate::Symbol;
 
     /// The dispatching stub is whole instructions under both encoders:
     /// every method body's dispatching entry jumps into it on x64 and on

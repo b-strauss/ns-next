@@ -5,9 +5,9 @@
 
 use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::hash::IdentityMap;
 use crate::mixin::{MethodEntry, PrimitiveMethod};
-use crate::Symbol;
 
 /// One native operation. Grouped by the builtin family whose module executes
 /// it, so each module matches its own group exhaustively.
@@ -1036,7 +1036,7 @@ pub enum RowStub {
     /// A ByteArray's `at:put:` (`bytes::element_at_put`).
     ByteArrayAtPut,
     /// The `Float` operation the row's primitive is
-    /// (`jit::float_operations::FloatOperation::of`), its result boxed inline
+    /// (`jit::float_operations::FloatOperation::of_primitive`), its result boxed inline
     /// (`builtins::numbers`' `float`, `integer` and `tower`).
     Float,
 }

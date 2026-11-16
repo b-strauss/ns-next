@@ -26,14 +26,14 @@ pub enum Lowering {
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 
+use crate::Symbol;
 use crate::bytecode::{BodyLimit, CodeKind, CompiledCode, Instruction, Literal};
 use crate::debugger::metadata::MetadataCollector;
 use crate::mixin::Mixin;
 use crate::types::Binding;
-use crate::Symbol;
 
 use capture::{BodyKey, RootBody};
 use lower::{Collecting, Enclosing, Lowerer};
@@ -270,7 +270,7 @@ impl<'a> Prologue<'a> {
     /// The prologue of `mixin`'s full body, or of its standalone body when
     /// `with_applied_clauses` is false; `None` for a mixin no declaration
     /// was read into -- a class side -- whose full body is its own part.
-    pub(super) fn of(mixin: &'a Mixin, with_applied_clauses: bool) -> Option<Prologue<'a>> {
+    pub(super) fn of_mixin(mixin: &'a Mixin, with_applied_clauses: bool) -> Option<Prologue<'a>> {
         let declaration = mixin.declaration.as_deref()?;
         Some(Prologue {
             superclass: declaration.superclass.as_ref(),
@@ -430,7 +430,7 @@ fn compile_mixin_full_initializer(
     with_applied_clauses: bool,
     collector: Option<&MetadataCollector>,
 ) -> Option<CompiledCode> {
-    let prologue = Prologue::of(mixin, with_applied_clauses)?;
+    let prologue = Prologue::of_mixin(mixin, with_applied_clauses)?;
     Some(compile_initializer_body(
         mixin,
         bindings,

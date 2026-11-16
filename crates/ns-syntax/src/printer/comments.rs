@@ -11,7 +11,7 @@
 //! between) stood after a line break, or it would trail the sibling, and
 //! so stood on a line of its own: it keeps that line.
 
-use super::document::{concat, hard_line, text, Document};
+use super::document::{Document, concat, hard_line, text};
 use crate::ast::{Anchor, AttachedComment, Placement};
 use crate::comment::CommentKind;
 

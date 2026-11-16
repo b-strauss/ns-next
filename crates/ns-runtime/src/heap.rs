@@ -18,6 +18,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::Symbol;
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
@@ -26,7 +27,6 @@ use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::{Arguments, FeedbackBase};
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
-use crate::Symbol;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
@@ -60,36 +60,36 @@ mod world;
 use compaction::{ForwardingTable, IdleTable};
 #[cfg(debug_assertions)]
 use compaction::{Shift, ShiftedRegion};
-use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
+use frames::{FrameFlags, FrameStack, frame_header, kind_tag};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
 use machine_words::{MachineWord, MachineWords};
 pub use object::Element;
-use object::{
-    class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
-};
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
+use object::{
+    CLASS, FIELDS, HEADER, PackedString, class_field, closure_field, frame_field, trace_block,
+};
 use pending::PendingEphemerons;
 pub use records::{
     DeclarationScope, FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat,
 };
 use scavenge::Scavenger;
 use space::{
-    allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
-    REGION_SLACK,
+    NURSERY_END, REGION_SLACK, RegionName, Space, allocation_words, block_range, object_at,
+    overflow_word,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 #[cfg(ns_jit)]
 pub(crate) use value::machine as value_bits;
-use value::{at_rest, branded};
 pub use value::{
-    fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
-    SMALL_INTEGER_MIN,
+    Immediate, ImmediateKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, Value, ValueKind, Word,
+    fits_small_integer,
 };
-pub(crate) use world::{forward_identity, World};
+use value::{at_rest, branded};
+pub(crate) use world::{World, forward_identity};
 
 /// The header an ordinary instance of an application is born with --
 /// its guard, `FixedPointers`, its word count -- computed once when the
@@ -633,7 +633,7 @@ impl<'gc> StackExhausted<'gc> {
     /// common path keeps no boxed header.
     #[cold]
     #[inline(never)]
-    fn of(header: ActivationHeader<'gc>) -> StackExhausted<'gc> {
+    fn of_header(header: ActivationHeader<'gc>) -> StackExhausted<'gc> {
         StackExhausted {
             header: Box::new(header),
         }
@@ -1488,7 +1488,7 @@ impl<'code> LastSet<'code> {
     /// The set of the body in code row `code_index` before
     /// `program_counter`, kept in `last` for the frame below.
     #[inline(always)]
-    fn of<'last>(
+    fn of_body<'last>(
         last: &'last mut Option<LastSet<'code>>,
         tables: &'code Tables,
         code_index: usize,
@@ -1592,11 +1592,12 @@ fn claim(claimed: &mut Vec<Range<usize>>, window: Range<usize>) {
     // A frame that ends inside the lowest window -- a sender whose callee
     // lies on its slots, as down a deep recursion -- only lowers its start:
     // the window above it begins past the lowest's end.
-    if let Some(lowest) = claimed.last_mut() {
-        if lowest.start <= window.end && window.end <= lowest.end {
-            lowest.start = window.start;
-            return;
-        }
+    if let Some(lowest) = claimed.last_mut()
+        && lowest.start <= window.end
+        && window.end <= lowest.end
+    {
+        lowest.start = window.start;
+        return;
     }
     claim_merging(claimed, window);
 }
@@ -1721,7 +1722,7 @@ impl ActivationStack {
     /// The flags of the frame at `offset`.
     #[inline(always)]
     fn flags(&self, offset: u32) -> FrameFlags {
-        FrameFlags::of(self.header_word(offset, frame_header::FLAGS))
+        FrameFlags::of_word(self.header_word(offset, frame_header::FLAGS))
     }
 
     /// How many registers the frame at `offset` has above its header.
@@ -1831,7 +1832,7 @@ impl ActivationStack {
     }
 
     /// The offset of every live frame, innermost first, by the caller words.
-    fn offsets(&self) -> impl Iterator<Item = u32> + '_ {
+    fn offsets(&self) -> impl Iterator<Item = u32> {
         let innermost = (self.innermost != NO_FRAME).then_some(self.innermost);
         std::iter::successors(innermost, |offset| self.caller(*offset))
     }
@@ -4231,11 +4232,11 @@ impl<'gc> Heap<'gc> {
         }
         let flags = Word::from_bits(header[frame_header::FLAGS]);
         if !flags.is_non_negative_small_integer()
-            || usize::from(FrameFlags::of(flags).argument_count) > start
+            || usize::from(FrameFlags::of_word(flags).argument_count) > start
         {
             return None;
         }
-        Some(FrameFlags::of(flags).generation)
+        Some(FrameFlags::of_word(flags).generation)
     }
 
     /// The handle for the live frame at `offset`, minted with that frame's
@@ -5309,11 +5310,10 @@ impl<'gc> Heap<'gc> {
         object: ObjectReference<'gc>,
         feedback_base: FeedbackBase,
     ) {
-        if let Some(words) = self.pointer_words_mut(object, Format::Closure) {
-            if words.len() >= closure_field::COUNT {
-                words[closure_field::FEEDBACK_BASE] =
-                    count_word(feedback_base.raw() as usize).bits();
-            }
+        if let Some(words) = self.pointer_words_mut(object, Format::Closure)
+            && words.len() >= closure_field::COUNT
+        {
+            words[closure_field::FEEDBACK_BASE] = count_word(feedback_base.raw() as usize).bits();
         }
     }
 
@@ -5827,7 +5827,7 @@ impl<'gc> Heap<'gc> {
         // no instantiation reads facts of another mixin than the one it runs.
         debug_assert_eq!(
             application.level_facts,
-            crate::mixin::LevelFacts::of(&application.mixin),
+            crate::mixin::LevelFacts::of_mixin(&application.mixin),
             "the level facts of {} disagree with its mixin",
             application.mixin.name
         );
@@ -6045,27 +6045,26 @@ impl<'gc> Heap<'gc> {
         code: &Rc<CompiledCode>,
         method: Option<&Rc<MixinMethod>>,
     ) -> CodeId {
-        if let Some((epoch, id)) = code.code_id_cache.get() {
-            if epoch == self.code_table_epoch {
-                // An epoch is renewed whenever rows are freed, so a cached
-                // id of the current epoch still names its own body.
-                debug_assert!(
-                    self.tables
-                        .codes
-                        .get(id.index())
-                        .and_then(Option::as_ref)
-                        .is_some_and(|entry| Rc::ptr_eq(&entry.code, code)),
-                    "internal: a body's cached id names another row: rows were freed without renewing the epoch"
-                );
-                if let Some(method) = method {
-                    if let Some(entry) = self.tables.codes[id.index()].as_mut() {
-                        if entry.method.is_none() {
-                            entry.method = Some(method.clone());
-                        }
-                    }
-                }
-                return id;
+        if let Some((epoch, id)) = code.code_id_cache.get()
+            && epoch == self.code_table_epoch
+        {
+            // An epoch is renewed whenever rows are freed, so a cached
+            // id of the current epoch still names its own body.
+            debug_assert!(
+                self.tables
+                    .codes
+                    .get(id.index())
+                    .and_then(Option::as_ref)
+                    .is_some_and(|entry| Rc::ptr_eq(&entry.code, code)),
+                "internal: a body's cached id names another row: rows were freed without renewing the epoch"
+            );
+            if let Some(method) = method
+                && let Some(entry) = self.tables.codes[id.index()].as_mut()
+                && entry.method.is_none()
+            {
+                entry.method = Some(method.clone());
             }
+            return id;
         }
         self.register_code_uncached(code, method)
     }
@@ -6201,10 +6200,10 @@ impl<'gc> Heap<'gc> {
         let id = self.known_mixin_id(mixin);
         let mut level = Some(class);
         while let Some(current) = level {
-            if let Some(application) = self.class_application_entry(current) {
-                if self.same_mixin(&application.mixin, mixin, id) {
-                    return Some(read(application));
-                }
+            if let Some(application) = self.class_application_entry(current)
+                && self.same_mixin(&application.mixin, mixin, id)
+            {
+                return Some(read(application));
             }
             level = self.class_superclass(current);
         }
@@ -6719,10 +6718,10 @@ impl<'gc> Heap<'gc> {
         level: ClassReference<'gc>,
         body: InitializerBody,
     ) -> Option<Rc<Mixin>> {
-        if body == InitializerBody::Full {
-            if let Some(declaration) = self.class_body_less_declaration(level) {
-                return Some(declaration.clone());
-            }
+        if body == InitializerBody::Full
+            && let Some(declaration) = self.class_body_less_declaration(level)
+        {
+            return Some(declaration.clone());
         }
         self.class_application(level)
             .map(|application| application.mixin.clone())
@@ -8017,7 +8016,7 @@ impl<'gc> Heap<'gc> {
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         match self.push_activation_in::<false>(&mut header, arguments, temporary_count) {
             Ok(activation) => Ok(activation),
-            Err(PushRefused) => Err(StackExhausted::of(header)),
+            Err(PushRefused) => Err(StackExhausted::of_header(header)),
         }
     }
 
@@ -8049,7 +8048,7 @@ impl<'gc> Heap<'gc> {
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         match self.push_activation_in::<true>(&mut header, arguments, temporary_count) {
             Ok(activation) => Ok(activation),
-            Err(PushRefused) => Err(StackExhausted::of(header)),
+            Err(PushRefused) => Err(StackExhausted::of_header(header)),
         }
     }
 
@@ -8474,7 +8473,7 @@ impl<'gc> Heap<'gc> {
         let offset = activation.offset as usize;
         let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
-        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let flags = FrameFlags::of_word(Word::from_bits(header[frame_header::FLAGS]));
         let program_counter = header[frame_header::PROGRAM_COUNTER];
         let continuation = Word::from_bits(header[frame_header::CONTINUATION]);
         let caller = Word::from_bits(header[frame_header::CALLER]);
@@ -10331,7 +10330,7 @@ impl<'gc> Heap<'gc> {
 
     /// How far a frame's flags word is shifted to bring its argument count
     /// down to bit 0, and the mask that leaves it alone there, as
-    /// `FrameFlags::of` reads it: what an outer-local template reads of a
+    /// `FrameFlags::of_word` reads it: what an outer-local template reads of a
     /// married frame to find its register 0 below its header, as
     /// `register_slot` does.
     #[cfg(ns_jit)]
@@ -10454,7 +10453,7 @@ impl<'gc> Heap<'gc> {
         let header_word = |heap: &Self, field: usize| {
             Word::from_bits(heap.stack.frames.committed_word(offset + field))
         };
-        let written = FrameFlags::of(header_word(self, frame_header::FLAGS));
+        let written = FrameFlags::of_word(header_word(self, frame_header::FLAGS));
         let tag = match frame.kind.tag {
             MachineKindTag::Constant(tag) => tag,
             MachineKindTag::Recorded => written.kind_tag,
@@ -10771,7 +10770,7 @@ impl<'gc> Heap<'gc> {
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
-            generation: FrameFlags::of(Word::from_bits(
+            generation: FrameFlags::of_word(Word::from_bits(
                 self.stack
                     .frames
                     .committed_word(offset as usize + frame_header::FLAGS),
@@ -10817,7 +10816,7 @@ impl<'gc> Heap<'gc> {
         let offset = activation.offset as usize;
         let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
-        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let flags = FrameFlags::of_word(Word::from_bits(header[frame_header::FLAGS]));
         let program_counter = header[frame_header::PROGRAM_COUNTER];
         let Some(frame) = reified else {
             unreachable!("internal: machine code divorces only a reified frame");
@@ -11461,7 +11460,7 @@ impl<'gc> Heap<'gc> {
                     .filter(|(callee_start, _)| *callee_start < end)
                     .map(|(_, callee_header)| callee_header),
             };
-            let set = LastSet::of(&mut last, tables, code_index, program_counter);
+            let set = LastSet::of_body(&mut last, tables, code_index, program_counter);
             #[cfg(debug_assertions)]
             set.check_callee(
                 start,
@@ -11521,7 +11520,8 @@ impl<'gc> Heap<'gc> {
                 }
             }
             for frame in &deferred {
-                let set = LastSet::of(&mut last, tables, frame.code_index, frame.program_counter);
+                let set =
+                    LastSet::of_body(&mut last, tables, frame.code_index, frame.program_counter);
                 let Some(tainted) = &set.tainted else {
                     unreachable!("internal: the fill keeps every set the walk deferred")
                 };
@@ -12381,11 +12381,11 @@ impl<'gc> Heap<'gc> {
         let mut replaced = 0;
         let mut replace = |fields: &mut [Word]| {
             for field in fields {
-                if let Some(offset) = field.object_offset() {
-                    if let Some(value) = values.get(&offset.get()) {
-                        *field = *value;
-                        replaced += 1;
-                    }
+                if let Some(offset) = field.object_offset()
+                    && let Some(value) = values.get(&offset.get())
+                {
+                    *field = *value;
+                    replaced += 1;
                 }
             }
         };
@@ -12500,11 +12500,11 @@ impl<'gc> Heap<'gc> {
     /// again and the text keeps one object.
     pub(crate) fn prune_canonical_symbols(&mut self) {
         for index in 0..self.canonical_symbols.len() {
-            if let Some(object) = self.canonical_symbols[index] {
-                if !self.header(object).marked() {
-                    self.symbol_of.remove(&object.offset.get());
-                    self.canonical_symbols[index] = None;
-                }
+            if let Some(object) = self.canonical_symbols[index]
+                && !self.header(object).marked()
+            {
+                self.symbol_of.remove(&object.offset.get());
+                self.canonical_symbols[index] = None;
             }
         }
         let mut program_symbols = std::mem::take(&mut self.program_symbols);
@@ -12681,10 +12681,10 @@ impl<'gc> Heap<'gc> {
             };
             for range in ranges {
                 for position in range.start + block.start..range.end + block.start {
-                    if let Some(target) = Word::from_bits(words[position]).object_offset() {
-                        if !Header(words[header_index(target)]).marked() {
-                            marker.push(target);
-                        }
+                    if let Some(target) = Word::from_bits(words[position]).object_offset()
+                        && !Header(words[header_index(target)]).marked()
+                    {
+                        marker.push(target);
                     }
                 }
             }
@@ -12838,10 +12838,10 @@ impl<'gc> Heap<'gc> {
     fn push_ephemeron_fields(&self, offset: NonZeroU64, marker: &mut mark::Marker) {
         let words = self.space.words();
         for bits in &words[self.field_range(offset)] {
-            if let Some(target) = Word::from_bits(*bits).object_offset() {
-                if !Header(words[header_index(target)]).marked() {
-                    marker.push(target);
-                }
+            if let Some(target) = Word::from_bits(*bits).object_offset()
+                && !Header(words[header_index(target)]).marked()
+            {
+                marker.push(target);
             }
         }
     }
@@ -12860,10 +12860,10 @@ impl<'gc> Heap<'gc> {
         let fields = self.field_range(offset);
         let words = self.space.words_mut();
         for position in fields {
-            if let Some(target) = Word::from_bits(words[position]).object_offset() {
-                if !Header(words[header_index(target)]).marked() {
-                    words[position] = Word::NIL.bits();
-                }
+            if let Some(target) = Word::from_bits(words[position]).object_offset()
+                && !Header(words[header_index(target)]).marked()
+            {
+                words[position] = Word::NIL.bits();
             }
         }
     }
@@ -13301,7 +13301,7 @@ mod tests {
         builtin: Option<BuiltinClass>,
     ) -> ClassReference<'gc> {
         let mixin = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,
@@ -13551,9 +13551,10 @@ mod tests {
         heap.record_program_symbol(object);
         assert_eq!(heap.symbol_value(object), None);
         assert_eq!(heap.symbol_text(object).as_deref(), Some(text));
-        assert!(heap
-            .program_symbol_named(text)
-            .is_some_and(|found| found.same(object)));
+        assert!(
+            heap.program_symbol_named(text)
+                .is_some_and(|found| found.same(object))
+        );
 
         let symbol = Symbol::intern(text);
         assert!(heap.canonical_symbol(symbol).is_none());
@@ -13562,9 +13563,10 @@ mod tests {
             "the decoder must refuse a record of the text"
         );
         assert_eq!(heap.symbol_value(object), Some(symbol));
-        assert!(heap
-            .adopt_program_symbol(symbol)
-            .is_some_and(|adopted| adopted.same(object)));
+        assert!(
+            heap.adopt_program_symbol(symbol)
+                .is_some_and(|adopted| adopted.same(object))
+        );
         assert!(heap.has_symbol_object(symbol));
         assert_eq!(heap.table_sizes().program_symbols, 0);
     }
@@ -14669,9 +14671,10 @@ mod tests {
                     Some(12 + i64::from(register))
                 );
             }
-            assert!(heap
-                .activation_local(from_slots, first_above_header(count))
-                .is_nil());
+            assert!(
+                heap.activation_local(from_slots, first_above_header(count))
+                    .is_nil()
+            );
             heap.pop_activation(from_slots);
         }
         // The same three counts from values: one is copied on its own,
@@ -14692,9 +14695,10 @@ mod tests {
                     Some(7 + i64::from(register))
                 );
             }
-            assert!(heap
-                .activation_local(from_values, first_above_header(count))
-                .is_nil());
+            assert!(
+                heap.activation_local(from_values, first_above_header(count))
+                    .is_nil()
+            );
             heap.pop_activation(from_values);
         }
         for register in first..first + 5 {
@@ -14756,12 +14760,14 @@ mod tests {
             heap.stack.frames.top(),
             callee.offset as usize + frame_header::COUNT + 1
         );
-        assert!(heap
-            .activation_sender(callee)
-            .is_some_and(|below| below.same(sender)));
-        assert!(heap
-            .activation_above(sender)
-            .is_some_and(|above| above.same(callee)));
+        assert!(
+            heap.activation_sender(callee)
+                .is_some_and(|below| below.same(sender))
+        );
+        assert!(
+            heap.activation_above(sender)
+                .is_some_and(|above| above.same(callee))
+        );
 
         let top = heap.stack.frames.top();
         let from_values = heap
@@ -15231,9 +15237,10 @@ mod tests {
                 .as_small_integer(),
             Some(7)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.pop_activation(activation);
     }
 
@@ -15471,9 +15478,10 @@ mod tests {
             _ => panic!("a closure's activation"),
         }
         assert!(heap.stack.flags(activation.offset).compiled);
-        assert!(heap
-            .activation_home(activation)
-            .is_some_and(|found| found.same(home)));
+        assert!(
+            heap.activation_home(activation)
+                .is_some_and(|found| found.same(home))
+        );
         // A leaf's view leaves out the caller, which the pop reads.
         heap.stack
             .set_header_word(activation.offset, frame_header::CALLER, caller);
@@ -15794,7 +15802,7 @@ mod tests {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Object");
         for size in [0, 1, 8, 13, 40] {
-            let bytes: Vec<u8> = (0..size).map(|index| index as u8 ^ 0x5A).collect();
+            let bytes = Vec::from_fn(size, |index| index as u8 ^ 0x5A);
             for residue in 0..object::ALIGNMENT_WORDS {
                 // A filler that puts the placeholder's header at `residue`
                 // within a 32-byte line: the filler's header is two words
@@ -16320,20 +16328,24 @@ mod tests {
 
         assert!(heap.activation_home(method_activation).is_none());
         assert!(heap.activation_captured(method_activation).is_none());
-        assert!(heap
-            .activation_home(closure_activation)
-            .is_some_and(|home| home.same(home_frame)));
-        assert!(heap
-            .activation_captured(closure_activation)
-            .is_some_and(|captured| captured.same(captured_frame)));
+        assert!(
+            heap.activation_home(closure_activation)
+                .is_some_and(|home| home.same(home_frame))
+        );
+        assert!(
+            heap.activation_captured(closure_activation)
+                .is_some_and(|captured| captured.same(captured_frame))
+        );
 
         let closure_frame = heap.reify(closure_activation);
-        assert!(heap
-            .frame_home(closure_frame)
-            .is_some_and(|home| home.same(home_frame)));
-        assert!(heap
-            .frame_captured(closure_frame)
-            .is_some_and(|captured| captured.same(captured_frame)));
+        assert!(
+            heap.frame_home(closure_frame)
+                .is_some_and(|home| home.same(home_frame))
+        );
+        assert!(
+            heap.frame_captured(closure_frame)
+                .is_some_and(|captured| captured.same(captured_frame))
+        );
 
         heap.pop_activation(closure_activation);
         heap.pop_activation(outer_block_activation);
@@ -16410,10 +16422,11 @@ mod tests {
             heap.object_class(class).same(class),
             "a class's own class is rewritten"
         );
-        assert!(heap
-            .array_element(array, 0)
-            .and_then(|element| element.as_object())
-            .is_some_and(|element| element.same(string)));
+        assert!(
+            heap.array_element(array, 0)
+                .and_then(|element| element.as_object())
+                .is_some_and(|element| element.same(string))
+        );
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
         let copied = heap
             .closure_copied_values(closure)
@@ -16430,14 +16443,16 @@ mod tests {
             heap.object_identity_key(heap.frame_object(captured_frame)),
             "every frame moved"
         );
-        assert!(heap
-            .frame_receiver(captured_frame)
-            .as_object()
-            .is_some_and(|receiver| receiver.same(string)));
-        assert!(heap
-            .frame_local(captured_frame, first_above_header(0))
-            .as_object()
-            .is_some_and(|register| register.same(array)));
+        assert!(
+            heap.frame_receiver(captured_frame)
+                .as_object()
+                .is_some_and(|receiver| receiver.same(string))
+        );
+        assert!(
+            heap.frame_local(captured_frame, first_above_header(0))
+                .as_object()
+                .is_some_and(|register| register.same(array))
+        );
         let activation_class = heap.activation_class.expect("recorded");
         assert!(
             heap.object_class(heap.frame_object(captured_frame))
@@ -16713,9 +16728,10 @@ mod tests {
         let activation_object = heap.frame_object(frame);
         let other = heap.allocate_string(class, crate::CodePoints::from("other"));
 
-        assert!(heap
-            .object_frame(activation_object)
-            .is_some_and(|answered| answered.same(frame)));
+        assert!(
+            heap.object_frame(activation_object)
+                .is_some_and(|answered| answered.same(frame))
+        );
         assert!(heap.object_frame(other).is_none());
         assert_eq!(
             heap.describe(Value::object(activation_object)),
@@ -16778,9 +16794,10 @@ mod tests {
                 .as_small_integer(),
             Some(9)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.pop_activation(activation);
     }
 
@@ -16854,9 +16871,10 @@ mod tests {
         assert!(heap.frame_activation(unretained_frame).is_none());
         assert!(!heap.frame_registers_kept(unretained_frame));
         assert!(heap.frame_local(unretained_frame, 0).is_nil());
-        assert!(heap
-            .frame_local(unretained_frame, first_above_header(1))
-            .is_nil());
+        assert!(
+            heap.frame_local(unretained_frame, first_above_header(1))
+                .is_nil()
+        );
     }
 
     /// The frame whose object `root` holds.
@@ -16897,9 +16915,10 @@ mod tests {
             Some(9),
             "a write through the moved frame reaches the live register"
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
 
         heap.retain_registers(activation);
         heap.pop_activation(activation);
@@ -17641,8 +17660,8 @@ mod tests {
     /// set from what still names a young object; past the limit, it asks
     /// for the tenuring scavenge as an overflowing barrier would.
     #[test]
-    fn a_scavenge_that_leaves_the_remembered_set_past_its_limit_asks_for_one_that_tenures_everything(
-    ) {
+    fn a_scavenge_that_leaves_the_remembered_set_past_its_limit_asks_for_one_that_tenures_everything()
+     {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         // One young object every holder names: it stays young through the
@@ -17949,9 +17968,10 @@ mod tests {
                 .as_small_integer(),
             Some(7)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.retain_registers(activation);
         heap.pop_activation(activation);
         assert!(heap.frame_activation(frame).is_none());
@@ -18022,9 +18042,10 @@ mod tests {
             "the scavenge copied the symbol"
         );
         assert_eq!(heap.symbol_value(object), Some(kept_symbol));
-        assert!(heap
-            .canonical_symbol(kept_symbol)
-            .is_some_and(|canonical| canonical.same(object)));
+        assert!(
+            heap.canonical_symbol(kept_symbol)
+                .is_some_and(|canonical| canonical.same(object))
+        );
         assert_eq!(heap.canonical_symbol(pruned_symbol).map(|_| ()), None);
         let live = heap.canonical_symbols.iter().flatten().count();
         assert_eq!(heap.symbol_of.len(), live);
@@ -19272,7 +19293,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         for size in [0, 1, 7, 8, 9, 33] {
-            let bytes: Vec<u8> = (0..size).map(|byte| byte as u8 ^ 0xA5).collect();
+            let bytes = Vec::from_fn(size, |byte| byte as u8 ^ 0xA5);
             let object = heap.allocate_byte_array(class, &bytes);
             assert!(heap.is_byte_array(object));
             assert!(!heap.is_string(object), "a ByteArray is never a String");
@@ -19312,9 +19333,11 @@ mod tests {
         assert_eq!(heap.byte_array_bytes(object), Some(vec![0; 40]));
         // The reserve too, so that the space holds no stale words.
         let block = block_range(heap.space.words(), header_index(object.offset));
-        assert!(heap.space.words()[block.start + FIELDS..block.end]
-            .iter()
-            .all(|word| *word == 0));
+        assert!(
+            heap.space.words()[block.start + FIELDS..block.end]
+                .iter()
+                .all(|word| *word == 0)
+        );
     }
 
     #[test]
@@ -19777,9 +19800,10 @@ mod tests {
             assert_eq!(fast_bumps, fast, "length {length}");
             assert!(space::is_young(array.offset));
             assert_eq!(heap.array_element_count(array), Some(length));
-            assert!(heap
-                .array_element(array, length - 1)
-                .is_some_and(|value| value.is_nil()));
+            assert!(
+                heap.array_element(array, length - 1)
+                    .is_some_and(|value| value.is_nil())
+            );
         }
     }
 
@@ -20048,9 +20072,10 @@ mod tests {
             heap.frame_local(bottom_frame, 0).as_small_integer(),
             Some(5)
         );
-        assert!(heap
-            .frame_sender(top_frame)
-            .is_some_and(|sender| sender.same(bottom_frame)));
+        assert!(
+            heap.frame_sender(top_frame)
+                .is_some_and(|sender| sender.same(bottom_frame))
+        );
         assert!(heap.frame_sender(bottom_frame).is_none());
 
         let resumed = heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
@@ -20065,22 +20090,27 @@ mod tests {
             heap.activation_local(resumed, 1).as_small_integer(),
             Some(2)
         );
-        assert!(heap
-            .activation_local(resumed, first_above_header(2))
-            .is_nil());
+        assert!(
+            heap.activation_local(resumed, first_above_header(2))
+                .is_nil()
+        );
         assert_eq!(heap.activation_program_counter(resumed), 7);
-        assert!(heap
-            .frame_activation(top_frame)
-            .is_some_and(|live| live.same(resumed)));
-        assert!(heap
-            .activation_reified(resumed)
-            .is_some_and(|frame| frame.same(top_frame)));
+        assert!(
+            heap.frame_activation(top_frame)
+                .is_some_and(|live| live.same(resumed))
+        );
+        assert!(
+            heap.activation_reified(resumed)
+                .is_some_and(|frame| frame.same(top_frame))
+        );
         assert!(!heap.frame_is_suspended(top_frame));
         assert!(heap.frame_is_running(top_frame));
         assert!(heap.frame_sender(top_frame).is_none());
-        assert!(own_registers(&heap, top_frame)
-            .iter()
-            .all(|bits| *bits == Word::NIL.bits()));
+        assert!(
+            own_registers(&heap, top_frame)
+                .iter()
+                .all(|bits| *bits == Word::NIL.bits())
+        );
         assert!(heap.frame_is_suspended(bottom_frame));
 
         heap.pop_activation(resumed);
@@ -20259,9 +20289,10 @@ mod tests {
             }
             _ => panic!("the resumed top returns to its suspended sender"),
         }
-        assert!(heap
-            .frame_suspended_continuation(bottom_frame)
-            .is_some_and(|then| matches!(then, Continuation::Unwind(_))));
+        assert!(
+            heap.frame_suspended_continuation(bottom_frame)
+                .is_some_and(|then| matches!(then, Continuation::Unwind(_)))
+        );
         let Popped { then, .. } = heap.pop_activation(resumed_top);
         let Continuation::ReturnToSuspended(suspended) = then else {
             panic!("the popped top returns to its suspended sender")
@@ -20297,12 +20328,14 @@ mod tests {
 
         heap.suspend_activations(0);
 
-        assert!(heap
-            .frame_sender(top_frame)
-            .is_some_and(|sender| sender.same(bottom_frame)));
-        assert!(heap
-            .frame_suspended_continuation(top_frame)
-            .is_some_and(|then| matches!(then, Continuation::Deliver)));
+        assert!(
+            heap.frame_sender(top_frame)
+                .is_some_and(|sender| sender.same(bottom_frame))
+        );
+        assert!(
+            heap.frame_suspended_continuation(top_frame)
+                .is_some_and(|then| matches!(then, Continuation::Deliver))
+        );
         let resumed = heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
         heap.pop_activation(resumed);
         let resumed = heap.resume_activation(bottom_frame, FeedbackBase::NOT_ASSIGNED);
@@ -20791,7 +20824,7 @@ mod tests {
     mod nil_leftovers {
         use super::*;
         use crate::bytecode::{
-            leftovers, CallSite, CodeKind, CompiledCode, Instruction, Literal, HEADER_REGISTERS,
+            CallSite, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction, Literal, leftovers,
         };
 
         /// The first register above the header of a frame that takes no
@@ -21123,8 +21156,10 @@ mod tests {
             heap.collect_for_test(&mut [&mut weak]);
 
             assert_eq!(kept(&heap, weak), [false]);
-            assert!((callee_end..sender_end)
-                .all(|word| heap.stack.frames.word(word) == dead_register().bits()));
+            assert!(
+                (callee_end..sender_end)
+                    .all(|word| heap.stack.frames.word(word) == dead_register().bits())
+            );
             heap.pop_activation(callee);
             heap.pop_activation(sender);
         }

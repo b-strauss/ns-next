@@ -14,15 +14,16 @@
 use crate::interpreter::Arguments;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
+use crate::heap::{ActivationReference, ArgumentSlots, RegisterBase, register_number};
 use crate::interpreter::breakpoint::{self, BreakpointDecision};
-use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
+use crate::interpreter::future::{Resolution, not_a_closure, value_for_a_value_slot};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
-    body_named, body_too_large_error_named, unresolved_identifier_error, BLOCK_BODY,
+    BLOCK_BODY, body_named, body_too_large_error_named, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
@@ -30,13 +31,12 @@ use crate::interpreter::locals::{
     write_outer_local,
 };
 use crate::interpreter::safepoint::SafepointOutcome;
-use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
+use crate::interpreter::unwind::{UnwindOutcome, non_boolean_condition};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Sent, Signal, Step,
 };
 use crate::jit::Resumption;
 use crate::types::*;
-use crate::Symbol;
 
 /// The running frame's state, which the loop holds in locals while it runs
 /// and in this struct between two stretches: nothing here is branded, so it
@@ -52,7 +52,7 @@ struct FrameRegisters {
 
 impl FrameRegisters {
     /// The state of `activation`, to run from `program_counter`.
-    fn of(
+    fn of_activation(
         mutator: &Mutator<'_>,
         activation: ActivationReference,
         program_counter: usize,
@@ -219,7 +219,7 @@ impl Handoff {
 /// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut frame) = interpreter.enter(|mutator| {
-        let frame = FrameRegisters::of(mutator, base, 0);
+        let frame = FrameRegisters::of_activation(mutator, base, 0);
         (mutator.heap.activation_position(base), frame)
     });
     // The base activation is a push too, the host's, so the JIT counts its
@@ -295,7 +295,11 @@ fn take_safepoint(
                     .heap
                     .top_activation()
                     .expect("internal: the safepoint resumed the running activation");
-                FrameRegisters::of(mutator, top, mutator.heap.activation_program_counter(top))
+                FrameRegisters::of_activation(
+                    mutator,
+                    top,
+                    mutator.heap.activation_program_counter(top),
+                )
             });
             AfterSafepoint::Run(None)
         }
@@ -339,7 +343,7 @@ fn after_safepoint(
         let physical = stopped.physical();
         if crate::jit::resumed_at_poll(mutator, stopped).is_some() {
             let program_counter = mutator.heap.activation_program_counter(physical);
-            *frame = FrameRegisters::of(mutator, physical, program_counter);
+            *frame = FrameRegisters::of_activation(mutator, physical, program_counter);
             return Some(Arrival::AtPoll);
         }
     }
@@ -391,7 +395,8 @@ fn terminate_at_safepoint(
             // A termination's unwind switches only to an `ensure:` or
             // `ifCurtailed:` block it pushed (`switch_to`), which starts
             // interpreted: no frame it switches to resumes machine code.
-            *frame = FrameRegisters::of(mutator, handoff.activation, handoff.program_counter);
+            *frame =
+                FrameRegisters::of_activation(mutator, handoff.activation, handoff.program_counter);
             None
         }
         Transfer::Next | Transfer::Stopped | Transfer::StoppedAtSafepoint => {
@@ -2854,7 +2859,7 @@ fn machine_code_switch<'gc>(
                 activation,
                 program_counter,
             } => {
-                return Switched::Run(FrameRegisters::of(
+                return Switched::Run(FrameRegisters::of_activation(
                     mutator,
                     activation,
                     program_counter as usize,
@@ -2864,7 +2869,7 @@ fn machine_code_switch<'gc>(
                 activation,
                 program_counter,
             } => {
-                return Switched::Safepoint(FrameRegisters::of(
+                return Switched::Safepoint(FrameRegisters::of_activation(
                     mutator,
                     activation,
                     program_counter as usize,
@@ -3202,7 +3207,7 @@ fn simultaneous_clause_instruction<'gc>(
             return match breakpoint::reached(mutator, activation, program_counter) {
                 BreakpointDecision::Execute(original) => OutOfLine::Execute(original),
                 BreakpointDecision::Stop => OutOfLine::Stop,
-            }
+            };
         }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
     };
@@ -3422,7 +3427,7 @@ fn unwind<'gc>(
     loop {
         let next = match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
             UnwindOutcome::Returned { target, value } => {
-                return finish(mutator, target, value, floor, handoff)
+                return finish(mutator, target, value, floor, handoff);
             }
             // Where the target starts again is the unwinder's to decide, and
             // it stored it; the loop resumes the target there.

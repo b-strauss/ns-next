@@ -36,19 +36,19 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::sync::PoisonError;
 
-use super::breakpoints::{address, settle, AfterPast, OneShot, PastOnce};
-use super::metadata::again::{declaration_path, BodyOrigin};
+use super::breakpoints::{AfterPast, OneShot, PastOnce, address, settle};
+use super::metadata::again::{BodyOrigin, declaration_path};
 use super::metadata::{BlockPlace, BlockSendEntry, BodyMetadata, Cache, TakenBlock};
 use super::remote::{BreakpointId, ClassName};
 use super::stack::{self, StackFrame};
 use ns_syntax::Span;
 
-use crate::bytecode::{register_written, CompiledCode, Instruction};
-use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
-use crate::interpreter::instantiate::FACTORY_INITIALIZE;
-use crate::interpreter::Mutator;
-use crate::types::{ActivationKind, BuiltinClass};
 use crate::Symbol;
+use crate::bytecode::{CompiledCode, Instruction, register_written};
+use crate::heap::{ActivationReference, DEBUGGER_STEP, FrameReference};
+use crate::interpreter::Mutator;
+use crate::interpreter::instantiate::FACTORY_INITIALIZE;
+use crate::types::{ActivationKind, BuiltinClass};
 use crate::{Root, Value};
 
 /// The frames no step stops in (`docs/design/debugger.md`, decision 16):
@@ -135,7 +135,7 @@ pub(crate) enum Holder {
 
 impl Holder {
     /// Whether the two name the same frame.
-    pub(crate) fn is(self, other: Holder) -> bool {
+    pub(crate) fn same_frame(self, other: Holder) -> bool {
         match (self, other) {
             (Holder::Running(held), Holder::Running(other)) => held.names(other),
             (Holder::Suspended(held), Holder::Suspended(other)) => held == other,
@@ -231,7 +231,7 @@ impl Stepping {
     /// return to its caller's send: its own, its return point's caller, or
     /// the frame whose send a step out of a block leaves.
     fn has_left(&self) -> bool {
-        let left = |holder: Holder| holder.is(Holder::Left);
+        let left = |holder: Holder| holder.same_frame(Holder::Left);
         left(self.frame)
             || self.return_point.is_some_and(|(caller, _)| left(caller))
             || self.after_send.is_some_and(|(holder, _)| left(holder))
@@ -444,14 +444,14 @@ impl LeftBlocks {
 fn send_left<'gc>(mutator: &mut Mutator<'gc>, taken_in: Place<'gc>) -> Option<SendLeft<'gc>> {
     let (code, _, metadata) = place_body(mutator, taken_in);
     let standing = place_program_counter(mutator, taken_in);
-    if let Some(metadata) = metadata.as_deref() {
-        if let Some(entry) = inline_send_around(metadata, standing) {
-            return Some(SendLeft::Inlined {
-                frame: taken_in,
-                join: join_stop(&code, metadata, entry),
-                left: left_blocks(&code, entry),
-            });
-        }
+    if let Some(metadata) = metadata.as_deref()
+        && let Some(entry) = inline_send_around(metadata, standing)
+    {
+        return Some(SendLeft::Inlined {
+            frame: taken_in,
+            join: join_stop(&code, metadata, entry),
+            left: left_blocks(&code, entry),
+        });
     }
     let creator = creator_of(mutator, taken_in)?;
     let callee = callee_of(mutator, taken_in, creator)?;
@@ -967,15 +967,15 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
     if gone(stepping.frame) {
         stepping.frame = Holder::Left;
     }
-    if let Some((caller, index)) = stepping.return_point {
-        if gone(caller) {
-            stepping.return_point = Some((Holder::Left, index));
-        }
+    if let Some((caller, index)) = stepping.return_point
+        && gone(caller)
+    {
+        stepping.return_point = Some((Holder::Left, index));
     }
-    if let Some((holder, index)) = stepping.after_send {
-        if gone(holder) {
-            stepping.after_send = Some((Holder::Left, index));
-        }
+    if let Some((holder, index)) = stepping.after_send
+        && gone(holder)
+    {
+        stepping.after_send = Some((Holder::Left, index));
     }
     if stepping.begun_in.is_some_and(gone) {
         stepping.begun_in = None;
@@ -1091,7 +1091,7 @@ fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
     let steps_elsewhere = mutator
         .stepping
         .as_ref()
-        .is_some_and(|stepping| !stepping.frame.is(origin));
+        .is_some_and(|stepping| !stepping.frame.same_frame(origin));
     if !steps_elsewhere {
         return;
     }
@@ -1113,10 +1113,10 @@ fn note_origin(mutator: &mut Mutator<'_>, top: ActivationReference) {
 /// The activation a step was taken in returned to its caller
 /// (`OneShot::leaves`).
 pub(crate) fn origin_returned(mutator: &mut Mutator<'_>) {
-    if let Some(stepping) = &mut mutator.stepping {
-        if stepping.origin.take().is_some() {
-            stepping.origin_left = true;
-        }
+    if let Some(stepping) = &mut mutator.stepping
+        && stepping.origin.take().is_some()
+    {
+        stepping.origin_left = true;
     }
 }
 
@@ -1201,7 +1201,7 @@ fn steps_at_or_above<'gc>(
                 heap.frame_object(frame).same(handler_object),
             ),
         };
-        if held.is_some_and(|held| stepping.frame.is(held)) {
+        if held.is_some_and(|held| stepping.frame.same_frame(held)) {
             return true;
         }
         if is_handler {
@@ -1409,7 +1409,7 @@ pub(crate) fn went_on_past_filtered(
         (stepping.frame, stepping.started_filtered, stepping.begun_in);
     let begun_here = |mutator: &Mutator<'_>| {
         takes(mutator, frame, activation)
-            || begun_in.is_some_and(|begun| begun.is(Holder::Running(activation)))
+            || begun_in.is_some_and(|begun| begun.same_frame(Holder::Running(activation)))
     };
     let past_a_factory_s_entry = stack::is_factory(&mutator.heap, &StackFrame::Running(activation))
         && mutator.heap.activation_program_counter(activation) > 0;
@@ -1541,7 +1541,7 @@ pub(crate) fn held_step(mutator: &mut Mutator<'_>) -> HeldStep {
     let was_there = stepping
         .between
         .iter()
-        .any(|(held, _)| held.is(Holder::Running(top)));
+        .any(|(held, _)| held.same_frame(Holder::Running(top)));
     if was_there || inline_code_of_step(mutator, top) {
         return HeldStep::GoOn;
     }
@@ -1649,7 +1649,7 @@ fn rewound_into_factory(mutator: &mut Mutator<'_>, top: ActivationReference) -> 
     let steps_in_it = mutator
         .stepping
         .as_ref()
-        .is_some_and(|stepping| stepping.frame.is(Holder::Running(factory)));
+        .is_some_and(|stepping| stepping.frame.same_frame(Holder::Running(factory)));
     if !at_its_initializer
         || steps_in_it
         || is_filtered(mutator, &StackFrame::Running(factory))
@@ -1763,11 +1763,11 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
     // a name of it kept past its return would name the next activation
     // pushed at its offset. An initializer that runs nothing a step stops
     // at leaves the step to its sender, begun nowhere filtered.
-    if let FirstStop::Patched = stop_at_first(mutator, top, false) {
-        if let Some(stepping) = &mut mutator.stepping {
-            stepping.started_filtered = started_filtered;
-            stepping.begun_in = Some(Holder::Running(top));
-        }
+    if let FirstStop::Patched = stop_at_first(mutator, top, false)
+        && let Some(stepping) = &mut mutator.stepping
+    {
+        stepping.started_filtered = started_filtered;
+        stepping.begun_in = Some(Holder::Running(top));
     }
     settle(mutator);
 }
@@ -1846,7 +1846,7 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
     };
     let stepping_frame = stepping.frame;
     let between: Vec<Holder> = stepping.between.iter().map(|(held, _)| *held).collect();
-    let is_between = |held: Holder| between.iter().any(|other| other.is(held));
+    let is_between = |held: Holder| between.iter().any(|other| other.same_frame(held));
     let Some(mut sender) = sender_of(mutator, top) else {
         return false;
     };
@@ -1854,7 +1854,7 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
         sender = match sender {
             Place::Running(activation) => {
                 let held = Holder::Running(activation);
-                if stepping_frame.is(held) || inline_code_of_step(mutator, activation) {
+                if stepping_frame.same_frame(held) || inline_code_of_step(mutator, activation) {
                     return true;
                 }
                 if is_between(held) || !is_filtered(mutator, &StackFrame::Running(activation)) {
@@ -1868,7 +1868,7 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
             Place::Suspended(frame) => {
                 if let Some(key) = suspended_key(mutator, frame) {
                     let held = Holder::Suspended(key);
-                    if stepping_frame.is(held) {
+                    if stepping_frame.same_frame(held) {
                         return true;
                     }
                     if is_between(held) {
@@ -1921,7 +1921,7 @@ fn inline_code_of_step(mutator: &Mutator<'_>, activation: ActivationReference) -
 /// inline copy. Ignored in any other activation of the body: a recursive
 /// call, or a block of the same home running in a callee.
 pub(crate) fn takes(mutator: &Mutator<'_>, holder: Holder, running: ActivationReference) -> bool {
-    if holder.is(Holder::Running(running)) {
+    if holder.same_frame(Holder::Running(running)) {
         return true;
     }
     let heap = &mutator.heap;
@@ -1931,7 +1931,7 @@ pub(crate) fn takes(mutator: &Mutator<'_>, holder: Holder, running: ActivationRe
             Some(creator) => Some(Holder::Running(creator)),
             None => suspended_key(mutator, frame).map(Holder::Suspended),
         };
-        if creator.is_some_and(|creator| holder.is(creator)) {
+        if creator.is_some_and(|creator| holder.same_frame(creator)) {
             return true;
         }
         captured = heap.frame_captured(frame);
@@ -2045,7 +2045,10 @@ pub(crate) fn suspending(mutator: &mut Mutator<'_>, floor: usize) {
         }
         let suspended_sender = mutator.heap.activation_suspended_sender(live).is_some();
         let sender = mutator.heap.activation_sender(live);
-        if named.iter().any(|held| held.is(Holder::Running(live))) {
+        if named
+            .iter()
+            .any(|held| held.same_frame(Holder::Running(live)))
+        {
             let frame = mutator.heap.reify(live);
             let key = hold(mutator, frame);
             rename(mutator, Holder::Running(live), Holder::Suspended(key));
@@ -2075,7 +2078,7 @@ pub(crate) fn resumed<'gc>(
     let position = mutator.heap.activation_position(activation);
     if let Some(stepping) = &mut mutator.stepping {
         for (held, held_position) in &mut stepping.between {
-            if held.is(Holder::Running(activation)) {
+            if held.same_frame(Holder::Running(activation)) {
                 *held_position = Some(position);
             }
         }
@@ -2122,29 +2125,35 @@ fn hold<'gc>(mutator: &mut Mutator<'gc>, frame: FrameReference<'gc>) -> u32 {
 /// its one-shots'.
 fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
     if let Some(stepping) = &mut mutator.stepping {
-        if stepping.frame.is(from) {
+        if stepping.frame.same_frame(from) {
             stepping.frame = onto;
         }
         for (held, position) in &mut stepping.between {
-            if held.is(from) {
+            if held.same_frame(from) {
                 *held = onto;
                 *position = None;
             }
         }
-        if let Some((caller, index)) = stepping.return_point {
-            if caller.is(from) {
-                stepping.return_point = Some((onto, index));
-            }
+        if let Some((caller, index)) = stepping.return_point
+            && caller.same_frame(from)
+        {
+            stepping.return_point = Some((onto, index));
         }
-        if let Some((holder, index)) = stepping.after_send {
-            if holder.is(from) {
-                stepping.after_send = Some((onto, index));
-            }
+        if let Some((holder, index)) = stepping.after_send
+            && holder.same_frame(from)
+        {
+            stepping.after_send = Some((onto, index));
         }
-        if stepping.begun_in.is_some_and(|begun| begun.is(from)) {
+        if stepping
+            .begun_in
+            .is_some_and(|begun| begun.same_frame(from))
+        {
             stepping.begun_in = Some(onto);
         }
-        if stepping.origin.is_some_and(|origin| origin.is(from)) {
+        if stepping
+            .origin
+            .is_some_and(|origin| origin.same_frame(from))
+        {
             stepping.origin = Some(onto);
         }
     }
@@ -2200,7 +2209,7 @@ fn frames_between<'gc>(
         Place::Suspended(top) => (None, Some(top)),
     };
     while let Some(live) = next {
-        if frame.is(Holder::Running(live)) {
+        if frame.same_frame(Holder::Running(live)) {
             return between;
         }
         let heap = &mutator.heap;
@@ -2213,7 +2222,7 @@ fn frames_between<'gc>(
     }
     while let Some(sender) = suspended {
         let held = Holder::Suspended(hold(mutator, sender));
-        if frame.is(held) {
+        if frame.same_frame(held) {
             break;
         }
         between.push((held, None));
@@ -2419,10 +2428,9 @@ fn taken_by_an_inlinable_send(following: &[Instruction], register: u16) -> bool 
             argument_sources,
             ..
         } = instruction
+            && (*receiver_register == register || argument_sources.contains(&register))
         {
-            if *receiver_register == register || argument_sources.contains(&register) {
-                return true;
-            }
+            return true;
         }
         if register_written(instruction) == Some(register) {
             return false;

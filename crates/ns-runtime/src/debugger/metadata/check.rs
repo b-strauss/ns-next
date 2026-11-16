@@ -8,14 +8,14 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use super::again::{compile_level_again, BodyOrigin, Member};
-use super::{address, BlockPlace, BodyMetadata, Cache, VariablePlace, VectorHolder};
+use super::again::{BodyOrigin, Member, compile_level_again};
+use super::{BlockPlace, BodyMetadata, Cache, VariablePlace, VectorHolder, address};
 use crate::bytecode::{CompiledCode, Instruction, Literal};
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
-use crate::interpreter::core_library::{shipped_module_text, LAZY_SHIPPED_MODULES};
-use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::Mutator;
+use crate::interpreter::core_library::{LAZY_SHIPPED_MODULES, shipped_module_text};
+use crate::interpreter::instantiate::InitializerBody;
 use crate::mixin::{MethodEntry, Mixin};
 use crate::{Interpreter, Symbol};
 
@@ -182,7 +182,7 @@ fn check_level(
                 return Err(format!(
                     "{} has no metadata through the debugger's cache",
                     describe(&level, body)
-                ))
+                ));
             }
         }
     }

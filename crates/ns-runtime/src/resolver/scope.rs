@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use ns_syntax::ast;
 
-use crate::types::Binding;
 use crate::Symbol;
+use crate::types::Binding;
 
 /// One method or closure body's own parameters and local slots, innermost
 /// activation last, each with whether it declares a setter: §3.6 makes a
@@ -124,10 +124,10 @@ impl ScopeStack {
     /// the enclosing classes.
     pub(super) fn resolve_setter(&self, name: Symbol) -> Option<Binding> {
         for (depth, scope) in self.scopes.iter().rev().enumerate() {
-            if let Some(entry) = scope.names.get(&name) {
-                if entry.has_setter {
-                    return Some(binding_at(depth, entry.index));
-                }
+            if let Some(entry) = scope.names.get(&name)
+                && entry.has_setter
+            {
+                return Some(binding_at(depth, entry.index));
             }
         }
         None

@@ -14,10 +14,10 @@
 //! recorded before the factory answered, so a demand an unwind interrupts
 //! leaves the next one to build the module from the same class.
 
+use crate::Mutator;
 use crate::builtins::primitive::ModulePrimitive;
 use crate::interpreter::core_library::{record_pending_module, shipped_module_class};
 use crate::types::*;
-use crate::Mutator;
 
 /// Declines -- and the forwarder's failure block runs -- when the subject
 /// is no symbol or names no shipped module (`InstanceNamed`), names no
@@ -95,10 +95,12 @@ mod tests {
         interpreter.build_shipped_module("CollectionsFactory", None);
         interpreter.enter(|mutator| {
             let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
-            assert!(mutator
-                .shipped_world
-                .module_instance(Symbol::intern("CollectionsFactory"))
-                .is_some());
+            assert!(
+                mutator
+                    .shipped_world
+                    .module_instance(Symbol::intern("CollectionsFactory"))
+                    .is_some()
+            );
             assert!(class_named(mutator, name).is_none());
         });
     }

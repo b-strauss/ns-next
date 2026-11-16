@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::heap::Root;
 use crate::interpreter::core_library::{
-    booted, KERNEL_MODULE, LAZY_SHIPPED_MODULES, SHIPPED_MODULES,
+    KERNEL_MODULE, LAZY_SHIPPED_MODULES, SHIPPED_MODULES, booted,
 };
 use crate::interpreter::shipped_world::ShippedWorld;
 use crate::mixin::Mixin;
@@ -25,8 +25,8 @@ use crate::{Mutator, Symbol};
 
 pub use crate::interpreter::shipped_world::{Positions, ShippedKind, ShippedName};
 
-use super::decode::{bounded_count, DecodeError, Reader};
-use super::encode::{u32_field, Writer};
+use super::decode::{DecodeError, Reader, bounded_count};
+use super::encode::{Writer, u32_field};
 use super::symbols;
 
 /// The most names one section may list. The shipped world has a few
@@ -166,7 +166,7 @@ pub(crate) fn decode_section(
                 return Err(DecodeError::InvalidTag {
                     what: "shipped name kind",
                     tag,
-                })
+                });
             }
         };
         names.push(ShippedName {

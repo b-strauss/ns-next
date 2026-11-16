@@ -7,22 +7,22 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::leftovers::{self, LeftoverRefusal, LOOP_LIMIT, PENDING_LIMIT};
+use crate::Symbol;
+use crate::bytecode::leftovers::{self, LOOP_LIMIT, LeftoverRefusal, PENDING_LIMIT};
 use crate::bytecode::{
-    jump_target, register_written, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
-    CreatedBlock, Emitted, Instruction, IntegerOperation, Literal, ARGUMENT_LIMIT,
-    HEADER_REGISTERS, INSTRUCTION_LIMIT,
+    ARGUMENT_LIMIT, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock,
+    Emitted, HEADER_REGISTERS, INSTRUCTION_LIMIT, Instruction, IntegerOperation, Literal,
+    jump_target, register_written,
 };
 use crate::heap::{
-    record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
+    FrameRecord, Heap, IDENTITY_HASH_LIMIT, NewClass, PlaceholderFormat, record_size,
 };
 use crate::interpreter::instantiate;
 use crate::numeric::Rational;
 use crate::types::{
-    fits_small_integer, BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference,
-    SourceOrigin, Value,
+    BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference, SourceOrigin, Value,
+    fits_small_integer,
 };
-use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
 
 use super::opcodes::*;
@@ -780,7 +780,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::UnexpectedEndOfFile => write!(f, "unexpected end of image"),
             DecodeError::BadMagic => write!(f, "not an ns-next image (bad magic)"),
             DecodeError::VersionMismatch { found, expected } => {
-                write!(f, "image format version {found} is not supported (this build reads version {expected})")
+                write!(
+                    f,
+                    "image format version {found} is not supported (this build reads version {expected})"
+                )
             }
             DecodeError::ShippedWorldMismatch { found, expected } => write!(
                 f,
@@ -796,7 +799,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a started image has exactly one root, the application, but this one has {count}"
             ),
-            DecodeError::ProgramCounterOutOfRange { program_counter, instructions } => write!(
+            DecodeError::ProgramCounterOutOfRange {
+                program_counter,
+                instructions,
+            } => write!(
                 f,
                 "frame pc {program_counter} is not an instruction index in a body of {instructions} instruction(s)"
             ),
@@ -813,7 +819,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::NotAFrameReference(id) => {
-                write!(f, "object {id} is named as a frame but is not a frame record")
+                write!(
+                    f,
+                    "object {id} is named as a frame but is not a frame record"
+                )
             }
             DecodeError::BadSymbolId(id) => write!(f, "symbol id {id} out of range"),
             DecodeError::BadMixinId(id) => write!(f, "mixin id {id} out of range"),
@@ -866,7 +875,10 @@ impl std::fmt::Display for DecodeError {
                 "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
             ),
             DecodeError::MalformedText { text } => {
-                write!(f, "text {text} of the image does not describe a declaration")
+                write!(
+                    f,
+                    "text {text} of the image does not describe a declaration"
+                )
             }
             DecodeError::TextIndexOutOfRange { row, index, texts } => write!(
                 f,
@@ -876,12 +888,20 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "mixin-table row {row}'s text has {holes} nested declarations, and the row {nested}"
             ),
-            DecodeError::TextSharedByRows { text, first, second } => write!(
+            DecodeError::TextSharedByRows {
+                text,
+                first,
+                second,
+            } => write!(
                 f,
                 "text {text} of the image is named by mixin-table rows {first} and {second}, \
                  and a text belongs to one declaration"
             ),
-            DecodeError::ClassSideTextMismatch { row, index, instance_side } => write!(
+            DecodeError::ClassSideTextMismatch {
+                row,
+                index,
+                instance_side,
+            } => write!(
                 f,
                 "mixin-table row {row}, a class side, names text {index}, and not the text of \
                  its instance side, row {instance_side}"
@@ -897,15 +917,25 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a mixin-table row declares the lazy slot `{slot}` without its getter method"
             ),
-            DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
+            DecodeError::ClosureArityMismatch {
+                parameters,
+                argument_count,
+            } => write!(
                 f,
                 "a `MakeClosure` names {parameters} parameters but the block body it creates takes {argument_count}"
             ),
-            DecodeError::CopiedCountMismatch { copied, copied_count } => write!(
+            DecodeError::CopiedCountMismatch {
+                copied,
+                copied_count,
+            } => write!(
                 f,
                 "the image supplies {copied} copied values for a block that is handed {copied_count}"
             ),
-            DecodeError::CopiedCountOutOfRange { argument_count, copied_count, register_count } => write!(
+            DecodeError::CopiedCountOutOfRange {
+                argument_count,
+                copied_count,
+                register_count,
+            } => write!(
                 f,
                 "a body in the image takes {argument_count} arguments and {copied_count} copied \
                  values, which do not fit its {register_count} registers"
@@ -974,10 +1004,9 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image declares a superclass clause it has no compiled code for"
             ),
-            DecodeError::BodyLessWithoutClauses => write!(
-                f,
-                "a class in the image has no body and applies no mixin"
-            ),
+            DecodeError::BodyLessWithoutClauses => {
+                write!(f, "a class in the image has no body and applies no mixin")
+            }
             DecodeError::BodyLessWithMembers => write!(
                 f,
                 "a class in the image has no body, yet the image gives it members"
@@ -1098,7 +1127,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a local count of {local_count} is past a body with {register_count} register(s)"
             ),
-            DecodeError::JumpTargetOutOfRange { target, instructions } => write!(
+            DecodeError::JumpTargetOutOfRange {
+                target,
+                instructions,
+            } => write!(
                 f,
                 "jump target {target} is not an instruction index in a body of {instructions} instruction(s)"
             ),
@@ -1165,7 +1197,10 @@ impl std::fmt::Display for DecodeError {
                 write!(f, "symbol #{text} is recorded twice")
             }
             DecodeError::SymbolOfWrongClass(text) => {
-                write!(f, "symbol #{text} is recorded with a class other than Symbol")
+                write!(
+                    f,
+                    "symbol #{text} is recorded with a class other than Symbol"
+                )
             }
             DecodeError::StringOfSymbolClass => f.write_str(
                 "a string record has the class Symbol, which only a symbol record may have",
@@ -2043,14 +2078,14 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 });
             }
         }
-        if let Some(register) = register_written(instruction) {
-            if register < code.argument_count {
-                return Err(DecodeError::ArgumentRegisterWritten {
-                    depth: 0,
-                    register,
-                    argument_count: code.argument_count,
-                });
-            }
+        if let Some(register) = register_written(instruction)
+            && register < code.argument_count
+        {
+            return Err(DecodeError::ArgumentRegisterWritten {
+                depth: 0,
+                register,
+                argument_count: code.argument_count,
+            });
         }
         // The base and every source are among `own_registers`; the slots
         // past the base are not, and the send writes each one it copies a
@@ -2092,13 +2127,13 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
                 }
             }
         }
-        if let Some(target) = jump_target(instruction) {
-            if target as usize >= instructions.len() {
-                return Err(DecodeError::JumpTargetOutOfRange {
-                    target,
-                    instructions: instructions.len(),
-                });
-            }
+        if let Some(target) = jump_target(instruction)
+            && target as usize >= instructions.len()
+        {
+            return Err(DecodeError::JumpTargetOutOfRange {
+                target,
+                instructions: instructions.len(),
+            });
         }
     }
     // Last, on a body every register and target of which is in range: a
@@ -2382,7 +2417,7 @@ fn decode_code(
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
                 tag,
-            })
+            });
         }
     };
     let argument_count = reader.read_u16()?;
@@ -2806,7 +2841,7 @@ fn decode_instruction(
             return Err(DecodeError::InvalidTag {
                 what: "instruction",
                 tag,
-            })
+            });
         }
     })
 }
@@ -2869,7 +2904,7 @@ pub(crate) fn read_large_integer_parts(
             return Err(DecodeError::InvalidTag {
                 what: "large integer sign",
                 tag,
-            })
+            });
         }
     };
     let count = bounded_count(reader.read_u32()? as usize, 8, reader)?;
@@ -2904,7 +2939,7 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
             return Err(DecodeError::InvalidTag {
                 what: "literal",
                 tag,
-            })
+            });
         }
     })
 }
@@ -3478,7 +3513,7 @@ impl<'gc> DeclaredKind<'gc> {
     /// `kind`'s, with `current_class` for a method; `None` for a closure or
     /// a top-level frame, and a method frame with no current class, none of
     /// which a declaration names.
-    pub(crate) fn of(
+    pub(crate) fn of_kind(
         kind: &FrameKind<'gc>,
         current_class: Option<ClassReference<'gc>>,
     ) -> Option<DeclaredKind<'gc>> {
@@ -3547,7 +3582,7 @@ pub(crate) fn declared_body<'gc>(
         DeclaredKind::Factory(class) => instantiate::factory_code(heap, *class),
         _ if !declared.is_shipped(heap) => return Err(DecodeError::DeclaredBodyNotShipped),
         DeclaredKind::Method(class, selector) => {
-            return declared_method(heap, *class, *selector).map(|method| method.code.clone())
+            return declared_method(heap, *class, *selector).map(|method| method.code.clone());
         }
         DeclaredKind::Initializer(_, body) => declared
             .declaration(heap)
@@ -3648,7 +3683,7 @@ fn decode_frame<'gc>(
                 return Err(DecodeError::InvalidTag {
                     what: "frame kind",
                     tag,
-                })
+                });
             }
         },
     };
@@ -3661,18 +3696,18 @@ fn decode_frame<'gc>(
         FRAME_BODY_NONE if top_level => FrameBody::None,
         FRAME_BODY_NONE => return Err(DecodeError::FrameCodeMismatch),
         FRAME_BODY_CODE if top_level || matches!(kind, Ok(FrameKind::Factory(_))) => {
-            return Err(DecodeError::FrameCodeMismatch)
+            return Err(DecodeError::FrameCodeMismatch);
         }
         FRAME_BODY_CODE => FrameBody::Code(frame_code(reader, context)?),
         FRAME_BODY_DECLARED if top_level || matches!(kind, Ok(FrameKind::Closure(_))) => {
-            return Err(DecodeError::DeclaredBodyNotShipped)
+            return Err(DecodeError::DeclaredBodyNotShipped);
         }
         FRAME_BODY_DECLARED => FrameBody::Declared,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame body",
                 tag,
-            })
+            });
         }
     };
     let program_counter = reader.read_u32()? as usize;
@@ -3691,7 +3726,7 @@ fn decode_frame<'gc>(
         (Ok(kind), FrameBody::None) => (kind, None),
         (Ok(kind), FrameBody::Code(code)) => (kind, Some(code)),
         (Ok(kind), FrameBody::Declared) => {
-            let declared = DeclaredKind::of(&kind, current_class)
+            let declared = DeclaredKind::of_kind(&kind, current_class)
                 .ok_or(DecodeError::DeclaredBodyNotShipped)?;
             let code = declared_body(&context.mutator.heap, &declared)?;
             (kind, Some(code))
@@ -3966,10 +4001,9 @@ fn rebuild_applications<'gc>(
                 context.mutator,
                 declaration_enclosing,
                 object,
-            ) {
-                if !context.mutator.record_value_class_refusal(object, refusal) {
-                    unreachable!("internal: a pending class record fills a class object");
-                }
+            ) && !context.mutator.record_value_class_refusal(object, refusal)
+            {
+                unreachable!("internal: a pending class record fills a class object");
             }
             continue;
         }
@@ -3983,10 +4017,9 @@ fn rebuild_applications<'gc>(
             context.mutator,
             enclosing,
             superclass_class,
-        ) {
-            if !context.mutator.record_value_class_refusal(object, refusal) {
-                unreachable!("internal: a pending class record fills a class object");
-            }
+        ) && !context.mutator.record_value_class_refusal(object, refusal)
+        {
+            unreachable!("internal: a pending class record fills a class object");
         }
     }
     Ok(())
@@ -4301,10 +4334,10 @@ fn check_class_references<'gc>(
     for frame in frames {
         let current_class = heap.frame_current_class(*frame);
         let kind = heap.frame_kind(*frame);
-        if let FrameKind::Closure(closure) = &kind {
-            if !heap.is_closure(*closure) {
-                return Err(DecodeError::NotAClosureReference);
-            }
+        if let FrameKind::Closure(closure) = &kind
+            && !heap.is_closure(*closure)
+        {
+            return Err(DecodeError::NotAClosureReference);
         }
         let kind_class = match &kind {
             FrameKind::Initializer(class, _)
@@ -4499,7 +4532,7 @@ impl Sizing<'_, '_, '_> {
                 return Err(DecodeError::InvalidTag {
                     what: "frame kind",
                     tag,
-                })
+                });
             }
         }
         match reader.read_u8()? {
@@ -4511,7 +4544,7 @@ impl Sizing<'_, '_, '_> {
                 return Err(DecodeError::InvalidTag {
                     what: "frame body",
                     tag,
-                })
+                });
             }
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
@@ -4703,7 +4736,7 @@ impl Sizing<'_, '_, '_> {
                 return Err(DecodeError::InvalidTag {
                     what: "object body",
                     tag,
-                })
+                });
             }
         };
         Ok((
@@ -4799,7 +4832,7 @@ fn read_mixin_record(
             return Err(DecodeError::InvalidTag {
                 what: "mixin reference",
                 tag,
-            })
+            });
         }
     };
     if mixin.is_class_side() {
@@ -5244,7 +5277,7 @@ pub fn decode_graph_section<'gc>(
                 return Err(DecodeError::InvalidTag {
                     what: "object body",
                     tag,
-                })
+                });
             }
         };
         let heap = &mut context.mutator.heap;
@@ -5264,15 +5297,15 @@ pub fn decode_graph_section<'gc>(
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
         }
-        if let Some((applied, _)) = applied_clause {
-            if !heap.class_set_applied_clause(*object, applied) {
-                unreachable!("internal: a class record fills a class object");
-            }
+        if let Some((applied, _)) = applied_clause
+            && !heap.class_set_applied_clause(*object, applied)
+        {
+            unreachable!("internal: a class record fills a class object");
         }
-        if let Some(this_class) = this_class {
-            if !heap.class_set_this_class(*object, this_class) {
-                unreachable!("internal: a metaclass record fills a class object");
-            }
+        if let Some(this_class) = this_class
+            && !heap.class_set_this_class(*object, this_class)
+        {
+            unreachable!("internal: a metaclass record fills a class object");
         }
         // A heap holds one object per symbol, and so does an image of one:
         // a second record of the same text is refused, not merged
@@ -5363,7 +5396,7 @@ pub fn decode_tag_named_hashes<'gc>(
                 return Err(DecodeError::InvalidTag {
                     what: "tag-named hash",
                     tag,
-                })
+                });
             }
         };
         let hash = reader.read_u32()?;
@@ -5428,13 +5461,13 @@ fn decode_class_record<'gc>(
                 .ok_or(DecodeError::BadMixinId(id))?
         }
         MIXIN_SHIPPED => {
-            return decode_shipped_level(reader, context, tables, placeholder_application)
+            return decode_shipped_level(reader, context, tables, placeholder_application);
         }
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "mixin reference",
                 tag,
-            })
+            });
         }
     };
     let superclass = decode_optional_class(reader, context, tables, NamePosition::Superclass)?;

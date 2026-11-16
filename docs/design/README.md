@@ -2,7 +2,7 @@
 
 `ns-next` is a native Rust runtime for [Newspeak](https://newspeaklanguage.org/):
 lexer, parser, resolver, bytecode compiler and register VM, and a versioned image
-format. Rust 1.98.0, edition 2021.
+format. Rust 1.100.0, edition 2024.
 
 This folder is the **living description of how the system is designed and how much
 of it exists**. It is updated in place. There is no series of dated design
@@ -536,7 +536,7 @@ says is running (`NEXTEST_BINARY_ID`, `NEXTEST_TEST_NAME`, which a child
 the compiler builds asks), and `platform` when it calls into the system
 through the memory layer (a reservation, the page size, the code zone, the
 native stack) or reaches the other code that differs by platform: the
-JIT's register roles (`Roles::of`, which every machine code built takes,
+JIT's register roles (`Roles::of_abi`, which every machine code built takes,
 mostly the host convention's), whether the build has a JIT, the cut's
 return address size, a project's paths (`ns-cli`'s `project.rs`:
 `locate_program`, `same_path`, `resolve_written_path`), the start of a

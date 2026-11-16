@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
             .map_or(TokenKind::EndOfInput, |token| token.kind)
     }
 
-    fn at(&self, kind: TokenKind) -> bool {
+    fn at_kind(&self, kind: TokenKind) -> bool {
         self.peek() == kind
     }
 
@@ -202,7 +202,7 @@ impl<'a> Parser<'a> {
     }
 
     fn eat(&mut self, kind: TokenKind) -> bool {
-        if self.at(kind) {
+        if self.at_kind(kind) {
             self.bump();
             true
         } else {
@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
 
     /// `eat`, answering the token consumed.
     fn eat_token(&mut self, kind: TokenKind) -> Option<Token> {
-        if self.at(kind) {
+        if self.at_kind(kind) {
             Some(self.bump())
         } else {
             None
@@ -220,7 +220,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, kind: TokenKind) -> Option<Token> {
-        if self.at(kind) {
+        if self.at_kind(kind) {
             Some(self.bump())
         } else {
             let token = self.current();
@@ -322,7 +322,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_where_clause(&mut self) {
-        if !(self.at(TokenKind::Identifier)
+        if !(self.at_kind(TokenKind::Identifier)
             && self.text(self.current()) == "where"
             && self.peek2() == TokenKind::LeftBrace)
         {
@@ -367,7 +367,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_type_arguments(&mut self) {
-        if !self.at(TokenKind::LeftBracket) {
+        if !self.at_kind(TokenKind::LeftBracket) {
             return;
         }
         let open = self.bump(); // `[`
@@ -424,7 +424,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_type_annotation(&mut self) {
-        if !self.at(TokenKind::LessThan) {
+        if !self.at_kind(TokenKind::LessThan) {
             return;
         }
         let open = self.bump(); // `<`
@@ -1041,10 +1041,12 @@ mod tests {
         let mut parser = Parser::new(&source, tokens);
         let _ = parser.parse_expression_for_test();
         assert!(!parser.diagnostics.is_empty());
-        assert!(parser
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("nested too deeply")));
+        assert!(
+            parser
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("nested too deeply"))
+        );
     }
 
     #[test]

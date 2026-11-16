@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::builtins::primitive::Primitive;
 use crate::heap::{DeclarationScope, Heap};
 use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
-use crate::Symbol;
 
 pub enum Lookup<'gc> {
     Method(Rc<MixinMethod>, ClassReference<'gc>),
@@ -473,7 +473,7 @@ mod tests {
     /// in `Heap::allocate_self_referential_class`.
     fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
         let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy")));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,
@@ -547,7 +547,7 @@ mod tests {
             methods,
             ..crate::mixin::Mixin::empty(Symbol::intern(name))
         });
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,

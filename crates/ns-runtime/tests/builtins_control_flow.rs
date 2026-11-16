@@ -158,7 +158,9 @@ fn a_while_loop_body_that_understands_nothing_fails() {
     // A condition that ends on its own, so a loop that never sends `value`
     // answers rather than spinning.
     let (_interpreter, result) = run_method(
-        &module("| count condition | count:: 0. condition:: [count:: count + 1. count < 3]. ^condition whileTrue: nil"),
+        &module(
+            "| count condition | count:: 0. condition:: [count:: count + 1. count < 3]. ^condition whileTrue: nil",
+        ),
         "run",
     );
     match result {

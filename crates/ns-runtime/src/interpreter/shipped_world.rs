@@ -12,14 +12,14 @@ use std::rc::Rc;
 
 use ns_syntax::ast::AccessModifier;
 
+use crate::Symbol;
 use crate::heap::MixinId;
 use crate::heap::{Heap, Root};
-use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
+use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::mixin::{MethodEntry, Mixin};
 use crate::trace::{Trace, Tracer};
 use crate::types::{BuiltinClass, ClassReference, ObjectReference, Value};
-use crate::Symbol;
 
 /// What a shipped name names, given its module and its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -651,12 +651,11 @@ fn accessed_classes(heap: &Heap<'_>, root: &Rc<Mixin>) -> HashSet<Symbol> {
     let mut pending: Vec<Rc<Mixin>> = vec![Rc::clone(root)];
     while let Some(mixin) = pending.pop() {
         for entry in mixin.methods.values() {
-            if let MethodEntry::Compiled(method) = entry {
-                if method.access == AccessModifier::Public {
-                    if let Some(accessor) = &method.class_accessor {
-                        accessed.insert(accessor.class_name);
-                    }
-                }
+            if let MethodEntry::Compiled(method) = entry
+                && method.access == AccessModifier::Public
+                && let Some(accessor) = &method.class_accessor
+            {
+                accessed.insert(accessor.class_name);
             }
         }
         pending.extend(heap.nested_mixins(&mixin));
@@ -872,9 +871,11 @@ mod tests {
                 assert!(positions.mixin, "a root's mixin may be named");
                 // Every root is `= Value`, so it applies no mixin and adds
                 // no level to name.
-                assert!(world
-                    .index_of_name(&name(root, root, ShippedKind::Level(0)))
-                    .is_none());
+                assert!(
+                    world
+                        .index_of_name(&name(root, root, ShippedKind::Level(0)))
+                        .is_none()
+                );
                 let instance = positions_of(world, name(root, root, ShippedKind::ModuleInstance));
                 assert_eq!(
                     instance,
@@ -918,12 +919,11 @@ mod tests {
                 .clone();
             let mut handed_out: HashSet<String> = HashSet::new();
             for entry in object_mixin.methods.values() {
-                if let MethodEntry::Compiled(method) = entry {
-                    if let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) =
+                if let MethodEntry::Compiled(method) = entry
+                    && let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) =
                         method.recognized_fast_path()
-                    {
-                        handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
-                    }
+                {
+                    handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
                 }
             }
             let platform = root_mixin("PlatformFactory");
@@ -933,10 +933,10 @@ mod tests {
                 .find(|nested| nested.name.as_str() == "KernelNamespace")
                 .expect("PlatformFactory declares KernelNamespace");
             for entry in kernel_namespace.methods.values() {
-                if let MethodEntry::Compiled(method) = entry {
-                    if method.access == AccessModifier::Public {
-                        handed_out.insert(method.selector.as_str().to_string());
-                    }
+                if let MethodEntry::Compiled(method) = entry
+                    && method.access == AccessModifier::Public
+                {
+                    handed_out.insert(method.selector.as_str().to_string());
                 }
             }
             let mut for_shipped_modules: Vec<String> = heap

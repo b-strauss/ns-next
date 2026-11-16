@@ -12,16 +12,16 @@
 
 use std::rc::Rc;
 
+use crate::Value;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction};
+use crate::debugger::BreakpointId;
 use crate::debugger::breakpoints::{
-    address, AfterPast, CountedReach, Hits, PastOnce, PendingStop, Standing,
+    AfterPast, CountedReach, Hits, PastOnce, PendingStop, Standing, address,
 };
 use crate::debugger::stepping::{self, Leaving};
-use crate::debugger::BreakpointId;
 use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::locals::filled_own_slot;
 use crate::interpreter::{Mutator, Signal};
-use crate::Value;
 
 /// What the `Breakpoint` arm goes on with.
 pub(crate) enum BreakpointDecision {

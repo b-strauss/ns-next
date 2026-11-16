@@ -28,14 +28,14 @@ pub(crate) mod value_class;
 
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
 use crate::heap::{
-    register_number, ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root,
+    ActivationHeader, ActivationReference, ArgumentSlots, Heap, PushRefused, Root, register_number,
 };
 use crate::shipped_code::ShippedCodePath;
 use crate::types::*;
-use crate::Symbol;
 pub(crate) use metaclass::MetaclassMixins;
 pub(crate) use reclaim::{MixinReclaimMemo, ReclaimBuffers};
 use unwind::WalkedActivation;
@@ -3109,7 +3109,7 @@ impl<'gc> Mutator<'gc> {
                     value,
                     value,
                     "cannotReturn: the enclosing method activation has already returned",
-                ))
+                ));
             }
         };
         Signal::Return(target, value)
@@ -3656,7 +3656,7 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
-        let level_facts = crate::mixin::LevelFacts::of(mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(mixin);
         let application = self
             .heap
             .register_application(crate::mixin::MixinApplication {
@@ -4140,9 +4140,11 @@ mod tests {
                 let version = Rc::new(mixin.clone());
                 mutator.replace_mixin(id, version.clone());
                 let application = mutator.apply_mixin(&version, superclass);
-                assert!(mutator
-                    .heap_mut()
-                    .class_set_application(class, application.clone()));
+                assert!(
+                    mutator
+                        .heap_mut()
+                        .class_set_application(class, application.clone())
+                );
                 application.index()
             }
             let second = next_level(mutator, class, id, &mixin, superclass.as_ref());

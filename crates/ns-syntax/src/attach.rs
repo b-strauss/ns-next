@@ -118,7 +118,7 @@
 //! taken as they come, and a comment no node holds goes to the module.
 
 use crate::ast::*;
-use crate::comment::{lines, starts_its_line, Comment, CommentKind};
+use crate::comment::{Comment, CommentKind, lines, starts_its_line};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
@@ -503,10 +503,10 @@ impl<'input> Parts<'input> {
             let open_index = self
                 .tokens
                 .partition_point(|token| token.span.start < open.start);
-            if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index]) {
-                if colon.kind == TokenKind::Colon {
-                    self.dropped.push(colon.span);
-                }
+            if let Some(colon) = open_index.checked_sub(1).map(|index| self.tokens[index])
+                && colon.kind == TokenKind::Colon
+            {
+                self.dropped.push(colon.span);
             }
         }
     }
@@ -702,10 +702,10 @@ fn describe<'tree>(
             &mut method.comments
         }
         Pending::Body(body) => {
-            if body.temporaries.is_empty() {
-                if let Some(parts) = parts {
-                    parts.drop_if_empty(body.temporaries_delimiters);
-                }
+            if body.temporaries.is_empty()
+                && let Some(parts) = parts
+            {
+                parts.drop_if_empty(body.temporaries_delimiters);
             }
             children.extend(body.temporaries.iter_mut().map(Pending::Slot));
             children.extend(body.statements.iter_mut().map(Pending::Statement));
@@ -747,10 +747,10 @@ fn describe_class<'tree>(
         comments,
         ..
     } = class;
-    if let (Some(parts), Some(side)) = (parts, class_side.as_ref()) {
-        if side.members.is_empty() {
-            parts.drop_empty_class_side(side.delimiters);
-        }
+    if let (Some(parts), Some(side)) = (parts, class_side.as_ref())
+        && side.members.is_empty()
+    {
+        parts.drop_empty_class_side(side.delimiters);
     }
     if let Some(clause) = superclass {
         children.push(Pending::Superclass(clause));
@@ -776,10 +776,10 @@ fn describe_side<'tree>(
         comments,
         ..
     } = side;
-    if header_slots.is_empty() {
-        if let Some(parts) = parts {
-            parts.drop_if_empty(*slot_delimiters);
-        }
+    if header_slots.is_empty()
+        && let Some(parts) = parts
+    {
+        parts.drop_if_empty(*slot_delimiters);
     }
     children.extend(header_slots.iter_mut().map(Pending::Slot));
     children.extend(initializer_expressions.iter_mut().map(Pending::Statement));
@@ -1282,10 +1282,10 @@ impl Context<'_> {
         // The comment stands before token `gap`, after token `gap - 1`.
         let gap = tokens.starts.partition_point(|start| *start < span.start);
         let around = children.partition_point(|child| child.first < gap);
-        if let Some(slot) = around.checked_sub(1) {
-            if gap <= children[slot].last {
-                return Target::Inside(slot);
-            }
+        if let Some(slot) = around.checked_sub(1)
+            && gap <= children[slot].last
+        {
+            return Target::Inside(slot);
         }
         let ending_at = |token: usize| {
             children

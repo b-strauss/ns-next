@@ -3,9 +3,9 @@
 //! as it was, so a file that was never formatted is not reformatted by a
 //! quick fix.
 
+use ns_syntax::Span;
 use ns_syntax::ast::{Expression, SlotDeclaration, Statement};
 use ns_syntax::token::TokenKind;
-use ns_syntax::Span;
 
 /// The text of `span` replaced by `text`; an empty span inserts.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -291,7 +291,7 @@ fn breakpoints_land_as_expected(
             module: module.clone(),
             breakpoints: expected
                 .iter()
-                .map(|(offset, _)| LineBreakpoint::at(*offset))
+                .map(|(offset, _)| LineBreakpoint::at_offset(*offset))
                 .collect(),
         });
         // Taken off again before anything runs, so that no breakpoint
@@ -370,7 +370,7 @@ fn breakpoints_of(
             other => {
                 return Err(
                     format!("the breakpoints of {module} were expected, not {other:?}").into(),
-                )
+                );
             }
         }
     }

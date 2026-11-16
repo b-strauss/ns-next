@@ -224,12 +224,12 @@ fn divide_blocks(dividend: &[u64], divisor: &[u64], level: usize) -> (Vec<u64>, 
 
     // A top block already below the divisor is the first remainder.
     let mut remainder = Vec::new();
-    if let Some(top_block) = dividend_blocks.clone().next_back() {
-        if compare_magnitudes(top_block, divisor) == Ordering::Less {
-            dividend_blocks.next_back();
-            remainder = top_block.to_vec();
-            trim_zero_top_digits(&mut remainder);
-        }
+    if let Some(top_block) = dividend_blocks.clone().next_back()
+        && compare_magnitudes(top_block, divisor) == Ordering::Less
+    {
+        dividend_blocks.next_back();
+        remainder = top_block.to_vec();
+        trim_zero_top_digits(&mut remainder);
     }
 
     let mut quotient = vec![0; dividend_blocks.len() * level];

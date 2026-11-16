@@ -21,9 +21,9 @@
 
 use std::rc::Rc;
 
-use crate::compiler::{primitive_method, Lowering};
-use crate::interpreter::core_library::{KERNEL_MODULE, SHIPPED_MODULES};
+use crate::compiler::{Lowering, primitive_method};
 use crate::interpreter::Interpreter;
+use crate::interpreter::core_library::{KERNEL_MODULE, SHIPPED_MODULES};
 use crate::mixin::Mixin;
 
 mod bytes;
@@ -150,8 +150,7 @@ fn refuse_without_primitive_methods(primitive_methods_disabled: bool) -> Result<
 }
 
 /// Why `generate` refuses under `NS_NEXT_NO_PRIMITIVE_METHODS=1`.
-const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str =
-    "NS_NEXT_NO_PRIMITIVE_METHODS=1 is set: the shipped code is compiled with primitive \
+const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str = "NS_NEXT_NO_PRIMITIVE_METHODS=1 is set: the shipped code is compiled with primitive \
      methods, so it is not generated under it; unset the variable and run again";
 
 /// The root mixin of the module `name` in the artifact `bytes`, every

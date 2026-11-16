@@ -8,11 +8,11 @@
 use std::cell::OnceCell;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
 use crate::mixin::Mixin;
 use crate::shipped_code::ShippedCodePath;
 use crate::types::{ClassReference, ObjectReference, ResolvedModule, SourceOrigin, Value};
-use crate::Symbol;
 
 pub(crate) const PLATFORM_FACTORY_SOURCE: &str =
     include_str!("../../core-library/PlatformFactory.ns");
@@ -625,10 +625,12 @@ mod tests {
                 .collect();
             assert_eq!(names, ["Kernel", "PlatformFactory"]);
             for name in ["Kernel", "PlatformFactory"] {
-                assert!(mutator
-                    .shipped_world
-                    .module_instance(Symbol::intern(name))
-                    .is_some());
+                assert!(
+                    mutator
+                        .shipped_world
+                        .module_instance(Symbol::intern(name))
+                        .is_some()
+                );
             }
             for name in LAZY_SHIPPED_MODULES {
                 let name = Symbol::intern(name);
@@ -659,13 +661,15 @@ mod tests {
                     .into_iter()
                     .find(|nested| nested.name.as_str() == "List")
                     .expect("CollectionsFactory declares List");
-                assert!(list
-                    .enclosing_mixin()
-                    .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &root)));
-                assert!(list
-                    .text
-                    .as_ref()
-                    .is_some_and(|list_text| list_text.is_shared()));
+                assert!(
+                    list.enclosing_mixin()
+                        .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &root))
+                );
+                assert!(
+                    list.text
+                        .as_ref()
+                        .is_some_and(|list_text| list_text.is_shared())
+                );
                 assert_eq!(
                     mutator.heap.assembled_text(&list).as_deref(),
                     crate::mixin::source_text(COLLECTIONS_FACTORY_SOURCE, list.span)
@@ -764,10 +768,12 @@ mod tests {
                 .fetch(&class)
                 .as_object()
                 .expect("a root class is a class object");
-            assert!(mutator
-                .shipped_world
-                .pending_class(transcript)
-                .is_some_and(|pending| pending.same(class)));
+            assert!(
+                mutator
+                    .shipped_world
+                    .pending_class(transcript)
+                    .is_some_and(|pending| pending.same(class))
+            );
         });
     }
 

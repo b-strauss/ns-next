@@ -285,7 +285,7 @@ impl OptimizedCopies {
 
 #[cfg(test)]
 mod tests {
-    use super::{OptimizedCopies, BLOCK_BYTES, DISPATCHING_ROWS, VACANT};
+    use super::{BLOCK_BYTES, DISPATCHING_ROWS, OptimizedCopies, VACANT};
     use crate::heap::limits::Shrink;
 
     /// After a full collection the table gives back what lies above the

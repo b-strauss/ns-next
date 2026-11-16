@@ -2,7 +2,7 @@
 //! with (`docs/design/compiler.md`, "The reference lowering").
 
 mod common;
-use common::{build_image, golden, ns_next_analyzer, ScratchDirectory};
+use common::{ScratchDirectory, build_image, golden, ns_next_analyzer};
 
 /// The optimized lowering inlines a loop's blocks; the reference lowering
 /// runs them as real closures, each sent `value` by its loop.

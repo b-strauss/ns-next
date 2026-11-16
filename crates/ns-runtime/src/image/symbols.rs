@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use crate::Symbol;
 
-use super::decode::{reserve_for, DecodeError, Reader};
-use super::encode::{u32_field, Writer};
+use super::decode::{DecodeError, Reader, reserve_for};
+use super::encode::{Writer, u32_field};
 
 /// Collects strings during encoding, deduplicating by content: the same
 /// string interned twice gets the same id both times, so a selector reused

@@ -687,9 +687,11 @@ mod tests {
             sources.text(&kernel()),
             ns_runtime::shipped_module_source("Kernel")
         );
-        assert!(sources
-            .text_for_positions(&ModuleName::shipped("PlatformFactory"))
-            .is_some());
+        assert!(
+            sources
+                .text_for_positions(&ModuleName::shipped("PlatformFactory"))
+                .is_some()
+        );
         assert_eq!(sources.text_answers(), 0);
     }
 

@@ -166,13 +166,14 @@ fn an_empty_unclosed_method_keeps_the_members_after_it() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["broken", "second"], "{messages:?}");
-    assert!(body
-        .methods()
-        .next()
-        .expect("a method")
-        .body
-        .statements
-        .is_empty());
+    assert!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements
+            .is_empty()
+    );
     assert_eq!(
         body.methods().next().expect("a method").span.text(source),
         "broken = ("
@@ -350,13 +351,14 @@ fn a_statement_after_a_return_is_skipped_to_the_end_of_the_body() {
             .len(),
         1
     );
-    assert!(body
-        .methods()
-        .next()
-        .expect("a method")
-        .body_delimiters
-        .and_then(|delimiters| delimiters.close)
-        .is_some());
+    assert!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body_delimiters
+            .and_then(|delimiters| delimiters.close)
+            .is_some()
+    );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
@@ -449,13 +451,14 @@ fn an_unclosed_block_ends_at_the_method_close() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    assert!(body
-        .methods()
-        .next()
-        .expect("a method")
-        .body_delimiters
-        .and_then(|delimiters| delimiters.close)
-        .is_some());
+    assert!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body_delimiters
+            .and_then(|delimiters| delimiters.close)
+            .is_some()
+    );
     let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Block(block),
         ..
@@ -784,12 +787,13 @@ fn a_mixin_clause_without_a_name_keeps_its_dot() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(class_names(body), ["Inner"], "{messages:?}");
-    assert!(body
-        .nested_classes()
-        .next()
-        .expect("a nested class")
-        .mixin_applications
-        .is_empty());
+    assert!(
+        body.nested_classes()
+            .next()
+            .expect("a nested class")
+            .mixin_applications
+            .is_empty()
+    );
     assert_eq!(method_names(body), ["second"]);
     assert_eq!(
         messages,

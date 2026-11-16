@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::{CallSite, CompiledCode};
 use crate::Symbol;
+use crate::bytecode::{CallSite, CompiledCode};
 
 pub(crate) mod again;
 pub(crate) mod breakable;

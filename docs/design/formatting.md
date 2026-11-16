@@ -323,7 +323,7 @@ asks for nothing to be decided (a long line left long).
     checks only that formatting changes nothing.
 23. **File level.** The line ending is taken from the file: the first line
     ending of the input decides every line ending of the output
-    (`LineEnding::of`; LF when the input has none). Line breaks inside a
+    (`LineEnding::first_in`; LF when the input has none). Line breaks inside a
     string literal stay byte for byte. No trailing whitespace on any line,
     comment lines included, never inside a string. Exactly one line ending
     at the end of the file. No tabs in the indentation the printer writes.
@@ -489,7 +489,7 @@ linear in the output.
   it can miss the class comment of a tree without positions. A tree
   `parse` answered reads back with every comment where it was.
 - `ns_syntax::format(&str) -> Result<String, Vec<Diagnostic>>` -- parse,
-  take the line ending from the source (`LineEnding::of`), print. A source
+  take the line ending from the source (`LineEnding::first_in`), print. A source
   with any error is refused with its diagnostics and never printed; a
   recovered tree is never printed.
 - `LineEnding` -- `LineFeed`, `CarriageReturnLineFeed`, `CarriageReturn`.

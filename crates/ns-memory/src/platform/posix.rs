@@ -520,11 +520,7 @@ pub(crate) unsafe fn decommit_code(
             libc::MADV_FREE,
         )
     };
-    if answer == 0 {
-        Ok(true)
-    } else {
-        Err(errno())
-    }
+    if answer == 0 { Ok(true) } else { Err(errno()) }
 }
 
 /// Nothing: a POSIX shared memory object has no portable way to give back
@@ -619,7 +615,7 @@ pub(crate) fn end_code_write() {}
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
     // `libc` does not declare it; it is libSystem's.
-    extern "C" {
+    unsafe extern "C" {
         fn sys_icache_invalidate(start: *mut libc::c_void, length: libc::size_t);
     }
     // SAFETY: the caller guarantees the range is mapped; invalidating the
@@ -635,7 +631,7 @@ pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
 pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
     // `libc` does not declare it; it is the compiler runtime's, which every
     // Rust program links.
-    extern "C" {
+    unsafe extern "C" {
         fn __clear_cache(start: *mut libc::c_char, end: *mut libc::c_char);
     }
     let start = address.cast_mut();

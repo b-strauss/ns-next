@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::metadata::again::{module_name, BodyOrigin, Member};
+use super::metadata::again::{BodyOrigin, Member, module_name};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
     FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
@@ -440,10 +440,10 @@ fn running_version(
 /// creates, transitively -- holds `code`.
 fn member_holding(mixin: &Mixin, code: &Rc<CompiledCode>) -> Option<Member> {
     for (selector, entry) in &mixin.methods {
-        if let MethodEntry::Compiled(method) = entry {
-            if family_holds(&method.code, code) {
-                return Some(Member::Method(*selector));
-            }
+        if let MethodEntry::Compiled(method) = entry
+            && family_holds(&method.code, code)
+        {
+            return Some(Member::Method(*selector));
         }
     }
     for kind in [
@@ -676,22 +676,20 @@ fn one_line(text: &str) -> String {
     }
     let half = (CALL_NAME_LIMIT - 1) / 2;
     let mut head = half;
-    if characters[head] != ' ' {
-        if let Some(space) = characters[..head]
+    if characters[head] != ' '
+        && let Some(space) = characters[..head]
             .iter()
             .rposition(|character| *character == ' ')
-        {
-            head = space;
-        }
+    {
+        head = space;
     }
     let mut tail = characters.len() - half;
-    if characters[tail - 1] != ' ' {
-        if let Some(space) = characters[tail..]
+    if characters[tail - 1] != ' '
+        && let Some(space) = characters[tail..]
             .iter()
             .position(|character| *character == ' ')
-        {
-            tail += space + 1;
-        }
+    {
+        tail += space + 1;
     }
     let head: String = characters[..head].iter().collect();
     let tail: String = characters[tail..].iter().collect();

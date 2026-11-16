@@ -182,7 +182,7 @@ fn from_code_points<'gc>(
                          outside 55296 to 57343, got {}",
                         mutator.heap.describe(element)
                     ),
-                )))
+                )));
             }
         }
     }
@@ -217,7 +217,7 @@ pub(crate) fn search_start<'gc>(
                 receiver,
                 selector,
                 start_argument,
-            ))
+            ));
         }
     };
     match start.map(usize::try_from) {
@@ -430,10 +430,10 @@ pub(crate) fn execute_string<'gc>(
     // The class-side leaves: their subject is the class, not a String.
     match primitive {
         StringPrimitive::FromCodePoint => {
-            return from_code_point(mutator, receiver, selector, arguments)
+            return from_code_point(mutator, receiver, selector, arguments);
         }
         StringPrimitive::FromCodePoints => {
-            return from_code_points(mutator, receiver, selector, arguments)
+            return from_code_points(mutator, receiver, selector, arguments);
         }
         StringPrimitive::FromUtf8 => return from_utf8(mutator, receiver, selector, arguments),
         _ => {}

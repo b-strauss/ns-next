@@ -8,10 +8,10 @@
 //! (`docs/design/dispatch.md`, "Slot accessors").
 
 use super::Arguments;
+use crate::Symbol;
 use crate::heap::ApplicationIndex;
 use crate::mixin::{AccessorKind, DispatchId};
 use crate::types::*;
-use crate::Symbol;
 
 use super::resolve::{Chain, Resolved};
 use super::{Mutator, Signal, Step};
@@ -49,10 +49,10 @@ impl<'gc> Mutator<'gc> {
                     }
                 }
                 AccessorKind::Setter => {
-                    if let Some(value) = arguments.first(&self.heap) {
-                        if self.heap.instance_set_field(object, field, value) {
-                            return Ok(Step::Value(receiver));
-                        }
+                    if let Some(value) = arguments.first(&self.heap)
+                        && self.heap.instance_set_field(object, field, value)
+                    {
+                        return Ok(Step::Value(receiver));
                     }
                 }
             }

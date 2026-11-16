@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::allocate::{allocate, Allocation, Location, Move, PointKind, Spot};
+use super::allocate::{Allocation, Location, Move, PointKind, Spot, allocate};
 use ns_assembler::Register;
 
 use super::graph::{BlockId, Graph, GraphScope, Node, ScopeId, ValueId};
-use super::liveness::{block_order, intervals_knowing, poll_target, Positions};
+use super::liveness::{Positions, block_order, intervals_knowing, poll_target};
 use super::verify::VerifyError;
 use crate::heap::CodeId;
 use crate::jit::macro_assembler::Roles;
@@ -319,7 +319,7 @@ fn replay(
     leaf_calls: &[u32],
 ) -> Result<(), VerifyError> {
     let order = &allocation.positions.order;
-    let positions = Positions::of(graph, order);
+    let positions = Positions::of_graph(graph, order);
     if positions != allocation.positions
         || metadata.points.len() != allocation.dirty_at.len()
         || order.first() != Some(&BlockId(0))
@@ -414,18 +414,18 @@ fn replay(
             for operand in node.uses() {
                 in_register(&replay, allocation, operand, use_position)?;
             }
-            if let Node::FrameRead { register, .. } = node {
-                if !replay.in_sync(usize::from(*register)) {
-                    return Err(VerifyError::StaleFrameWord {
-                        register: *register,
-                        position: use_position,
-                    });
-                }
+            if let Node::FrameRead { register, .. } = node
+                && !replay.in_sync(usize::from(*register))
+            {
+                return Err(VerifyError::StaleFrameWord {
+                    register: *register,
+                    position: use_position,
+                });
             }
-            if let Some(fallback) = node.fallback() {
-                if graph.block(*block).exit_position(fallback) == Some(index) {
-                    enters(&replay, graph, allocation, (*block, fallback), None)?;
-                }
+            if let Some(fallback) = node.fallback()
+                && graph.block(*block).exit_position(fallback) == Some(index)
+            {
+                enters(&replay, graph, allocation, (*block, fallback), None)?;
             }
             // The trap's cold write-back, replayed on its way out.
             if node.trap().is_some() {
@@ -480,7 +480,7 @@ fn replay(
                         return Err(VerifyError::Misplaced {
                             value,
                             position: definition,
-                        })
+                        });
                     }
                 }
             }
@@ -866,7 +866,7 @@ fn write_back(
                 return Err(VerifyError::Misplaced {
                     value: *value,
                     position,
-                })
+                });
             }
         }
     }

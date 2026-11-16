@@ -230,7 +230,9 @@ fn disjoint_ranges_are_lent_at_once_and_overlapping_ones_are_not() {
         2
     );
     assert!(reservation.split_words_mut([0..16, 8..24]).is_none());
-    assert!(reservation
-        .split_words_mut([0..page(), 2 * page()..3 * page()])
-        .is_none());
+    assert!(
+        reservation
+            .split_words_mut([0..page(), 2 * page()..3 * page()])
+            .is_none()
+    );
 }

@@ -7,11 +7,11 @@
 //! calling convention").
 
 use ns_assembler::aarch64::{
-    D0, D1, D2, SP, X0, X1, X19, X2, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29, X3, X4, X5,
-    X6, X7, X8, X9,
+    D0, D1, D2, SP, X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X19, X20, X21, X22, X23, X24, X25, X26,
+    X27, X28, X29,
 };
 use ns_assembler::x64::{
-    DIVIDEND, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
+    DIVIDEND, R8, R9, R10, R11, R12, R13, R14, R15, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
     RSP, XMM0, XMM1, XMM2,
 };
 use ns_assembler::{
@@ -324,7 +324,7 @@ impl Roles {
     /// place `x22` and `x23`), so that every register two roles share
     /// under x64 they share here, and no other. `x24` to `x29` take no
     /// role; the encoder keeps `x16` to `x18` and `x30` for itself.
-    pub(crate) fn of(abi: Abi) -> Roles {
+    pub(crate) fn of_abi(abi: Abi) -> Roles {
         // Every machine code a test builds takes its roles here, mostly
         // the host's convention's: code that differs by platform.
         crate::reach::record(crate::reach::Reach::Platform);
@@ -718,7 +718,7 @@ impl MacroAssembler {
     pub(crate) fn new(abi: Abi) -> MacroAssembler {
         MacroAssembler {
             assembler: Assembler::with_encoder(abi.encoding()),
-            roles: Roles::of(abi),
+            roles: Roles::of_abi(abi),
             abi,
             #[cfg(debug_assertions)]
             program_counter: 0,
@@ -1408,7 +1408,7 @@ impl MacroAssembler {
             panic!("internal: a leaf call clobbers {register:?}, which holds a value");
         }
         let stack_pointer = roles.stack_pointer;
-        let layout = LeafCallLayout::of(self.abi);
+        let layout = LeafCallLayout::of_abi(self.abi);
         for argument in arguments {
             assert!(
                 argument != Operand::Register(stack_pointer),
@@ -3758,7 +3758,7 @@ struct LeafCallLayout {
 }
 
 impl LeafCallLayout {
-    fn of(abi: Abi) -> LeafCallLayout {
+    fn of_abi(abi: Abi) -> LeafCallLayout {
         match abi {
             // The fifth argument sits above the 32 bytes of shadow space,
             // which the callee owns only once it is called, so the copies
@@ -3801,7 +3801,7 @@ impl LeafCallLayout {
 /// register -- for the tests that move operands out of them.
 #[cfg(test)]
 pub(crate) fn leaf_call_argument_registers(abi: Abi) -> Vec<Register> {
-    let layout = LeafCallLayout::of(abi);
+    let layout = LeafCallLayout::of_abi(abi);
     let mut registers = vec![layout.block, layout.leaf];
     registers.extend(layout.places.iter().filter_map(|place| match place {
         Place::Register(register) => Some(*register),
@@ -3920,8 +3920,8 @@ mod encoding_tests {
     /// role.
     #[test]
     fn the_aapcs64_roles_alias_as_x64_s_do() {
-        let mut x64 = played(Roles::of(Abi::SystemV));
-        let mut aarch64 = played(Roles::of(Abi::Aapcs64));
+        let mut x64 = played(Roles::of_abi(Abi::SystemV));
+        let mut aarch64 = played(Roles::of_abi(Abi::Aapcs64));
         x64.extend(Roles::free_survivors(Abi::SystemV));
         aarch64.extend(Roles::free_survivors(Abi::Aapcs64));
         assert_eq!(x64.len(), aarch64.len());
@@ -3935,13 +3935,13 @@ mod encoding_tests {
                 );
             }
         }
-        let roles = Roles::of(Abi::Aapcs64);
+        let roles = Roles::of_abi(Abi::Aapcs64);
         for pinned in [roles.frame, roles.context, roles.object_space] {
             assert!(Abi::Aapcs64.callee_saved().contains(&pinned));
         }
         assert_eq!(Roles::free_survivors(Abi::Aapcs64), [X22, X23]);
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let roles = played(Roles::of(abi));
+            let roles = played(Roles::of_abi(abi));
             for survivor in Roles::free_survivors(abi) {
                 assert!(abi.callee_saved().contains(&survivor), "{abi:?}");
                 assert!(!roles.contains(&survivor), "{abi:?}");
@@ -3969,7 +3969,7 @@ mod encoding_tests {
         use ns_assembler::aarch64::{X16, X17, X18, X29, X30};
 
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let roles = Roles::of(abi);
+            let roles = Roles::of_abi(abi);
             let fixed = [
                 roles.frame,
                 roles.context,
@@ -4006,11 +4006,11 @@ mod encoding_tests {
             }
             assert_eq!(roles.allocatable[..2], Roles::free_survivors(abi));
         }
-        assert_eq!(Roles::of(Abi::Windows64).survive_leaf_calls, 5);
-        assert_eq!(Roles::of(Abi::SystemV).survive_leaf_calls, 3);
-        assert_eq!(Roles::of(Abi::Aapcs64).survive_leaf_calls, 7);
-        assert_eq!(Roles::of(Abi::Windows64).allocatable.len(), 8);
-        assert_eq!(Roles::of(Abi::Aapcs64).allocatable.len(), 13);
+        assert_eq!(Roles::of_abi(Abi::Windows64).survive_leaf_calls, 5);
+        assert_eq!(Roles::of_abi(Abi::SystemV).survive_leaf_calls, 3);
+        assert_eq!(Roles::of_abi(Abi::Aapcs64).survive_leaf_calls, 7);
+        assert_eq!(Roles::of_abi(Abi::Windows64).allocatable.len(), 8);
+        assert_eq!(Roles::of_abi(Abi::Aapcs64).allocatable.len(), 13);
     }
 
     /// Optimized code's fast path computes in registers no value is
@@ -4019,7 +4019,7 @@ mod encoding_tests {
     #[test]
     fn the_integer_temporaries_hold_no_value_and_no_pinned_role() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let roles = Roles::of(abi);
+            let roles = Roles::of_abi(abi);
             let temporaries = roles.integer_temporaries();
             let registers = [
                 temporaries.left,
@@ -4059,11 +4059,11 @@ mod encoding_tests {
     /// them may be among them.
     #[test]
     fn float_scratch_registers_are_volatile_under_every_convention() {
-        use ns_assembler::aarch64::{D15, D8};
-        use ns_assembler::x64::{XMM15, XMM6};
+        use ns_assembler::aarch64::{D8, D15};
+        use ns_assembler::x64::{XMM6, XMM15};
 
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let float_scratch = Roles::of(abi).float_scratch;
+            let float_scratch = Roles::of_abi(abi).float_scratch;
             let preserved = match abi {
                 // System V preserves no vector register; Win64's range
                 // holds for both, since the two x64 conventions share the
@@ -4089,7 +4089,7 @@ mod encoding_tests {
     #[should_panic(expected = "cannot be a temporary")]
     fn a_debug_build_refuses_a_held_register_as_a_temporary() {
         let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
-        let held = Roles::of(Abi::Windows64).allocatable[3];
+        let held = Roles::of_abi(Abi::Windows64).allocatable[3];
         macro_assembler.hold_values(&[held]);
         macro_assembler.temporary(held);
     }
@@ -4098,7 +4098,7 @@ mod encoding_tests {
     #[test]
     #[should_panic(expected = "clobbers")]
     fn a_debug_build_refuses_a_leaf_call_over_a_value_past_the_survivors() {
-        let roles = Roles::of(Abi::SystemV);
+        let roles = Roles::of_abi(Abi::SystemV);
         let mut macro_assembler = super::MacroAssembler::new(Abi::SystemV);
         macro_assembler.hold_values(&roles.allocatable[..=roles.survive_leaf_calls]);
         macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
@@ -4108,7 +4108,7 @@ mod encoding_tests {
     #[test]
     #[should_panic(expected = "clobbers")]
     fn a_debug_build_refuses_an_out_of_line_leaf_call_over_a_value_held_where_it_branches_off() {
-        let roles = Roles::of(Abi::Windows64);
+        let roles = Roles::of_abi(Abi::Windows64);
         let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
         let label = macro_assembler.assembler().label();
         let rejoin = macro_assembler.assembler().label();
@@ -4131,7 +4131,7 @@ mod encoding_tests {
     #[test]
     #[should_panic(expected = "cannot be a temporary")]
     fn a_debug_build_refuses_an_out_of_line_leaf_call_s_result_in_a_held_register() {
-        let roles = Roles::of(Abi::Windows64);
+        let roles = Roles::of_abi(Abi::Windows64);
         let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
         let label = macro_assembler.assembler().label();
         let rejoin = macro_assembler.assembler().label();
@@ -4152,7 +4152,7 @@ mod encoding_tests {
     #[test]
     fn an_out_of_line_leaf_call_keeps_the_values_the_survivors_hold() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let roles = Roles::of(abi);
+            let roles = Roles::of_abi(abi);
             let mut macro_assembler = super::MacroAssembler::new(abi);
             let label = macro_assembler.assembler().label();
             let rejoin = macro_assembler.assembler().label();
@@ -4172,7 +4172,7 @@ mod encoding_tests {
     #[test]
     fn a_leaf_call_keeps_the_values_the_survivors_hold() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let roles = Roles::of(abi);
+            let roles = Roles::of_abi(abi);
             let mut macro_assembler = super::MacroAssembler::new(abi);
             macro_assembler.hold_values(&roles.allocatable[..roles.survive_leaf_calls]);
             macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
@@ -4195,7 +4195,7 @@ mod tests {
     /// The host's first `COUNT` scratch registers, in the roles' order:
     /// x64's `rax`, `rcx`, `rdx` and `rsi`, AAPCS64's `x0` to `x3`.
     fn scratch<const COUNT: usize>() -> [Register; COUNT] {
-        let roles = Roles::of(Abi::host());
+        let roles = Roles::of_abi(Abi::host());
         std::array::from_fn(|index| roles.scratch[index])
     }
 

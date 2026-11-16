@@ -17,7 +17,7 @@ use std::path::Path;
 use libtest_mimic::{Arguments, Failed, Trial};
 
 mod common;
-use common::{ns_next, ScratchDirectory};
+use common::{ScratchDirectory, ns_next};
 
 const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 

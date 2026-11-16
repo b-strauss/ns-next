@@ -45,11 +45,12 @@ impl PageMap {
         kept.sort_by_key(|(existing, _)| existing.start);
         let mut merged: Vec<(Range<usize>, Protection)> = Vec::with_capacity(kept.len());
         for (existing, protection) in kept {
-            if let Some((last, last_protection)) = merged.last_mut() {
-                if last.end == existing.start && *last_protection == protection {
-                    last.end = existing.end;
-                    continue;
-                }
+            if let Some((last, last_protection)) = merged.last_mut()
+                && last.end == existing.start
+                && *last_protection == protection
+            {
+                last.end = existing.end;
+                continue;
             }
             merged.push((existing, protection));
         }

@@ -237,7 +237,7 @@ fn encoder_of(relative: &Path) -> String {
         .as_os_str()
         .to_string_lossy()
         .into_owned();
-    first.strip_suffix(".rs").unwrap_or(&first).to_owned()
+    first.trim_suffix(".rs").to_owned()
 }
 
 fn violations_in(source_directory: &Path) -> Vec<String> {

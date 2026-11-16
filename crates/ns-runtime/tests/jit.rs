@@ -5285,7 +5285,7 @@ fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result(
 /// fails here, and so does one the list names that is not marked.
 #[test]
 fn every_leaf_row_is_audited() {
-    use ns_runtime::builtins::primitive::{row_stub_index, MachineCall, MIRROR, ROW_STUB_COUNT};
+    use ns_runtime::builtins::primitive::{MIRROR, MachineCall, ROW_STUB_COUNT, row_stub_index};
     let marked: std::collections::BTreeSet<&str> = MIRROR
         .iter()
         .filter(|entry| entry.machine_call.is_leaf_safe())
@@ -5500,9 +5500,7 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
     ),
     (
         "reads a closure's parameter count",
-        &[
-            "blockNumArgs:ifFail:",
-        ],
+        &["blockNumArgs:ifFail:"],
     ),
     (
         "reads a class object's parts, allocating at most the name's String",

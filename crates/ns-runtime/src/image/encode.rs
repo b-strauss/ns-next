@@ -822,7 +822,7 @@ fn encode_literal(
 fn class_references<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
-) -> impl Iterator<Item = ObjectReference<'gc>> {
+) -> impl Iterator<Item = ObjectReference<'gc>> + use<'gc> {
     let own_context = !applies_a_shipped_mixin(heap, class);
     let (enclosing, declaring_class) = if own_context {
         (heap.class_enclosing(class), heap.class_declaring(class))
@@ -1316,7 +1316,7 @@ fn written_by_value<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> bool
 fn frame_references<'gc>(
     heap: &Heap<'gc>,
     frame: FrameReference<'gc>,
-) -> impl Iterator<Item = Value<'gc>> {
+) -> impl Iterator<Item = Value<'gc>> + use<'gc> {
     let snapshot = heap.frame_record(frame);
     let kind_reference = match &snapshot.kind {
         // The closure object a closure activation runs is a record of its
@@ -1492,22 +1492,22 @@ fn encode_value<'gc>(
         writer.write_f64(float);
         return Ok(());
     }
-    if let Some((world_index, entry)) = context.shipped(object) {
-        if entry.name.kind == ShippedKind::ModuleInstance {
-            // A module instance holds the core library's state -- the kernel
-            // holds the mirror -- so only a frame of shipped code, whose
-            // registers legitimately hold one, may name it.
-            if position != NamePosition::FrameRegister {
-                return Err(format!(
-                    "image encoding refuses the module instance {} outside a frame: it holds \
+    if let Some((world_index, entry)) = context.shipped(object)
+        && entry.name.kind == ShippedKind::ModuleInstance
+    {
+        // A module instance holds the core library's state -- the kernel
+        // holds the mirror -- so only a frame of shipped code, whose
+        // registers legitimately hold one, may name it.
+        if position != NamePosition::FrameRegister {
+            return Err(format!(
+                "image encoding refuses the module instance {} outside a frame: it holds \
                      the core library's state",
-                    entry.name.module.as_str()
-                ));
-            }
-            writer.write_u8(VALUE_SHIPPED_MODULE);
-            writer.write_u32(context.table.used.index_of(world_index));
-            return Ok(());
+                entry.name.module.as_str()
+            ));
         }
+        writer.write_u8(VALUE_SHIPPED_MODULE);
+        writer.write_u32(context.table.used.index_of(world_index));
+        return Ok(());
     }
     if context.heap.is_class(object) {
         writer.write_u8(VALUE_CLASS_TAG);
@@ -2148,7 +2148,7 @@ fn encode_frame_body<'gc>(
         return Ok(());
     }
     let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
-    let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
+    let declared = super::decode::DeclaredKind::of_kind(&snapshot.kind, snapshot.current_class);
     if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
         let found = super::decode::declared_body(context.heap, &declared).ok();
         if !found.is_some_and(|found| Rc::ptr_eq(&found, &code)) {
@@ -2238,7 +2238,7 @@ pub fn walk_graph<'gc>(
                      class with an enclosing object or a declaring class, such as a nested \
                      class",
                     heap.class_display_name(*class)
-                ))
+                ));
             }
             Some(super::modules::RootRecordDefect::RootRule) => {
                 return Err(format!(
@@ -2246,7 +2246,7 @@ pub fn walk_graph<'gc>(
                      inherit what the root rule allows, Object or Value, or Value applied over \
                      Object",
                     heap.class_display_name(*class)
-                ))
+                ));
             }
         }
     }

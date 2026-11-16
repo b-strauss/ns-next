@@ -1,7 +1,7 @@
 //! Single-pass lexer for Newspeak3 source.
 
 use crate::comment::{
-    continues_line_block, first_line_break, first_of_either, Comment, CommentKind,
+    Comment, CommentKind, continues_line_block, first_line_break, first_of_either,
 };
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
@@ -152,13 +152,12 @@ impl<'a> Lexer<'a> {
         self.position = first_line_break(&self.bytes[start..])
             .map_or(self.bytes.len(), |length| start + length);
         let span = Span::from_offsets(start, self.position);
-        if let Some(previous) = self.comments.last_mut() {
-            if previous.kind == CommentKind::Line
-                && continues_line_block(self.source, previous.span, start)
-            {
-                previous.span = previous.span.merge(span);
-                return;
-            }
+        if let Some(previous) = self.comments.last_mut()
+            && previous.kind == CommentKind::Line
+            && continues_line_block(self.source, previous.span, start)
+        {
+            previous.span = previous.span.merge(span);
+            return;
         }
         self.comments.push(Comment {
             kind: CommentKind::Line,
@@ -505,7 +504,7 @@ impl<'a> Lexer<'a> {
     fn lex_double_quoted_string(&mut self) {
         let start = self.position;
         self.position += 1; // opening `"` (ASCII, one byte)
-                            // Advance by the whole codepoint, so the span never ends mid-character.
+        // Advance by the whole codepoint, so the span never ends mid-character.
         if let Some(character) = self.source[self.position..].chars().next() {
             let after = self.position + character.len_utf8();
             if self.source.as_bytes().get(after) == Some(&b'"') {

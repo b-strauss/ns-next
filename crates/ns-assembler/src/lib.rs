@@ -640,11 +640,11 @@ impl<E: Encoder> Assembler<E> {
         let start = self.encoded.len();
         self.encoder.encode(operation, &mut self.encoded);
         let end = self.encoded.len();
-        if let Some(Item::Code { end: last_end, .. }) = self.items.last_mut() {
-            if *last_end == start {
-                *last_end = end;
-                return;
-            }
+        if let Some(Item::Code { end: last_end, .. }) = self.items.last_mut()
+            && *last_end == start
+        {
+            *last_end = end;
+            return;
         }
         self.items.push(Item::Code { start, end });
     }

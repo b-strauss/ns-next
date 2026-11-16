@@ -143,7 +143,7 @@ fn repository_root() -> PathBuf {
 /// `file` relative to `root`, its directories separated by `/` on every
 /// platform.
 fn relative_name(root: &Path, file: &Path) -> String {
-    let relative = file.strip_prefix(root).unwrap_or(file);
+    let relative = file.trim_prefix(root);
     relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy())

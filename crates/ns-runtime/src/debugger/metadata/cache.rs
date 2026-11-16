@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use super::again::{compile_level, BodyOrigin, Member, PairedBodies};
-use super::{address, BodyMetadata};
+use super::again::{BodyOrigin, Member, PairedBodies, compile_level};
+use super::{BodyMetadata, address};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
@@ -150,10 +150,10 @@ impl Cache {
     /// `text`, kept from here on. Compared rather than trusted, since a
     /// full collection may reclaim a root's id for another module.
     pub(super) fn module_text(&mut self, root: MixinId, text: String) -> Rc<str> {
-        if let Some(kept) = self.texts.get(&root) {
-            if **kept == *text {
-                return Rc::clone(kept);
-            }
+        if let Some(kept) = self.texts.get(&root)
+            && **kept == *text
+        {
+            return Rc::clone(kept);
         }
         let text: Rc<str> = Rc::from(text);
         self.texts.insert(root, Rc::clone(&text));

@@ -7,22 +7,22 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
-    Literal as BytecodeLiteral, HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
+    IntegerOperation, Literal as BytecodeLiteral,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
     TakenBlock, VariableEntry, VariablePlace, VectorHolder,
 };
-use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
+use crate::interpreter::literals::{IntegerLiteral, parse_float_literal, parse_integer_literal};
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -1483,10 +1483,10 @@ impl<'a> Lowerer<'a> {
             InlineForm::WhileTrue { condition, body }
             | InlineForm::WhileFalse { condition, body } => (None, Some(condition), Some(body)),
         };
-        if let Some(receiver) = receiver {
-            if self.writes_register(receiver, register, inlined_depth) {
-                return true;
-            }
+        if let Some(receiver) = receiver
+            && self.writes_register(receiver, register, inlined_depth)
+        {
+            return true;
         }
         self.inlined_blocks_write_register(
             [first, second].into_iter().flatten(),
@@ -2012,14 +2012,14 @@ impl<'a> Lowerer<'a> {
     /// Records a send that takes `blocks`, which the body goes on from at
     /// `after` once the send has answered, when the metadata is collected.
     fn record_block_send(&mut self, blocks: Vec<TakenBlock>, after: u32, inlined: bool) {
-        if let Some(collected) = self.collected.as_mut() {
-            if !blocks.is_empty() {
-                collected.block_sends.push(BlockSendEntry {
-                    blocks: blocks.into(),
-                    inlined,
-                    after,
-                });
-            }
+        if let Some(collected) = self.collected.as_mut()
+            && !blocks.is_empty()
+        {
+            collected.block_sends.push(BlockSendEntry {
+                blocks: blocks.into(),
+                inlined,
+                after,
+            });
         }
     }
 
@@ -2056,7 +2056,7 @@ impl<'a> Lowerer<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -2206,7 +2206,7 @@ impl<'a> Lowerer<'a> {
     /// object `outer N m` would send to, loaded without running any code.
     fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -2550,7 +2550,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             index,
             Some(call_site),
-            SendSpans::of(&send.receiver, &send.message),
+            SendSpans::of_send(&send.receiver, &send.message),
         );
         let end_label = self.here();
         self.patch_target(after_fast_path_jump, end_label);
@@ -2604,7 +2604,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             failure_jump,
             None,
-            SendSpans::of(&send.receiver, &send.message),
+            SendSpans::of_send(&send.receiver, &send.message),
         );
         let after_send_jump = self.emit(Instruction::Jump { target: 0 });
         let failure_label = self.here();
@@ -2812,11 +2812,12 @@ impl<'a> Lowerer<'a> {
         // shorter -- an enclosing one, since a body past it records no
         // tables.
         debug_assert_eq!(names.len(), self.layout.places.len());
-        debug_assert!(self
-            .layouts
-            .iter()
-            .zip(&self.enclosing_variable_names)
-            .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len()));
+        debug_assert!(
+            self.layouts
+                .iter()
+                .zip(&self.enclosing_variable_names)
+                .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len())
+        );
         let own = names
             .iter()
             .enumerate()
@@ -2928,7 +2929,10 @@ impl<'text> SendSpans<'text> {
     /// apart from its receiver, is spanned without it, and names it in
     /// parentheses when it is a binary or keyword send written without
     /// them, as the message would read sent to it alone: `(a + b) c`.
-    pub(super) fn of(receiver: &Expression, message: &'text ast::MessageSend) -> SendSpans<'text> {
+    pub(super) fn of_send(
+        receiver: &Expression,
+        message: &'text ast::MessageSend,
+    ) -> SendSpans<'text> {
         let spelled = receiver_span(receiver);
         let apart = spelled.is_some_and(|spelled| spelled.end <= message.span.start);
         let call = match spelled {
@@ -3036,7 +3040,7 @@ mod tests {
         reason = "a test's values are small literals and lengths it built"
     )]
 
-    use super::super::capture::{analyze, RootBody};
+    use super::super::capture::{RootBody, analyze};
     use super::*;
     use indoc::{formatdoc, indoc};
     use std::path::PathBuf;
@@ -3395,7 +3399,7 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 1); // `t` is register 13
-                                                  // An explicit `self` receiver is a depth-0 lexical send.
+        // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_sources, ..
@@ -4068,13 +4072,15 @@ mod tests {
         let mut lowerer = method_lowerer(&foo, &bindings);
         let destination = lowerer.lower_expression(return_expression(&foo));
         let code = lowerer.finish(foo.span);
-        let [Instruction::SendLexical {
-            depth: 0,
-            selector,
-            argument_sources,
-            destination: send_destination,
-            ..
-        }] = &code.instructions()[..]
+        let [
+            Instruction::SendLexical {
+                depth: 0,
+                selector,
+                argument_sources,
+                destination: send_destination,
+                ..
+            },
+        ] = &code.instructions()[..]
         else {
             panic!(
                 "expected one depth-0 lexical send: {:?}",
@@ -4567,10 +4573,12 @@ mod tests {
         )));
         assert_eq!(fallback.outer_reach, 1);
         // Nothing captured `t`, so it stays a register.
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::MakeVector { .. }))
+        );
     }
 
     #[test]
@@ -5272,10 +5280,12 @@ mod tests {
         let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
-        assert!(block
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. })));
+        assert!(
+            block
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. }))
+        );
     }
 
     #[test]

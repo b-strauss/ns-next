@@ -27,10 +27,10 @@ use crate::bytecode::{CodeKind, Instruction};
 use crate::heap::Heap;
 use crate::interpreter::Mutator;
 
+use super::Installed;
 use super::materialize::machine_frame;
 use super::sends::call_slots;
 use super::stubs::BlockWord;
-use super::Installed;
 
 /// What `cut` and `cut_frame` answer when the cut cannot carry the return
 /// out exactly: no frame changed, the template exits at the

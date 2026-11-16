@@ -40,10 +40,10 @@ use ns_memory::CodeOffset;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
-use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::Mutator;
+use crate::interpreter::inline_cache::SiteSlide;
 
-use super::{CopyDependencies, InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
+use super::{BODY_ALIGNMENT, COMPILED, CopyDependencies, InstalledBody, JitState};
 
 /// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
 /// code, while it lives, whose machine entry row names it, and its entry's
@@ -518,10 +518,10 @@ impl JitState {
             let dispatching = body
                 .dispatching
                 .map(|dispatching| CodeOffset(start + dispatching.entry));
-            if let Some(code) = &code {
-                if self.named_body(code) == Some(index) {
-                    code.jit.forget();
-                }
+            if let Some(code) = &code
+                && self.named_body(code) == Some(index)
+            {
+                code.jit.forget();
             }
             if self.mark_free(number, FreedBy::BetweenCompactions) {
                 indices.push(number);
@@ -1126,14 +1126,13 @@ impl JitState {
             if body.free {
                 // A row naming a freed copy would name whichever body
                 // takes its index now.
-                if let (Some(key), Some(code)) = (body.key, body.code.upgrade()) {
-                    if code
+                if let (Some(key), Some(code)) = (body.key, body.code.upgrade())
+                    && code
                         .jit
                         .copy_row(key)
                         .is_some_and(|row| row.body as usize == old_index)
-                    {
-                        code.jit.set_copy_body(key, super::NO_BODY);
-                    }
+                {
+                    code.jit.set_copy_body(key, super::NO_BODY);
                 }
                 renumbered.push(None);
                 continue;
@@ -1165,7 +1164,7 @@ impl JitState {
             body.end -= delta;
             body.words -= delta;
             body.words_end -= delta;
-            body.usage.set(body.usage.get() / 2);
+            body.usage.update(|usage| usage / 2);
             // A twin's slot is its lean body's, which names the lean body;
             // optimized code's slot names it beside the lean body, as its
             // one copy or in its key's row.
@@ -1580,7 +1579,7 @@ mod tests {
     #[cfg(ns_jit)]
     #[test]
     fn a_body_assembled_at_two_offsets_is_the_same_bytes() {
-        use crate::jit::{install, JitState};
+        use crate::jit::{JitState, install};
         let mut state = JitState::for_test(1 << 16, true);
         let first = crate::jit::tests::machine::body_making_a_closure();
         crate::jit::tests::machine::enter_twice(&mut state, &first);
@@ -1687,7 +1686,7 @@ mod tests {
     fn a_frame_stopped_in_freed_code_resumes_interpreted() {
         use crate::interpreter::FeedbackBase;
         use crate::jit::tests::machine::body_with_a_loop;
-        use crate::jit::{abandon, note_entry, resumed, Resumption};
+        use crate::jit::{Resumption, abandon, note_entry, resumed};
         let mut interpreter =
             crate::interpreter::Interpreter::bootstrap_with(crate::Lowering::Optimized);
         interpreter.set_jit_enabled(true);

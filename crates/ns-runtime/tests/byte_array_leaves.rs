@@ -74,9 +74,11 @@ fn objects_byte_array_accessor_is_protected_and_answers_the_class() {
     interpreter.enter(|mutator| {
         let value = mutator.fetch(&result);
         let byte_array = mutator.builtin_class(BuiltinClass::ByteArray);
-        assert!(value
-            .as_object()
-            .is_some_and(|class| class.same(byte_array)));
+        assert!(
+            value
+                .as_object()
+                .is_some_and(|class| class.same(byte_array))
+        );
     });
     let (mut interpreter, class) = load(source);
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");

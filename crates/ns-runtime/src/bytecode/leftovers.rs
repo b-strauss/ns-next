@@ -41,8 +41,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::ops::Range;
 
 use super::{
-    falls_through, jump_target, register_written, registers_read, CompiledCode, Instruction,
-    INSTRUCTION_LIMIT,
+    CompiledCode, INSTRUCTION_LIMIT, Instruction, falls_through, jump_target, register_written,
+    registers_read,
 };
 
 /// The parser's nesting limit (`ns_syntax`'s `MAX_DEPTH`): how many guarded
@@ -382,35 +382,34 @@ pub(crate) fn analyze(
             .last()
             .is_some_and(|&innermost| regions[innermost].end < here)
         {
-            if let Some(closed) = open_loops.pop() {
-                if let Some(head_state) = head_states.get_mut(closed) {
-                    *head_state = None;
-                }
+            if let Some(closed) = open_loops.pop()
+                && let Some(head_state) = head_states.get_mut(closed)
+            {
+                *head_state = None;
             }
         }
         if pass
             .pending
             .last()
             .is_some_and(|entry| entry.target == here)
+            && let Some(entry) = pass.pending.pop()
         {
-            if let Some(entry) = pass.pending.pop() {
-                // Every path into a loop passes its head: a jump to a point
-                // inside it comes from inside it.
-                if let Some(&innermost) = open_loops.last() {
-                    if regions[innermost].head > entry.earliest_source {
-                        return Err(LeftoverRefusal::PastTheBound {
-                            instruction: entry.earliest_source,
-                        });
-                    }
-                }
-                if reachable {
-                    operations += union_into(&mut current, &entry.bits);
-                    pass.free.push(entry.bits);
-                } else {
-                    let unreachable = std::mem::replace(&mut current, entry.bits);
-                    pass.free.push(unreachable);
-                    reachable = true;
-                }
+            // Every path into a loop passes its head: a jump to a point
+            // inside it comes from inside it.
+            if let Some(&innermost) = open_loops.last()
+                && regions[innermost].head > entry.earliest_source
+            {
+                return Err(LeftoverRefusal::PastTheBound {
+                    instruction: entry.earliest_source,
+                });
+            }
+            if reachable {
+                operations += union_into(&mut current, &entry.bits);
+                pass.free.push(entry.bits);
+            } else {
+                let unreachable = std::mem::replace(&mut current, entry.bits);
+                pass.free.push(unreachable);
+                reachable = true;
             }
         }
         if let Some(region) = regions
@@ -424,10 +423,8 @@ pub(crate) fn analyze(
                     usize::from(register_count),
                 );
             }
-            if reachable {
-                if let Some(head_state) = head_states.get_mut(next_region) {
-                    *head_state = Some(current.clone());
-                }
+            if reachable && let Some(head_state) = head_states.get_mut(next_region) {
+                *head_state = Some(current.clone());
             }
             open_loops.push(next_region);
             pass.spent.peak_open_loops = pass.spent.peak_open_loops.max(open_loops.len());
@@ -534,10 +531,10 @@ fn loops(
     let mut next = 0;
     // An inner loop's sends are its parent's too.
     fn close(open: &mut Vec<usize>, regions: &mut [Region]) {
-        if let Some(innermost) = open.pop() {
-            if let Some(&parent) = open.last() {
-                regions[parent].floor = regions[parent].floor.min(regions[innermost].floor);
-            }
+        if let Some(innermost) = open.pop()
+            && let Some(&parent) = open.last()
+        {
+            regions[parent].floor = regions[parent].floor.min(regions[innermost].floor);
         }
     }
     for (index, instruction) in instructions.iter().enumerate() {
@@ -548,12 +545,12 @@ fn loops(
             close(&mut open, &mut regions);
         }
         while next < regions.len() && regions[next].head as usize == index {
-            if let Some(&parent) = open.last() {
-                if regions[next].end > regions[parent].end {
-                    return Err(LeftoverRefusal::PastTheBound {
-                        instruction: regions[next].end,
-                    });
-                }
+            if let Some(&parent) = open.last()
+                && regions[next].end > regions[parent].end
+            {
+                return Err(LeftoverRefusal::PastTheBound {
+                    instruction: regions[next].end,
+                });
             }
             if open.len() >= LOOP_LIMIT {
                 return Err(LeftoverRefusal::PastTheBound {
@@ -563,10 +560,10 @@ fn loops(
             open.push(next);
             next += 1;
         }
-        if let Some(&innermost) = open.last() {
-            if let Some(end) = taint_end(instruction, local_count, register_count) {
-                regions[innermost].floor = regions[innermost].floor.min(end);
-            }
+        if let Some(&innermost) = open.last()
+            && let Some(end) = taint_end(instruction, local_count, register_count)
+        {
+            regions[innermost].floor = regions[innermost].floor.min(end);
         }
     }
     while !open.is_empty() {

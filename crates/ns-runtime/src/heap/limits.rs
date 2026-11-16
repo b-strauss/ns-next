@@ -572,9 +572,11 @@ mod tests {
         let mut grown = ShrinkDamping { factor: 100 };
         assert_eq!(shrink.keep(&mut grown, true, true, 0, 1001 * page), None);
         assert_eq!(shrink.keep(&mut grown, true, false, 0, 1001 * page), None);
-        assert!(shrink
-            .keep(&mut grown, true, false, 0, 1001 * page)
-            .is_some());
+        assert!(
+            shrink
+                .keep(&mut grown, true, false, 0, 1001 * page)
+                .is_some()
+        );
         assert_eq!(
             shrink.keep(&mut undamped, false, true, 0, 1001 * page),
             None,

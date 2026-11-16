@@ -177,7 +177,9 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
                 sent.map_or_else(|description| description, |integer| integer.to_string());
             let instantiated_description =
                 instantiated.map_or_else(|description| description, |integer| integer.to_string());
-            panic!("expected two equal small integers, got {sent_description} and {instantiated_description}")
+            panic!(
+                "expected two equal small integers, got {sent_description} and {instantiated_description}"
+            )
         }
     }
 }

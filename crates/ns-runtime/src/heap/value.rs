@@ -577,7 +577,7 @@ pub(super) fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Immediate, ImmediateKind, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use super::{Immediate, ImmediateKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, Value, ValueKind};
 
     #[test]
     fn tagged_arithmetic_answers_what_untagged_arithmetic_answers() {
@@ -637,9 +637,11 @@ mod tests {
             }
         }
         assert!(small(1).small_integer_sum(Value::nil()).is_none());
-        assert!(Value::<'static>::boolean(true)
-            .small_integer_order(small(1))
-            .is_none());
+        assert!(
+            Value::<'static>::boolean(true)
+                .small_integer_order(small(1))
+                .is_none()
+        );
     }
 
     #[test]
@@ -719,9 +721,11 @@ mod tests {
         assert!(Value::<'static>::nil().is_nil());
         assert_eq!(Value::<'static>::boolean(false).as_boolean(), Some(false));
         assert_eq!(Value::<'static>::boolean(true).as_boolean(), Some(true));
-        assert!(Value::<'static>::boolean(false)
-            .as_small_integer()
-            .is_none());
+        assert!(
+            Value::<'static>::boolean(false)
+                .as_small_integer()
+                .is_none()
+        );
     }
 
     #[test]

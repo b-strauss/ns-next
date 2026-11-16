@@ -15,25 +15,6 @@ when they were written.
 
 ## Next
 
-**First, the toolchain and the edition, on a branch of their own**
-(agreed with the user on 2026-11-14, after the debugger's stage 4): the
-pinned toolchain is raised from 1.98.0 to the stable release of the day
--- `rust-toolchain.toml`'s channel, the workspace's `rust-version` and
-the Docker image `xtask/docker/Dockerfile` -- the new Clippy lints fixed
-and the `codegen` budgets checked again; then the workspace moves from
-edition 2021 to 2024, by `cargo fix --edition` and a formatting commit
-of its own, every gate run to the end of the batch -- the Docker groups
-`linux` and `aarch64` included, though they are no longer part of
-`end-of-batch`, since a new compiler and edition reach every platform and
-the image changes too -- since the edition
-changes what the tree relies on: the temporary-scope rules of 2024
-change when a temporary in an `if let` scrutinee or a block's tail
-expression is dropped, `impl Trait` in return position captures every
-lifetime in scope, which touches the `'gc` brand (`CLAUDE.md`, "The brand is the
-compiler's"), and `ns-memory`'s `extern` blocks become `unsafe extern`.
-Staying on an old toolchain and edition costs every later batch the
-lints and language features it cannot use, and the gap only grows.
-
 **The debugger's stage 5: evaluation, conditional breakpoints and
 logpoints, watches and setting variables, smart step into, restart
 frame and force return** (decided with the user on 2026-11-11: the
@@ -711,7 +692,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   - **Windows on ARM runs interpreted** (2026-11-04). `build.rs` sets
     `cfg(ns_jit)` for AArch64 on Linux and Apple's platforms only. Much
     of what the JIT needs there exists: the encoder never uses `x18`,
-    the register Windows reserves, so `Roles::of(Abi::Aapcs64)` would
+    the register Windows reserves, so `Roles::of_abi(Abi::Aapcs64)` would
     serve, and `ns-memory`'s Windows code zone and native-stack bounds
     exist and build for that target. What is open is whether Windows on ARM's
     convention and unwinding differ from AAPCS64 in anything a stub
@@ -1458,7 +1439,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   would keep `program_counter`, the code and the register base in machine
   registers across instructions and give every instruction its own indirect
   jump -- the threaded dispatch Strongtalk's and Cog's interpreters have.
-  `become` is experimental in Rust 1.98.0 (checked 2026-10-02), so the
+  `become` is experimental in Rust 1.100.0 (checked 2026-11-16), so the
   question is first how much it would gain: an experiment on a throwaway
   copy, on nightly, switching only the dispatch of the eight-byte encoding's
   loop to `become` and measuring it against the `match` loop. Whether the
@@ -2478,7 +2459,7 @@ classes and a class from source with no predecessor are not edited
   about 2.5x faster than direct threading; those benchmarks have no
   objects and no sends, so they say nothing of the send path, where most
   of this interpreter's time goes. Rust guarantees such a call only with
-  `become` (feature `explicit_tail_calls`), which in October 2026 is
+  `become` (feature `explicit_tail_calls`), which in Rust 1.100.0 (checked 2026-11-16) is still
   unstable and incomplete, aimed at stabilization in 2027 together with
   `loop_match`; without the guarantee every handler deepens the native
   stack. Once it is stable, the experiment shows how much of the 1.3-2x
@@ -3670,6 +3651,14 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The codegen gate does not see what fat LTO inlines (noted 2026-11-16).
+  `xtask/src/codegen.rs` reads `cargo asm`'s listing of `ns-runtime`'s
+  lib, which is compiled without the binaries' cross-crate LTO. Under
+  LLVM 23, `builtins::execute` saved two XMM registers in that listing
+  and all ten in `ns-next.exe`, so the gate passed a 3.4% slowdown of
+  Json that only a measurement found ([execution.md](design/execution.md),
+  "What Rust 1.100.0 moved"). Holding the binary's listing, and counting
+  a hot function's saved XMM registers, would catch it.
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
   support.arm.com page, as the convention asks, but the pages' paths

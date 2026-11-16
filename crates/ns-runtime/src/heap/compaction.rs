@@ -229,12 +229,11 @@ pub(crate) struct ShiftedRegion {
 impl Relocation for Shift {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
         for region in &self.regions {
-            if region.source.contains(&offset.get()) {
-                if let Some(moved) =
+            if region.source.contains(&offset.get())
+                && let Some(moved) =
                     NonZeroU64::new(offset.get() - region.source.start + region.destination)
-                {
-                    return moved;
-                }
+            {
+                return moved;
             }
         }
         unreachable!("internal: a moved handle names an object in no occupied region")
@@ -406,10 +405,11 @@ mod tests {
             idle.chunks.capacity() < 100,
             "the memory past the committed words is freed"
         );
-        assert!(idle
-            .chunks
-            .iter()
-            .all(|chunk| chunk.live == 0 && chunk.before == 0));
+        assert!(
+            idle.chunks
+                .iter()
+                .all(|chunk| chunk.live == 0 && chunk.before == 0)
+        );
     }
 
     /// A survivor outside the occupied ranges would set a bit in a gap,

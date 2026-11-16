@@ -27,7 +27,7 @@
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
-use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
+use crate::heap::{ActivationReference, ArgumentSlots, Word, register_number};
 use crate::interpreter::inline_cache::{self, MissAnswer};
 use crate::interpreter::locals::receiver_keeps_entered_level;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
@@ -293,11 +293,7 @@ fn step_in(
         },
         other => unreachable!("internal: the generic leaf is handed {other:?}"),
     };
-    if done {
-        DONE
-    } else {
-        REFUSED
-    }
+    if done { DONE } else { REFUSED }
 }
 
 /// `Leaf::OwnSlots`: the cold half of `check_own_slots`
@@ -326,11 +322,7 @@ fn own_slots(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         && mutator.heap.dispatch_id(receiver) != DispatchId::NONE
         && receiver_keeps_entered_level(mutator, frame.activation, receiver);
     materialize::release_leaf_frame(mutator, frame);
-    if kept {
-        DONE
-    } else {
-        REFUSED
-    }
+    if kept { DONE } else { REFUSED }
 }
 
 /// The initializer leaf, which an initializer invocation's template calls
@@ -882,11 +874,7 @@ fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     };
     let compiled = jit::compile_twin_at(&mut mutator.jit, code_address);
     jit::after_compile_trigger(mutator);
-    if compiled {
-        DONE
-    } else {
-        REFUSED
-    }
+    if compiled { DONE } else { REFUSED }
 }
 
 /// The budget leaf, which a spend of a body's optimization budget calls

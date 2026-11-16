@@ -4,7 +4,7 @@
 //! whichever it holds.
 
 use crate::builtins::collections::{
-    checked_range, integer_argument, not_an_integer, out_of_range, source_start, IntegerArgument,
+    IntegerArgument, checked_range, integer_argument, not_an_integer, out_of_range, source_start,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::BytePrimitive;
@@ -98,7 +98,7 @@ impl<'gc> ArgumentBytes<'gc> {
     }
 
     /// Whether the argument is the object `object`.
-    fn is(self, object: ObjectReference<'gc>) -> bool {
+    fn is_object(self, object: ObjectReference<'gc>) -> bool {
         self.object.same(object)
     }
 
@@ -155,7 +155,7 @@ impl<'gc> Needle<'gc> {
     /// ByteArray or String, which a search's failure block compares
     /// element by element with `=` and `startsWith:` and `endsWith:`
     /// refuse.
-    fn of(heap: &Heap<'gc>, argument: Option<Value<'gc>>) -> Option<Needle<'gc>> {
+    fn of_argument(heap: &Heap<'gc>, argument: Option<Value<'gc>>) -> Option<Needle<'gc>> {
         let argument = argument?;
         match integer_argument(heap, Some(argument)) {
             Some(IntegerArgument::Small(number)) => Some(Needle::Byte(u8::try_from(number).ok())),
@@ -262,7 +262,7 @@ fn replace<'gc>(
     // The receiver as its own source moves its bytes as `memmove` does;
     // any other source is read whole before the first byte is stored,
     // since the receiver cannot be written while it is read.
-    let written = if source.is(object) {
+    let written = if source.is_object(object) {
         mutator.heap.with_byte_array_mut(object, |mut data| {
             data.copy_within(source_range, range.start)
         })
@@ -342,7 +342,7 @@ fn search<'gc>(
         Ok(position) => position,
         Err(error) => return Some(Err(error)),
     };
-    let needle = Needle::of(heap, arguments.first(&mutator.heap))?;
+    let needle = Needle::of_argument(heap, arguments.first(&mutator.heap))?;
     let found = size.checked_sub(needle.size()).and_then(|last_position| {
         let occurs = |candidate: &usize| needle.occurs_at(heap, object, *candidate);
         if backwards {
@@ -370,7 +370,7 @@ fn affix<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let heap = &mutator.heap;
     let (object, size) = byte_array(mutator, receiver)?;
-    let Some(needle) = Needle::of(heap, arguments.first(&mutator.heap)) else {
+    let Some(needle) = Needle::of_argument(heap, arguments.first(&mutator.heap)) else {
         return Some(Err(NewspeakError::argument_error(
             selector,
             receiver,

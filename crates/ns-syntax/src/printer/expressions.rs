@@ -5,9 +5,9 @@
 
 use std::rc::Rc;
 
-use super::comments::{after, before, on_its_line, OwnTokens};
+use super::comments::{OwnTokens, after, before, on_its_line};
 use super::declarations::{annotation, code_body, name_separator, parameter};
-use super::document::{concat, group, hard_line, indent, line, soft_line, text, Document};
+use super::document::{Document, concat, group, hard_line, indent, line, soft_line, text};
 use crate::ast::{
     Anchor, AttachedComment, BlockExpression, Cascade, Expression, ExpressionKind, Literal,
     MessageSend, Placement, Selector, Send, Statement, StatementKind,
@@ -415,7 +415,7 @@ fn sent_message(message: &MessageSend, with_trailing: bool) -> Document {
             tokens.child();
         }
         Selector::Keyword(selector) => {
-            return keyword_message_sent(None, message, selector, with_trailing)
+            return keyword_message_sent(None, message, selector, with_trailing);
         }
     }
     parts.push(tokens.end());
@@ -679,11 +679,7 @@ fn standard(head: &Head, parts: &KeywordParts, arguments: &[Argument], broken: b
         message.push(indent(CONTINUATION, concat(rest)));
     }
     let message = concat(message);
-    if broken {
-        message
-    } else {
-        group(message)
-    }
+    if broken { message } else { group(message) }
 }
 
 /// Every block argument opened at the line end and broken, the keyword

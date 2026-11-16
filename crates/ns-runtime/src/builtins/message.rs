@@ -5,11 +5,11 @@
 //! protected or private method. It answers the step the send decided,
 //! which the run loop runs as any send's; it runs nothing itself.
 
+use crate::Mutator;
 use crate::builtins::primitive::MessagePrimitive;
 use crate::interpreter::Arguments;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
-use crate::Mutator;
 
 /// Runs `primitive` on `subject`, a `Message`. `None` -- the kernel
 /// method's failure block, which raises an `Error` -- for a subject that is

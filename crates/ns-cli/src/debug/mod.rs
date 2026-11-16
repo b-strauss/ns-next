@@ -21,13 +21,13 @@ mod wire;
 
 use std::net::TcpStream;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) use host::{report_terminated, status_of, terminated_before_run, HostLink, HostStart};
-pub(crate) use sources::{file_identity, ProgramModule};
+pub(crate) use host::{HostLink, HostStart, report_terminated, status_of, terminated_before_run};
+pub(crate) use sources::{ProgramModule, file_identity};
 
 /// How the agent opens its connection.
 pub(crate) enum DebugOptions {
@@ -147,23 +147,25 @@ fn spawn_pump(
 ) {
     std::thread::Builder::new()
         .name("ns-next debugger events".to_string())
-        .spawn(move || loop {
-            if let Some(event) = events.next_event(PUMP_SLICE) {
-                if inputs.send(agent::Input::Event(event)).is_err() {
+        .spawn(move || {
+            loop {
+                if let Some(event) = events.next_event(PUMP_SLICE)
+                    && inputs.send(agent::Input::Event(event)).is_err()
+                {
                     return;
                 }
-            }
-            if detached.load(Ordering::SeqCst) {
-                return;
-            }
-            if let Ok(handed_over) = drain_requests.try_recv() {
-                while let Some(event) = events.next_event(Duration::ZERO) {
-                    if inputs.send(agent::Input::Event(event)).is_err() {
-                        break;
-                    }
+                if detached.load(Ordering::SeqCst) {
+                    return;
                 }
-                let _ = handed_over.send(());
-                return;
+                if let Ok(handed_over) = drain_requests.try_recv() {
+                    while let Some(event) = events.next_event(Duration::ZERO) {
+                        if inputs.send(agent::Input::Event(event)).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = handed_over.send(());
+                    return;
+                }
             }
         })
         .expect("spawn the debugger's event pump");

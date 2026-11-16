@@ -3,7 +3,7 @@
 //! note's.
 
 use super::tower::{self, Arithmetic, Comparison};
-use super::{integer_operand, shift_left, type_mismatch, Accepted};
+use super::{Accepted, integer_operand, shift_left, type_mismatch};
 use crate::builtins::primitive::{LargeIntegerPrimitive, Primitive};
 use crate::interpreter::Arguments;
 use crate::types::*;

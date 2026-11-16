@@ -26,15 +26,15 @@ use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::heap::MixinId;
 use crate::types::Binding;
 use crate::types::BuiltinClass;
-use crate::Symbol;
 
 /// The guard an inline cache compares: a dense number, minted per heap, that
 /// names one mixin application's behaviour for its instances
@@ -1103,7 +1103,7 @@ fn holes_fit(range: Span, holes: &[Span]) -> bool {
 /// The module-text bounds of the pieces between `holes` within `range`:
 /// from the range's start to the first hole, between each two, and from
 /// the last hole to the range's end.
-fn segment_bounds(range: Span, holes: &[Span]) -> impl Iterator<Item = (u32, u32)> + '_ {
+fn segment_bounds(range: Span, holes: &[Span]) -> impl Iterator<Item = (u32, u32)> {
     let starts = std::iter::once(range.start).chain(holes.iter().map(|hole| hole.end));
     let ends = holes
         .iter()
@@ -1471,7 +1471,7 @@ pub struct MixinApplication {
     /// `None` for one whose word count does not fit in the header; set by
     /// `Heap::register_application`.
     pub instance_header: Option<crate::heap::InstanceHeader>,
-    /// What instantiation asks of this level's own mixin (`LevelFacts::of`),
+    /// What instantiation asks of this level's own mixin (`LevelFacts::of_mixin`),
     /// computed where the application is built; a debug build's
     /// `Heap::register_application` checks it against `mixin`.
     pub level_facts: LevelFacts,
@@ -1505,7 +1505,7 @@ pub struct LevelFacts {
 }
 
 impl LevelFacts {
-    pub(crate) fn of(mixin: &Mixin) -> LevelFacts {
+    pub(crate) fn of_mixin(mixin: &Mixin) -> LevelFacts {
         LevelFacts {
             needs_initializer_code: crate::interpreter::instantiate::mixin_needs_initializer_code(
                 mixin,
@@ -1904,12 +1904,14 @@ mod declaration_text_tests {
         assert!(DeclarationText::from_parts(range, vec![second, first], text()).is_none());
         assert!(DeclarationText::from_parts(range, vec![Span::new(16, 21)], text()).is_none());
         assert!(DeclarationText::from_parts(range, vec![first], text()).is_none());
-        assert!(DeclarationText::from_parts(
-            Span::new(0, 4),
-            vec![Span::new(1, 2)],
-            Box::from("\u{e4}x")
-        )
-        .is_none());
+        assert!(
+            DeclarationText::from_parts(
+                Span::new(0, 4),
+                vec![Span::new(1, 2)],
+                Box::from("\u{e4}x")
+            )
+            .is_none()
+        );
     }
 
     /// A hole is a nested declaration, which is never empty: an empty hole

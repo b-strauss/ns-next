@@ -2,7 +2,7 @@
 //! through the binary.
 
 mod common;
-use common::{golden, goldens_root, ns_next, ScratchDirectory};
+use common::{ScratchDirectory, golden, goldens_root, ns_next};
 use indoc::indoc;
 use std::path::Path;
 

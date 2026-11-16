@@ -4,8 +4,8 @@
 
 use std::rc::Rc;
 
-use super::edit::{Edit, EditedTexts, PreparedEdit};
 use super::Mutator;
+use super::edit::{Edit, EditedTexts, PreparedEdit};
 use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::mixin::{DispatchId, Mixin, MixinApplication};
@@ -106,7 +106,7 @@ impl<'gc> Mutator<'gc> {
         if !self.has_no_breakpoints() {
             let (module_root, _) = self.path_from_module_root(id);
             if let Some(root) = self.heap.mixin(module_root) {
-                let module = crate::debugger::ModuleName::of(&root);
+                let module = crate::debugger::ModuleName::of_root(&root);
                 crate::debugger::breakpoints::module_built(self, &module);
             }
         }
@@ -363,8 +363,8 @@ impl<'gc> Mutator<'gc> {
 mod tests {
     use super::*;
     use crate::heap::{ActivationHeader, ApplicationIndex};
-    use crate::interpreter::edit::MemberEdit;
     use crate::interpreter::Arguments;
+    use crate::interpreter::edit::MemberEdit;
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::Mixin;
     use crate::types::{ActivationKind, BuiltinClass, Continuation, SourceOrigin, Value};

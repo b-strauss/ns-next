@@ -1,10 +1,10 @@
 //! `Closure` native methods -- `value`..`value:value:value:` and
 //! `numArgs`. `value` returns the block to activate as a step.
 
+use crate::Mutator;
 use crate::builtins::primitive::BlockPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
-use crate::Mutator;
 
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,

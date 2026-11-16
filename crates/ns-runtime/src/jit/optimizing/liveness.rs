@@ -67,7 +67,7 @@ pub(crate) struct Positions {
 }
 
 impl Positions {
-    pub(crate) fn of(graph: &Graph, order: &[BlockId]) -> Positions {
+    pub(crate) fn of_graph(graph: &Graph, order: &[BlockId]) -> Positions {
         let mut first_slot = vec![u32::MAX; graph.blocks.len()];
         let mut end_slot = vec![u32::MAX; graph.blocks.len()];
         let mut slot: u32 = 0;
@@ -420,10 +420,10 @@ fn block_exits(graph: &Graph, block: BlockId, entry: &[Binding]) -> Vec<(BlockId
     let mut bindings = entry.to_vec();
     let mut exits = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
-        if let Some(fallback) = node.fallback() {
-            if graph.block(block).exit_position(fallback) == Some(index) {
-                exits.push((fallback, bindings.clone()));
-            }
+        if let Some(fallback) = node.fallback()
+            && graph.block(block).exit_position(fallback) == Some(index)
+        {
+            exits.push((fallback, bindings.clone()));
         }
         bind(&mut bindings, node);
     }
@@ -450,7 +450,7 @@ impl ValueSet {
         self.words[value.index() / 64] |= 1 << (value.index() % 64);
     }
 
-    fn values(&self) -> impl Iterator<Item = ValueId> + '_ {
+    fn values(&self) -> impl Iterator<Item = ValueId> {
         self.words.iter().enumerate().flat_map(|(index, word)| {
             (0..64)
                 .filter(move |bit| word & (1 << bit) != 0)
@@ -536,7 +536,7 @@ pub(crate) fn intervals_knowing(graph: &Graph, order: &[BlockId]) -> Intervals {
 }
 
 fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals {
-    let positions = Positions::of(graph, order);
+    let positions = Positions::of_graph(graph, order);
     let register_count = named_registers(graph);
     let entry_bindings = entry_bindings(graph, &positions, register_count, knowing);
     let value_count = graph.values.len();
@@ -623,10 +623,9 @@ fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals 
                     value: Some(value),
                     clean: false,
                 } = binding
+                    && *joined == Binding::FRAME_WORD
                 {
-                    if *joined == Binding::FRAME_WORD {
-                        reads.push((end_definition, *value, Need::Anywhere));
-                    }
+                    reads.push((end_definition, *value, Need::Anywhere));
                 }
             }
         }

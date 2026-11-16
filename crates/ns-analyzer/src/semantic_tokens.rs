@@ -7,7 +7,7 @@ use ns_runtime::Binding;
 use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::{Span, Token, TokenKind};
 
-use crate::documents::{utf16_length, LineIndex};
+use crate::documents::{LineIndex, utf16_length};
 use crate::hover::{self, Container, Declared, DeclaredKind, Reference};
 
 /// The token types of the legend, in legend order (`legend`).
@@ -150,11 +150,11 @@ enum MemberKind {
 }
 
 impl ClassMembers {
-    fn of(declaration: &ast::ClassDeclaration) -> ClassMembers {
+    fn of_declaration(declaration: &ast::ClassDeclaration) -> ClassMembers {
         let mut class_side = declaration
             .class_side
             .as_ref()
-            .map_or_else(SideMembers::default, SideMembers::of);
+            .map_or_else(SideMembers::default, SideMembers::of_body);
         // §6: a declaration without a factory signature has the factory `new`;
         // §6.3 makes it a member of the metaclass mixin the class side becomes.
         let factory = declaration
@@ -166,14 +166,14 @@ impl ClassMembers {
             declaration: factory_span(declaration),
         });
         ClassMembers {
-            instance_side: SideMembers::of(&declaration.instance_side),
+            instance_side: SideMembers::of_body(&declaration.instance_side),
             class_side,
         }
     }
 }
 
 impl SideMembers {
-    fn of(body: &ast::ClassBody) -> SideMembers {
+    fn of_body(body: &ast::ClassBody) -> SideMembers {
         let mut members = HashMap::new();
         let member = |kind, declaration| Member { kind, declaration };
         for slot in body.slots() {
@@ -343,7 +343,7 @@ impl Classifier<'_> {
         enclosing: &[&SideMembers],
         container: Option<Container>,
     ) {
-        let own = ClassMembers::of(declaration);
+        let own = ClassMembers::of_declaration(declaration);
         let mut chain: Vec<&SideMembers> = vec![&own.instance_side];
         chain.extend_from_slice(enclosing);
         let mut class_side_chain: Vec<&SideMembers> = vec![&own.class_side];

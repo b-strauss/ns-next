@@ -613,10 +613,10 @@ mod tests {
 
     use ns_assembler::FloatArithmetic;
 
-    use super::{emit, FloatRegisters};
+    use super::{FloatRegisters, emit};
     use crate::builtins::numbers::tower::{self, Operand};
     use crate::heap::machine_words::MachineWord;
-    use crate::heap::{is_small_float_bits, Heap, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::heap::{Heap, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, is_small_float_bits};
     use crate::jit::float_operations::{FloatComparison, FloatOperation, FloatReceiver};
     use crate::jit::macro_assembler::{Abi, Roles};
     use crate::jit::stubs::testing::Machine;
@@ -941,7 +941,7 @@ mod tests {
 
     impl Harness {
         fn new(operation: FloatOperation, limit_words: u64) -> Harness {
-            let roles = Roles::of(Abi::host());
+            let roles = Roles::of_abi(Abi::host());
             let [receiver, argument, result, spare] =
                 std::array::from_fn(|index| roles.scratch[index]);
             let eden = vec![UNWRITTEN; 8];

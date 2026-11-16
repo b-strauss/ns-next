@@ -23,19 +23,19 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
+use ns_syntax::ast::AccessModifier;
 
+use crate::Symbol;
 use crate::bytecode::CompiledCode;
 use crate::heap::{Heap, MixinId};
 use crate::mixin::{
-    mixin_key, slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
-    MixinApplicationClause, MixinMethod, MixinSlot,
+    ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot, mixin_key, slot_accessors,
 };
-use crate::Symbol;
 
-use super::decode::{check_argument_count, reserve_for, DecodeError, Reader};
-use super::encode::{arity_field, u32_field, CodeIds, Writer};
+use super::decode::{DecodeError, Reader, check_argument_count, reserve_for};
+use super::encode::{CodeIds, Writer, arity_field, u32_field};
 use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
 use super::texts::TextIds;

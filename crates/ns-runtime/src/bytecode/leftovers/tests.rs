@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::builtins::primitive::MirrorPrimitive;
-use crate::bytecode::{jump_target, register_written, successors, CallSite, CompiledCode, Literal};
+use crate::bytecode::{CallSite, CompiledCode, Literal, jump_target, register_written, successors};
 use crate::{Lowering, Symbol};
 
 fn send(argument_base: u16, argument_sources: Vec<u16>, destination: u16) -> Instruction {
@@ -674,10 +674,10 @@ fn crafted_bodies_of_many_registers_agree_with_the_oracle() {
         let length = 4 + generator.next(60);
         let register_count = 60 + generator.next(200) as u16;
         let body = crafted_body(&mut generator, length, register_count);
-        if check(&body, 4, register_count).is_ok() {
-            if let Err(message) = agrees_with_the_oracle(&body, 4, register_count) {
-                panic!("round {round}: {message}\n{body:#?}");
-            }
+        if check(&body, 4, register_count).is_ok()
+            && let Err(message) = agrees_with_the_oracle(&body, 4, register_count)
+        {
+            panic!("round {round}: {message}\n{body:#?}");
         }
     }
 }
@@ -889,14 +889,14 @@ fn every_golden_body_stays_within_the_bound() {
                 match measure(&code) {
                     Ok(spent) => {
                         largest.record(&spent, &label);
-                        if instructions.len() <= 400 {
-                            if let Err(message) = agrees_with_the_oracle(
+                        if instructions.len() <= 400
+                            && let Err(message) = agrees_with_the_oracle(
                                 &instructions,
                                 code.local_count,
                                 code.register_count,
-                            ) {
-                                failures.push(format!("{label}: {message}"));
-                            }
+                            )
+                        {
+                            failures.push(format!("{label}: {message}"));
                         }
                     }
                     Err(refusal) => failures.push(format!(

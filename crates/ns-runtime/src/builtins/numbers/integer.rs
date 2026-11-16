@@ -3,8 +3,8 @@
 
 use super::tower::{self, Arithmetic, Comparison};
 use super::{
-    checked_floor_divide, division_by_zero, floor_modulo, integer_operand, promote, shift_left,
-    type_mismatch, Accepted,
+    Accepted, checked_floor_divide, division_by_zero, floor_modulo, integer_operand, promote,
+    shift_left, type_mismatch,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{AnyIntegerPrimitive, IntegerPrimitive, Primitive};

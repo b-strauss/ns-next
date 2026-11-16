@@ -79,7 +79,9 @@ fn check(tag: &DocTag, owner: Option<&Owner>, findings: &mut Vec<Finding>) {
                 let documents = owner.map_or("nothing", Owner::description);
                 warn(
                     tag.name_span,
-                    format!("`@factory` describes a class's factory: the comment documents {documents}"),
+                    format!(
+                        "`@factory` describes a class's factory: the comment documents {documents}"
+                    ),
                 );
             }
         }
@@ -109,10 +111,9 @@ fn check(tag: &DocTag, owner: Option<&Owner>, findings: &mut Vec<Finding>) {
                 };
                 match named {
                     Some((_, parameters)) if parameters.contains(name) => {}
-                    Some((selector, _)) => warn(
-                        *span,
-                        format!("`{name}` is no parameter of `{selector}`"),
-                    ),
+                    Some((selector, _)) => {
+                        warn(*span, format!("`{name}` is no parameter of `{selector}`"))
+                    }
                     None => warn(
                         *span,
                         format!(

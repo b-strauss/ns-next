@@ -10,10 +10,10 @@ use std::rc::Rc;
 use super::decode::{self, DecodeError, Reader};
 use super::encode::{self, Writer};
 use super::mixins;
+use crate::Mutator;
 use crate::heap::Heap;
 use crate::mixin::Mixin;
 use crate::types::{BuiltinClass, ClassReference, SourceOrigin};
-use crate::Mutator;
 
 /// One module an artifact carries, as a writer is handed it. `with_source`
 /// asks for the module's text in the image, which the encoder reads from
@@ -237,12 +237,12 @@ pub fn module_root_classes<'gc>(
             Some(RootRecordDefect::NotItsRecord) => {
                 return Err(DecodeError::ModuleRootNotItsRecord {
                     module: module_index,
-                })
+                });
             }
             Some(RootRecordDefect::RootRule) => {
                 return Err(DecodeError::RootRule {
                     module: module_index,
-                })
+                });
             }
         }
     }

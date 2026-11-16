@@ -1370,12 +1370,16 @@ mod tests {
                 application.own_slot_base + position
             };
             let mirror = mutator.vm_mirror();
-            assert!(mutator
-                .heap
-                .instance_set_field(object, field("own"), Value::object(instance)));
-            assert!(mutator
-                .heap
-                .instance_set_field(object, field("secret"), mirror));
+            assert!(
+                mutator
+                    .heap
+                    .instance_set_field(object, field("own"), Value::object(instance))
+            );
+            assert!(
+                mutator
+                    .heap
+                    .instance_set_field(object, field("secret"), mirror)
+            );
         });
         for name in ["own", "secret"] {
             let symbol = a_symbol(&mut interpreter, name);

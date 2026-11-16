@@ -5,15 +5,15 @@
 //! (`docs/design/editor-support.md`, "Breakable lines";
 //! `docs/design/debugger.md`, "A breakpoint names a source position").
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
 use lsp_types::{Range, Uri};
 use ns_runtime::{BreakableStatement, Interpreter, SourceOrigin};
 use ns_syntax::ast;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::analysis::panic_detail;
 use crate::documents::LineIndex;

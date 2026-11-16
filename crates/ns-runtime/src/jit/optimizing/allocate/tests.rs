@@ -1,11 +1,11 @@
-use super::{allocate, sequence, Location, Move, PointKind, Spot};
+use super::{Location, Move, PointKind, Spot, allocate, sequence};
 use crate::bytecode::{Instruction, IntegerOperation, Literal};
 use crate::jit::macro_assembler::{Abi, Roles};
 use crate::jit::optimizing::build::build_speculating as build;
 use crate::jit::optimizing::graph::{BlockId, Graph, Node};
 use crate::jit::optimizing::liveness::{block_order, intervals};
 use crate::jit::optimizing::metadata::{
-    allocate_and_describe, metadata, replay_with_leaf_calls, verify_allocation, Resumes,
+    Resumes, allocate_and_describe, metadata, replay_with_leaf_calls, verify_allocation,
 };
 use crate::jit::optimizing::snapshot::Snapshot;
 use crate::jit::optimizing::verify::VerifyError;
@@ -18,7 +18,7 @@ fn allocated(snapshot: &Snapshot, abi: Abi) -> (Graph, super::Allocation) {
     let allocation = allocate(
         &graph,
         &intervals(&graph, &block_order(&graph)),
-        &Roles::of(abi),
+        &Roles::of_abi(abi),
     );
     (graph, allocation)
 }
@@ -51,14 +51,18 @@ fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
         .find(|point| point.scopes[0].program_counter == 2)
         .expect("the send is an interrupt point");
     assert_eq!(send.scopes[0].resumes, Resumes::Deliver);
-    assert!(send.scopes[0]
-        .locations
-        .iter()
-        .any(|(register, _)| *register == 3));
-    assert!(send.scopes[0]
-        .locations
-        .iter()
-        .all(|(_, location)| *location == Location::FrameWord));
+    assert!(
+        send.scopes[0]
+            .locations
+            .iter()
+            .any(|(register, _)| *register == 3)
+    );
+    assert!(
+        send.scopes[0]
+            .locations
+            .iter()
+            .all(|(_, location)| *location == Location::FrameWord)
+    );
     // Both bindings are stored before the send, from their registers.
     let stored: Vec<u16> = allocation.dirty_at[0]
         .stores
@@ -156,11 +160,13 @@ fn a_loop_counter_stays_in_a_register_across_the_loop() {
         allocation.location_of(counter.inputs[way], loop_end_position),
         Location::Register(_)
     ));
-    assert!(allocation
-        .moves_at(loop_end_position)
-        .iter()
-        .chain(allocation.moves_at(loop_end_position + 1))
-        .all(|each| !matches!(each, Move::Store { register: 3, .. })));
+    assert!(
+        allocation
+            .moves_at(loop_end_position)
+            .iter()
+            .chain(allocation.moves_at(loop_end_position + 1))
+            .all(|each| !matches!(each, Move::Store { register: 3, .. }))
+    );
     let poll = allocation
         .dirty_at
         .iter()
@@ -194,7 +200,7 @@ fn ten_live_values() -> Snapshot {
 fn more_live_values_than_registers_spill_the_farthest_used() {
     let snapshot = ten_live_values();
     let (graph, allocation) = allocated(&snapshot, Abi::Windows64);
-    assert_eq!(Roles::of(Abi::Windows64).allocatable.len(), 8);
+    assert_eq!(Roles::of_abi(Abi::Windows64).allocatable.len(), 8);
     // The tenth frame read: the first ten reads and copies are nodes 0 to
     // 19.
     let Node::FrameRead { register: 10, .. } = graph.blocks[0].nodes[18] else {
@@ -239,7 +245,7 @@ fn a_value_live_across_a_leaf_call_leaves_the_registers_it_clobbers() {
     let leaf = plain.positions.node_use(BlockId(0), 15);
     let mut with_leaf = plain.clone();
     with_leaf.leaf_calls.push(leaf);
-    let roles = Roles::of(Abi::SystemV);
+    let roles = Roles::of_abi(Abi::SystemV);
     let kept = allocate(&graph, &with_leaf, &roles);
     let described = metadata(&graph, &kept);
     assert_eq!(
@@ -342,9 +348,11 @@ fn a_tainted_register_where_two_arms_meet() -> Snapshot {
 #[test]
 fn a_binding_the_leftover_analysis_taints_at_a_merge_is_not_stored() {
     let snapshot = a_tainted_register_where_two_arms_meet();
-    assert!(snapshot.tainted_before[5]
-        .iter()
-        .any(|range| range.contains(&20)));
+    assert!(
+        snapshot.tainted_before[5]
+            .iter()
+            .any(|range| range.contains(&20))
+    );
     let graph = build(&snapshot);
     let stores_of_r20 = |allocation: &super::Allocation| {
         allocation
@@ -354,7 +362,7 @@ fn a_binding_the_leftover_analysis_taints_at_a_merge_is_not_stored() {
             .filter(|each| matches!(each, Move::Store { register: 20, .. }))
             .count()
     };
-    let (knowing, described) = allocate_and_describe(&graph, &Roles::of(Abi::Windows64));
+    let (knowing, described) = allocate_and_describe(&graph, &Roles::of_abi(Abi::Windows64));
     assert_eq!(stores_of_r20(&knowing), 0);
     assert_eq!(verify_allocation(&graph, &knowing, &described), Ok(()));
     let (_, unknowing) = allocated(&snapshot, Abi::Windows64);
@@ -411,7 +419,7 @@ fn every_built_graph_allocates_and_verifies_on_both_abis() {
     for snapshot in corpus_of_bodies().iter().chain(&shipped_bodies()) {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             let graph = build(snapshot);
-            let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+            let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(abi));
             assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
             // Knowing nothing of the leftover analysis stores more, and
             // holds as well.
@@ -456,7 +464,7 @@ fn every_customized_graph_allocates_and_verifies_on_both_abis() {
         }
         loads += reads;
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+            let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(abi));
             assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
         }
     }
@@ -606,7 +614,7 @@ fn a_trap_writes_back_every_dirty_binding() {
         unrun_every_site(&mut snapshot);
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             let graph = build(&snapshot);
-            let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+            let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(abi));
             assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
         }
     }
@@ -629,7 +637,7 @@ fn a_trap_writes_back_every_dirty_binding() {
     ]);
     unrun_site(&mut snapshot, 2, 0);
     let graph = build(&snapshot);
-    let (allocation, described) = allocate_and_describe(&graph, &Roles::of(Abi::host()));
+    let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(Abi::host()));
     assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
     let traps: Vec<&super::DirtyPoint> = allocation
         .dirty_at
@@ -665,17 +673,17 @@ fn a_trap_writes_back_every_dirty_binding() {
 /// registers below the send's slots alone.
 #[test]
 fn every_interrupt_point_names_its_chain_of_scopes() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_callee_with_a_frame_node;
     use crate::jit::optimizing::graph::ScopeId;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_callee_with_a_frame_node();
     let plan = plan(&tree, Speculation::Traps);
     let graph = build_inlined(&tree, &plan, Speculation::Traps);
     for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-        let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+        let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(abi));
         assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
         for point in &described.points {
             let chain: Vec<ScopeId> = point.scopes.iter().map(|scope| scope.scope).collect();
@@ -719,11 +727,13 @@ fn every_interrupt_point_names_its_chain_of_scopes() {
         );
         assert!(root.locations.iter().all(|(register, _)| *register < 20));
         assert!(root.locations.iter().any(|(register, _)| *register == 13));
-        assert!(inside
-            .scopes
-            .iter()
-            .flat_map(|scope| &scope.locations)
-            .all(|(_, location)| *location == Location::FrameWord));
+        assert!(
+            inside
+                .scopes
+                .iter()
+                .flat_map(|scope| &scope.locations)
+                .all(|(_, location)| *location == Location::FrameWord)
+        );
     }
 }
 
@@ -735,7 +745,7 @@ fn every_interrupt_point_names_its_chain_of_scopes() {
 fn every_inlined_allocation_verifies() {
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::plan::plan_with;
-    use crate::jit::optimizing::{inlining_corpus, Speculation, SWEEP_LIMITS};
+    use crate::jit::optimizing::{SWEEP_LIMITS, Speculation, inlining_corpus};
 
     let mut chained = 0;
     for tree in inlining_corpus() {
@@ -747,7 +757,7 @@ fn every_inlined_allocation_verifies() {
                 let allocation = allocate(
                     &graph,
                     &crate::jit::optimizing::liveness::intervals_knowing(&graph, &order),
-                    &Roles::of(abi),
+                    &Roles::of_abi(abi),
                 );
                 let described = metadata(&graph, &allocation);
                 if let Err(error) = verify_allocation(&graph, &allocation, &described) {
@@ -769,17 +779,17 @@ fn every_inlined_allocation_verifies() {
 /// again: that pass has not laid the callee's frame yet.
 #[test]
 fn a_poll_into_an_unguarded_entry_names_its_sender_at_the_send() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_loop_headed_by_an_unguarded_send;
     use crate::jit::optimizing::graph::ScopeId;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_loop_headed_by_an_unguarded_send();
     let plan = plan(&tree, Speculation::Traps);
     let graph = build_inlined(&tree, &plan, Speculation::Traps);
     for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-        let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+        let (allocation, described) = allocate_and_describe(&graph, &Roles::of_abi(abi));
         assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
         let polls: Vec<_> = allocation
             .dirty_at
@@ -806,10 +816,10 @@ fn a_poll_into_an_unguarded_entry_names_its_sender_at_the_send() {
 /// the replay read one leftover analysis at its top, its sender's.
 #[test]
 fn an_unguarded_entry_where_two_ways_meet_allocates_and_verifies() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::an_unguarded_send_where_two_ways_meet;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = an_unguarded_send_where_two_ways_meet();
     for speculation in [Speculation::Traps, Speculation::None] {
@@ -820,7 +830,7 @@ fn an_unguarded_entry_where_two_ways_meet_allocates_and_verifies() {
             let allocation = allocate(
                 &graph,
                 &crate::jit::optimizing::liveness::intervals_knowing(&graph, &order),
-                &Roles::of(abi),
+                &Roles::of_abi(abi),
             );
             let described = metadata(&graph, &allocation);
             assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
@@ -929,11 +939,11 @@ fn a_poll_s_re_entry_holds_a_tainted_register_to_its_binding_only_while_its_valu
 /// refused, although the word is the exit's to write at every other point.
 #[test]
 fn a_frame_node_s_current_class_left_unwritten_is_refused() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_callee_with_a_frame_node;
     use crate::jit::optimizing::graph::{HeaderBinding, ScopeId};
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_callee_with_a_frame_node();
     let plan = plan(&tree, Speculation::Traps);
@@ -942,7 +952,7 @@ fn a_frame_node_s_current_class_left_unwritten_is_refused() {
     let mut allocation = allocate(
         &graph,
         &crate::jit::optimizing::liveness::intervals_knowing(&graph, &order),
-        &Roles::of(Abi::Windows64),
+        &Roles::of_abi(Abi::Windows64),
     );
     let described = metadata(&graph, &allocation);
     assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));

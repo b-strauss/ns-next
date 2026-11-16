@@ -2,7 +2,7 @@
 //! the numeric classes are the module note's.
 
 use super::tower::{self, Arithmetic, Comparison};
-use super::{type_mismatch, Accepted};
+use super::{Accepted, type_mismatch};
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{FloatPrimitive, Primitive};
@@ -384,7 +384,7 @@ fn parse_text<'gc>(
 
 #[cfg(test)]
 mod tests {
-    use super::tower::{equal, hash, Operand};
+    use super::tower::{Operand, equal, hash};
 
     #[test]
     fn every_nan_equals_every_other_and_hashes_alike() {

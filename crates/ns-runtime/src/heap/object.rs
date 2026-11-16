@@ -38,8 +38,8 @@
 //! each number has one representation.
 
 use crate::builtins::primitive::ElementKind;
-use crate::heap::header::{Format, Header};
 use crate::heap::Word;
+use crate::heap::header::{Format, Header};
 use crate::trace::Tracer;
 
 /// Where a block keeps its header word (`header.rs` gives the layout).

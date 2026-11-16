@@ -70,16 +70,18 @@ pub(crate) fn listen() -> std::io::Result<TcpListener> {
 pub(crate) fn spawn_acceptor(listener: TcpListener, inputs: Sender<Input>, next: Receiver<()>) {
     std::thread::Builder::new()
         .name("ns-next debugger acceptor".to_string())
-        .spawn(move || loop {
-            let Ok((stream, _)) = listener.accept() else {
-                // A connection that failed before it was accepted: the
-                // next one is awaited, after a pause, so that an error
-                // that persists costs no processor.
-                std::thread::sleep(ACCEPT_RETRY);
-                continue;
-            };
-            if inputs.send(Input::Connected(stream)).is_err() || next.recv().is_err() {
-                return;
+        .spawn(move || {
+            loop {
+                let Ok((stream, _)) = listener.accept() else {
+                    // A connection that failed before it was accepted: the
+                    // next one is awaited, after a pause, so that an error
+                    // that persists costs no processor.
+                    std::thread::sleep(ACCEPT_RETRY);
+                    continue;
+                };
+                if inputs.send(Input::Connected(stream)).is_err() || next.recv().is_err() {
+                    return;
+                }
             }
         })
         .expect("spawn the debugger's acceptor");

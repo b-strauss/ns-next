@@ -9,16 +9,16 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ns_runtime::{
     Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::breakpoints::{self, Breakpoints, FunctionEntry, LineEntry};
 use super::connection::{self, Token};
@@ -606,18 +606,18 @@ impl Agent {
         // A pause asked while stopped would stop the program again at the
         // next safepoint once it goes on; one asked while a `Continue` or
         // a step is on its way is asked of the program it resumes.
-        if !self.stopped || self.resuming {
-            if let Some(control) = &self.control {
-                control.pause();
-            }
+        if (!self.stopped || self.resuming)
+            && let Some(control) = &self.control
+        {
+            control.pause();
         }
         // A step by line still reading where it begins has not left the
         // stop: the pause finds the program stopped, as without the step,
         // and the step's own stop is reported as the step's.
-        if let Some(step) = &mut self.line_step {
-            if !matches!(step.phase, Phase::Origin { .. }) {
-                step.interrupted = true;
-            }
+        if let Some(step) = &mut self.line_step
+            && !matches!(step.phase, Phase::Origin { .. })
+        {
+            step.interrupted = true;
         }
         self.respond(connection, request, None);
         // A step by line deciding at a stop the client has not seen
@@ -882,15 +882,15 @@ impl Agent {
             variables_reference: locals,
             expensive: false,
         }];
-        if index == 0 {
-            if let Some(returned) = self.stop.returned().cloned() {
-                scopes.push(protocol::Scope {
-                    name: "Return value",
-                    presentation_hint: Some("returnValue"),
-                    variables_reference: self.stop.reference(Target::Returned(returned)),
-                    expensive: false,
-                });
-            }
+        if index == 0
+            && let Some(returned) = self.stop.returned().cloned()
+        {
+            scopes.push(protocol::Scope {
+                name: "Return value",
+                presentation_hint: Some("returnValue"),
+                variables_reference: self.stop.reference(Target::Returned(returned)),
+                expensive: false,
+            });
         }
         self.respond(connection, request, Some(json!({ "scopes": scopes })));
     }
@@ -1410,11 +1410,12 @@ impl Agent {
     fn host_message(&mut self, message: HostMessage) {
         match message {
             HostMessage::AboutToRunMain(done) => {
-                if self.stop_on_entry && self.is_attached() {
-                    if let Some(control) = &self.control {
-                        control.pause();
-                        self.entry_pending = true;
-                    }
+                if self.stop_on_entry
+                    && self.is_attached()
+                    && let Some(control) = &self.control
+                {
+                    control.pause();
+                    self.entry_pending = true;
                 }
                 let _ = done.send(());
             }

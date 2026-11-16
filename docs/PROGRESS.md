@@ -65,6 +65,7 @@ first.
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
 | The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md) |
+| Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
 ## Notes
 
@@ -6843,7 +6844,7 @@ for a stub's tail jump into one, and `call_unentered` for a call into a
 body's middle, the entry at a push -- which encode on x64 as nothing,
 `jmp` and `call`. The macro assembler assembles through one `Encoding`
 the `Abi` chooses (`Windows64`, `SystemV`, `Aapcs64`), its stack slot
-from the encoder, and `Roles::of(Abi::Aapcs64)` maps every role one to
+from the encoder, and `Roles::of_abi(Abi::Aapcs64)` maps every role one to
 one from x64's; the native stack an entry needs is about 1.68 MB on
 AArch64. Every stub and every golden body is assembled for AAPCS64 on
 every host, and the tests that run machine code take the host's roles.
@@ -8048,3 +8049,52 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Missing tests"
 plugin's paths into the platform without a test
 ([editor-support.md](design/editor-support.md), "Plugin testing and
 gates").
+
+## Rust 1.100.0 and edition 2024 (2026-11-16)
+
+The pinned toolchain goes from 1.98.0 to 1.100.0 (`rust-toolchain.toml`,
+the workspace's `rust-version`, the Docker image), and the workspace from
+edition 2021 to 2024 with resolver 3. No program's outcome changed. The
+plan is `docs/superpowers/plans/2026-11-16-0025-toolchain-and-edition.md`,
+with a survey of what 1.99, 1.100 and the edition allow, what was taken
+up, and why the rest was not (the never type, the `Allocator` API,
+`extern "custom"`, `become`, which is still experimental).
+
+- **Clippy 1.100** holds function names to `min_ident_chars` too. The
+  workspace's two-letter constructors and predicates are named for what
+  they take (`Roles::of_abi`, `Holder::same_frame`,
+  `LineBreakpoint::at_offset`, `LineEnding::first_in`, ...), and `u8` is
+  allowed beside `u16` to `u64`. The `codegen` budgets hold unchanged
+  under LLVM 23.
+- **The migration**: `cargo fix --edition` on the host and, for the
+  library crates, on the Linux, Apple and Windows-on-ARM targets. The 39
+  tail-expression drop-order warnings all name drops that only release
+  memory, so 2024's order stands. `expr_2021` and one `if let` rescoping
+  were undone. The brand's `compile_fail` doctests still fail for the
+  reasons they name.
+- **The formatting** in style edition 2024 is one commit of its own,
+  listed in `.git-blame-ignore-revs`.
+- **Let chains**: every `if` nested in an `if let` with nothing else in
+  it became one chain.
+- **The new APIs**: `trim_prefix`/`trim_suffix`,
+  `String::from_utf8_lossy_owned`, `bool::toggle`, `LocalKey::update`
+  and `Cell::update`, `DropGuard`, `Vec::from_fn`; `iced-x86` is one
+  workspace dependency.
+- **The `memory` gate** lints `ns-memory` for Windows on ARM too. Its
+  tests' code-zone measurements, which only x64 Windows runs, are
+  compiled only there.
+- **The measurement** against `master`: -0.21% on the geometric mean,
+  nothing slower, Richards 2.9% faster ([execution.md](design/execution.md),
+  "What Rust 1.100.0 moved"). It first showed Json 3.4% slower. LLVM 23
+  made the leaf dispatcher `builtins::execute` save all ten callee-saved
+  XMM registers, so an `Array`'s `copyFrom:to:` is no longer inlined
+  into it, and the value equality walk makes its set of assumed pairs
+  only when it needs one.
+
+Every commit ran `cargo xtask gates commit` and the groups its files
+name. The end-of-batch gates passed at `7dbac16b`: every stress suite
+(769 s), `run-corpus` "ran 6, failed 0, skipped 205" plain and under
+each mode. The Docker groups `linux` and `aarch64` passed there too:
+5,280 tests on x86_64 Linux and 5,280 under QEMU on AArch64. The first
+`aarch64` run had found the one `extern` block that only AArch64 Linux
+compiles (`3bafc154`).

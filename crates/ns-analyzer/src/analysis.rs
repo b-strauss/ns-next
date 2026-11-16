@@ -1,7 +1,7 @@
 //! One document's analysis: the errors `ns-next` would report before running
 //! it, and what the resolver knows about each name.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use std::collections::HashMap;
 
@@ -185,10 +185,12 @@ mod tests {
         let analysis = analyze(text);
         assert!(!analysis.findings.is_empty());
         let parameter_use = text.rfind("argument").expect("the use") as u32;
-        assert!(analysis
-            .classified
-            .iter()
-            .any(|classified| classified.span.start == parameter_use));
+        assert!(
+            analysis
+                .classified
+                .iter()
+                .any(|classified| classified.span.start == parameter_use)
+        );
     }
 
     #[test]
@@ -275,9 +277,11 @@ mod tests {
             .expect("the analysis answers on a small stack");
         assert!(valid_findings.is_empty(), "{:?}", valid_findings.first());
         assert_eq!(unclosed_findings.len(), 10_001);
-        assert!(unclosed_findings
-            .iter()
-            .all(|message| !message.contains("internal error")));
+        assert!(
+            unclosed_findings
+                .iter()
+                .all(|message| !message.contains("internal error"))
+        );
     }
 
     #[test]
