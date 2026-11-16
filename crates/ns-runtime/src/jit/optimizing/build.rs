@@ -1778,7 +1778,7 @@ impl Laying<'_, '_> {
 /// check is expressed (`Laying::expressed`): only `class` has none. A
 /// `SmallInteger` row that also takes a `Float` argument is both its
 /// fast path and its mixed operation; every other row machine code
-/// computes a float operation of is that operation (`FloatOperation::of`),
+/// computes a float operation of is that operation (`FloatOperation::of_primitive`),
 /// whose arm the plan takes only for the receivers its row's operation
 /// is for (`plan::expressed`).
 fn expressed_primitive(
@@ -1786,7 +1786,7 @@ fn expressed_primitive(
     argument_count: usize,
     checks: bool,
 ) -> Option<Expressed> {
-    let float = FloatOperation::of(primitive)
+    let float = FloatOperation::of_primitive(primitive)
         .filter(|operation| operation.argument_count() == argument_count);
     let expressed = match (primitive, argument_count) {
         (Primitive::Object(ObjectPrimitive::Class), 0) => return Some(Expressed::ClassOf),
@@ -2802,7 +2802,12 @@ impl<'flat> Builder<'flat> {
         // A register's word keeps its generation where every way in agrees
         // on it and no pass around a loop through the block writes it;
         // elsewhere a read made before the block is not the word after it.
-        for register in 0..self.register_count {
+        for (register, word_generation) in state
+            .generations
+            .iter_mut()
+            .enumerate()
+            .take(self.register_count)
+        {
             let mut generations = forward
                 .iter()
                 .map(|predecessor| self.edge_state(*predecessor, block).generations[register]);
@@ -2811,7 +2816,7 @@ impl<'flat> Builder<'flat> {
             let written_around = self.loops[block]
                 .as_ref()
                 .is_some_and(|facts| facts.written.contains(register));
-            state.generations[register] = match agreed {
+            *word_generation = match agreed {
                 Some(generation) if !written_around => generation,
                 _ => self.new_generation(),
             };
@@ -3941,7 +3946,7 @@ mod tests {
         );
         Snapshot {
             code_id: CodeId::from_raw(0),
-            facts: BodyFacts::of(&code),
+            facts: BodyFacts::of_code(&code),
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             instructions: code
                 .instructions()

@@ -756,7 +756,7 @@ impl Breakpoints {
         for patch in self.patches.values_mut() {
             for kind in &mut patch.kinds {
                 if let PatchKind::OneShot(one_shot) = kind {
-                    if one_shot.holder.is(from) {
+                    if one_shot.holder.same_frame(from) {
                         one_shot.holder = onto;
                     }
                 }

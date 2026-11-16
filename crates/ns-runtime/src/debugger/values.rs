@@ -389,7 +389,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let mixin = Rc::new(Mixin::empty(Symbol::intern("Unregistered")));
-            let level_facts = LevelFacts::of(&mixin);
+            let level_facts = LevelFacts::of_mixin(&mixin);
             let application = mutator.heap.register_application(MixinApplication {
                 index: crate::heap::ApplicationIndex::UNREGISTERED,
                 mixin,

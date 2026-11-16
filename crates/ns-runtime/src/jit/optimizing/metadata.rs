@@ -319,7 +319,7 @@ fn replay(
     leaf_calls: &[u32],
 ) -> Result<(), VerifyError> {
     let order = &allocation.positions.order;
-    let positions = Positions::of(graph, order);
+    let positions = Positions::of_graph(graph, order);
     if positions != allocation.positions
         || metadata.points.len() != allocation.dirty_at.len()
         || order.first() != Some(&BlockId(0))

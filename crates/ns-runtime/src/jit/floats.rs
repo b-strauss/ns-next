@@ -941,7 +941,7 @@ mod tests {
 
     impl Harness {
         fn new(operation: FloatOperation, limit_words: u64) -> Harness {
-            let roles = Roles::of(Abi::host());
+            let roles = Roles::of_abi(Abi::host());
             let [receiver, argument, result, spare] =
                 std::array::from_fn(|index| roles.scratch[index]);
             let eden = vec![UNWRITTEN; 8];

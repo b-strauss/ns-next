@@ -13634,7 +13634,7 @@ the baseline JIT's foundation moved" that of the first two.
   register or its encoder** (`x64`, `aarch64`) outside a test module: a
   template, a send or a stub is written against the idioms and the
   roles, never against an encoder, so that an architecture adds an
-  encoder, an arm of `Roles::of`, its convention's facts on `Abi` and
+  encoder, an arm of `Roles::of_abi`, its convention's facts on `Abi` and
   nothing above them (decided with the user on 2026-10-29: the split is
   held by a source scan, `crates/ns-runtime/tests/jit_architecture_split.rs`,
   rather than a crate of its own). On x64 two registers play no role, `r13`
@@ -14527,7 +14527,7 @@ lowering of one instruction:
   reach, `sp` where the encoding would read register 31 as `xzr`, `sp`
   as a store's source or a load's target (through `x17`) -- `x18`, the
   platform register Apple and Windows reserve, never used on any target,
-  so that there is one `Roles::of`, and `x30`, the link register, which
+  so that there is one `Roles::of_abi`, and `x30`, the link register, which
   the call convention owns. **A conditional branch's long form is one
   `b.cond`** (±1 MiB): past that reach `finish` answers
   `BranchOutOfReach` and the body stays interpreted, as any other
@@ -14714,11 +14714,11 @@ which role is the macro assembler's, per convention: `Abi` names three,
 `Windows64`, `SystemV` and `Aapcs64` -- the last Linux's and Apple's
 alike, which differ in nothing the JIT relies on -- and each answers its
 encoder, its stack slot, the registers its callee preserves and its
-first argument register; `LeafCallLayout::of` places a leaf call's
+first argument register; `LeafCallLayout::of_abi` places a leaf call's
 operands for it.
 
 Under AAPCS64 every role takes the register x64's takes, one to one
-(`Roles::of`): `rax` `x0`, `rcx` `x1`, `rdx` `x2`, `rsi` `x3`, `rdi` `x4`,
+(`Roles::of_abi`): `rax` `x0`, `rcx` `x1`, `rdx` `x2`, `rsi` `x3`, `rdi` `x4`,
 `r8` to `r10` `x5` to `x7`, `r12` `x8`, `r11`, the idioms' scratch, `x9`;
 the pinned frame base, context and object space's base, `rbx`, `r14` and
 `r15`, the preserved `x19` to `x21`; and the two free survivors, `r13`
@@ -14868,7 +14868,7 @@ for it. The rows that compute a `Float` operation in one instruction or
 a few run in machine code, written once against the macro assembler's
 idioms for the baseline's row stubs and optimized code's nodes alike
 (`jit/floats.rs`, `floats::emit`; which rows, `jit/float_operations.rs`'s
-`FloatOperation::of`, compiled on every target, since optimized code's
+`FloatOperation::of_primitive`, compiled on every target, since optimized code's
 graph and plan, compiled without a JIT too, name it). Every one answers
 bit for bit what its row's leaf answers (`builtins/numbers/float.rs`,
 `integer.rs`, `tower.rs`), or declines before it has written anything but its own

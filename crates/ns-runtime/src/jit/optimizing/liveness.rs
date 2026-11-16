@@ -67,7 +67,7 @@ pub(crate) struct Positions {
 }
 
 impl Positions {
-    pub(crate) fn of(graph: &Graph, order: &[BlockId]) -> Positions {
+    pub(crate) fn of_graph(graph: &Graph, order: &[BlockId]) -> Positions {
         let mut first_slot = vec![u32::MAX; graph.blocks.len()];
         let mut end_slot = vec![u32::MAX; graph.blocks.len()];
         let mut slot: u32 = 0;
@@ -536,7 +536,7 @@ pub(crate) fn intervals_knowing(graph: &Graph, order: &[BlockId]) -> Intervals {
 }
 
 fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals {
-    let positions = Positions::of(graph, order);
+    let positions = Positions::of_graph(graph, order);
     let register_count = named_registers(graph);
     let entry_bindings = entry_bindings(graph, &positions, register_count, knowing);
     let value_count = graph.values.len();

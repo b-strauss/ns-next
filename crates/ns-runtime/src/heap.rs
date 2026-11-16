@@ -633,7 +633,7 @@ impl<'gc> StackExhausted<'gc> {
     /// common path keeps no boxed header.
     #[cold]
     #[inline(never)]
-    fn of(header: ActivationHeader<'gc>) -> StackExhausted<'gc> {
+    fn of_header(header: ActivationHeader<'gc>) -> StackExhausted<'gc> {
         StackExhausted {
             header: Box::new(header),
         }
@@ -1488,7 +1488,7 @@ impl<'code> LastSet<'code> {
     /// The set of the body in code row `code_index` before
     /// `program_counter`, kept in `last` for the frame below.
     #[inline(always)]
-    fn of<'last>(
+    fn of_body<'last>(
         last: &'last mut Option<LastSet<'code>>,
         tables: &'code Tables,
         code_index: usize,
@@ -1721,7 +1721,7 @@ impl ActivationStack {
     /// The flags of the frame at `offset`.
     #[inline(always)]
     fn flags(&self, offset: u32) -> FrameFlags {
-        FrameFlags::of(self.header_word(offset, frame_header::FLAGS))
+        FrameFlags::of_word(self.header_word(offset, frame_header::FLAGS))
     }
 
     /// How many registers the frame at `offset` has above its header.
@@ -4231,11 +4231,11 @@ impl<'gc> Heap<'gc> {
         }
         let flags = Word::from_bits(header[frame_header::FLAGS]);
         if !flags.is_non_negative_small_integer()
-            || usize::from(FrameFlags::of(flags).argument_count) > start
+            || usize::from(FrameFlags::of_word(flags).argument_count) > start
         {
             return None;
         }
-        Some(FrameFlags::of(flags).generation)
+        Some(FrameFlags::of_word(flags).generation)
     }
 
     /// The handle for the live frame at `offset`, minted with that frame's
@@ -5827,7 +5827,7 @@ impl<'gc> Heap<'gc> {
         // no instantiation reads facts of another mixin than the one it runs.
         debug_assert_eq!(
             application.level_facts,
-            crate::mixin::LevelFacts::of(&application.mixin),
+            crate::mixin::LevelFacts::of_mixin(&application.mixin),
             "the level facts of {} disagree with its mixin",
             application.mixin.name
         );
@@ -8017,7 +8017,7 @@ impl<'gc> Heap<'gc> {
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         match self.push_activation_in::<false>(&mut header, arguments, temporary_count) {
             Ok(activation) => Ok(activation),
-            Err(PushRefused) => Err(StackExhausted::of(header)),
+            Err(PushRefused) => Err(StackExhausted::of_header(header)),
         }
     }
 
@@ -8049,7 +8049,7 @@ impl<'gc> Heap<'gc> {
     ) -> Result<ActivationReference, StackExhausted<'gc>> {
         match self.push_activation_in::<true>(&mut header, arguments, temporary_count) {
             Ok(activation) => Ok(activation),
-            Err(PushRefused) => Err(StackExhausted::of(header)),
+            Err(PushRefused) => Err(StackExhausted::of_header(header)),
         }
     }
 
@@ -8474,7 +8474,7 @@ impl<'gc> Heap<'gc> {
         let offset = activation.offset as usize;
         let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
-        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let flags = FrameFlags::of_word(Word::from_bits(header[frame_header::FLAGS]));
         let program_counter = header[frame_header::PROGRAM_COUNTER];
         let continuation = Word::from_bits(header[frame_header::CONTINUATION]);
         let caller = Word::from_bits(header[frame_header::CALLER]);
@@ -10331,7 +10331,7 @@ impl<'gc> Heap<'gc> {
 
     /// How far a frame's flags word is shifted to bring its argument count
     /// down to bit 0, and the mask that leaves it alone there, as
-    /// `FrameFlags::of` reads it: what an outer-local template reads of a
+    /// `FrameFlags::of_word` reads it: what an outer-local template reads of a
     /// married frame to find its register 0 below its header, as
     /// `register_slot` does.
     #[cfg(ns_jit)]
@@ -10454,7 +10454,7 @@ impl<'gc> Heap<'gc> {
         let header_word = |heap: &Self, field: usize| {
             Word::from_bits(heap.stack.frames.committed_word(offset + field))
         };
-        let written = FrameFlags::of(header_word(self, frame_header::FLAGS));
+        let written = FrameFlags::of_word(header_word(self, frame_header::FLAGS));
         let tag = match frame.kind.tag {
             MachineKindTag::Constant(tag) => tag,
             MachineKindTag::Recorded => written.kind_tag,
@@ -10771,7 +10771,7 @@ impl<'gc> Heap<'gc> {
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
-            generation: FrameFlags::of(Word::from_bits(
+            generation: FrameFlags::of_word(Word::from_bits(
                 self.stack
                     .frames
                     .committed_word(offset as usize + frame_header::FLAGS),
@@ -10817,7 +10817,7 @@ impl<'gc> Heap<'gc> {
         let offset = activation.offset as usize;
         let header = self.stack.frames.header(offset);
         let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
-        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let flags = FrameFlags::of_word(Word::from_bits(header[frame_header::FLAGS]));
         let program_counter = header[frame_header::PROGRAM_COUNTER];
         let Some(frame) = reified else {
             unreachable!("internal: machine code divorces only a reified frame");
@@ -11461,7 +11461,7 @@ impl<'gc> Heap<'gc> {
                     .filter(|(callee_start, _)| *callee_start < end)
                     .map(|(_, callee_header)| callee_header),
             };
-            let set = LastSet::of(&mut last, tables, code_index, program_counter);
+            let set = LastSet::of_body(&mut last, tables, code_index, program_counter);
             #[cfg(debug_assertions)]
             set.check_callee(
                 start,
@@ -11521,7 +11521,8 @@ impl<'gc> Heap<'gc> {
                 }
             }
             for frame in &deferred {
-                let set = LastSet::of(&mut last, tables, frame.code_index, frame.program_counter);
+                let set =
+                    LastSet::of_body(&mut last, tables, frame.code_index, frame.program_counter);
                 let Some(tainted) = &set.tainted else {
                     unreachable!("internal: the fill keeps every set the walk deferred")
                 };
@@ -13301,7 +13302,7 @@ mod tests {
         builtin: Option<BuiltinClass>,
     ) -> ClassReference<'gc> {
         let mixin = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,

@@ -1471,7 +1471,7 @@ pub struct MixinApplication {
     /// `None` for one whose word count does not fit in the header; set by
     /// `Heap::register_application`.
     pub instance_header: Option<crate::heap::InstanceHeader>,
-    /// What instantiation asks of this level's own mixin (`LevelFacts::of`),
+    /// What instantiation asks of this level's own mixin (`LevelFacts::of_mixin`),
     /// computed where the application is built; a debug build's
     /// `Heap::register_application` checks it against `mixin`.
     pub level_facts: LevelFacts,
@@ -1505,7 +1505,7 @@ pub struct LevelFacts {
 }
 
 impl LevelFacts {
-    pub(crate) fn of(mixin: &Mixin) -> LevelFacts {
+    pub(crate) fn of_mixin(mixin: &Mixin) -> LevelFacts {
         LevelFacts {
             needs_initializer_code: crate::interpreter::instantiate::mixin_needs_initializer_code(
                 mixin,

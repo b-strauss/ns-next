@@ -266,7 +266,7 @@ impl FrameFlags {
         if !word.is_non_negative_small_integer() {
             return None;
         }
-        let found = FrameFlags::of(word);
+        let found = FrameFlags::of_word(word);
         (found.word().bits() == word.bits() && found.with_generation(self.generation) == self)
             .then_some(found.generation)
     }
@@ -295,7 +295,7 @@ impl FrameFlags {
     /// The flags a header's flags word holds; `word` must be one `word`
     /// answered.
     #[inline(always)]
-    pub(super) fn of(word: Word) -> FrameFlags {
+    pub(super) fn of_word(word: Word) -> FrameFlags {
         let payload = number_of(word);
         FrameFlags {
             kind_tag: (payload & KIND_TAG_MASK) as u8,
@@ -1014,7 +1014,7 @@ mod tests {
                             let _ = generation;
                             let word = flags.word();
                             assert!(word.is_non_negative_small_integer());
-                            assert_eq!(FrameFlags::of(word), flags);
+                            assert_eq!(FrameFlags::of_word(word), flags);
                         }
                     }
                 }

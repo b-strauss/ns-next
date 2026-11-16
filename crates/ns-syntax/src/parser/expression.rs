@@ -261,8 +261,8 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern_literal_inner(&mut self) -> Literal {
         let start = self.bump(); // `<`
-        if self.at(TokenKind::Keyword) {
-            while self.at(TokenKind::Keyword) {
+        if self.at_kind(TokenKind::Keyword) {
+            while self.at_kind(TokenKind::Keyword) {
                 self.bump();
                 if !self.at_pattern_end() {
                     self.parse_pattern_value();
@@ -284,12 +284,12 @@ impl<'a> Parser<'a> {
 
     /// `kwPatternValue`.
     fn parse_pattern_value(&mut self) {
-        if self.at(TokenKind::LessThan) {
+        if self.at_kind(TokenKind::LessThan) {
             let _ = self.parse_pattern_literal();
             return;
         }
         // `variablePattern`: `?` against an identifier.
-        if self.at(TokenKind::BinarySelector)
+        if self.at_kind(TokenKind::BinarySelector)
             && self.text(self.current()) == "?"
             && self.peek2() == TokenKind::Identifier
             && self.tokens[self.position + 1].span.start == self.current().span.end
@@ -303,7 +303,7 @@ impl<'a> Parser<'a> {
                 self.current().span,
                 "expected `_`, a literal, `?name` or a nested pattern (§5.1.9)",
             );
-            if !self.at_pattern_end() && !self.at(TokenKind::EndOfInput) {
+            if !self.at_pattern_end() && !self.at_kind(TokenKind::EndOfInput) {
                 self.bump();
             }
         }
@@ -331,14 +331,14 @@ impl<'a> Parser<'a> {
     /// Whether the cursor is at a pattern's closing `>`, which the lexer may
     /// have joined with a nested pattern's (`<a: <b: 1>>` ends in `>>`).
     fn at_pattern_end(&self) -> bool {
-        self.at(TokenKind::GreaterThan)
-            || (self.at(TokenKind::BinarySelector)
+        self.at_kind(TokenKind::GreaterThan)
+            || (self.at_kind(TokenKind::BinarySelector)
                 && self.text(self.current()).bytes().all(|byte| byte == b'>'))
     }
 
     /// Consumes one `>`, splitting it off a run of them, and answers its span.
     fn expect_pattern_end(&mut self) -> Option<crate::span::Span> {
-        if self.at(TokenKind::GreaterThan) {
+        if self.at_kind(TokenKind::GreaterThan) {
             return Some(self.bump().span);
         }
         if self.at_pattern_end() {
@@ -368,7 +368,7 @@ impl<'a> Parser<'a> {
         // slotDecl` (§5.1.8). A parameter without its name is left out, and
         // the `|` is still the parameters' end, not a temporaries section.
         let mut has_parameters = false;
-        while self.at(TokenKind::Colon) {
+        while self.at_kind(TokenKind::Colon) {
             self.bump();
             has_parameters = true;
             let name = self.declared_identifier("name a block parameter");
@@ -402,10 +402,10 @@ impl<'a> Parser<'a> {
     fn parse_dynamic_array(&mut self) -> Expression {
         let left_brace = self.bump(); // {
         let mut elements = Vec::new();
-        while !self.at(TokenKind::RightBrace) && !self.at_body_close() {
+        while !self.at_kind(TokenKind::RightBrace) && !self.at_body_close() {
             let before = self.position;
             elements.push(self.parse_expression());
-            if self.eat(TokenKind::Dot) || self.at(TokenKind::RightBrace) {
+            if self.eat(TokenKind::Dot) || self.at_kind(TokenKind::RightBrace) {
                 continue;
             }
             // An element that consumed nothing has reported its token
@@ -446,7 +446,7 @@ impl<'a> Parser<'a> {
     /// The lexer emits `x::` as a single `SetterKeyword` token whose text is
     /// `x::`, so the name is split off the lexeme here.
     pub(crate) fn parse_expression(&mut self) -> Expression {
-        if self.at(TokenKind::SetterKeyword) {
+        if self.at_kind(TokenKind::SetterKeyword) {
             if !self.enter() {
                 self.leave();
                 let token = self.current();
@@ -482,7 +482,7 @@ impl<'a> Parser<'a> {
     /// follows a primary and at least one message sent to it, never an
     /// implicit-receiver keyword send and never a primary alone.
     fn parse_send_expression(&mut self) -> Expression {
-        if self.at(TokenKind::Keyword) {
+        if self.at_kind(TokenKind::Keyword) {
             // `implicitKeywordSend`: a keyword message with no explicit
             // receiver (`foo: x bar: y`) is an implicit send to `self`, whose
             // receiver is modelled as the identifier `self` with a zero-width
@@ -494,7 +494,7 @@ impl<'a> Parser<'a> {
             }));
             receiver.synthesized = true;
             let expression = self.parse_keyword_messages(receiver);
-            if self.at(TokenKind::Semicolon) {
+            if self.at_kind(TokenKind::Semicolon) {
                 self.push_error(
                     self.current().span,
                     "a keyword send to the implicit receiver cannot be cascaded (§5.4.4)",
@@ -505,7 +505,7 @@ impl<'a> Parser<'a> {
         }
         let primary = self.parse_primary_operand();
         let (expression, sent) = self.parse_message_tails(primary);
-        if !self.at(TokenKind::Semicolon) {
+        if !self.at_kind(TokenKind::Semicolon) {
             return expression;
         }
         if !sent {
@@ -640,7 +640,7 @@ impl<'a> Parser<'a> {
 
     /// `binarySelector unaryExpression`, the cursor at the selector.
     fn parse_binary_operator_and_argument(&mut self) -> (String, crate::span::Span, Expression) {
-        if self.at(TokenKind::Number) {
+        if self.at_kind(TokenKind::Number) {
             self.split_negative_number();
         }
         let operator = self.bump();
@@ -650,7 +650,7 @@ impl<'a> Parser<'a> {
 
     /// `keywordMsg → (keyword binaryExpression)+` sent to `receiver`.
     fn parse_keyword_messages(&mut self, receiver: Expression) -> Expression {
-        let eventual = self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
+        let eventual = self.eat_eventual_send_operator(|parser| parser.at_kind(TokenKind::Keyword));
         let start = expression_span(&receiver);
         let (selector, selector_spans, arguments, end) = self.parse_keyword_parts(start);
         let span = start.merge(end);
@@ -685,7 +685,7 @@ impl<'a> Parser<'a> {
         let mut selector_spans = Vec::new();
         let mut arguments = Vec::new();
         let mut end = start;
-        while self.at(TokenKind::Keyword) {
+        while self.at_kind(TokenKind::Keyword) {
             let keyword = self.bump();
             selector_spans.push(keyword.span);
             selector.push_str(self.text(keyword).trim_end_matches(':'));
@@ -701,7 +701,7 @@ impl<'a> Parser<'a> {
     /// implicit receiver; after a receiver, `receiver x:: v` is no message
     /// at all -- `keywordMsg` takes `keyword`, never `setterKeyword`.
     fn refuse_setter_after_receiver(&mut self) {
-        if self.at(TokenKind::SetterKeyword) {
+        if self.at_kind(TokenKind::SetterKeyword) {
             let token = self.bump();
             self.push_error(
                 token.span,
@@ -717,9 +717,9 @@ impl<'a> Parser<'a> {
     fn parse_cascade_message(&mut self) -> Option<MessageSend> {
         let start = self.current().span;
         let eventual = self.eat_eventual_send_operator(|parser| {
-            parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
+            parser.at_kind(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
-        if self.at(TokenKind::Keyword) {
+        if self.at_kind(TokenKind::Keyword) {
             let (selector, selector_spans, arguments, end) = self.parse_keyword_parts(start);
             return Some(MessageSend {
                 selector: Selector::Keyword(selector),
@@ -771,13 +771,13 @@ impl<'a> Parser<'a> {
     fn at_message(&self) -> bool {
         self.at_name()
             || self.at_binary_operator()
-            || self.at(TokenKind::Keyword)
-            || self.at(TokenKind::EventualSendOperator)
+            || self.at_kind(TokenKind::Keyword)
+            || self.at_kind(TokenKind::EventualSendOperator)
     }
 
     fn at_keyword_message(&self) -> bool {
-        self.at(TokenKind::Keyword)
-            || (self.at(TokenKind::EventualSendOperator) && self.peek2() == TokenKind::Keyword)
+        self.at_kind(TokenKind::Keyword)
+            || (self.at_kind(TokenKind::EventualSendOperator) && self.peek2() == TokenKind::Keyword)
     }
 
     /// Whether a binary message starts here: a binary selector with an
@@ -828,14 +828,14 @@ impl<'a> Parser<'a> {
     /// operator was consumed for a message of this kind, which then records
     /// `eventual`.
     fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) -> bool {
-        if !self.at(TokenKind::EventualSendOperator) {
+        if !self.at_kind(TokenKind::EventualSendOperator) {
             return false;
         }
         let operator = self.bump();
         if message_follows(self) {
             return true;
         }
-        if self.at(TokenKind::Keyword) || self.at_binary_operator() || self.at_name() {
+        if self.at_kind(TokenKind::Keyword) || self.at_binary_operator() || self.at_name() {
             self.position -= 1;
             return false;
         }

@@ -929,7 +929,7 @@ mod tests {
     /// The host's first `COUNT` scratch registers, in the roles' order:
     /// x64's `rax` and `rcx`, AAPCS64's `x0` and `x1`.
     fn scratch<const COUNT: usize>() -> [Register; COUNT] {
-        let roles = Roles::of(Abi::host());
+        let roles = Roles::of_abi(Abi::host());
         std::array::from_fn(|index| roles.scratch[index])
     }
 
@@ -940,7 +940,7 @@ mod tests {
         // roles do not pin, so a register the stubs failed to restore
         // shows in the locals Rust keeps across the calls.
         let abi = Abi::host();
-        let roles = Roles::of(abi);
+        let roles = Roles::of_abi(abi);
         let pinned = [roles.frame, roles.context, roles.object_space];
         let overwritten: Vec<Register> = abi
             .callee_saved()
@@ -1082,7 +1082,7 @@ mod tests {
         // `x2`.
         let abi = Abi::host();
         let arguments = leaf_call_argument_registers(abi);
-        let passing: Vec<Register> = Roles::of(abi)
+        let passing: Vec<Register> = Roles::of_abi(abi)
             .scratch
             .iter()
             .copied()

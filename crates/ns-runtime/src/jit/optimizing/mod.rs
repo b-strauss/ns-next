@@ -128,7 +128,7 @@ pub(crate) fn compile_tree(
             let scope_role = if index == 0 { role } else { BodyRole::Method };
             emit::EmittedScope {
                 snapshot: scope_snapshot,
-                facts: ScopeFacts::of(
+                facts: ScopeFacts::of_body(
                     &scope_snapshot.facts,
                     scope_snapshot.feedback_base,
                     scope_role,
@@ -380,7 +380,7 @@ pub(crate) fn test_snapshot_with_arguments(
     );
     snapshot::Snapshot {
         code_id: crate::heap::CodeId::from_raw(0),
-        facts: snapshot::BodyFacts::of(&code),
+        facts: snapshot::BodyFacts::of_code(&code),
         feedback_base: crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
         instructions: code
             .instructions()
@@ -1029,7 +1029,7 @@ mod tests {
             .count();
         assert_eq!(integer_paths, 2, "`iteration < 50` and `iteration + 1`");
         let roles =
-            crate::jit::macro_assembler::Roles::of(crate::jit::macro_assembler::Abi::host());
+            crate::jit::macro_assembler::Roles::of_abi(crate::jit::macro_assembler::Abi::host());
         let (allocation, _) = super::metadata::allocate_and_describe(&graph, &roles);
         // The four locals the float operations write: each is stored once
         // before the loop, on its way in, and once in the loop, right where

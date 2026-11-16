@@ -22,7 +22,7 @@ pub enum LineEnding {
 
 impl LineEnding {
     /// The first line ending of `source`, `LineFeed` when it has none.
-    pub fn of(source: &str) -> LineEnding {
+    pub fn first_in(source: &str) -> LineEnding {
         let bytes = source.as_bytes();
         match bytes.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
             Some(index) if bytes[index] == b'\n' => LineEnding::LineFeed,
@@ -70,5 +70,5 @@ pub fn print_module(module: &Module, line_ending: LineEnding) -> String {
 /// error is never printed.
 pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
     let module = crate::parse(source)?;
-    Ok(print_module(&module, LineEnding::of(source)))
+    Ok(print_module(&module, LineEnding::first_in(source)))
 }

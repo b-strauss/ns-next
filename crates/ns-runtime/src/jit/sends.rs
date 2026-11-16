@@ -440,7 +440,7 @@ pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<Ca
     // answers for every instruction that might.
     let instruction =
         SnapshotInstruction::of_unclosed(&code.instruction(program_counter as usize))?;
-    call_slots_of(&BodyFacts::of(code), &instruction)
+    call_slots_of(&BodyFacts::of_code(code), &instruction)
 }
 
 /// `call_slots` from the snapshot form of the instruction.
@@ -489,7 +489,7 @@ pub(crate) fn call_slots_of(
 /// end, above which a callee no send lays on the slots is pushed
 /// (`InitializeInstance`'s, as `Mutator::push_above` pushes it).
 pub(crate) fn window_end(code: &CompiledCode) -> u16 {
-    BodyFacts::of(code).window_end()
+    BodyFacts::of_code(code).window_end()
 }
 
 /// How far an index into the machine words is shifted to be a byte
@@ -681,7 +681,7 @@ struct Placement {
 
 impl Placement {
     /// The moves of `sources` into the slots from `argument_base`.
-    fn of(argument_base: u16, sources: &[u16]) -> Placement {
+    fn of_arguments(argument_base: u16, sources: &[u16]) -> Placement {
         let moves = (argument_base..)
             .zip(sources)
             .filter(|(slot, source)| *slot != **source)
@@ -846,7 +846,7 @@ pub(super) fn initialize(
             let Ok(count) = u16::try_from(sources.len()) else {
                 return Lowering::Exit;
             };
-            let placement = Placement::of(argument_base, sources);
+            let placement = Placement::of_arguments(argument_base, sources);
             let placement_registers = body.macro_assembler.roles().placement.len();
             if placement.moves.len() > placement_registers && placement.overlaps() {
                 return Lowering::Exit;
@@ -1038,7 +1038,7 @@ fn send_through_cell(
     let Ok(count) = u16::try_from(argument_sources.len()) else {
         return Lowering::Exit;
     };
-    let placement = Placement::of(argument_base, argument_sources);
+    let placement = Placement::of_arguments(argument_base, argument_sources);
     let writes_receiver =
         matches!(receiver, Receiver::Register(register) if placement.writes(register));
     let placement_registers = body.macro_assembler.roles().placement.len();

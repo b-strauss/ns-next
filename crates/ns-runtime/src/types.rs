@@ -645,7 +645,7 @@ mod tests {
         name: &str,
     ) -> Rc<crate::mixin::MixinApplication> {
         let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name)));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,

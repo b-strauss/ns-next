@@ -292,7 +292,7 @@ impl ScopeId {
         self.0 as usize
     }
 
-    fn of(index: usize) -> ScopeId {
+    fn of_index(index: usize) -> ScopeId {
         ScopeId(u32::try_from(index).expect("internal: a compile's scopes are numbered in 32 bits"))
     }
 }
@@ -882,7 +882,7 @@ fn returns_otherwise(snapshot: &Snapshot) -> bool {
 /// Whether the graph expresses the leaf `primitive` inline for a
 /// receiver of `receiver`: a `SmallInteger` fast path, `==`, `class`, an
 /// indexed access, or a row machine code computes a float operation of
-/// (`FloatOperation::of`) -- a `SmallInteger` receiver's mixed one only
+/// (`FloatOperation::of_primitive`) -- a `SmallInteger` receiver's mixed one only
 /// for a `SmallInteger`, since `Number`'s `/` is every number's whose
 /// class does not override it, whose operation would always decline.
 fn expressed(primitive: Primitive, receiver: &ReceiverFacts) -> bool {
@@ -905,7 +905,7 @@ fn expressed(primitive: Primitive, receiver: &ReceiverFacts) -> bool {
             | Primitive::Bytes(BytePrimitive::ElementAt | BytePrimitive::ElementAtPut)
     );
     integer_or_other
-        || match FloatOperation::of(primitive) {
+        || match FloatOperation::of_primitive(primitive) {
             Some(
                 FloatOperation::Arithmetic {
                     receiver: FloatReceiver::SmallInteger,
@@ -1087,7 +1087,7 @@ impl<'tree> Planner<'tree> {
         block: Option<BlockKey>,
         entry: Holdings,
     ) -> ScopeId {
-        let id = ScopeId::of(self.scopes.len());
+        let id = ScopeId::of_index(self.scopes.len());
         let depth = plan
             .parent
             .map_or(0, |(parent, _)| self.scopes[parent.index()].depth + 1);
@@ -1590,8 +1590,10 @@ impl<'tree> Planner<'tree> {
                     if scope.ways[program_counter] == CompiledWay::Runs
                         && self.tree.blocks.contains_key(block)
                     {
-                        eliminated
-                            .insert((ScopeId::of(index), program_counter_u32(program_counter)));
+                        eliminated.insert((
+                            ScopeId::of_index(index),
+                            program_counter_u32(program_counter),
+                        ));
                     }
                 }
             }
@@ -1660,8 +1662,10 @@ impl<'tree> Planner<'tree> {
                 matches!(instruction, SnapshotInstruction::MakeClosure { .. })
                     && !fallback
                     && scope.ways[program_counter] == CompiledWay::Runs
-                    && !eliminated
-                        .contains(&(ScopeId::of(index), program_counter_u32(program_counter)))
+                    && !eliminated.contains(&(
+                        ScopeId::of_index(index),
+                        program_counter_u32(program_counter),
+                    ))
             })
     }
 
@@ -1752,7 +1756,7 @@ impl<'tree> Planner<'tree> {
             if !scope.alive {
                 continue;
             }
-            let id = ScopeId::of(index);
+            let id = ScopeId::of_index(index);
             let mut holding = HashSet::new();
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
                 let way = scope.ways[program_counter];
@@ -1934,7 +1938,7 @@ impl<'tree> Planner<'tree> {
         let mut next = 0_usize;
         for (index, scope) in self.scopes.iter().enumerate() {
             if scope.alive {
-                renumbered[index] = Some(ScopeId::of(next));
+                renumbered[index] = Some(ScopeId::of_index(next));
                 next += 1;
             }
         }
@@ -1950,7 +1954,7 @@ impl<'tree> Planner<'tree> {
             if !scope.alive {
                 continue;
             }
-            let id = ScopeId::of(index);
+            let id = ScopeId::of_index(index);
             let mut plan = scope.plan.clone();
             plan.parent = plan
                 .parent

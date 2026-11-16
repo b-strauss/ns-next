@@ -669,7 +669,7 @@ impl CustomizationKey {
     /// The key of an activation on `receiver` at `current_class`; `None`
     /// where either has no application with a minted id -- a class object
     /// only a crafted image makes -- which no copy is made for.
-    fn of<'gc>(
+    fn of_activation<'gc>(
         heap: &Heap<'gc>,
         receiver: Value<'gc>,
         current_class: Option<ClassReference<'gc>>,
@@ -3313,7 +3313,7 @@ impl CopyDependencies {
     /// applications' guards read from `heap` at the install's safepoint,
     /// where the tree its plan was made from was taken.
     #[cfg(ns_jit)]
-    fn of(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
+    fn of_relied_on(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
         let mut applications: Vec<DispatchId> = relied_on.guards.clone();
         for index in &relied_on.applications {
             if let Some(application) = heap.application(*index) {
@@ -4545,7 +4545,7 @@ pub(crate) fn entry_key<'gc>(
     if !code.jit.has_installed_copy() {
         return None;
     }
-    CustomizationKey::of(heap, receiver, current_class)
+    CustomizationKey::of_activation(heap, receiver, current_class)
 }
 
 /// `entry_key` for `activation`, read off its frame's header.
@@ -4558,7 +4558,7 @@ fn activation_key(
         return None;
     }
     let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
-    CustomizationKey::of(heap, receiver, current_class)
+    CustomizationKey::of_activation(heap, receiver, current_class)
 }
 
 /// Counts an entry into `code`, an activation with `feedback_base` of
@@ -4807,7 +4807,7 @@ fn assemble(
 ) -> Result<baseline::BaselineBody, Refusal> {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(settings.counting);
-    let role = baseline::BodyRole::of(code, method.is_some());
+    let role = baseline::BodyRole::of_code(code, method.is_some());
     baseline::compile(
         code,
         macro_assembler,
@@ -5369,7 +5369,7 @@ fn optimization_due<'gc>(
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
 ) -> bool {
     let key = frame.and_then(|(receiver, current_class)| {
-        CustomizationKey::of(&mutator.heap, receiver, current_class)
+        CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
     });
     if let Some(key) = key {
         match code.jit.copy_row(key) {
@@ -5666,7 +5666,7 @@ fn recompilable(
     let (key, current_class) = if customized {
         let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
         (
-            CustomizationKey::of(heap, receiver, current_class),
+            CustomizationKey::of_activation(heap, receiver, current_class),
             current_class,
         )
     } else {
@@ -5844,7 +5844,7 @@ fn request_recompilee(
         mutator.jit.statistics.recompilees_above += 1;
         let code = mutator.heap.activation_code(triggering);
         let key = frame_of(mutator, &code, triggering).and_then(|(receiver, current_class)| {
-            CustomizationKey::of(&mutator.heap, receiver, current_class)
+            CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
         });
         let version = code.jit.optimized_version(key);
         mutator
@@ -5923,7 +5923,7 @@ fn request_copy<'gc>(
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
 ) -> bool {
-    let Some(key) = CustomizationKey::of(&mutator.heap, receiver, current_class) else {
+    let Some(key) = CustomizationKey::of_activation(&mutator.heap, receiver, current_class) else {
         return false;
     };
     if code.jit.copy_row(key).is_none() {
@@ -6143,7 +6143,7 @@ fn optimize(
     macro_assembler.set_count_down_at_entry(countdown);
     #[cfg(test)]
     macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
-    let role = baseline::BodyRole::of(code, method.is_some());
+    let role = baseline::BodyRole::of_code(code, method.is_some());
     // What the copy inlined -- its scopes, type-case arms, eliminated
     // blocks and sites -- counted once it is installed.
     let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
@@ -6162,7 +6162,7 @@ fn optimize(
             u64::from(optimized.inlined_sites),
         );
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
-        let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
+        let dependencies = CopyDependencies::of_relied_on(&mutator.heap, &optimized.relied_on);
         install_optimized(
             &mut mutator.jit,
             code,

@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        let end = if self.at_body_close() && !self.at(TokenKind::EndOfInput) {
+        let end = if self.at_body_close() && !self.at_kind(TokenKind::EndOfInput) {
             self.current().span
         } else {
             self.previous_span()
@@ -305,10 +305,11 @@ impl<'a> Parser<'a> {
         if self.diagnostics.len() != diagnostics {
             return None;
         }
-        if self.at(TokenKind::RightParenthesis) {
+        if self.at_kind(TokenKind::RightParenthesis) {
             return Some(self.bump().span.end);
         }
-        (self.at(TokenKind::EndOfInput) || self.at_member_start()).then(|| self.previous_span().end)
+        (self.at_kind(TokenKind::EndOfInput) || self.at_member_start())
+            .then(|| self.previous_span().end)
     }
 
     /// `recovery_at_member_start` at another position, the cursor left
@@ -344,7 +345,7 @@ impl<'a> Parser<'a> {
     /// it. A stray `}` that closes nothing is skipped as well, so the body
     /// always moves on.
     fn skip_rest_of_statement(&mut self) {
-        if !self.skip_balanced(&[TokenKind::Dot]) && self.at(TokenKind::RightBrace) {
+        if !self.skip_balanced(&[TokenKind::Dot]) && self.at_kind(TokenKind::RightBrace) {
             self.bump();
         }
         self.eat(TokenKind::Dot);
@@ -355,7 +356,7 @@ impl<'a> Parser<'a> {
     fn skip_rest_of_body(&mut self) {
         loop {
             self.skip_balanced(&[]);
-            if !self.at(TokenKind::RightBrace) {
+            if !self.at_kind(TokenKind::RightBrace) {
                 break;
             }
             self.bump();
@@ -374,7 +375,7 @@ impl<'a> Parser<'a> {
     /// legitimately starts with a binary `|` send (there is no left operand),
     /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
     fn parse_temporaries(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
-        if !self.at(TokenKind::Bar) && !self.at(TokenKind::DoubleBar) {
+        if !self.at_kind(TokenKind::Bar) && !self.at_kind(TokenKind::DoubleBar) {
             return (Vec::new(), None);
         }
         let (temporaries, delimiters) = self.parse_slot_declarations();
@@ -452,7 +453,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Keyword => {
                     let mut parts = Vec::new();
                     let mut missing = false;
-                    while self.at(TokenKind::Keyword) {
+                    while self.at_kind(TokenKind::Keyword) {
                         let keyword = self.bump();
                         let keyword = Identifier {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
@@ -508,7 +509,7 @@ impl<'a> Parser<'a> {
         self.bump(); // `[`
         loop {
             let _ = self.declared_identifier("name a type parameter");
-            if !(self.at(TokenKind::BinarySelector) && self.text(self.current()) == ",") {
+            if !(self.at_kind(TokenKind::BinarySelector) && self.text(self.current()) == ",") {
                 break;
             }
             self.bump(); // `,`
@@ -525,7 +526,7 @@ impl<'a> Parser<'a> {
         }
         let checkpoint = self.checkpoint();
         let _ = self.parse_message_pattern();
-        let matched = self.at(TokenKind::Equals);
+        let matched = self.at_kind(TokenKind::Equals);
         self.restore(checkpoint);
         matched
     }
@@ -546,7 +547,7 @@ impl<'a> Parser<'a> {
     /// `take_return_type` for a lookahead, which keeps nothing; answers
     /// whether there was one.
     fn consume_return_type(&mut self) -> bool {
-        if self.at(TokenKind::Caret) && self.peek2() == TokenKind::LessThan {
+        if self.at_kind(TokenKind::Caret) && self.peek2() == TokenKind::LessThan {
             self.bump(); // `^`
             self.consume_type_annotation();
             return true;
@@ -585,7 +586,7 @@ impl<'a> Parser<'a> {
     /// one -- the method being typed keeps the class around it. Otherwise
     /// what is left is skipped, balanced, up to the method's `)`.
     fn close_method_body(&mut self) -> Option<Token> {
-        if self.at(TokenKind::RightParenthesis) {
+        if self.at_kind(TokenKind::RightParenthesis) {
             return Some(self.bump());
         }
         let token = self.current();
@@ -609,7 +610,7 @@ impl<'a> Parser<'a> {
     /// `seqSlotDecls` first, which would read every `||` as the empty
     /// section and leave `simSlotDecls` unreachable.)
     pub(crate) fn parse_slot_declarations(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
-        if self.at(TokenKind::DoubleBar) {
+        if self.at_kind(TokenKind::DoubleBar) {
             let checkpoint = self.checkpoint();
             let section = self.parse_slot_section(TokenKind::DoubleBar);
             if self.diagnostics.len() == checkpoint.diagnostics {
@@ -681,8 +682,8 @@ impl<'a> Parser<'a> {
             // section's close or the next slot. Anything else is an error,
             // and the slot then ends at its own last token, never at an
             // unrelated one after it -- an owner's `)` among them.
-            let end = if self.at(TokenKind::Dot)
-                || (initializer.is_none() && (self.at(close) || self.at_name()))
+            let end = if self.at_kind(TokenKind::Dot)
+                || (initializer.is_none() && (self.at_kind(close) || self.at_name()))
             {
                 self.current().span
             } else {
@@ -723,7 +724,7 @@ impl<'a> Parser<'a> {
     /// bracket, which no slot declaration holds at its top level -- the
     /// section was never closed, and the bracket is its owner's.
     fn at_slot_section_end(&self, close: TokenKind) -> bool {
-        self.at(close)
+        self.at_kind(close)
             || matches!(
                 self.peek(),
                 TokenKind::RightParenthesis
@@ -772,7 +773,7 @@ impl<'a> Parser<'a> {
         // §8.1's `toplevelClass → classCategory classDeclaration`, with
         // `classCategory → [string]`: the category is optional, and a module's
         // class, which nothing encloses, takes no access modifier.
-        let category = if self.at(TokenKind::String) {
+        let category = if self.at_kind(TokenKind::String) {
             let token = self.bump();
             Some(Category {
                 value: string_lexeme_body(self.text(token)),
@@ -793,7 +794,7 @@ impl<'a> Parser<'a> {
         }
         let root_class = self.parse_class_declaration();
         let end = self.current().span;
-        if !self.at(TokenKind::EndOfInput) {
+        if !self.at_kind(TokenKind::EndOfInput) {
             self.push_error(
                 self.current().span,
                 "unexpected tokens after the top-level class",
@@ -867,7 +868,7 @@ impl<'a> Parser<'a> {
         // `class Map <[K, V]> ...`, and the canonical grammar's
         // `class List[E] ...` (`NewspeakGrammar.ns:465`).
         let type_parameters_start = self.position;
-        if self.at(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
+        if self.at_kind(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
             self.parse_type_parameter_declaration();
         }
         self.consume_type_arguments();
@@ -877,13 +878,13 @@ impl<'a> Parser<'a> {
         // when a parameter and another `=` follow it (`class Pair = other =
         // Object new () ()`), and otherwise the one that ends the header.
         let (factory, factory_types) =
-            if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
+            if self.at_kind(TokenKind::Equals) && !self.at_binary_equals_factory() {
                 (None, PatternTypes::default())
             } else {
                 self.parse_message_pattern()
             };
         self.expect(TokenKind::Equals);
-        let superclass = if self.at(TokenKind::LeftParenthesis) {
+        let superclass = if self.at_kind(TokenKind::LeftParenthesis) {
             None
         } else {
             self.parse_superclass_clause()
@@ -913,7 +914,7 @@ impl<'a> Parser<'a> {
         // carrying a body. It then declares no slots, no methods, no nested
         // classes, no class side and no class comment — the applied mixin
         // supplies all of its behaviour.
-        if applies_mixin && self.at(TokenKind::Dot) {
+        if applies_mixin && self.at_kind(TokenKind::Dot) {
             let dot = self.bump();
             let span = start.merge(dot.span);
             return ClassDeclaration {
@@ -952,7 +953,7 @@ impl<'a> Parser<'a> {
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
         let (members, g2_end, members_delimiters, instance_close) =
-            if self.at(TokenKind::LeftParenthesis) {
+            if self.at_kind(TokenKind::LeftParenthesis) {
                 let open = self.bump();
                 let members = self.parse_side_body();
                 let end = self.end_of_group();
@@ -1083,7 +1084,7 @@ impl<'a> Parser<'a> {
                 span: selector_token.span,
             });
         } else if self.at_binary_operator() {
-            if self.at(TokenKind::Number) {
+            if self.at_kind(TokenKind::Number) {
                 self.split_negative_number();
             }
             let operator = self.bump();
@@ -1099,13 +1100,13 @@ impl<'a> Parser<'a> {
                     .merge(super::expression::expression_span(&argument)),
                 arguments: vec![argument],
             });
-        } else if self.at(TokenKind::Keyword) {
+        } else if self.at_kind(TokenKind::Keyword) {
             let mut selector = String::new();
             let mut selector_spans = Vec::new();
             let mut arguments = Vec::new();
             let start = self.current().span;
             let mut end = start;
-            while self.at(TokenKind::Keyword) {
+            while self.at_kind(TokenKind::Keyword) {
                 let keyword = self.bump();
                 selector_spans.push(keyword.span);
                 selector.push_str(self.text(keyword).trim_end_matches(':'));
@@ -1124,7 +1125,7 @@ impl<'a> Parser<'a> {
                 span: start.merge(end),
             });
         }
-        if self.at_name() || self.at_binary_operator() || self.at(TokenKind::Keyword) {
+        if self.at_name() || self.at_binary_operator() || self.at_kind(TokenKind::Keyword) {
             self.push_error(
                 self.current().span,
                 "a superclass clause sends at most one message to the class it names (§6.1)",
@@ -1149,11 +1150,12 @@ impl<'a> Parser<'a> {
         crate::span::Span,
     ) {
         let start = self.current().span;
-        let (slots, slot_delimiters) = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
-            self.parse_slot_declarations()
-        } else {
-            (Vec::new(), None)
-        };
+        let (slots, slot_delimiters) =
+            if self.at_kind(TokenKind::Bar) || self.at_kind(TokenKind::DoubleBar) {
+                self.parse_slot_declarations()
+            } else {
+                (Vec::new(), None)
+            };
         self.record_if_empty(&slots, slot_delimiters);
         let mut initializer_expressions = Vec::new();
         loop {
@@ -1270,7 +1272,7 @@ impl<'a> Parser<'a> {
                         "expected a method, nested class, or lazy slot declaration",
                     );
                     // One error for the whole run, up to the next member.
-                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                    if !self.skip_balanced(&[]) && !self.at_kind(TokenKind::RightParenthesis) {
                         self.bump(); // a stray `]` or `}`
                     }
                 }
@@ -1311,7 +1313,7 @@ impl<'a> Parser<'a> {
                     let token = self.current();
                     self.push_error(token.span, "expected a method declaration");
                     // One error for the whole run, up to the next method.
-                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                    if !self.skip_balanced(&[]) && !self.at_kind(TokenKind::RightParenthesis) {
                         self.bump(); // a stray `]` or `}`
                     }
                 }
@@ -1337,7 +1339,7 @@ impl<'a> Parser<'a> {
     /// Where a class's `( … )` group ends: its `)`, or, when recovery found
     /// none, the last token it consumed.
     fn end_of_group(&self) -> crate::span::Span {
-        if self.at(TokenKind::RightParenthesis) {
+        if self.at_kind(TokenKind::RightParenthesis) {
             self.current().span
         } else {
             self.previous_span()
@@ -1398,7 +1400,7 @@ impl<'a> Parser<'a> {
                 let _ = self.parse_expression();
                 self.diagnostics.len() == diagnostics
             }
-            && self.at(TokenKind::Dot);
+            && self.at_kind(TokenKind::Dot);
         self.restore(checkpoint);
         matched
     }
@@ -1450,7 +1452,7 @@ impl<'a> Parser<'a> {
         };
         let initializer = Some(self.parse_expression());
         // Without its `.` the slot ends at its own last token.
-        let end = if self.at(TokenKind::Dot) {
+        let end = if self.at_kind(TokenKind::Dot) {
             self.current().span
         } else {
             self.previous_span()
@@ -1535,7 +1537,7 @@ impl<'a> Parser<'a> {
         self.parse_access_modifier();
         // A bare `= (` starts no method: without a pattern there is none.
         let is_method = self.try_parse_message_pattern().is_some()
-            && self.at(TokenKind::Equals)
+            && self.at_kind(TokenKind::Equals)
             && self.tokens.get(self.position + 1).map(|token| token.kind)
                 == Some(TokenKind::LeftParenthesis);
         self.restore(checkpoint);
@@ -1554,7 +1556,7 @@ impl<'a> Parser<'a> {
         } else {
             match self.peek() {
                 TokenKind::Keyword => {
-                    while self.at(TokenKind::Keyword) {
+                    while self.at_kind(TokenKind::Keyword) {
                         self.bump();
                         if self.at_name() {
                             self.bump();

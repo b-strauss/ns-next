@@ -2288,7 +2288,7 @@ fn line_start(source: &str, text: &str) -> u32 {
 /// Sets the line breakpoints of `module` at `offsets`, each stopping at
 /// every hit.
 fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
-    let breakpoints = offsets.into_iter().map(LineBreakpoint::at).collect();
+    let breakpoints = offsets.into_iter().map(LineBreakpoint::at_offset).collect();
     set_line_breakpoints(remote, module, breakpoints);
 }
 
@@ -4394,7 +4394,7 @@ fn hits_after_the_rewind(lowering: Lowering, condition: HitCondition) -> usize {
         &remote,
         "Headers",
         vec![
-            LineBreakpoint::at(sent),
+            LineBreakpoint::at_offset(sent),
             LineBreakpoint {
                 offset: slot,
                 hit_condition: Some(condition),
@@ -11074,7 +11074,7 @@ ns_runtime::for_each_lowering! {
                     remote,
                     "Lines",
                     vec![
-                        LineBreakpoint::at(first),
+                        LineBreakpoint::at_offset(first),
                         LineBreakpoint {
                             offset: second,
                             hit_condition: Some(HitCondition::Equal(2)),
@@ -11701,11 +11701,11 @@ ns_runtime::for_each_lowering! {
             |remote| {
                 remote.send(Command::SetBreakpoints {
                     module: shipped.clone(),
-                    breakpoints: vec![LineBreakpoint::at(array_do_body())],
+                    breakpoints: vec![LineBreakpoint::at_offset(array_do_body())],
                 });
                 remote.send(Command::SetBreakpoints {
                     module: own.clone(),
-                    breakpoints: vec![LineBreakpoint::at(line_start(OWN_KERNEL, "^sum"))],
+                    breakpoints: vec![LineBreakpoint::at_offset(line_start(OWN_KERNEL, "^sum"))],
                 });
             },
             |remote| {

@@ -285,7 +285,7 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
 /// `Roles::dispatching_baseline`: compares the receiver's dispatch id and
 /// the current class's application word with each row
 /// (`heap/optimized_copies.rs`) -- the key a copy was customized for, as
-/// `CustomizationKey::of` reads it off the frame the prologue writes --
+/// `CustomizationKey::of_activation` reads it off the frame the prologue writes --
 /// and goes on in the first copy whose row holds both, or in the body's
 /// baseline code when none does. A vacant row's receiver word is no
 /// dispatch id, so no row is tested for vacancy.
@@ -1351,7 +1351,7 @@ fn emit_row_stub(
     assembler.enter_called();
     // A unary operation's send has no slot 0, so its stub reads none.
     // Only a float stub's row has one (`every_row_with_a_float_operation_has_the_float_stub`).
-    let float_operation = FloatOperation::of(MIRROR[row].primitive);
+    let float_operation = FloatOperation::of_primitive(MIRROR[row].primitive);
     if float_operation.is_none_or(|operation| operation.argument_count() > 0) {
         assembler.load(Width::Word64, index, argument_slot(roles, 0));
     }

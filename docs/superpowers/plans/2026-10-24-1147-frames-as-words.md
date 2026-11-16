@@ -247,7 +247,7 @@ reservation" (decided with the user on 2026-10-24), read with "Activations"
 
 - [ ] **Step 1: Write the failing tests**
   - `flags_round_trip_through_a_small_integer_word`: every kind tag,
-    argument counts 0, 1 and 65,535, both booleans; assert `FrameFlags::of(flags.word()) == flags`
+    argument counts 0, 1 and 65,535, both booleans; assert `FrameFlags::of_word(flags.word()) == flags`
     and `flags.word().is_small_integer()`.
   - `a_push_past_the_committed_end_commits_and_answers_nil_words`: a
     `FrameStack::new(1 << 20)`, push one frame of 65,535 + `COUNT` words

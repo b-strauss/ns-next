@@ -4038,8 +4038,8 @@ mod tests {
         freed.guards.extend([guard(0), guard(2)]);
         freed.applications.insert(level(1));
         caches.forget_freed(&freed);
-        for index in base..base + 3 {
-            assert!(matches!(caches.sites[index].target, Target::Vacant));
+        for site in &caches.sites[base..base + 3] {
+            assert!(matches!(site.target, Target::Vacant));
         }
         assert!(!matches!(caches.sites[base + 3].target, Target::Vacant));
         assert!(matches!(

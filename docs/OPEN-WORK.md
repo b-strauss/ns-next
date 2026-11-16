@@ -711,7 +711,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   - **Windows on ARM runs interpreted** (2026-11-04). `build.rs` sets
     `cfg(ns_jit)` for AArch64 on Linux and Apple's platforms only. Much
     of what the JIT needs there exists: the encoder never uses `x18`,
-    the register Windows reserves, so `Roles::of(Abi::Aapcs64)` would
+    the register Windows reserves, so `Roles::of_abi(Abi::Aapcs64)` would
     serve, and `ns-memory`'s Windows code zone and native-stack bounds
     exist and build for that target. What is open is whether Windows on ARM's
     convention and unwinding differ from AAPCS64 in anything a stub

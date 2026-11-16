@@ -6843,7 +6843,7 @@ for a stub's tail jump into one, and `call_unentered` for a call into a
 body's middle, the entry at a push -- which encode on x64 as nothing,
 `jmp` and `call`. The macro assembler assembles through one `Encoding`
 the `Abi` chooses (`Windows64`, `SystemV`, `Aapcs64`), its stack slot
-from the encoder, and `Roles::of(Abi::Aapcs64)` maps every role one to
+from the encoder, and `Roles::of_abi(Abi::Aapcs64)` maps every role one to
 one from x64's; the native stack an entry needs is about 1.68 MB on
 AArch64. Every stub and every golden body is assembled for AAPCS64 on
 every host, and the tests that run machine code take the host's roles.

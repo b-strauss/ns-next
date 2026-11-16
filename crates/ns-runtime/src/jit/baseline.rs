@@ -128,7 +128,7 @@ pub(crate) enum BodyRole {
 impl BodyRole {
     /// The role of `code`, compiled as the body of `method` when it is
     /// one's.
-    pub(crate) fn of(code: &CompiledCode, is_method: bool) -> BodyRole {
+    pub(crate) fn of_code(code: &CompiledCode, is_method: bool) -> BodyRole {
         match (is_method, code.kind) {
             (true, _) => BodyRole::Method,
             (false, CodeKind::Method) => BodyRole::Factory,
@@ -251,7 +251,7 @@ pub(crate) struct ScopeFacts {
 impl ScopeFacts {
     /// The facts of a body of `facts` whose sends' cells are found from
     /// `feedback_base`, lowered as `role`, `inlined_depth` scopes deep.
-    pub(crate) fn of(
+    pub(crate) fn of_body(
         facts: &BodyFacts,
         feedback_base: FeedbackBase,
         role: BodyRole,
@@ -1255,7 +1255,7 @@ pub(crate) fn compile(
         (start, rows_word)
     });
     if copy == BodyCopy::Lean {
-        sends::prologue(&mut body, &BodyFacts::of(code));
+        sends::prologue(&mut body, &BodyFacts::of_code(code));
     }
     let mut exits = Vec::with_capacity(usize::from(count));
     let mut transfers = Vec::with_capacity(usize::from(count));

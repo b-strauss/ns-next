@@ -3478,7 +3478,7 @@ impl<'gc> DeclaredKind<'gc> {
     /// `kind`'s, with `current_class` for a method; `None` for a closure or
     /// a top-level frame, and a method frame with no current class, none of
     /// which a declaration names.
-    pub(crate) fn of(
+    pub(crate) fn of_kind(
         kind: &FrameKind<'gc>,
         current_class: Option<ClassReference<'gc>>,
     ) -> Option<DeclaredKind<'gc>> {
@@ -3691,7 +3691,7 @@ fn decode_frame<'gc>(
         (Ok(kind), FrameBody::None) => (kind, None),
         (Ok(kind), FrameBody::Code(code)) => (kind, Some(code)),
         (Ok(kind), FrameBody::Declared) => {
-            let declared = DeclaredKind::of(&kind, current_class)
+            let declared = DeclaredKind::of_kind(&kind, current_class)
                 .ok_or(DecodeError::DeclaredBodyNotShipped)?;
             let code = declared_body(&context.mutator.heap, &declared)?;
             (kind, Some(code))

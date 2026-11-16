@@ -238,7 +238,7 @@ pub(crate) fn module_name(
     running: &Rc<Mixin>,
 ) -> Option<crate::debugger::ModuleName> {
     let (root, _) = declaration_path(mutator, running)?;
-    Some(crate::debugger::ModuleName::of(&root))
+    Some(crate::debugger::ModuleName::of_root(&root))
 }
 
 /// The root class of the module `running` is declared in, and the names

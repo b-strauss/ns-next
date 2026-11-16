@@ -2148,7 +2148,7 @@ fn encode_frame_body<'gc>(
         return Ok(());
     }
     let code = context.heap.frame_code(frame).ok_or_else(refusal)?;
-    let declared = super::decode::DeclaredKind::of(&snapshot.kind, snapshot.current_class);
+    let declared = super::decode::DeclaredKind::of_kind(&snapshot.kind, snapshot.current_class);
     if let Some(declared) = declared.filter(|declared| declared.is_shipped(context.heap)) {
         let found = super::decode::declared_body(context.heap, &declared).ok();
         if !found.is_some_and(|found| Rc::ptr_eq(&found, &code)) {

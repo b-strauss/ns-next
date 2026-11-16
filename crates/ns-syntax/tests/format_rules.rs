@@ -945,13 +945,13 @@ fn rule_23_the_first_line_ending_decides_every_line_ending() {
         formatted(input),
         "class A = () (\r\n  public one = (\r\n    ^1.\r\n  )\r\n)\r\n"
     );
-    assert_eq!(LineEnding::of("a\rb\r\n"), LineEnding::CarriageReturn);
+    assert_eq!(LineEnding::first_in("a\rb\r\n"), LineEnding::CarriageReturn);
     assert_eq!(
-        LineEnding::of("a\r\nb\n"),
+        LineEnding::first_in("a\r\nb\n"),
         LineEnding::CarriageReturnLineFeed
     );
-    assert_eq!(LineEnding::of("a\nb\r\n"), LineEnding::LineFeed);
-    assert_eq!(LineEnding::of("a"), LineEnding::LineFeed);
+    assert_eq!(LineEnding::first_in("a\nb\r\n"), LineEnding::LineFeed);
+    assert_eq!(LineEnding::first_in("a"), LineEnding::LineFeed);
     assert_eq!(LineEnding::CarriageReturn.as_str(), "\r");
 }
 

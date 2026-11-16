@@ -52,7 +52,7 @@ struct FrameRegisters {
 
 impl FrameRegisters {
     /// The state of `activation`, to run from `program_counter`.
-    fn of(
+    fn of_activation(
         mutator: &Mutator<'_>,
         activation: ActivationReference,
         program_counter: usize,
@@ -219,7 +219,7 @@ impl Handoff {
 /// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut frame) = interpreter.enter(|mutator| {
-        let frame = FrameRegisters::of(mutator, base, 0);
+        let frame = FrameRegisters::of_activation(mutator, base, 0);
         (mutator.heap.activation_position(base), frame)
     });
     // The base activation is a push too, the host's, so the JIT counts its
@@ -295,7 +295,11 @@ fn take_safepoint(
                     .heap
                     .top_activation()
                     .expect("internal: the safepoint resumed the running activation");
-                FrameRegisters::of(mutator, top, mutator.heap.activation_program_counter(top))
+                FrameRegisters::of_activation(
+                    mutator,
+                    top,
+                    mutator.heap.activation_program_counter(top),
+                )
             });
             AfterSafepoint::Run(None)
         }
@@ -339,7 +343,7 @@ fn after_safepoint(
         let physical = stopped.physical();
         if crate::jit::resumed_at_poll(mutator, stopped).is_some() {
             let program_counter = mutator.heap.activation_program_counter(physical);
-            *frame = FrameRegisters::of(mutator, physical, program_counter);
+            *frame = FrameRegisters::of_activation(mutator, physical, program_counter);
             return Some(Arrival::AtPoll);
         }
     }
@@ -391,7 +395,8 @@ fn terminate_at_safepoint(
             // A termination's unwind switches only to an `ensure:` or
             // `ifCurtailed:` block it pushed (`switch_to`), which starts
             // interpreted: no frame it switches to resumes machine code.
-            *frame = FrameRegisters::of(mutator, handoff.activation, handoff.program_counter);
+            *frame =
+                FrameRegisters::of_activation(mutator, handoff.activation, handoff.program_counter);
             None
         }
         Transfer::Next | Transfer::Stopped | Transfer::StoppedAtSafepoint => {
@@ -2854,7 +2859,7 @@ fn machine_code_switch<'gc>(
                 activation,
                 program_counter,
             } => {
-                return Switched::Run(FrameRegisters::of(
+                return Switched::Run(FrameRegisters::of_activation(
                     mutator,
                     activation,
                     program_counter as usize,
@@ -2864,7 +2869,7 @@ fn machine_code_switch<'gc>(
                 activation,
                 program_counter,
             } => {
-                return Switched::Safepoint(FrameRegisters::of(
+                return Switched::Safepoint(FrameRegisters::of_activation(
                     mutator,
                     activation,
                     program_counter as usize,

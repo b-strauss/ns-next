@@ -42,7 +42,7 @@ pub(crate) struct BodyFacts {
 }
 
 impl BodyFacts {
-    pub(crate) fn of(code: &CompiledCode) -> BodyFacts {
+    pub(crate) fn of_code(code: &CompiledCode) -> BodyFacts {
         BodyFacts {
             argument_count: code.argument_count,
             local_count: code.local_count,
@@ -263,7 +263,10 @@ impl SnapshotInstruction {
     /// The snapshot form of `instruction`. A `MakeClosure`'s block is
     /// registered with `heap` if it was not yet, which gives it the id the
     /// closure the instruction makes will carry.
-    pub(crate) fn of(instruction: &Instruction, heap: &mut Heap) -> SnapshotInstruction {
+    pub(crate) fn of_instruction(
+        instruction: &Instruction,
+        heap: &mut Heap,
+    ) -> SnapshotInstruction {
         convert(instruction, &mut |block| Some(heap.code_id(block)))
             .expect("internal: every block is registered when the heap is given")
     }
@@ -626,7 +629,7 @@ impl SnapshotInstruction {
     }
 }
 
-/// `SnapshotInstruction::of` with a `MakeClosure`'s block id asked of
+/// `SnapshotInstruction::of_instruction` with a `MakeClosure`'s block id asked of
 /// `block_id`, which answers `None` where there is no heap to ask.
 fn convert(
     instruction: &Instruction,
@@ -1065,11 +1068,11 @@ impl Snapshot {
             .collect();
         Snapshot {
             code_id: heap.code_id(code),
-            facts: BodyFacts::of(code),
+            facts: BodyFacts::of_code(code),
             feedback_base,
             instructions: instructions
                 .iter()
-                .map(|instruction| SnapshotInstruction::of(instruction, heap))
+                .map(|instruction| SnapshotInstruction::of_instruction(instruction, heap))
                 .collect(),
             tainted_before: tainted_before_each(code),
             fallback_taken,
@@ -1565,7 +1568,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             for instruction in every_instruction() {
-                let snapshot = SnapshotInstruction::of(&instruction, &mut mutator.heap);
+                let snapshot = SnapshotInstruction::of_instruction(&instruction, &mut mutator.heap);
                 assert_eq!(
                     snapshot.registers_read(),
                     crate::bytecode::registers_read(&instruction).collect::<Vec<_>>(),
@@ -1663,7 +1666,7 @@ mod tests {
             let encoded = call_slots(&code, 0)
                 .map(|slots| (slots.argument_base, slots.argument_count, slots.selector));
             let snapshot = SnapshotInstruction::of_unclosed(&instruction).and_then(|snapshot| {
-                call_slots_of(&super::BodyFacts::of(&code), &snapshot)
+                call_slots_of(&super::BodyFacts::of_code(&code), &snapshot)
                     .map(|slots| (slots.argument_base, slots.argument_count, slots.selector))
             });
             assert_eq!(encoded, snapshot, "{instruction:?}");

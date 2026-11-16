@@ -49,7 +49,7 @@ pub(crate) struct Place {
 impl Place {
     /// The place of a stop whose frames are `frames` from the first it
     /// shows down, that frame's statement on `line`.
-    pub(crate) fn of(frames: &[FrameDescription], line: Option<u32>) -> Place {
+    pub(crate) fn of_frames(frames: &[FrameDescription], line: Option<u32>) -> Place {
         Place {
             depth: frames.len(),
             name: frames
@@ -374,7 +374,7 @@ impl Agent {
         let shown = frames.iter().position(|frame| !frame.hidden).unwrap_or(0);
         let frames = frames[shown..].to_vec();
         let Some(location) = frames.first().and_then(|top| top.location.clone()) else {
-            return Some(Ok(Place::of(&frames, None)));
+            return Some(Ok(Place::of_frames(&frames, None)));
         };
         match self.read_text(&location.module) {
             Ok(true) => {}
@@ -385,7 +385,7 @@ impl Agent {
             .sources
             .range(&location.module, location.statement)
             .map(|(start, _)| start.line);
-        Some(Ok(Place::of(&frames, line)))
+        Some(Ok(Place::of_frames(&frames, line)))
     }
 }
 

@@ -124,7 +124,7 @@ struct ClosureRegisters {
 }
 
 impl ClosureRegisters {
-    fn of(macro_assembler: &MacroAssembler) -> ClosureRegisters {
+    fn of_assembler(macro_assembler: &MacroAssembler) -> ClosureRegisters {
         let scratch = macro_assembler.roles().scratch;
         ClosureRegisters {
             object: scratch[0],
@@ -161,7 +161,7 @@ pub(super) fn make_closure(
     copied: &[u16],
 ) -> Lowering {
     let site = body.macro_assembler.take_body_words(SITE_WORDS);
-    let registers = ClosureRegisters::of(&body.macro_assembler);
+    let registers = ClosureRegisters::of_assembler(&body.macro_assembler);
     #[cfg(debug_assertions)]
     for register in copied {
         body.macro_assembler
@@ -749,7 +749,7 @@ pub(super) fn make_future(body: &mut BodyAssembler, destination: u16, closure: u
         address,
         value,
         spare,
-    } = ClosureRegisters::of(&body.macro_assembler);
+    } = ClosureRegisters::of_assembler(&body.macro_assembler);
     let program_counter = body.program_counter;
     let macro_assembler = &mut body.macro_assembler;
     let frame = macro_assembler.roles().frame;
@@ -844,7 +844,7 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
         spare,
         class_word,
         ..
-    } = ClosureRegisters::of(&body.macro_assembler);
+    } = ClosureRegisters::of_assembler(&body.macro_assembler);
     let program_counter = body.program_counter;
     let window_end = body.window_end;
     let macro_assembler = &mut body.macro_assembler;
@@ -983,7 +983,7 @@ struct OuterRegisters {
 }
 
 impl OuterRegisters {
-    fn of(macro_assembler: &MacroAssembler) -> OuterRegisters {
+    fn of_assembler(macro_assembler: &MacroAssembler) -> OuterRegisters {
         let scratch = macro_assembler.roles().scratch;
         OuterRegisters {
             frame: scratch[0],
@@ -1033,7 +1033,7 @@ pub(super) fn outer_local(
     access: OuterAccess,
 ) -> Lowering {
     if depth == 0 || body.role != BodyRole::Block {
-        let value = OuterRegisters::of(&body.macro_assembler).value;
+        let value = OuterRegisters::of_assembler(&body.macro_assembler).value;
         if let OuterAccess::Store { source } = access {
             body.macro_assembler.load_frame_register(value, source);
         }
@@ -1041,7 +1041,7 @@ pub(super) fn outer_local(
         return Lowering::Template;
     }
     let site = body.macro_assembler.take_body_words(OUTER_SITE_WORDS);
-    let registers = OuterRegisters::of(&body.macro_assembler);
+    let registers = OuterRegisters::of_assembler(&body.macro_assembler);
     let layout = Heap::machine_layout();
     let argument_count = body.argument_count;
     let program_counter = body.program_counter;

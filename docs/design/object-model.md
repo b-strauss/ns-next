@@ -787,7 +787,7 @@ new` is the factory's one activation, and a chain of levels without code
 neither nests nor escapes the depth limit's count, whatever its length
 (`levels_without_code_are_passed_without_an_activation`). What it asks of a
 level it copies out of the level's application in one read
-(`LevelFacts::of` the level's own mixin, computed where the application is
+(`LevelFacts::of_mixin` the level's own mixin, computed where the application is
 built and checked against the mixin by a debug build's
 `Heap::register_application`): `needs_initializer_code`, the superclass
 clause's `clause_selector` and `clause_has_arguments`, the

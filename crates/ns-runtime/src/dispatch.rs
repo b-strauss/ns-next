@@ -473,7 +473,7 @@ mod tests {
     /// in `Heap::allocate_self_referential_class`.
     fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
         let mixin = Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy")));
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,
@@ -547,7 +547,7 @@ mod tests {
             methods,
             ..crate::mixin::Mixin::empty(Symbol::intern(name))
         });
-        let level_facts = crate::mixin::LevelFacts::of(&mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(&mixin);
         let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin,

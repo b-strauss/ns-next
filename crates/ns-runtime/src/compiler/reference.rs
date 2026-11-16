@@ -56,14 +56,14 @@ pub(crate) fn compile_mixin_bodies(
     collector: Option<&MetadataCollector>,
 ) {
     let own = Rc::new(initializer(mixin, bindings, None, collector));
-    mixin.initializer_code = Some(match super::Prologue::of(mixin, true) {
+    mixin.initializer_code = Some(match super::Prologue::of_mixin(mixin, true) {
         Some(prologue) => Rc::new(initializer(mixin, bindings, Some(prologue), collector)),
         None => Rc::clone(&own),
     });
     mixin.standalone_initializer_code = if mixin.mixin_applications.is_empty() || !mixin.has_body {
         None
     } else {
-        super::Prologue::of(mixin, false)
+        super::Prologue::of_mixin(mixin, false)
             .map(|prologue| Rc::new(initializer(mixin, bindings, Some(prologue), collector)))
     };
     mixin.own_initializer_code = Some(own);
@@ -826,7 +826,7 @@ impl<'a> Body<'a> {
 
     fn send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         match self.binding(send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -902,7 +902,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -926,7 +926,7 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendInlinable {
                 selector,
@@ -965,7 +965,7 @@ impl<'a> Body<'a> {
         let condition_register = self.block(condition, None);
         let body_register = self.block(body, None);
         let loop_start = self.code.len();
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         let condition_send = self.code.len();
         let condition_value = self.value_send(condition_register, spans);
         let not_boolean_jump = self.code.len();

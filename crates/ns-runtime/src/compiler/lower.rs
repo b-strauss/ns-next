@@ -2056,7 +2056,7 @@ impl<'a> Lowerer<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
-        let spans = SendSpans::of(receiver, message);
+        let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
                 selector,
@@ -2206,7 +2206,7 @@ impl<'a> Lowerer<'a> {
     /// object `outer N m` would send to, loaded without running any code.
     fn lower_super_or_lexical_send(&mut self, send: &ast::Send, into: Option<u16>) -> u16 {
         let selector = selector_of(&send.message);
-        let spans = SendSpans::of(&send.receiver, &send.message);
+        let spans = SendSpans::of_send(&send.receiver, &send.message);
         match self.bindings.get(&send.span) {
             Some(Binding::EnclosingObject { depth }) => {
                 let destination = self.target_register(into);
@@ -2550,7 +2550,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             index,
             Some(call_site),
-            SendSpans::of(&send.receiver, &send.message),
+            SendSpans::of_send(&send.receiver, &send.message),
         );
         let end_label = self.here();
         self.patch_target(after_fast_path_jump, end_label);
@@ -2604,7 +2604,7 @@ impl<'a> Lowerer<'a> {
         self.record_send(
             failure_jump,
             None,
-            SendSpans::of(&send.receiver, &send.message),
+            SendSpans::of_send(&send.receiver, &send.message),
         );
         let after_send_jump = self.emit(Instruction::Jump { target: 0 });
         let failure_label = self.here();
@@ -2928,7 +2928,10 @@ impl<'text> SendSpans<'text> {
     /// apart from its receiver, is spanned without it, and names it in
     /// parentheses when it is a binary or keyword send written without
     /// them, as the message would read sent to it alone: `(a + b) c`.
-    pub(super) fn of(receiver: &Expression, message: &'text ast::MessageSend) -> SendSpans<'text> {
+    pub(super) fn of_send(
+        receiver: &Expression,
+        message: &'text ast::MessageSend,
+    ) -> SendSpans<'text> {
         let spelled = receiver_span(receiver);
         let apart = spelled.is_some_and(|spelled| spelled.end <= message.span.start);
         let call = match spelled {

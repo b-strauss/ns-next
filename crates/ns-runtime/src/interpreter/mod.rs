@@ -3656,7 +3656,7 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
-        let level_facts = crate::mixin::LevelFacts::of(mixin);
+        let level_facts = crate::mixin::LevelFacts::of_mixin(mixin);
         let application = self
             .heap
             .register_application(crate::mixin::MixinApplication {

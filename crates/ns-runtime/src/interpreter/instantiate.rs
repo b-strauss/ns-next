@@ -321,7 +321,7 @@ impl<'gc> Mutator<'gc> {
         self.note_module_built();
         // A breakpoint set before the module was loaded resolves now.
         if !self.has_no_breakpoints() {
-            let module = crate::debugger::ModuleName::of(&mixin);
+            let module = crate::debugger::ModuleName::of_root(&mixin);
             crate::debugger::breakpoints::module_built(self, &module);
         }
         class
@@ -890,7 +890,7 @@ impl<'gc> Mutator<'gc> {
                 return Err(Signal::Error(instantiation_refusal_error(
                     class,
                     &display_name,
-                    Instantiated::of(&self.heap, class, application),
+                    Instantiated::of_class(&self.heap, class, application),
                     refusal,
                 )));
             }
@@ -1221,7 +1221,7 @@ impl<'gc> Mutator<'gc> {
     /// level a clause added is entered.
     fn passes(&self, level: ClassReference<'gc>, view: ClassLevel<'_, 'gc>) -> Option<Pass> {
         let (facts, own_level) = match view.body_less_declaration() {
-            Some(declaration) => (Some(crate::mixin::LevelFacts::of(declaration)), 0),
+            Some(declaration) => (Some(crate::mixin::LevelFacts::of_mixin(declaration)), 0),
             None if view.is_applied_level() => return None,
             None => (view.level_facts(), 1),
         };
@@ -1620,7 +1620,7 @@ struct Instantiated {
 }
 
 impl Instantiated {
-    fn of<'gc>(
+    fn of_class<'gc>(
         heap: &Heap<'gc>,
         class: ClassReference<'gc>,
         application: &crate::mixin::MixinApplication,
@@ -1762,7 +1762,7 @@ fn value_class_refusal_error<'gc>(
     let Instantiated {
         name: instantiated,
         selector,
-    } = Instantiated::of(heap, class, application);
+    } = Instantiated::of_class(heap, class, application);
     let Some(refusal) = heap.class_value_refusal(class) else {
         unreachable!("internal: value_class_refusal_error called for a class with no refusal");
     };
@@ -2266,7 +2266,7 @@ mod tests {
             while let Some(application) = level {
                 assert_eq!(
                     application.level_facts,
-                    LevelFacts::of(&application.mixin),
+                    LevelFacts::of_mixin(&application.mixin),
                     "{}",
                     application.mixin.name
                 );

@@ -124,7 +124,7 @@ RUN curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
         https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init \
     && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum --check --strict \
     && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.0 \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.100.0 \
         --component rustfmt,clippy \
         --target x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu \
     && rm /tmp/rustup-init
