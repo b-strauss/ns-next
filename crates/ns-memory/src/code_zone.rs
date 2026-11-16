@@ -913,7 +913,7 @@ mod tests {
     /// sections' included, which a process's own `PrivateUsage` leaves out
     /// -- a pagefile-backed section's committed pages are no process's
     /// private bytes.
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn system_commit_charge() -> usize {
         use windows_sys::Win32::System::ProcessStatus::{
             K32GetPerformanceInfo, PERFORMANCE_INFORMATION,
@@ -929,7 +929,7 @@ mod tests {
     }
 
     /// The process's own commit charge in bytes (`PrivateUsage`).
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn private_usage() -> usize {
         use windows_sys::Win32::System::ProcessStatus::{
             K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
@@ -955,7 +955,7 @@ mod tests {
     /// committed pages of the sections it maps, which `PrivateUsage`
     /// leaves out. `None` where the system refuses the `_EX2` form, before
     /// Windows 10 version 21H2.
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn shared_commit_usage() -> Option<u64> {
         use windows_sys::Win32::System::ProcessStatus::{
             K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
@@ -979,7 +979,7 @@ mod tests {
     }
 
     /// The handles the process holds open.
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn handle_count() -> u32 {
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
         let mut count = 0;
@@ -991,7 +991,7 @@ mod tests {
 
     /// Whether the chunk of `zone` at `chunk` is a placeholder again in
     /// both its views: reserved, no view of a section mapped there.
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn is_placeholder(zone: &CodeZone, chunk: usize) -> bool {
         use windows_sys::Win32::System::Memory::{
             MEM_MAPPED, MEM_RESERVE, MEMORY_BASIC_INFORMATION, VirtualQuery,

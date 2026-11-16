@@ -348,7 +348,7 @@ impl CodeMapping {
     }
 
     /// How many chunks' sections are open. For tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     pub(crate) fn open_sections(&self) -> usize {
         self.sections
             .borrow()

@@ -34,7 +34,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   analyzer             the hints' behaviour oracle (profile hints)
   images               every golden through build then load (profile images)
   caches               every golden with a two-entry global cache (profile caches)
-  memory               ns-memory's clippy for Linux and macOS
+  memory               ns-memory's clippy for Linux, macOS and Windows on ARM
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the suite under the fifteen stress modes and without the JIT, the unreached tests left out, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
@@ -562,25 +562,29 @@ fn group(name: &str) -> Option<Vec<Part>> {
             &["nextest", "run", "-p", "ns-cli", "--profile", "caches"],
         )]),
         "memory" => steps(
-            ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
-                .iter()
-                .map(|target| {
-                    Step::cargo(
-                        &format!("lint for {target}"),
-                        &[
-                            "clippy",
-                            "-p",
-                            "ns-memory",
-                            "--all-targets",
-                            "--target",
-                            target,
-                            "--",
-                            "-D",
-                            "warnings",
-                        ],
-                    )
-                })
-                .collect(),
+            [
+                "x86_64-unknown-linux-gnu",
+                "aarch64-apple-darwin",
+                "aarch64-pc-windows-msvc",
+            ]
+            .iter()
+            .map(|target| {
+                Step::cargo(
+                    &format!("lint for {target}"),
+                    &[
+                        "clippy",
+                        "-p",
+                        "ns-memory",
+                        "--all-targets",
+                        "--target",
+                        target,
+                        "--",
+                        "-D",
+                        "warnings",
+                    ],
+                )
+            })
+            .collect(),
         ),
         "benchmarks" => steps(vec![Step::cargo(
             "benchmark programs",
