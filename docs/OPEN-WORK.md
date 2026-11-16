@@ -2288,38 +2288,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Further `ns-next-analyzer` commands**, each looking without running: a
   heap dump and a deeper inspection of an image; what a method compiles
   to, machine code included, is the item below.
-- **A command-line debugger client** (decided with the user on
-  2026-11-15; not built): `ns-next debug <program>`, say, driven by
-  commands from a file or standard input -- `break <file>:<line>`, `run`,
-  `next`, `step`, `out`, `continue`, `stack`, `vars <frame>`,
-  `print <value>` and the like -- and printing every stop with its stack
-  and variables as plain text or JSON, a client of the same debugging API
-  the DAP agent serves (`DebugRemote`, [debugger.md](design/debugger.md),
-  "The debugging API at the safepoint"). It matters because the debugger
-  is today reachable only through DAP over a socket, which the IDE plugin
-  drives but an agent with only a shell cannot, so it does not meet the
-  principle that introspection is reachable from the command line first
-  ([design/README.md](design/README.md), "Principles"). First on the
-  command line; the plugin, which speaks DAP, is unaffected.
 - **A profiler** (asked for by the user on 2026-11-15; not designed yet):
   the time a program spends per method and per send site. It matters because
   a slow program today shows where its time goes only to a native sampling
   profiler, which sees the VM's Rust frames and the code zone's anonymous
   addresses, never a Newspeak method -- the profiles behind "Unexplained
   measurements and unmeasured decisions" below were read so. Whether it
-  samples or counts, and what it costs a run, are open. The principle it
-  follows (the user's, on 2026-11-15; [design/README.md](design/README.md),
-  "Principles"): every introspection feature is reachable from the command
-  line first -- an `ns-next` or `ns-next-analyzer` subcommand or flag, its
-  output plain text or JSON -- so that an agent such as Claude can use it
-  for debugging; the IDE plugin's views come on top, as clients of the same
-  requests -- here a `run`/`bench` flag whose report is plain text or JSON
-  before any IDE view of it.
+  samples or counts, what it costs a run, and how an agent and the IDE
+  reach its report are open.
 - **A view of what a method compiles to** (asked for by the user on
   2026-11-15): its bytecode, as `disasm` prints it, and its JIT code -- the
   baseline machine code, the optimized copies per receiver application, the
-  inlining decisions with the reasons behind each -- first on the command
-  line, then beside the source in the IDE, JITWatch's kind of view. It
+  inlining decisions with the reasons behind each -- reachable by an agent
+  and beside the source in the IDE, JITWatch's kind of view. It
   matters because a slow body is explained by what the tiers made of it,
   which today only a debugger on the process or a `dumpbin`/`objdump` of the
   code zone shows, without names. `disasm` prints the instructions only, and
@@ -2329,12 +2310,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   and the IDE's view is a client of the same request
   ([compiler.md](design/compiler.md), "Reading the output";
   [execution.md](design/execution.md), "The baseline JIT's foundation",
-  "Inlining"). The principle it follows (the user's, on 2026-11-15;
-  [design/README.md](design/README.md), "Principles"): every introspection
-  feature is reachable from the command line first -- an `ns-next` or
-  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
-  that an agent such as Claude can use it for debugging; the IDE plugin's
-  views come on top, as clients of the same requests.
+  "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15):
   tracing flags that say why a body is compiled, optimized, deoptimized or
   retired and how each inline cache goes from empty to monomorphic,
@@ -2345,15 +2321,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   was retired -- is answered today only by a counter or a print added for
   the occasion; `--cache-statistics`, `--collector-statistics` and
   `disasm`/`inspect` are its first pieces
-  ([compiler.md](design/compiler.md), "Reading the output"). The principle
-  it follows (the user's, on 2026-11-15;
-  [design/README.md](design/README.md), "Principles"): every introspection
-  feature is reachable from the command line first -- an `ns-next` or
-  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
-  that an agent such as Claude can use it for debugging; the IDE plugin's
-  views come on top, as clients of the same requests; the tracing and the
-  printing are flags of `ns-next`, the REPL a subcommand, each usable
-  without the IDE.
+  ([compiler.md](design/compiler.md), "Reading the output"); the tracing
+  and the printing are flags of `ns-next`, as `d8`'s are.
 
 [editor-support.md](design/editor-support.md), "Planned later".
 

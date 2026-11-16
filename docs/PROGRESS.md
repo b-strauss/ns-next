@@ -7874,11 +7874,9 @@ its findings are fixed (`875a1f0a` to `572f0379`).
   the send delivered: the callee's parameters, a delivery's `Message`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
-(the time a step took, planned in no stage), and four tools planned on
-the command line first: a command-line debugger client, which the
-debugger needs to meet that principle, a profiler, a view of what a
-method compiles to and a developer tool like V8's `d8` ("Planned: editor
-support and the analyzer"); the play button's Debug through the
+(the time a step took, planned in no stage), and three tools planned: a
+profiler, a view of what a method compiles to and a developer tool like
+V8's `d8` ("Planned: editor support and the analyzer"); the play button's Debug through the
 platform's own launcher is untested ("Missing tests").
 
 ## The debugger: header stops and the core library in the IDE (2026-11-15)
