@@ -56,6 +56,13 @@ use crate::{Mutator, Symbol, platform};
 /// failure paths rest on that when they see through a future among the
 /// operands (`interpreter::future::after_a_failed_leaf`,
 /// `docs/design/dispatch.md`, "Primitives").
+///
+/// Every leaf enters this function, so its prologue and epilogue are paid
+/// by the hottest ones. Fat LTO inlines the groups' leaves into it, and
+/// under Windows' calling convention a function saves and restores each of
+/// `xmm6`..`xmm15` it touches: with LLVM 23, an `Array`'s vectorized
+/// `copyFrom:to:` made it save all ten, and `Json` ran 3.4% slower than
+/// under LLVM 22. That copy is never inlined (`collections::copy_range`).
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: Primitive,

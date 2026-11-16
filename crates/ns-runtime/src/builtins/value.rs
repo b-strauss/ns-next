@@ -413,10 +413,13 @@ fn derived_equality<'gc>(
     // unrelated classes -- allocates nothing: an empty `Vec` allocates
     // only at its first push, and this leaf runs for every `=` that
     // reaches it: allocating the stack up front cost Richards 15 % of its
-    // time on Windows' heap.
+    // time on Windows' heap. The set of assumed pairs is made at its first
+    // insert for the same reason: a `HashSet::new()` reads its thread's
+    // random keys, a thread-local access and a 16-byte copy on every `=`,
+    // which a pair its first step decides never needs.
     let mut root = Some((left, right));
     let mut work = Vec::new();
-    let mut assumed: HashSet<(usize, usize)> = HashSet::new();
+    let mut assumed: Option<HashSet<(usize, usize)>> = None;
     // The root pair is charged like a pushed one.
     let mut charged = 1usize;
     while let Some((first, second)) = root.take().or_else(|| work.pop()) {
@@ -454,7 +457,8 @@ fn derived_equality<'gc>(
             }
             // A pair already assumed has been unfolded; pushing it again
             // would only spend budget on a node the walk discards.
-            if assumed.contains(&identity_pair(mutator, first_class, second_class)) {
+            let key = identity_pair(mutator, first_class, second_class);
+            if assumed.as_ref().is_some_and(|set| set.contains(&key)) {
                 None
             } else {
                 if charged >= NODE_BUDGET {
@@ -472,7 +476,9 @@ fn derived_equality<'gc>(
             // -- ends where one through slots does.
             Pair::Classes(first_class, second_class)
                 if !first_class.same(second_class)
-                    && assumed.insert(identity_pair(mutator, first_class, second_class)) =>
+                    && assumed
+                        .get_or_insert_with(HashSet::new)
+                        .insert(identity_pair(mutator, first_class, second_class)) =>
             {
                 let Some(pairs) = class_state_pairs(mutator, first_class, second_class) else {
                     return Some(false);
@@ -486,7 +492,9 @@ fn derived_equality<'gc>(
             }
             Pair::Classes(..) => {}
             Pair::State(first_object, second_object)
-                if assumed.insert(identity_pair(mutator, first_object, second_object)) =>
+                if assumed
+                    .get_or_insert_with(HashSet::new)
+                    .insert(identity_pair(mutator, first_object, second_object)) =>
             {
                 let first_slots = slots_of(mutator, first_object);
                 let second_slots = slots_of(mutator, second_object);

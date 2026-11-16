@@ -168,6 +168,12 @@ pub(crate) fn source_start<'gc>(
 
 /// `copyFrom:to:` on an `Array`: a new Array of the elements in the range.
 /// `None` when the receiver is no Array.
+///
+/// Never inlined: `builtins::execute`, which every leaf enters, would take
+/// on the registers its vectorized copy needs -- under Windows' calling
+/// convention all of `xmm6`..`xmm15` saved and restored on every leaf, the
+/// hottest `at:` and `size` included (`builtins::execute`).
+#[inline(never)]
 fn copy_range<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
