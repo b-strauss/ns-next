@@ -29,7 +29,9 @@ impl Interpreter {
     /// every send entry's index a send's of exactly that call site (a
     /// `SendMirror` for None), and every send named by one; every
     /// variable's registers below the reading body's `local_count` and
-    /// every `Outer` hop within its lexical depth; every span within the
+    /// every `Outer` hop within its lexical depth; a variable copied by
+    /// closures one of the body's own registers, named by exactly the
+    /// `MakeClosure`s that copy that register; every span within the
     /// module's text. Answers how many bodies it checked, or the first
     /// failure.
     ///
@@ -474,6 +476,33 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
             ));
         }
         let what = format!("the variable {}'s", variable.name);
+        // A list that misses a copy lets the debugger assign where that
+        // copy may already be stale; one that names an instruction copying
+        // nothing refuses an assignment it should allow. An empty list is
+        // what a read-only local has, which the table does not say, so the
+        // list is held to the code only where it names a copy.
+        if !variable.copied_by.is_empty() {
+            let (0, VariablePlace::Register(register)) = (variable.depth, variable.place) else {
+                return Err(format!(
+                    "the variable {} is copied by closures but is no register of the body's own",
+                    variable.name
+                ));
+            };
+            let copying: Vec<u32> = (0..length)
+                .filter(|index| {
+                    matches!(
+                        code.instruction(*index as usize),
+                        Instruction::MakeClosure { copied, .. } if copied.contains(&register)
+                    )
+                })
+                .collect();
+            if *variable.copied_by != copying[..] {
+                return Err(format!(
+                    "the variable {} is copied by the closures at {copying:?}, not at {:?}",
+                    variable.name, variable.copied_by
+                ));
+            }
+        }
         match variable.place {
             VariablePlace::Register(register) => {
                 register_below(register, code.local_count, &what)?;
@@ -620,6 +649,19 @@ mod tests {
                 hops_past_the_depth.variables[0].place =
                     VariablePlace::Outer { hops: 2, register: 0 };
                 broken.push(("an outer place past the lexical depth", hops_past_the_depth));
+
+                let mut copied_by_no_closure = metadata.clone();
+                copied_by_no_closure.variables[0].copied_by = Box::new([length - 1]);
+                broken.push(("a variable copied by no closure", copied_by_no_closure));
+
+                let enclosing = metadata
+                    .variables
+                    .iter()
+                    .position(|variable| variable.depth > 0)
+                    .expect("the method's variables");
+                let mut enclosing_copied = metadata.clone();
+                enclosing_copied.variables[enclosing].copied_by = Box::new([0]);
+                broken.push(("an enclosing variable copied by a closure", enclosing_copied));
 
                 let taking = |place: BlockPlace, after: u32| {
                     Box::new([BlockSendEntry {

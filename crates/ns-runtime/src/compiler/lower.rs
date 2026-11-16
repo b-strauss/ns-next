@@ -2869,6 +2869,8 @@ impl<'a> Lowerer<'a> {
     /// enclosing frame's outward, as `resolve_variable` reads through the
     /// innermost converted frame; one nothing was handed is read where its
     /// declaring frame keeps it. A by-reference body is handed nothing.
+    /// Each of the body's own assignable locals names the `MakeClosure`s
+    /// that copy it (`VariableEntry::copied_by`).
     fn collected_variables(&self, names: &[crate::Symbol]) -> Vec<VariableEntry> {
         // A layout holds one place per local the resolver numbers, and the
         // names are the same locals': a list that fell short would drop a
@@ -2883,17 +2885,43 @@ impl<'a> Lowerer<'a> {
                 .zip(&self.enclosing_variable_names)
                 .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len())
         );
+        // Each `MakeClosure` of the body and the registers it hands its
+        // block by value.
+        let closures: Vec<(u32, Vec<u16>)> = self
+            .code
+            .instructions()
+            .into_iter()
+            .zip(0_u32..)
+            .filter_map(|(instruction, index)| match instruction {
+                Instruction::MakeClosure { copied, .. } => Some((index, copied)),
+                _ => None,
+            })
+            .collect();
         let own = names
             .iter()
             .enumerate()
             .take(self.layout.places.len())
-            .map(|(index, name)| VariableEntry {
-                name: *name,
-                depth: 0,
-                place: variable_place(access_through(
-                    0,
-                    self.layout.own_location(super::local_index(index)),
-                )),
+            .map(|(index, name)| {
+                let access = access_through(0, self.layout.own_location(super::local_index(index)));
+                // Only a register an assignment may write can go stale in
+                // a copy: a parameter's and an immutable local's are
+                // read-only, and a vector variable's copies share its slot.
+                let copied_by = match access {
+                    Access::Register(register) if !self.read_only_locals[usize::from(register)] => {
+                        closures
+                            .iter()
+                            .filter(|(_, copied)| copied.contains(&register))
+                            .map(|(closure, _)| *closure)
+                            .collect()
+                    }
+                    _ => Box::new([]) as Box<[u32]>,
+                };
+                VariableEntry {
+                    name: *name,
+                    depth: 0,
+                    place: variable_place(access),
+                    copied_by,
+                }
             });
         let enclosing = self
             .layouts
@@ -2938,10 +2966,14 @@ impl<'a> Lowerer<'a> {
                                 })
                             })
                             .unwrap_or_else(|| access_through(hops, location));
+                        // A block copies an enclosing variable only from
+                        // the copy this frame was handed, which no
+                        // assignment in this frame writes.
                         VariableEntry {
                             name: *name,
                             depth: hops,
                             place: variable_place(access),
+                            copied_by: Box::new([]),
                         }
                     })
             });

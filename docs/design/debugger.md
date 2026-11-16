@@ -3613,6 +3613,13 @@ returning, errors, the depth reserve and aborting are planned.
 
 ### Assigning a captured variable
 
+**Partial:** the variable table names, for each of a body's own
+assignable locals, the `MakeClosure`s that copy it
+(`debugger::metadata::VariableEntry::copied_by`, held to the code by the
+metadata check), and `bytecode::may_have_run` answers whether one of them
+may have run before a program counter; the refusal of the assignment is
+planned.
+
 Closure conversion copies a captured mutable local into the closure
 unless something can write it once a block holds it
 (`compiler/capture.rs`, `needs_vector`): a local a block writes, one
@@ -3624,11 +3631,13 @@ would write one copy and leave the others stale, and the reference
 lowering, which does not copy, would behave differently. A copy exists
 only once its `MakeClosure` has run, though, and an assignment before
 it reaches every copy the body will make. So the variable table records,
-for each mutable local and each stop location, whether a `MakeClosure`
-that copies it may have run before the location -- a forward analysis
-over the body's control flow, a loop's back edge included, since a
-capture later in a loop's body may have run in an earlier iteration --
-and an assignment where one may have is refused with a message naming
+for each mutable local, the `MakeClosure`s that copy it, and at a stop a
+forward search over the body's control flow from its entry answers
+whether one of them may have run before the stop's location -- a loop's
+back edge included, since a capture later in a loop's body may have run
+in an earlier iteration; it reads the instructions as emitted, which a
+breakpoint's patch leaves as they were. An assignment where one may have
+run is refused with a message naming
 the capture, as IntelliJ refuses a local a lambda captured; in a block's
 own frame the variable is a copy, and is always refused (decided with
 the user on 2026-11-16). A variable in the indirection vector, a register

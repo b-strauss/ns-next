@@ -146,6 +146,16 @@ pub(crate) struct VariableEntry {
     /// not counted.
     pub(crate) depth: u16,
     pub(crate) place: VariablePlace,
+    /// The indices of this body's `MakeClosure`s that hand the variable to
+    /// their block by value, ascending: once one of them has run
+    /// (`bytecode::may_have_run`), an assignment would leave that copy
+    /// stale (`docs/design/debugger.md`, "Assigning a captured variable").
+    /// Empty for a variable no block copies, one in an indirection vector,
+    /// a parameter and an immutable local, which nothing assigns, an
+    /// enclosing scope's variable, which this frame holds a copy of at
+    /// most, and every variable under the reference lowering, which copies
+    /// nothing.
+    pub(crate) copied_by: Box<[u32]>,
 }
 
 /// Where a frame of the body reads a variable.

@@ -8,7 +8,7 @@ use super::again::{BodyOrigin, Member, PairedBodies, compile_level_again};
 use super::{
     BodyMetadata, Cache, MetadataCollector, SendEntry, VariableEntry, VariablePlace, VectorHolder,
 };
-use crate::bytecode::{CompiledCode, HEADER_REGISTERS, Instruction, compiles_alike};
+use crate::bytecode::{CompiledCode, HEADER_REGISTERS, Instruction, compiles_alike, may_have_run};
 use crate::compiler::Lowering;
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;
@@ -96,7 +96,165 @@ fn variable(name: &str, depth: u16, place: VariablePlace) -> VariableEntry {
         name: Symbol::intern(name),
         depth,
         place,
+        copied_by: Box::new([]),
     }
+}
+
+/// `entry`, copied by value by the `MakeClosure`s at `indices`.
+fn copied_by(entry: VariableEntry, indices: &[u32]) -> VariableEntry {
+    VariableEntry {
+        copied_by: indices.into(),
+        ..entry
+    }
+}
+
+/// The index of every `MakeClosure` of `code`, in order.
+fn closure_indices(code: &CompiledCode) -> Vec<u32> {
+    code.instructions()
+        .iter()
+        .enumerate()
+        .filter(|(_, instruction)| matches!(instruction, Instruction::MakeClosure { .. }))
+        .map(|(index, _)| u32::try_from(index).expect("small"))
+        .collect()
+}
+
+/// The variable `name` of `metadata`'s table.
+fn variable_named<'metadata>(
+    metadata: &'metadata BodyMetadata,
+    name: &str,
+) -> &'metadata VariableEntry {
+    metadata
+        .variables
+        .iter()
+        .find(|entry| entry.name == Symbol::intern(name))
+        .expect("the variable is named")
+}
+
+/// The first instruction of the statement of `metadata` at `position`.
+fn statement_start(metadata: &BodyMetadata, position: usize) -> u32 {
+    metadata.statements[position].instructions.start
+}
+
+#[test]
+fn copied_by_names_the_capturing_closures() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m = ( | x | x:: 1. holder value: [ x ]. sink: x )
+          holder = ( ^nil )
+          sink: value = ( )
+        ) : ()
+    "};
+    let (code, metadata, _) = collected(source);
+    let closures = closure_indices(&code);
+    assert_eq!(closures.len(), 1);
+    assert_eq!(*variable_named(&metadata, "x").copied_by, closures[..]);
+
+    let (reference, reference_collector) = collected_under(source, Lowering::Reference);
+    let reference_metadata = reference_collector
+        .take(&reference)
+        .expect("the reference method's metadata");
+    assert!(
+        variable_named(&reference_metadata, "x")
+            .copied_by
+            .is_empty(),
+        "the reference lowering copies nothing"
+    );
+}
+
+#[test]
+fn copied_by_is_empty_for_a_parameter_an_immutable_local_and_a_vector_variable() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m: p = ( | i = 1. v | v:: 2. holder value: [ p + i + v. v:: 3 ] )
+          holder = ( ^nil )
+        ) : ()
+    "};
+    let (code, metadata, _) = collected(source);
+    let Some(Instruction::MakeClosure { copied, .. }) = code
+        .instructions()
+        .into_iter()
+        .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+    else {
+        panic!("a block");
+    };
+    // The parameter and the immutable local are handed by value, the
+    // vector variable through its vector.
+    assert!(copied.contains(&0), "the parameter is handed");
+    for name in ["p", "i", "v"] {
+        assert!(
+            variable_named(&metadata, name).copied_by.is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn may_have_run_follows_the_back_edge() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m = ( | x i | x:: 1. i:: 0. [ i < 3 ] whileTrue: [ sink: x. holder value: [ x ]. i:: i + 1 ] )
+          holder = ( ^nil )
+          sink: value = ( )
+        ) : ()
+    "};
+    let (code, metadata, _) = collected(source);
+    assert_eq!(
+        statement_texts(&metadata, source),
+        vec![
+            "x:: 1",
+            "i:: 0",
+            "[ i < 3 ] whileTrue: [ sink: x. holder value: [ x ]. i:: i + 1 ]",
+            "i < 3",
+            "sink: x",
+            "holder value: [ x ]",
+            "i:: i + 1"
+        ]
+    );
+    let copies = variable_named(&metadata, "x").copied_by.clone();
+    assert_eq!(copies.len(), 1);
+    for before_the_loop in 0..3 {
+        assert!(!may_have_run(
+            &code,
+            &copies,
+            statement_start(&metadata, before_the_loop)
+        ));
+    }
+    // An earlier iteration made the closure before this one reached the
+    // loop's condition and its first statement.
+    for in_the_loop in 3..7 {
+        assert!(may_have_run(
+            &code,
+            &copies,
+            statement_start(&metadata, in_the_loop)
+        ));
+    }
+}
+
+#[test]
+fn may_have_run_is_false_before_the_capture() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          m = ( | x | x:: 1. sink: x. holder value: [ x ]. sink: x )
+          holder = ( ^nil )
+          sink: value = ( )
+        ) : ()
+    "};
+    let (code, metadata, _) = collected(source);
+    assert_eq!(
+        statement_texts(&metadata, source),
+        vec!["x:: 1", "sink: x", "holder value: [ x ]", "sink: x"]
+    );
+    let copies = variable_named(&metadata, "x").copied_by.clone();
+    assert_eq!(copies.len(), 1);
+    assert!(!may_have_run(&code, &copies, statement_start(&metadata, 1)));
+    // The statement that makes the closure has not made it at its start.
+    assert!(!may_have_run(&code, &copies, statement_start(&metadata, 2)));
+    assert!(may_have_run(&code, &copies, statement_start(&metadata, 3)));
+    assert!(!may_have_run(&code, &[], statement_start(&metadata, 3)));
 }
 
 #[test]
@@ -253,14 +411,18 @@ fn a_block_s_variables_cover_its_whole_lexical_chain() {
     "};
     let (code, metadata, collector) = collected(source);
     // The method: `p`, then `t` and `u` after the header's numbers, and
-    // the vector register after them.
+    // the vector register after them; the block copies `t`, the one
+    // assignable local it is handed by value.
     let t_register = 1 + HEADER_REGISTERS;
     let vector_register = t_register + 2;
     assert_eq!(
         metadata.variables.to_vec(),
         vec![
             variable("p", 0, VariablePlace::Register(0)),
-            variable("t", 0, VariablePlace::Register(t_register)),
+            copied_by(
+                variable("t", 0, VariablePlace::Register(t_register)),
+                &closure_indices(&code),
+            ),
             variable(
                 "u",
                 0,

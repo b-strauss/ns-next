@@ -1337,6 +1337,7 @@ impl<'a> Body<'a> {
             name: *name,
             depth: 0,
             place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
+            copied_by: Box::new([]),
         });
         let enclosing = self
             .enclosing_variable_names
@@ -1358,6 +1359,7 @@ impl<'a> Body<'a> {
                             hops: depth,
                             register: self.local_register(depth, super::local_index(index)),
                         },
+                        copied_by: Box::new([]),
                     })
             });
         own.chain(enclosing).collect()

@@ -301,6 +301,7 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
                 name,
                 depth: 0,
                 place: VariablePlace::Register(u16::try_from(position).ok()?),
+                copied_by: Box::new([]),
             })
         })
         .collect();
