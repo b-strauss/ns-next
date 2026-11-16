@@ -294,5 +294,5 @@ fn class_reference<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ClassReference<'
 /// The bytes of a `ByteArray` of `size`: every value a byte takes, so that
 /// a byte read from the wrong place shows.
 fn byte_array_contents(size: usize) -> Vec<u8> {
-    (0..size).map(|index| (index * 7 + 3) as u8).collect()
+    Vec::from_fn(size, |index| (index * 7 + 3) as u8)
 }

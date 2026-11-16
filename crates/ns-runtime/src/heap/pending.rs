@@ -115,7 +115,7 @@ impl PendingEphemerons {
 
     /// Every ephemeron never resolved: its key reached by nothing but
     /// ephemerons.
-    pub(in crate::heap) fn unresolved(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
+    pub(in crate::heap) fn unresolved(&self) -> impl Iterator<Item = NonZeroU64> {
         self.ephemerons
             .iter()
             .zip(&self.resolved)
@@ -143,7 +143,7 @@ pub(in crate::heap) mod work {
     /// index: 0 indexes from the first check on, so a test reaches the
     /// index without a fixpoint of three rounds.
     pub(in crate::heap) fn set_scanned_checks(checks: usize) {
-        SCANNED_CHECKS_OVERRIDE.with(|scanned_checks| scanned_checks.set(checks));
+        SCANNED_CHECKS_OVERRIDE.set(checks);
     }
 
     /// The work counted since the last `take`.
@@ -163,29 +163,29 @@ pub(in crate::heap) mod work {
     }
 
     pub(in crate::heap) fn count_lookup() {
-        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+        LOOKUPS.update(|lookups| lookups + 1);
     }
 
     pub(in crate::heap) fn count_resolution() {
-        RESOLUTIONS.with(|resolutions| resolutions.set(resolutions.get() + 1));
+        RESOLUTIONS.update(|resolutions| resolutions + 1);
     }
 
     pub(in crate::heap) fn count_examined() {
-        EXAMINED.with(|examined| examined.set(examined.get() + 1));
+        EXAMINED.update(|examined| examined + 1);
     }
 
     pub(in crate::heap) fn count_recorded() {
-        RECORDED.with(|recorded| recorded.set(recorded.get() + 1));
+        RECORDED.update(|recorded| recorded + 1);
     }
 
     /// The work counted since the last call, which starts the count
     /// afresh.
     pub(in crate::heap) fn take() -> Work {
         Work {
-            lookups: LOOKUPS.with(|lookups| lookups.replace(0)),
-            resolutions: RESOLUTIONS.with(|resolutions| resolutions.replace(0)),
-            examined: EXAMINED.with(|examined| examined.replace(0)),
-            recorded: RECORDED.with(|recorded| recorded.replace(0)),
+            lookups: LOOKUPS.replace(0),
+            resolutions: RESOLUTIONS.replace(0),
+            examined: EXAMINED.replace(0),
+            recorded: RECORDED.replace(0),
         }
     }
 }

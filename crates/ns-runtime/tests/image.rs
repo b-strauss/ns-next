@@ -3076,7 +3076,7 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
 /// byte takes, so that a byte read from the wrong place or the wrong word
 /// shows.
 fn byte_array_contents(size: usize) -> Vec<u8> {
-    (0..size).map(|index| (index * 7 + 3) as u8).collect()
+    Vec::from_fn(size, |index| (index * 7 + 3) as u8)
 }
 
 #[test]

@@ -1860,7 +1860,7 @@ impl EncodedBody {
     /// Every block the body creates, in the order its `MakeClosure`s were
     /// emitted, whatever form each took -- what the image decoder's checks
     /// on blocks read, without decoding a slot.
-    pub(crate) fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> + '_ {
+    pub(crate) fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> {
         (0..self.slots.len()).filter_map(move |index| match emitted_entry(self.original(index)) {
             EmittedEntry::Block(block) => {
                 let site = &self.blocks[block];

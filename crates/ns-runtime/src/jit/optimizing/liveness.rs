@@ -450,7 +450,7 @@ impl ValueSet {
         self.words[value.index() / 64] |= 1 << (value.index() % 64);
     }
 
-    fn values(&self) -> impl Iterator<Item = ValueId> + '_ {
+    fn values(&self) -> impl Iterator<Item = ValueId> {
         self.words.iter().enumerate().flat_map(|(index, word)| {
             (0..64)
                 .filter(move |bit| word & (1 << bit) != 0)

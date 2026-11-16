@@ -1051,7 +1051,7 @@ impl InlineCaches {
     /// word 0 (`verify_cells`), and the global cache's rows, a thousand,
     /// are mostly vacant.
     #[cfg(all(ns_jit, debug_assertions))]
-    pub(crate) fn cell_entries(&self) -> impl Iterator<Item = u64> + '_ {
+    pub(crate) fn cell_entries(&self) -> impl Iterator<Item = u64> {
         let cell_entry = |words: &[u64; cells::CELL_WORDS]| Cell::from_words(words).entry;
         let sites = self.cells.site_words(self.sites.len());
         let blocks = self.cells.block_words(self.pool.len());

@@ -1103,7 +1103,7 @@ fn holes_fit(range: Span, holes: &[Span]) -> bool {
 /// The module-text bounds of the pieces between `holes` within `range`:
 /// from the range's start to the first hole, between each two, and from
 /// the last hole to the range's end.
-fn segment_bounds(range: Span, holes: &[Span]) -> impl Iterator<Item = (u32, u32)> + '_ {
+fn segment_bounds(range: Span, holes: &[Span]) -> impl Iterator<Item = (u32, u32)> {
     let starts = std::iter::once(range.start).chain(holes.iter().map(|hole| hole.end));
     let ends = holes
         .iter()

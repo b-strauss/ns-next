@@ -73,7 +73,7 @@ impl Captures {
     }
 
     #[cfg(test)]
-    pub(crate) fn keys(&self) -> impl Iterator<Item = BodyKey> + '_ {
+    pub(crate) fn keys(&self) -> impl Iterator<Item = BodyKey> {
         self.bodies.keys().copied()
     }
 }

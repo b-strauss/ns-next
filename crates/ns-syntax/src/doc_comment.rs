@@ -88,7 +88,7 @@ impl DocComment {
             let trimmed = line.text.trim_start();
             let head = if in_fence { None } else { tag_head(line) };
             if trimmed.starts_with("```") {
-                in_fence = !in_fence;
+                in_fence.toggle();
             }
             match (head, tag_lines.last_mut()) {
                 (Some(head), _) => tag_lines.push((head, vec![line.text])),

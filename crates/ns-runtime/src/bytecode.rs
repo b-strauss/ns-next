@@ -1379,7 +1379,7 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
 /// it would be read past every check that holds a body to what its
 /// callees may have left (`docs/design/compiler.md`, "What a callee
 /// leaves").
-pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> + '_ {
+pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = u16> {
     let (fixed, listed): ([Option<u16>; 2], &[u16]) = match instruction {
         Instruction::Move { source, .. }
         | Instruction::StoreLocal { source, .. }
@@ -2584,7 +2584,7 @@ method foo: (args 1, registers 4)
     fn every_slot_patched_in_any_order_keeps_its_original() {
         let (code, _) = method_with_a_send();
         let count = code.instruction_count();
-        let slots: Vec<CompactInstruction> = (0..count).map(|index| code.slot(index)).collect();
+        let slots: Vec<CompactInstruction> = Vec::from_fn(count, |index| code.slot(index));
         let interleaved = |index: usize| (index * 7 + 3) % count;
         let order: Vec<usize> = if count % 7 == 0 {
             (0..count).rev().collect()

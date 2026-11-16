@@ -1623,14 +1623,8 @@ fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
     use crate::jit::optimizing::snapshot::SUPER_SENDS_READ_AS_NEVER_RUN;
     use crate::jit::optimizing::tree::SnapshotTree;
 
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            SUPER_SENDS_READ_AS_NEVER_RUN.set(false);
-        }
-    }
     SUPER_SENDS_READ_AS_NEVER_RUN.set(true);
-    let _reset = Reset;
+    let _reset = core::mem::DropGuard::new((), |()| SUPER_SENDS_READ_AS_NEVER_RUN.set(false));
     let source = A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY;
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))

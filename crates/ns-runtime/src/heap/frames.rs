@@ -50,21 +50,15 @@ thread_local! {
 /// included, so that no later test on the thread inherits the small stack.
 #[cfg(test)]
 pub(crate) fn with_stack_reservation<T>(bytes: usize, body: impl FnOnce() -> T) -> T {
-    struct ResetOverride;
-    impl Drop for ResetOverride {
-        fn drop(&mut self) {
-            STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(None));
-        }
-    }
-    STACK_RESERVATION_OVERRIDE.with(|cell| cell.set(Some(bytes)));
-    let _reset = ResetOverride;
+    STACK_RESERVATION_OVERRIDE.set(Some(bytes));
+    let _reset = core::mem::DropGuard::new((), |()| STACK_RESERVATION_OVERRIDE.set(None));
     body()
 }
 
 /// The reservation a new stack takes.
 pub(super) fn stack_reservation() -> usize {
     #[cfg(test)]
-    if let Some(bytes) = STACK_RESERVATION_OVERRIDE.with(|cell| cell.get()) {
+    if let Some(bytes) = STACK_RESERVATION_OVERRIDE.get() {
         return bytes;
     }
     STACK_RESERVATION

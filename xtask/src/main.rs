@@ -283,7 +283,7 @@ fn linked_worktree_git(root: &Path) -> Option<(PathBuf, PathBuf)> {
         root.display(),
         String::from_utf8_lossy(&output.stderr)
     );
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let text = String::from_utf8_lossy_owned(output.stdout);
     let mut lines = text.lines().map(PathBuf::from);
     let (Some(git_directory), Some(common_directory)) = (lines.next(), lines.next()) else {
         panic!(

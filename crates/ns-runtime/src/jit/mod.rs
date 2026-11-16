@@ -911,8 +911,8 @@ impl JitSlot {
     fn decay_exits(&self) -> u32 {
         let exits = self.exits.get() / 2;
         self.exits.set(exits);
-        self.abandonments.set(self.abandonments.get() / 2);
-        self.optimized_traps.set(self.optimized_traps.get() / 2);
+        self.abandonments.update(|abandonments| abandonments / 2);
+        self.optimized_traps.update(|traps| traps / 2);
         for copy in self.copies.borrow_mut().iter_mut() {
             copy.traps /= 2;
         }
@@ -3063,9 +3063,7 @@ impl JitState {
             }
         }
         #[cfg(test)]
-        self.body_lookup
-            .searches
-            .set(self.body_lookup.searches.get() + 1);
+        self.body_lookup.searches.update(|searches| searches + 1);
         // Installed in ascending order, so the body holding the offset, if
         // one does, is the last that starts at or before it.
         let after = self.bodies.partition_point(|body| body.start <= offset);
@@ -4448,7 +4446,7 @@ impl JitState {
             // is, so that a rare exit of it does not add up to its
             // abandonment over a long run either.
             if body.tier == Tier::Optimized && !body.free {
-                body.exits.set(body.exits.get() / 2);
+                body.exits.update(|exits| exits / 2);
             }
         }
         let mut revived = 0;

@@ -1164,7 +1164,7 @@ impl JitState {
             body.end -= delta;
             body.words -= delta;
             body.words_end -= delta;
-            body.usage.set(body.usage.get() / 2);
+            body.usage.update(|usage| usage / 2);
             // A twin's slot is its lean body's, which names the lean body;
             // optimized code's slot names it beside the lean body, as its
             // one copy or in its key's row.

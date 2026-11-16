@@ -886,7 +886,7 @@ fn unescape_string(raw: &str) -> String {
 }
 
 fn symbol_body(raw: &str) -> String {
-    let body = raw.strip_prefix('#').unwrap_or(raw);
+    let body = raw.trim_prefix('#');
     if body.starts_with('\'') {
         super::lexeme_body(body).replace("''", "'")
     } else {

@@ -2218,7 +2218,7 @@ impl RegisterSet {
         }
     }
 
-    fn registers(&self) -> impl Iterator<Item = usize> + '_ {
+    fn registers(&self) -> impl Iterator<Item = usize> {
         (0..self.words.len() * 64).filter(|register| self.contains(*register))
     }
 }

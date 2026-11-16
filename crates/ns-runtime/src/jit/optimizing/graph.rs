@@ -1039,7 +1039,7 @@ impl Graph {
 
     /// The blocks that head a loop, in block order.
     #[cfg(test)]
-    pub(crate) fn loop_heads(&self) -> impl Iterator<Item = BlockId> + '_ {
+    pub(crate) fn loop_heads(&self) -> impl Iterator<Item = BlockId> {
         self.blocks
             .iter()
             .enumerate()

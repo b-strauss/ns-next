@@ -106,14 +106,14 @@ fn line_text(raw: &str) -> String {
             text.push('\n');
         }
         let line = line.trim_start();
-        let line = line.strip_prefix("///").unwrap_or(line);
-        text.push_str(line.strip_prefix(' ').unwrap_or(line).trim_end());
+        let line = line.trim_prefix("///");
+        text.push_str(line.trim_prefix(' ').trim_end());
     }
     text
 }
 
 fn block_text(raw: &str) -> String {
-    let inner = raw.strip_prefix("(*").unwrap_or(raw);
+    let inner = raw.trim_prefix("(*");
     let inner = inner.strip_suffix("*)").unwrap_or(inner);
     let lines: Vec<&str> = lines(inner).collect();
     let Some((first, rest)) = lines.split_first() else {

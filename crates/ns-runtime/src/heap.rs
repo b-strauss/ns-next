@@ -1832,7 +1832,7 @@ impl ActivationStack {
     }
 
     /// The offset of every live frame, innermost first, by the caller words.
-    fn offsets(&self) -> impl Iterator<Item = u32> + '_ {
+    fn offsets(&self) -> impl Iterator<Item = u32> {
         let innermost = (self.innermost != NO_FRAME).then_some(self.innermost);
         std::iter::successors(innermost, |offset| self.caller(*offset))
     }
@@ -15802,7 +15802,7 @@ mod tests {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Object");
         for size in [0, 1, 8, 13, 40] {
-            let bytes: Vec<u8> = (0..size).map(|index| index as u8 ^ 0x5A).collect();
+            let bytes = Vec::from_fn(size, |index| index as u8 ^ 0x5A);
             for residue in 0..object::ALIGNMENT_WORDS {
                 // A filler that puts the placeholder's header at `residue`
                 // within a 32-byte line: the filler's header is two words
@@ -19293,7 +19293,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         for size in [0, 1, 7, 8, 9, 33] {
-            let bytes: Vec<u8> = (0..size).map(|byte| byte as u8 ^ 0xA5).collect();
+            let bytes = Vec::from_fn(size, |byte| byte as u8 ^ 0xA5);
             let object = heap.allocate_byte_array(class, &bytes);
             assert!(heap.is_byte_array(object));
             assert!(!heap.is_string(object), "a ByteArray is never a String");

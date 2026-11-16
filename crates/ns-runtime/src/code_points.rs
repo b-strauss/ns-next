@@ -112,7 +112,7 @@ impl CodePoints {
         }
     }
 
-    pub fn elements(&self) -> impl Iterator<Item = u32> + '_ {
+    pub fn elements(&self) -> impl Iterator<Item = u32> {
         let (narrow, wide): (&[u8], &[u32]) = match &self.0 {
             Representation::Narrow(bytes) => (bytes, &[]),
             Representation::Wide(words) => (&[], words),
@@ -125,7 +125,7 @@ impl CodePoints {
 
     /// Every element is a scalar value by construction, so the replacement
     /// character is never produced; it stands in for a panic.
-    pub fn characters(&self) -> impl Iterator<Item = char> + '_ {
+    pub fn characters(&self) -> impl Iterator<Item = char> {
         self.elements()
             .map(|code_point| char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER))
     }
