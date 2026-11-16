@@ -1625,10 +1625,16 @@ pub(crate) fn successors(
     )
 )]
 pub(crate) fn may_have_run(code: &CompiledCode, indices: &[u32], program_counter: u32) -> bool {
+    let length = code.instruction_count();
+    // A counter outside the body is reached by no path, and would answer
+    // that nothing ran -- an assignment allowed -- without a word.
+    debug_assert!(
+        (program_counter as usize) < length,
+        "internal: program counter {program_counter} outside a body of {length} instructions"
+    );
     if indices.is_empty() {
         return false;
     }
-    let length = code.instruction_count();
     // Each instruction is visited at most twice: before any of `indices`
     // has run on the path, and after.
     let mut visited = vec![[false; 2]; length];
@@ -2090,6 +2096,23 @@ mod tests {
         assert!(!may_have_run(&code, &[0], 0), "not yet run where it stands");
         assert!(!may_have_run(&code, &[5], 6), "never reached");
         assert!(!may_have_run(&code, &[], 4));
+    }
+
+    /// A counter past the body would answer that nothing ran there.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "outside a body")]
+    fn may_have_run_refuses_a_counter_outside_the_body() {
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 0 }],
+            1,
+            1,
+            0,
+            vec![],
+            Span::new(0, 0),
+        );
+        may_have_run(&code, &[0], 1);
     }
 
     /// A body's reach is the deepest frame anything in it addresses: its own

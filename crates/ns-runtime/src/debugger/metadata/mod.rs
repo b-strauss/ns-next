@@ -151,10 +151,19 @@ pub(crate) struct VariableEntry {
     /// (`bytecode::may_have_run`), an assignment would leave that copy
     /// stale (`docs/design/debugger.md`, "Assigning a captured variable").
     /// Empty for a variable no block copies, one in an indirection vector,
-    /// a parameter and an immutable local, which nothing assigns, an
-    /// enclosing scope's variable, which this frame holds a copy of at
-    /// most, and every variable under the reference lowering, which copies
-    /// nothing.
+    /// a parameter and an immutable local, which nothing assigns, every
+    /// variable under the reference lowering, which copies nothing, and
+    /// every enclosing scope's variable (`depth` above 0), whose copies
+    /// this body's index space cannot name. For such a variable the place
+    /// decides: a `Register` is a copy this frame was handed, which an
+    /// assignment would leave its siblings stale beside, so it is always
+    /// refused; a `Vector` slot is shared by every copy and is assigned;
+    /// and an `Outer { hops, register }` is the declaring frame's own
+    /// register, decided by the declaring body's own depth-0 entry for
+    /// that register -- its `copied_by` and `may_have_run` at the
+    /// declaring frame's program counter in the declaring body's code --
+    /// and refused whenever that list is non-empty if the declaring frame
+    /// no longer runs.
     pub(crate) copied_by: Box<[u32]>,
 }
 

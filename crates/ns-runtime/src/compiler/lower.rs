@@ -2966,9 +2966,12 @@ impl<'a> Lowerer<'a> {
                                 })
                             })
                             .unwrap_or_else(|| access_through(hops, location));
-                        // A block copies an enclosing variable only from
-                        // the copy this frame was handed, which no
-                        // assignment in this frame writes.
+                        // This body's `MakeClosure`s name nothing an
+                        // enclosing variable's assignment must ask: a
+                        // `Register` place is a copy this frame was
+                        // handed, and an `Outer` place the declaring
+                        // frame's own register, whose copies that frame's
+                        // own entry names (`VariableEntry::copied_by`).
                         VariableEntry {
                             name: *name,
                             depth: hops,
