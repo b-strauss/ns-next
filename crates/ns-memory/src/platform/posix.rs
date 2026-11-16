@@ -619,7 +619,7 @@ pub(crate) fn end_code_write() {}
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 pub(crate) unsafe fn flush_instruction_cache(address: *const u8, bytes: usize) {
     // `libc` does not declare it; it is libSystem's.
-    extern "C" {
+    unsafe extern "C" {
         fn sys_icache_invalidate(start: *mut libc::c_void, length: libc::size_t);
     }
     // SAFETY: the caller guarantees the range is mapped; invalidating the

@@ -1591,7 +1591,10 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
         reason = "read by the baseline compiler, built only where `cfg(ns_jit)` is set, and the tests"
     )
 )]
-pub(crate) fn successors(index: u32, instruction: &Instruction) -> impl Iterator<Item = u32> {
+pub(crate) fn successors(
+    index: u32,
+    instruction: &Instruction,
+) -> impl Iterator<Item = u32> + use<> {
     let next = if falls_through(instruction) {
         index.checked_add(1)
     } else {

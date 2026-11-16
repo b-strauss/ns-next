@@ -822,7 +822,7 @@ fn encode_literal(
 fn class_references<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
-) -> impl Iterator<Item = ObjectReference<'gc>> {
+) -> impl Iterator<Item = ObjectReference<'gc>> + use<'gc> {
     let own_context = !applies_a_shipped_mixin(heap, class);
     let (enclosing, declaring_class) = if own_context {
         (heap.class_enclosing(class), heap.class_declaring(class))
@@ -1316,7 +1316,7 @@ fn written_by_value<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> bool
 fn frame_references<'gc>(
     heap: &Heap<'gc>,
     frame: FrameReference<'gc>,
-) -> impl Iterator<Item = Value<'gc>> {
+) -> impl Iterator<Item = Value<'gc>> + use<'gc> {
     let snapshot = heap.frame_record(frame);
     let kind_reference = match &snapshot.kind {
         // The closure object a closure activation runs is a record of its
