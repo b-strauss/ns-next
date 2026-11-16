@@ -3532,11 +3532,23 @@ principle", requires.
   the block would read `nil` at exit status 0.
 - **Its errors.** The handler search walks below the expression into the
   program's own `on:do:` frames, and a program's handler would catch the
-  expression's error and unwind the program's frames. So the expression
-  runs inside a handler for every `Exception`, at its base, that answers
-  the exception as the evaluation's result; `retry` and `pass` cannot
-  cross it. An `on:do:` does not stop a non-local return, so `^` in an
-  evaluated expression is refused by its compiler, and the evaluation's
+  expression's error and unwind the program's frames. So the evaluation's
+  base frame ends the handler search (decided with the user on
+  2026-11-16): an exception no handler within the expression takes runs
+  its `defaultAction` as it would in the program, and where that ends
+  the run -- `Exception>>defaultAction` does, through the `terminate:`
+  leaf -- the unwind ends at the base, and the evaluation answers the
+  error, the exception object held at the leaf so that it can be
+  inspected; `retry` and `pass` cannot cross the base. A handler for
+  every `Exception` at the base, which answered the exception itself,
+  is the way not taken: a program class may override `defaultAction`
+  and have `signal` answer its value -- a resumable `Missing` whose
+  `defaultAction` answers 0, or an `Error` whose does -- and the
+  expression must answer what the same code answers in the program,
+  where a handler at the base would answer the exception; the Newspeak
+  IDE's `on: Error do:` at its base (`newspeak/ActivationMirrors.ns:368`)
+  cuts off the same for an `Error`. The `^` is refused by the
+  expression's compiler, and the evaluation's
   base frame is an unwind barrier the unwinder stops at: a program block
   the expression calls whose `^` would return to a home below the
   evaluation -- `b value` for a `b` holding `[^1]` -- is stopped there,
