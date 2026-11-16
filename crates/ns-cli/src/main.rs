@@ -184,12 +184,12 @@ enum Command {
     /// Write the `.ns` sources this binary embeds -- the kernel, the
     /// manifest and the factories -- into DIRECTORY in the layout of
     /// `core-library/`, with a `fingerprint` file; or print their
-    /// fingerprint; or print them as JSON. The directory is created, and
-    /// refused when it holds anything that is not one of these files.
+    /// fingerprint. The directory is created, and refused when it holds
+    /// anything that is not one of these files.
     #[command(group(
         clap::ArgGroup::new("form")
             .required(true)
-            .args(["directory", "fingerprint", "json"])
+            .args(["directory", "fingerprint"])
     ))]
     ShippedSources {
         directory: Option<PathBuf>,
@@ -197,10 +197,6 @@ enum Command {
         /// of writing them. It changes with any embedded `.ns` text.
         #[arg(long)]
         fingerprint: bool,
-        /// Print `{ "fingerprint": ..., "modules": [ { "name", "path",
-        /// "text" } ] }` instead of writing.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -308,7 +304,6 @@ fn execute(command: Command) -> ExitCode {
         Command::ShippedSources {
             directory,
             fingerprint,
-            json,
-        } => commands::shipped_sources::execute(directory.as_deref(), fingerprint, json),
+        } => commands::shipped_sources::execute(directory.as_deref(), fingerprint),
     }
 }

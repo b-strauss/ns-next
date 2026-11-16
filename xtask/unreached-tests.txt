@@ -2201,7 +2201,7 @@ ns-cli::shipped_sources a_foreign_file_in_the_directory_is_refused_and_nothing_i
 ns-cli::shipped_sources every_embedded_module_is_written_equal_to_the_binarys_text
 ns-cli::shipped_sources exactly_one_form_is_asked_for
 ns-cli::shipped_sources its_own_files_are_overwritten
-ns-cli::shipped_sources json_lists_every_module_with_its_path_and_text
+ns-cli::shipped_sources json_is_an_unknown_argument
 ns-cli::shipped_sources the_fingerprint_agrees_between_every_form
 ns-cli::target_runner a_runner_goes_before_the_binary_with_its_own_arguments
 ns-cli::target_runner the_binary_starts_through_the_target_command

@@ -1,5 +1,5 @@
 //! `ns-next shipped-sources`: the embedded core library written out, for the
-//! plugin and for an agent with a shell.
+//! plugin.
 
 mod common;
 use common::{ScratchDirectory, ns_next};
@@ -50,11 +50,8 @@ fn the_fingerprint_agrees_between_every_form() {
     expect_ok(&["shipped-sources".as_ref(), target.as_os_str()]);
     let printed = expect_ok(&["shipped-sources".as_ref(), "--fingerprint".as_ref()]);
     let written = std::fs::read_to_string(target.join("fingerprint")).expect("fingerprint file");
-    let json = expect_ok(&["shipped-sources".as_ref(), "--json".as_ref()]);
-    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json");
     assert_eq!(printed.lines().count(), 1);
     assert_eq!(written, printed);
-    assert_eq!(parsed["fingerprint"], printed.trim_end());
     assert_eq!(
         printed.trim_end(),
         ns_runtime::shipped_sources_fingerprint()
@@ -62,17 +59,10 @@ fn the_fingerprint_agrees_between_every_form() {
 }
 
 #[test]
-fn json_lists_every_module_with_its_path_and_text() {
-    let json = expect_ok(&["shipped-sources".as_ref(), "--json".as_ref()]);
-    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json");
-    let modules = parsed["modules"].as_array().expect("modules");
-    let files = ns_runtime::shipped_source_files();
-    assert_eq!(modules.len(), files.len());
-    for (module, file) in modules.iter().zip(&files) {
-        assert_eq!(module["name"], file.name);
-        assert_eq!(module["path"], file.path);
-        assert_eq!(module["text"], file.text);
-    }
+fn json_is_an_unknown_argument() {
+    let (ok, _, error) = ns_next(&["shipped-sources".as_ref(), "--json".as_ref()]);
+    assert!(!ok);
+    assert!(error.contains("--json"), "{error}");
 }
 
 #[test]
