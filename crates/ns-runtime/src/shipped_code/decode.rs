@@ -4,9 +4,11 @@
 
 use std::rc::Rc;
 
-use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
+use ns_syntax::ast::AccessModifier;
 
+use crate::ArbitraryInteger;
+use crate::Symbol;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
@@ -19,8 +21,6 @@ use crate::mixin::{
 };
 use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
-use crate::ArbitraryInteger;
-use crate::Symbol;
 
 use super::bytes::ByteReader;
 

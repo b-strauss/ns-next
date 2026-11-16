@@ -9,16 +9,16 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ns_runtime::{
     Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::breakpoints::{self, Breakpoints, FunctionEntry, LineEntry};
 use super::connection::{self, Token};

@@ -5,8 +5,8 @@
 
 use std::rc::Rc;
 
-use crate::types::*;
 use crate::Symbol;
+use crate::types::*;
 
 use super::Mutator;
 

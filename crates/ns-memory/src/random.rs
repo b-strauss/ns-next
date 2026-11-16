@@ -44,7 +44,7 @@ pub fn fill_random(bytes: &mut [u8]) -> Result<(), RandomError> {
 #[cfg(windows)]
 fn fill(bytes: &mut [u8]) -> Result<(), RandomError> {
     use windows_sys::Win32::Security::Cryptography::{
-        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
     };
     // The call takes a 32-bit length, so a larger buffer goes in pieces.
     for chunk in bytes.chunks_mut(u32::MAX as usize) {
@@ -111,7 +111,7 @@ fn fill(bytes: &mut [u8]) -> Result<(), RandomError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fill_random, RandomError};
+    use super::{RandomError, fill_random};
 
     #[test]
     fn fill_random_fills_a_large_buffer() {

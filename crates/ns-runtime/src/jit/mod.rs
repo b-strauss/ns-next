@@ -54,7 +54,7 @@ use ns_memory::{CodeOffset, CodeWriter, EntryBlock};
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
-use crate::interpreter::{FeedbackBase, Mutator, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
+use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 
 /// The code zone's size unless a test asks for another. A first guess
@@ -3984,7 +3984,7 @@ pub(crate) enum Stubbed<'method> {
 /// arguments than a closure stub shifts past, a `doesNotUnderstand:`
 /// handler -- and where there is no zone: the interpreter runs the send.
 pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
-    use crate::builtins::primitive::{mirror_entry, BlockPrimitive, MachineCall, Primitive};
+    use crate::builtins::primitive::{BlockPrimitive, MachineCall, Primitive, mirror_entry};
     use crate::interpreter::resolve::Chain;
     use crate::mixin::{AccessorKind, MethodFastPath, QuickConstant};
     let zone = state.zone.as_ref()?;
@@ -6469,7 +6469,10 @@ fn verify_blocks_at_poll_entries(
                 assert!(
                     home.locations.iter().any(|(own, location)| {
                         own == register
-                            && matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                            && matches!(
+                                location,
+                                Location::FrameWord | Location::EliminatedBlock(_)
+                            )
                     }),
                     "internal: a block live at a poll copies r{register}, which the frame does not keep there"
                 );
@@ -8844,7 +8847,7 @@ mod tests {
 
     #[test]
     fn the_entries_a_revival_waits_for_double_up_to_their_cap() {
-        use super::{revival_entries, REVIVAL_ENTRIES};
+        use super::{REVIVAL_ENTRIES, revival_entries};
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 1), 4096);
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 2), 8192);
         assert_eq!(revival_entries(REVIVAL_ENTRIES, 5), 65_536);
@@ -8960,8 +8963,8 @@ mod tests {
 
     #[test]
     fn a_copy_speculates_up_to_its_last_version() {
-        use super::optimizing::Speculation;
         use super::LAST_VERSION;
+        use super::optimizing::Speculation;
         assert_eq!(Speculation::at_version(0), Speculation::Traps);
         assert_eq!(Speculation::at_version(LAST_VERSION), Speculation::Traps);
         assert_eq!(Speculation::at_version(LAST_VERSION + 1), Speculation::None);
@@ -9037,7 +9040,7 @@ mod tests {
         use crate::jit::stubs::{ExitKind, MachineExit};
         use ns_memory::CodeOffset;
 
-        use crate::jit::{compile_twin, install, machine_entry, note_entry, JitState};
+        use crate::jit::{JitState, compile_twin, install, machine_entry, note_entry};
 
         fn body() -> Rc<CompiledCode> {
             Rc::new(CompiledCode::new(
@@ -9159,9 +9162,11 @@ mod tests {
             assert!(machine_entry(&state, &code).is_some());
             assert!(code.jit.push_is_armed(), "a push enters it");
             assert!(state.is_entered_here(&code));
-            assert!(state
-                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
-                .is_some());
+            assert!(
+                state
+                    .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                    .is_some()
+            );
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
@@ -9190,9 +9195,11 @@ mod tests {
             enter_twice(&mut state, &code);
             assert!(machine_entry(&state, &code).is_some());
             assert!(code.jit.push_is_armed(), "a push enters it");
-            assert!(state
-                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
-                .is_some());
+            assert!(
+                state
+                    .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                    .is_some()
+            );
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
@@ -9513,9 +9520,11 @@ mod tests {
                 state.body_at(first_start, heap).is_none(),
                 "the stubs' code, or the padding after them"
             );
-            assert!(state
-                .body_at(address(ns_memory::CodeOffset(1)), heap)
-                .is_none());
+            assert!(
+                state
+                    .body_at(address(ns_memory::CodeOffset(1)), heap)
+                    .is_none()
+            );
             assert!(state.body_at(0, heap).is_none(), "outside the zone");
             // A body that died answers nothing, never another body. (The
             // two above live on in the heap's code rows, which `body_at`
@@ -9605,7 +9614,7 @@ mod tests {
         #[test]
         fn only_exits_that_say_something_of_the_code_count() {
             use crate::jit::stubs::MachineExit;
-            use crate::jit::{exit_counts, ExitCircumstances};
+            use crate::jit::{ExitCircumstances, exit_counts};
             let plain = ExitCircumstances::default();
             let at_the_bound = MachineExit::PushRefused {
                 at_the_bound: true,
@@ -10253,7 +10262,7 @@ mod tests {
         fn a_receiver_guarded_cell_names_its_copy() {
             use crate::interpreter::inline_cache::{CacheEntry, Target};
             use crate::interpreter::resolve::Chain;
-            use crate::jit::{cell_entry, CustomizationKey};
+            use crate::jit::{CustomizationKey, cell_entry};
 
             let source = ONE_METHOD_ON_TWO_APPLICATIONS;
             let module = ns_syntax::parse(source).expect("parse");
@@ -10497,7 +10506,7 @@ mod tests {
         fn a_receiver_guarded_cell_at_each_level_names_that_level_s_copy() {
             use crate::interpreter::inline_cache::{CacheEntry, Target};
             use crate::interpreter::resolve::Chain;
-            use crate::jit::{cell_entry, CustomizationKey};
+            use crate::jit::{CustomizationKey, cell_entry};
 
             let source = ONE_MIXIN_APPLIED_TWICE;
             let module = ns_syntax::parse(source).expect("parse");
@@ -11220,10 +11229,10 @@ mod cross_assembly_tests {
     use std::rc::Rc;
 
     use super::macro_assembler::Abi;
-    use super::{assemble, baseline, stubs, targets, CompileSettings, FeedbackBase};
+    use super::{CompileSettings, FeedbackBase, assemble, baseline, stubs, targets};
+    use crate::Lowering;
     use crate::bytecode::{CompiledCode, Instruction};
     use crate::mixin::{MethodEntry, Mixin, MixinMethod};
-    use crate::Lowering;
 
     /// The bytes of an assembled stub are whole AArch64 instructions.
     fn assert_instructions(name: &str, bytes: &[u8]) {

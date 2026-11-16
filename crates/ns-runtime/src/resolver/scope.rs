@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use ns_syntax::ast;
 
-use crate::types::Binding;
 use crate::Symbol;
+use crate::types::Binding;
 
 /// One method or closure body's own parameters and local slots, innermost
 /// activation last, each with whether it declares a setter: §3.6 makes a

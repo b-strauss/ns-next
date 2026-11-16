@@ -1041,10 +1041,12 @@ mod tests {
         let mut parser = Parser::new(&source, tokens);
         let _ = parser.parse_expression_for_test();
         assert!(!parser.diagnostics.is_empty());
-        assert!(parser
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("nested too deeply")));
+        assert!(
+            parser
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("nested too deeply"))
+        );
     }
 
     #[test]

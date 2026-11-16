@@ -4,7 +4,7 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::bytecode::{BodyLimit, CallSite, CodeKind, Instruction, Literal, HEADER_REGISTERS};
+use ns_runtime::bytecode::{BodyLimit, CallSite, CodeKind, HEADER_REGISTERS, Instruction, Literal};
 use ns_runtime::dispatch::Lookup;
 use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, ValueKind};
 

@@ -28,7 +28,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 TokenKind::RightBracket | TokenKind::RightParenthesis | TokenKind::EndOfInput => {
-                    break
+                    break;
                 }
                 TokenKind::Caret => {
                     let caret = self.bump();
@@ -2178,11 +2178,13 @@ mod class_tests {
 
     #[test]
     fn trailing_garbage_is_an_error() {
-        assert!(crate::parse(indoc! {"
+        assert!(
+            crate::parse(indoc! {"
             class C = () ()
             extra
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     // Malformed G1 input must terminate with a diagnostic, not hang:
@@ -2190,35 +2192,43 @@ mod class_tests {
     // so `parse_header_body`'s loop needs an explicit forward-progress guard.
     #[test]
     fn malformed_body_caret_is_error() {
-        assert!(crate::parse(indoc! {"
+        assert!(
+            crate::parse(indoc! {"
             class C = ( ^ 1 ) ()
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     #[test]
     fn malformed_body_semicolon_is_error() {
-        assert!(crate::parse(indoc! {"
+        assert!(
+            crate::parse(indoc! {"
             class C = ( ; ) ()
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     #[test]
     fn malformed_body_binary_selector_is_error() {
-        assert!(crate::parse(indoc! {"
+        assert!(
+            crate::parse(indoc! {"
             class C = ( + ) ()
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     // A `|..|` slot section inside G2 is malformed (it belongs to G1).
     #[test]
     fn slot_section_in_g2_is_error() {
-        assert!(crate::parse(indoc! {"
+        assert!(
+            crate::parse(indoc! {"
             class C = () ( | x | ) : ()
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     // --- corpus-shaped tests (real two-group grammar) ---
@@ -2473,9 +2483,11 @@ mod class_tests {
         let Err(diagnostics) = crate::parse(&source) else {
             panic!("a chain past the limit is refused");
         };
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "expression nested too deeply"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "expression nested too deeply")
+        );
     }
 
     /// Nested pattern literals recurse once per level, past the limit a
@@ -2489,9 +2501,11 @@ mod class_tests {
         let Err(diagnostics) = crate::parse(&source) else {
             panic!("nesting past the limit is refused");
         };
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "pattern nested too deeply"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "pattern nested too deeply")
+        );
     }
 
     #[test]
@@ -2505,9 +2519,11 @@ mod class_tests {
         let Err(diagnostics) = crate::parse(&source) else {
             panic!("expected Err")
         };
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("nested too deeply")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("nested too deeply"))
+        );
     }
 
     #[test]
@@ -3319,10 +3335,12 @@ mod specification_tests {
         refused("class Box = Object new ( self foo.. self bar ) ()");
         refused("class Box = Object new ( self foo self bar ) ()");
         refused("first = ( ^1 ). second = ( ^2 )");
-        assert!(parse_module_source(indoc::indoc! {"
+        assert!(
+            parse_module_source(indoc::indoc! {"
             class Root = () () : ( first = ( ^1 ). )
         "})
-        .is_err());
+            .is_err()
+        );
     }
 
     /// §6.1's `inheritanceClause → [inheritancePrefix] unarySelector [message]`.
@@ -3516,10 +3534,11 @@ mod specification_tests {
             .map(|slot| slot.simultaneous)
             .collect();
         assert_eq!(header, vec![true, true]);
-        assert!(body
-            .slots()
-            .filter(|slot| slot.lazy)
-            .all(|slot| !slot.simultaneous));
+        assert!(
+            body.slots()
+                .filter(|slot| slot.lazy)
+                .all(|slot| !slot.simultaneous)
+        );
         let temporaries = |selector_name: &str| -> Vec<bool> {
             body.methods()
                 .find(|method| match &method.pattern {
@@ -3871,9 +3890,11 @@ mod type_annotation_tests {
         assert!(class.factory_where_clause.is_none());
         let superclass = class.superclass.as_ref().expect("Object new");
         assert!(superclass.receiver_type_arguments.is_none());
-        assert!(class.instance_side.header_slots[0]
-            .type_annotation
-            .is_none());
+        assert!(
+            class.instance_side.header_slots[0]
+                .type_annotation
+                .is_none()
+        );
         let method = class.instance_side.methods().next().expect("at:");
         let MessagePattern::Keyword { parts } = &method.pattern else {
             panic!("at:");

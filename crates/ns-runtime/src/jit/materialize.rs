@@ -40,13 +40,13 @@
 
 use std::rc::Rc;
 
+use crate::Value;
 use crate::bytecode::{CodeKind, CompiledCode};
 use crate::heap::{
     ActivationReference, ClassReference, CodeId, Heap, MachineFrame, MachineKind, ObjectReference,
 };
 use crate::interpreter::Mutator;
 use crate::mixin::MixinMethod;
-use crate::Value;
 
 use super::optimizing::allocate::Location;
 use super::optimizing::graph::{ClassRecipe, ClassStart};

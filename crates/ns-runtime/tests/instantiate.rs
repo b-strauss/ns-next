@@ -926,10 +926,12 @@ fn a_class_without_code_still_answers_a_fresh_instance_per_new() {
         let second = elements[1].as_object().expect("an instance");
         assert!(!first.same(second), "each `new` answers a fresh instance");
         for made in [first, second] {
-            assert!(mutator
-                .heap()
-                .object_class(made)
-                .same(object(mutator, &empty)));
+            assert!(
+                mutator
+                    .heap()
+                    .object_class(made)
+                    .same(object(mutator, &empty))
+            );
         }
     });
 }

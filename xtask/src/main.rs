@@ -1379,9 +1379,11 @@ mod tests {
                     ["ns-next-gates", "bash", "-c"]
                 );
             }
-            assert!(steps[2..]
-                .iter()
-                .all(|step| script_of(step).contains("cargo ")));
+            assert!(
+                steps[2..]
+                    .iter()
+                    .all(|step| script_of(step).contains("cargo "))
+            );
         }
     }
 

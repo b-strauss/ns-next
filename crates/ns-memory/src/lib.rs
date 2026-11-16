@@ -37,9 +37,9 @@ use std::ops::Range;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-pub use code_zone::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
+pub use code_zone::{CodeOffset, CodeWriter, CodeZone, ENTRY_BLOCK_WORDS, EntryBlock, Leaf};
 use page_map::PageMap;
-pub use random::{fill_random, RandomError};
+pub use random::{RandomError, fill_random};
 
 /// How a committed page range may be accessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

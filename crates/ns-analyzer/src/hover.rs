@@ -513,7 +513,9 @@ mod tests {
     fn a_class_side_method_says_where_it_is() {
         assert_eq!(
             hover_at("fresh", 0).as_deref(),
-            Some("```newspeak\npublic fresh\n```\n\nMakes one.\nFresh.\n\n*In* `Shapes`'s class side")
+            Some(
+                "```newspeak\npublic fresh\n```\n\nMakes one.\nFresh.\n\n*In* `Shapes`'s class side"
+            )
         );
     }
 

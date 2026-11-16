@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use ns_assembler::Register;
 
 use super::graph::{BlockId, Graph, Node, ValueId};
-use super::liveness::{bind, poll_target, Binding, Intervals, Positions};
+use super::liveness::{Binding, Intervals, Positions, bind, poll_target};
 use super::plan::EliminatedId;
 use crate::jit::macro_assembler::Roles;
 

@@ -41,8 +41,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::ops::Range;
 
 use super::{
-    falls_through, jump_target, register_written, registers_read, CompiledCode, Instruction,
-    INSTRUCTION_LIMIT,
+    CompiledCode, INSTRUCTION_LIMIT, Instruction, falls_through, jump_target, register_written,
+    registers_read,
 };
 
 /// The parser's nesting limit (`ns_syntax`'s `MAX_DEPTH`): how many guarded

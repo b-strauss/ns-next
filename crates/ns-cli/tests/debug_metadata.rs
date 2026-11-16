@@ -370,7 +370,7 @@ fn breakpoints_of(
             other => {
                 return Err(
                     format!("the breakpoints of {module} were expected, not {other:?}").into(),
-                )
+                );
             }
         }
     }

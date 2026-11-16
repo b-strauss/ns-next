@@ -28,7 +28,7 @@ use lsp_types::{
 };
 use ns_syntax::{Severity, Span};
 
-use crate::analysis::{analyze, Analysis};
+use crate::analysis::{Analysis, analyze};
 use crate::breakable::{self, Breakable};
 use crate::code_actions;
 use crate::document_symbols;
@@ -165,7 +165,7 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     let ranges = documents
@@ -195,7 +195,7 @@ fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Res
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     let edits: Vec<TextEdit> = documents
@@ -249,7 +249,7 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     let uri = &params.text_document.uri;
@@ -322,7 +322,7 @@ fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     // A document the client never opened -- or already closed -- has no
@@ -358,7 +358,7 @@ fn hover_of(documents: &HashMap<String, Document>, request: Request) -> Response
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     let position = params.text_document_position_params;
@@ -403,7 +403,7 @@ fn breakable_lines_of(
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 format!("malformed {} request: {error}", breakable::METHOD),
-            )
+            );
         }
     };
     let Some(document) = documents.get(identifier.uri.as_str()) else {
@@ -548,7 +548,7 @@ fn code_actions_of(documents: &HashMap<String, Document>, request: Request) -> R
                 request.id,
                 ErrorCode::InvalidParams as i32,
                 error.to_string(),
-            )
+            );
         }
     };
     let uri = &params.text_document.uri;

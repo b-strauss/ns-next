@@ -26,14 +26,14 @@ pub enum Lowering {
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 
+use crate::Symbol;
 use crate::bytecode::{BodyLimit, CodeKind, CompiledCode, Instruction, Literal};
 use crate::debugger::metadata::MetadataCollector;
 use crate::mixin::Mixin;
 use crate::types::Binding;
-use crate::Symbol;
 
 use capture::{BodyKey, RootBody};
 use lower::{Collecting, Enclosing, Lowerer};

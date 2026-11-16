@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use lsp_types::{DocumentSymbol, SymbolKind};
 use ns_runtime::Binding;
-use ns_syntax::ast::{self, AccessModifier, SlotMutability};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, AccessModifier, SlotMutability};
 
 use crate::documents::LineIndex;
 
@@ -769,16 +769,20 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(found.len(), length + 2);
-        assert!(found[1..]
-            .iter()
-            .all(|(_, detail)| detail.as_deref() == Some("protected value")));
+        assert!(
+            found[1..]
+                .iter()
+                .all(|(_, detail)| detail.as_deref() == Some("protected value"))
+        );
         let unvalued = text.replace("Object <: Value", "Object");
         let started = std::time::Instant::now();
         let found = class_details(&unvalued);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        assert!(found
-            .iter()
-            .all(|(_, detail)| !detail.as_deref().unwrap_or("").contains("value")));
+        assert!(
+            found
+                .iter()
+                .all(|(_, detail)| !detail.as_deref().unwrap_or("").contains("value"))
+        );
     }
 
     /// A class declared as `Value`, as `Kernel.ns` declares it, makes the

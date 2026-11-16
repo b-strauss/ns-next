@@ -29,21 +29,21 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
+use crate::Symbol;
 use crate::builtins::primitive::{
-    BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive,
-    Primitive, MIRROR,
+    BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, MIRROR, ObjectPrimitive,
+    Primitive,
 };
 use crate::bytecode::{CodeKind, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
 use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
-use crate::Symbol;
 
-use super::build::{compiled_ways, CompiledWay};
+use super::Speculation;
+use super::build::{CompiledWay, compiled_ways};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::{CalleeFacts, ReceiverFacts, SnapshotTree};
-use super::Speculation;
 
 /// The weight of an instruction that is no send, closure or non-local
 /// return (Strongtalk's `costModel.cpp`, the start the measurement of
@@ -2127,14 +2127,14 @@ mod tests {
     use indoc::indoc;
 
     use super::{
-        weight, weight_in, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan, Limits,
-        ScopeId, BLOCK_ARGUMENT_BONUS, METHOD_LIMIT,
+        ArmPlan, BLOCK_ARGUMENT_BONUS, BlockPlan, EliminatedId, FallThrough, InliningPlan, Limits,
+        METHOD_LIMIT, ScopeId, weight, weight_in,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::MethodSide;
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
     use crate::jit::optimizing::tree::{CalleeFacts, SnapshotTree};
-    use crate::jit::optimizing::Speculation;
     use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
     /// The plan of `tree` with blocks inlined, which most of these tests
@@ -2448,10 +2448,11 @@ mod tests {
         let twice = &plan.sites[&(ScopeId::ROOT, send_of(&tree.root, "twice:"))];
         assert_eq!(twice.arms.len(), 1, "{twice:?}");
         assert_eq!(plan.scopes.len(), 2, "the root and `twice:`");
-        assert!(plan
-            .blocks
-            .values()
-            .all(|block| *block != BlockPlan::Created));
+        assert!(
+            plan.blocks
+                .values()
+                .all(|block| *block != BlockPlan::Created)
+        );
     }
 
     /// `remember:` makes a block only for a number past 100, which `run`
@@ -3095,10 +3096,12 @@ mod tests {
             2,
             "the created block's value scope is dropped"
         );
-        assert!(cautious
-            .sites
-            .values()
-            .all(|site| site.fall_through != FallThrough::Trap));
+        assert!(
+            cautious
+                .sites
+                .values()
+                .all(|site| site.fall_through != FallThrough::Trap)
+        );
     }
 
     const REFERENCE: &str = indoc! {"

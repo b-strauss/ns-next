@@ -10,7 +10,7 @@
 //! methods").
 
 use super::Arguments;
-use crate::builtins::primitive::{mirror_entry, MirrorEntry, MirrorPrimitive, MIRROR};
+use crate::builtins::primitive::{MIRROR, MirrorEntry, MirrorPrimitive, mirror_entry};
 use crate::heap::Heap;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
@@ -306,7 +306,7 @@ fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
 
 #[cfg(test)]
 mod tests {
-    use crate::builtins::primitive::{mirror_primitive_named, MIRROR};
+    use crate::builtins::primitive::{MIRROR, mirror_primitive_named};
     use crate::interpreter::Arguments;
     use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 

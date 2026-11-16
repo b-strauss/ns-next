@@ -8,8 +8,8 @@ use std::collections::HashSet;
 
 use ns_syntax::ast;
 
-use crate::mixin::RootClauseDefect;
 use crate::Symbol;
+use crate::mixin::RootClauseDefect;
 
 /// The members one side of a class declaration *declares*, each under its
 /// full selector, in declaration order and with any repeats kept -- what

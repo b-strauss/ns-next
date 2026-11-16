@@ -14,15 +14,16 @@
 use crate::interpreter::Arguments;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
+use crate::heap::{ActivationReference, ArgumentSlots, RegisterBase, register_number};
 use crate::interpreter::breakpoint::{self, BreakpointDecision};
-use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
+use crate::interpreter::future::{Resolution, not_a_closure, value_for_a_value_slot};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
-    body_named, body_too_large_error_named, unresolved_identifier_error, BLOCK_BODY,
+    BLOCK_BODY, body_named, body_too_large_error_named, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
@@ -30,13 +31,12 @@ use crate::interpreter::locals::{
     write_outer_local,
 };
 use crate::interpreter::safepoint::SafepointOutcome;
-use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
+use crate::interpreter::unwind::{UnwindOutcome, non_boolean_condition};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Sent, Signal, Step,
 };
 use crate::jit::Resumption;
 use crate::types::*;
-use crate::Symbol;
 
 /// The running frame's state, which the loop holds in locals while it runs
 /// and in this struct between two stretches: nothing here is branded, so it
@@ -3207,7 +3207,7 @@ fn simultaneous_clause_instruction<'gc>(
             return match breakpoint::reached(mutator, activation, program_counter) {
                 BreakpointDecision::Execute(original) => OutOfLine::Execute(original),
                 BreakpointDecision::Stop => OutOfLine::Stop,
-            }
+            };
         }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
     };
@@ -3427,7 +3427,7 @@ fn unwind<'gc>(
     loop {
         let next = match crate::interpreter::unwind::unwind_signal(mutator, signal, floor) {
             UnwindOutcome::Returned { target, value } => {
-                return finish(mutator, target, value, floor, handoff)
+                return finish(mutator, target, value, floor, handoff);
             }
             // Where the target starts again is the unwinder's to decide, and
             // it stored it; the loop resumes the target there.

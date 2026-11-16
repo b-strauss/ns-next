@@ -8,10 +8,10 @@
 //! (`docs/design/dispatch.md`, "Slot accessors").
 
 use super::Arguments;
+use crate::Symbol;
 use crate::heap::ApplicationIndex;
 use crate::mixin::{AccessorKind, DispatchId};
 use crate::types::*;
-use crate::Symbol;
 
 use super::resolve::{Chain, Resolved};
 use super::{Mutator, Signal, Step};

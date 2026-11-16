@@ -2539,10 +2539,12 @@ method foo: (args 1, registers 4)
         assert!(code.instruction(send).is_identical_to(&instruction));
         let after = code.instructions();
         assert_eq!(after.len(), instructions.len());
-        assert!(after
-            .iter()
-            .zip(&instructions)
-            .all(|(after, before)| after.is_identical_to(before)));
+        assert!(
+            after
+                .iter()
+                .zip(&instructions)
+                .all(|(after, before)| after.is_identical_to(before))
+        );
         assert_eq!(code.cached_send(send), cached_send);
         assert!(code.is_send(send));
         assert!(code.is_patched(send) && code.has_patches());

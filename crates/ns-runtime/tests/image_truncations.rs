@@ -244,9 +244,11 @@ fn reified_mixin() -> Vec<u8> {
         let Some(holder) = instance.as_object() else {
             panic!("an instance is an object")
         };
-        assert!(mutator
-            .heap_mut()
-            .instance_set_field(holder, 0, Value::object(held)));
+        assert!(
+            mutator
+                .heap_mut()
+                .instance_set_field(holder, 0, Value::object(held))
+        );
         let modules = [image::ModuleSource {
             class,
             origin: &origin,

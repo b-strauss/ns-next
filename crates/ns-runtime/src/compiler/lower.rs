@@ -7,22 +7,22 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use super::capture::{BodyKey, Captured, Captures, Place};
 use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
-    Literal as BytecodeLiteral, HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
+    IntegerOperation, Literal as BytecodeLiteral,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
     TakenBlock, VariableEntry, VariablePlace, VectorHolder,
 };
-use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
+use crate::interpreter::literals::{IntegerLiteral, parse_float_literal, parse_integer_literal};
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -2812,11 +2812,12 @@ impl<'a> Lowerer<'a> {
         // shorter -- an enclosing one, since a body past it records no
         // tables.
         debug_assert_eq!(names.len(), self.layout.places.len());
-        debug_assert!(self
-            .layouts
-            .iter()
-            .zip(&self.enclosing_variable_names)
-            .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len()));
+        debug_assert!(
+            self.layouts
+                .iter()
+                .zip(&self.enclosing_variable_names)
+                .all(|(layout, names)| layout.base == 0 || names.len() == layout.places.len())
+        );
         let own = names
             .iter()
             .enumerate()
@@ -3039,7 +3040,7 @@ mod tests {
         reason = "a test's values are small literals and lengths it built"
     )]
 
-    use super::super::capture::{analyze, RootBody};
+    use super::super::capture::{RootBody, analyze};
     use super::*;
     use indoc::{formatdoc, indoc};
     use std::path::PathBuf;
@@ -3398,7 +3399,7 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 1); // `t` is register 13
-                                                  // An explicit `self` receiver is a depth-0 lexical send.
+        // An explicit `self` receiver is a depth-0 lexical send.
         let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_sources, ..
@@ -4071,13 +4072,15 @@ mod tests {
         let mut lowerer = method_lowerer(&foo, &bindings);
         let destination = lowerer.lower_expression(return_expression(&foo));
         let code = lowerer.finish(foo.span);
-        let [Instruction::SendLexical {
-            depth: 0,
-            selector,
-            argument_sources,
-            destination: send_destination,
-            ..
-        }] = &code.instructions()[..]
+        let [
+            Instruction::SendLexical {
+                depth: 0,
+                selector,
+                argument_sources,
+                destination: send_destination,
+                ..
+            },
+        ] = &code.instructions()[..]
         else {
             panic!(
                 "expected one depth-0 lexical send: {:?}",
@@ -4570,10 +4573,12 @@ mod tests {
         )));
         assert_eq!(fallback.outer_reach, 1);
         // Nothing captured `t`, so it stays a register.
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::MakeVector { .. }))
+        );
     }
 
     #[test]
@@ -5275,10 +5280,12 @@ mod tests {
         let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
-        assert!(block
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. })));
+        assert!(
+            block
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. }))
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 
 use super::machine_words::{MachineWord, MachineWords};
 use super::space::reserve_falling_back;
-use super::{out_of_memory, Word};
+use super::{Word, out_of_memory};
 use ns_memory::{MemoryError, Reservation};
 
 /// How much address space a heap's frame stack reserves. Reserved space

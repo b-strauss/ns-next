@@ -26,15 +26,15 @@ use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::heap::MixinId;
 use crate::types::Binding;
 use crate::types::BuiltinClass;
-use crate::Symbol;
 
 /// The guard an inline cache compares: a dense number, minted per heap, that
 /// names one mixin application's behaviour for its instances
@@ -1904,12 +1904,14 @@ mod declaration_text_tests {
         assert!(DeclarationText::from_parts(range, vec![second, first], text()).is_none());
         assert!(DeclarationText::from_parts(range, vec![Span::new(16, 21)], text()).is_none());
         assert!(DeclarationText::from_parts(range, vec![first], text()).is_none());
-        assert!(DeclarationText::from_parts(
-            Span::new(0, 4),
-            vec![Span::new(1, 2)],
-            Box::from("\u{e4}x")
-        )
-        .is_none());
+        assert!(
+            DeclarationText::from_parts(
+                Span::new(0, 4),
+                vec![Span::new(1, 2)],
+                Box::from("\u{e4}x")
+            )
+            .is_none()
+        );
     }
 
     /// A hole is a nested declaration, which is never empty: an empty hole

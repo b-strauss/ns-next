@@ -1,5 +1,5 @@
 use indoc::{formatdoc, indoc};
-use ns_runtime::{resolve, Binding, SourceOrigin};
+use ns_runtime::{Binding, SourceOrigin, resolve};
 
 fn resolve_source(source: &str) -> ns_runtime::ResolvedModule {
     let module = ns_syntax::parse(source).expect("parse");
@@ -16,10 +16,12 @@ fn method_temporary_resolves_as_local() {
     "});
     // At least one Local binding exists somewhere in the module (the `x`
     // reference in the method body).
-    assert!(resolved
-        .bindings
-        .values()
-        .any(|binding| matches!(binding, Binding::Local(_))));
+    assert!(
+        resolved
+            .bindings
+            .values()
+            .any(|binding| matches!(binding, Binding::Local(_)))
+    );
 }
 
 #[test]
@@ -31,10 +33,12 @@ fn self_send_resolves_to_depth_zero() {
           baz = ( ^1 )
         ) : ()
     "});
-    assert!(resolved
-        .bindings
-        .values()
-        .any(|binding| matches!(binding, Binding::LexicalSend { depth: 0 })));
+    assert!(
+        resolved
+            .bindings
+            .values()
+            .any(|binding| matches!(binding, Binding::LexicalSend { depth: 0 }))
+    );
 }
 
 #[test]
@@ -45,10 +49,12 @@ fn super_send_resolves_to_super_send_binding() {
           bar = ( ^super baz )
         ) : ()
     "});
-    assert!(resolved
-        .bindings
-        .values()
-        .any(|binding| *binding == Binding::SuperSend));
+    assert!(
+        resolved
+            .bindings
+            .values()
+            .any(|binding| *binding == Binding::SuperSend)
+    );
 }
 
 #[test]
@@ -63,10 +69,12 @@ fn outer_named_send_resolves_to_the_exact_depth() {
           ) : ()
         ) : ()
     "});
-    assert!(resolved
-        .bindings
-        .values()
-        .any(|binding| matches!(binding, Binding::LexicalSend { depth: 1 })));
+    assert!(
+        resolved
+            .bindings
+            .values()
+            .any(|binding| matches!(binding, Binding::LexicalSend { depth: 1 }))
+    );
 }
 
 /// A bare reference to a builtin class name that no enclosing declaration

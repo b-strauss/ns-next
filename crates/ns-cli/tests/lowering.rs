@@ -2,7 +2,7 @@
 //! (`docs/design/compiler.md`, "The reference lowering").
 
 mod common;
-use common::{golden, ns_next, ScratchDirectory};
+use common::{ScratchDirectory, golden, ns_next};
 
 #[test]
 fn a_golden_runs_under_the_reference_lowering() {

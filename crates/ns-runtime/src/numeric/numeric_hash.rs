@@ -6,8 +6,8 @@
 //! `SmallInteger`, which lies within the modulus, hashes as itself
 //! (`docs/design/core-library.md`, "The numeric tower").
 
-use crate::numeric::Rational;
 use crate::ArbitraryInteger;
+use crate::numeric::Rational;
 
 const MODULUS: u64 = (1 << 61) - 1;
 

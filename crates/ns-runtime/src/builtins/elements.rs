@@ -6,7 +6,7 @@
 //! branches on a view's class, and the views stay Newspeak over a
 //! `ByteArray` slot (`docs/design/core-library.md`, "The typed arrays").
 
-use crate::builtins::collections::{integer_argument, not_an_integer, IntegerArgument};
+use crate::builtins::collections::{IntegerArgument, integer_argument, not_an_integer};
 use crate::builtins::first_argument;
 use crate::builtins::numbers::integer_operand;
 use crate::builtins::primitive::{ElementAccess, ElementKind};

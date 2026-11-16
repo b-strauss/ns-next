@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use super::again::{compile_level, BodyOrigin, Member, PairedBodies};
-use super::{address, BodyMetadata};
+use super::again::{BodyOrigin, Member, PairedBodies, compile_level};
+use super::{BodyMetadata, address};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::heap::MixinId;

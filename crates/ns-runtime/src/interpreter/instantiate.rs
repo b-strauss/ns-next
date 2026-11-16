@@ -6,18 +6,18 @@ use super::Arguments;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
+use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::debugger::metadata::MetadataCollector;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassLevel, Heap, Root};
 use crate::mixin::{
-    slot_accessors, ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin,
-    MixinApplicationClause, MixinMethod, MixinSlot,
+    ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot, slot_accessors,
 };
 use crate::types::*;
-use crate::Symbol;
 
 use super::{
     HostError, HostResult, HostSignal, HostStart, Interpreter, Mutator, Signal, Step, StepArguments,
@@ -279,7 +279,7 @@ impl Interpreter {
                             "cannot instantiate {}: it is not a class",
                             mutator.heap.describe(value)
                         ),
-                    })))
+                    })));
                 }
             };
             let factory_arguments: Vec<Value> = factory_arguments
@@ -2345,10 +2345,12 @@ mod tests {
                 assert!(!text.is_shared(), "{} owns its text", mixin.name);
             }
             let inner_text = inner.text.as_ref().expect("built from source");
-            assert!(inner_class_side
-                .text
-                .as_ref()
-                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
+            assert!(
+                inner_class_side
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| Rc::ptr_eq(text, inner_text))
+            );
         });
     }
 
@@ -2400,10 +2402,12 @@ mod tests {
             assert!(inner.class_side.is_none(), "Inner declares no class side");
             let class_side = mutator.metaclass_mixin(&inner);
             let inner_text = inner.text.as_ref().expect("built from source");
-            assert!(class_side
-                .text
-                .as_ref()
-                .is_some_and(|text| Rc::ptr_eq(text, inner_text)));
+            assert!(
+                class_side
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| Rc::ptr_eq(text, inner_text))
+            );
         });
     }
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use indoc::indoc;
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 

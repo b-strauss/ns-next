@@ -15,7 +15,7 @@ use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, Mixin, MixinMethod}
 use crate::types::*;
 use crate::{Heap, Symbol};
 
-use super::{nested, FeedbackBase, Mutator, Signal, Step, StepArguments};
+use super::{FeedbackBase, Mutator, Signal, Step, StepArguments, nested};
 
 /// Which lookup found a target -- and so which class object its levels are
 /// counted from.

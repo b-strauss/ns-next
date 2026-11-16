@@ -9,8 +9,8 @@
 
 use ns_assembler::{Condition, Label, Register};
 
-use crate::builtins::primitive::{mirror_entry, MachineCall};
-use crate::bytecode::{successors, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::builtins::primitive::{MachineCall, mirror_entry};
+use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, successors};
 use crate::heap::Immediate;
 use crate::interpreter::FeedbackBase;
 
@@ -1656,11 +1656,11 @@ pub(super) fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowe
 mod tests {
     use crate::builtins::numbers::checked_floor_divide;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-    use crate::heap::{fits_small_integer, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::heap::{Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, fits_small_integer};
     use crate::interpreter::FeedbackBase;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
-    use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::MachineExit;
+    use crate::jit::stubs::testing::Machine;
 
     fn method(instructions: Vec<Instruction>, argument_count: u16) -> CompiledCode {
         CompiledCode::new(
@@ -1785,7 +1785,7 @@ mod tests {
     /// runs nothing.
     #[test]
     fn a_sends_call_maps_its_return_address_to_the_send() {
-        use ns_assembler::aarch64::{X10, X9};
+        use ns_assembler::aarch64::{X9, X10};
         use ns_assembler::x64::{RAX, RCX};
 
         a_sends_call_maps_its_return_address_under(

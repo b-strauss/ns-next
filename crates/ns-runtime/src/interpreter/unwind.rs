@@ -13,15 +13,15 @@
 //! scheduling steps, not Rust calling back into Newspeak. An activation with
 //! no marker costs one test.
 
-use super::breakpoint;
 use super::Arguments;
+use super::breakpoint;
+use crate::Symbol;
 use crate::bytecode::UnwindMarker;
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
-use crate::Symbol;
 
 use super::{
-    EvaluationResult, Mutator, Signal, Step, StepArguments, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH,
+    DEPTH_RESERVE, EvaluationResult, MAX_ACTIVATION_DEPTH, Mutator, Signal, Step, StepArguments,
 };
 
 /// Where an unwind stopped.
@@ -796,12 +796,12 @@ mod tests {
     use crate::interpreter::Arguments;
     use std::rc::Rc;
 
-    use super::{unwind, UnwindOutcome};
+    use super::{UnwindOutcome, unwind};
+    use crate::Interpreter;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use crate::heap::ActivationHeader;
     use crate::interpreter::FeedbackBase;
     use crate::types::*;
-    use crate::Interpreter;
 
     /// A body that returns its first register: nothing here runs it.
     fn trivial_code() -> Rc<CompiledCode> {

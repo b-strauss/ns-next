@@ -7,12 +7,12 @@
 //! "Weak references").
 
 use crate::builtins::collections::{
-    integer_argument, not_an_integer, out_of_range, IntegerArgument,
+    IntegerArgument, integer_argument, not_an_integer, out_of_range,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{Primitive, WeakPrimitive};
-use crate::interpreter::instantiate;
 use crate::interpreter::Arguments;
+use crate::interpreter::instantiate;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 

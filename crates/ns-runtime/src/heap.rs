@@ -18,6 +18,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::Symbol;
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
@@ -26,7 +27,6 @@ use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::{Arguments, FeedbackBase};
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
-use crate::Symbol;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
@@ -60,36 +60,36 @@ mod world;
 use compaction::{ForwardingTable, IdleTable};
 #[cfg(debug_assertions)]
 use compaction::{Shift, ShiftedRegion};
-use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
+use frames::{FrameFlags, FrameStack, frame_header, kind_tag};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 pub(crate) use ids::{DispatchIdAllocator, FreeIndices};
 use machine_words::{MachineWord, MachineWords};
 pub use object::Element;
-use object::{
-    class_field, closure_field, frame_field, trace_block, PackedString, CLASS, FIELDS, HEADER,
-};
 pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
+use object::{
+    CLASS, FIELDS, HEADER, PackedString, class_field, closure_field, frame_field, trace_block,
+};
 use pending::PendingEphemerons;
 pub use records::{
     DeclarationScope, FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat,
 };
 use scavenge::Scavenger;
 use space::{
-    allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
-    REGION_SLACK,
+    NURSERY_END, REGION_SLACK, RegionName, Space, allocation_words, block_range, object_at,
+    overflow_word,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, CodeIdCache, MixinRow, Tables};
 pub(crate) use value::is_small_float_bits;
 #[cfg(ns_jit)]
 pub(crate) use value::machine as value_bits;
-use value::{at_rest, branded};
 pub use value::{
-    fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
-    SMALL_INTEGER_MIN,
+    Immediate, ImmediateKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, Value, ValueKind, Word,
+    fits_small_integer,
 };
-pub(crate) use world::{forward_identity, World};
+use value::{at_rest, branded};
+pub(crate) use world::{World, forward_identity};
 
 /// The header an ordinary instance of an application is born with --
 /// its guard, `FixedPointers`, its word count -- computed once when the
@@ -13552,9 +13552,10 @@ mod tests {
         heap.record_program_symbol(object);
         assert_eq!(heap.symbol_value(object), None);
         assert_eq!(heap.symbol_text(object).as_deref(), Some(text));
-        assert!(heap
-            .program_symbol_named(text)
-            .is_some_and(|found| found.same(object)));
+        assert!(
+            heap.program_symbol_named(text)
+                .is_some_and(|found| found.same(object))
+        );
 
         let symbol = Symbol::intern(text);
         assert!(heap.canonical_symbol(symbol).is_none());
@@ -13563,9 +13564,10 @@ mod tests {
             "the decoder must refuse a record of the text"
         );
         assert_eq!(heap.symbol_value(object), Some(symbol));
-        assert!(heap
-            .adopt_program_symbol(symbol)
-            .is_some_and(|adopted| adopted.same(object)));
+        assert!(
+            heap.adopt_program_symbol(symbol)
+                .is_some_and(|adopted| adopted.same(object))
+        );
         assert!(heap.has_symbol_object(symbol));
         assert_eq!(heap.table_sizes().program_symbols, 0);
     }
@@ -14670,9 +14672,10 @@ mod tests {
                     Some(12 + i64::from(register))
                 );
             }
-            assert!(heap
-                .activation_local(from_slots, first_above_header(count))
-                .is_nil());
+            assert!(
+                heap.activation_local(from_slots, first_above_header(count))
+                    .is_nil()
+            );
             heap.pop_activation(from_slots);
         }
         // The same three counts from values: one is copied on its own,
@@ -14693,9 +14696,10 @@ mod tests {
                     Some(7 + i64::from(register))
                 );
             }
-            assert!(heap
-                .activation_local(from_values, first_above_header(count))
-                .is_nil());
+            assert!(
+                heap.activation_local(from_values, first_above_header(count))
+                    .is_nil()
+            );
             heap.pop_activation(from_values);
         }
         for register in first..first + 5 {
@@ -14757,12 +14761,14 @@ mod tests {
             heap.stack.frames.top(),
             callee.offset as usize + frame_header::COUNT + 1
         );
-        assert!(heap
-            .activation_sender(callee)
-            .is_some_and(|below| below.same(sender)));
-        assert!(heap
-            .activation_above(sender)
-            .is_some_and(|above| above.same(callee)));
+        assert!(
+            heap.activation_sender(callee)
+                .is_some_and(|below| below.same(sender))
+        );
+        assert!(
+            heap.activation_above(sender)
+                .is_some_and(|above| above.same(callee))
+        );
 
         let top = heap.stack.frames.top();
         let from_values = heap
@@ -15232,9 +15238,10 @@ mod tests {
                 .as_small_integer(),
             Some(7)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.pop_activation(activation);
     }
 
@@ -15472,9 +15479,10 @@ mod tests {
             _ => panic!("a closure's activation"),
         }
         assert!(heap.stack.flags(activation.offset).compiled);
-        assert!(heap
-            .activation_home(activation)
-            .is_some_and(|found| found.same(home)));
+        assert!(
+            heap.activation_home(activation)
+                .is_some_and(|found| found.same(home))
+        );
         // A leaf's view leaves out the caller, which the pop reads.
         heap.stack
             .set_header_word(activation.offset, frame_header::CALLER, caller);
@@ -16321,20 +16329,24 @@ mod tests {
 
         assert!(heap.activation_home(method_activation).is_none());
         assert!(heap.activation_captured(method_activation).is_none());
-        assert!(heap
-            .activation_home(closure_activation)
-            .is_some_and(|home| home.same(home_frame)));
-        assert!(heap
-            .activation_captured(closure_activation)
-            .is_some_and(|captured| captured.same(captured_frame)));
+        assert!(
+            heap.activation_home(closure_activation)
+                .is_some_and(|home| home.same(home_frame))
+        );
+        assert!(
+            heap.activation_captured(closure_activation)
+                .is_some_and(|captured| captured.same(captured_frame))
+        );
 
         let closure_frame = heap.reify(closure_activation);
-        assert!(heap
-            .frame_home(closure_frame)
-            .is_some_and(|home| home.same(home_frame)));
-        assert!(heap
-            .frame_captured(closure_frame)
-            .is_some_and(|captured| captured.same(captured_frame)));
+        assert!(
+            heap.frame_home(closure_frame)
+                .is_some_and(|home| home.same(home_frame))
+        );
+        assert!(
+            heap.frame_captured(closure_frame)
+                .is_some_and(|captured| captured.same(captured_frame))
+        );
 
         heap.pop_activation(closure_activation);
         heap.pop_activation(outer_block_activation);
@@ -16411,10 +16423,11 @@ mod tests {
             heap.object_class(class).same(class),
             "a class's own class is rewritten"
         );
-        assert!(heap
-            .array_element(array, 0)
-            .and_then(|element| element.as_object())
-            .is_some_and(|element| element.same(string)));
+        assert!(
+            heap.array_element(array, 0)
+                .and_then(|element| element.as_object())
+                .is_some_and(|element| element.same(string))
+        );
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
         let copied = heap
             .closure_copied_values(closure)
@@ -16431,14 +16444,16 @@ mod tests {
             heap.object_identity_key(heap.frame_object(captured_frame)),
             "every frame moved"
         );
-        assert!(heap
-            .frame_receiver(captured_frame)
-            .as_object()
-            .is_some_and(|receiver| receiver.same(string)));
-        assert!(heap
-            .frame_local(captured_frame, first_above_header(0))
-            .as_object()
-            .is_some_and(|register| register.same(array)));
+        assert!(
+            heap.frame_receiver(captured_frame)
+                .as_object()
+                .is_some_and(|receiver| receiver.same(string))
+        );
+        assert!(
+            heap.frame_local(captured_frame, first_above_header(0))
+                .as_object()
+                .is_some_and(|register| register.same(array))
+        );
         let activation_class = heap.activation_class.expect("recorded");
         assert!(
             heap.object_class(heap.frame_object(captured_frame))
@@ -16714,9 +16729,10 @@ mod tests {
         let activation_object = heap.frame_object(frame);
         let other = heap.allocate_string(class, crate::CodePoints::from("other"));
 
-        assert!(heap
-            .object_frame(activation_object)
-            .is_some_and(|answered| answered.same(frame)));
+        assert!(
+            heap.object_frame(activation_object)
+                .is_some_and(|answered| answered.same(frame))
+        );
         assert!(heap.object_frame(other).is_none());
         assert_eq!(
             heap.describe(Value::object(activation_object)),
@@ -16779,9 +16795,10 @@ mod tests {
                 .as_small_integer(),
             Some(9)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.pop_activation(activation);
     }
 
@@ -16855,9 +16872,10 @@ mod tests {
         assert!(heap.frame_activation(unretained_frame).is_none());
         assert!(!heap.frame_registers_kept(unretained_frame));
         assert!(heap.frame_local(unretained_frame, 0).is_nil());
-        assert!(heap
-            .frame_local(unretained_frame, first_above_header(1))
-            .is_nil());
+        assert!(
+            heap.frame_local(unretained_frame, first_above_header(1))
+                .is_nil()
+        );
     }
 
     /// The frame whose object `root` holds.
@@ -16898,9 +16916,10 @@ mod tests {
             Some(9),
             "a write through the moved frame reaches the live register"
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
 
         heap.retain_registers(activation);
         heap.pop_activation(activation);
@@ -17642,8 +17661,8 @@ mod tests {
     /// set from what still names a young object; past the limit, it asks
     /// for the tenuring scavenge as an overflowing barrier would.
     #[test]
-    fn a_scavenge_that_leaves_the_remembered_set_past_its_limit_asks_for_one_that_tenures_everything(
-    ) {
+    fn a_scavenge_that_leaves_the_remembered_set_past_its_limit_asks_for_one_that_tenures_everything()
+     {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         // One young object every holder names: it stays young through the
@@ -17950,9 +17969,10 @@ mod tests {
                 .as_small_integer(),
             Some(7)
         );
-        assert!(heap
-            .frame_activation(frame)
-            .is_some_and(|live| live.same(activation)));
+        assert!(
+            heap.frame_activation(frame)
+                .is_some_and(|live| live.same(activation))
+        );
         heap.retain_registers(activation);
         heap.pop_activation(activation);
         assert!(heap.frame_activation(frame).is_none());
@@ -18023,9 +18043,10 @@ mod tests {
             "the scavenge copied the symbol"
         );
         assert_eq!(heap.symbol_value(object), Some(kept_symbol));
-        assert!(heap
-            .canonical_symbol(kept_symbol)
-            .is_some_and(|canonical| canonical.same(object)));
+        assert!(
+            heap.canonical_symbol(kept_symbol)
+                .is_some_and(|canonical| canonical.same(object))
+        );
         assert_eq!(heap.canonical_symbol(pruned_symbol).map(|_| ()), None);
         let live = heap.canonical_symbols.iter().flatten().count();
         assert_eq!(heap.symbol_of.len(), live);
@@ -19313,9 +19334,11 @@ mod tests {
         assert_eq!(heap.byte_array_bytes(object), Some(vec![0; 40]));
         // The reserve too, so that the space holds no stale words.
         let block = block_range(heap.space.words(), header_index(object.offset));
-        assert!(heap.space.words()[block.start + FIELDS..block.end]
-            .iter()
-            .all(|word| *word == 0));
+        assert!(
+            heap.space.words()[block.start + FIELDS..block.end]
+                .iter()
+                .all(|word| *word == 0)
+        );
     }
 
     #[test]
@@ -19778,9 +19801,10 @@ mod tests {
             assert_eq!(fast_bumps, fast, "length {length}");
             assert!(space::is_young(array.offset));
             assert_eq!(heap.array_element_count(array), Some(length));
-            assert!(heap
-                .array_element(array, length - 1)
-                .is_some_and(|value| value.is_nil()));
+            assert!(
+                heap.array_element(array, length - 1)
+                    .is_some_and(|value| value.is_nil())
+            );
         }
     }
 
@@ -20049,9 +20073,10 @@ mod tests {
             heap.frame_local(bottom_frame, 0).as_small_integer(),
             Some(5)
         );
-        assert!(heap
-            .frame_sender(top_frame)
-            .is_some_and(|sender| sender.same(bottom_frame)));
+        assert!(
+            heap.frame_sender(top_frame)
+                .is_some_and(|sender| sender.same(bottom_frame))
+        );
         assert!(heap.frame_sender(bottom_frame).is_none());
 
         let resumed = heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
@@ -20066,22 +20091,27 @@ mod tests {
             heap.activation_local(resumed, 1).as_small_integer(),
             Some(2)
         );
-        assert!(heap
-            .activation_local(resumed, first_above_header(2))
-            .is_nil());
+        assert!(
+            heap.activation_local(resumed, first_above_header(2))
+                .is_nil()
+        );
         assert_eq!(heap.activation_program_counter(resumed), 7);
-        assert!(heap
-            .frame_activation(top_frame)
-            .is_some_and(|live| live.same(resumed)));
-        assert!(heap
-            .activation_reified(resumed)
-            .is_some_and(|frame| frame.same(top_frame)));
+        assert!(
+            heap.frame_activation(top_frame)
+                .is_some_and(|live| live.same(resumed))
+        );
+        assert!(
+            heap.activation_reified(resumed)
+                .is_some_and(|frame| frame.same(top_frame))
+        );
         assert!(!heap.frame_is_suspended(top_frame));
         assert!(heap.frame_is_running(top_frame));
         assert!(heap.frame_sender(top_frame).is_none());
-        assert!(own_registers(&heap, top_frame)
-            .iter()
-            .all(|bits| *bits == Word::NIL.bits()));
+        assert!(
+            own_registers(&heap, top_frame)
+                .iter()
+                .all(|bits| *bits == Word::NIL.bits())
+        );
         assert!(heap.frame_is_suspended(bottom_frame));
 
         heap.pop_activation(resumed);
@@ -20260,9 +20290,10 @@ mod tests {
             }
             _ => panic!("the resumed top returns to its suspended sender"),
         }
-        assert!(heap
-            .frame_suspended_continuation(bottom_frame)
-            .is_some_and(|then| matches!(then, Continuation::Unwind(_))));
+        assert!(
+            heap.frame_suspended_continuation(bottom_frame)
+                .is_some_and(|then| matches!(then, Continuation::Unwind(_)))
+        );
         let Popped { then, .. } = heap.pop_activation(resumed_top);
         let Continuation::ReturnToSuspended(suspended) = then else {
             panic!("the popped top returns to its suspended sender")
@@ -20298,12 +20329,14 @@ mod tests {
 
         heap.suspend_activations(0);
 
-        assert!(heap
-            .frame_sender(top_frame)
-            .is_some_and(|sender| sender.same(bottom_frame)));
-        assert!(heap
-            .frame_suspended_continuation(top_frame)
-            .is_some_and(|then| matches!(then, Continuation::Deliver)));
+        assert!(
+            heap.frame_sender(top_frame)
+                .is_some_and(|sender| sender.same(bottom_frame))
+        );
+        assert!(
+            heap.frame_suspended_continuation(top_frame)
+                .is_some_and(|then| matches!(then, Continuation::Deliver))
+        );
         let resumed = heap.resume_activation(top_frame, FeedbackBase::NOT_ASSIGNED);
         heap.pop_activation(resumed);
         let resumed = heap.resume_activation(bottom_frame, FeedbackBase::NOT_ASSIGNED);
@@ -20792,7 +20825,7 @@ mod tests {
     mod nil_leftovers {
         use super::*;
         use crate::bytecode::{
-            leftovers, CallSite, CodeKind, CompiledCode, Instruction, Literal, HEADER_REGISTERS,
+            CallSite, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction, Literal, leftovers,
         };
 
         /// The first register above the header of a frame that takes no
@@ -21124,8 +21157,10 @@ mod tests {
             heap.collect_for_test(&mut [&mut weak]);
 
             assert_eq!(kept(&heap, weak), [false]);
-            assert!((callee_end..sender_end)
-                .all(|word| heap.stack.frames.word(word) == dead_register().bits()));
+            assert!(
+                (callee_end..sender_end)
+                    .all(|word| heap.stack.frames.word(word) == dead_register().bits())
+            );
             heap.pop_activation(callee);
             heap.pop_activation(sender);
         }

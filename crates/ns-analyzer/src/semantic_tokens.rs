@@ -7,7 +7,7 @@ use ns_runtime::Binding;
 use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::{Span, Token, TokenKind};
 
-use crate::documents::{utf16_length, LineIndex};
+use crate::documents::{LineIndex, utf16_length};
 use crate::hover::{self, Container, Declared, DeclaredKind, Reference};
 
 /// The token types of the legend, in legend order (`legend`).

@@ -4,7 +4,7 @@
 //! whichever it holds.
 
 use crate::builtins::collections::{
-    checked_range, integer_argument, not_an_integer, out_of_range, source_start, IntegerArgument,
+    IntegerArgument, checked_range, integer_argument, not_an_integer, out_of_range, source_start,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::BytePrimitive;

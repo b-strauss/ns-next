@@ -197,16 +197,12 @@ pub(crate) fn parse_float_literal(text: &str) -> f64 {
         scale /= base;
     }
     let value = value * 10f64.powi(exponent);
-    if negative {
-        -value
-    } else {
-        value
-    }
+    if negative { -value } else { value }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_float_literal, parse_integer_literal, IntegerLiteral};
+    use super::{IntegerLiteral, parse_float_literal, parse_integer_literal};
 
     #[test]
     fn a_radix_float_is_its_digits_in_its_radix_times_ten_to_its_exponent() {

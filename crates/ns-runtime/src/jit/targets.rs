@@ -35,19 +35,19 @@
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
+use super::SHIFTED_SLOTS;
 use super::float_operations::FloatOperation;
 use super::floats::{self, FloatRegisters};
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
-use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
-use super::SHIFTED_SLOTS;
-use crate::builtins::primitive::{MachineCall, RowStub, MIRROR, ROW_STUB_COUNT};
+use super::stubs::{BlockWord, ExitKind, emit_miss, finish_stub};
+use crate::builtins::primitive::{MIRROR, MachineCall, ROW_STUB_COUNT, RowStub};
 use crate::heap::machine_words::MachineWord;
+use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, CHAIN_START_BITS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES,
     ROW_WORDS, VACANT_GUARD,
 };
-use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::{RULE_TAG_BITS, RULE_TAG_LEXICAL, RULE_TAG_MASK};
 use crate::mixin::AccessorKind;
 
@@ -300,7 +300,7 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
 /// compiled while the JIT counts jumps to, and one that counts nothing,
 /// so that a body compiled while nobody counts pays nothing for it.
 pub(crate) fn assemble_dispatching_stub(abi: Abi, counting: bool) -> Assembled {
-    use crate::heap::optimized_copies::{RowWord, DISPATCHING_ROWS, ROW_BYTES};
+    use crate::heap::optimized_copies::{DISPATCHING_ROWS, ROW_BYTES, RowWord};
     let mut macro_assembler = MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(counting);
     let roles = macro_assembler.roles();
@@ -1465,13 +1465,13 @@ mod tests {
     use ns_assembler::Memory;
 
     use super::emit_group;
+    use crate::Symbol;
     use crate::heap::optimized_copies::{DISPATCHING_ROWS, ROW_WORDS, VACANT};
-    use crate::interpreter::inline_cache::{rule_word, CacheRule, GlobalCache};
+    use crate::interpreter::inline_cache::{CacheRule, GlobalCache, rule_word};
     use crate::jit::macro_assembler::Abi;
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::{BlockWord, ExitKind, MachineExit};
     use crate::mixin::DispatchId;
-    use crate::Symbol;
 
     /// The dispatching stub is whole instructions under both encoders:
     /// every method body's dispatching entry jumps into it on x64 and on

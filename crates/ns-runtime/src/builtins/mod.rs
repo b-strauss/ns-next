@@ -39,7 +39,7 @@ use primitive::Primitive;
 use crate::heap::Heap;
 use crate::interpreter::{Signal, Step};
 use crate::types::*;
-use crate::{platform, Mutator, Symbol};
+use crate::{Mutator, Symbol, platform};
 
 /// Runs `primitive` on `receiver`. `None` means a leaf declines: the
 /// receiver is not of the shape it works on, and the answer goes back to the

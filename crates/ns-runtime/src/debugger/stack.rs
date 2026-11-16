@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::metadata::again::{module_name, BodyOrigin, Member};
+use super::metadata::again::{BodyOrigin, Member, module_name};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
     FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,

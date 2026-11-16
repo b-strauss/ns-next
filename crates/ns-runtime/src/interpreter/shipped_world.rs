@@ -12,14 +12,14 @@ use std::rc::Rc;
 
 use ns_syntax::ast::AccessModifier;
 
+use crate::Symbol;
 use crate::heap::MixinId;
 use crate::heap::{Heap, Root};
-use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
+use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::mixin::{MethodEntry, Mixin};
 use crate::trace::{Trace, Tracer};
 use crate::types::{BuiltinClass, ClassReference, ObjectReference, Value};
-use crate::Symbol;
 
 /// What a shipped name names, given its module and its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -872,9 +872,11 @@ mod tests {
                 assert!(positions.mixin, "a root's mixin may be named");
                 // Every root is `= Value`, so it applies no mixin and adds
                 // no level to name.
-                assert!(world
-                    .index_of_name(&name(root, root, ShippedKind::Level(0)))
-                    .is_none());
+                assert!(
+                    world
+                        .index_of_name(&name(root, root, ShippedKind::Level(0)))
+                        .is_none()
+                );
                 let instance = positions_of(world, name(root, root, ShippedKind::ModuleInstance));
                 assert_eq!(
                     instance,

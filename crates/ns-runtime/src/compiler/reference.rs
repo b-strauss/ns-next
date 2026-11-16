@@ -10,16 +10,17 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use super::control_flow;
-use super::lower::{lower_literal, selector_of, taken_block_spans, Collecting, SendSpans};
+use super::lower::{Collecting, SendSpans, lower_literal, selector_of, taken_block_spans};
 use super::simultaneous;
+use crate::Symbol;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
-    register_written, registers_read, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode,
-    Instruction, Literal as BytecodeLiteral, HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
+    Literal as BytecodeLiteral, register_written, registers_read,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
@@ -27,7 +28,6 @@ use crate::debugger::metadata::{
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
-use crate::Symbol;
 
 type Bindings = Rc<HashMap<Span, Binding>>;
 
@@ -794,11 +794,18 @@ impl<'a> Body<'a> {
         match self.binding(target.span) {
             Some(Binding::Local(index)) => {
                 let slot = self.local_register(0, index);
-                self.emit(Instruction::StoreLocal { source: value_register, slot });
+                self.emit(Instruction::StoreLocal {
+                    source: value_register,
+                    slot,
+                });
             }
             Some(Binding::OuterLocal { depth, index }) => {
                 let index = self.local_register(depth, index);
-                self.emit(Instruction::StoreOuterLocal { source: value_register, depth, index });
+                self.emit(Instruction::StoreOuterLocal {
+                    source: value_register,
+                    depth,
+                    index,
+                });
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
@@ -1457,10 +1464,12 @@ mod tests {
                 .any(|instruction| matches!(instruction, Instruction::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
             "{code:?}"
         );
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::SendPublic { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SendPublic { .. }))
+        );
     }
 
     #[test]
@@ -1653,10 +1662,12 @@ mod tests {
             instruction,
             Instruction::SendPublic { selector, .. } if selector.as_str() == "stringSize:ifFail:"
         )));
-        assert!(!code
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })));
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. }))
+        );
     }
 
     #[test]

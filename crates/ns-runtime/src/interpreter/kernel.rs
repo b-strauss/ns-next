@@ -450,7 +450,9 @@ impl<'gc> Mutator<'gc> {
             let class = self.builtin_class(kind);
             let field = hidden_slot_of(self, kernel, kind);
             debug_assert!(
-                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
+                self.heap
+                    .instance_field(kernel, field)
+                    .is_some_and(|value| value.is_nil()),
                 "internal: Kernel's initializer touched the nested class {kind:?} before the bootstrap could fill it"
             );
             if !self
@@ -470,7 +472,9 @@ impl<'gc> Mutator<'gc> {
             };
             let field = hidden_slot_of_mixin(self, kernel, mixin);
             debug_assert!(
-                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
+                self.heap
+                    .instance_field(kernel, field)
+                    .is_some_and(|value| value.is_nil()),
                 "internal: Kernel's initializer touched the nested class {} before the bootstrap could fill it",
                 mixin.name
             );
@@ -2739,10 +2743,12 @@ mod tests {
             let class = indexed_collection_class(mutator, kernel)
                 .expect("the kernel phase fills IndexedCollection's hidden slot");
             let collection = mutator.builtin_class(BuiltinClass::Collection);
-            assert!(mutator
-                .heap()
-                .class_superclass(class)
-                .is_some_and(|superclass| superclass.same(collection)));
+            assert!(
+                mutator
+                    .heap()
+                    .class_superclass(class)
+                    .is_some_and(|superclass| superclass.same(collection))
+            );
         });
     }
 

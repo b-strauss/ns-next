@@ -7,11 +7,11 @@
 //! calling convention").
 
 use ns_assembler::aarch64::{
-    D0, D1, D2, SP, X0, X1, X19, X2, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29, X3, X4, X5,
-    X6, X7, X8, X9,
+    D0, D1, D2, SP, X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X19, X20, X21, X22, X23, X24, X25, X26,
+    X27, X28, X29,
 };
 use ns_assembler::x64::{
-    DIVIDEND, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
+    DIVIDEND, R8, R9, R10, R11, R12, R13, R14, R15, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
     RSP, XMM0, XMM1, XMM2,
 };
 use ns_assembler::{
@@ -4059,8 +4059,8 @@ mod encoding_tests {
     /// them may be among them.
     #[test]
     fn float_scratch_registers_are_volatile_under_every_convention() {
-        use ns_assembler::aarch64::{D15, D8};
-        use ns_assembler::x64::{XMM15, XMM6};
+        use ns_assembler::aarch64::{D8, D15};
+        use ns_assembler::x64::{XMM6, XMM15};
 
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             let float_scratch = Roles::of_abi(abi).float_scratch;

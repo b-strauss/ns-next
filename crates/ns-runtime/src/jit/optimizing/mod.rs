@@ -84,8 +84,8 @@ pub(crate) fn compile_tree(
     futures_exit: bool,
     speculation: Speculation,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
-    use crate::jit::baseline::{BodyRole, ScopeFacts};
     use crate::jit::Refusal;
+    use crate::jit::baseline::{BodyRole, ScopeFacts};
 
     let snapshot = &tree.root;
     let roles = macro_assembler.roles();

@@ -7,10 +7,10 @@
 //! at the base level; reflection is a mirror's
 //! (`docs/design/object-model.md`, "Class sides and metaclasses").
 
+use crate::Mutator;
 use crate::builtins::primitive::BehaviorPrimitive;
 use crate::interpreter::Arguments;
 use crate::types::*;
-use crate::Mutator;
 
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,

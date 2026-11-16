@@ -406,10 +406,11 @@ mod tests {
             idle.chunks.capacity() < 100,
             "the memory past the committed words is freed"
         );
-        assert!(idle
-            .chunks
-            .iter()
-            .all(|chunk| chunk.live == 0 && chunk.before == 0));
+        assert!(
+            idle.chunks
+                .iter()
+                .all(|chunk| chunk.live == 0 && chunk.before == 0)
+        );
     }
 
     /// A survivor outside the occupied ranges would set a bit in a gap,

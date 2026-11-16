@@ -1,11 +1,11 @@
-use super::{allocate, sequence, Location, Move, PointKind, Spot};
+use super::{Location, Move, PointKind, Spot, allocate, sequence};
 use crate::bytecode::{Instruction, IntegerOperation, Literal};
 use crate::jit::macro_assembler::{Abi, Roles};
 use crate::jit::optimizing::build::build_speculating as build;
 use crate::jit::optimizing::graph::{BlockId, Graph, Node};
 use crate::jit::optimizing::liveness::{block_order, intervals};
 use crate::jit::optimizing::metadata::{
-    allocate_and_describe, metadata, replay_with_leaf_calls, verify_allocation, Resumes,
+    Resumes, allocate_and_describe, metadata, replay_with_leaf_calls, verify_allocation,
 };
 use crate::jit::optimizing::snapshot::Snapshot;
 use crate::jit::optimizing::verify::VerifyError;
@@ -51,14 +51,18 @@ fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
         .find(|point| point.scopes[0].program_counter == 2)
         .expect("the send is an interrupt point");
     assert_eq!(send.scopes[0].resumes, Resumes::Deliver);
-    assert!(send.scopes[0]
-        .locations
-        .iter()
-        .any(|(register, _)| *register == 3));
-    assert!(send.scopes[0]
-        .locations
-        .iter()
-        .all(|(_, location)| *location == Location::FrameWord));
+    assert!(
+        send.scopes[0]
+            .locations
+            .iter()
+            .any(|(register, _)| *register == 3)
+    );
+    assert!(
+        send.scopes[0]
+            .locations
+            .iter()
+            .all(|(_, location)| *location == Location::FrameWord)
+    );
     // Both bindings are stored before the send, from their registers.
     let stored: Vec<u16> = allocation.dirty_at[0]
         .stores
@@ -156,11 +160,13 @@ fn a_loop_counter_stays_in_a_register_across_the_loop() {
         allocation.location_of(counter.inputs[way], loop_end_position),
         Location::Register(_)
     ));
-    assert!(allocation
-        .moves_at(loop_end_position)
-        .iter()
-        .chain(allocation.moves_at(loop_end_position + 1))
-        .all(|each| !matches!(each, Move::Store { register: 3, .. })));
+    assert!(
+        allocation
+            .moves_at(loop_end_position)
+            .iter()
+            .chain(allocation.moves_at(loop_end_position + 1))
+            .all(|each| !matches!(each, Move::Store { register: 3, .. }))
+    );
     let poll = allocation
         .dirty_at
         .iter()
@@ -342,9 +348,11 @@ fn a_tainted_register_where_two_arms_meet() -> Snapshot {
 #[test]
 fn a_binding_the_leftover_analysis_taints_at_a_merge_is_not_stored() {
     let snapshot = a_tainted_register_where_two_arms_meet();
-    assert!(snapshot.tainted_before[5]
-        .iter()
-        .any(|range| range.contains(&20)));
+    assert!(
+        snapshot.tainted_before[5]
+            .iter()
+            .any(|range| range.contains(&20))
+    );
     let graph = build(&snapshot);
     let stores_of_r20 = |allocation: &super::Allocation| {
         allocation
@@ -665,11 +673,11 @@ fn a_trap_writes_back_every_dirty_binding() {
 /// registers below the send's slots alone.
 #[test]
 fn every_interrupt_point_names_its_chain_of_scopes() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_callee_with_a_frame_node;
     use crate::jit::optimizing::graph::ScopeId;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_callee_with_a_frame_node();
     let plan = plan(&tree, Speculation::Traps);
@@ -719,11 +727,13 @@ fn every_interrupt_point_names_its_chain_of_scopes() {
         );
         assert!(root.locations.iter().all(|(register, _)| *register < 20));
         assert!(root.locations.iter().any(|(register, _)| *register == 13));
-        assert!(inside
-            .scopes
-            .iter()
-            .flat_map(|scope| &scope.locations)
-            .all(|(_, location)| *location == Location::FrameWord));
+        assert!(
+            inside
+                .scopes
+                .iter()
+                .flat_map(|scope| &scope.locations)
+                .all(|(_, location)| *location == Location::FrameWord)
+        );
     }
 }
 
@@ -735,7 +745,7 @@ fn every_interrupt_point_names_its_chain_of_scopes() {
 fn every_inlined_allocation_verifies() {
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::plan::plan_with;
-    use crate::jit::optimizing::{inlining_corpus, Speculation, SWEEP_LIMITS};
+    use crate::jit::optimizing::{SWEEP_LIMITS, Speculation, inlining_corpus};
 
     let mut chained = 0;
     for tree in inlining_corpus() {
@@ -769,11 +779,11 @@ fn every_inlined_allocation_verifies() {
 /// again: that pass has not laid the callee's frame yet.
 #[test]
 fn a_poll_into_an_unguarded_entry_names_its_sender_at_the_send() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_loop_headed_by_an_unguarded_send;
     use crate::jit::optimizing::graph::ScopeId;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_loop_headed_by_an_unguarded_send();
     let plan = plan(&tree, Speculation::Traps);
@@ -806,10 +816,10 @@ fn a_poll_into_an_unguarded_entry_names_its_sender_at_the_send() {
 /// the replay read one leftover analysis at its top, its sender's.
 #[test]
 fn an_unguarded_entry_where_two_ways_meet_allocates_and_verifies() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::an_unguarded_send_where_two_ways_meet;
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = an_unguarded_send_where_two_ways_meet();
     for speculation in [Speculation::Traps, Speculation::None] {
@@ -929,11 +939,11 @@ fn a_poll_s_re_entry_holds_a_tainted_register_to_its_binding_only_while_its_valu
 /// refused, although the word is the exit's to write at every other point.
 #[test]
 fn a_frame_node_s_current_class_left_unwritten_is_refused() {
+    use crate::jit::optimizing::Speculation;
     use crate::jit::optimizing::build::build_inlined;
     use crate::jit::optimizing::build::inlining_tests::a_callee_with_a_frame_node;
     use crate::jit::optimizing::graph::{HeaderBinding, ScopeId};
     use crate::jit::optimizing::plan::plan;
-    use crate::jit::optimizing::Speculation;
 
     let tree = a_callee_with_a_frame_node();
     let plan = plan(&tree, Speculation::Traps);

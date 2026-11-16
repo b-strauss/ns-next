@@ -601,7 +601,7 @@ fn intersect(
 
 #[cfg(test)]
 mod tests {
-    use super::{immediate_dominators, verify, VerifyError};
+    use super::{VerifyError, immediate_dominators, verify};
     use crate::jit::optimizing::graph::{
         Block, BlockId, End, Graph, Node, Phi, ValueId, ValueKind,
     };

@@ -180,7 +180,7 @@ impl FloatOperation {
 #[cfg(test)]
 mod tests {
     use super::FloatOperation;
-    use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
+    use crate::builtins::primitive::{MIRROR, MachineCall, RowStub};
 
     /// `FloatOperation::of_primitive` answers an operation for exactly the rows
     /// machine code computes `Float` operations for: `Float`'s binary

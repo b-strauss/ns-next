@@ -17,21 +17,21 @@ use std::sync::{Arc, Mutex};
 
 use ns_syntax::Span;
 
+use super::Attachments;
 use super::exceptions::{ExceptionBreakpoints, PendingException};
-use super::metadata::again::PairedBodies;
 use super::metadata::Cache;
+use super::metadata::again::PairedBodies;
 use super::remote::{
     BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, MethodBreakpoint,
     MethodBreakpointState, ModuleName, StopReason,
 };
-use super::stepping::{inlined_blocks, FilterDecisions, Holder, StepFilters};
-use super::Attachments;
+use super::stepping::{FilterDecisions, Holder, StepFilters, inlined_blocks};
+use crate::Root;
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::{ActivationReference, CodeId, FrameReference, Heap, MixinId};
-use crate::interpreter::core_library::{shipped_module_text, KERNEL_MODULE, SHIPPED_MODULES};
 use crate::interpreter::Mutator;
+use crate::interpreter::core_library::{KERNEL_MODULE, SHIPPED_MODULES, shipped_module_text};
 use crate::mixin::{Mixin, MixinMethod};
-use crate::Root;
 
 /// The size of the breakpoint stress mode's table of resolved bodies from
 /// which each doubling forgets the dead ones.

@@ -14,8 +14,8 @@ use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
 use super::{
-    attached, closes, literal_span, merge, placement, widen, widen_annotation, widen_delimiters,
-    Tokens,
+    Tokens, attached, closes, literal_span, merge, placement, widen, widen_annotation,
+    widen_delimiters,
 };
 
 /// Attaches `comments` to `module` as `attach_comments` does, by the

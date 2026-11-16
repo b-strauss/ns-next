@@ -179,9 +179,5 @@ pub(crate) fn terminated_before_run(link: Option<&HostLink>) -> bool {
 /// The status a command's exit code stands for: every failure the host
 /// reports is `ExitCode::FAILURE`.
 pub(crate) fn status_of(code: ExitCode) -> u8 {
-    if code == ExitCode::SUCCESS {
-        0
-    } else {
-        1
-    }
+    if code == ExitCode::SUCCESS { 0 } else { 1 }
 }

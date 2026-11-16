@@ -1,7 +1,7 @@
 //! `ns-next-analyzer inspect` -- the structural listing of an artifact.
 
 mod common;
-use common::{build_image, golden, ns_next_analyzer, ScratchDirectory};
+use common::{ScratchDirectory, build_image, golden, ns_next_analyzer};
 
 #[test]
 fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {

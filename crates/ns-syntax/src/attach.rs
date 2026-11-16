@@ -118,7 +118,7 @@
 //! taken as they come, and a comment no node holds goes to the module.
 
 use crate::ast::*;
-use crate::comment::{lines, starts_its_line, Comment, CommentKind};
+use crate::comment::{Comment, CommentKind, lines, starts_its_line};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 

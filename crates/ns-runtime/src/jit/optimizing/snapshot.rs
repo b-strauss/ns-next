@@ -14,15 +14,15 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    falls_through, jump_target, leftovers, CallSite, CodeKind, CompiledCode, Instruction,
-    IntegerOperation, Literal, HEADER_REGISTERS,
+    CallSite, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction, IntegerOperation, Literal,
+    falls_through, jump_target, leftovers,
 };
 use crate::heap::{CodeId, Heap};
 use crate::interpreter::inline_cache::{FeedbackBase, InlineCaches};
 use crate::jit::CustomizationKey;
-use crate::Symbol;
 
 /// What a body says of itself apart from its instructions: the numbers
 /// the push and the prologue lay a frame out by.
@@ -1141,8 +1141,8 @@ mod tests {
 
     use super::{Snapshot, SnapshotInstruction};
     use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation};
-    use crate::interpreter::inline_cache::FeedbackBase;
     use crate::interpreter::Interpreter;
+    use crate::interpreter::inline_cache::FeedbackBase;
     use crate::{Lowering, Symbol};
 
     fn body(kind: CodeKind, instructions: Vec<Instruction>, arguments: u16) -> Rc<CompiledCode> {

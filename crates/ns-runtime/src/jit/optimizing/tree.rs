@@ -21,7 +21,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
-use crate::bytecode::{CallSite, CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS, Instruction};
 use crate::heap::{ApplicationIndex, CodeId, Heap};
 use crate::interpreter::inline_cache::{
     CacheEntry, FeedbackBase, InlineCaches, SiteEntries, Target,
@@ -29,7 +29,7 @@ use crate::interpreter::inline_cache::{
 use crate::interpreter::resolve::Chain;
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, MixinMethod};
 
-use super::plan::{weight_with, Limits};
+use super::plan::{Limits, weight_with};
 use super::snapshot::{Customization, Snapshot};
 
 /// What a cache entry's guard says of the receivers it was filled for:

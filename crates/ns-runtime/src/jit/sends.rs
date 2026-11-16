@@ -18,13 +18,13 @@
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
+use crate::Symbol;
 use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::{Heap, Immediate};
-use crate::interpreter::inline_cache::cells::{ChainStart, CELL_BYTES, CELL_WORDS};
-use crate::interpreter::inline_cache::{rule_tag, site_index, CacheRule, RULE_TAG_BITS};
+use crate::interpreter::inline_cache::cells::{CELL_BYTES, CELL_WORDS, ChainStart};
+use crate::interpreter::inline_cache::{CacheRule, RULE_TAG_BITS, rule_tag, site_index};
 use crate::mixin::DispatchId;
-use crate::Symbol;
 
 use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;

@@ -36,19 +36,19 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 use std::sync::PoisonError;
 
-use super::breakpoints::{address, settle, AfterPast, OneShot, PastOnce};
-use super::metadata::again::{declaration_path, BodyOrigin};
+use super::breakpoints::{AfterPast, OneShot, PastOnce, address, settle};
+use super::metadata::again::{BodyOrigin, declaration_path};
 use super::metadata::{BlockPlace, BlockSendEntry, BodyMetadata, Cache, TakenBlock};
 use super::remote::{BreakpointId, ClassName};
 use super::stack::{self, StackFrame};
 use ns_syntax::Span;
 
-use crate::bytecode::{register_written, CompiledCode, Instruction};
-use crate::heap::{ActivationReference, FrameReference, DEBUGGER_STEP};
-use crate::interpreter::instantiate::FACTORY_INITIALIZE;
-use crate::interpreter::Mutator;
-use crate::types::{ActivationKind, BuiltinClass};
 use crate::Symbol;
+use crate::bytecode::{CompiledCode, Instruction, register_written};
+use crate::heap::{ActivationReference, DEBUGGER_STEP, FrameReference};
+use crate::interpreter::Mutator;
+use crate::interpreter::instantiate::FACTORY_INITIALIZE;
+use crate::types::{ActivationKind, BuiltinClass};
 use crate::{Root, Value};
 
 /// The frames no step stops in (`docs/design/debugger.md`, decision 16):

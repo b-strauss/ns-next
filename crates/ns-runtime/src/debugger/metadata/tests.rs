@@ -4,11 +4,11 @@ use std::rc::Rc;
 
 use indoc::{formatdoc, indoc};
 
-use super::again::{compile_level_again, BodyOrigin, Member, PairedBodies};
+use super::again::{BodyOrigin, Member, PairedBodies, compile_level_again};
 use super::{
     BodyMetadata, Cache, MetadataCollector, SendEntry, VariableEntry, VariablePlace, VectorHolder,
 };
-use crate::bytecode::{compiles_alike, CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{CompiledCode, HEADER_REGISTERS, Instruction, compiles_alike};
 use crate::compiler::Lowering;
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;

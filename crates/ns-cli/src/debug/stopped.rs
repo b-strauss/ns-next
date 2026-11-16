@@ -157,7 +157,7 @@ impl Stop {
             VariableValue::Shown(value) => value,
             VariableValue::Unavailable => return Self::without_value(variable, "not available"),
             VariableValue::NotComputed => {
-                return Self::without_value(variable, "<not computed yet>")
+                return Self::without_value(variable, "<not computed yet>");
             }
         };
         let indexed = value.indexed;

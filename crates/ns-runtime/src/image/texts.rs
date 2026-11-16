@@ -17,8 +17,8 @@ use ns_syntax::Span;
 
 use crate::mixin::{DeclarationText, Mixin};
 
-use super::decode::{bounded_count, DecodeError, Reader};
-use super::encode::{u32_field, Writer};
+use super::decode::{DecodeError, Reader, bounded_count};
+use super::encode::{Writer, u32_field};
 use super::mixins::Row;
 
 /// Each row's text index, by row id.

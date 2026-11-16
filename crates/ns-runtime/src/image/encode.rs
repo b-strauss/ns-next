@@ -2238,7 +2238,7 @@ pub fn walk_graph<'gc>(
                      class with an enclosing object or a declaring class, such as a nested \
                      class",
                     heap.class_display_name(*class)
-                ))
+                ));
             }
             Some(super::modules::RootRecordDefect::RootRule) => {
                 return Err(format!(
@@ -2246,7 +2246,7 @@ pub fn walk_graph<'gc>(
                      inherit what the root rule allows, Object or Value, or Value applied over \
                      Object",
                     heap.class_display_name(*class)
-                ))
+                ));
             }
         }
     }

@@ -2,10 +2,10 @@
 //! every own-slot instruction makes first, and the helper `InitializeSlot`
 //! writes through.
 
+use crate::Symbol;
 use crate::heap::{ActivationReference, Heap, RegisterBase};
 use crate::mixin::DispatchId;
 use crate::types::*;
-use crate::Symbol;
 
 use super::{EvaluationResult, Mutator, Signal};
 

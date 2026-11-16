@@ -20,14 +20,14 @@
 use std::rc::Rc;
 use std::sync::PoisonError;
 
-use super::metadata::again::{declaration_path, Member};
+use super::metadata::again::{Member, declaration_path};
 use super::remote::{ClassName, StopReason};
 use super::stack::{self, StackFrame};
 use super::stepping;
 use crate::builtins::object_class::identical;
 use crate::heap::DEBUGGER_STOP;
-use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::interpreter::Mutator;
+use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::mixin::Mixin;
 use crate::types::{ActivationKind, BuiltinClass};
 use crate::{Root, Symbol, Value};

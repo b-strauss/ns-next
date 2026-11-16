@@ -16,7 +16,7 @@ use crate::builtins::primitive::{ActivationPrimitive, Primitive};
 use crate::bytecode::{CodeKind, UnwindMarker};
 use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::unwind::WalkedActivation;
-use crate::interpreter::{unwind, Signal, Step};
+use crate::interpreter::{Signal, Step, unwind};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 

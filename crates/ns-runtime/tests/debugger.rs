@@ -7,19 +7,19 @@
 
 use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use indoc::indoc;
+use ns_runtime::JitStatistics;
 use ns_runtime::debugger::FrameKind;
 use ns_runtime::debugger::{
     BreakpointId, BreakpointState, ClassName, HitCondition, LineBreakpoint, MethodBreakpoint,
     MethodBreakpointState, ModuleName, ModuleTextAnswer,
 };
-use ns_runtime::JitStatistics;
 use ns_runtime::{
     Command, DebugRemote, Event, FrameDescription, HostResult, HostSignal, Interpreter, Lowering,
     MethodSide, ReturnedValue, Root, StopReason, Symbol, ValueDescription, ValueKind, Variable,

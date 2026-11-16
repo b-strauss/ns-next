@@ -7,7 +7,7 @@ use std::rc::Rc;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
 use ns_runtime::{
     ClassReference, Heap, HostError, HostResult, HostSignal, Interpreter, Mixin, Mutator, Root,
-    SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
+    SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, SourceOrigin, Symbol, Value, ValueKind,
 };
 use ns_syntax::Span;
 

@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
+use ns_syntax::ast::AccessModifier;
 
+use crate::Symbol;
 use crate::bytecode::{
     CallSite, CodeKind, CompiledCode, CompiledCodeFields, Instruction, IntegerOperation, Literal,
     UnwindMarker,
@@ -20,7 +21,6 @@ use crate::mixin::{
 };
 use crate::resolver::RootShape;
 use crate::types::BuiltinClass;
-use crate::Symbol;
 
 use super::bytes::ByteWriter;
 use super::{FORMAT_VERSION, MAGIC};

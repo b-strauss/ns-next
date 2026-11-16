@@ -10,21 +10,21 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use ns_syntax::{ast, Span};
+use ns_syntax::{Span, ast};
 
-use super::{address, BodyMetadata, MetadataCollector, VariableEntry, VariablePlace};
-use crate::bytecode::{compiles_alike, CompiledCode};
+use super::{BodyMetadata, MetadataCollector, VariableEntry, VariablePlace, address};
+use crate::Symbol;
+use crate::bytecode::{CompiledCode, compiles_alike};
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
+use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{
-    resolved_shipped_module, shipped_module_text, KERNEL_MODULE, SHIPPED_MODULES,
+    KERNEL_MODULE, SHIPPED_MODULES, resolved_shipped_module, shipped_module_text,
 };
 use crate::interpreter::edit::find_declaration;
-use crate::interpreter::instantiate::{pattern_parameter_count, InitializerBody, ModuleSource};
-use crate::interpreter::Mutator;
+use crate::interpreter::instantiate::{InitializerBody, ModuleSource, pattern_parameter_count};
 use crate::mixin::{MethodEntry, Mixin};
 use crate::types::{ResolvedModule, SourceOrigin};
-use crate::Symbol;
 
 /// Which body of which declaration a frame runs.
 pub(crate) struct BodyOrigin {

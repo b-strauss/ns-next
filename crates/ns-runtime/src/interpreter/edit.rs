@@ -10,12 +10,12 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use super::instantiate::{method_name, ModuleSource};
 use super::Mutator;
+use super::instantiate::{ModuleSource, method_name};
+use crate::Symbol;
 use crate::heap::{Heap, MixinId};
 use crate::mixin::Mixin;
 use crate::types::{SourceOrigin, Value};
-use crate::Symbol;
 
 /// A staged edit of one class, as a `ClassDeclarationBuilder` hands it
 /// over: a new header, or `None` to keep it, and the member operations of
@@ -705,10 +705,10 @@ fn check_kept_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Root;
     use crate::bytecode::Instruction;
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::MethodEntry;
-    use crate::Root;
     use indoc::indoc;
     use std::path::PathBuf;
 
@@ -986,9 +986,11 @@ mod tests {
             )],
         };
         let prepared = prepare(&mut interpreter, inner_id, &edit);
-        assert!(prepared
-            .module_text
-            .contains(") : (\npublic make = ( ^self new )\n)"));
+        assert!(
+            prepared
+                .module_text
+                .contains(") : (\npublic make = ( ^self new )\n)")
+        );
         let (_, fresh) = &prepared.replacements[0];
         let class_side = fresh.class_side.clone().expect("a declared class side");
         assert!(class_side.methods.contains_key(&Symbol::intern("make")));
@@ -1010,9 +1012,11 @@ mod tests {
         );
         assert!(synthesized.is_class_side());
         assert!(synthesized.methods.contains_key(&Symbol::NEW));
-        assert!(synthesized
-            .enclosing_mixin()
-            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, fresh)));
+        assert!(
+            synthesized
+                .enclosing_mixin()
+                .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, fresh))
+        );
         assert_eq!(prepared.replacements.len(), 1);
     }
 
@@ -1048,10 +1052,12 @@ mod tests {
             .expect("Inner's synthesized class side is paired");
         assert_eq!(entry.1, synthesized_id);
         assert!(entry.2.is_class_side());
-        assert!(entry
-            .2
-            .enclosing_mixin()
-            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &fresh_outer.declared_nested()[0])));
+        assert!(
+            entry
+                .2
+                .enclosing_mixin()
+                .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &fresh_outer.declared_nested()[0]))
+        );
     }
 
     /// The next edit of a module starts from its current text, so an
@@ -1070,9 +1076,11 @@ mod tests {
         assert!(second.module_text.contains("public b = (^2)"));
         assert!(second.module_text.contains("public d = (^4)"));
         let (_, fresh_outer) = &second.replacements[0];
-        assert!(fresh_outer.declared_nested()[0]
-            .methods
-            .contains_key(&Symbol::intern("b")));
+        assert!(
+            fresh_outer.declared_nested()[0]
+                .methods
+                .contains_key(&Symbol::intern("b"))
+        );
     }
 
     /// Spans are byte offsets: a splice between characters of several
@@ -1146,9 +1154,7 @@ mod tests {
                 "addFromSource: of Inner's methods takes one method declaration",
             ),
             (
-                instance_edit(vec![MemberEdit::AddLazySlot(
-                    "public b = (^2)".to_string(),
-                )]),
+                instance_edit(vec![MemberEdit::AddLazySlot("public b = (^2)".to_string())]),
                 "addFromSource: of Inner's lazy slots takes one lazy slot declaration",
             ),
             (

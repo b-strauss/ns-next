@@ -9,7 +9,7 @@
 //! exit.
 
 use ns_assembler::{Assembled, Condition, Memory, Width};
-use ns_memory::{EntryBlock, ENTRY_BLOCK_WORDS};
+use ns_memory::{ENTRY_BLOCK_WORDS, EntryBlock};
 
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand};
@@ -704,11 +704,11 @@ pub(crate) fn assemble_refusing_stub(abi: Abi) -> Assembled {
 #[cfg(test)]
 pub(super) mod testing {
     use ns_assembler::Assembled;
-    use ns_memory::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
+    use ns_memory::{CodeOffset, CodeWriter, CodeZone, ENTRY_BLOCK_WORDS, EntryBlock, Leaf};
 
     use super::{
-        assemble_call_stub, assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord,
-        MachineExit,
+        BlockWord, MachineExit, assemble_call_stub, assemble_entry_stub, assemble_exit_stub,
+        decode_exit,
     };
     use crate::heap::machine_words::{MachineWord, MachineWords};
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
@@ -923,7 +923,7 @@ mod tests {
     use super::testing::Machine;
     use super::{BlockWord, ExitKind, MachineExit};
     use crate::jit::macro_assembler::{
-        leaf_call_argument_registers, Abi, LeafIndex, MacroAssembler, Operand, Roles,
+        Abi, LeafIndex, MacroAssembler, Operand, Roles, leaf_call_argument_registers,
     };
 
     /// The host's first `COUNT` scratch registers, in the roles' order:

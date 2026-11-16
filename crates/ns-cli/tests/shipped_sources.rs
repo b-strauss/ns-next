@@ -2,7 +2,7 @@
 //! plugin and for an agent with a shell.
 
 mod common;
-use common::{ns_next, ScratchDirectory};
+use common::{ScratchDirectory, ns_next};
 use std::ffi::OsStr;
 
 fn expect_ok(arguments: &[&OsStr]) -> String {

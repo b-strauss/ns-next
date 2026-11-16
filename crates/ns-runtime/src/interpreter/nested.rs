@@ -24,9 +24,9 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::mixin::{Mixin, MixinApplication};
 use crate::types::*;
-use crate::Symbol;
 
 use super::{Mutator, Signal, Step};
 

@@ -3,12 +3,12 @@
 //! seam.
 
 use indoc::indoc;
+use ns_runtime::Interpreter;
+use ns_runtime::ValueKind;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
 use ns_runtime::interpreter::Arguments;
 use ns_runtime::interpreter::FeedbackBase;
 use ns_runtime::types::{ActivationKind, Continuation, Value};
-use ns_runtime::Interpreter;
-use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
@@ -29,9 +29,11 @@ fn array_accessors_read_and_write_through_the_seam() {
                 == Some(1)
         );
 
-        assert!(mutator
-            .heap_mut()
-            .array_set_element(object, 0, Value::small_integer(9)));
+        assert!(
+            mutator
+                .heap_mut()
+                .array_set_element(object, 0, Value::small_integer(9))
+        );
         assert!(
             mutator
                 .heap()
@@ -59,9 +61,11 @@ fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
         let object = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
 
         assert!(mutator.heap().array_element(object, 99).is_none());
-        assert!(!mutator
-            .heap_mut()
-            .array_set_element(object, 99, Value::small_integer(9)));
+        assert!(
+            !mutator
+                .heap_mut()
+                .array_set_element(object, 99, Value::small_integer(9))
+        );
     });
 }
 
@@ -357,9 +361,11 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
         // it has seen, and a copy is another key -- an edited class.
         let edited = std::rc::Rc::new((*application.mixin).clone());
         let reapplied = mutator.apply_mixin(&edited, application.superclass.as_ref());
-        assert!(mutator
-            .heap_mut()
-            .class_set_application(class_object, reapplied));
+        assert!(
+            mutator
+                .heap_mut()
+                .class_set_application(class_object, reapplied)
+        );
         let after = mutator.heap().class_dispatch_ids(class_object);
         assert_ne!(before, after, "a new application mints new ids");
         let instance = mutator.fetch(&instance);

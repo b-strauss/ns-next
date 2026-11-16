@@ -5,9 +5,9 @@
 
 use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::hash::IdentityMap;
 use crate::mixin::{MethodEntry, PrimitiveMethod};
-use crate::Symbol;
 
 /// One native operation. Grouped by the builtin family whose module executes
 /// it, so each module matches its own group exhaustively.

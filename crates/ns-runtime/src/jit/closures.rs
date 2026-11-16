@@ -42,8 +42,8 @@
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use crate::bytecode::{CompiledCode, Instruction};
-use crate::heap::machine_words::MachineWord;
 use crate::heap::Heap;
+use crate::heap::machine_words::MachineWord;
 use crate::interpreter::Mutator;
 
 use super::baseline::{BodyAssembler, BodyRole, Lowering, TwinTransfer};

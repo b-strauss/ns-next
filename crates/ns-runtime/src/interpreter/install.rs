@@ -4,8 +4,8 @@
 
 use std::rc::Rc;
 
-use super::edit::{Edit, EditedTexts, PreparedEdit};
 use super::Mutator;
+use super::edit::{Edit, EditedTexts, PreparedEdit};
 use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::mixin::{DispatchId, Mixin, MixinApplication};
@@ -363,8 +363,8 @@ impl<'gc> Mutator<'gc> {
 mod tests {
     use super::*;
     use crate::heap::{ActivationHeader, ApplicationIndex};
-    use crate::interpreter::edit::MemberEdit;
     use crate::interpreter::Arguments;
+    use crate::interpreter::edit::MemberEdit;
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::Mixin;
     use crate::types::{ActivationKind, BuiltinClass, Continuation, SourceOrigin, Value};

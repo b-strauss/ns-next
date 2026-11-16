@@ -318,7 +318,7 @@ impl MachineEntries {
 
 #[cfg(test)]
 mod tests {
-    use super::{MachineEntries, RowWord, ROW_WORDS};
+    use super::{MachineEntries, ROW_WORDS, RowWord};
 
     /// What `names_entry` answers for every committed row and one past
     /// them, against the row's own entry word.

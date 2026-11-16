@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{
-    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
-    HEADER_REGISTERS,
+    BodyLimit, CallSite, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction, IntegerOperation,
+    Literal,
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
@@ -25,11 +25,11 @@ use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     ArbitraryInteger, BuiltinClass, ClassReference, DispatchId, FrameKind, Heap, HostResult,
     HostSignal, Interpreter, Mixin, MixinApplication, Mutator, NewClass, NewClosure,
-    ObjectReference, ObjectShape, Root, SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX,
-    SMALL_INTEGER_MIN,
+    ObjectReference, ObjectShape, Root, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN, SourceOrigin, Symbol,
+    Value, ValueKind,
 };
-use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
+use ns_syntax::ast::AccessModifier;
 
 #[test]
 fn header_round_trips() {
@@ -1320,8 +1320,8 @@ fn the_retired_load_builtin_class_tag_is_refused() {
     let bytes = one_method_code_table(false, 1, |writer| {
         writer.write_u8(2); // the retired LoadBuiltinClass tag
         writer.write_u16(0); // destination
-                             // a builtin class tag would have followed; never read, since the
-                             // instruction tag alone is already refused
+        // a builtin class tag would have followed; never read, since the
+        // instruction tag alone is already refused
         writer.write_u8(0);
     });
     let mut reader = decode::Reader::new(&bytes);
@@ -3399,9 +3399,10 @@ fn an_ephemeron_round_trips_with_its_value_while_its_key_is_reached() {
         let heap = mutator.heap();
         let held = holder_field(mutator, holder, 2);
         let ephemeron = object(holder_field(mutator, holder, 0));
-        assert!(heap
-            .object_class(ephemeron)
-            .same(mutator.builtin_class(BuiltinClass::Ephemeron)));
+        assert!(
+            heap.object_class(ephemeron)
+                .same(mutator.builtin_class(BuiltinClass::Ephemeron))
+        );
         assert_eq!(heap.object_shape(ephemeron), ObjectShape::Ephemeron);
         let fields = heap
             .ephemeron_fields(ephemeron)
@@ -3559,9 +3560,11 @@ fn reified_holder_snapshot(
         let values = elements(mutator, class, list);
         let array = mutator.new_array(values);
         let instance = object(mutator.fetch(&instance));
-        assert!(mutator
-            .heap_mut()
-            .instance_set_field(instance, 0, Value::object(array)));
+        assert!(
+            mutator
+                .heap_mut()
+                .instance_set_field(instance, 0, Value::object(array))
+        );
         snapshot_one(
             mutator,
             true,
@@ -4277,9 +4280,10 @@ fn the_platform_decodes_to_a_record_equal_to_the_interpreters_own() {
         let platform = object(mutator.fetch(&platform));
         let heap = mutator.heap();
         assert!(!decoded_0.same(platform), "a record, not the singleton");
-        assert!(heap
-            .object_class(decoded_0)
-            .same(heap.object_class(platform)));
+        assert!(
+            heap.object_class(decoded_0)
+                .same(heap.object_class(platform))
+        );
     });
     let equal = expect_ok(
         interpreter.send(&decoded[0], Symbol::intern("="), &[platform]),
@@ -4414,14 +4418,16 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             .expect("the class declares `mk`");
         assert_eq!(declaration.selector, method.selector);
         assert_eq!(*declaration.code, *method.code);
-        assert!(heap
-            .object_class(object(heap.frame_receiver(closure_home)))
-            .same(class));
-        assert!(home
-            .current_class
-            .as_ref()
-            .expect("a method frame has a current class")
-            .same(class));
+        assert!(
+            heap.object_class(object(heap.frame_receiver(closure_home)))
+                .same(class)
+        );
+        assert!(
+            home.current_class
+                .as_ref()
+                .expect("a method frame has a current class")
+                .same(class)
+        );
         assert!(
             home.sender.is_none(),
             "a returned activation has no sender -- Smalltalk's rule, and what keeps \
@@ -6423,8 +6429,8 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
 fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_FACTORY + 1); // one past the last frame kind
-                                        // The rest of a well-formed record, so the kind tag itself is what the
-                                        // reader rejects.
+    // The rest of a well-formed record, so the kind tag itself is what the
+    // reader rejects.
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
@@ -9320,7 +9326,7 @@ fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counte
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("x");
     writer.write_u32(0); // no roots -- otherwise complete, so the hash is what
-                         // the decoder rejects, not a truncation
+    // the decoder rejects, not a truncation
     let bytes = writer.into_bytes();
     let error = GraphFixture::new().decode_error(&bytes);
     assert_eq!(error, decode::DecodeError::IdentityHashTooWide(1 << 22));
@@ -9556,9 +9562,11 @@ fn the_hash_of_a_shipped_level_survives_a_snapshot() {
         "the level is named in the table: {:?}",
         report.graph_tag_named_hashes
     );
-    assert!(report
-        .graph_tag_named_hashes
-        .contains(&format!("Kernel Array level 0 class hash {metaclass_hash}")));
+    assert!(
+        report
+            .graph_tag_named_hashes
+            .contains(&format!("Kernel Array level 0 class hash {metaclass_hash}"))
+    );
 
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
@@ -11792,7 +11800,9 @@ fn deepest_parseable_nesting() -> usize {
             return nested - 1;
         }
     }
-    panic!("the parser accepted {PROBE_CEILING} levels of class nesting: it has no ceiling to derive the image's from");
+    panic!(
+        "the parser accepted {PROBE_CEILING} levels of class nesting: it has no ceiling to derive the image's from"
+    );
 }
 
 /// The boundary this pins: the parser counts only *nested* classes,
@@ -13291,8 +13301,8 @@ fn a_header_flag_this_build_does_not_assign_is_rejected() {
 /// rather than read as one whose texts sit in the text table.
 #[test]
 fn a_header_flag_of_the_retired_module_text_layout_is_rejected() {
-    use ns_runtime::image::decode::{read_header, DecodeError, Reader};
-    use ns_runtime::image::encode::{write_header, Writer, RETIRED_HEADER_FLAGS};
+    use ns_runtime::image::decode::{DecodeError, Reader, read_header};
+    use ns_runtime::image::encode::{RETIRED_HEADER_FLAGS, Writer, write_header};
     const MODULE_TEXTS: u8 = 1;
     assert_ne!(RETIRED_HEADER_FLAGS & MODULE_TEXTS, 0);
     let mut writer = Writer::new();
@@ -13910,12 +13920,16 @@ fn a_builtin_metaclass_round_trips_by_tag() {
             panic!("both slots hold metaclasses");
         };
         let integer = mutator.builtin_class(BuiltinClass::Integer);
-        assert!(mutator
-            .metaclass_of(integer)
-            .is_some_and(|metaclass| metaclass.same(kept)));
-        assert!(mutator
-            .metaclass_of(loaded_class)
-            .is_some_and(|metaclass| metaclass.same(other)));
+        assert!(
+            mutator
+                .metaclass_of(integer)
+                .is_some_and(|metaclass| metaclass.same(kept))
+        );
+        assert!(
+            mutator
+                .metaclass_of(loaded_class)
+                .is_some_and(|metaclass| metaclass.same(other))
+        );
         // Each is its class's class, as the header says.
         assert!(mutator.heap().object_class(integer).same(kept));
         assert!(mutator.heap().object_class(loaded_class).same(other));
@@ -14028,9 +14042,11 @@ fn a_root_level_metaclass_round_trips_as_a_record() {
             .heap()
             .class_superclass(root_class)
             .expect("the loaded root's level");
-        assert!(mutator
-            .metaclass_of(level)
-            .is_some_and(|level_metaclass| level_metaclass.same(metaclass)));
+        assert!(
+            mutator
+                .metaclass_of(level)
+                .is_some_and(|level_metaclass| level_metaclass.same(metaclass))
+        );
         assert!(mutator.heap().object_class(level).same(metaclass));
         assert_eq!(mutator.heap().object_identity_hash(metaclass), hash);
     });
@@ -14170,9 +14186,10 @@ fn a_class_record_naming_another_classs_metaclass_is_refused() {
     let mut fixture = GraphFixture::new();
     fixture.decoded(&two_classes(2, 3), "paired records", |heap, graph| {
         for (class, metaclass) in [(0, 2), (1, 3)] {
-            assert!(heap
-                .class_metaclass(graph.objects[class])
-                .is_some_and(|found| found.same(graph.objects[metaclass])));
+            assert!(
+                heap.class_metaclass(graph.objects[class])
+                    .is_some_and(|found| found.same(graph.objects[metaclass]))
+            );
         }
     });
     let error = fixture.decode_error(&two_classes(3, 2));
@@ -14924,9 +14941,11 @@ fn a_body_less_class_records_scope_is_checked() {
         let scope = heap
             .class_declaration_scope(graph.objects[0])
             .expect("the record's scope is on its class object");
-        assert!(scope
-            .enclosing
-            .is_some_and(|enclosing| enclosing.same(graph.objects[2])));
+        assert!(
+            scope
+                .enclosing
+                .is_some_and(|enclosing| enclosing.same(graph.objects[2]))
+        );
         assert!(scope.declaring_class.is_none());
     });
     type WritesScope = Box<dyn Fn(&mut encode::Writer)>;
@@ -15998,9 +16017,10 @@ fn a_root_level_loads_as_a_record_applying_kernel_value() {
             &heap.class_application(level).expect("a class").mixin,
             &heap.class_application(value).expect("a class").mixin
         ));
-        assert!(heap
-            .class_superclass(level)
-            .is_some_and(|below| below.same(mutator.builtin_class(BuiltinClass::Object))));
+        assert!(
+            heap.class_superclass(level)
+                .is_some_and(|below| below.same(mutator.builtin_class(BuiltinClass::Object)))
+        );
     });
 }
 
@@ -16976,9 +16996,11 @@ fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
             .as_deref(),
         Some(TWO_CLASS_MODULE)
     );
-    assert!(inner
-        .enclosing_mixin()
-        .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
+    assert!(
+        inner
+            .enclosing_mixin()
+            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer))
+    );
     assert!(outer.enclosing_mixin().is_none());
 }
 
@@ -16991,9 +17013,11 @@ fn a_mixin_decoded_from_an_image_without_source_carries_no_text() {
     let (outer, inner) = outer_and_inner(&mut loaded);
     assert!(outer.text.is_none());
     assert!(inner.text.is_none());
-    assert!(inner
-        .enclosing_mixin()
-        .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer)));
+    assert!(
+        inner
+            .enclosing_mixin()
+            .is_some_and(|enclosing| Rc::ptr_eq(&enclosing, &outer))
+    );
 }
 
 /// An image holding a `List` loads into a fresh process, whose boot built
@@ -17711,9 +17735,11 @@ fn a_caught_non_boolean_receiver_round_trips_through_a_package() {
         })
         .unwrap_or_else(|error| panic!("{error}"));
     let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert!(report
-        .shipped_names
-        .contains(&"Kernel NonBooleanReceiver".to_string()));
+    assert!(
+        report
+            .shipped_names
+            .contains(&"Kernel NonBooleanReceiver".to_string())
+    );
     let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
     let held = expect_ok(
         loaded
@@ -17831,8 +17857,8 @@ fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
 
 #[test]
 fn a_retired_stateless_flag_is_refused_as_unknown() {
-    use ns_runtime::image::decode::{read_header, DecodeError, Reader};
-    use ns_runtime::image::encode::{write_header, Writer, RETIRED_HEADER_FLAGS};
+    use ns_runtime::image::decode::{DecodeError, Reader, read_header};
+    use ns_runtime::image::encode::{RETIRED_HEADER_FLAGS, Writer, write_header};
     const STATELESS: u8 = 2;
     assert_ne!(RETIRED_HEADER_FLAGS & STATELESS, 0);
     let mut writer = Writer::new();
@@ -18224,12 +18250,14 @@ fn check_body_less_root<'gc>(mutator: &Mutator<'gc>, class: ClassReference<'gc>)
     let value = mutator.builtin_class(BuiltinClass::Value);
     let object = mutator.builtin_class(BuiltinClass::Object);
     assert_eq!(heap.class_name(class), Some(Symbol::intern("BodyLessRoot")));
-    assert!(heap
-        .class_named(class)
-        .is_some_and(|named| named.same(value)));
-    assert!(heap
-        .class_superclass(class)
-        .is_some_and(|superclass| superclass.same(object)));
+    assert!(
+        heap.class_named(class)
+            .is_some_and(|named| named.same(value))
+    );
+    assert!(
+        heap.class_superclass(class)
+            .is_some_and(|superclass| superclass.same(object))
+    );
     let scope = heap
         .class_declaration_scope(class)
         .expect("the root's class object keeps its declaration's scope");

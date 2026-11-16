@@ -994,7 +994,7 @@ mod tests {
     #[cfg(windows)]
     fn is_placeholder(zone: &CodeZone, chunk: usize) -> bool {
         use windows_sys::Win32::System::Memory::{
-            VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_MAPPED, MEM_RESERVE,
+            MEM_MAPPED, MEM_RESERVE, MEMORY_BASIC_INFORMATION, VirtualQuery,
         };
         let (executable, writable) = zone.mapping.chunk_addresses(chunk);
         [executable, writable].into_iter().all(|address| {

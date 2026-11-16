@@ -10,10 +10,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{Immediate, ImmediateKind};
-use crate::Symbol;
 
 /// One instruction in eight bytes, matched on by the run loop. A register
 /// is a `u8`, a jump target an absolute `u32` instruction index, and
@@ -2691,7 +2691,9 @@ impl Tables<'_> {
             },
             CompactInstruction::Wide { index } => self.wide[index as usize].clone(),
             CompactInstruction::Breakpoint => {
-                unreachable!("internal: a breakpoint is never decoded; the decoded view answers the original")
+                unreachable!(
+                    "internal: a breakpoint is never decoded; the decoded view answers the original"
+                )
             }
         }
     }
@@ -2786,8 +2788,8 @@ mod tests {
     )]
 
     use super::*;
-    use crate::bytecode::{CallSite, Instruction, IntegerOperation, Literal};
     use crate::Symbol;
+    use crate::bytecode::{CallSite, Instruction, IntegerOperation, Literal};
 
     /// Whether two instruction lists are the same, a `Float` literal by its
     /// bits, so that a NaN's payload and a zero's sign must survive.

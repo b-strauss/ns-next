@@ -398,11 +398,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                 };
                 let marked = broken_groups.contains(&std::ptr::from_ref(document));
                 let group_mode = if mode == Mode::Flat && !writer.remeasure {
-                    if marked {
-                        Mode::Break
-                    } else {
-                        Mode::Flat
-                    }
+                    if marked { Mode::Break } else { Mode::Flat }
                 } else {
                     writer.remeasure = false;
                     if !marked && fits(flat, &commands, writer.start(width), &broken_groups) {

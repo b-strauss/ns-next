@@ -423,10 +423,12 @@ mod tests {
         let empty = directory.join("empty.json");
         std::fs::write(&empty, r#"{ "main": "App.ns", "modules": [] }"#)
             .unwrap_or_else(|error| panic!("{error}"));
-        assert!(read_project(&empty)
-            .unwrap_or_else(|error| panic!("{error}"))
-            .modules
-            .is_empty());
+        assert!(
+            read_project(&empty)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .modules
+                .is_empty()
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 
 use super::Mutator;
 use crate::hash::{IdentityBuildHasher, IdentityMap};
-use crate::heap::reclaim::{mixin_row_number, BitSet, FreedIds, GatheredIds, InsideCounts};
+use crate::heap::reclaim::{BitSet, FreedIds, GatheredIds, InsideCounts, mixin_row_number};
 use crate::heap::{ApplicationIndex, MixinId};
 use crate::mixin::{DispatchId, Mixin};
 

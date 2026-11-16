@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The longest any single wait takes before the test fails.
 pub const TIMEOUT: Duration = Duration::from_secs(30);

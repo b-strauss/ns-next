@@ -520,11 +520,7 @@ pub(crate) unsafe fn decommit_code(
             libc::MADV_FREE,
         )
     };
-    if answer == 0 {
-        Ok(true)
-    } else {
-        Err(errno())
-    }
+    if answer == 0 { Ok(true) } else { Err(errno()) }
 }
 
 /// Nothing: a POSIX shared memory object has no portable way to give back

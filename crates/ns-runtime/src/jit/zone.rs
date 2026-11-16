@@ -40,10 +40,10 @@ use ns_memory::CodeOffset;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
-use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::Mutator;
+use crate::interpreter::inline_cache::SiteSlide;
 
-use super::{CopyDependencies, InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
+use super::{BODY_ALIGNMENT, COMPILED, CopyDependencies, InstalledBody, JitState};
 
 /// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
 /// code, while it lives, whose machine entry row names it, and its entry's
@@ -1580,7 +1580,7 @@ mod tests {
     #[cfg(ns_jit)]
     #[test]
     fn a_body_assembled_at_two_offsets_is_the_same_bytes() {
-        use crate::jit::{install, JitState};
+        use crate::jit::{JitState, install};
         let mut state = JitState::for_test(1 << 16, true);
         let first = crate::jit::tests::machine::body_making_a_closure();
         crate::jit::tests::machine::enter_twice(&mut state, &first);
@@ -1687,7 +1687,7 @@ mod tests {
     fn a_frame_stopped_in_freed_code_resumes_interpreted() {
         use crate::interpreter::FeedbackBase;
         use crate::jit::tests::machine::body_with_a_loop;
-        use crate::jit::{abandon, note_entry, resumed, Resumption};
+        use crate::jit::{Resumption, abandon, note_entry, resumed};
         let mut interpreter =
             crate::interpreter::Interpreter::bootstrap_with(crate::Lowering::Optimized);
         interpreter.set_jit_enabled(true);

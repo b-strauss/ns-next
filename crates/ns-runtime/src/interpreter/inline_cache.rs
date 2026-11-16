@@ -16,6 +16,7 @@ use std::hash::BuildHasher;
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::Symbol;
 use crate::builtins::primitive::Primitive;
 use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
@@ -27,12 +28,11 @@ use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
-use crate::Symbol;
 
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
-use cells::{Cell, Cells, ChainStart, GlobalRow, CHAIN_START_BITS, VACANT_GUARD};
+use cells::{CHAIN_START_BITS, Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3851,9 +3851,11 @@ mod tests {
             Some(chains[2])
         );
         global.clear();
-        assert!(guards
-            .iter()
-            .all(|guard| global.get(*guard, selector, CacheRule::Public).is_none()));
+        assert!(
+            guards
+                .iter()
+                .all(|guard| global.get(*guard, selector, CacheRule::Public).is_none())
+        );
     }
 
     /// Two entries that agree on guard and selector but carry a different
@@ -4048,13 +4050,17 @@ mod tests {
         ));
         assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
         assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
-        assert!(caches
-            .global_get(guard(0), selector, CacheRule::Public)
-            .is_none());
+        assert!(
+            caches
+                .global_get(guard(0), selector, CacheRule::Public)
+                .is_none()
+        );
         assert!(caches.global_get(guard(1), selector, lexical).is_none());
-        assert!(caches
-            .global_get(guard(1), selector, CacheRule::Public)
-            .is_some());
+        assert!(
+            caches
+                .global_get(guard(1), selector, CacheRule::Public)
+                .is_some()
+        );
         assert!(!caches.slot_level_verified(guard(1), level(1)));
         assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }

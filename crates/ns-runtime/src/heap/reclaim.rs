@@ -10,7 +10,7 @@ use super::value::{Value, Word};
 use super::{ActivationReference, ApplicationIndex, CodeId, Heap, MixinId, Tables};
 use crate::hash::IdentityBuildHasher;
 use crate::interpreter::FeedbackBase;
-use crate::mixin::{mixin_key, AppliedClause, DispatchId, Mixin, MixinApplication};
+use crate::mixin::{AppliedClause, DispatchId, Mixin, MixinApplication, mixin_key};
 
 /// What a full marking found named: one bit per row of each table.
 pub(crate) struct GatheredIds {

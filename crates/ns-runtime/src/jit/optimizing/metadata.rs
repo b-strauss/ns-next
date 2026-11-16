@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::allocate::{allocate, Allocation, Location, Move, PointKind, Spot};
+use super::allocate::{Allocation, Location, Move, PointKind, Spot, allocate};
 use ns_assembler::Register;
 
 use super::graph::{BlockId, Graph, GraphScope, Node, ScopeId, ValueId};
-use super::liveness::{block_order, intervals_knowing, poll_target, Positions};
+use super::liveness::{Positions, block_order, intervals_knowing, poll_target};
 use super::verify::VerifyError;
 use crate::heap::CodeId;
 use crate::jit::macro_assembler::Roles;
@@ -480,7 +480,7 @@ fn replay(
                         return Err(VerifyError::Misplaced {
                             value,
                             position: definition,
-                        })
+                        });
                     }
                 }
             }
@@ -866,7 +866,7 @@ fn write_back(
                 return Err(VerifyError::Misplaced {
                     value: *value,
                     position,
-                })
+                });
             }
         }
     }

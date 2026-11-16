@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::Symbol;
 use crate::builtins::primitive::Primitive;
 use crate::heap::{DeclarationScope, Heap};
 use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
-use crate::Symbol;
 
 pub enum Lookup<'gc> {
     Method(Rc<MixinMethod>, ClassReference<'gc>),

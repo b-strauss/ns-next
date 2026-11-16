@@ -18,7 +18,7 @@ pub use ast::Module;
 pub use comment::{Comment, CommentKind};
 pub use diagnostic::{Diagnostic, Severity};
 pub use doc_comment::DocComment;
-pub use printer::{format, print_module, LineEnding};
+pub use printer::{LineEnding, format, print_module};
 pub use span::Span;
 pub use token::{Token, TokenKind};
 

@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::builtins::primitive::MirrorPrimitive;
-use crate::bytecode::{jump_target, register_written, successors, CallSite, CompiledCode, Literal};
+use crate::bytecode::{CallSite, CompiledCode, Literal, jump_target, register_written, successors};
 use crate::{Lowering, Symbol};
 
 fn send(argument_base: u16, argument_sources: Vec<u16>, destination: u16) -> Instruction {

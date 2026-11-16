@@ -7,13 +7,13 @@
 //! the answer is what a breakpoint set there lands on, and nothing the
 //! compile builds is kept.
 
-use ns_syntax::{ast, Span};
+use ns_syntax::{Span, ast};
 
 use super::again::{compile_unloaded_level, shipped_resolution};
 use crate::compiler::Lowering;
 use crate::debugger::breakpoints::breakable;
-use crate::interpreter::instantiate::ModuleSource;
 use crate::interpreter::Interpreter;
+use crate::interpreter::instantiate::ModuleSource;
 use crate::types::ResolvedModule;
 
 /// A statement a line breakpoint can stand at.

@@ -43,8 +43,8 @@
 //! `SeqCst` read-modify-write (`fetch_or`, `fetch_and`), paired with
 //! `fence` where an ordering beyond the one word is needed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many immediates there are: `nil`, `false`, `true`, a `SmallInteger`
 /// and a `Float`, the indexes `Value::immediate_index` answers.

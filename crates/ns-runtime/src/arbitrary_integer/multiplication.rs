@@ -16,7 +16,7 @@ use super::addition::{
     subtract_magnitudes,
 };
 use super::number_theoretic_transform::multiply_accumulate_by_transform;
-use super::{low_digit, trim_zero_top_digits, ArbitraryInteger};
+use super::{ArbitraryInteger, low_digit, trim_zero_top_digits};
 
 /// Below this many digits in the shorter operand, long multiplication wins.
 const LONG_MULTIPLICATION_LIMIT: usize = 32;

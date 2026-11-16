@@ -10,9 +10,9 @@
     reason = "a test's values are small literals and lengths it built"
 )]
 
+use ns_runtime::Interpreter;
 use ns_runtime::builtins::primitive::{ElementAccess, ElementKind};
 use ns_runtime::heap::Element;
-use ns_runtime::Interpreter;
 
 const KINDS: [ElementKind; 10] = [
     ElementKind::Int8,
@@ -159,9 +159,10 @@ fn every_kind_reads_in_both_orders_at_every_offset() {
                     );
                 }
                 let last = pattern.len() - width;
-                assert!(heap
-                    .byte_array_element(object, last, kind, big_endian)
-                    .is_some());
+                assert!(
+                    heap.byte_array_element(object, last, kind, big_endian)
+                        .is_some()
+                );
                 assert_eq!(
                     heap.byte_array_element(object, last + 1, kind, big_endian),
                     None,
@@ -189,9 +190,11 @@ fn every_kind_writes_in_both_orders_at_every_offset() {
                 for element in samples(kind) {
                     for offset in 0..8 {
                         let object = mutator.new_byte_array(&[FILL; SIZE]);
-                        assert!(mutator
-                            .heap_mut()
-                            .set_byte_array_element(object, offset, kind, big_endian, element));
+                        assert!(
+                            mutator
+                                .heap_mut()
+                                .set_byte_array_element(object, offset, kind, big_endian, element)
+                        );
                         let mut expected = vec![FILL; SIZE];
                         expected[offset..offset + width]
                             .copy_from_slice(&encoded(kind, big_endian, element));

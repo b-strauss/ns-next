@@ -20,13 +20,13 @@
 //! barrier, allocates nothing and pushes nothing, so machine code runs
 //! them through the leaf shim.
 
+use crate::Mutator;
 use crate::builtins::primitive::FuturePrimitive;
 use crate::interpreter::future::{
-    FutureState, COMPUTATION_FIELD, RESOLVED, RESOLVING, STATE_FIELD, UNRESOLVED,
+    COMPUTATION_FIELD, FutureState, RESOLVED, RESOLVING, STATE_FIELD, UNRESOLVED,
 };
 use crate::interpreter::{Arguments, Signal, Step};
 use crate::types::*;
-use crate::Mutator;
 
 /// What `futureState:ifFail:` answers for a future whose fields no
 /// forcing wrote (`FutureState::Malformed`): beside the three states, so

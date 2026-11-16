@@ -13,7 +13,7 @@
 //! (`Node::calls_leaf`).
 use std::ops::Range;
 
-use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
+use crate::bytecode::{HEADER_REGISTERS, IntegerOperation};
 use crate::heap::{ApplicationIndex, CodeId, Immediate};
 use crate::jit::float_operations::FloatOperation;
 use crate::mixin::DispatchId;
