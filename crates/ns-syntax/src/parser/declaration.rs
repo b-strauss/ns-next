@@ -112,6 +112,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A code body that is the whole input, as a tool writes one outside
+    /// any module -- the debugger's evaluated expression: `parse_code_body`,
+    /// then the end of input, so that a `)` or `]` it stops at is an error
+    /// rather than the silent end of what is compiled.
+    pub(crate) fn parse_whole_code_body(&mut self) -> CodeBody {
+        let body = self.parse_code_body();
+        if !self.at_kind(TokenKind::EndOfInput) {
+            let token = self.current();
+            self.push_error(
+                token.span,
+                &format!("expected the end of the code, found {}", self.found(token)),
+            );
+        }
+        body
+    }
+
     /// A statement's expression. When it reported an error inside a member
     /// that starts in what it consumed, the body was never closed and the
     /// member is the next one in the class: the expression is parsed again

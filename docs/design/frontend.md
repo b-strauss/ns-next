@@ -8,7 +8,9 @@
 > without positions (`positions.rs`); for an editor, `parse_for_editor`
 > (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
 > `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop,
-> clone and `receiver_chain` (`ast.rs`); the recovery's tests in
+> clone and `receiver_chain` (`ast.rs`); for code compiled outside any
+> module -- the debugger's evaluated expression -- `parse_code_body`
+> (`lib.rs`), a code body that is the whole input; the recovery's tests in
 > `tests/recovery.rs`, the attachment's in `tests/attachment.rs`; the
 > corpus benchmark in `benches/corpus.rs`. The
 > printer that writes a module back as source is

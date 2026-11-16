@@ -61,6 +61,28 @@ pub fn parse(source: &str) -> Result<Module, Vec<Diagnostic>> {
     Ok(module)
 }
 
+/// Parse `source` as a code body standing alone -- temporaries, then
+/// statements, as a method's or a block's body is written -- the whole of
+/// it, for a tool that compiles code outside any module, as the
+/// debugger's evaluation does. Returns `Err` on any error-severity
+/// diagnostic, as [`parse`] does; its comments are not attached.
+pub fn parse_code_body(source: &str) -> Result<ast::CodeBody, Vec<Diagnostic>> {
+    if let Some(diagnostic) = source_too_long(source.len()) {
+        return Err(vec![diagnostic]);
+    }
+    let (tokens, lexer_diagnostics) = lexer::Lexer::new(source).run();
+    if has_error(&lexer_diagnostics) {
+        return Err(lexer_diagnostics);
+    }
+    let mut parser = parser::Parser::new(source, tokens);
+    let body = parser.parse_whole_code_body();
+    let (_, diagnostics) = parser.into_parts();
+    if has_error(&diagnostics) {
+        return Err(diagnostics);
+    }
+    Ok(body)
+}
+
 fn has_error(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
@@ -176,7 +198,27 @@ pub fn source_too_long(length: usize) -> Option<Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::source_too_long;
+    use super::{parse_code_body, source_too_long};
+
+    #[test]
+    fn a_code_body_standing_alone_parses_with_its_temporaries() {
+        let Ok(body) = parse_code_body("| total ::= 0. | total:: total + 1. total") else {
+            panic!("the code body parses");
+        };
+        assert_eq!(body.temporaries.len(), 1);
+        assert_eq!(body.statements.len(), 2);
+    }
+
+    #[test]
+    fn a_code_body_standing_alone_is_the_whole_input() {
+        let Err(diagnostics) = parse_code_body("count ) foo") else {
+            panic!("a closing parenthesis ends no body here");
+        };
+        assert_eq!(
+            diagnostics[0].message,
+            "expected the end of the code, found RightParenthesis"
+        );
+    }
 
     /// A source of exactly `u32::MAX` bytes ends at the last offset a `Span`
     /// holds; one byte more is refused, without allocating either.

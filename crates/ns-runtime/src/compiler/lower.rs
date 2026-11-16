@@ -101,6 +101,10 @@ pub(crate) struct Enclosing {
     /// Each enclosing frame's variable names by resolver index; empty when
     /// no metadata is collected.
     pub(crate) variable_names: Vec<Rc<[crate::Symbol]>>,
+    /// Where the stopped frame keeps each variable an evaluated expression
+    /// names (`Binding::FrameVariable`), by the binding's index; `None`
+    /// outside an evaluation (`super::evaluation`).
+    pub(crate) frame_variables: Option<Rc<[VariablePlace]>>,
 }
 
 /// What a `Lowerer` that collects the debugger's metadata is handed: the
@@ -437,6 +441,9 @@ pub(crate) struct Lowerer<'a> {
     /// Each enclosing frame's variable names, parallel to `layouts`;
     /// empty when no metadata is collected.
     enclosing_variable_names: Vec<Rc<[crate::Symbol]>>,
+    /// The stopped frame's variable places, for an evaluated expression
+    /// and every block in it (`Enclosing::frame_variables`).
+    frame_variables: Option<Rc<[VariablePlace]>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -467,6 +474,7 @@ impl<'a> Lowerer<'a> {
             read_only_locals: enclosing_read_only_locals,
             layouts,
             variable_names: enclosing_variable_names,
+            frame_variables,
         } = enclosing;
         let (collector, collected) = match collecting {
             Some(Collecting {
@@ -593,6 +601,7 @@ impl<'a> Lowerer<'a> {
             collector,
             collected,
             enclosing_variable_names,
+            frame_variables,
         }
     }
 
@@ -1169,6 +1178,7 @@ impl<'a> Lowerer<'a> {
                 read_only_locals: enclosing_read_only_locals,
                 layouts,
                 variable_names,
+                frame_variables: self.frame_variables.clone(),
             },
             self.next_call_site,
             collecting,
@@ -1357,10 +1367,13 @@ impl<'a> Lowerer<'a> {
         let (depth, index) = match self.bindings.get(&target.span)? {
             Binding::Local(index) => (0, *index),
             Binding::OuterLocal { depth, index } => (*depth, *index),
+            // A frame variable is a register of the stopped frame, never
+            // of this body.
             Binding::LexicalSend { .. }
             | Binding::EnclosingObject { .. }
             | Binding::SuperSend
-            | Binding::MirrorSend => return None,
+            | Binding::MirrorSend
+            | Binding::FrameVariable(_) => return None,
         };
         // The inlining gate admits no block with temporaries or parameters,
         // so a binding inside an inlined block never names that block's own
@@ -1645,6 +1658,48 @@ impl<'a> Lowerer<'a> {
         access_through(hops, layout.locate(key, index, &self.captures))
     }
 
+    /// How the body being lowered reaches the stopped frame's variable at
+    /// `index` of an evaluated expression (`Binding::FrameVariable`): the
+    /// stopped frame is the evaluation's outer frame, the outermost scope,
+    /// so it lies one hop past every frame scope of the evaluation, and the
+    /// variable where the stopped frame reads it lies as many hops further
+    /// as that frame's place says (`docs/design/debugger.md`, decision 8).
+    fn frame_variable_access(&self, index: u16) -> Access {
+        let places = self
+            .frame_variables
+            .as_ref()
+            .expect("internal: a frame variable outside an evaluation");
+        let to_stopped = hops_above(&self.scopes, 0);
+        let further = |hops: u16| {
+            to_stopped
+                .checked_add(hops)
+                .expect("internal: a frame variable past u16::MAX hops")
+        };
+        match places[usize::from(index)] {
+            VariablePlace::Register(register) => Access::OuterRegister {
+                hops: to_stopped,
+                index: register,
+            },
+            VariablePlace::Outer { hops, register } => Access::OuterRegister {
+                hops: further(hops),
+                index: register,
+            },
+            VariablePlace::Vector { vector, slot } => {
+                let (hops, register) = match vector {
+                    VectorHolder::Register(register) => (to_stopped, register),
+                    VectorHolder::Outer { hops, register } => (further(hops), register),
+                };
+                Access::Vector {
+                    vector: VectorAccess::Outer {
+                        hops,
+                        index: register,
+                    },
+                    slot,
+                }
+            }
+        }
+    }
+
     /// Emits whatever `access` needs to leave the variable's value in a
     /// register, and answers that register.
     fn emit_read(&mut self, access: Access, into: Option<u16>) -> u16 {
@@ -1733,6 +1788,10 @@ impl<'a> Lowerer<'a> {
             }
             Some(Binding::OuterLocal { depth, index }) => {
                 let access = self.resolve_variable(*depth, *index);
+                self.emit_read(access, into)
+            }
+            Some(Binding::FrameVariable(index)) => {
+                let access = self.frame_variable_access(*index);
                 self.emit_read(access, into)
             }
             Some(Binding::LexicalSend { depth }) => {
@@ -1835,6 +1894,12 @@ impl<'a> Lowerer<'a> {
             Some(Binding::OuterLocal { depth, index }) => {
                 let access = self.resolve_variable(*depth, *index);
                 self.check_writable(access);
+                self.emit_store(access, value_register);
+            }
+            // The resolver binds an assignment only to a frame variable
+            // that is assignable (`resolver::resolve_evaluation`).
+            Some(Binding::FrameVariable(index)) => {
+                let access = self.frame_variable_access(*index);
                 self.emit_store(access, value_register);
             }
             Some(

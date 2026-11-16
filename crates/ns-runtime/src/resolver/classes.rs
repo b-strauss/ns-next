@@ -55,7 +55,7 @@ fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
 /// member instead of an instance of this class; `duplicate_member_names`
 /// below already treats it as a class-side member, and the two must agree on
 /// what the class side holds.
-pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
+pub(crate) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
     let mut names: HashSet<Symbol> = declared_members(&declaration.instance_side)
         .into_iter()
         .collect();

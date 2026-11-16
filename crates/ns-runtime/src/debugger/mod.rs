@@ -57,6 +57,17 @@ const NO_SUCH_FRAME: &str = "no frame at that index";
 /// Why a stop refuses `Children` for a value it did not hand out.
 const NO_SUCH_VALUE: &str = "no value of this stop has that id";
 
+/// Why an expression with a `^` is refused: the evaluation's block has no
+/// home among the program's frames that a return could leave for, and a
+/// return to the stopped frame's home would unwind the program's own frames
+/// (`docs/design/debugger.md`, decision 8).
+pub(crate) const RETURN_FROM_AN_EVALUATION: &str = "a ^ cannot leave an evaluation";
+
+/// What follows a variable's name in the refusal of an assignment to a
+/// parameter, an immutable local or a marked label:
+/// `"<name> is not assignable"`.
+pub(crate) const NOT_ASSIGNABLE: &str = "is not assignable";
+
 /// The VM's end of an attached debugger, held by its `Interpreter`.
 pub(crate) struct Debugger {
     commands: Receiver<Command>,

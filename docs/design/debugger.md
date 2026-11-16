@@ -2034,8 +2034,9 @@ the tables, the stops at statement starts and return points and the
 agent's stepping by line, without smart step into's targets; and of
 decision 6 the session, breakpoints of every kind, steps, run to cursor,
 pause and inspection over DAP, without evaluation, conditions,
-logpoints, smart step into, restart frame, force return and hot swap.
-Everything else they decide is planned, and is written below as the
+logpoints, smart step into, restart frame, force return and hot swap;
+and of decision 8 the expression's resolution and compilation, which
+nothing runs yet. Everything else they decide is planned, and is written below as the
 design to build.
 
 ### 1. One debugging API in Rust, two clients over it
@@ -2363,6 +2364,10 @@ flag of its own is rejected for the check it adds to the poll and to
 machine code, and for the pause it would take late.
 
 ### 8. An expression is evaluated as a block in the stop's scope
+
+**Partial:** an expression is resolved and compiled as a block in a
+stopped frame's scope (`resolver::resolve_evaluation`,
+`compiler/evaluation.rs`); running it at a stop is planned.
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
 watch, `setVariable` as `name := expression` -- is resolved and compiled as
@@ -3498,6 +3503,19 @@ where it gives a frame to the interpreter), as
 principle", requires.
 
 ### Evaluation
+
+**Partial:** the expression's compilation is built. `compiler/evaluation.rs`
+parses it as a code body standing alone (`ns_syntax::parse_code_body`),
+`resolver::resolve_evaluation` resolves it -- a marked label is the
+block's parameter, a name of the frame's variable table
+`Binding::FrameVariable`, every other name resolved against the stopped
+body's class chain, an assignment to a parameter, an immutable local or
+a label refused as not assignable, and every `^` refused, nested blocks
+included -- and both lowerings compile it as a block whose frame
+variables are reached one hop past its own frames, where the stopped
+frame's variable table places them: a register by `LoadOuterLocal` and
+`StoreOuterLocal`, a vector variable through its vector. Pushing,
+returning, errors, the depth reserve and aborting are planned.
 
 - **Where it lies.** The expression's activation is pushed above every
   live frame's whole register window (`Mutator::push_above`), whichever

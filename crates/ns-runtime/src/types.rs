@@ -280,6 +280,14 @@ pub enum Binding {
     /// (`docs/design/core-library.md`, "The VM mirror is the whole Rust
     /// boundary").
     MirrorSend,
+    /// A variable of the frame a debugger's evaluation stands in, by its
+    /// index in the evaluation's frame variables
+    /// (`resolver::FrameVariable`). Recorded only by
+    /// `resolver::resolve_evaluation`, so no module carries it: an
+    /// expression is compiled as a block whose outer frame is the stopped
+    /// frame, and reaches the variable where that frame keeps it
+    /// (`docs/design/debugger.md`, decision 8).
+    FrameVariable(u16),
 }
 
 pub struct ResolvedModule {
