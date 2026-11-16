@@ -486,13 +486,15 @@ The commands (`debugger::Command`):
   before this point" ("Assigning a captured variable") or, at the depth
   limit, "the stack has no room for the evaluation".
 - `SetVariable { frame, name, expression }` -- sets the variable `name`
-  of the activation at index `frame` to what `expression` answers, by
-  evaluating `name:: (expression)` as `Evaluate` does ("Writing a
-  frame"); answered by `Event::VariableSet`, the variable as `Variables`
-  now shows it, by `Event::Evaluated` with the error the expression ended
-  with, or refused as `Evaluate` is, "<name> is not assignable" also for
-  a name that is not an assignable variable the frame shows -- `self`
-  among them.
+  of the activation at index `frame` to what `expression`, one
+  expression, answers, by evaluating the assignment `name:: expression`
+  as `Evaluate` does ("Writing a frame"); answered by
+  `Event::VariableSet`, the variable as `Variables` now shows it, by
+  `Event::Evaluated` with the error the expression ended with, or refused
+  as `Evaluate` is, "<name> is not assignable" also for a name that is
+  not an assignable variable the frame shows -- `self` among them -- and
+  "the expression does not compile: a variable's new value is one
+  expression" for statements or temporaries.
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
@@ -2425,7 +2427,7 @@ stopped frame's scope (`resolver::resolve_evaluation`,
 messages and watches are planned.
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
-watch, `setVariable` as `name:: (expression)` -- is resolved and compiled as
+watch, `setVariable` as `name:: expression` -- is resolved and compiled as
 if it were a block standing at the frame's stored `program_counter` -- a
 statement start, or a return point mid-statement -- its outer frame the
 stopped frame, reified for it. It reads and writes the frame's
@@ -3558,14 +3560,16 @@ variable, are built (`debugger::evaluation::begin`,
 `Command::SetVariable`); a restart and a forced return are planned.
 
 A variable is set by an evaluation: `Command::SetVariable { frame, name,
-expression }` compiles `name:: (expression)` in the frame
-(`debugger::evaluation::compile_assignment`), on lines of their own so
-that a line comment ending the expression leaves the parenthesis closed,
-and runs it as `Evaluate` runs an expression. The name must be the
-variable the frame shows under it -- the innermost of the name, which the
-assignment's resolution names too -- and assignable, or the command is
-refused as not assignable before any text is composed, so that no name
-is read as source; an assignment to a variable a block may already hold
+expression }` compiles the assignment `name:: expression` in the frame
+(`debugger::evaluation::compile_assignment`) and runs it as `Evaluate`
+runs an expression. The expression is parsed on its own and must be one
+expression without temporaries, and the assignment is built around it as
+a syntax tree node, never spliced around it as text: text such as `3).
+(9` would close a spliced `x:: (…)` early, assigning one value while the
+evaluation answered another. The name must be the variable the frame
+shows under it -- the innermost of the name, which the assignment's
+resolution names too -- and assignable, or the command is refused as not
+assignable, the name never read as source; an assignment to a variable a block may already hold
 a copy of is refused as an evaluated one is ("Assigning a captured
 variable"). Its answer, `Event::VariableSet`, is the variable holding
 the value the assignment answered, which is what it wrote; an expression
@@ -3822,8 +3826,12 @@ that frame returned, and refused, too, where neither the frame nor its
 entry is found; a vector variable is assigned. Pinned by
 `a_copied_variable_is_refused_after_its_capture`,
 `a_copied_variable_is_assigned_before_its_capture`,
-`a_copy_in_a_block_s_frame_is_refused` and
-`an_evaluated_assignment_to_a_captured_variable_is_refused`.
+`a_copy_in_a_block_s_frame_is_refused`,
+`an_evaluated_assignment_to_a_captured_variable_is_refused`, and, for
+the declaring frame's own register a conditional's fallback block reads,
+`a_method_s_copied_variable_is_refused_from_its_fallback_block`,
+`a_method_s_variable_is_set_from_its_fallback_block_before_its_capture`
+and `a_returned_method_s_copied_variable_is_refused_from_its_fallback_block`.
 
 The reference lowering copies nothing and refuses nothing, so
 the lowerings differ in what the debugger allows, never in what an

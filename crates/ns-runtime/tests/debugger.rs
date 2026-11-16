@@ -13159,4 +13159,263 @@ mod evaluation {
             assert_eq!(answer, 6);
         }
     }
+
+    ns_runtime::for_each_lowering! {
+        /// A new value that is not one expression is refused, the
+        /// variable unwritten: text that would close an assignment spliced
+        /// around it early does not parse on its own, and two statements
+        /// would have the assignment write the first while the evaluation
+        /// answered the second.
+        fn a_new_value_of_more_than_one_expression_is_refused(lowering) {
+            let ((escaping, statements, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    (
+                        set_refusal(remote, 0, "count", "3). (9"),
+                        set_refusal(remote, 0, "count", "3. 9"),
+                        value_label(remote, 0, "count"),
+                    )
+                },
+            );
+            assert!(
+                escaping.starts_with("the expression does not compile: "),
+                "{escaping}"
+            );
+            assert_eq!(
+                statements,
+                "the expression does not compile: a variable's new value is one expression"
+            );
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A new value whose expression signals answers the error, as an
+        /// evaluation does, and the variable keeps its value.
+        fn a_new_value_that_signals_answers_the_error(lowering) {
+            let (event, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| set_variable(remote, 0, "count", "count zork"),
+            );
+            assert!(
+                matches!(event, Event::Evaluated(Evaluation::Error { .. })),
+                "{event:?}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `self` and a name the frame does not hold are not assignable.
+        fn self_and_an_unknown_name_are_not_assignable(lowering) {
+            let ((of_self, of_unknown), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    (
+                        set_refusal(remote, 0, "self", "3"),
+                        set_refusal(remote, 0, "missing", "3"),
+                    )
+                },
+            );
+            assert_eq!(of_self, "self is not assignable");
+            assert_eq!(of_unknown, "missing is not assignable");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable of a frame of the core library is never set.
+        fn a_variable_of_a_shipped_frame_is_refused(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (reason, answer) = debugged_answering(
+                QUICK,
+                lowering,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let reason = set_refusal(remote, 0, "trueBlock", "nil");
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(reason, "the frame is the core library's");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    /// A method whose local a block copies before an inlinable conditional
+    /// on a receiver that is no Boolean, whose fallback block reads the
+    /// local where the method keeps it.
+    const FALLING_BACK: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Truthy = Object new () (
+            public ifTrue: block = (
+              ^block value
+            )
+          )
+          public run = (
+            ^self run: Truthy new
+          )
+          run: condition = (
+            | x ::= 1. |
+            holder:: [x].
+            condition ifTrue: [
+              self sink: x.
+              x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// `FALLING_BACK` with the copying block made after the conditional.
+    const FALLING_BACK_FIRST: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Truthy = Object new () (
+            public ifTrue: block = (
+              ^block value
+            )
+          )
+          public run = (
+            ^self run: Truthy new
+          )
+          run: condition = (
+            | x ::= 1. |
+            condition ifTrue: [
+              self sink: x.
+              x].
+            holder:: [x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// `FALLING_BACK` whose conditional's receiver keeps the fallback
+    /// block, which runs once the method that made it returned.
+    const FALLING_BACK_LATER: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Keeping = Object new (
+            | public kept ::= nil. |
+          ) (
+            public ifTrue: block = (
+              kept:: block.
+              ^nil
+            )
+          )
+          public run = (
+            | keeping = Keeping new. |
+            self run: keeping.
+            ^keeping kept value
+          )
+          run: condition = (
+            | x ::= 1. |
+            holder:: [x].
+            condition ifTrue: [
+              self sink: x.
+              x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The fallback block of `source` stopped in at `self sink: x.`,
+    /// setting its method's `x` to 5: the event and the run's answer.
+    fn set_in_fallback(source: &str, lowering: Lowering) -> (Event, i64) {
+        stopped_at(source, lowering, "FallingBack", "self sink: x.", |remote| {
+            set_variable(remote, 0, "x", "5")
+        })
+    }
+
+    /// The label a set answered, which it must be.
+    fn set_answer(event: &Event) -> &str {
+        match event {
+            Event::VariableSet(variable) => &shown(variable).label,
+            other => panic!("x was expected to be set, not {other:?}"),
+        }
+    }
+
+    /// In the fallback block, which reads the method's own register, the
+    /// method's local is refused once the method's block copied it.
+    #[test]
+    fn a_method_s_copied_variable_is_refused_from_its_fallback_block() {
+        let (event, answer) = set_in_fallback(FALLING_BACK, Lowering::Optimized);
+        assert_eq!(
+            event,
+            Event::Refused {
+                command: "SetVariable".to_owned(),
+                reason: "x is captured by a block made before this point".to_owned(),
+            }
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering nothing copies the local, and the
+    /// copying block reads the value set from the fallback block.
+    #[test]
+    fn a_method_s_variable_is_set_from_its_fallback_block_under_the_reference_lowering() {
+        let (event, answer) = set_in_fallback(FALLING_BACK, Lowering::Reference);
+        assert_eq!(set_answer(&event), "5");
+        assert_eq!(answer, 5);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Before the method's block copies it, the local is set from the
+        /// fallback block, and the copy holds the new value.
+        fn a_method_s_variable_is_set_from_its_fallback_block_before_its_capture(lowering) {
+            let (event, answer) = set_in_fallback(FALLING_BACK_FIRST, lowering);
+            assert_eq!(set_answer(&event), "5");
+            assert_eq!(answer, 5);
+        }
+    }
+
+    /// Once the method returned, a local a block of it copies is refused
+    /// from the fallback block, which outlived it.
+    #[test]
+    fn a_returned_method_s_copied_variable_is_refused_from_its_fallback_block() {
+        let (event, answer) = set_in_fallback(FALLING_BACK_LATER, Lowering::Optimized);
+        assert_eq!(
+            event,
+            Event::Refused {
+                command: "SetVariable".to_owned(),
+                reason: "x is captured by a block made before this point".to_owned(),
+            }
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering the returned method's local is set
+    /// from the block that outlived it, which then answers it.
+    #[test]
+    fn a_returned_method_s_variable_is_set_from_its_block_under_the_reference_lowering() {
+        let (event, answer) = set_in_fallback(FALLING_BACK_LATER, Lowering::Reference);
+        assert_eq!(set_answer(&event), "5");
+        assert_eq!(answer, 5);
+    }
 }

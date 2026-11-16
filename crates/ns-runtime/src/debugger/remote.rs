@@ -163,8 +163,9 @@ pub enum Command {
     /// captured variable").
     Evaluate { frame: usize, expression: String },
     /// Sets the variable `name` of the frame at index `frame` of the stack
-    /// trace to what `expression` answers, evaluated as `Evaluate`
-    /// evaluates `name:: (expression)`. Served only while the program is
+    /// trace to what `expression`, one expression, answers, evaluated as
+    /// `Evaluate` evaluates the assignment `name:: expression`, built
+    /// around the parsed expression. Served only while the program is
     /// stopped; answered by `Event::VariableSet`, by `Event::Evaluated`
     /// with the error the expression ended with, or by `Event::Refused`
     /// for what `Evaluate` refuses, a name that is not an assignable

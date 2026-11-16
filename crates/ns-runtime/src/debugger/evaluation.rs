@@ -18,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::PoisonError;
 
+use ns_syntax::{Span, ast};
+
 use super::metadata::again::{declaration_chain, module_name};
 use super::metadata::{BodyMetadata, VariablePlace};
 use super::stack::{self, OuterFrame, StackFrame};
@@ -42,6 +44,12 @@ pub(crate) const SHIPPED_FRAME: &str = "the frame is the core library's";
 /// What precedes the compiler's message in the refusal of an expression
 /// that does not compile.
 pub(crate) const DOES_NOT_COMPILE: &str = "the expression does not compile: ";
+
+/// Why a variable's new value that is not one expression is refused,
+/// after `DOES_NOT_COMPILE`: statements or temporaries around it would
+/// make what the assignment writes differ from what the evaluation
+/// answers.
+const ONE_EXPRESSION: &str = "a variable's new value is one expression";
 
 /// Why an evaluation in a frame whose body has no metadata is refused:
 /// without its variable table and its declaration nothing in the
@@ -92,17 +100,20 @@ pub(crate) fn compile(
     frame: usize,
     text: &str,
 ) -> Result<Rc<CompiledCode>, String> {
-    compile_with(mutator, stop, frame, |_| Ok(text.to_owned()))
+    compile_with(mutator, stop, frame, |_| parsed(text))
 }
 
-/// `name:: (expression)` compiled as `compile` compiles an expression in
-/// the frame at index `frame` of `stop`'s stack: what
+/// The assignment `name:: expression` compiled as `compile` compiles an
+/// expression in the frame at index `frame` of `stop`'s stack: what
 /// `Command::SetVariable` evaluates. `name` must be the variable the frame
 /// shows under it -- the innermost of the name, which the assignment then
 /// names too -- and assignable: anything else -- `self`, a parameter, an
 /// immutable local, a name the frame does not hold -- is refused as not
-/// assignable, before the text is composed, so that no name is read as
-/// source.
+/// assignable. `expression` is parsed on its own and must be one
+/// expression, without temporaries, which the assignment is then built
+/// around as a node of its own (`assignment`): text spliced around it
+/// could be closed early by the expression, assigning one value while the
+/// evaluation answers another.
 pub(crate) fn compile_assignment(
     mutator: &mut Mutator<'_>,
     stop: &mut Stop,
@@ -116,21 +127,75 @@ pub(crate) fn compile_assignment(
             .iter()
             .find(|entry| entry.name.as_str() == name);
         match shown {
-            // On lines of its own, so that a line comment ending the
-            // expression leaves the parenthesis closed.
-            Some(entry) if entry.assignable => Ok(format!("{name}:: (\n{expression}\n)")),
+            Some(entry) if entry.assignable => assignment(name, expression),
             _ => Err(format!("{name} {NOT_ASSIGNABLE}")),
         }
     })
 }
 
-/// `compile` of the text `text` answers for the frame's metadata, or its
-/// refusal.
+/// `text` parsed as a code body standing alone, or the refusal of an
+/// expression that does not compile.
+fn parsed(text: &str) -> Result<ast::CodeBody, String> {
+    crate::compiler::evaluation::parse_expression(text)
+        .map_err(|message| format!("{DOES_NOT_COMPILE}{message}"))
+}
+
+/// The code body `name:: expression`: `expression` parsed on its own, one
+/// expression without temporaries -- a `^` refused as in any evaluation --
+/// the value of an assignment to `name`, whose target's span lies past the
+/// expression's text, so that no binding of the expression's is keyed by
+/// it.
+fn assignment(name: &str, expression: &str) -> Result<ast::CodeBody, String> {
+    let mut body = parsed(expression)?;
+    if !body.temporaries.is_empty() || body.statements.len() != 1 {
+        return Err(format!("{DOES_NOT_COMPILE}{ONE_EXPRESSION}"));
+    }
+    let Some(ast::Statement {
+        kind: ast::StatementKind::Expression(value),
+        ..
+    }) = body.statements.pop()
+    else {
+        return Err(String::from(RETURN_FROM_AN_EVALUATION));
+    };
+    let end = u32::try_from(expression.len())
+        .map_err(|_| format!("{DOES_NOT_COMPILE}{ONE_EXPRESSION}"))?;
+    let target_start = end.saturating_add(1);
+    let target = ast::Identifier {
+        name: name.to_owned(),
+        span: Span::new(
+            target_start,
+            target_start.saturating_add(u32::try_from(name.len()).unwrap_or(u32::MAX)),
+        ),
+    };
+    let span = Span::new(value.span.start, target.span.end);
+    let assign = ast::Expression {
+        kind: ast::ExpressionKind::Assign {
+            target,
+            value: Box::new(value),
+            span,
+        },
+        parentheses: Vec::new(),
+        type_arguments: None,
+        synthesized: true,
+        comments: Vec::new(),
+        span,
+    };
+    body.statements.push(ast::Statement {
+        kind: ast::StatementKind::Expression(assign),
+        comments: Vec::new(),
+        span,
+    });
+    body.span = Span::new(body.span.start, span.end);
+    Ok(body)
+}
+
+/// `compile` of the code body `body` answers for the frame's metadata, or
+/// its refusal.
 fn compile_with(
     mutator: &mut Mutator<'_>,
     stop: &mut Stop,
     frame: usize,
-    text: impl FnOnce(&BodyMetadata) -> Result<String, String>,
+    body: impl FnOnce(&BodyMetadata) -> Result<ast::CodeBody, String>,
 ) -> Result<Rc<CompiledCode>, String> {
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
@@ -143,7 +208,7 @@ fn compile_with(
     }
     let (code, _, metadata) = stack::body(mutator, stack_frame);
     let metadata = metadata.ok_or(NO_SOURCE)?;
-    let text = text(&metadata)?;
+    let expression = body(&metadata)?;
     let chain: Vec<(Symbol, HashSet<Symbol>)> =
         declaration_chain(mutator, &origin.mixin).ok_or(NO_SOURCE)?;
     let classes: Vec<EnclosingClass<'_>> = chain
@@ -164,8 +229,6 @@ fn compile_with(
             assignability,
         })
         .collect();
-    let expression = crate::compiler::evaluation::parse_expression(&text)
-        .map_err(|message| format!("{DOES_NOT_COMPILE}{message}"))?;
     let scope = EvaluationScope {
         classes: &classes,
         variables: &variables,
