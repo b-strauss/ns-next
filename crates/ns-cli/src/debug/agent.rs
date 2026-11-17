@@ -357,15 +357,11 @@ pub(crate) struct Agent {
     /// (`nsNext/mark`), which a listening agent takes off when the client
     /// leaves, so that the next client meets none of them.
     marks: BTreeSet<String>,
-    /// A client left a listening agent while the program ran: its marks
-    /// are taken off at the next stop, the only place the VM serves an
-    /// `Unmark`, before anything else is asked there.
-    unmark_at_next_stop: bool,
     /// A client left a listening agent while an evaluation of its ran: the
-    /// evaluation was aborted, and the stop is left -- its marks taken off,
-    /// the program going on -- once the evaluation answered, since the VM
-    /// serves a `Continue` only at the stop the evaluation's end
-    /// re-enters, and refuses one that arrives while it runs.
+    /// evaluation was aborted, and the stop is left -- the program going
+    /// on -- once the evaluation answered, since the VM serves a
+    /// `Continue` only at the stop the evaluation's end re-enters, and
+    /// refuses one that arrives while it runs.
     leave_after_evaluation: bool,
 }
 
@@ -415,7 +411,6 @@ impl Agent {
             queued_evaluations: VecDeque::new(),
             dropped_logs: 0,
             marks: BTreeSet::new(),
-            unmark_at_next_stop: false,
             leave_after_evaluation: false,
         }
     }
@@ -540,12 +535,14 @@ impl Agent {
                     .pending
                     .iter()
                     .find(|pending| pending.command == "Evaluate")
-                    .is_some_and(|pending| {
-                        matches!(
-                            &pending.reply,
-                            Reply::Request { connection: asked, request_seq, command, .. }
-                                if *asked == connection && *request_seq == seq && command == "evaluate"
-                        )
+                    .is_some_and(|pending| match &pending.reply {
+                        Reply::Request {
+                            connection: asked,
+                            request_seq,
+                            command,
+                            ..
+                        } => *asked == connection && *request_seq == seq && command == "evaluate",
+                        _ => false,
                     });
                 if running {
                     self.command(Command::AbortEvaluation, Reply::Internal);
@@ -1374,7 +1371,6 @@ impl Agent {
         self.hovers.clear();
         // The VM drops the marks with the debugger.
         self.marks.clear();
-        self.unmark_at_next_stop = false;
         self.leave_after_evaluation = false;
         self.resuming = false;
         self.force_return_evaluating = false;
@@ -1418,6 +1414,11 @@ impl Agent {
             Reply::Internal,
         );
         self.breakpoints.clear();
+        // Served at once, while the program runs too, so that no
+        // condition of the next client's names a label of this one's.
+        for label in std::mem::take(&mut self.marks) {
+            self.command(Command::Unmark { label }, Reply::Internal);
+        }
         if self.evaluation_in_flight() {
             self.command(Command::AbortEvaluation, Reply::Internal);
             self.leave_after_evaluation = true;
@@ -1429,26 +1430,10 @@ impl Agent {
         }
     }
 
-    /// Takes the left client's marks off and lets a stopped program go
-    /// on. The VM serves an `Unmark` only at a stop, so a program that
-    /// runs, or a stop being left already, has them taken off at its next
-    /// stop.
+    /// Lets a stopped program go on for a client that left.
     fn leave_the_stop(&mut self) {
-        if self.stopped && !self.resuming {
-            self.unmark_all();
-        } else {
-            self.unmark_at_next_stop = !self.marks.is_empty();
-        }
         if self.stopped {
             self.go_on();
-        }
-    }
-
-    /// Takes every mark the agent holds off, at the stop the program
-    /// stands at.
-    fn unmark_all(&mut self) {
-        for label in std::mem::take(&mut self.marks) {
-            self.command(Command::Unmark { label }, Reply::Internal);
         }
     }
 
@@ -1479,6 +1464,7 @@ impl Agent {
                 | Command::SetStepFilters { .. }
                 | Command::SetMethodBreakpoints(_)
                 | Command::SetExceptionBreakpoints { .. }
+                | Command::Unmark { .. }
         );
         self.pending.push_back(Pending {
             command: command.name(),
@@ -1530,10 +1516,6 @@ impl Agent {
         self.stopped = true;
         self.resuming = false;
         self.stop.begin(returned);
-        if self.unmark_at_next_stop {
-            self.unmark_at_next_stop = false;
-            self.unmark_all();
-        }
         if !self.is_attached() {
             self.go_on();
             return;
@@ -1658,8 +1640,24 @@ impl Agent {
         };
         if let Event::Marked { label } = &event {
             if pending.command == "Mark" {
-                self.marks.insert(label.clone());
-            } else {
+                match pending.reply {
+                    // A mark the VM made after its client left, which the
+                    // leave's unmarking could not name yet.
+                    Reply::Request { connection, .. } if !self.is_current(connection) => {
+                        self.command(
+                            Command::Unmark {
+                                label: label.clone(),
+                            },
+                            Reply::Internal,
+                        );
+                    }
+                    _ => {
+                        self.marks.insert(label.clone());
+                    }
+                }
+            } else if !matches!(pending.reply, Reply::Internal) {
+                // The agent's own unmarking took its labels already, and
+                // the next client may have marked one of them since.
                 self.marks.remove(label);
             }
         }

@@ -443,7 +443,7 @@ The remote has three operations:
   it while the program is stopped. A command queued while no run
   executes, or still queued when a run ends, is dropped and answered by
   `Event::Refused`, but a configuration command -- `SetBreakpoints`,
-  `SetStepFilters` -- which the start or the end of a run serves
+  `SetStepFilters`, `Unmark` -- which the start or the end of a run serves
   ("Commands while the program runs"). A remote whose VM is gone queues
   it nowhere and arms nothing.
 - `next_event(timeout)` answers the VM's next event, or `None` once the
@@ -802,8 +802,9 @@ lock, then every queued command is taken without waiting (`try_recv`). A
 at once, answered by `Event::Refused`, but for a configuration command;
 a `SetBreakpoints` is served -- the breakpoints patched or restored,
 answered by `Event::Breakpoints` -- and so is every other configuration
-command, `SetStepFilters`, `SetMethodBreakpoints` and
-`SetExceptionBreakpoints`, and the program runs on; an
+command, `SetStepFilters`, `SetMethodBreakpoints`,
+`SetExceptionBreakpoints` and `Unmark` ("Marking objects"), and the
+program runs on; an
 `AbortEvaluation` aborts the evaluation that runs, and is refused, "no
 evaluation runs", where none does ("Evaluation", "Aborting"); any other
 command is refused, "the program is running". The agent queues a command before it
@@ -4368,8 +4369,8 @@ not a label". Marking an object marked before renames it, and a label
 another object had moves to the object marked now, so that a label
 names one object and an object has one label; objects are told apart as
 `==` tells them, so that a number's label shows on every value of that
-number. `Command::Unmark` takes a label off. Both answer
-`Event::Marked`. The marks are held on the `Mutator`, beside the
+number. `Command::Unmark` takes a label off, a configuration command
+served while the program runs too. Both answer `Event::Marked`. The marks are held on the `Mutator`, beside the
 breakpoints (`Breakpoints::marks`), so that a condition decided while the
 program runs reaches them, and go when the debugger detaches; each
 stop's value table starts from them, describes by them and hands back
@@ -5462,11 +5463,17 @@ the listening mode that leaves, once attached, has the VM reset -- no line
 breakpoint in any module the client set one in, no method or exception
 breakpoint, since nobody would be there to go on from a stop, the default
 step filters, none of its marks, a stopped program going on -- and the
-next client is accepted. The VM serves an `Unmark` only at a stop, so a
-client that leaves while the program runs has its marks taken off at the
-next stop, before anything else is asked there
-(`a_client_leaving_while_the_program_runs_leaves_no_mark`); and it serves
-a `Continue` only at the stop an evaluation's end re-enters, refusing one
+next client is accepted. An `Unmark` is a configuration command, served
+at a safepoint while the program runs as well as at a stop, so a client
+that leaves while the program runs has its marks taken off at once: no
+condition or log expression of the next client's, which the VM decides
+before any stop, names a label of the departed client's, and the marks
+keep their objects alive no longer
+(`a_client_leaving_while_the_program_runs_leaves_no_mark`,
+`a_departed_client_s_label_is_unknown_to_the_next_client_s_condition`);
+a mark the VM makes for the departed client after the leave, its
+request already queued, is taken off as soon as it is answered. The VM
+serves a `Continue` only at the stop an evaluation's end re-enters, refusing one
 that arrives while the evaluation runs, so a client that leaves with an
 evaluation in flight has it aborted (`Command::AbortEvaluation`) and the
 stop left once the evaluation answered

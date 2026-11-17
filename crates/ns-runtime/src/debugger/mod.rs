@@ -1484,7 +1484,8 @@ impl Interpreter {
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
                 | Command::SetStepFilters { .. }
-                | Command::SetExceptionBreakpoints { .. }) => {
+                | Command::SetExceptionBreakpoints { .. }
+                | Command::Unmark { .. }) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
                 command @ (Command::Continue
@@ -1503,7 +1504,6 @@ impl Interpreter {
                 | Command::StepInTargets
                 | Command::StepIntoTarget { .. }
                 | Command::Mark { .. }
-                | Command::Unmark { .. }
                 | Command::InstanceCounts
                 | Command::Instances { .. }
                 | Command::Referrers { .. }) => {
@@ -1556,6 +1556,25 @@ impl Interpreter {
                 });
                 self.answer(source, Event::ExceptionBreakpointsSet);
             }
+            // Served while the program runs too, so that the label of a
+            // client that left is gone before the next client's
+            // conditions are decided, and keeps its object alive no
+            // longer. A stop kept for an evaluation drops it as well, or
+            // the stop's marks would put it back when it serves again.
+            Command::Unmark { label } => {
+                if let Some(Debugger {
+                    stop: Some(stop), ..
+                }) = &mut self.debugger
+                {
+                    stop.values.unmark(&label);
+                }
+                self.enter(|mutator| {
+                    let mut marks = mutator.breakpoints.marks().to_vec();
+                    marks.retain(|mark| mark.label != label);
+                    mutator.breakpoints.set_marks(marks);
+                });
+                self.answer(source, Event::Marked { label });
+            }
             Command::Continue
             | Command::StepOver
             | Command::StepInto
@@ -1574,7 +1593,6 @@ impl Interpreter {
             | Command::StepInTargets
             | Command::StepIntoTarget { .. }
             | Command::Mark { .. }
-            | Command::Unmark { .. }
             | Command::InstanceCounts
             | Command::Instances { .. }
             | Command::Referrers { .. } => {
@@ -2263,7 +2281,8 @@ impl Interpreter {
                     command @ (Command::SetBreakpoints { .. }
                     | Command::SetMethodBreakpoints(_)
                     | Command::SetStepFilters { .. }
-                    | Command::SetExceptionBreakpoints { .. }),
+                    | Command::SetExceptionBreakpoints { .. }
+                    | Command::Unmark { .. }),
                 ) => {
                     self.configure(&mut CommandSource::Remote, command);
                 }
@@ -2286,7 +2305,6 @@ impl Interpreter {
                     | Command::StepInTargets
                     | Command::StepIntoTarget { .. }
                     | Command::Mark { .. }
-                    | Command::Unmark { .. }
                     | Command::InstanceCounts
                     | Command::Instances { .. }
                     | Command::Referrers { .. }),

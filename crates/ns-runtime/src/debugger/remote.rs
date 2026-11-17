@@ -18,20 +18,20 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
 /// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
 /// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets`,
-/// `StepIntoTarget`, `Mark`, `Unmark`, `InstanceCounts`, `Instances` and
+/// `StepIntoTarget`, `Mark`, `InstanceCounts`, `Instances` and
 /// `Referrers` are served only while the program is stopped; one that
 /// arrives while it runs is refused (`Event::Refused`). `Terminate` is
 /// served either way. An agent waits for `Event::Stopped` before it sends
 /// a command only a stop serves: one sent right after `DebugRemote::pause`
 /// is refused or served depending on whether a safepoint drains the queue
-/// before the stop or the stop serves it. A command is served by the run it arrives during; one
-/// queued while no run executes, or still queued when a run ends, is
-/// dropped and answered by `Event::Refused`, its reason that no run
-/// executes. A configuration command -- `SetBreakpoints`,
-/// `SetMethodBreakpoints`, `SetStepFilters`, `SetExceptionBreakpoints` --
-/// is served wherever commands are taken instead: at a safepoint while
-/// the program runs, at a stop, and when a run starts or ends, for one
-/// queued between runs.
+/// before the stop or the stop serves it. A command is served by the run
+/// it arrives during; one queued while no run executes, or still queued
+/// when a run ends, is dropped and answered by `Event::Refused`, its
+/// reason that no run executes. A configuration command --
+/// `SetBreakpoints`, `SetMethodBreakpoints`, `SetStepFilters`,
+/// `SetExceptionBreakpoints`, `Unmark` -- is served wherever commands are
+/// taken instead: at a safepoint while the program runs, at a stop, and
+/// when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.
@@ -157,17 +157,23 @@ pub enum Command {
     /// the stopped program's thread above every frame, going past every
     /// breakpoint it meets, and the program stays stopped. Served only
     /// while the program is stopped; answered by `Event::Evaluated`, or by
-    /// `Event::Refused` for a frame index past the stack, a frame of the
-    /// core library, a frame whose source is not known, an expression
-    /// that does not compile, or one that assigns a variable a block may
-    /// already hold a copy of (`docs/design/debugger.md`, "Assigning a
-    /// captured variable") or a vector variable whose frame has not made
-    /// its vector yet (`"<name> does not exist yet at this point"`; "A
-    /// vector not made yet"), one that reads or assigns a variable the
-    /// variables view shows as not available (`"<name> is not available
-    /// here"`; "A variable not available"), and at a stop the debugger's termination
-    /// makes in an `ensure:` block it runs (`"the program is
-    /// terminating"`; "Continuing and terminating").
+    /// `Event::Refused` for:
+    /// - a frame index past the stack;
+    /// - a frame of the core library;
+    /// - a frame whose source is not known;
+    /// - an expression that does not compile;
+    /// - an expression that assigns a variable a block may already hold a
+    ///   copy of (`docs/design/debugger.md`, "Assigning a captured
+    ///   variable");
+    /// - an expression that assigns a vector variable whose frame has not
+    ///   made its vector yet (`"<name> does not exist yet at this
+    ///   point"`; "A vector not made yet");
+    /// - an expression that reads or assigns a variable the variables view
+    ///   shows as not available (`"<name> is not available here"`; "A
+    ///   variable not available");
+    /// - any expression at a stop the debugger's termination makes, in an
+    ///   `ensure:` block the termination runs (`"the program is
+    ///   terminating"`; "Continuing and terminating").
     Evaluate { frame: usize, expression: String },
     /// Sets the variable `name` of the frame at index `frame` of the stack
     /// trace to what `expression`, one expression, answers, evaluated as
@@ -274,8 +280,11 @@ pub enum Command {
     /// label that is no identifier or ends in `_DebugLabel` --
     /// `"<label> is not a label"`.
     Mark { value: ValueId, label: String },
-    /// Takes the mark `label` off the object it marks, if one does.
-    /// Served only while the program is stopped; answered by
+    /// Takes the mark `label` off the object it marks, if one does. A
+    /// configuration command, served while the program runs too, so that
+    /// an agent whose client left takes the client's marks off before
+    /// any condition of the next client's is decided against them, and
+    /// they keep their objects alive no longer; answered by
     /// `Event::Marked`.
     Unmark { label: String },
     /// How many instances each class declaration has

@@ -3267,7 +3267,7 @@ done
 }
 
 /// A client that leaves a listening agent while the program runs has its
-/// marks taken off at the next stop, before the next client reads it.
+/// marks taken off at once, before the next client reads the program.
 #[test]
 fn a_client_leaving_while_the_program_runs_leaves_no_mark() {
     let (_directory, path) = program("Waiting", WAITING);
@@ -3299,6 +3299,81 @@ fn a_client_leaving_while_the_program_runs_leaves_no_mark() {
     client.stopped("pause");
     let marked = evaluate(&mut client, "numbers_DebugLabel", Some(1), "repl");
     assert_eq!(marked["success"], false, "{marked}");
+    evaluated(&mut client, "waiting:: false", Some(1));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "first
+done
+"
+    );
+}
+
+/// A program that marks its array's stop, then sends `tick` in a loop
+/// until its slot is cleared.
+const TICKING: &str = indoc! {"
+    class Ticking = Object new (
+      | waiting ::= true. ticks ::= 0. |
+    ) (
+      tick = (
+        ticks:: ticks + 1.
+      )
+      public main: platform args: arguments = (
+        | elements |
+        elements:: {10. 20. 30}.
+        platform transcript show: 'first'; newLine.
+        [waiting] whileTrue: [self tick].
+        platform transcript show: 'done'; newLine.
+      )
+    ) : ()
+"};
+
+/// A client that leaves a listening agent while the program runs has its
+/// marks taken off at once, before any stop: the next client's breakpoint
+/// condition, which the VM decides before it stops, finds no such label,
+/// and fails as a condition naming an unknown name does.
+#[test]
+fn a_departed_client_s_label_is_unknown_to_the_next_client_s_condition() {
+    let (_directory, path) = program("Ticking", TICKING);
+    let mut client = DapClient::listen_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[10]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let reference = variable(&variables, "elements")["nsNext/valueReference"].clone();
+    client.succeed(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "numbers" }),
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.wait_for_stdout(
+        "first
+",
+    );
+    client.succeed("disconnect", json!({}));
+    client.connection.expect_closed();
+
+    client.reconnect();
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 5, "condition": "numbers_DebugLabel size = 3" }],
+        }),
+    );
+    assert_eq!(body["breakpoints"][0]["verified"], true, "{body}");
+    client.configuration_done();
+    let stopped = client.stopped("breakpoint");
+    let text = stopped["body"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("numbers_DebugLabel"), "{stopped}");
+    client.set_breakpoints(file_source(&path), &[]);
     evaluated(&mut client, "waiting:: false", Some(1));
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
