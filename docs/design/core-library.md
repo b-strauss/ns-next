@@ -3175,9 +3175,10 @@ the specification requires them of every value.
 
 ### The shipped sources as files
 
-The sources are embedded text (`include_str!`), and a tool that browses them
--- the JetBrains plugin's library "Newspeak Core Library" -- takes them from the very binary that runs, so that the text it shows
-is the text the debugger's lines refer to. `ns-next shipped-sources
+The sources are embedded text (`include_str!`), and a tool that browses
+them -- the JetBrains plugin's library "Newspeak Core Library" -- takes
+them from the very binary that runs, so that the text it shows is the
+text the debugger's lines refer to. `ns-next shipped-sources
 <directory>` writes every embedded `.ns`, `Manifest.ns` included, under its
 path below `crates/ns-runtime/core-library/` (`Kernel.ns`, `Manifest.ns`,
 `PlatformFactory.ns`, `platform/*.ns`), byte for byte the binary's text, and

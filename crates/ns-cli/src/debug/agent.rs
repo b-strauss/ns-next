@@ -89,6 +89,14 @@ const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 /// not -- however busy -- delays the process's end by no more than this.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
 
+/// How long an `evaluate` of the context `hover` may take before the
+/// agent aborts it by a pause: a hover is asked as the pointer rests on a
+/// name, unbidden, and an expression that does not end -- a getter that
+/// loops -- would otherwise leave the program's stop busy until the user
+/// noticed. The console's, a watch's and the clipboard's are the user's
+/// own request, which the user cancels.
+pub(super) const HOVER_BOUND: Duration = Duration::from_secs(2);
+
 /// The variable a debug build reads `ENDED_LINGER` from, in milliseconds,
 /// as `ATTACH_DEADLINE_VARIABLE`.
 #[cfg(debug_assertions)]
@@ -200,6 +208,10 @@ pub(super) enum Conversion {
     FunctionBreakpoints { entries: Vec<FunctionEntry> },
     /// `setExceptionBreakpoints`': the number of filters it turned on.
     ExceptionBreakpoints { count: usize },
+    /// `evaluate`'s, asked at the stop `generation`.
+    Evaluated { generation: u64 },
+    /// `setVariable`'s, asked at the stop `generation`.
+    VariableSet { generation: u64 },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
@@ -223,6 +235,13 @@ struct Waiting {
     request: protocol::Request,
     /// The stop it was asked at.
     generation: u64,
+}
+
+/// A hover's `evaluate` the VM has not answered, aborted at `deadline`.
+struct Hover {
+    connection: u64,
+    request_seq: i64,
+    deadline: Instant,
 }
 
 /// The agent's state; `run` drives it.
@@ -275,6 +294,8 @@ pub(crate) struct Agent {
     /// out, so that a client resending the same filters is told once
     /// (`stepping.rs`, `set_step_filters`).
     pub(super) step_filters_said: Vec<String>,
+    /// The hovers' evaluations not answered yet (`HOVER_BOUND`).
+    hovers: Vec<Hover>,
 }
 
 impl Agent {
@@ -317,14 +338,16 @@ impl Agent {
             stop: Stop::new(),
             waiting: Vec::new(),
             step_filters_said: Vec::new(),
+            hovers: Vec::new(),
         }
     }
 
     /// Serves every input until the process ends, and ends the session of
     /// a client of the listening mode that has not attached by its
-    /// deadline: kept here, beside the inputs, rather than by a timer per
-    /// connection, and checked before every input too, so that a peer
-    /// sending without a pause cannot keep it from passing.
+    /// deadline, and aborts a hover's evaluation past its bound: kept
+    /// here, beside the inputs, rather than by a timer each, and checked
+    /// before every input too, so that a peer sending without a pause
+    /// cannot keep a deadline from passing.
     pub(crate) fn run(mut self) {
         loop {
             if self
@@ -334,9 +357,10 @@ impl Agent {
                 self.leave();
                 continue;
             }
+            self.abort_overdue_hovers();
             let input = match self.deferred.pop_front() {
                 Some(input) => input,
-                None => match self.attach_by() {
+                None => match self.next_deadline() {
                     Some(deadline) => match self
                         .received
                         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -361,6 +385,48 @@ impl Agent {
             .as_ref()
             .filter(|client| !client.attached)
             .and_then(|client| client.attach_by)
+    }
+
+    /// The earliest deadline the agent keeps: the attach's, or a hover's.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.hovers
+            .iter()
+            .map(|hover| hover.deadline)
+            .chain(self.attach_by())
+            .min()
+    }
+
+    /// Bounds the hover `request` asked of the VM by `HOVER_BOUND`.
+    pub(super) fn bound_hover(&mut self, connection: u64, request: &protocol::Request) {
+        self.hovers.push(Hover {
+            connection,
+            request_seq: request.seq,
+            deadline: Instant::now() + HOVER_BOUND,
+        });
+    }
+
+    /// Pauses the VM, which aborts the evaluation running at its stop, for
+    /// a hover past its bound that the VM has still not answered. Should
+    /// the evaluation end just before the pause arrives, the pause is moot
+    /// at the stop, which the evaluation leaves as it was.
+    fn abort_overdue_hovers(&mut self) {
+        let now = Instant::now();
+        let (overdue, waiting): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovers)
+            .into_iter()
+            .partition(|hover| hover.deadline <= now);
+        self.hovers = waiting;
+        let unanswered = overdue.iter().any(|hover| {
+            self.pending.iter().any(|pending| {
+                matches!(
+                    &pending.reply,
+                    Reply::Request { connection, request_seq, .. }
+                        if *connection == hover.connection && *request_seq == hover.request_seq
+                )
+            })
+        });
+        if unanswered && let Some(control) = &self.control {
+            control.pause();
+        }
     }
 
     fn serve(&mut self, input: Input) {
@@ -499,6 +565,10 @@ impl Agent {
             "stackTrace" => self.stack_trace(connection, &request),
             "scopes" => self.scopes(connection, &request),
             "variables" => self.variables(connection, &request),
+            "evaluate" => self.evaluate(connection, &request),
+            "setVariable" => self.set_variable(connection, &request),
+            "nsNext/mark" => self.mark(connection, &request),
+            "nsNext/unmark" => self.unmark(connection, &request),
             "source" => self.source(connection, &request),
             "setBreakpoints" => self.set_breakpoints(connection, &request),
             "setFunctionBreakpoints" => self.set_function_breakpoints(connection, &request),
@@ -866,12 +936,7 @@ impl Agent {
         if !self.at_stop(connection, request) {
             return;
         }
-        let index = arguments
-            .frame_id
-            .checked_sub(1)
-            .and_then(|index| usize::try_from(index).ok())
-            .filter(|index| self.stop.has_frame(*index));
-        let Some(index) = index else {
+        let Some(index) = self.stop.frame_of_id(arguments.frame_id) else {
             self.respond_error(connection, request, "no frame of this stop has that id");
             return;
         };
@@ -1031,6 +1096,7 @@ impl Agent {
         drop(client.writer);
         let was_attached = client.attached;
         self.waiting.clear();
+        self.hovers.clear();
         self.line_step = None;
         self.step_filters_said.clear();
         self.stop_on_entry = false;
@@ -1075,6 +1141,7 @@ impl Agent {
         self.control = None;
         self.events_detached.store(true, Ordering::SeqCst);
         self.pending.clear();
+        self.hovers.clear();
         self.resuming = false;
         self.line_step = None;
         self.went_on();
@@ -1179,6 +1246,12 @@ impl Agent {
                 if self.host.terminate_requested() && !self.exited {
                     self.send_terminate();
                 }
+            }
+            Event::Logged { text, .. } => {
+                // A logpoint's line, in the console beside the program's
+                // own output, which the IDE shows itself.
+                let output = json!({ "category": "console", "output": format!("{text}\n") });
+                self.event("output", Some(output));
             }
             event => self.answer(event),
         }
@@ -1348,6 +1421,9 @@ impl Agent {
                     // A step by line's first step, refused: no step runs.
                     self.line_step = None;
                 }
+                self.hovers.retain(|hover| {
+                    hover.connection != connection || hover.request_seq != request_seq
+                });
                 let outcome = self.convert(event, conversion);
                 self.write_response(connection, request_seq, &command, outcome);
             }
@@ -1400,6 +1476,18 @@ impl Agent {
                     .map(|_| protocol::Breakpoint::verified())
                     .collect();
                 Ok(Some(json!({ "breakpoints": breakpoints })))
+            }
+            (
+                event @ (Event::Evaluated(_) | Event::VariableSet(_)),
+                conversion @ (Conversion::Evaluated { generation }
+                | Conversion::VariableSet { generation }),
+            ) => {
+                // References of a stop the program left would name nothing.
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                let setting = matches!(conversion, Conversion::VariableSet { .. });
+                self.evaluation_body(event, setting)
             }
             _ => Ok(None),
         }

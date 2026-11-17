@@ -9,9 +9,10 @@ const FINGERPRINT_FILE: &str = "fingerprint";
 
 /// `ns-next shipped-sources`: the `.ns` sources this binary embeds, which
 /// `Kernel.ns`, the factories and the manifest are, in one of two forms --
-/// their fingerprint on one line (`fingerprint`), or written below `directory`
-/// in `core-library/`'s layout with a `fingerprint` file. A directory is written only when everything in it is
-/// one of these files, so a mistyped path never has its own files overwritten.
+/// their fingerprint on one line (`fingerprint`), or written below
+/// `directory` in `core-library/`'s layout with a `fingerprint` file. A
+/// directory is written only when everything in it is one of these files,
+/// so a mistyped path never has its own files overwritten.
 pub(crate) fn execute(directory: Option<&Path>, fingerprint: bool) -> ExitCode {
     if fingerprint {
         println!("{}", ns_runtime::shipped_sources_fingerprint());

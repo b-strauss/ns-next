@@ -1,14 +1,17 @@
 //! What the agent keeps of one stop: its frames, once the VM answered
 //! them, the value its step's last call returned, and the
 //! `variablesReference` ids it handed out, each naming a frame's
-//! variables or a value's children. Everything here is valid until the
-//! program goes on; the ids continue across the stops of a session, so
-//! that a reference of an earlier stop names nothing rather than a value
-//! of this one.
+//! variables or a value's children, and the value references, each naming
+//! a value a mark or a forced return takes. Everything here is valid
+//! until the program goes on; the ids continue across the stops of a
+//! session, so that a reference of an earlier stop names nothing rather
+//! than a value of this one.
 
 use std::collections::BTreeMap;
 
-use ns_runtime::{FrameDescription, ReturnedValue, ValueId, Variable, VariableValue};
+use ns_runtime::{
+    FrameDescription, ReturnedValue, ValueDescription, ValueId, Variable, VariableValue,
+};
 use ns_syntax::Span;
 
 use super::protocol;
@@ -48,6 +51,9 @@ pub(crate) struct Stop {
     frames: Frames,
     returned: Option<ReturnedValue>,
     references: BTreeMap<i64, Target>,
+    /// The value references handed out, numbered from the same count as
+    /// the `variablesReference`s, so that no number names both.
+    values: BTreeMap<i64, ValueId>,
     next_reference: i64,
 }
 
@@ -58,6 +64,7 @@ impl Stop {
             frames: Frames::Missing,
             returned: None,
             references: BTreeMap::new(),
+            values: BTreeMap::new(),
             next_reference: 1,
         }
     }
@@ -83,6 +90,7 @@ impl Stop {
         self.frames = Frames::Missing;
         self.returned = None;
         self.references.clear();
+        self.values.clear();
     }
 
     pub(crate) fn frames(&self) -> &Frames {
@@ -148,18 +156,34 @@ impl Stop {
         self.references.get(&reference).cloned()
     }
 
-    /// A variable as a client shows it, a reference handed out for a value
-    /// with children. A field not computed yet says so in its value, with
-    /// no presentation hint: DAP's `lazy` hint promises a value fetched
-    /// through the variable's reference, and a stop computes none.
+    /// The value the value reference `reference` names (`shown`).
+    pub(crate) fn value(&self, reference: i64) -> Option<ValueId> {
+        self.values.get(&reference).copied()
+    }
+
+    /// A variable as a client shows it (`shown`). A field not computed
+    /// yet says so in its value, with no presentation hint: DAP's `lazy`
+    /// hint promises a value fetched through the variable's reference,
+    /// and a stop computes none.
     pub(crate) fn variable(&mut self, variable: &Variable) -> protocol::Variable {
-        let value = match &variable.value {
-            VariableValue::Shown(value) => value,
-            VariableValue::Unavailable => return Self::without_value(variable, "not available"),
-            VariableValue::NotComputed => {
-                return Self::without_value(variable, "<not computed yet>");
-            }
+        let (value, shown) = match &variable.value {
+            VariableValue::Shown(value) => self.shown(value),
+            VariableValue::Unavailable => Self::without_value("not available"),
+            VariableValue::NotComputed => Self::without_value("<not computed yet>"),
         };
+        protocol::Variable {
+            name: variable.name.clone(),
+            value,
+            shown,
+        }
+    }
+
+    /// A value as a client shows it: its text, and a `variablesReference`
+    /// handed out for one with children and a value reference, which
+    /// marks and a forced return name it by, for one that is not withheld
+    /// -- a withheld one is read-only instead. A marked value's text ends
+    /// in its label, in brackets.
+    pub(crate) fn shown(&mut self, value: &ValueDescription) -> (String, protocol::Shown) {
         let indexed = value.indexed;
         let variables_reference = if value.child_count > 0 {
             self.reference(Target::Value {
@@ -170,24 +194,48 @@ impl Stop {
         } else {
             0
         };
-        protocol::Variable {
-            name: variable.name.clone(),
-            value: value.label.clone(),
+        let value_reference = (!value.withheld).then(|| {
+            let reference = self.next_reference;
+            self.next_reference += 1;
+            self.values.insert(reference, value.id);
+            reference
+        });
+        let text = match &value.mark {
+            Some(label) => format!("{} [{label}]", value.label),
+            None => value.label.clone(),
+        };
+        let shown = protocol::Shown {
             class_name: Some(value.class_name.clone()),
             variables_reference,
             indexed_variables: indexed.then_some(value.child_count),
-        }
+            presentation_hint: value.withheld.then(|| protocol::VariablePresentationHint {
+                attributes: vec!["readOnly"],
+            }),
+            value_reference,
+        };
+        (text, shown)
     }
 
-    /// A variable that holds no value, its text saying why.
-    fn without_value(variable: &Variable, text: &str) -> protocol::Variable {
-        protocol::Variable {
-            name: variable.name.clone(),
-            value: text.to_string(),
+    /// What a variable that holds no value shows, its text saying why.
+    fn without_value(text: &str) -> (String, protocol::Shown) {
+        let shown = protocol::Shown {
             class_name: None,
             variables_reference: 0,
             indexed_variables: None,
-        }
+            presentation_hint: None,
+            value_reference: None,
+        };
+        (text.to_string(), shown)
+    }
+
+    /// The index in the stack trace of the frame whose DAP id is
+    /// `frame_id`, its index plus 1, as `stack_frame` gives it; `None` for
+    /// an id no frame of this stop has.
+    pub(crate) fn frame_of_id(&self, frame_id: i64) -> Option<usize> {
+        frame_id
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| self.has_frame(*index))
     }
 }
 

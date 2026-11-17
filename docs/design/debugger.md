@@ -88,8 +88,10 @@
 > logpoint's message, each an evaluation in the frame that reached it
 > ("Hit counts and temporary breakpoints"), and restarts a stopped frame
 > or forces it to return, through the one unwinder ("Restart frame and
-> force return"). Everything else is planned:
-> conditions and logpoints in the agent and the plugin, watches, smart
+> force return"); the DAP agent evaluates, sets variables, marks
+> objects and passes conditions and logpoints on ("Launching, the start
+> and the end"). Everything else is planned:
+> conditions and logpoints in the plugin, watches, smart
 > step into (stage 5, next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
@@ -2473,12 +2475,13 @@ decision's mechanism anyway.
 `scopes`, paged `variables` and `source`, `setBreakpoints` with hit
 conditions and block variants, `setFunctionBreakpoints`,
 `setExceptionBreakpoints`, `pause`, `continue`, the steps with their
-`granularity`, run to cursor, `terminate` and `disconnect`, and the
-`stopped`, `breakpoint` and `exited` events (`crates/ns-cli/src/debug/`,
-"Launching, the start and the end"); conditions and logpoints,
-`breakpointLocations`, `stepInTargets`, `restartFrame`, `evaluate`,
-`setVariable` and the requests of ns-next's own for hot swap,
-edit-and-continue and force return are planned.
+`granularity`, run to cursor, `evaluate`, `setVariable`, breakpoints'
+conditions and logpoints, the marks (`nsNext/mark`, `nsNext/unmark`),
+`terminate` and `disconnect`, and the `stopped`, `breakpoint`, `output`
+and `exited` events (`crates/ns-cli/src/debug/`, "Launching, the start
+and the end"); `breakpointLocations`, `stepInTargets`, `restartFrame`
+and the requests of ns-next's own for hot swap, edit-and-continue and
+force return are planned.
 
 The agent speaks the Debug Adapter Protocol, JSON in `Content-Length`
 frames, over a TCP socket bound to 127.0.0.1, since the program owns its
@@ -2540,9 +2543,11 @@ machine code, and for the pause it would take late.
 **Partial:** an expression is resolved and compiled as a block in a
 stopped frame's scope (`resolver::resolve_evaluation`,
 `compiler/evaluation.rs`) and run at a stop (`Command::Evaluate`,
-`debugger/evaluation.rs`; "Evaluation") and as a variable's new value
-(`Command::SetVariable`; "Writing a frame"); breakpoint conditions, log
-messages and watches are planned.
+`debugger/evaluation.rs`; "Evaluation"), as a variable's new value
+(`Command::SetVariable`; "Writing a frame") and as a breakpoint's
+condition and a logpoint's message ("Hit counts and temporary
+breakpoints"), and the agent serves `evaluate` in every context, a
+watch's among them; the plugin's evaluator and watches are planned.
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
 watch, `setVariable` as `name:: expression` -- is resolved and compiled as
@@ -4129,8 +4134,8 @@ access in Java, which has no capability to keep.
 
 **Built** in the VM (`Command::Mark`, `Command::Unmark`,
 `debugger/values.rs`; `ValueDescription::withheld`,
-`ValueDescription::mark`); the agent's requests for them are planned with
-its stage 5 part.
+`ValueDescription::mark`) and in the agent (`nsNext/mark`,
+`nsNext/unmark`; "Launching, the start and the end").
 
 An object the IDE shows can be marked with a label and named in every
 later evaluation of the session as `<label>_DebugLabel`, as IntelliJ's
@@ -4823,8 +4828,7 @@ clause's initializer a step out of a superclass's initializer returns to
 
 ### Launching, the start and the end
 
-**Built** (`crates/ns-cli/src/debug/`), but for the `output` events of
-logpoints, which come with stage 5's conditions.
+**Built** (`crates/ns-cli/src/debug/`).
 
 Decided with the user on 2026-11-14: the agent opens its connection in
 either direction, as JDWP's `server=y` and `server=n` do
@@ -4876,9 +4880,9 @@ IntelliJ's `KillableProcessHandler` does for a JVM; no timer in `ns-next`
 decides it (decided with the user on 2026-11-14). A program that ends --
 while running, while stopped, or in the middle of a step -- sends `exited`
 with its exit status. The program's standard streams stay its own: when
-the IDE launched the process it shows them itself, and the agent is to
-send `output` events only for logpoints and messages of its own -- none
-today -- so that no line is shown twice.
+the IDE launched the process it shows them itself, and the agent sends
+`output` events only for logpoints and messages of its own, so that no
+line is shown twice.
 
 Built (`crates/ns-cli/src/debug/`; its tests
 `crates/ns-cli/tests/debug_adapter.rs`, through the test client
@@ -5021,7 +5025,42 @@ it names (`a_pending_breakpoint_is_reported_once_its_module_is_built`). A
 module an install changed is counted in its new text only once a stop read
 it: a `setBreakpoints` sent between the install and that stop counts its
 lines in the older text, and the VM resolves those offsets in the current
-one.
+one. A line breakpoint takes a `condition` and a `logMessage`, a function
+breakpoint a `condition`, passed to the VM as written; a blank one is
+none. A log message's text is logged as it is, `{{` and `}}` a brace of
+it, and each expression in braces evaluated at the hit, its own braces
+-- a tuple's -- nesting and a brace in its strings its own, so that one
+beginning with a tuple is written after a blank, `{ {1. 2} size}`; a
+brace that never closes, or an empty `{}`, leaves the breakpoint
+unverified, its message saying so (`parse_log_message`). Each line a
+logpoint logs (`Event::Logged`) is an `output` event, category
+`console`; a condition or log expression that failed stops as the
+breakpoint, its error the `stopped` event's `text`
+(`a_conditional_breakpoint_stops_only_where_it_holds`,
+`a_failing_condition_stops_with_its_error`,
+`a_logpoint_writes_an_output_event_and_does_not_stop`).
+
+Evaluation (`evaluation.rs`): `evaluate` runs its expression in the
+frame its `frameId` names, the top frame without one, as
+`Command::Evaluate`, and answers its value as a variable shows one; an
+exception that ended it is a failed response whose message describes
+it, an abort one of the message "evaluation aborted". Every `context` is
+evaluated alike, but a hover's, asked unbidden as the pointer rests on a
+name, is aborted by a pause when it has not answered within
+`HOVER_BOUND`, two seconds, which the agent's loop keeps beside the
+attach deadline (`a_hover_evaluation_that_does_not_answer_is_aborted`).
+`setVariable` sets a variable of the frame whose `Locals` scope its
+reference names (`Command::SetVariable`), refusing a value's child and
+the return value: "only a frame's variables are set". Every value the
+agent shows that is not withheld carries, beside its
+`variablesReference`, a value reference of ns-next's own,
+`nsNext/valueReference`, numbered from the same count and valid until
+the program goes on, by which `nsNext/mark { valueReference, label }`
+marks it and a forced return will name it; a withheld value has none and
+is shown read-only (`presentationHint.attributes` `readOnly`), and a
+marked one's text ends in ` [label]`. `nsNext/unmark { label }` takes a
+mark off (`a_marked_object_is_named_in_a_later_evaluate`,
+`a_withheld_value_is_read_only`).
 
 The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
 default, or by statement (decision 4); `stepOut`, one `StepOut`; and

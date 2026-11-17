@@ -79,6 +79,10 @@ pub(crate) struct Capabilities {
     pub(crate) supports_configuration_done_request: bool,
     pub(crate) supports_function_breakpoints: bool,
     pub(crate) supports_hit_conditional_breakpoints: bool,
+    pub(crate) supports_conditional_breakpoints: bool,
+    pub(crate) supports_log_points: bool,
+    pub(crate) supports_evaluate_for_hovers: bool,
+    pub(crate) supports_set_variable: bool,
     pub(crate) supports_terminate_request: bool,
     pub(crate) supports_exception_filter_options: bool,
     pub(crate) exception_breakpoint_filters: Vec<ExceptionBreakpointsFilter>,
@@ -102,6 +106,10 @@ impl Capabilities {
             supports_configuration_done_request: true,
             supports_function_breakpoints: true,
             supports_hit_conditional_breakpoints: true,
+            supports_conditional_breakpoints: true,
+            supports_log_points: true,
+            supports_evaluate_for_hovers: true,
+            supports_set_variable: true,
             supports_terminate_request: true,
             supports_exception_filter_options: true,
             exception_breakpoint_filters: vec![
@@ -236,6 +244,12 @@ pub(crate) struct SourceBreakpoint {
     pub(crate) line: u32,
     pub(crate) column: Option<u32>,
     pub(crate) hit_condition: Option<String>,
+    /// An expression the breakpoint stops only where it answers `true`;
+    /// a blank one is none.
+    pub(crate) condition: Option<String>,
+    /// A logpoint's message, its expressions in braces: the breakpoint
+    /// logs it instead of stopping; an empty one is none.
+    pub(crate) log_message: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -251,6 +265,8 @@ pub(crate) struct SetFunctionBreakpointsArguments {
 pub(crate) struct FunctionBreakpoint {
     pub(crate) name: String,
     pub(crate) hit_condition: Option<String>,
+    /// As `SourceBreakpoint::condition`.
+    pub(crate) condition: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -385,12 +401,95 @@ pub(crate) struct Scope {
 pub(crate) struct Variable {
     pub(crate) name: String,
     pub(crate) value: String,
+    #[serde(flatten)]
+    pub(crate) shown: Shown,
+}
+
+/// `evaluate`'s body.
+#[derive(Serialize)]
+pub(crate) struct EvaluateResponseBody {
+    pub(crate) result: String,
+    #[serde(flatten)]
+    pub(crate) shown: Shown,
+}
+
+/// `setVariable`'s body.
+#[derive(Serialize)]
+pub(crate) struct SetVariableResponseBody {
+    pub(crate) value: String,
+    #[serde(flatten)]
+    pub(crate) shown: Shown,
+}
+
+/// What a variable, an `evaluate` and a `setVariable` say of a value
+/// beside its text.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Shown {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub(crate) class_name: Option<String>,
     /// 0 for a value without children.
     pub(crate) variables_reference: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) indexed_variables: Option<usize>,
+    /// `readOnly` for a withheld value, which can be neither marked nor
+    /// forced as a frame's return.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) presentation_hint: Option<VariablePresentationHint>,
+    /// ns-next's own: the reference by which `nsNext/mark` and
+    /// `nsNext/forceReturn` name the value, valid until the program goes
+    /// on; none for a withheld value, nor where no value is shown.
+    #[serde(
+        rename = "nsNext/valueReference",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) value_reference: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct VariablePresentationHint {
+    pub(crate) attributes: Vec<&'static str>,
+}
+
+/// `evaluate`: `expression` in the frame `frameId` names, the top frame
+/// without one. Every `context` -- `repl`, `watch`, `hover`,
+/// `clipboard` -- is evaluated alike, but a hover's is aborted past a
+/// bound (`agent::HOVER_BOUND`).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct EvaluateArguments {
+    pub(crate) expression: String,
+    pub(crate) frame_id: Option<i64>,
+    pub(crate) context: Option<String>,
+}
+
+/// `setVariable`: the variable `name` of the frame whose `Locals` scope
+/// `variablesReference` names, set to what the expression `value`
+/// answers.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SetVariableArguments {
+    pub(crate) variables_reference: i64,
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+/// `nsNext/mark`, a request of ns-next's own: marks the value
+/// `valueReference` names (`Shown::value_reference`) with `label`, by
+/// which every later evaluation names it `<label>_DebugLabel`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct MarkArguments {
+    pub(crate) value_reference: i64,
+    pub(crate) label: String,
+}
+
+/// `nsNext/unmark`, a request of ns-next's own: takes the mark `label`
+/// off the object it marks.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct UnmarkArguments {
+    pub(crate) label: String,
 }
 
 /// One breakpoint of a `setBreakpoints` response.

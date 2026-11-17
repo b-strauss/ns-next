@@ -3022,3 +3022,385 @@ fn a_pending_breakpoint_is_reported_once_its_module_is_built() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
 }
+
+/// `evaluate` in the frame `frame_id` -- the top frame when `None` -- in
+/// the context `context`; answers the response.
+fn evaluate(
+    client: &mut DapClient,
+    expression: &str,
+    frame_id: Option<u64>,
+    context: &str,
+) -> Value {
+    let mut arguments = json!({ "expression": expression, "context": context });
+    if let Some(frame_id) = frame_id {
+        arguments["frameId"] = json!(frame_id);
+    }
+    client.request("evaluate", arguments)
+}
+
+/// The body of an `evaluate` that must succeed.
+fn evaluated(client: &mut DapClient, expression: &str, frame_id: Option<u64>) -> Value {
+    let response = evaluate(client, expression, frame_id, "repl");
+    assert_eq!(response["success"], true, "{response}");
+    response["body"].clone()
+}
+
+/// The message of an `evaluate` in the top frame that must fail.
+fn evaluation_refused(client: &mut DapClient, expression: &str) -> String {
+    let response = evaluate(client, expression, Some(1), "repl");
+    assert_eq!(response["success"], false, "{response}");
+    response["message"].as_str().unwrap_or_default().to_string()
+}
+
+#[test]
+fn an_evaluate_answers_the_expression_s_value() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    let capabilities = client.initialize()["body"].clone();
+    for capability in [
+        "supportsConditionalBreakpoints",
+        "supportsLogPoints",
+        "supportsEvaluateForHovers",
+        "supportsSetVariable",
+    ] {
+        assert_eq!(capabilities[capability], true, "{capabilities}");
+    }
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[6]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+
+    let sum = evaluated(&mut client, "count + 4", Some(1));
+    assert_eq!(sum["result"], "7", "{sum}");
+    assert!(sum["type"].is_string(), "{sum}");
+    assert_eq!(sum["variablesReference"], 0, "{sum}");
+    assert!(sum["nsNext/valueReference"].is_i64(), "{sum}");
+
+    // Without a frame, the top frame.
+    let elements = evaluated(&mut client, "elements", None);
+    assert_eq!(elements["indexedVariables"], 3, "{elements}");
+    assert_ne!(elements["variablesReference"], 0, "{elements}");
+    assert_ne!(
+        elements["variablesReference"], elements["nsNext/valueReference"],
+        "{elements}"
+    );
+    let children = client.variables(&elements["variablesReference"], None, None);
+    assert_eq!(children[0]["value"], "10", "{children:?}");
+
+    // A hover and a watch are answered as the console is.
+    let hover = evaluate(&mut client, "count", Some(1), "hover");
+    assert_eq!(hover["body"]["result"], "3", "{hover}");
+    let watch = evaluate(&mut client, "count", Some(1), "watch");
+    assert_eq!(watch["body"]["result"], "3", "{watch}");
+    let missing = evaluate(&mut client, "count", Some(99), "watch");
+    assert_eq!(missing["success"], false, "{missing}");
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+#[test]
+fn an_evaluate_error_is_a_failed_response() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let raised = evaluation_refused(&mut client, "count frobnicate");
+    assert!(raised.contains("frobnicate"), "{raised}");
+    let malformed = evaluation_refused(&mut client, "count +");
+    assert!(
+        malformed.starts_with("the expression does not compile: "),
+        "{malformed}"
+    );
+    assert_eq!(
+        evaluation_refused(&mut client, "^count"),
+        "a ^ cannot leave an evaluation"
+    );
+    // The stop is still there to read.
+    assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+/// A hover's evaluation that has not answered within the agent's bound is
+/// aborted, the program still stopped and its stop served.
+#[test]
+fn a_hover_evaluation_that_does_not_answer_is_aborted() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let endless = evaluate(&mut client, "[true] whileTrue: []", Some(1), "hover");
+    assert_eq!(endless["success"], false, "{endless}");
+    assert_eq!(endless["message"], "evaluation aborted", "{endless}");
+    assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    client.succeed("terminate", json!({}));
+    assert_eq!(exit_code_reported(&mut client), 1);
+    assert_eq!(client.finish().status, Some(1));
+}
+
+#[test]
+fn a_set_variable_changes_what_the_program_prints() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let set = client.succeed(
+        "setVariable",
+        json!({ "variablesReference": locals, "name": "count", "value": "40 + 2" }),
+    );
+    assert_eq!(set["value"], "42", "{set}");
+    assert_eq!(set["variablesReference"], 0, "{set}");
+    let variables = client.variables(&locals, None, None);
+    assert_eq!(
+        variable(&variables, "count")["value"],
+        "42",
+        "{variables:?}"
+    );
+
+    let elements = variable(&variables, "elements")["variablesReference"].clone();
+    let refused = client.request(
+        "setVariable",
+        json!({ "variablesReference": elements, "name": "[1]", "value": "0" }),
+    );
+    assert_eq!(refused["success"], false, "{refused}");
+    assert_eq!(
+        refused["message"], "only a frame's variables are set",
+        "{refused}"
+    );
+    let failing = client.request(
+        "setVariable",
+        json!({ "variablesReference": locals, "name": "count", "value": "count frobnicate" }),
+    );
+    assert_eq!(failing["success"], false, "{failing}");
+    let message = failing["message"].as_str().unwrap_or_default();
+    assert!(message.contains("frobnicate"), "{failing}");
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+#[test]
+fn a_conditional_breakpoint_stops_only_where_it_holds() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 6, "condition": "index = 4" }],
+        }),
+    );
+    let breakpoint = body["breakpoints"][0].clone();
+    assert_eq!(breakpoint["verified"], true, "{body}");
+    // A method breakpoint whose condition never holds stops neither at
+    // the method's entry nor at its exit.
+    let functions = client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "Loop>>main:args:", "condition": "false" }] }),
+    );
+    assert_eq!(functions["breakpoints"][0]["verified"], true, "{functions}");
+    client.configuration_done();
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoint["id"]]),
+        "{stopped}"
+    );
+    assert_eq!(evaluated(&mut client, "index", Some(1))["result"], "4");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    let events = client.connection.events_until_closed();
+    assert!(
+        !names(&events).contains(&"stopped".to_string()),
+        "{events:?}"
+    );
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+#[test]
+fn a_failing_condition_stops_with_its_error() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 6, "condition": "index frobnicate" }],
+        }),
+    );
+    let breakpoint = body["breakpoints"][0].clone();
+    client.configuration_done();
+    let stopped = client.stopped("breakpoint");
+    assert_eq!(
+        stopped["body"]["hitBreakpointIds"],
+        json!([breakpoint["id"]]),
+        "{stopped}"
+    );
+    let text = stopped["body"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("frobnicate"), "{stopped}");
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+#[test]
+fn a_logpoint_writes_an_output_event_and_does_not_stop() {
+    let (_directory, path) = program("Loop", LOOP);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [
+                { "line": 6, "logMessage": "at {index} {{of}} { {1. 2} size + 3}" },
+                { "line": 8, "logMessage": "total {total" },
+            ],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], true, "{body}");
+    assert_eq!(breakpoints[1]["verified"], false, "{body}");
+    let message = breakpoints[1]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("unclosed `{`"), "{body}");
+    client.configuration_done();
+    for index in 1..=5 {
+        let output = client.event("output");
+        assert_eq!(output["body"]["category"], "console", "{output}");
+        assert_eq!(
+            output["body"]["output"],
+            format!("at {index} {{of}} 5\n"),
+            "{output}"
+        );
+    }
+    let events = client.connection.events_until_closed();
+    assert!(
+        !names(&events).contains(&"stopped".to_string()),
+        "{events:?}"
+    );
+    assert_eq!(client.finish().stdout, "15\n");
+}
+
+/// A root that holds an Array in a local at line 5, and nil at line 6.
+const MARKS: &str = indoc! {"
+    class Marks = Object new () (
+      public main: platform args: arguments = (
+        | elements |
+        elements:: {10. 20. 30}.
+        elements:: nil.
+        platform transcript show: 'done'; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_marked_object_is_named_in_a_later_evaluate() {
+    let (_directory, path) = program("Marks", MARKS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[5, 6]);
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let elements = variable(&variables, "elements").clone();
+    let reference = elements["nsNext/valueReference"].clone();
+    assert!(reference.is_i64(), "{elements}");
+    client.succeed(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "numbers" }),
+    );
+    let variables = client.variables(&locals, None, None);
+    let marked = variable(&variables, "elements")["value"].clone();
+    assert!(
+        marked
+            .as_str()
+            .is_some_and(|value| value.ends_with(" [numbers]")),
+        "{marked}"
+    );
+    let refused = client.request(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "not a label" }),
+    );
+    assert_eq!(refused["success"], false, "{refused}");
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.stopped("breakpoint");
+    // A reference of the earlier stop names nothing.
+    let stale = client.request(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "again" }),
+    );
+    assert_eq!(stale["success"], false, "{stale}");
+    let size = evaluated(&mut client, "numbers_DebugLabel size", Some(1));
+    assert_eq!(size["result"], "3", "{size}");
+    let named = evaluated(&mut client, "numbers_DebugLabel", Some(1));
+    assert!(
+        named["result"]
+            .as_str()
+            .is_some_and(|value| value.ends_with(" [numbers]")),
+        "{named}"
+    );
+    client.succeed("nsNext/unmark", json!({ "label": "numbers" }));
+    let gone = evaluate(&mut client, "numbers_DebugLabel size", Some(1), "repl");
+    assert_eq!(gone["success"], false, "{gone}");
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "done\n");
+}
+
+/// Every value of a shipped frame is withheld, so read-only and without a
+/// value reference; a program frame's are not.
+#[test]
+fn a_withheld_value_is_read_only() {
+    let (_directory, path) = program("Walker", WALKER);
+    let (_library_directory, library) = core_library();
+    let kernel = file_source(&library.join("Kernel.ns"));
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach_with(json!({ "stopOnEntry": false, "coreLibrary": absolute(&library) }));
+    client.set_breakpoints(kernel.clone(), &[array_do_body_line()]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    let shipped = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&shipped, None, None);
+    let receiver = variable(&variables, "self");
+    assert_eq!(
+        receiver["presentationHint"]["attributes"],
+        json!(["readOnly"]),
+        "{receiver}"
+    );
+    assert!(
+        receiver.get("nsNext/valueReference").is_none(),
+        "{receiver}"
+    );
+
+    let program = frames
+        .iter()
+        .find(|frame| frame["name"] == "Walker>>main:args:")
+        .unwrap_or_else(|| panic!("no program frame: {frames:?}"));
+    let locals = locals_of(&mut client, program);
+    let variables = client.variables(&locals, None, None);
+    let receiver = variable(&variables, "self");
+    assert!(receiver.get("presentationHint").is_none(), "{receiver}");
+    assert!(receiver["nsNext/valueReference"].is_i64(), "{receiver}");
+
+    client.set_breakpoints(kernel, &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "12\n");
+}

@@ -12,6 +12,7 @@
 mod agent;
 mod breakpoints;
 mod connection;
+mod evaluation;
 mod host;
 mod protocol;
 mod sources;

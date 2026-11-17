@@ -102,10 +102,14 @@ fn its_own_files_are_overwritten() {
 fn exactly_one_form_is_asked_for() {
     let (ok, _, _) = ns_next(&["shipped-sources".as_ref()]);
     assert!(!ok);
-    let (ok, _, _) = ns_next(&[
+    let directory = ScratchDirectory::new("both-forms");
+    let target = directory.join("library");
+    let (ok, _, error) = ns_next(&[
         "shipped-sources".as_ref(),
-        "--json".as_ref(),
+        target.as_os_str(),
         "--fingerprint".as_ref(),
     ]);
     assert!(!ok);
+    assert!(error.contains("cannot be used with"), "{error}");
+    assert!(!target.exists(), "nothing was written");
 }
