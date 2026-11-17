@@ -45,8 +45,9 @@ pub(crate) fn parse_expression(text: &str) -> Result<ast::CodeBody, String> {
 /// stopped frame reads it, one hop further out, since the stopped frame is
 /// the block's outer frame; a block the expression makes reaches it one
 /// hop further for each frame between. So the body's `outer_reach` is at
-/// least 1 whenever it names a frame variable, and the frame keeps its
-/// registers for it.
+/// least 1 whenever it names a frame variable, and a block it makes that
+/// names one reaches 2 or more, for which the frame keeps its registers
+/// (`debugger::evaluation::begin_in`).
 pub(crate) fn compile_evaluation(
     expression: &ast::CodeBody,
     bindings: &Rc<HashMap<Span, Binding>>,

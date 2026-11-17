@@ -13506,6 +13506,46 @@ mod evaluation {
         assert_eq!(assigned, "count does not exist yet at this point");
         assert_eq!(set, "count does not exist yet at this point");
     }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation that only reads a frame's variable leaves the
+        /// frame to drop its registers when it returns, as it would
+        /// without the evaluation: `unused`, read at a stop in `make:`
+        /// while it runs, is shown as not available once `make:` returned,
+        /// at a later stop in the block that outlived it. The reference
+        /// lowering's block reads `limit` from the method's frame, which
+        /// therefore keeps its registers and shows `unused` anyway.
+        fn a_read_at_a_stop_leaves_the_frame_to_drop_its_registers(lowering) {
+            let offset = line_start(RETURNED, "block:: [");
+            let ((read, unused), result) = debugged(
+                RETURNED,
+                lowering,
+                |remote| set_breakpoints(remote, "Returned", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Returned"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "unused");
+                    set_breakpoints(remote, "Returned", Vec::new());
+                    expect_breakpoints(remote, "Returned");
+                    continue_stopped(remote);
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    let variables = frame_and_variables(remote, "[] in Returned>>make:").1;
+                    let unused = named(&variables, "unused").value.clone();
+                    remote.send(Command::Terminate);
+                    (read, unused)
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(read, "42");
+            match (lowering, unused) {
+                (Lowering::Optimized, unused) => assert_eq!(unused, VariableValue::Unavailable),
+                (Lowering::Reference, VariableValue::Shown(value)) => assert_eq!(value.label, "42"),
+                (Lowering::Reference, other) => panic!("unused was expected to show, not {other:?}"),
+            }
+        }
+    }
 }
 
 /// Conditional breakpoints and logpoints, decided by the VM

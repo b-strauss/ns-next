@@ -3849,12 +3849,19 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   itself, as a `MakeClosure` in the frame would, the stopped frame its
   creator, so that `LoadOuterLocal` and `StoreOuterLocal` at depth 1
   reach the frame's registers. A block the expression creates can escape
-  (`[count]` stored away), so the frame is marked as `MakeClosure` marks
-  a creator whose block has an `outer_reach` above 0
+  (`[count]` stored away), so when the expression creates a block that
+  reaches the frame -- an `outer_reach` of 2 or more, one hop past the
+  expression's own frame -- the frame is marked as `MakeClosure` marks a
+  creator whose block has an `outer_reach` above 0
   (`Heap::frame_retain_registers`, which marks a suspended frame's
   record too), or it would drop its registers when it returns and the
   block would read `nil` at exit status 0
-  (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`).
+  (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`). An
+  expression that only reads or writes the frame's variables reaches
+  them while the frame is stopped, so its frame is not marked: retaining
+  its registers would keep alive what the frame drops at its return and
+  show it to every later stop
+  (`a_read_at_a_stop_leaves_the_frame_to_drop_its_registers`).
   While it runs, every `Breakpoint` arm goes past its slot uncounted
   (`Breakpoints::evaluating`), as IntelliJ skips breakpoints in an
   evaluation, no method's exit by an unwind is counted, no exception

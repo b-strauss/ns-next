@@ -366,8 +366,9 @@ fn assignabilities(
 /// counter it stores, which a block reading it by reference would read
 /// otherwise, is reified, as a `MakeClosure` in it would reify it, and goes
 /// on interpreted from here (`docs/design/debugger.md`, "Writing a
-/// frame"); it keeps its registers past its return, since a block the
-/// expression stores may read them; and the expression's closure, made
+/// frame"); it keeps its registers past its return when the expression
+/// creates a block that reaches it, since such a block may be stored and
+/// read them (`makes_a_block_reaching_the_frame`); and the expression's closure, made
 /// over it, is pushed above every live frame's window, whichever frame it
 /// evaluates in -- a frame below the top has its callees above it -- with
 /// `Continuation::Evaluated`. Breakpoints, exception breakpoints and the
@@ -411,7 +412,9 @@ pub(crate) fn begin_in<'gc>(
         mutator.heap.clear_compiled(*activation);
     }
     let captured_frame = stack::reified(&mut mutator.heap, stack_frame);
-    mutator.heap.frame_retain_registers(captured_frame);
+    if makes_a_block_reaching_the_frame(&code) {
+        mutator.heap.frame_retain_registers(captured_frame);
+    }
     let closure = mutator.new_closure(NewClosure {
         code,
         captured_frame,
@@ -445,6 +448,20 @@ pub(crate) fn begin_in<'gc>(
         return Err(NO_ROOM);
     }
     Ok(())
+}
+
+/// Whether `code`, an evaluation's body, creates a block that reaches the
+/// frame it stands in by reference -- one hop past the body's own frame, so
+/// an `outer_reach` of 2 or more, which counts the blocks nested in it --
+/// and so may read the frame's registers after it returned: `MakeClosure`'s
+/// own rule for a creator. An expression that only reads or writes the
+/// frame's variables reaches them while the frame is stopped, so retaining
+/// them would only keep alive what the frame drops at its return, and show
+/// it to every later stop (`docs/design/debugger.md`, "Evaluation").
+fn makes_a_block_reaching_the_frame(code: &CompiledCode) -> bool {
+    code.body()
+        .created_blocks()
+        .any(|block| block.code.outer_reach >= 2)
 }
 
 /// The evaluation's block returned `value`, its answer: recorded for the
