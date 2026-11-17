@@ -2114,6 +2114,24 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     - *Instances of an unknown class*: `nsNext/instances` of a class name
       no module declares answers an empty page rather than a refusal
       ([debugger.md](design/debugger.md), "The memory view").
+    - *The memory view's cost, unmeasured*: every `Instances` and
+      `Referrers` answer walks the whole object space again, a
+      `Referrers` answer more than once -- the referrer walk, then the
+      walks that decide which returned frame objects nothing living
+      refers to -- and the withholding of a closure asks
+      `stack::code_is_shipped` for each closure the walk meets, which
+      searches every registered mixin's members; nothing measures either
+      on a large heap ([debugger.md](design/debugger.md), "The memory
+      view").
+    - *An unexplained failure*: once, while the MCP server's start was
+      built (2026-11-17), the agent answered a request "`` is not
+      supported yet" -- a command named by an empty string -- in a run
+      whose server's standard output closed early; it did not recur in
+      more than twenty runs, nor since. A debug build's agent now logs an
+      unknown command's connection, name, seq and message keys to its
+      standard error, and the MCP server every refused response, so that a
+      recurrence says what arrived ([debugger.md](design/debugger.md),
+      "The MCP server").
     - *The plugin*: its hovers send no `context: "hover"` -- they
       evaluate only a frame's variable names -- so the agent's hover
       bound and its abort never apply to them; the memory view's panel
@@ -2131,7 +2149,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       of a declaration with no slots, smart-steps in a `whileFalse:` loop
       over a bare local, or detaches with marks set; and the endless
       evaluations' tests (`start_endless`) wait for the evaluation to
-      start by a sleep (`crates/ns-runtime/tests/debugger.rs`).
+      start by a sleep (`crates/ns-runtime/tests/debugger.rs`). The pause
+      stress reader's refusal to evaluate while a breakpoint's token waits
+      (`Breakpoints::waits_for_a_fetch`) is exercised only beside the
+      suspend stress mode, by one test, never by the pause mode alone; and
+      the two regression tests of the stage's end-of-batch fixes,
+      `a_suspended_frame_refers_from_the_stack` and
+      `a_stress_pause_beside_suspensions_leaves_a_token_to_its_frame`, do
+      not assert their precondition -- that a frame was suspended, that
+      a token waited when the mode stopped -- so a change that stopped
+      producing it would leave them passing vacuously.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

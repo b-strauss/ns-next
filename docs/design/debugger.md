@@ -609,45 +609,45 @@ The commands (`debugger::Command`):
   raised, so that an agent asks again only whether it changed. Served
   only at a stop, where the agent reads positions in it.
 
-The events (`debugger::Event`): `Stopped { reason, returned, elsewhere }`, the
-program stopped and serves commands until a `Continue` or a `Terminate` --
-`StopReason::Pause`, `StopReason::Breakpoint { ids }`, the breakpoints
-standing at the statement it stopped at, `StopReason::Step`, a step's or
-the run to cursor's arrival, or `StopReason::MethodEntry { id, others }`
-and `StopReason::MethodExit { id, others }`, a method breakpoint's
-("Method breakpoints"), or `StopReason::Exception { class_name,
-description, caught, exits }` and `StopReason::Halt { exits }`, an
-exception breakpoint's, `exits` the method breakpoints whose exit by an
-unwind it reports ("Exceptions", "Method breakpoints"), or
+The events (`debugger::Event`): `Stopped { reason, returned, elsewhere }`,
+the program stopped and serves commands until a `Continue` or a
+`Terminate` -- `StopReason::Pause`, `StopReason::Breakpoint { ids }`, the
+breakpoints standing at the statement it stopped at, `StopReason::Step`, a
+step's or the run to cursor's arrival, or `StopReason::MethodEntry { id,
+others }` and `StopReason::MethodExit { id, others }`, a method
+breakpoint's ("Method breakpoints"), or `StopReason::Exception {
+class_name, description, caught, exits }` and `StopReason::Halt { exits
+}`, an exception breakpoint's, `exits` the method breakpoints whose exit
+by an unwind it reports ("Exceptions", "Method breakpoints"), or
 `StopReason::ConditionFailed { ids, error }`, the breakpoints standing
 there whose condition or log expression did not compile or raised an
 error, and the first failure's description ("Hit counts and temporary
-breakpoints"); `returned`, at a
-step's stop, a `ReturnedValue`: the value the stepping frame's last call
-answered, described as the stop's first value, and the call that answered
-it as a reader names it, a `String`; `None` at every other stop ("The
-return value of the last call"); `elsewhere`, at a step's stop, whether the
-step went on as a step into from where the program went on rather than
-from the frame it was taken in, so that it stands in another activation
-(decision 4), and `false` at every other stop; `StackTrace`; `Variables`, the answer to both
-`Variables` and `Children`; `Refused { command, reason }`, the command
-`Command::name` names not served; `Continued`; and `Breakpoints { module,
-breakpoints }`, the module's line breakpoints in the order of their
-offsets, each a `BreakpointState` -- its `BreakpointId`, its offset and
-the span of the statement it stops at, or `None` while it is pending --
-the answer to `SetBreakpoints`, and sent unasked when a pending one
-resolves or an install moves one; `StepFiltersSet`, the answer to
-`SetStepFilters`; `MethodBreakpoints`, each method breakpoint's
-`MethodBreakpointState` -- its id and whether its method is declared
-(`verified`) -- in the order they were set, the answer to
-`SetMethodBreakpoints`, and sent unasked when a module's build or an
-install changes whether one is verified; `ExceptionBreakpointsSet`,
-the answer to `SetExceptionBreakpoints`; `ModuleText`, the answer to
-`ModuleText`; and `Logged { breakpoint, text }`, sent unasked where a
-logpoint holds, its message made, while the program goes on. `Continue`, the three steps, `RunToPosition`, `StackTrace`,
-`Variables`, `Children` and `ModuleText` are served only at a stop; one
-that arrives while the program runs is refused with "the program is
-running", and one queued between runs is dropped and refused
+breakpoints"); `returned`, at a step's stop, a `ReturnedValue`: the value
+the stepping frame's last call answered, described as the stop's first
+value, and the call that answered it as a reader names it, a `String`;
+`None` at every other stop ("The return value of the last call");
+`elsewhere`, at a step's stop, whether the step went on as a step into
+from where the program went on rather than from the frame it was taken in,
+so that it stands in another activation (decision 4), and `false` at every
+other stop; `StackTrace`; `Variables`, the answer to both `Variables` and
+`Children`; `Refused { command, reason }`, the command `Command::name`
+names not served; `Continued`; and `Breakpoints { module, breakpoints }`,
+the module's line breakpoints in the order of their offsets, each a
+`BreakpointState` -- its `BreakpointId`, its offset and the span of the
+statement it stops at, or `None` while it is pending -- the answer to
+`SetBreakpoints`, and sent unasked when a pending one resolves or an
+install moves one; `StepFiltersSet`, the answer to `SetStepFilters`;
+`MethodBreakpoints`, each method breakpoint's `MethodBreakpointState` --
+its id and whether its method is declared (`verified`) -- in the order
+they were set, the answer to `SetMethodBreakpoints`, and sent unasked when
+a module's build or an install changes whether one is verified;
+`ExceptionBreakpointsSet`, the answer to `SetExceptionBreakpoints`;
+`ModuleText`, the answer to `ModuleText`; and `Logged { breakpoint, text
+}`, sent unasked where a logpoint holds, its message made, while the
+program goes on. `Continue`, the three steps, `RunToPosition`,
+`StackTrace`, `Variables`, `Children` and `ModuleText` are served only at
+a stop; one that arrives while the program runs is refused with "the
+program is running", and one queued between runs is dropped and refused
 with "no run executes". Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
 agent therefore waits for `Stopped` before it sends a command only a stop
@@ -1011,15 +1011,15 @@ control's drop makes that next talk come soon: it closes the command
 channel and then arms the commands bit (`Drop for DebugControl`), so that
 a running program drains, finds the channel disconnected and detaches at
 its next safepoint, and an evaluation running at a stop, which may never
-end, is aborted there ("Evaluation", "Aborting"). Then
-`detach_debugger` makes no attachment current and clears every debugger
-bit under one hold of the arming lock, removes every breakpoint, each
-slot given its original back but one the breakpoint stress mode patched
-too, which keeps that patch ("The breakpoint stress mode"), ends a step in progress and puts the step
-filters and the exception breakpoints back to their default, then drops
-the debugger. A stopped
-program goes on as after a `Continue`, and a running one is never stopped
-again (`a_dropped_remote_lets_the_program_finish`,
+end, is aborted there ("Evaluation", "Aborting"). Then `detach_debugger`
+makes no attachment current and clears every debugger bit under one hold
+of the arming lock, removes every breakpoint, each slot given its original
+back but one the breakpoint stress mode patched too, which keeps that
+patch ("The breakpoint stress mode"), ends a step in progress and puts the
+step filters and the exception breakpoints back to their default, then
+drops the debugger. A stopped program goes on as after a `Continue`, and a
+running one is never stopped again
+(`a_dropped_remote_lets_the_program_finish`,
 `a_remote_dropped_while_stopped_lets_the_program_finish`,
 `a_detach_during_an_evaluation_aborts_it`).
 
@@ -1415,9 +1415,12 @@ children and without DAP's `lazy` hint, which promises a value fetched
 through the variable's reference
 (`an_instance_s_fields_are_named_and_a_lazy_slot_not_computed_says_so`).
 
-Planned: an object the IDE pins outlives its stop, as JDWP's object ids
-and their `DisableCollection` do; a `ByteArray`'s and a `String`'s
-elements are read by the heap's accessors and paged; and a Newspeak
+An object the debugger marks outlives its stop, held by the attachment
+until it is unmarked, as JDWP's `DisableCollection` holds an object id
+("Marking objects"); a value is pinned past its stop in no other way --
+an id the IDE keeps names nothing at a later stop -- which is still open.
+Planned: a `ByteArray`'s and a `String`'s elements are read by the
+heap's accessors and paged; and a Newspeak
 collection (`List`, `Map`, `Set` of `CollectionsFactory.ns`), which shows
 its slots, is shown by a renderer that runs Newspeak code (`size`, `do:`,
 `printString`) as an evaluation ("Evaluation") under a limit of time and
@@ -1498,23 +1501,23 @@ The breakpoint stress mode (`NS_NEXT_STRESS_BREAKPOINTS`, debug builds,
 one of the `stress` gate's fifteen modes;
 `Interpreter::set_stress_breakpoints` for a test,
 `Interpreter::stress_breakpoint_hits` the count of the patches gone past
-since it was switched on) runs every program through the `Breakpoint`
-arm at the statements of every body it finds running at a safepoint,
-which is every body whose first entry is interpreted (below). No debugger need be attached. At every
-safepoint, right after the pause and the step stress modes' stops,
-`breakpoints::patch_running_for_stress` walks the running activations
-from the top and patches every statement start of each body it has not
-resolved yet -- the first instruction of every statement its metadata
-names, an inlined block's included -- with a breakpoint of its own kind
-(`PatchKind::Stress`), which never stops: the arm counts the hit and
-executes the original through its ordinary arm, as for a slot nothing
-stops at. The walk stops at the first body it resolved before, which
-keeps a deep recursion's safepoints from walking its whole stack. A
-body without metadata -- an image's without source -- is resolved to
-no slot. The patches change through `settle`, so a patched body loses
-its machine code and is compiled again with an exit at every statement
-start, and is never optimized nor inlined; under the JIT the mode thus
-runs every exit at a patch and every abandonment it leads to.
+since it was switched on) runs every program through the `Breakpoint` arm
+at the statements of every body it finds running at a safepoint, which is
+every body whose first entry is interpreted (below). No debugger need be
+attached. At every safepoint, right after the pause and the step stress
+modes' stops, `breakpoints::patch_running_for_stress` walks the running
+activations from the top and patches every statement start of each body it
+has not resolved yet -- the first instruction of every statement its
+metadata names, an inlined block's included -- with a breakpoint of its
+own kind (`PatchKind::Stress`), which never stops: the arm counts the hit
+and executes the original through its ordinary arm, as for a slot nothing
+stops at. The walk stops at the first body it resolved before, which keeps
+a deep recursion's safepoints from walking its whole stack. A body without
+metadata -- an image's without source -- is resolved to no slot. The
+patches change through `settle`, so a patched body loses its machine code
+and is compiled again with an exit at every statement start, and is never
+optimized nor inlined; under the JIT the mode thus runs every exit at a
+patch and every abandonment it leads to.
 
 What brings a body to the walk is its first entry. While the mode is on
 it holds the stress bit (`hold_safepoints_for_stress`), which the
@@ -1675,19 +1678,19 @@ not.
   clearing the debugger's bits gives the limit back.
 - **The metadata at a stop** (`tests/debugger.rs`, each under both
   lowerings but the image without source's): a frame named and located,
-  the send it waits on included; a frame's named variables; a block's
-  view of its method's variables; an outer variable of a creator that
-  returned without keeping its registers, not available; a block two
-  deep reading its method's variable two captured frames out, while the
-  method runs and after it returned; a returned creator's frame an
-  image decoded, read through the closure that reads it by reference; a
-  factory's frame named by its header's parameters; a superseded body its edit changed, shown
-  by number and without a location, its block's frame still named for
-  its method; a superseded body an install into its declaration left
-  alone, and its block's, named, located in the current text and showing
-  their named variables; an image without source, its frames
-  named and their variables numbered; and a vector variable's current
-  value in every frame of its chain.
+  the send it waits on included; a frame's named variables; a block's view
+  of its method's variables; an outer variable of a creator that returned
+  without keeping its registers, not available; a block two deep reading
+  its method's variable two captured frames out, while the method runs and
+  after it returned; a returned creator's frame an image decoded, read
+  through the closure that reads it by reference; a factory's frame named
+  by its header's parameters; a superseded body its edit changed, shown by
+  number and without a location, its block's frame still named for its
+  method; a superseded body an install into its declaration left alone,
+  and its block's, named, located in the current text and showing their
+  named variables; an image without source, its frames named and their
+  variables numbered; and a vector variable's current value in every frame
+  of its chain.
 - **The collection and the pairing** (`debugger/metadata/tests.rs`):
   statement starts, an inlined block's included, and their spans; a
   send's call site, receiver and selector, an implicit receiver's, a
@@ -1945,54 +1948,54 @@ not.
   breakpoint stops it, so that the stop does not depend on when the
   breakpoint is served.
 - **Stage 5's tests** (`tests/debugger.rs`, each under both lowerings
-  where a lowering can tell): `evaluation::*` -- a local read and
-  written, a frame below the top and a stopped block's home read, a
-  private method reached by an implicit receiver send and another
-  object's refused, an error as the answer with the program's handlers
-  below untouched, a program's block whose `^` would return to a home
-  below answering `CannotReturn` (an evaluated `^` is refused by
-  `compiler/evaluation.rs`'s own tests), breakpoints gone past, a
-  compiled loop's iteration and a compiled frame below the top written, a collection during an
-  evaluation, a stored block reading the frame after it returned, a
-  shipped frame refused, a pause, `AbortEvaluation`, a terminate and a
-  detach ending an endless evaluation, the depth reserve at a stack
-  overflow and near the limit; setting a variable, the copied variable
-  refused after its capture and assigned before it, through a fallback
-  block and a vector, before its vector is made, and a read leaving the
-  frame to drop its registers; `conditions::*` -- a condition counted
-  before the hit condition and evaluated once a hit, a logpoint, a
-  failing condition and log expression, a step's and a step into's
-  stop, a method breakpoint's entry and exit, an exit by an exception and
-  by a non-local return, an endless condition aborted, two conditions at
-  one statement, beside an exception's stop and in a compiled loop;
+  where a lowering can tell): `evaluation::*` -- a local read and written,
+  a frame below the top and a stopped block's home read, a private method
+  reached by an implicit receiver send and another object's refused, an
+  error as the answer with the program's handlers below untouched, a
+  program's block whose `^` would return to a home below answering
+  `CannotReturn` (an evaluated `^` is refused by
+  `compiler/evaluation.rs`'s own tests), breakpoints gone past, a compiled
+  loop's iteration and a compiled frame below the top written, a
+  collection during an evaluation, a stored block reading the frame after
+  it returned, a shipped frame refused, a pause, `AbortEvaluation`, a
+  terminate and a detach ending an endless evaluation, the depth reserve
+  at a stack overflow and near the limit; setting a variable, the copied
+  variable refused after its capture and assigned before it, through a
+  fallback block and a vector, before its vector is made, and a read
+  leaving the frame to drop its registers; `conditions::*` -- a condition
+  counted before the hit condition and evaluated once a hit, a logpoint, a
+  failing condition and log expression, a step's and a step into's stop, a
+  method breakpoint's entry and exit, an exit by an exception and by a
+  non-local return, an endless condition aborted, two conditions at one
+  statement, beside an exception's stop and in a compiled loop;
   `restarting::*` -- a method, a block, a factory and an initializer
-  restarted and forced to return, `ensure:` blocks run, the vector kept,
-  a clause-less initializer and a body without metadata, an exception's
+  restarted and forced to return, `ensure:` blocks run, the vector kept, a
+  clause-less initializer and a body without metadata, an exception's
   machinery unwound, compiled frames below the top, a shipped frame
-  refused; `smart_stepping::*` -- the targets in source order, an
-  inlined conditional's and loop's blocks' sends, a fast-path accessor, a
-  filtered send's block, a block never run, an escaped block of another
-  activation, an exception's targets and a target in a loop;
-  `marking::*` -- a mark held past a continue, named in a later
-  evaluation and a condition, moved and removed, the platform's mirror
-  field withheld; and `memory_view::*` -- instances counted and listed,
-  referrers from objects and from the stack, a shipped instance, the
-  mirror's class and a frame object withheld, weak words and an
-  ephemeron's key no references, and returned frame objects. The agent's
-  (`crates/ns-cli/tests/debug_adapter.rs`): `evaluate`, its error, a
-  hover's bound and `cancel`, `setVariable`, a conditional breakpoint, a
-  failing condition, a logpoint, a mark named later, a withheld value
-  read-only, `stepInTargets` and `stepIn` with a target, a stale target
-  refused, `restartFrame`, `nsNext/forceReturn` with and without an
-  expression and during an evaluation, the memory view's requests, a
-  shipped frame deemphasized, and a lost connection ending the program in
-  the connecting mode. The MCP server's (`crates/ns-cli/tests/mcp.rs`):
-  its tools, a start stopping at a breakpoint with its summary, a step
-  and an evaluation, an endless loop paused, a shipped frame's file, a
-  reference expanded and a mark, an endless evaluation aborted, the
-  executable freed for the next build and a killed server ending its
-  program. The plugin's tests cover the stage's actions over a scripted
-  agent and the real runtime ("The JetBrains plugin").
+  refused; `smart_stepping::*` -- the targets in source order, an inlined
+  conditional's and loop's blocks' sends, a fast-path accessor, a filtered
+  send's block, a block never run, an escaped block of another activation,
+  an exception's targets and a target in a loop; `marking::*` -- a mark
+  held past a continue, named in a later evaluation and a condition, moved
+  and removed, the platform's mirror field withheld; and `memory_view::*`
+  -- instances counted and listed, referrers from objects and from the
+  stack, a shipped instance, the mirror's class and a frame object
+  withheld, weak words and an ephemeron's key no references, and returned
+  frame objects. The agent's (`crates/ns-cli/tests/debug_adapter.rs`):
+  `evaluate`, its error, a hover's bound and `cancel`, `setVariable`, a
+  conditional breakpoint, a failing condition, a logpoint, a mark named
+  later, a withheld value read-only, `stepInTargets` and `stepIn` with a
+  target, a stale target refused, `restartFrame`, `nsNext/forceReturn`
+  with and without an expression and during an evaluation, the memory
+  view's requests, a shipped frame deemphasized, and a lost connection
+  ending the program in the connecting mode. The MCP server's
+  (`crates/ns-cli/tests/mcp.rs`): its tools, a start stopping at a
+  breakpoint with its summary, a step and an evaluation, an endless loop
+  paused, a shipped frame's file, a reference expanded and a mark, an
+  endless evaluation aborted, the executable freed for the next build and
+  a killed server ending its program. The plugin's tests cover the stage's
+  actions over a scripted agent and the real runtime ("The JetBrains
+  plugin").
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -2538,35 +2541,36 @@ statement of a one-line block a `do:` runs stands, after the VM's step
 over, in the next activation at the same depth, in a frame of the same
 name, on the same line, where decision 16 stops it. So the step's stop
 says whether the VM's step went on as a step into from where the program
-went on rather than from the frame it was taken in -- after that frame,
-or its caller, returned or unwound, past a filtered frame, at a handler,
-or into the next run (`Event::Stopped`'s `elsewhere`,
+went on rather than from the frame it was taken in -- after that frame, or
+its caller, returned or unwound, past a filtered frame, at a handler, or
+into the next run (`Event::Stopped`'s `elsewhere`,
 `stepping::continue_as_step_into`) -- or whether the activation it was
-taken in left while the step stepped in another frame: a step taken in
-the top frame itself -- not at an exception's stop, which steps from the
-frame it shows below the machinery, nor for a step out that leaves the
-send that took a block -- that is the fallback closure of a block its
-creator's inlined form took steps in the creator, and a receiver that runs the block again makes a new
-activation at the same offset, at the same depth, in a frame of the same
-name, which only the first's return tells apart, noted by a one-shot that
-never stops where its caller goes on (`OneShot::leaves`,
-`stepping::note_origin`) and by `popped` for an unwind. A stop that went
-on elsewhere is another place, whatever its depth, name and line
+taken in left while the step stepped in another frame: a step taken in the
+top frame itself -- not at an exception's stop, which steps from the frame
+it shows below the machinery, nor for a step out that leaves the send that
+took a block -- that is the fallback closure of a block its creator's
+inlined form took steps in the creator, and a receiver that runs the block
+again makes a new activation at the same offset, at the same depth, in a
+frame of the same name, which only the first's return tells apart, noted
+by a one-shot that never stops where its caller goes on
+(`OneShot::leaves`, `stepping::note_origin`) and by `popped` for an
+unwind. A stop that went on elsewhere is another place, whatever its
+depth, name and line
 (`a_line_step_over_at_a_one_line_block_stops_in_its_next_activation`,
 `a_line_step_over_at_a_fallback_block_stops_in_its_next_activation`,
 `a_step_s_stop_says_whether_it_went_on_from_another_frame`,
 `a_step_over_into_a_fallback_block_s_next_activation_says_it_went_on_elsewhere`).
-The agent places a stop by the first frame it shows, below an
-exception's hidden machinery, the frame the VM steps from
-(`a_line_step_from_a_halt_stop_leaves_the_line`). Statements
-on one line of one activation are still stepped over as one line, and so
-is a one-line loop whose block a step over passes, since the step goes
-on in the frame it was taken in (`a_line_step_over_a_one_line_loop_ends`,
-`a_step_over_a_loop_says_it_stayed_in_its_frame`). Each repetition reads the stop's
-frames and the top frame's module's text from the VM, the text by
-revision, so that a step over a line of several statements costs a round
-trip per statement and never a stop the client sees. A client may ask for
-`granularity: statement`, one VM step, and `instruction` steps as
+The agent places a stop by the first frame it shows, below an exception's
+hidden machinery, the frame the VM steps from
+(`a_line_step_from_a_halt_stop_leaves_the_line`). Statements on one line
+of one activation are still stepped over as one line, and so is a one-line
+loop whose block a step over passes, since the step goes on in the frame
+it was taken in (`a_line_step_over_a_one_line_loop_ends`,
+`a_step_over_a_loop_says_it_stayed_in_its_frame`). Each repetition reads
+the stop's frames and the top frame's module's text from the VM, the text
+by revision, so that a step over a line of several statements costs a
+round trip per statement and never a stop the client sees. A client may
+ask for `granularity: statement`, one VM step, and `instruction` steps as
 `statement` does, a statement being the smallest place a stop is made at.
 A source span per instruction, Primordial Soup's `bciSourceMapping`
 (`primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns:564-596`),
@@ -2575,20 +2579,20 @@ place of their own in the source.
 
 ### 5. The metadata is compiled again on demand and verified
 
-Built ("Compiling the metadata again", and a breakpoint's resolution,
-"A breakpoint names a source position"). Neither table is stored. The first time the debugger needs a
-body's -- a stop in it, or a breakpoint the IDE sets -- it compiles the
-body's source again, the lowerer collecting the stop locations and the
-**variable table** on the side: each named variable's place (a register,
-a register of an enclosing frame, a slot of an indirection vector), over
-the whole body, since an inlined block declares no variable of its own
-(decision 13). The result is compared with the running body; only an
-equal body gets the tables, cached by the body. A body whose source is
-gone (an image built with `--strip-source`) or whose recompilation
-differs (code an older binary compiled, a superseded version an edit
-changed) gets none, and its frames show without variable names and
-source positions, as Java's do for a class compiled without `-g`; a
-frame keeps its name, which its declaration gives.
+Built ("Compiling the metadata again", and a breakpoint's resolution, "A
+breakpoint names a source position"). Neither table is stored. The first
+time the debugger needs a body's -- a stop in it, or a breakpoint the IDE
+sets -- it compiles the body's source again, the lowerer collecting the
+stop locations and the **variable table** on the side: each named
+variable's place (a register, a register of an enclosing frame, a slot of
+an indirection vector), over the whole body, since an inlined block
+declares no variable of its own (decision 13). The result is compared with
+the running body; only an equal body gets the tables, cached by the body.
+A body whose source is gone (an image built with `--strip-source`) or
+whose recompilation differs (code an older binary compiled, a superseded
+version an edit changed) gets none, and its frames show without variable
+names and source positions, as Java's do for a class compiled without
+`-g`; a frame keeps its name, which its declaration gives.
 
 This rests on the invariant that compiling a resolved module is total and
 deterministic. Primordial Soup does the same, recompiling a method for its
@@ -2726,15 +2730,16 @@ values, breakpoints and evaluations ("Evaluation").
 
 A breakpoint, a step's stop or a pause leaves its stretch for the run
 loop's safepoint, as a collection request does, and there calls the
-debugging API, which blocks on a channel and serves the agent's commands --
-reading the stack and values, setting breakpoints, evaluating -- answering
-on another; no handle is live there, and nothing pushes or pops while it
-waits. Evaluating pushes the expression's activation and
-returns into the loop, its return carried back into the stop by a
-`Continuation` variant of its own (`Continuation::Evaluated`): the
-trampoline every send uses, never a re-entry of the loop from Rust ([execution.md](execution.md), "No re-entry
-from Rust"). The debugger therefore needs no yield path out of `vm::run`;
-that remains the image's need, for a snapshot taken mid-execution
+debugging API, which blocks on a channel and serves the agent's commands
+-- reading the stack and values, setting breakpoints, evaluating --
+answering on another; no handle is live there, and nothing pushes or pops
+while it waits. Evaluating pushes the expression's activation and returns
+into the loop, its return carried back into the stop by a `Continuation`
+variant of its own (`Continuation::Evaluated`): the trampoline every send
+uses, never a re-entry of the loop from Rust
+([execution.md](execution.md), "No re-entry from Rust"). The debugger
+therefore needs no yield path out of `vm::run`; that remains the image's
+need, for a snapshot taken mid-execution
 ([image-format.md](image-format.md), "Planned: suspend and resume").
 
 HotSpot's thread waits inside the runtime call that posts the JVMTI event,
@@ -2981,13 +2986,14 @@ records no range.
 
 - Targeted tests at a stop, in `crates/ns-runtime/tests/debugger.rs`,
   each under both lowerings but the image without source's: named
-  variables; a block's outer chain, copied, in a vector, by reference,
-  two frames out, after its creator returned, and from a creator's
-  frame an image decoded; a factory's frame; a superseded version an install into its declaration
-  left alone, and one the edit changed; and an image without its source.
-  Unit tests in `debugger/metadata/tests.rs`: a body after an edit of
-  another declaration (`an_install_moves_the_spans_of_an_unedited_body`)
-  and an image whose code the reference lowering compiled
+  variables; a block's outer chain, copied, in a vector, by reference, two
+  frames out, after its creator returned, and from a creator's frame an
+  image decoded; a factory's frame; a superseded version an install into
+  its declaration left alone, and one the edit changed; and an image
+  without its source. Unit tests in `debugger/metadata/tests.rs`: a body
+  after an edit of another declaration
+  (`an_install_moves_the_spans_of_an_unedited_body`) and an image whose
+  code the reference lowering compiled
   (`a_reference_lowered_image_body_pairs_with_the_reference_lowering`).
 - An oracle over every body: a test compiles every body of every golden
   again under the lowering it runs under, both of them, and requires it
@@ -3029,32 +3035,32 @@ selector's is rejected, since smart step into marks the selector.
 ### 16. Shipped code is filtered from steps, and program classes can be
 
 **Built** (`debugger/stepping.rs`: `is_filtered`, `went_on_past_filtered`,
-`continue_as_step_into`, `held_step`; `Command::SetStepFilters`). A
-frame is filtered when its body is a member of a declaration, or a block
-of one, whose module's root is shipped while the shipped filter is on,
-or whose path from its module's root begins with that of a `ClassName`
-the client sent (`again::declaration_path`); the declaration is the one
-the frame's metadata is looked up by (`stack::origin`), a class side's
-its instance side's, and a frame of no declaration, the top level, is
-never filtered. The decision is the body's, since the declaration is
-the version holding the frame's body, and is kept by body
-(`stepping::FilterDecisions`, held weakly as the metadata cache holds
-its bodies), so that a step into through shipped code, which asks at
-every poll, builds no declaration path after the first; it is forgotten
-when the filters change and at every install, as the metadata is. A stop the step's own one-shot makes, where no line
-breakpoint stands, is decided at the safepoint (`serve_debugger`): in a
-filtered frame the step was not begun in, nor in a block lowered inline
-in that one, it is not made, and the step goes on as a step into from
-the first unfiltered frame below (`went_on_past_filtered`), the frame
+`continue_as_step_into`, `held_step`; `Command::SetStepFilters`). A frame
+is filtered when its body is a member of a declaration, or a block of one,
+whose module's root is shipped while the shipped filter is on, or whose
+path from its module's root begins with that of a `ClassName` the client
+sent (`again::declaration_path`); the declaration is the one the frame's
+metadata is looked up by (`stack::origin`), a class side's its instance
+side's, and a frame of no declaration, the top level, is never filtered.
+The decision is the body's, since the declaration is the version holding
+the frame's body, and is kept by body (`stepping::FilterDecisions`, held
+weakly as the metadata cache holds its bodies), so that a step into
+through shipped code, which asks at every poll, builds no declaration path
+after the first; it is forgotten when the filters change and at every
+install, as the metadata is. A stop the step's own one-shot makes, where
+no line breakpoint stands, is decided at the safepoint (`serve_debugger`):
+in a filtered frame the step was not begun in, nor in a block lowered
+inline in that one, it is not made, and the step goes on as a step into
+from the first unfiltered frame below (`went_on_past_filtered`), the frame
 past its slot once; every other way a step goes on as a step into -- a
-frame an unwind or a continuation other than `Deliver` left (decision
-17) -- likewise starts from the first unfiltered frame at or below the
-one the program goes on in, through suspended senders. A step into's
-held request counts as its push an unfiltered frame whose sender is the
-stepping frame, a block the step flooded for it, or a filtered frame
-whose sender is one in turn, and so on down; a filtered frame on top
-keeps the request. The filters live in the breakpoint table and go back
-to their default with its other contents at an attachment and a detach.
+frame an unwind or a continuation other than `Deliver` left (decision 17)
+-- likewise starts from the first unfiltered frame at or below the one the
+program goes on in, through suspended senders. A step into's held request
+counts as its push an unfiltered frame whose sender is the stepping frame,
+a block the step flooded for it, or a filtered frame whose sender is one
+in turn, and so on down; a filtered frame on top keeps the request. The
+filters live in the breakpoint table and go back to their default with its
+other contents at an attachment and a detach.
 
 A step never lands in a filtered frame: by default the shipped modules'
 bodies -- a body is shipped when its module's root is, as for its
@@ -3132,55 +3138,53 @@ stepping frame's return point when its caller goes on there --
 `Continuation::Deliver`, and a superclass clause's
 `Continuation::NestedClass` whose class `after_clause` hands to the
 accessor's send. Every other way a frame returns goes on as a step into
-(with decision 16's filter) until the next statement start of the
-program, the frame the program goes on in flooded with one-shot
-breakpoints: an `ensure:` or `ifCurtailed:` block the unwinder ran
-(`Continuation::Unwind`) stops in the next such block or in the frame
-the unwind lands in; a future's `resolve` (`Continuation::Reexecute`)
-stops in its caller after the instruction run again, or in what that
-instruction pushes; a caller standing at an instruction that raised
-stops in the handler block that takes the error, which the search
-reports to the stepping state ("Exceptions"), or the program ends with
-the error (`Continuation::VmErrorSignalled`); and a frame that returns
-to a suspended sender (`Continuation::ReturnToSuspended`) stops in the
-sender, resumed. The pop is reported to the stepping state only by the
-unwinder as it pops (`Mutator::pop_for_unwind`) and in
-`apply_continuation`'s arms other than `Deliver`'s, which call one cold
-function (`interpreter::breakpoint::frame_left`), so the return's hot
-path is unchanged: `finish` keeps no handle of the popped frame for
-them. The unwinder asks once per unwind whether a step is in progress
-or a method breakpoint set (`breakpoint::follows_unwinds`), and only
-then reports each frame it pops: no pop can start a step that neither
-already holds; made for every frame, those tests cost `bench_signal`,
-which unwinds fifty frames per caught exception, about 1.5%, two thirds
-of the +2.3% that version measured ("What stage 3 moved"). A pop only
-forgets the names the step knew the popped frame by
-(`stepping::popped`); where the step goes on is decided once, where the
-unwind stops popping -- it arrives at its target, runs an `ensure:` or
-`ifCurtailed:` block, or leaves the run -- by one cold call
-(`breakpoint::unwind_stopped`, `stepping::unwind_stopped`), so that only
-the frame the program goes on in is flooded, never one the unwind
-passes, which a deep recursion's unwind would otherwise patch, its
-machine code freed, at every frame. The report finds the popped frame as the one whose offset lies
-above the stack's top (`Heap::activation_lies_above_the_top`), since
-nothing is pushed between the pop and the report, and every name the
-step knew it by becomes `Holder::Left`, which no activation is
-(`stepping::popped`) -- for a frame returning to a suspended sender
-before the sender is resumed, which may take its offset, all a release
-build compares (`breakpoint::returning_to_suspended`). When the step's
-frame, or the caller its return point is in, has left, the step goes on
-as a step into from the frame on top (`continue_as_step_into`); any
-other frame the step named above it is only forgotten. An error the
-popped frame's continuation raises -- a superclass clause's answer
-refused as no class -- makes no frame the step goes on in yet: stepping
-into the `signal` pushed for it would stop in the exception's
-machinery, so the step waits, its frame `Holder::Left`, for the
-handler search's report of the handler it found, which goes on into the
-handler block, or for the unwind its default action starts, which goes
-on where it stops popping. A step out of a
-superclass clause whose class is handed to the accessor's send, the
-`NestedClass` arm's value, reports nothing and stops at the accessor's
-return point.
+(with decision 16's filter) until the next statement start of the program,
+the frame the program goes on in flooded with one-shot breakpoints: an
+`ensure:` or `ifCurtailed:` block the unwinder ran
+(`Continuation::Unwind`) stops in the next such block or in the frame the
+unwind lands in; a future's `resolve` (`Continuation::Reexecute`) stops in
+its caller after the instruction run again, or in what that instruction
+pushes; a caller standing at an instruction that raised stops in the
+handler block that takes the error, which the search reports to the
+stepping state ("Exceptions"), or the program ends with the error
+(`Continuation::VmErrorSignalled`); and a frame that returns to a
+suspended sender (`Continuation::ReturnToSuspended`) stops in the sender,
+resumed. The pop is reported to the stepping state only by the unwinder as
+it pops (`Mutator::pop_for_unwind`) and in `apply_continuation`'s arms
+other than `Deliver`'s, which call one cold function
+(`interpreter::breakpoint::frame_left`), so the return's hot path is
+unchanged: `finish` keeps no handle of the popped frame for them. The
+unwinder asks once per unwind whether a step is in progress or a method
+breakpoint set (`breakpoint::follows_unwinds`), and only then reports each
+frame it pops: no pop can start a step that neither already holds; made
+for every frame, those tests cost `bench_signal`, which unwinds fifty
+frames per caught exception, about 1.5%, two thirds of the +2.3% that
+version measured ("What stage 3 moved"). A pop only forgets the names the
+step knew the popped frame by (`stepping::popped`); where the step goes on
+is decided once, where the unwind stops popping -- it arrives at its
+target, runs an `ensure:` or `ifCurtailed:` block, or leaves the run -- by
+one cold call (`breakpoint::unwind_stopped`, `stepping::unwind_stopped`),
+so that only the frame the program goes on in is flooded, never one the
+unwind passes, which a deep recursion's unwind would otherwise patch, its
+machine code freed, at every frame. The report finds the popped frame as
+the one whose offset lies above the stack's top
+(`Heap::activation_lies_above_the_top`), since nothing is pushed between
+the pop and the report, and every name the step knew it by becomes
+`Holder::Left`, which no activation is (`stepping::popped`) -- for a frame
+returning to a suspended sender before the sender is resumed, which may
+take its offset, all a release build compares
+(`breakpoint::returning_to_suspended`). When the step's frame, or the
+caller its return point is in, has left, the step goes on as a step into
+from the frame on top (`continue_as_step_into`); any other frame the step
+named above it is only forgotten. An error the popped frame's continuation
+raises -- a superclass clause's answer refused as no class -- makes no
+frame the step goes on in yet: stepping into the `signal` pushed for it
+would stop in the exception's machinery, so the step waits, its frame
+`Holder::Left`, for the handler search's report of the handler it found,
+which goes on into the handler block, or for the unwind its default action
+starts, which goes on where it stops popping. A step out of a superclass
+clause whose class is handed to the accessor's send, the `NestedClass`
+arm's value, reports nothing and stops at the accessor's return point.
 
 All three systems define a step out by where the program goes next,
 not by how the frame returned: Newspeak's `stepOut:` stops as soon as
@@ -3242,11 +3246,11 @@ whose inline blocks holds the instruction the frame stands at, in its own
 body, from the metadata's block sends ("Compiling the metadata again") --
 the smallest such block, since inlined forms nest, so that one step out
 leaves one block level; else, for a frame that runs a closure, the send
-its creator -- the frame its captured frame names, running or suspended
--- stands at, when that send took this very closure, which is decided at
-the stop from the frames themselves: walking down the closure's senders
-meets the creator, and the frame just above it, the send's callee, is
-the closure's own activation -- a `value` the creator sent -- or holds the
+its creator -- the frame its captured frame names, running or suspended --
+stands at, when that send took this very closure, which is decided at the
+stop from the frames themselves: walking down the closure's senders meets
+the creator, and the frame just above it, the send's callee, is the
+closure's own activation -- a `value` the creator sent -- or holds the
 closure object the stopped frame runs (`Heap::activation_closure`,
 `Heap::frame_closure`) as its receiver or in one of its parameters, the
 registers below its body's argument count, which no body writes; or the
@@ -3258,36 +3262,37 @@ leaf reads it (`Mutator::kernel_slot`), no Newspeak code run
 selector, so that the `Message` is the lookup's delivery: a `Message` a
 program sends `doesNotUnderstand:` itself is an argument like any other,
 whose arguments no send took
-(`a_step_out_of_a_block_in_a_message_sent_explicitly_leaves_its_frame`). What the send delivered decides, so that a
-proxy's `do:` leaves the `do:`
+(`a_step_out_of_a_block_in_a_message_sent_explicitly_leaves_its_frame`).
+What the send delivered decides, so that a proxy's `do:` leaves the `do:`
 (`a_step_out_of_a_block_a_does_not_understand_takes_stops_after_the_send`),
 and the creator's registers never do: the run loop reads a single
 argument, or consecutive ones, where they stand and copies them into the
 send's slots only for a callee laid on them, so a slot the send did not
-read still holds what an earlier send of that slot took, and a named
-local the send read from lives in a register an inlined form's fallback
-closure assigns, which a callee can run while the send runs
+read still holds what an earlier send of that slot took, and a named local
+the send read from lives in a register an inlined form's fallback closure
+assigns, which a callee can run while the send runs
 (`a_step_out_of_a_block_a_does_not_understand_takes_in_a_variable_stops_after_the_send`,
 `a_step_out_of_a_kept_block_a_does_not_understand_runs_stops_in_its_caller`,
 `a_step_out_of_a_block_assigned_to_a_sent_local_meanwhile_stops_in_its_caller`,
 each with the JIT off too, since machine code writes every argument into
 its slot). The one thing the decision does not see is a handler that
 stores into its own `Message`'s `arguments` before the closure runs: it
-then answers what the array holds, not what the send delivered. A block literal, a parenthesized one, a closure
-handed on in a variable or computed by an expression are all taken
-alike; the creator's literal entry, when the closure's block is the
-literal the send took, only says whether the send is an inlined form.
-A frame of a method, a closure whose creator returned, and one whose
-creator's send did not take it -- a sibling closure that runs it, a
-closure kept and run by another send -- step out as any frame does. A
-frame at a loop's own statement start, before its first round, stands at
-no instruction of its blocks yet, and a step out there leaves the frame.
-So does a frame of a body without metadata, as an image built with
-`--strip-source` has: no inline block of it is known, so a step out
-inside one falls back to a frame step out, while a closure's creator's
-send is still found and left for the index after it, since that needs no
-metadata -- though without it no send is known to be an inlined form's,
-so a fallback send or a `SendInlinable` is left as a real send is.
+then answers what the array holds, not what the send delivered. A block
+literal, a parenthesized one, a closure handed on in a variable or
+computed by an expression are all taken alike; the creator's literal
+entry, when the closure's block is the literal the send took, only says
+whether the send is an inlined form. A frame of a method, a closure whose
+creator returned, and one whose creator's send did not take it -- a
+sibling closure that runs it, a closure kept and run by another send --
+step out as any frame does. A frame at a loop's own statement start,
+before its first round, stands at no instruction of its blocks yet, and a
+step out there leaves the frame. So does a frame of a body without
+metadata, as an image built with `--strip-source` has: no inline block of
+it is known, so a step out inside one falls back to a frame step out,
+while a closure's creator's send is still found and left for the index
+after it, since that needs no metadata -- though without it no send is
+known to be an inlined form's, so a fallback send or a `SendInlinable` is
+left as a real send is.
 
 An inlined form -- and its reference-lowered counterpart, a
 `SendInlinable` or the loop of `value` sends, and the optimized
@@ -3709,71 +3714,68 @@ JDWP counts in-process the same way, its `Count` modifier decremented at
 each event and the event reported at zero
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/eventFilter.c:482-488`).
 
-A breakpoint's condition -- DAP's `condition`, IntelliJ's -- is decided
-by the VM too, before the count, as JDWP applies `Count` after the other
+A breakpoint's condition -- DAP's `condition`, IntelliJ's -- is decided by
+the VM too, before the count, as JDWP applies `Count` after the other
 filters, and evaluated exactly once per hit, never again by the IDE, so
 that a condition with a side effect sees every hit once
-(`a_condition_is_evaluated_once_per_hit`). `LineBreakpoint::condition`
-and `MethodBreakpoint::condition` carry its text, `log` a logpoint's
-message, parts of text and expressions (`LogPart`). The `Breakpoint`
-arm, where no code may run, leaves every breakpoint with a condition or
-a log standing at the slot to the safepoint, uncounted
-(`PendingStop::conditions`), and records the stop even when nothing else
-stops there. The safepoint evaluates each condition in the frame that
-reached the slot, an evaluation as `Command::Evaluate` runs one
-("Evaluation"), one at a time: it begins the evaluation and keeps the
-decision in the `Debugger` (`conditions::Deciding`) as it keeps a stop,
-the run loop runs it, and the safepoint its end asks for goes on with
-the next (`Interpreter::decide`). A breakpoint whose condition answers
-`true`, and only `true`, is counted and decided by its hit condition;
-one whose condition answers anything else is neither counted nor stopped
-for (`a_condition_counts_before_the_hit_condition`). A logpoint that
-holds has its message's expressions evaluated the same way, each as
-`(expression) printString`, whose `String` joins the text, and sends
-`Event::Logged` with the message instead of stopping
-(`a_logpoint_logs_without_stopping`). A condition or log expression
-that does not compile -- a `^` among its causes, as in every evaluation
--- or raises an error stops the program at the slot with
-`StopReason::ConditionFailed`, naming every breakpoint that failed there
-and the first failure's description, as IntelliJ stops when a condition
-fails (`a_failing_condition_stops_and_says_why`,
+(`a_condition_is_evaluated_once_per_hit`). `LineBreakpoint::condition` and
+`MethodBreakpoint::condition` carry its text, `log` a logpoint's message,
+parts of text and expressions (`LogPart`). The `Breakpoint` arm, where no
+code may run, leaves every breakpoint with a condition or a log standing
+at the slot to the safepoint, uncounted (`PendingStop::conditions`), and
+records the stop even when nothing else stops there. The safepoint
+evaluates each condition in the frame that reached the slot, an evaluation
+as `Command::Evaluate` runs one ("Evaluation"), one at a time: it begins
+the evaluation and keeps the decision in the `Debugger`
+(`conditions::Deciding`) as it keeps a stop, the run loop runs it, and the
+safepoint its end asks for goes on with the next (`Interpreter::decide`).
+A breakpoint whose condition answers `true`, and only `true`, is counted
+and decided by its hit condition; one whose condition answers anything
+else is neither counted nor stopped for
+(`a_condition_counts_before_the_hit_condition`). A logpoint that holds has
+its message's expressions evaluated the same way, each as `(expression)
+printString`, whose `String` joins the text, and sends `Event::Logged`
+with the message instead of stopping (`a_logpoint_logs_without_stopping`).
+A condition or log expression that does not compile -- a `^` among its
+causes, as in every evaluation -- or raises an error stops the program at
+the slot with `StopReason::ConditionFailed`, naming every breakpoint that
+failed there and the first failure's description, as IntelliJ stops when a
+condition fails (`a_failing_condition_stops_and_says_why`,
 `a_failing_log_expression_stops_and_says_why`), and, after them, every
 breakpoint that held there and every method exit by an unwind the stop
-reports, so that IntelliJ removes a temporary breakpoint hit there all
-the same (`a_failed_condition_s_stop_names_the_breakpoints_that_held`). A reach none of whose
-breakpoints holds and no step stops at goes past the slot as a resumed
-stop's token lets it (`PastOnce`); otherwise the stop is made as the
-arm's would be, every condition decided first, and the commands served
-while they ran -- a `SetBreakpoints` -- may have removed some of what it
-is for. A stop not made remembers what the reach decided, the
-conditions that did not hold and the logpoints that logged among the
+reports, so that IntelliJ removes a temporary breakpoint hit there all the
+same (`a_failed_condition_s_stop_names_the_breakpoints_that_held`). A
+reach none of whose breakpoints holds and no step stops at goes past the
+slot as a resumed stop's token lets it (`PastOnce`); otherwise the stop is
+made as the arm's would be, every condition decided first, and the
+commands served while they ran -- a `SetBreakpoints` -- may have removed
+some of what it is for. A stop not made remembers what the reach decided,
+the conditions that did not hold and the logpoints that logged among the
 passed (`CountedReach`), so that the fetch of the slot again evaluates
-none of them twice; a condition not yet evaluated when an exception's
-stop is made instead is evaluated by that fetch, once. A pause asked
-while a condition runs aborts it ("Evaluation", "Aborting") and stops
-the program at the slot, for the breakpoints that held there and the
-exits it reports, or else as the pause's stop. Each expression is
-compiled once per breakpoint, body and slot and kept on the
-breakpoint's record (`CompiledConditions`), dropped with the
-breakpoint and at every install, which changes the text it was resolved
-against. A step into's stop at a pushed frame's first statement, which
-is the step's whatever the breakpoints there say, decides their
-conditions in that frame first, as the safepoint decides a reach
-(`conditions::Deciding::at_push`): it is the breakpoint's where one
-holds, and the step's otherwise, and a logpoint there logs
-(`a_step_into_decides_a_condition_at_the_first_statement`). A method's
-exit by an unwind -- an exception a caller handles, a non-local return
-past it or arriving at it -- is decided in the frame the unwind leaves,
-before the unwinder pops it or returns from it, as it runs an `ensure:`
-block there, as JVMTI's `MethodExit` fires for an exit by an exception
-in the frame still on the stack: the
-unwinder pushes the condition's evaluation above that frame with the
-unwind it interrupts (`Continuation::ExitEvaluated`), whose return
-decides the exit and raises the unwind again, and an error that ends it
-does the same at its base (`interpreter/unwind.rs`, `end_at_base`); the
-exit is then counted and decided as an ordinary one, logged, or
-reported where the program goes on, as every exit by an unwind is
-(`conditions::decide_unwound_exits`;
+none of them twice; a condition not yet evaluated when an exception's stop
+is made instead is evaluated by that fetch, once. A pause asked while a
+condition runs aborts it ("Evaluation", "Aborting") and stops the program
+at the slot, for the breakpoints that held there and the exits it reports,
+or else as the pause's stop. Each expression is compiled once per
+breakpoint, body and slot and kept on the breakpoint's record
+(`CompiledConditions`), dropped with the breakpoint and at every install,
+which changes the text it was resolved against. A step into's stop at a
+pushed frame's first statement, which is the step's whatever the
+breakpoints there say, decides their conditions in that frame first, as
+the safepoint decides a reach (`conditions::Deciding::at_push`): it is the
+breakpoint's where one holds, and the step's otherwise, and a logpoint
+there logs (`a_step_into_decides_a_condition_at_the_first_statement`). A
+method's exit by an unwind -- an exception a caller handles, a non-local
+return past it or arriving at it -- is decided in the frame the unwind
+leaves, before the unwinder pops it or returns from it, as it runs an
+`ensure:` block there, as JVMTI's `MethodExit` fires for an exit by an
+exception in the frame still on the stack: the unwinder pushes the
+condition's evaluation above that frame with the unwind it interrupts
+(`Continuation::ExitEvaluated`), whose return decides the exit and raises
+the unwind again, and an error that ends it does the same at its base
+(`interpreter/unwind.rs`, `end_at_base`); the exit is then counted and
+decided as an ordinary one, logged, or reported where the program goes on,
+as every exit by an unwind is (`conditions::decide_unwound_exits`;
 `a_condition_decides_an_exit_by_an_exception`,
 `a_condition_decides_an_exit_by_a_non_local_return`,
 `a_method_logpoint_logs_an_exit_by_an_exception`). A failure there is
@@ -3784,16 +3786,17 @@ would take the failure from the debugger
 (`a_stress_pause_leaves_an_exit_s_failure_to_the_debugger`); a pause that
 aborts it makes that report the pause's stop. An exit whose unwind ends
 the run is reported by the step the next run carries (decision 17), and
-the failure goes with that step: named by its stop at the next run's
-first statement, or by a pause asked between the runs, which reports the
-step's exits; dropped with it by a `Terminate` or a detach between the
-runs; and dropped at a run's end that carries no step
-(`evaluation::run_ended`, `stepping::end`;
+the failure goes with that step: named by its stop at the next run's first
+statement, or by a pause asked between the runs, which reports the step's
+exits; dropped with it by a `Terminate` or a detach between the runs; and
+dropped at a run's end that carries no step (`evaluation::run_ended`,
+`stepping::end`;
 `a_failure_owed_at_a_run_s_end_is_named_by_the_stop_that_reports_its_exit`,
-`a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs`). A temporary breakpoint needs
-nothing of the agent or the VM: IntelliJ's debugger session removes a
-breakpoint marked to be removed once hit when it reports the stop, which
-the `stopped` event's `hitBreakpointIds` tell it.
+`a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs`). A
+temporary breakpoint needs nothing of the agent or the VM: IntelliJ's
+debugger session removes a breakpoint marked to be removed once hit when
+it reports the stop, which the `stopped` event's `hitBreakpointIds` tell
+it.
 
 ### Step over in recursion and blocks
 
@@ -3871,41 +3874,40 @@ one-shots, its return point and its push test follow the frame.
 
 **Built** (`stepping::held_step`). A step into is a step over that also
 holds the request bit `DEBUGGER_STEP` until the next push. The held
-request is taken at every poll until then, not only at pushes: a
-backward jump in the stepping frame, or a caller resumed, also reaches
-the safepoint, which goes on without stopping when nothing was pushed. A
-loop with no send, or a statement whose sends are all answered by
-primitives, so takes the safepoint at every iteration until a push or a
-one-shot breakpoint ends the step, and machine code's loop-head poll
-exits at each. The bit is one of `LOWERS_DEPTH_LIMIT`, as the pause bit
-is ("The poll words as atomics"), so that a compiled prologue refuses
-the push and the interpreter's push takes the safepoint before the
-callee runs. The safepoint recognizes a push by a frame on top whose
-sender is the stepping frame or a block the step flooded for it -- not by
-a `program_counter` of 0, which a backward jump to the stepping body's
-first instruction, or a frame `retry` restarted, also shows, nor by a
-frame merely above the stepping one: a step taken in an inlined block
-steps in the block's creator, and the frames between the two, the
-receiver's `ifTrue:` among them, and what they send to are not the
-step's. A frame that runs a flooded block stands for the stepping
-frame's inline code and is no push, nor is a frame that lay between the
-one the step was taken in and the stepping frame when the step began,
-which goes from that list once the top lies below it, so that a frame
-the stepping frame pushes later at its offset is a push. The push drops the bit and stops at the new body's first
+request is taken at every poll until then, not only at pushes: a backward
+jump in the stepping frame, or a caller resumed, also reaches the
+safepoint, which goes on without stopping when nothing was pushed. A loop
+with no send, or a statement whose sends are all answered by primitives,
+so takes the safepoint at every iteration until a push or a one-shot
+breakpoint ends the step, and machine code's loop-head poll exits at each.
+The bit is one of `LOWERS_DEPTH_LIMIT`, as the pause bit is ("The poll
+words as atomics"), so that a compiled prologue refuses the push and the
+interpreter's push takes the safepoint before the callee runs. The
+safepoint recognizes a push by a frame on top whose sender is the stepping
+frame or a block the step flooded for it -- not by a `program_counter` of
+0, which a backward jump to the stepping body's first instruction, or a
+frame `retry` restarted, also shows, nor by a frame merely above the
+stepping one: a step taken in an inlined block steps in the block's
+creator, and the frames between the two, the receiver's `ifTrue:` among
+them, and what they send to are not the step's. A frame that runs a
+flooded block stands for the stepping frame's inline code and is no push,
+nor is a frame that lay between the one the step was taken in and the
+stepping frame when the step began, which goes from that list once the top
+lies below it, so that a frame the stepping frame pushes later at its
+offset is a push. The push drops the bit and stops at the new body's first
 statement start: at once when its frame stands there, at index 0, and
 through a one-shot for the pushed frame at index 1 for a body -- a
 method's or a block's -- whose first instruction makes its indirection
 vector (`MakeVector`, emitted before the local initializers and outside
-every statement's range, `compiler/lower.rs`), or, for an initializer
-of a declaration that writes no superclass clause, at the first
-statement start after the clause that stands for `Object new`, the
-step stopping where its frame goes on when there is none
-(`stepping::first_stop`). A factory's push stops in the factory, and
-the push of an initializer a clause entered stops at its entry, at its
-header, the step from there going on to its first statement;
-`Object`'s and `Top`'s initializers keep the request (decision 12). A send
-answered by a primitive or a leaf pushes nothing, and the next one-shot
-stops.
+every statement's range, `compiler/lower.rs`), or, for an initializer of a
+declaration that writes no superclass clause, at the first statement start
+after the clause that stands for `Object new`, the step stopping where its
+frame goes on when there is none (`stepping::first_stop`). A factory's
+push stops in the factory, and the push of an initializer a clause entered
+stops at its entry, at its header, the step from there going on to its
+first statement; `Object`'s and `Top`'s initializers keep the request
+(decision 12). A send answered by a primitive or a leaf pushes nothing,
+and the next one-shot stops.
 
 ### Writing a frame
 
@@ -3918,18 +3920,18 @@ A variable is set by an evaluation: `Command::SetVariable { frame, name,
 expression }` compiles the assignment `name:: expression` in the frame
 (`debugger::evaluation::compile_assignment`) and runs it as `Evaluate`
 runs an expression. The expression is parsed on its own and must be one
-expression without temporaries, and the assignment is built around it as
-a syntax tree node, never spliced around it as text: text such as `3).
-(9` would close a spliced `x:: (…)` early, assigning one value while the
-evaluation answered another. The name must be the variable the frame
-shows under it -- the innermost of the name, which the assignment's
-resolution names too -- and assignable, or the command is refused as not
-assignable, the name never read as source; an assignment to a variable a block may already hold
-a copy of is refused as an evaluated one is ("Assigning a captured
-variable"). Its answer, `Event::VariableSet`, is the variable holding
-the value the assignment answered, which is what it wrote; an expression
-that ends with an error answers `Event::Evaluated` with it, the variable
-unwritten.
+expression without temporaries, and the assignment is built around it as a
+syntax tree node, never spliced around it as text: text such as `3). (9`
+would close a spliced `x:: (…)` early, assigning one value while the
+evaluation answered another. The name must be the variable the frame shows
+under it -- the innermost of the name, which the assignment's resolution
+names too -- and assignable, or the command is refused as not assignable,
+the name never read as source; an assignment to a variable a block may
+already hold a copy of is refused as an evaluated one is ("Assigning a
+captured variable"). Its answer, `Event::VariableSet`, is the variable
+holding the value the assignment answered, which is what it wrote; an
+expression that ends with an error answers `Event::Evaluated` with it, the
+variable unwritten.
 
 Reading a compiled frame needs nothing; a frame whose variable is set, or
 that is restarted or forced to return, goes on in the interpreter -- a stop
@@ -4007,21 +4009,22 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   its `unreachable!`. `Continuation::Evaluated`, the base activation's,
   records the result (`evaluation::returned`), asks for a stop
   (`Heap::request_debugger_stop`, under the arming lock, as an exception
-  breakpoint asks), and switches to the frame below at the program
-  counter it stopped at, delivering nothing (`vm::evaluated`), so that
-  the safepoint the request makes is taken before that frame runs
-  another instruction, interpreted. The stop is left for the evaluation
-  with `Served::Evaluate`, kept in the `Debugger` ("The stop"), which
+  breakpoint asks), and switches to the frame below at the program counter
+  it stopped at, delivering nothing (`vm::evaluated`), so that the
+  safepoint the request makes is taken before that frame runs another
+  instruction, interpreted. The stop is left for the evaluation with
+  `Served::Evaluate`, kept in the `Debugger` ("The stop"), which
   `Interpreter::safepoint` answers as `SafepointOutcome::Rebuilt`, in
   every build, so that the run loop reads the evaluation's frame, now on
   top; the safepoint the end asks for re-enters the kept stop
   (`Interpreter::serve_evaluation`), which answers `Evaluated` and serves
   on. `Event::Stopped` is sent once per stop, `Event::Evaluated` once per
   evaluation. While the evaluation runs a safepoint serves the commands
-  queued meanwhile, and a pause aborts it ("Aborting" below). The variant is named in [image-format.md](image-format.md),
-  "Planned: suspend and resume", for completeness; no image is written
-  while an evaluation runs, so it is never encoded, and the encoder,
-  which writes dead frames only, has no match over continuations.
+  queued meanwhile, and a pause aborts it ("Aborting" below). The variant
+  is named in [image-format.md](image-format.md), "Planned: suspend and
+  resume", for completeness; no image is written while an evaluation runs,
+  so it is never encoded, and the encoder, which writes dead frames only,
+  has no match over continuations.
 - **The frame it reads.** The stopped frame loses the registers the
   leftover analysis finds tainted at the program counter it stores
   (`Heap::nil_tainted_registers`, below the window of the frame above
@@ -4155,60 +4158,60 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
 - **Aborting.** An evaluation the user cancels is aborted by
   `Command::AbortEvaluation`, or by the agent's pause bit
   (`DebugControl::pause`): the safepoint that serves the command --
-  queued, it arms the commands bit as every command does -- or the
-  pause, finding an evaluation running at the kept stop
+  queued, it arms the commands bit as every command does -- or the pause,
+  finding an evaluation running at the kept stop
   (`Interpreter::serve_evaluation`), marks it aborted
   (`evaluation::abort`), answers the command `Event::AbortTaken`, and
   answers `Served::Abort`, which the run loop takes as a termination --
-  the debugger's termination signal unwound from the top activation (`vm::unwind_at_safepoint`) -- but for the
-  termination flag, which it leaves clear, so that the evaluation's base
-  ends the unwind: every `ensure:` block above the base runs, and the
-  stop answers `Event::Evaluated(Evaluation::Aborted)`, whatever an
-  `ensure:` block raised on the way, and serves on, the program still
-  stopped. The unwind leaves the frame below at the slot it stood at,
-  and the run loop takes the safepoint the evaluation's end asked for at
-  once (`vm::take_safepoint`), as the switch to that frame does when the
+  the debugger's termination signal unwound from the top activation
+  (`vm::unwind_at_safepoint`) -- but for the termination flag, which it
+  leaves clear, so that the evaluation's base ends the unwind: every
+  `ensure:` block above the base runs, and the stop answers
+  `Event::Evaluated(Evaluation::Aborted)`, whatever an `ensure:` block
+  raised on the way, and serves on, the program still stopped. The unwind
+  leaves the frame below at the slot it stood at, and the run loop takes
+  the safepoint the evaluation's end asked for at once
+  (`vm::take_safepoint`), as the switch to that frame does when the
   evaluation returns or an error ends it: were the frame to fetch its
-  patched slot first, with no token to go past it, it would request a
-  stop of its own, which the kept stop's serving leaves pending for a
-  later safepoint -- a stop for the same breakpoint in whatever frame
-  runs then (`a_continue_after_an_aborted_evaluation_runs_to_the_end`).
-  That second safepoint is not at a loop head, whatever the first was:
-  the backward jump that made the first was the evaluation's, and
-  counted against the stopped frame's body it could compile the body and
-  switch the frame into machine code mid-body
+  patched slot first, with no token to go past it, it would request a stop
+  of its own, which the kept stop's serving leaves pending for a later
+  safepoint -- a stop for the same breakpoint in whatever frame runs then
+  (`a_continue_after_an_aborted_evaluation_runs_to_the_end`). That second
+  safepoint is not at a loop head, whatever the first was: the backward
+  jump that made the first was the evaluation's, and counted against the
+  stopped frame's body it could compile the body and switch the frame into
+  machine code mid-body
   (`an_evaluation_aborted_at_a_loop_head_counts_no_jump_of_the_stopped_frame`).
   A condition's evaluation is aborted the same way, and its stop is what
   the conditions' rules make of an aborted condition
-  (`an_abort_evaluation_command_aborts_an_endless_condition`). The
-  command is sequenced with the others, so that it never outlives the
-  evaluation it was meant for: where none runs -- at a stop, the
-  evaluation already answered, while the program runs, or after another
-  `AbortEvaluation` drained at the same safepoint took the abort -- it
-  is moot, refused with `"no evaluation runs"`, and leaves nothing armed
-  (`an_abort_evaluation_command_with_none_running_is_refused`). A pause
-  is a bit, unordered with the commands: one that comes after the
-  evaluation ended is cleared by the safepoint that serves the kept
-  stop, but one asked while that stop serves again is a pause asked
-  while stopped, and stops the program at the next safepoint once it
-  goes on ("The stop"). The DAP agent therefore aborts an evaluation
-  past its bound by the command, never by a pause. The remote's
-  departure aborts it too: the last handle of a
-  `DebugControl` closes the command channel and arms the commands bit as
-  it drops, so that even an evaluation that never ends reaches a
-  safepoint that finds the channel closed, detaches the debugger and
-  aborts the evaluation, and the program runs on. A `Command::Terminate`
-  while it runs ends the run as at any safepoint, the evaluation
-  unanswered, its `ensure:` blocks and the program's run once on the way
-  to the floor, the depth limit keeping the evaluation's raise until the
-  run ended (`evaluation::terminated`), since those blocks are pushed
-  where the evaluation's frames stood, which may lie past L
+  (`an_abort_evaluation_command_aborts_an_endless_condition`). The command
+  is sequenced with the others, so that it never outlives the evaluation
+  it was meant for: where none runs -- at a stop, the evaluation already
+  answered, while the program runs, or after another `AbortEvaluation`
+  drained at the same safepoint took the abort -- it is moot, refused with
+  `"no evaluation runs"`, and leaves nothing armed
+  (`an_abort_evaluation_command_with_none_running_is_refused`). A pause is
+  a bit, unordered with the commands: one that comes after the evaluation
+  ended is cleared by the safepoint that serves the kept stop, but one
+  asked while that stop serves again is a pause asked while stopped, and
+  stops the program at the next safepoint once it goes on ("The stop").
+  The DAP agent therefore aborts an evaluation past its bound by the
+  command, never by a pause. The remote's departure aborts it too: the
+  last handle of a `DebugControl` closes the command channel and arms the
+  commands bit as it drops, so that even an evaluation that never ends
+  reaches a safepoint that finds the channel closed, detaches the debugger
+  and aborts the evaluation, and the program runs on. A
+  `Command::Terminate` while it runs ends the run as at any safepoint, the
+  evaluation unanswered, its `ensure:` blocks and the program's run once
+  on the way to the floor, the depth limit keeping the evaluation's raise
+  until the run ended (`evaluation::terminated`), since those blocks are
+  pushed where the evaluation's frames stood, which may lie past L
   (`a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block`).
   Pinned by `an_endless_evaluation_is_aborted_by_a_pause`,
   `an_abort_evaluation_command_aborts_an_endless_evaluation`,
   `a_detach_during_an_evaluation_aborts_it` and
-  `a_terminate_during_an_evaluation_ends_the_program`. A renderer past
-  its limit will be stopped the same way.
+  `a_terminate_during_an_evaluation_ends_the_program`. A renderer past its
+  limit will be stopped the same way.
 
 ### Assigning a captured variable
 
@@ -4540,134 +4543,129 @@ false`, since the VM refuses to restart a frame of the core library.
 
 **Built** (`debugger/exceptions.rs`; `Command::SetExceptionBreakpoints`;
 the mirror rows `exceptionUnhandled:ifFail:`, a leaf, and
-`exceptionCaught:at:ifFail:`, an exit, `builtins/activation.rs`), but for "Create Method" and the declined
-`MessageNotUnderstood`'s forced `nil`, which are planned; the forced
-return they need is built ("Restart frame and force return"). The handler search of
-`Kernel.ns` reports its outcome through two mirror rows:
-`invokeNextHandler`, having found no handler, sends
-`exceptionUnhandled:ifFail:` just before `defaultAction`, and
-`invokeHandlerAt:disabling:` reads the handler it is about to send
-`cull: self` through `exceptionCaught:at:ifFail:`, which answers the
-`on:do:` activation's handler, the block its marker's register holds;
-only the shipped modules reach the mirror
-([core-library.md](core-library.md), "The VM mirror is the whole Rust
-boundary"). With no debugger attached `exceptionUnhandled:ifFail:`
-does nothing and answers what its failure block would, false, and
-`exceptionCaught:at:ifFail:` answers the handler and records nothing;
-with one attached the caught row answers the handler all the same and
-records the catch beside it. A handler it cannot read -- the activation
-not running, or no `on:do:` marker's -- makes it record nothing and
-decline, so that its failure block answers nil. So an exception behaves
-as it does without the debugger; and
+`exceptionCaught:at:ifFail:`, an exit, `builtins/activation.rs`), but for
+"Create Method" and the declined `MessageNotUnderstood`'s forced `nil`,
+which are planned; the forced return they need is built ("Restart frame
+and force return"). The handler search of `Kernel.ns` reports its outcome
+through two mirror rows: `invokeNextHandler`, having found no handler,
+sends `exceptionUnhandled:ifFail:` just before `defaultAction`, and
+`invokeHandlerAt:disabling:` reads the handler it is about to send `cull:
+self` through `exceptionCaught:at:ifFail:`, which answers the `on:do:`
+activation's handler, the block its marker's register holds; only the
+shipped modules reach the mirror ([core-library.md](core-library.md), "The
+VM mirror is the whole Rust boundary"). With no debugger attached
+`exceptionUnhandled:ifFail:` does nothing and answers what its failure
+block would, false, and `exceptionCaught:at:ifFail:` answers the handler
+and records nothing; with one attached the caught row answers the handler
+all the same and records the catch beside it. A handler it cannot read --
+the activation not running, or no `on:do:` marker's -- makes it record
+nothing and decline, so that its failure block answers nil. So an
+exception behaves as it does without the debugger; and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
-stops nothing; nor does an exception an `ensure:` block of the
-debugger's termination raises, from the `Terminate` to the run's end,
-as the termination ends a step. `exceptionUnhandled:ifFail:` is a leaf
-machine code calls without exiting (`MachineCall::Leaf`), and
-`exceptionCaught:at:ifFail:` the exit the search made already to read
-the handler, which reads another activation and so is no leaf: a
-program without a debugger pays no send of its own for either report.
-Beyond the handler the caught row answers, each only decides and
-records, and only with a debugger attached -- it reads the exception and
-its class chain, holds the `on:do:` activation and the handler as
-`Root`s, and sets a bit -- runs no Newspeak code and collects nothing. What it
-decides is recorded on the `Mutator`
-(`Breakpoints::request_exception_stop`) and asked of the next poll
-through the request bit `DEBUGGER_STOP` ("The poll words as atomics"),
-which lowers the depth limit, so that the next push is the
+stops nothing; nor does an exception an `ensure:` block of the debugger's
+termination raises, from the `Terminate` to the run's end, as the
+termination ends a step. `exceptionUnhandled:ifFail:` is a leaf machine
+code calls without exiting (`MachineCall::Leaf`), and
+`exceptionCaught:at:ifFail:` the exit the search made already to read the
+handler, which reads another activation and so is no leaf: a program
+without a debugger pays no send of its own for either report. Beyond the
+handler the caught row answers, each only decides and records, and only
+with a debugger attached -- it reads the exception and its class chain,
+holds the `on:do:` activation and the handler as `Root`s, and sets a bit
+-- runs no Newspeak code and collects nothing. What it decides is recorded
+on the `Mutator` (`Breakpoints::request_exception_stop`) and asked of the
+next poll through the request bit `DEBUGGER_STOP` ("The poll words as
+atomics"), which lowers the depth limit, so that the next push is the
 interpreter's, or machine code's call of it refused, and its safepoint
 serves it (`exceptions::serve`): there, where flooding is allowed, the
 handler found is reported to a step in progress; and the stop waits,
-recorded again, while the frame on top is still the search's -- the
-caller of a refused compiled call stands at the send, before the push
--- so that an uncaught exception stops at `defaultAction`'s first
-instruction, a `Halt` at `resume:`'s, and a caught one past the
-kernel's `cull:`, at the handler block's first instruction, before it
-ran, or at the first frame of a handler that is no block. The stop
-ends a step in progress and serves a pause asked meanwhile, as every
-stop does; a termination and the run's end drop a stop no poll served
-(`exceptions::drop_pending`). A stop of another kind -- a step's, a
-breakpoint's, a pause's -- served while a caught exception's stop waits
-for the handler's first instruction leaves that stop waiting: once the
-program goes on, the exception's stop follows as a second one, so that
-neither is lost.
+recorded again, while the frame on top is still the search's -- the caller
+of a refused compiled call stands at the send, before the push -- so that
+an uncaught exception stops at `defaultAction`'s first instruction, a
+`Halt` at `resume:`'s, and a caught one past the kernel's `cull:`, at the
+handler block's first instruction, before it ran, or at the first frame of
+a handler that is no block. The stop ends a step in progress and serves a
+pause asked meanwhile, as every stop does; a termination and the run's end
+drop a stop no poll served (`exceptions::drop_pending`). A stop of another
+kind -- a step's, a breakpoint's, a pause's -- served while a caught
+exception's stop waits for the handler's first instruction leaves that
+stop waiting: once the program goes on, the exception's stop follows as a
+second one, so that neither is lost.
 
 A signal searches its handler before anything unwinds, so an uncaught
 exception stops with its whole stack, where the search, having found no
 handler, is about to send `defaultAction` (`invokeNextHandler`,
 `Kernel.ns`), before any subclass's override of it runs:
-`StopReason::Exception { class_name, description, caught: false, exits }`, the
-description the exception's `messageText` as text, or its class's name
+`StopReason::Exception { class_name, description, caught: false, exits }`,
+the description the exception's `messageText` as text, or its class's name
 when it has none -- `Exception>>description`'s answer unless a class
-overrides it, which only running code could ask. The frame shown
-first is the first frame below the exception's own machinery -- below
-the kernel's `signal` or `pass` that runs the search, then the instance
-side's and the class side's `signal` and `signal:`, and
-`Object>>doesNotUnderstand:` for a `MessageNotUnderstood` -- which is the
-raising frame itself only for a VM error, whose `signal` is pushed right
-above it; with step filters (decision 16) that is the first frame below
-it they do not filter, the first frame of program code
-(`exceptions::first_shown`). The frames above it are marked
-`FrameDescription::hidden`, never dropped, so that a frame's index is
-the same at every stop, and a step taken at the stop steps from the
-frame shown first (decision 16; `stepping::begin`). Going on lets
+overrides it, which only running code could ask. The frame shown first is
+the first frame below the exception's own machinery -- below the kernel's
+`signal` or `pass` that runs the search, then the instance side's and the
+class side's `signal` and `signal:`, and `Object>>doesNotUnderstand:` for
+a `MessageNotUnderstood` -- which is the raising frame itself only for a
+VM error, whose `signal` is pushed right above it; with step filters
+(decision 16) that is the first frame below it they do not filter, the
+first frame of program code (`exceptions::first_shown`). The frames above
+it are marked `FrameDescription::hidden`, never dropped, so that a frame's
+index is the same at every stop, and a step taken at the stop steps from
+the frame shown first (decision 16; `stepping::begin`). Going on lets
 `defaultAction` run, which ends the program for every exception whose
 class does not override it, as its `terminate…` leaf does without a
 debugger, resumable ones included; a `Halt` and a declined
-`MessageNotUnderstood` are handled as below.
-Whether a handler takes an exception is decided by Newspeak code
-(`handles:`), so "caught" is known only once the search found one: a
-caught-exception breakpoint, off by default, stops where the search
-invokes the handler it found (`invokeHandlerAt:disabling:`), before the
-handler runs, `caught: true`. Execution stands in the handler, about to
-run it, so that stop shows the handler block on top first, the
-exception's machinery between it and the raising frame hidden -- the
-kernel's `cull:`, `invokeHandlerAt:disabling:`, `invokeNextHandler`,
-`signal`, `signal:` or `pass` -- and the frame `exceptions::first_shown`
-answers below the machinery shown next (`exceptions::hidden`); a step
-taken there steps in the handler block, as from any frame it stood in.
-Only an uncaught exception's and a `Halt`'s stop step from the frame
-below the machinery -- and a caught one's whose handler pushes no frame:
-a handler whose `cull:` is a slot's setter, or a method a fast path
-answers, runs without an activation, so that its stop, made at the next
-poll, stands in the kernel's machinery frame the program goes on in.
-That stop hides the machinery as an uncaught one's does, showing first
-the frame below it, and a step taken there steps from that frame
-(`exceptions::serve` answers whether the frame on top is one the handler
-pushed: the handler block's activation, or a method sent to the
-handler by the kernel's block in `invokeHandlerAt:disabling:` that sends
-it `cull:` -- not one the search sends it later, as the `return:` an
-exception that is its own handler receives). A handler that does not understand `cull:` pushes
+`MessageNotUnderstood` are handled as below. Whether a handler takes an
+exception is decided by Newspeak code (`handles:`), so "caught" is known
+only once the search found one: a caught-exception breakpoint, off by
+default, stops where the search invokes the handler it found
+(`invokeHandlerAt:disabling:`), before the handler runs, `caught: true`.
+Execution stands in the handler, about to run it, so that stop shows the
+handler block on top first, the exception's machinery between it and the
+raising frame hidden -- the kernel's `cull:`,
+`invokeHandlerAt:disabling:`, `invokeNextHandler`, `signal`, `signal:` or
+`pass` -- and the frame `exceptions::first_shown` answers below the
+machinery shown next (`exceptions::hidden`); a step taken there steps in
+the handler block, as from any frame it stood in. Only an uncaught
+exception's and a `Halt`'s stop step from the frame below the machinery --
+and a caught one's whose handler pushes no frame: a handler whose `cull:`
+is a slot's setter, or a method a fast path answers, runs without an
+activation, so that its stop, made at the next poll, stands in the
+kernel's machinery frame the program goes on in. That stop hides the
+machinery as an uncaught one's does, showing first the frame below it, and
+a step taken there steps from that frame (`exceptions::serve` answers
+whether the frame on top is one the handler pushed: the handler block's
+activation, or a method sent to the handler by the kernel's block in
+`invokeHandlerAt:disabling:` that sends it `cull:` -- not one the search
+sends it later, as the `return:` an exception that is its own handler
+receives). A handler that does not understand `cull:` pushes
 `Object>>doesNotUnderstand:` sent to it, a real call it made, which the
-stop shows on top and a step steps in as in any kernel code. A class filter -- `ClassName`s, as the step
-filters name a declaration -- is decided in Rust by walking the
-exception's class chain by declaration, each level's applied mixin and
-body-less declaration as `Class>>handles:` reads them
-(`activation::inherits_any`), running no code; with no class named,
-every exception is taken. `halt` signals `Halt`, whose breakpoint is on
-by default under the debugger: an uncaught `Halt` stops
-(`StopReason::Halt { exits }`), and going on resumes it with `nil`, which `halt`
-answers -- the leaf answers true and `invokeNextHandler` sends
+stop shows on top and a step steps in as in any kernel code. A class
+filter -- `ClassName`s, as the step filters name a declaration -- is
+decided in Rust by walking the exception's class chain by declaration,
+each level's applied mixin and body-less declaration as `Class>>handles:`
+reads them (`activation::inherits_any`), running no code; with no class
+named, every exception is taken. `halt` signals `Halt`, whose breakpoint
+is on by default under the debugger: an uncaught `Halt` stops
+(`StopReason::Halt { exits }`), and going on resumes it with `nil`, which
+`halt` answers -- the leaf answers true and `invokeNextHandler` sends
 `resume: nil` instead of `defaultAction`. A `Halt` subclass therefore
-behaves otherwise under that default breakpoint than without a
-debugger: its `defaultAction` override is skipped, the `Halt` resumed
-with nil instead, and one whose `isResumable` answers false makes that
-`resume:` signal the kernel's "cannot resume a non-resumable exception"
-`Error`, which, uncaught, stops in turn. With the `Halt` breakpoint
-off, a `Halt` is an exception as any other. An
-uncaught `MessageNotUnderstood` will offer "Create Method": the method is
-created public, since the send again is a public send, and the exception
-is resumed, sending the message again
-([core-library.md](core-library.md), "Exceptions"). Declined, the
-failing send will answer `nil`: the debugger forces
-`Object>>doesNotUnderstand:`'s frame to return `nil` -- the one forced
-return in a shipped frame the refusal below allows. Resuming the
-exception instead, as `resume_unhandled_exceptions` does, would
-send the message again (`doesNotUnderstand:` sends it again once the
-exception reached its default handler, `Kernel.ns`), signal the same
-`MessageNotUnderstood` again, and stop again, without end. Until then,
-going on from it ends the run.
+behaves otherwise under that default breakpoint than without a debugger:
+its `defaultAction` override is skipped, the `Halt` resumed with nil
+instead, and one whose `isResumable` answers false makes that `resume:`
+signal the kernel's "cannot resume a non-resumable exception" `Error`,
+which, uncaught, stops in turn. With the `Halt` breakpoint off, a `Halt`
+is an exception as any other. An uncaught `MessageNotUnderstood` will
+offer "Create Method": the method is created public, since the send again
+is a public send, and the exception is resumed, sending the message again
+([core-library.md](core-library.md), "Exceptions"). Declined, the failing
+send will answer `nil`: the debugger forces `Object>>doesNotUnderstand:`'s
+frame to return `nil` -- the one forced return in a shipped frame the
+refusal below allows. Resuming the exception instead, as
+`resume_unhandled_exceptions` does, would send the message again
+(`doesNotUnderstand:` sends it again once the exception reached its
+default handler, `Kernel.ns`), signal the same `MessageNotUnderstood`
+again, and stop again, without end. Until then, going on from it ends the
+run.
 
 A stop at the push of `defaultAction` needs a push: an override of
 `defaultAction` that a method's fast path answers without an activation
@@ -4732,43 +4730,43 @@ refused leaves the program stopped where it was, nothing begun.
   is where its sender goes on, reporting the value it returned, or where
   a superclass clause's error is handled.
 - **Restart** arrives at the frame and resets it (`restart_frame`): its
-  `program_counter` goes back to 0, as `retry`'s `Restarted` outcome
-  sets it, and the registers it keeps are the arguments, the header and
-  a block's copied values, while it nils the named temporaries
-  between the copied values and `local_count`; the scratch registers
-  are tainted at index 0 anyway. A block's copied values stay
-  (Primordial Soup's restart, `primordialsoup/newspeak/Mirrors.ns:2325-2353`).
-  Under the optimized lowering a body with vector variables makes its
-  indirection vector at index 0, outside every statement's range; a
-  restart there would make a fresh vector, and blocks made in the first
-  run would keep the old one and see neither the reset nor any later
-  assignment, while under the reference lowering, whose blocks read the
-  frame's registers, they see both. So a restart reuses the frame's
-  vector (decided with the user on 2026-11-16): it nils the vector's
-  elements -- a vector variable's own register is always `nil`, so
-  nilling the named temporaries alone would not reset it -- and restarts
-  at index 1, past `MakeVector`, and the first run's blocks see the reset
-  and every later assignment, as the reference lowering's do; a frame
-  standing at index 0, stopped at its push, has made no vector yet, and
-  makes it as it starts again. What
+  `program_counter` goes back to 0, as `retry`'s `Restarted` outcome sets
+  it, and the registers it keeps are the arguments, the header and a
+  block's copied values, while it nils the named temporaries between the
+  copied values and `local_count`; the scratch registers are tainted at
+  index 0 anyway. A block's copied values stay (Primordial Soup's restart,
+  `primordialsoup/newspeak/Mirrors.ns:2325-2353`). Under the optimized
+  lowering a body with vector variables makes its indirection vector at
+  index 0, outside every statement's range; a restart there would make a
+  fresh vector, and blocks made in the first run would keep the old one
+  and see neither the reset nor any later assignment, while under the
+  reference lowering, whose blocks read the frame's registers, they see
+  both. So a restart reuses the frame's vector (decided with the user on
+  2026-11-16): it nils the vector's elements -- a vector variable's own
+  register is always `nil`, so nilling the named temporaries alone would
+  not reset it -- and restarts at index 1, past `MakeVector`, and the
+  first run's blocks see the reset and every later assignment, as the
+  reference lowering's do; a frame standing at index 0, stopped at its
+  push, has made no vector yet, and makes it as it starts again. What
   remains between the lowerings is a variable closure conversion copied,
   one nothing writes once a block holds it: a first-run block keeps its
-  copy, where the reference lowering's reads the register the restart
-  nils and the second run assigns again, so the two differ only for such
-  a block run between the restart and that assignment, or where the
-  second run assigns another value. Pharo's `Context>>restart` and
-  Primordial Soup's restart (`Mirrors.ns:2341-2353`) start before the
-  bytecode that makes the vector, and so disconnect the first run's
-  blocks from every variable; neither has a second lowering to agree
-  with. Updating the copies instead is not possible: a block of
-  `outer_reach` 0 holds nothing that names the frame it came from. Every program frame can be restarted (decided with the
-  user on 2026-11-16): an initializer's, a slot initializer's within it
-  included, runs its prologue, its superclass's initialization and its
-  slot initializers again, overwriting the slots; a superclass clause's
-  evaluates the clause again, its `NestedClass` continuation waiting for
-  the value as before; a factory's allocates a fresh instance, an
-  instance of the first run that escaped staying as far initialized as
-  it got. Each runs its side effects again, as every restart does.
+  copy, where the reference lowering's reads the register the restart nils
+  and the second run assigns again, so the two differ only for such a
+  block run between the restart and that assignment, or where the second
+  run assigns another value. Pharo's `Context>>restart` and Primordial
+  Soup's restart (`Mirrors.ns:2341-2353`) start before the bytecode that
+  makes the vector, and so disconnect the first run's blocks from every
+  variable; neither has a second lowering to agree with. Updating the
+  copies instead is not possible: a block of `outer_reach` 0 holds nothing
+  that names the frame it came from. Every program frame can be restarted
+  (decided with the user on 2026-11-16): an initializer's, a slot
+  initializer's within it included, runs its prologue, its superclass's
+  initialization and its slot initializers again, overwriting the slots; a
+  superclass clause's evaluates the clause again, its `NestedClass`
+  continuation waiting for the value as before; a factory's allocates a
+  fresh instance, an instance of the first run that escaped staying as far
+  initialized as it got. Each runs its side effects again, as every
+  restart does.
 - **Force return** arrives at the frame and returns the value to its
   sender through the ordinary return path (`UnwindOutcome::Returned`),
   defined for every program frame (decided with the user on
@@ -5262,45 +5260,43 @@ breakpoint, its error the `stopped` event's `text`
 `a_failing_condition_stops_with_its_error`,
 `a_logpoint_writes_an_output_event_and_does_not_stop`).
 
-Evaluation (`evaluation.rs`): `evaluate` runs its expression in the
-frame its `frameId` names, the top frame without one, as
-`Command::Evaluate`, and answers its value as a variable shows one; an
-exception that ended it is a failed response whose message describes
-it, an abort one of the message "evaluation aborted". Every `context` is
-evaluated alike, but a hover's, asked unbidden as the pointer rests on a
-name, is aborted when it has not answered within `HOVER_BOUND`, two
-seconds, which the agent's loop keeps beside the attach deadline, by
-`Command::AbortEvaluation`, never a pause: the command is served in
-sequence with the evaluation, so one that arrives after the answer is
-refused as moot and dropped, where a pause bit would stay armed at the
-stop and stop the program again once it goes on
+Evaluation (`evaluation.rs`): `evaluate` runs its expression in the frame
+its `frameId` names, the top frame without one, as `Command::Evaluate`,
+and answers its value as a variable shows one; an exception that ended it
+is a failed response whose message describes it, an abort one of the
+message "evaluation aborted". Every `context` is evaluated alike, but a
+hover's, asked unbidden as the pointer rests on a name, is aborted when it
+has not answered within `HOVER_BOUND`, two seconds, which the agent's loop
+keeps beside the attach deadline, by `Command::AbortEvaluation`, never a
+pause: the command is served in sequence with the evaluation, so one that
+arrives after the answer is refused as moot and dropped, where a pause bit
+would stay armed at the stop and stop the program again once it goes on
 (`a_hover_evaluation_that_does_not_answer_is_aborted`,
-`a_hover_answered_around_its_bound_stops_nothing_later`). The agent
-sends the VM one evaluation at a time -- an `evaluate`'s, a
-`setVariable`'s or an `nsNext/forceReturn`'s -- and holds every such
-request that arrives meanwhile until it answered, then serves the held
-ones in order, each as if it arrived then: the VM refuses a command that
-arrives while an evaluation runs, and its refusal, named by the command
-alone, would answer the running evaluation's request, whose value would
-then answer the other's -- a forced return would force an unrelated
-value (`a_forced_return_sent_during_an_evaluation_forces_its_own_value`).
-DAP's `cancel` (`supportsCancelRequest`)
-naming the `evaluate` the VM runs aborts it the same way, by
-`Command::AbortEvaluation`, the abort the MCP server sends past its wait
-("The MCP server"); one naming a request still held is dropped and
-answered with the message "cancelled", never sent, since the abort would
-stop the running one; a cancel of another request, or of one answered
-already, is answered with success and does nothing
+`a_hover_answered_around_its_bound_stops_nothing_later`). The agent sends
+the VM one evaluation at a time -- an `evaluate`'s, a `setVariable`'s or
+an `nsNext/forceReturn`'s -- and holds every such request that arrives
+meanwhile until it answered, then serves the held ones in order, each as
+if it arrived then: the VM refuses a command that arrives while an
+evaluation runs, and its refusal, named by the command alone, would answer
+the running evaluation's request, whose value would then answer the
+other's -- a forced return would force an unrelated value
+(`a_forced_return_sent_during_an_evaluation_forces_its_own_value`). DAP's
+`cancel` (`supportsCancelRequest`) naming the `evaluate` the VM runs
+aborts it the same way, by `Command::AbortEvaluation`, the abort the MCP
+server sends past its wait ("The MCP server"); one naming a request still
+held is dropped and answered with the message "cancelled", never sent,
+since the abort would stop the running one; a cancel of another request,
+or of one answered already, is answered with success and does nothing
 (`a_cancelled_evaluation_is_aborted`,
-`a_cancel_aborts_only_the_running_evaluation`).
-`setVariable` sets a variable of the frame whose `Locals` scope its
-reference names (`Command::SetVariable`), refusing a value's child and
-the return value: "only a frame's variables are set". Every value the
-agent shows that is not withheld carries, beside its
-`variablesReference`, a value reference of ns-next's own,
-`nsNext/valueReference`, numbered from the same count, one per value
-the stop handed out and valid until the program goes on, by which `nsNext/mark { valueReference, label }`
-marks it and `nsNext/referrers` asks what refers to it; a withheld value has none and
+`a_cancel_aborts_only_the_running_evaluation`). `setVariable` sets a
+variable of the frame whose `Locals` scope its reference names
+(`Command::SetVariable`), refusing a value's child and the return value:
+"only a frame's variables are set". Every value the agent shows that is
+not withheld carries, beside its `variablesReference`, a value reference
+of ns-next's own, `nsNext/valueReference`, numbered from the same count,
+one per value the stop handed out and valid until the program goes on, by
+which `nsNext/mark { valueReference, label }` marks it and
+`nsNext/referrers` asks what refers to it; a withheld value has none and
 is shown read-only (`presentationHint.attributes` `readOnly`), and a
 marked one's text ends in ` [label]`. `nsNext/unmark { label }` takes a
 mark off (`a_marked_object_is_named_in_a_later_evaluate`,
@@ -5359,7 +5355,8 @@ value, and a frame's variable that holds the value as a variable named
 `frame <id> <name>`, the frame's DAP id, its text the frame's name,
 with `presentationHint.kind` `virtual` and neither children nor a value
 reference, since what it holds is the value asked of. A missing or 0
-`count` answers every one from `start`
+`count` answers at most 1,000 from `start`, so that a class of millions
+of instances is never described whole in one response
 (`instance_counts_name_the_program_s_classes`).
 
 The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
@@ -5451,17 +5448,17 @@ both bounds and the 2 s after `terminated` from variables, so that their
 tests take a fraction of a second. The agent refuses a connection it
 cannot start a reader or a writer for, which ends its session as a client
 that left before it attached: the connecting mode's program starts without
-its debugger. A client of the connecting mode that leaves by
-`disconnect` detaches the debugger: both halves of the remote are dropped
-and the program runs on, a host still waiting for the configuration
-starting it. One whose connection closes before a `disconnect` -- its
-launcher, which owns the process, gone: the plugin and the MCP server
-both start their child -- ends the program as `terminate` does, its
-pending `ensure:` blocks run and every stop on the way going on with no
-client there, with a terminated program's exit status, a host still
-waiting for the configuration starting no run (decided on 2026-11-17;
-`a_lost_connection_ends_the_program_in_the_connecting_mode`). A client of the
-listening mode that leaves, once attached, has the VM reset -- no line
+its debugger. A client of the connecting mode that leaves by `disconnect`
+detaches the debugger: both halves of the remote are dropped and the
+program runs on, a host still waiting for the configuration starting it.
+One whose connection closes before a `disconnect` -- its launcher, which
+owns the process, gone: the plugin and the MCP server both start their
+child -- ends the program as `terminate` does, its pending `ensure:`
+blocks run and every stop on the way going on with no client there, with a
+terminated program's exit status, a host still waiting for the
+configuration starting no run (decided on 2026-11-17;
+`a_lost_connection_ends_the_program_in_the_connecting_mode`). A client of
+the listening mode that leaves, once attached, has the VM reset -- no line
 breakpoint in any module the client set one in, no method or exception
 breakpoint, since nobody would be there to go on from a stop, the default
 step filters, none of its marks, a stopped program going on -- and the
@@ -5473,9 +5470,10 @@ a `Continue` only at the stop an evaluation's end re-enters, refusing one
 that arrives while the evaluation runs, so a client that leaves with an
 evaluation in flight has it aborted (`Command::AbortEvaluation`) and the
 stop left once the evaluation answered
-(`a_client_leaving_during_an_evaluation_lets_the_program_go_on`); a host still waiting for the configuration waits for that
-client's, as it waited for the first. A stop that arrives while no client
-is attached goes on at once.
+(`a_client_leaving_during_an_evaluation_lets_the_program_go_on`); a host
+still waiting for the configuration waits for that client's, as it waited
+for the first. A stop that arrives while no client is attached goes on at
+once.
 
 ### Threads
 
@@ -5538,21 +5536,21 @@ the way not taken: every question would run the program from its start.
   answered after it.
 - **The program runs in a child** (`session.rs`, `dap_client.rs`). Each
   `debug_start` starts `ns-next run --debug-connect` against a socket the
-  server listens on, as the plugin does, hands the child a one-time
-  secret in `NS_NEXT_DEBUG_SECRET`, and goes on only when the `process`
-  event names the child's process id and that secret. The server is a
-  DAP client of the agent (`crates/ns-cli/src/debug/`) on the agent's
-  framing (`wire.rs`), with the requests the plugin uses, and asks it to
-  stop at uncaught exceptions and at `halt`. The program writes to its
-  own standard streams, which the server reads; a crash ends the child,
-  never the server; and the child is killed when its session ends -- at
-  the next `debug_start`, at `debug_stop` past its wait, and when the
-  server ends. A server killed outright drops the child's connection,
-  and the child's agent, whose launcher is gone, ends the program as a
-  `terminate` does ("Launching, the start and the end";
-  `killing_the_server_ends_its_program`). Running the program inside the server would put the
-  program's output on the stream the protocol owns and take the server
-  down with a crash.
+  server listens on, as the plugin does, hands the child a one-time secret
+  in `NS_NEXT_DEBUG_SECRET`, and goes on only when the `process` event
+  names the child's process id and that secret. The server is a DAP client
+  of the agent (`crates/ns-cli/src/debug/`) on the agent's framing
+  (`wire.rs`), with the requests the plugin uses, and asks it to stop at
+  uncaught exceptions and at `halt`. The program writes to its own
+  standard streams, which the server reads; a crash ends the child, never
+  the server; and the child is killed when its session ends -- at the next
+  `debug_start`, at `debug_stop` past its wait, and when the server ends.
+  A server killed outright drops the child's connection, and the child's
+  agent, whose launcher is gone, ends the program as a `terminate` does
+  ("Launching, the start and the end";
+  `killing_the_server_ends_its_program`). Running the program inside the
+  server would put the program's output on the stream the protocol owns
+  and take the server down with a crash.
 - **The tools** (`tools.rs`). One session at a time; a new `debug_start`
   ends the last. `debug_start(program, breakpoints?, stop_on_entry?,
   arguments?, runtime?, wait?)`, `debug_breakpoints(set?, clear?)`,
@@ -5742,31 +5740,30 @@ directly, and any other module -- a shipped one without the library, an
 image's, one an install changed -- by the `source` request's answer, read
 once per reference for the session, as a read-only `LightVirtualFile` of
 the name `<Module>.ns` holding the answer, one per reference for the
-session; a hidden frame
-(`presentationHint: "subtle"`) stays listed, drawn greyed. A frame's
-equality object (`XStackFrame.getEqualityObject`), by which the platform
-keeps the nodes the user expanded in the variables view and restores
-them at the next stop, is the body it runs -- the agent's name of it --
-its module's file or name and its depth, the frames below it counted,
-since the DAP frame's `id` is numbered afresh at every stop: a step
-within one body, or a loop's block activated again at the same depth,
+session; a hidden frame (`presentationHint: "subtle"`) stays listed, drawn
+greyed. A frame's equality object (`XStackFrame.getEqualityObject`), by
+which the platform keeps the nodes the user expanded in the variables view
+and restores them at the next stop, is the body it runs -- the agent's
+name of it -- its module's file or name and its depth, the frames below it
+counted, since the DAP frame's `id` is numbered afresh at every stop: a
+step within one body, or a loop's block activated again at the same depth,
 keeps what the user opened, as Java's frames do by their method, while a
 recursive activation, deeper, is another frame; the object is a data
-class, since the platform's front end compares it by its text. Its children
-are the `Return value` scope's value, at a step's stop, above the
+class, since the platform's front end compares it by its text. Its
+children are the `Return value` scope's value, at a step's stop, above the
 `Locals`, named by its call and drawn with the platform's icon of a
 returned value (`AllIcons.Debugger.WatchLastReturnValue`), as Java's is,
-whose name carries no other mark; a `NewspeakValue` shows the agent's text and class of a value
-and pages its children by 100, the tree offering the next page
-(`tooManyChildren`) -- an indexed value's count known, a named value's
-until a page comes back short. Resume is `continue`; Step Over, Step Into
-and Step Out are `next`, `stepIn` and `stepOut` with `granularity:
-"line"`; Run to Cursor is `nsNext/runToPosition`, Pause `pause`; a Run to
-Cursor in a file the agent cannot name -- a module's text an earlier
-session showed -- is reported and leaves the program at its stop, and one
-before the runtime connected says the session has not started. A step or a
-resume the agent refuses leaves it at its stop, which the debug process
-shows again with the refusal.
+whose name carries no other mark; a `NewspeakValue` shows the agent's text
+and class of a value and pages its children by 100, the tree offering the
+next page (`tooManyChildren`) -- an indexed value's count known, a named
+value's until a page comes back short. Resume is `continue`; Step Over,
+Step Into and Step Out are `next`, `stepIn` and `stepOut` with
+`granularity: "line"`; Run to Cursor is `nsNext/runToPosition`, Pause
+`pause`; a Run to Cursor in a file the agent cannot name -- a module's
+text an earlier session showed -- is reported and leaves the program at
+its stop, and one before the runtime connected says the session has not
+started. A step or a resume the agent refuses leaves it at its stop, which
+the debug process shows again with the refusal.
 
 Every event reaches the client's reader thread, which must never wait for
 an answer; the debug process hands each on at once to a thread of the
@@ -5797,24 +5794,24 @@ time:
   without one. A file on disk is named by its `path` -- a program
   module's, and a file of the core library, which the agent takes for the
   shipped module, or for the program's embedded `Manifest`, only in the
-  library the session handed it ("The agent's sources"), so that a file
-  of any other fingerprint directory -- an older binary's text, which a
-  look that failed left breakpoints in -- names no module and its
-  breakpoints stay unverified; in a run of one module, which loads no
-  manifest, the agent answers a `Manifest.ns` breakpoint unverified -- and
-  a module the session shows by reference by its name. The breakpoints in the library's
+  library the session handed it ("The agent's sources"), so that a file of
+  any other fingerprint directory -- an older binary's text, which a look
+  that failed left breakpoints in -- names no module and its breakpoints
+  stay unverified; in a run of one module, which loads no manifest, the
+  agent answers a `Manifest.ns` breakpoint unverified -- and a module the
+  session shows by reference by its name. The breakpoints in the library's
   files are kept with the project and follow it to a new fingerprint
   ([editor-support.md](editor-support.md), "The core library"). Run to
-  Cursor names a library file the same way. The pass count (`NewspeakLineBreakpointProperties`,
-  edited in the breakpoint's properties) is sent as the `hitCondition`,
-  in the agent's forms ("Hit counts and temporary breakpoints"). The
-  handler marks each breakpoint verified, or, where the agent set it at
-  another line, verified with the line it stops at
-  (`updateBreakpointPresentation`) -- the breakpoint stays where the user
-  put it -- or invalid with the agent's message, as its answer and every
-  later `breakpoint` event say. "Remove once hit" needs nothing of the
-  plugin: the platform removes the breakpoint as the stop
-  `breakpointReached` reported is left, and the removal resends the
+  Cursor names a library file the same way. The pass count
+  (`NewspeakLineBreakpointProperties`, edited in the breakpoint's
+  properties) is sent as the `hitCondition`, in the agent's forms ("Hit
+  counts and temporary breakpoints"). The handler marks each breakpoint
+  verified, or, where the agent set it at another line, verified with the
+  line it stops at (`updateBreakpointPresentation`) -- the breakpoint
+  stays where the user put it -- or invalid with the agent's message, as
+  its answer and every later `breakpoint` event say. "Remove once hit"
+  needs nothing of the plugin: the platform removes the breakpoint as the
+  stop `breakpointReached` reported is left, and the removal resends the
   file's set before the `continue`.
 - **Method breakpoints** (`NewspeakMethodBreakpointType`), added from the
   Breakpoints dialog by the method's name in the agent's form,
@@ -5842,54 +5839,53 @@ platform's debugger settings (`NewspeakDebuggerSettings`, an
 `XDebuggerSettings` registered as `xdebugger.settings`) and edited in
 Newspeak's section of Settings | Build, Execution, Deployment | Debugger
 | Stepping (`NewspeakSteppingConfigurable`, the
-`DebuggerSettingsCategory.STEPPING` configurable) and by "Step Into
-Kernel and Platform Code" in the debug tool window's Debugger Settings
+`DebuggerSettingsCategory.STEPPING` configurable) and by "Step Into Kernel
+and Platform Code" in the debug tool window's Debugger Settings
 (`NewspeakStepIntoShippedAction`, a toggle in the platform's group
 `XDebugger.Settings`, shown for a Newspeak session only), the same
 setting, as Java's switches there are its settings'. The classes not to
 step into, IntelliJ's "Do not step into the classes", are the project's
-(`NewspeakSkippedClasses`, a project service kept in the workspace, as
-the breakpoints are), on a page of their own under Debugger, "Newspeak
-Step Filters" (`NewspeakStepFiltersConfigurable`, a `projectConfigurable`
-whose parent is the debugger's page, as Java's Async Stack Traces is,
-since the Stepping section has no project, and registered for real
-projects only, `nonDefaultProject`, since the default project has no
-files to choose). An entry is never typed: Add lists the project's `.ns`
-files and the core library's at once, under a progress the user may
-cancel, as a tree with a speed search, each file a node for its whole
-module, and asks a file's classes -- those its root nests, as the
-language server's document symbols answer them -- only when its node is
-expanded, on a pooled thread, for at most 15 seconds, after which a file
-the server has not answered offers its whole module only; closing the
-dialog cancels every question still asked (`StepFilterChoices.kt`,
-`StepFilterTree`). The user chooses a file, for its whole module, or a
-class, for it and every class nested in it. An entry is a file and a class path in it, the root's name left
-out: a library file by its path below the library's directory --
+(`NewspeakSkippedClasses`, a project service kept in the workspace, as the
+breakpoints are), on a page of their own under Debugger, "Newspeak Step
+Filters" (`NewspeakStepFiltersConfigurable`, a `projectConfigurable` whose
+parent is the debugger's page, as Java's Async Stack Traces is, since the
+Stepping section has no project, and registered for real projects only,
+`nonDefaultProject`, since the default project has no files to choose). An
+entry is never typed: Add lists the project's `.ns` files and the core
+library's at once, under a progress the user may cancel, as a tree with a
+speed search, each file a node for its whole module, and asks a file's
+classes -- those its root nests, as the language server's document symbols
+answer them -- only when its node is expanded, on a pooled thread, for at
+most 15 seconds, after which a file the server has not answered offers its
+whole module only; closing the dialog cancels every question still asked
+(`StepFilterChoices.kt`, `StepFilterTree`). The user chooses a file, for
+its whole module, or a class, for it and every class nested in it. An
+entry is a file and a class path in it, the root's name left out: a
+library file by its path below the library's directory --
 `platform/CollectionsFactory.ns`, never the fingerprint's -- so that it
-names the same file in a rebuilt binary's library, a project file by
-its path below the project's directory, one outside it by its own. The
-page marks an entry whose file is gone or whose file no longer declares
-its class, decided off the event dispatch thread; an entry whose path no
-file system holds -- a damaged workspace file -- counts as gone
+names the same file in a rebuilt binary's library, a project file by its
+path below the project's directory, one outside it by its own. The page
+marks an entry whose file is gone or whose file no longer declares its
+class, decided off the event dispatch thread; an entry whose path no file
+system holds -- a damaged workspace file -- counts as gone
 (`SkippedClass.resolvedAgainst`), so that it never stops a session's
-configuration. A session sends the
-filters as `nsNext/setStepFilters` -- `shipped` the negation of the
-switch, `entries` each entry whose file is there by its absolute path,
-a library file's under the library the project shows now, so that a
-library entry is not sent while the project shows no library -- the
-page marks it then, as it marks an entry whose file is gone -- and its
-`classPath` -- before `configurationDone`, and again whenever either
-setting changes: a change is told on the settings' topic, which each
-session hears from its start to its `stop()`, its subscription a child
-of the project's step filters service; it is sent at once, on the thread
-that changed them, which waits for no answer, so that a step started
-after a change is sent after it and runs under it, and the filters are
-read and their request queued under one lock, so that the configuration's
-send and a change's at the session's start reach the agent in the order
-they read the settings. The agent maps each entry's file as it maps a
-breakpoint's ("The agent's sources"), leaves out an entry of a file of
-no module of the program unsaid, and says one it cannot take otherwise
-in an `output` event, which the console shows.
+configuration. A session sends the filters as `nsNext/setStepFilters` --
+`shipped` the negation of the switch, `entries` each entry whose file is
+there by its absolute path, a library file's under the library the project
+shows now, so that a library entry is not sent while the project shows no
+library -- the page marks it then, as it marks an entry whose file is gone
+-- and its `classPath` -- before `configurationDone`, and again whenever
+either setting changes: a change is told on the settings' topic, which
+each session hears from its start to its `stop()`, its subscription a
+child of the project's step filters service; it is sent at once, on the
+thread that changed them, which waits for no answer, so that a step
+started after a change is sent after it and runs under it, and the filters
+are read and their request queued under one lock, so that the
+configuration's send and a change's at the session's start reach the agent
+in the order they read the settings. The agent maps each entry's file as
+it maps a breakpoint's ("The agent's sources"), leaves out an entry of a
+file of no module of the program unsaid, and says one it cannot take
+otherwise in an `output` event, which the console shows.
 
 A property the user edits -- a pass count, an exception breakpoint's
 boxes -- reaches a running session by turning the breakpoint off and on
@@ -5967,14 +5963,15 @@ trees' menu, an `XDebuggerTreeBackendOnlyActionBase`, which hands it the
 debug process's own value under the split debugger too, where the tree's
 node holds a frontend proxy of it) mark a value the agent hands out a
 value reference for -- not a withheld one
-(`testAWithheldValueIsNeitherSetNorMarked`) -- with a label the user gives -- an identifier, the value's name by default --
-by `nsNext/mark`, and take a value's label off by `nsNext/unmark`; the
-session reads its views again, and the agent shows the label after the
-value's text wherever a stop shows it, which the session reads back as
-the value's label for the labels it gave (`NewspeakValueMarkers`), and
-names the object in every later evaluation as `<label>_DebugLabel`
-(`testAMarkedObjectIsNamedInAnEvaluation`). The platform's own Mark
-Object stays hidden for a Newspeak session, which gives it no
+(`testAWithheldValueIsNeitherSetNorMarked`) -- with a label the user gives
+-- an identifier, the value's name by default -- by `nsNext/mark`, and
+take a value's label off by `nsNext/unmark`; the session reads its views
+again, and the agent shows the label after the value's text wherever a
+stop shows it, which the session reads back as the value's label for the
+labels it gave (`NewspeakValueMarkers`), and names the object in every
+later evaluation as `<label>_DebugLabel`
+(`testAMarkedObjectIsNamedInAnEvaluation`). The platform's own Mark Object
+stays hidden for a Newspeak session, which gives it no
 `XValueMarkerProvider`: the platform hands the provider the value alone,
 never the label typed in its dialog, which it keeps in a map only its
 internal API reaches (`XDebugSessionImpl.getValueMarkers`), and the agent
