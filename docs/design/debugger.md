@@ -5110,12 +5110,20 @@ sequence with the evaluation, so one that arrives after the answer is
 refused as moot and dropped, where a pause bit would stay armed at the
 stop and stop the program again once it goes on
 (`a_hover_evaluation_that_does_not_answer_is_aborted`,
-`a_hover_answered_around_its_bound_stops_nothing_later`). Any other
-evaluation is aborted the same way by DAP's `cancel` naming it while
-the VM has not answered it (`supportsCancelRequest`), the abort the MCP
-server sends past its wait ("The MCP server"); a cancel of another
-request, or of one answered already, is answered with success and
-does nothing (`a_cancelled_evaluation_is_aborted`).
+`a_hover_answered_around_its_bound_stops_nothing_later`). The agent
+sends the VM one evaluation at a time -- an `evaluate` or a
+`setVariable` -- and holds the `evaluate`s that arrive meanwhile until
+it answered: the VM refuses a command that arrives while an evaluation
+runs, and its refusal, named by the command alone, would answer the
+running evaluation's request. DAP's `cancel` (`supportsCancelRequest`)
+naming the `evaluate` the VM runs aborts it the same way, by
+`Command::AbortEvaluation`, the abort the MCP server sends past its wait
+("The MCP server"); one naming an `evaluate` still held is dropped and
+answered with the message "cancelled", never sent, since the abort would
+stop the running one; a cancel of another request, or of one answered
+already, is answered with success and does nothing
+(`a_cancelled_evaluation_is_aborted`,
+`a_cancel_aborts_only_the_running_evaluation`).
 `setVariable` sets a variable of the frame whose `Locals` scope its
 reference names (`Command::SetVariable`), refusing a value's child and
 the return value: "only a frame's variables are set". Every value the
@@ -5274,9 +5282,16 @@ both bounds and the 2 s after `terminated` from variables, so that their
 tests take a fraction of a second. The agent refuses a connection it
 cannot start a reader or a writer for, which ends its session as a client
 that left before it attached: the connecting mode's program starts without
-its debugger. A client of the connecting mode that leaves detaches the
-debugger: both halves of the remote are dropped and the program runs on, a
-host still waiting for the configuration starting it. A client of the
+its debugger. A client of the connecting mode that leaves by
+`disconnect` detaches the debugger: both halves of the remote are dropped
+and the program runs on, a host still waiting for the configuration
+starting it. One whose connection closes before a `disconnect` -- its
+launcher, which owns the process, gone: the plugin and the MCP server
+both start their child -- ends the program as `terminate` does, its
+pending `ensure:` blocks run and every stop on the way going on with no
+client there, with a terminated program's exit status, a host still
+waiting for the configuration starting no run (decided on 2026-11-17;
+`a_lost_connection_ends_the_program_in_the_connecting_mode`). A client of the
 listening mode that leaves, once attached, has the VM reset -- no line
 breakpoint in any module the client set one in, no method or exception
 breakpoint, since nobody would be there to go on from a stop, the default
@@ -5338,9 +5353,12 @@ the way not taken: every question would run the program from its start.
   unknown tool -32602, and a batch is answered as one. Written by hand
   on `serde_json`, as the agent's framing is, so that no protocol crate
   reaches `ns-next`. Nothing but protocol messages goes to the standard
-  output; the server's own words go to the standard error. The server
-  ends when the client closes its standard input, and its program with
-  it.
+  output; the server's own words go to the standard error -- the
+  process each program runs as, and every request the agent refused.
+  The server ends when the client closes its standard input, and its
+  program with it. It serves one message at a time: a tool call holds
+  the loop for as long as it waits, so a `ping` sent meanwhile is
+  answered after it.
 - **The program runs in a child** (`session.rs`, `dap_client.rs`). Each
   `debug_start` starts `ns-next run --debug-connect` against a socket the
   server listens on, as the plugin does, hands the child a one-time
@@ -5352,7 +5370,10 @@ the way not taken: every question would run the program from its start.
   own standard streams, which the server reads; a crash ends the child,
   never the server; and the child is killed when its session ends -- at
   the next `debug_start`, at `debug_stop` past its wait, and when the
-  server ends. Running the program inside the server would put the
+  server ends. A server killed outright drops the child's connection,
+  and the child's agent, whose launcher is gone, ends the program as a
+  `terminate` does ("Launching, the start and the end";
+  `killing_the_server_ends_its_program`). Running the program inside the server would put the
   program's output on the stream the protocol owns and take the server
   down with a crash.
 - **The tools** (`tools.rs`). One session at a time; a new `debug_start`
@@ -5419,27 +5440,37 @@ the way not taken: every question would run the program from its start.
   evaluation that does not end within 30 s is aborted by DAP's `cancel`,
   which the agent turns into the abort a hover's bound takes
   (`Command::AbortEvaluation`), and answered so, the program still
-  stopped. `debug_stop` ends the program as its own `terminate…` would,
+  stopped; an evaluation that ended otherwise meanwhile is answered in
+  its own words. `debug_stop` ends the program as its own `terminate…` would,
   its `ensure:` blocks run, and kills it when it has not ended within
   5 s.
 - **Starting it** (`shadow.rs`). `.mcp.json` at the repository's root
-  registers `target/debug/ns-next mcp`. The server copies its executable
-  into `ns-next-mcp/<hash>/` below the temporary directory, the hash
-  FNV-1a over the executable's bytes, as the shipped sources'
-  fingerprint is, and serves from there: by `exec` on POSIX, and on
-  Windows, which has no `exec`, by starting the copy on its own standard
-  streams and ending, so that no process runs the original. The copy
-  learns the original's path from `NS_NEXT_MCP_EXECUTABLE`, and
-  `debug_start` starts the binary at that path -- the current build --
-  copied the same way, unless `runtime` names another: on Windows a
-  running executable can be neither replaced nor removed, and neither the
-  server nor a session may keep `cargo build` from writing `target`
-  (`the_server_runs_from_a_copy`). A copy is written under a name of its
-  process's and renamed into place, so that no process runs a half
-  written one, and a directory of copies untouched for a day is removed
-  when a server starts. A change to the program's runtime thus takes
-  effect at the next `debug_start`; a change to the server itself, at
-  the client's next connection.
+  registers `target/debug/ns-next mcp`. On Windows a running executable
+  can be neither replaced nor removed, and neither the server nor a
+  session may keep `cargo build` from writing `target`. The server stays
+  the process its client started: a client watches that process, and
+  Node's `child_process`, on which the MCP SDKs' stdio transports are
+  built, closes the server's standard input once it ends, so a server
+  that handed over to a copy of itself would end at its start (decided
+  on 2026-11-17). On Windows the server renames
+  its own executable aside, to `<file name>.<process id>.running` in its
+  directory -- Windows permits renaming a running image within its
+  volume -- and puts a copy back at the original path, written under a
+  name of its process's and renamed into place, so that a build
+  overwrites a file no process runs and the path still names the build;
+  as it starts, it removes the files earlier servers renamed aside that
+  no process runs any more, the removal of one a process runs failing.
+  Elsewhere a running file can be replaced as it is
+  (`the_server_frees_its_executable_for_the_next_build`). `debug_start`
+  starts the binary at the path the server was started from -- the
+  current build -- unless `runtime` names another, from a copy in
+  `ns-next-mcp/<hash>/` below the temporary directory, the hash FNV-1a
+  over the executable's bytes, as the shipped sources' fingerprint is;
+  a copy is written under a name of its process's and renamed into
+  place, so that no process runs a half written one, and a directory of
+  copies untouched for a day is removed when a server starts. A change to
+  the program's runtime thus takes effect at the next `debug_start`; a
+  change to the server itself, at the client's next connection.
 
 ## The JetBrains plugin
 

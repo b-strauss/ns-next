@@ -16,7 +16,6 @@ mod summary;
 mod tools;
 
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
@@ -32,17 +31,12 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
-/// `ns-next mcp`: starts again from a copy of the executable unless it
-/// runs from one (`shadow.rs`), then serves until the client closes the
-/// standard input. The session's program ends with the server.
+/// `ns-next mcp`: frees the executable it was started from for the next
+/// build (`shadow.rs`), then serves until the client closes the standard
+/// input, one message at a time -- a tool call holds the loop for as long
+/// as it waits. The session's program ends with the server.
 pub(crate) fn execute() -> ExitCode {
-    if let Some(exit_code) = shadow::relaunch_from_copy() {
-        return exit_code;
-    }
-    let default_runtime = std::env::var_os(shadow::EXECUTABLE_VARIABLE)
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .unwrap_or_else(|| PathBuf::from("ns-next"));
+    let default_runtime = shadow::free_the_executable();
     let mut debugger = tools::Debugger::new(default_runtime);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

@@ -273,6 +273,43 @@ fn terminate_runs_the_ensure_blocks() {
     assert!(finished.stderr.contains(TERMINATED), "{}", finished.stderr);
 }
 
+/// A connecting agent's launcher owns the process: a connection lost
+/// before a `disconnect` ends the program as `terminate` does, its
+/// `ensure:` blocks run, with a terminated program's status -- the
+/// program loops forever otherwise. A stopped program goes on to its end
+/// the same way.
+#[test]
+fn a_lost_connection_ends_the_program_in_the_connecting_mode() {
+    let (_directory, path) = program("Looper", LOOPER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(false);
+    client.wait_for_stdout(
+        "looping
+",
+    );
+    client.connection.close();
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(1), "{}", finished.stderr);
+    assert!(
+        finished.stdout.ends_with(
+            "ensured
+"
+        ),
+        "{}",
+        finished.stdout
+    );
+    assert!(finished.stderr.contains(TERMINATED), "{}", finished.stderr);
+
+    let (_directory, path) = program("Looper", LOOPER);
+    let mut client = DapClient::connect_mode(&path);
+    client.start_session(true);
+    client.stopped("entry");
+    client.connection.close();
+    let finished = client.finish();
+    assert_eq!(finished.status, Some(1), "{}", finished.stderr);
+    assert!(!finished.stdout.contains("looping"), "{}", finished.stdout);
+}
+
 #[test]
 fn a_terminate_between_runs_ends_the_program_before_main() {
     let directory = ScratchDirectory::new("SlowStart");
@@ -3167,6 +3204,42 @@ fn a_cancelled_evaluation_is_aborted() {
     assert_eq!(aborted["message"], "evaluation aborted", "{aborted}");
     client.succeed("cancel", json!({ "requestId": endless }));
     assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    continue_to_the_end(client);
+}
+
+/// Evaluations sent together run one at a time: a `cancel` aborts only
+/// the one the VM runs, the oldest, while one still queued behind it is
+/// answered "cancelled" and never runs, and the others run once the
+/// running one ended.
+#[test]
+fn a_cancel_aborts_only_the_running_evaluation() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let seqs = client.connection.send_together(&[
+        (
+            "evaluate",
+            json!({ "expression": "[true] whileTrue: []", "frameId": 1, "context": "repl" }),
+        ),
+        (
+            "evaluate",
+            json!({ "expression": "count", "frameId": 1, "context": "repl" }),
+        ),
+        (
+            "evaluate",
+            json!({ "expression": "count + 1", "frameId": 1, "context": "repl" }),
+        ),
+    ]);
+    client.succeed("cancel", json!({ "requestId": seqs[1] }));
+    let cancelled = client.connection.response_to(seqs[1], "evaluate");
+    assert_eq!(cancelled["success"], false, "{cancelled}");
+    assert_eq!(cancelled["message"], "cancelled", "{cancelled}");
+    client.succeed("cancel", json!({ "requestId": seqs[0] }));
+    let aborted = client.connection.response_to(seqs[0], "evaluate");
+    assert_eq!(aborted["message"], "evaluation aborted", "{aborted}");
+    let third = client.connection.response_to(seqs[2], "evaluate");
+    assert_eq!(third["body"]["result"], "4", "{third}");
     continue_to_the_end(client);
 }
 

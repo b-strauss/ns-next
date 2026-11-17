@@ -139,8 +139,6 @@ impl Debugger {
     fn start(&mut self, arguments: Value) -> Answer {
         let arguments: StartArguments = parse(arguments)?;
         let wait = wait_of(arguments.wait)?;
-        // One session at a time: the last one's program ends here.
-        self.session = None;
         let program = std::path::absolute(&arguments.program)
             .map_err(|error| format!("{}: {error}", arguments.program))?;
         if !program.exists() {
@@ -152,6 +150,9 @@ impl Debugger {
             }
             None => self.default_runtime.clone(),
         };
+        // One session at a time: the last one's program ends here, once
+        // the arguments are known to be good.
+        self.session = None;
         let (session, answer) = Session::start(StartOptions {
             program,
             runtime,

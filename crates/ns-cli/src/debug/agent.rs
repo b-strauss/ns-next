@@ -89,6 +89,9 @@ const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 /// not -- however busy -- delays the process's end by no more than this.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
 
+/// The message of a queued `evaluate` a `cancel` dropped.
+const CANCELLED: &str = "cancelled";
+
 /// How long an `evaluate` of the context `hover` may take before the
 /// agent aborts it (`abort_overdue_hovers`): a hover is asked as the
 /// pointer rests on a name, unbidden, and an expression that does not
@@ -341,6 +344,11 @@ pub(crate) struct Agent {
     pub(super) step_filters_said: Vec<String>,
     /// The hovers' evaluations not answered yet (`HOVER_BOUND`).
     hovers: Vec<Hover>,
+    /// The `evaluate` requests that wait for the evaluation the VM runs:
+    /// the VM refuses a command that arrives while an evaluation runs,
+    /// and its refusal, named by the command alone, would answer the
+    /// running one's request (`queue_evaluation`).
+    queued_evaluations: VecDeque<(u64, protocol::Request)>,
     /// The logpoint lines dropped since the client was last told, for a
     /// write queue too full to take them (`log`).
     dropped_logs: u64,
@@ -389,6 +397,7 @@ impl Agent {
             waiting: Vec::new(),
             step_filters_said: Vec::new(),
             hovers: Vec::new(),
+            queued_evaluations: VecDeque::new(),
             dropped_logs: 0,
         }
     }
@@ -486,31 +495,74 @@ impl Agent {
         }
     }
 
-    /// `cancel`: aborts the `evaluate` its `requestId` names while the VM
-    /// has not answered it, by `Command::AbortEvaluation` as a hover's
-    /// bound does, so that a client which stops waiting for an expression
-    /// that does not end -- the MCP server past its wait -- gets the stop
-    /// back. The evaluation is then answered "evaluation aborted". Any
-    /// other request, or one answered already, is not cancelled: DAP makes
-    /// a cancel a hint, answered with success either way.
+    /// `cancel`: the `evaluate` its `requestId` names stops. The one the
+    /// VM runs -- the oldest it was sent -- is aborted by
+    /// `Command::AbortEvaluation`, as a hover's bound aborts it, and then
+    /// answered "evaluation aborted"; one still queued behind it
+    /// (`queue_evaluation`) is dropped and answered "cancelled", never
+    /// sent; the abort would otherwise stop the running one. Any other
+    /// request, or one answered already, is not cancelled: DAP makes a
+    /// cancel a hint, answered with success either way.
     fn cancel(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) = self.arguments::<protocol::CancelArguments>(connection, request)
         else {
             return;
         };
-        let evaluating = arguments.request_id.is_some_and(|seq| {
-            self.pending.iter().any(|pending| {
-                matches!(
-                    &pending.reply,
-                    Reply::Request { connection: asked, request_seq, command, .. }
-                        if *asked == connection && *request_seq == seq && command == "evaluate"
-                )
-            })
-        });
-        if evaluating {
-            self.command(Command::AbortEvaluation, Reply::Internal);
+        if let Some(seq) = arguments.request_id {
+            let queued = self
+                .queued_evaluations
+                .iter()
+                .position(|(asked, queued)| *asked == connection && queued.seq == seq);
+            if let Some((_, cancelled)) =
+                queued.and_then(|index| self.queued_evaluations.remove(index))
+            {
+                self.respond_error(connection, &cancelled, CANCELLED);
+            } else {
+                let running = self
+                    .pending
+                    .iter()
+                    .find(|pending| pending.command == "Evaluate")
+                    .is_some_and(|pending| {
+                        matches!(
+                            &pending.reply,
+                            Reply::Request { connection: asked, request_seq, command, .. }
+                                if *asked == connection && *request_seq == seq && command == "evaluate"
+                        )
+                    });
+                if running {
+                    self.command(Command::AbortEvaluation, Reply::Internal);
+                }
+            }
         }
         self.respond(connection, request, None);
+    }
+
+    /// Whether the VM runs an evaluation the agent sent: an `evaluate`'s
+    /// or a `setVariable`'s.
+    pub(super) fn evaluation_in_flight(&self) -> bool {
+        self.pending
+            .iter()
+            .any(|pending| matches!(pending.command, "Evaluate" | "SetVariable"))
+    }
+
+    /// Holds `request`, an `evaluate`, until the evaluation the VM runs
+    /// has answered.
+    pub(super) fn queue_evaluation(&mut self, connection: u64, request: &protocol::Request) {
+        self.queued_evaluations
+            .push_back((connection, request.clone()));
+    }
+
+    /// Sends the queued evaluations once none runs, each served afresh
+    /// as it arrived: one the stop no longer serves is refused then.
+    fn send_queued_evaluation(&mut self) {
+        while !self.evaluation_in_flight() {
+            let Some((connection, request)) = self.queued_evaluations.pop_front() else {
+                return;
+            };
+            if self.is_current(connection) {
+                self.evaluate(connection, &request);
+            }
+        }
     }
 
     fn serve(&mut self, input: Input) {
@@ -522,7 +574,7 @@ impl Agent {
             } => self.request(connection, message),
             Input::Closed { connection } => {
                 if self.is_current(connection) {
-                    self.leave();
+                    self.connection_lost();
                 }
             }
             Input::Event(event) => self.vm_event(event),
@@ -610,6 +662,13 @@ impl Agent {
         if !self.is_current(connection) {
             return;
         }
+        // What a request the agent does not know carried, said in a debug
+        // build, so that a client that sends one shows itself.
+        #[cfg(debug_assertions)]
+        let keys: Vec<String> = message
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
         // A message that is no request has nothing to answer.
         let Ok(request) = serde_json::from_value::<protocol::Request>(message) else {
             return;
@@ -672,6 +731,11 @@ impl Agent {
             "terminate" => self.terminate(connection, &request),
             "disconnect" => self.disconnect(connection, &request),
             command => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "ns-next debugger: connection {connection} sent the unknown command                      {command:?} (seq {}), its message's keys {keys:?}",
+                    request.seq
+                );
                 let message = format!("`{command}` is not supported yet");
                 self.respond_error(connection, &request, &message);
             }
@@ -1200,6 +1264,21 @@ impl Agent {
         }
     }
 
+    /// The client's connection closed before a `disconnect`. A connecting
+    /// agent's launcher owns the process -- the plugin and the MCP server
+    /// start their child -- and is gone, so the program ends as a
+    /// `terminate` ends it: its pending `ensure:` blocks run, every stop
+    /// on the way goes on with no client there, and the process ends with
+    /// a terminated program's status. A listening agent's client is one of
+    /// several, and the program waits for the next.
+    fn connection_lost(&mut self) {
+        if matches!(self.mode, Mode::Connecting { .. }) && !self.exited {
+            self.host.request_terminate();
+            self.send_terminate();
+        }
+        self.leave();
+    }
+
     /// The client left: by `disconnect`, by closing its connection, or
     /// refused. A client that never attached configured nothing and is
     /// only let go.
@@ -1213,6 +1292,7 @@ impl Agent {
         let was_attached = client.attached;
         self.waiting.clear();
         self.hovers.clear();
+        self.queued_evaluations.clear();
         self.dropped_logs = 0;
         self.line_step = None;
         self.step_filters_said.clear();
@@ -1227,6 +1307,9 @@ impl Agent {
     /// whether its client had configured anything.
     fn session_ended(&mut self, was_attached: bool) {
         match &self.mode {
+            // A program being terminated keeps its debugger until it
+            // ended, so that the queued `Terminate` is served.
+            Mode::Connecting { .. } if self.host.terminate_requested() => {}
             Mode::Connecting { .. } => {
                 // The program runs on without its debugger, and without
                 // waiting for a configuration nobody will finish.
@@ -1560,6 +1643,9 @@ impl Agent {
                 }
                 let outcome = self.convert(event, conversion);
                 self.write_response(connection, request_seq, &command, outcome);
+                if matches!(pending.command, "Evaluate" | "SetVariable") {
+                    self.send_queued_evaluation();
+                }
             }
         }
     }
@@ -1778,6 +1864,14 @@ impl Agent {
                     Err("the program ended".to_string()),
                 );
             }
+        }
+        for (connection, request) in std::mem::take(&mut self.queued_evaluations) {
+            self.write_response(
+                connection,
+                request.seq,
+                &request.command,
+                Err("the program ended".to_string()),
+            );
         }
     }
 

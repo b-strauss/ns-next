@@ -55,19 +55,37 @@ const TOOLS: [(&str, &[&str], &[&str]); 16] = [
 ];
 
 /// A running `ns-next mcp` and the lines it writes to its standard output.
+/// Its input is closed once the process started ends, as Node's
+/// `child_process` closes it, on which the MCP SDKs' stdio transports are
+/// built: a server that handed over to another process would lose its
+/// input then.
 struct McpServer {
-    /// The process started; on Windows it hands over to its copy and ends.
-    child: Child,
-    stdin: Option<ChildStdin>,
+    /// The directory of the copy the server was started from, if any.
+    build: Option<ScratchDirectory>,
+    child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     lines: Receiver<String>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: i64,
 }
 
 impl McpServer {
-    /// `ns-next mcp`, initialized.
+    /// `ns-next mcp` started from a copy of the binary of its own, since
+    /// the server renames the file it was started from on Windows,
+    /// initialized.
     fn start() -> McpServer {
-        McpServer::start_with(Path::new(binary()), &[])
+        McpServer::start_from_a_copy(&[])
+    }
+
+    /// As `start`, with the environment `variables`.
+    fn start_from_a_copy(variables: &[(&str, &str)]) -> McpServer {
+        let build = ScratchDirectory::new("server");
+        let name = Path::new(binary()).file_name().expect("a file name");
+        let executable = build.join(&name.to_string_lossy());
+        std::fs::copy(binary(), &executable).expect("copy the binary");
+        let mut server = McpServer::start_with(&executable, variables);
+        server.build = Some(build);
+        server
     }
 
     /// `<executable> mcp` with the environment `variables`, initialized.
@@ -107,8 +125,26 @@ impl McpServer {
                     .extend_from_slice(&chunk[..read]);
             }
         });
-        let stdin = child.stdin.take();
+        let stdin = Arc::new(Mutex::new(child.stdin.take()));
+        let child = Arc::new(Mutex::new(child));
+        let watched = Arc::clone(&child);
+        let closed = Arc::clone(&stdin);
+        std::thread::spawn(move || {
+            loop {
+                let ended = watched
+                    .lock()
+                    .expect("the child")
+                    .try_wait()
+                    .map_or(true, |status| status.is_some());
+                if ended {
+                    closed.lock().expect("the input").take();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
         let mut server = McpServer {
+            build: None,
             child,
             stdin,
             lines,
@@ -132,9 +168,33 @@ impl McpServer {
     }
 
     fn write(&mut self, message: &Value) {
-        let stdin = self.stdin.as_mut().expect("the server's input");
+        let mut stdin = self.stdin.lock().expect("the input");
+        let stdin = stdin
+            .as_mut()
+            .expect("the server's input, closed once the process started ended");
         writeln!(stdin, "{message}").expect("write to the server");
         stdin.flush().expect("flush the server's input");
+    }
+
+    /// Whether the process started still runs.
+    fn runs(&self) -> bool {
+        self.child
+            .lock()
+            .expect("the child")
+            .try_wait()
+            .is_ok_and(|status| status.is_none())
+    }
+
+    /// The process id of the program the last `debug_start` started, as
+    /// the server says it on its standard error.
+    fn program_process(&self) -> u32 {
+        let stderr = String::from_utf8_lossy(&self.stderr.lock().expect("stderr")).to_string();
+        let line = stderr
+            .lines()
+            .rev()
+            .find_map(|line| line.split(" runs as process ").nth(1))
+            .unwrap_or_else(|| panic!("no program's process on stderr: {stderr}"));
+        line.trim().parse().expect("a process id")
     }
 
     fn notify(&mut self, method: &str) {
@@ -199,17 +259,18 @@ impl Drop for McpServer {
     /// Closing the input ends the server, which ends its program; a
     /// failing test leaves neither behind.
     fn drop(&mut self) {
-        self.stdin = None;
+        self.stdin.lock().expect("the input").take();
         let started = Instant::now();
-        // The output ends once whichever process serves has exited.
+        // The output ends once the server has exited.
         while started.elapsed() < TIMEOUT {
             match self.lines.recv_timeout(TIMEOUT) {
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child.lock().expect("the child");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -478,31 +539,36 @@ fn a_location_naming_no_module_is_refused() {
     assert!(relative.contains("absolute"), "{relative}");
 }
 
+/// The server stays the process its client started, and frees the file
+/// it was started from for the next build: a build overwrites it while
+/// the server and a session run, and the next `debug_start` runs the new
+/// file. On Windows the server renames its running file aside and puts a
+/// copy back, after removing what earlier servers renamed aside that no
+/// process runs any more.
 #[test]
-fn the_server_runs_from_a_copy() {
+fn the_server_frees_its_executable_for_the_next_build() {
     let build = ScratchDirectory::new("build");
-    let name = Path::new(binary()).file_name().expect("a file name");
-    let executable = build.join(&name.to_string_lossy());
+    let name = Path::new(binary())
+        .file_name()
+        .expect("a file name")
+        .to_string_lossy()
+        .to_string();
+    let executable = std::path::absolute(build.join(&name)).expect("an absolute path");
     std::fs::copy(binary(), &executable).expect("copy the binary");
+    let leftover = build.join(&format!("{name}.4294967295.running"));
+    std::fs::write(&leftover, "an earlier server's").expect("write a leftover");
     let mut server = McpServer::start_with(&executable, &[]);
-    // On Windows the process started hands over to its copy and ends,
-    // since a running executable cannot be removed.
-    #[cfg(windows)]
-    {
-        let started = Instant::now();
-        while server.child.try_wait().expect("the status").is_none() {
-            assert!(
-                started.elapsed() < TIMEOUT,
-                "the started process never ended"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+    assert!(server.runs(), "the process started ended");
+    if cfg!(windows) {
+        assert!(!leftover.exists(), "the leftover is still there");
+        let aside = build.join(&format!(
+            "{name}.{}.running",
+            server.child.lock().expect("the child").id()
+        ));
+        assert!(aside.is_file(), "nothing renamed aside");
     }
-    // A build replaces the executable while the server runs.
-    let old = build.join("old");
-    std::fs::rename(&executable, &old).expect("rename the executable");
-    std::fs::remove_file(&old).expect("remove the executable");
-    std::fs::copy(binary(), &executable).expect("copy the binary again");
+    // A build overwrites the executable while the server runs.
+    std::fs::copy(binary(), &executable).expect("overwrite the executable");
     let (_directory, path) = program("Counter", COUNTER);
     let ended = server.succeed("debug_start", json!({ "program": path }));
     assert!(ended.starts_with("ended: exit status 0"), "{ended}");
@@ -515,7 +581,50 @@ fn the_server_runs_from_a_copy() {
         "debug_start",
         json!({ "program": path, "stop_on_entry": true }),
     );
-    std::fs::remove_file(&executable).expect("remove the executable during a session");
+    std::fs::copy(binary(), &executable).expect("overwrite the executable during a session");
+    assert!(server.runs(), "the process started ended");
+}
+
+/// Whether a process of the id `process` runs.
+fn process_runs(process: u32) -> bool {
+    if cfg!(windows) {
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {process}"), "/NH", "/FO", "CSV"])
+            .output()
+            .expect("run tasklist");
+        String::from_utf8_lossy(&output.stdout).contains(&format!("\"{process}\""))
+    } else {
+        std::process::Command::new("kill")
+            .args(["-0", &process.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+}
+
+/// A server killed outright drops its program's connection, and the
+/// program, whose launcher is gone, ends.
+#[test]
+fn killing_the_server_ends_its_program() {
+    let (_directory, path) = program("Spin", SPIN);
+    let mut server = McpServer::start();
+    let running = server.succeed("debug_start", json!({ "program": path, "wait": 0.5 }));
+    assert!(running.starts_with("running for "), "{running}");
+    let process = server.program_process();
+    assert!(process_runs(process), "the program does not run");
+    {
+        let mut child = server.child.lock().expect("the child");
+        child.kill().expect("kill the server");
+        let _ = child.wait();
+    }
+    let started = Instant::now();
+    while process_runs(process) {
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "the program outlived its server"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// A root that holds an array, then lets it go.
@@ -575,7 +684,7 @@ const EVALUATION_WAIT: &str = "NS_NEXT_MCP_EVALUATION_WAIT_MILLISECONDS";
 #[test]
 fn an_evaluation_that_does_not_end_is_aborted() {
     let (_directory, path) = program("Counter", COUNTER);
-    let mut server = McpServer::start_with(Path::new(binary()), &[(EVALUATION_WAIT, "300")]);
+    let mut server = McpServer::start_from_a_copy(&[(EVALUATION_WAIT, "300")]);
     server.succeed(
         "debug_start",
         json!({

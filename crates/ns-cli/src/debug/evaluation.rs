@@ -45,6 +45,12 @@ impl Agent {
             self.respond_error(connection, request, "no frame of this stop has that id");
             return;
         };
+        // One evaluation at a time: the VM refuses one that arrives while
+        // another runs.
+        if self.evaluation_in_flight() {
+            self.queue_evaluation(connection, request);
+            return;
+        }
         let command = Command::Evaluate {
             frame,
             expression: arguments.expression,

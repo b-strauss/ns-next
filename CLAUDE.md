@@ -214,16 +214,19 @@ Rust 1.100.0, edition 2024, seven crates:
   the connection's writer thread, every write and its queue bounded, and
   writes nothing to the program's standard streams but the listening
   line and the line a terminated run prints; the connecting mode returns
-  the secret its launcher hands it in `NS_NEXT_DEBUG_SECRET`
+  the secret its launcher hands it in `NS_NEXT_DEBUG_SECRET`, and ends
+  the program as `terminate` does when its connection is lost before a
+  `disconnect`
   (`debugger.md`, "Launching, the start and the end"; tests
   `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
   standard input and output (`mcp/`), registered by `.mcp.json`, through
   whose tools an agent debugs a program: each `debug_start` runs it in a
   child `ns-next run --debug-connect` the server is a DAP client of, and
-  each stop is answered as a summary in text; the server and its children
-  run from copies of their executables below the temporary directory, so
-  that a build can replace `target/debug/ns-next` meanwhile (`debugger.md`,
-  "The MCP server"; tests `tests/mcp.rs`).
+  each stop is answered as a summary in text; the children run from
+  copies of their executables below the temporary directory and, on
+  Windows, the server renames its own executable aside and puts a copy
+  back, so that a build can replace `target/debug/ns-next` meanwhile
+  (`debugger.md`, "The MCP server"; tests `tests/mcp.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,

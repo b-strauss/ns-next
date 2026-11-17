@@ -1,23 +1,22 @@
-//! The executable copies the MCP server runs from (`docs/design/debugger.md`,
-//! "The MCP server", "Starting it"): the server and every program it
-//! starts run a copy of their binary, below the temporary directory in a
-//! directory named by a hash of the binary's bytes, never the binary the
-//! build writes -- on Windows a running executable can be neither replaced
-//! nor removed, and neither the server nor a session may keep `cargo build`
-//! from writing `target`. And the shipped sources of the binary a session
-//! runs, written once per fingerprint, which a stop names its shipped
-//! frames' files in.
+//! What keeps the MCP server and its programs from locking the build
+//! (`docs/design/debugger.md`, "The MCP server", "Starting it"): on
+//! Windows a running executable can be neither replaced nor removed, and
+//! neither the server nor a session may keep `cargo build` from writing
+//! `target`. The server stays the process its client started -- a client
+//! watches that process, and Node's `child_process`, on which the MCP
+//! SDKs' stdio transports are built, closes the server's input when it
+//! ends -- so on Windows it renames its own executable aside, which
+//! Windows permits for a running image within its volume, and puts a
+//! copy back at the original path, which a build then overwrites; every
+//! program a session starts runs a copy below the temporary directory, in
+//! a directory named by a hash of the binary's bytes. And the shipped
+//! sources of the binary a session runs, written once per fingerprint,
+//! which a stop names its shipped frames' files in.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use crate::target_runner;
-
-/// The variable through which a server started from its copy learns the
-/// path it was started from: the build a `debug_start` runs by default.
-/// Set, it also says the process already runs from its copy.
-pub(crate) const EXECUTABLE_VARIABLE: &str = "NS_NEXT_MCP_EXECUTABLE";
 
 /// The directory below the temporary directory that holds the copies of
 /// executables, one directory per hash.
@@ -27,62 +26,93 @@ const COPIES_DIRECTORY: &str = "ns-next-mcp";
 /// sources, one directory per fingerprint.
 const CORE_LIBRARY_DIRECTORY: &str = "ns-next-core";
 
+/// The suffix of an executable a server renamed aside: `<file
+/// name>.<process id>.running`, beside the original.
+const RUNNING_SUFFIX: &str = ".running";
+
 /// How long a directory of copies stays untouched before a server that
 /// starts removes it: each build is a copy of its own, and a day is
 /// longer than any session. One still in use cannot be removed on
 /// Windows, and on other systems its running processes keep their file.
 const STALE_COPIES: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Starts the server again from a copy of its executable, unless it runs
-/// from one already: answers the exit code of this process when the copy
-/// took over, or `None` when this process is to serve -- the copy itself,
-/// or the original when no copy could be made, which is said on the
-/// standard error.
-pub(crate) fn relaunch_from_copy() -> Option<ExitCode> {
-    if std::env::var_os(EXECUTABLE_VARIABLE).is_some() {
-        return None;
-    }
+/// Frees the executable this server was started from, and answers its
+/// path: the build a `debug_start` runs by default. On Windows the file is
+/// renamed aside and a copy of it put back at its path, so that a build
+/// replaces a file no process runs, after the files earlier servers
+/// renamed aside that no process runs any more are removed; elsewhere a
+/// running file can be replaced as it is. What fails is said on the
+/// standard error, and the server serves all the same.
+pub(crate) fn free_the_executable() -> PathBuf {
     let executable = match std::env::current_exe() {
         Ok(executable) => executable,
         Err(error) => {
-            eprintln!("ns-next mcp: serving from the build, its path unknown: {error}");
-            return None;
+            eprintln!("ns-next mcp: the executable's path is unknown: {error}");
+            return PathBuf::from("ns-next");
         }
     };
     remove_stale_copies();
-    let copy = match copy_of(&executable) {
-        Ok(copy) => copy,
-        Err(error) => {
-            eprintln!("ns-next mcp: serving from the build, not a copy: {error}");
-            return None;
+    if cfg!(windows) {
+        remove_unused_renamed(&executable);
+        if let Err(error) = rename_aside(&executable) {
+            eprintln!(
+                "ns-next mcp: {} stays in use: {error}",
+                executable.display()
+            );
         }
+    }
+    executable
+}
+
+/// Renames `executable` to `<file name>.<process id>.running` beside it
+/// and copies it back to its path.
+fn rename_aside(executable: &Path) -> Result<(), String> {
+    let Some(name) = executable.file_name() else {
+        return Err("it names no file".to_string());
     };
-    let mut command = target_runner::target_command(&copy);
-    command.arg("mcp").env(EXECUTABLE_VARIABLE, &executable);
-    hand_over(command)
+    let mut aside_name = name.to_os_string();
+    aside_name.push(format!(".{}{RUNNING_SUFFIX}", std::process::id()));
+    let aside = executable.with_file_name(aside_name);
+    std::fs::rename(executable, &aside)
+        .map_err(|error| format!("renaming it to {}: {error}", aside.display()))?;
+    // Written under a name of this process's and renamed into place, so
+    // that a process started from the path meanwhile never meets a half
+    // written file; another server started from the same path may have
+    // put its copy back first, which is the same build.
+    let mut partial_name = name.to_os_string();
+    partial_name.push(format!(".{}.partial", std::process::id()));
+    let partial = executable.with_file_name(partial_name);
+    let restored =
+        std::fs::copy(&aside, &partial).and_then(|_| std::fs::rename(&partial, executable));
+    if let Err(error) = restored {
+        let _ = std::fs::remove_file(&partial);
+        if !executable.is_file() {
+            return Err(format!("copying it back: {error}"));
+        }
+    }
+    Ok(())
 }
 
-/// Replaces this process by `command`, which serves on the same standard
-/// streams.
-#[cfg(unix)]
-fn hand_over(mut command: Command) -> Option<ExitCode> {
-    use std::os::unix::process::CommandExt;
-    let error = command.exec();
-    eprintln!("ns-next mcp: serving from the build, the copy did not start: {error}");
-    None
-}
-
-/// Starts `command` on the same standard streams, which it inherits, and
-/// lets this process end at once: Windows has no `exec`, and the original
-/// file is free only once no process runs it. The client's pipes stay
-/// open as long as the copy holds them.
-#[cfg(not(unix))]
-fn hand_over(mut command: Command) -> Option<ExitCode> {
-    match command.spawn() {
-        Ok(_) => Some(ExitCode::SUCCESS),
-        Err(error) => {
-            eprintln!("ns-next mcp: serving from the build, the copy did not start: {error}");
-            None
+/// Removes the files beside `executable` that a server renamed aside:
+/// the removal of one a process still runs fails, which leaves it.
+fn remove_unused_renamed(executable: &Path) {
+    let (Some(directory), Some(name)) = (executable.parent(), executable.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let renamed = file_name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(RUNNING_SUFFIX))
+            .is_some_and(|process| {
+                !process.is_empty() && process.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        if renamed {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
 }

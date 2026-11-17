@@ -49,6 +49,9 @@ const OUTPUT_SETTLE: Duration = Duration::from_millis(200);
 /// answer unless asked for a page.
 pub(crate) const LISTING_LIMIT: usize = 100;
 
+/// The agent's message for an evaluation the abort ended.
+const ABORTED: &str = "evaluation aborted";
+
 /// The longest text of an evaluation's value an answer shows.
 const EVALUATION_LIMIT: usize = 10_000;
 
@@ -219,13 +222,19 @@ impl Session {
         }
         command
             .env(SECRET_VARIABLE, &secret)
-            .env_remove(shadow::EXECUTABLE_VARIABLE)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command
             .spawn()
             .map_err(|error| format!("starting {}: {error}", copy.display()))?;
+        // Said for whoever watches the server: a test, or a person
+        // looking for the program's process.
+        eprintln!(
+            "ns-next mcp: {} runs as process {}",
+            options.program.display(),
+            child.id()
+        );
         let output: Written = Arc::new(Mutex::new(Vec::new()));
         if let Some(stdout) = child.stdout.take() {
             collect(stdout, Arc::clone(&output));
@@ -810,7 +819,9 @@ impl Session {
                 // The evaluation's answer, which the agent sends however it
                 // ended: aborted, or answered just before the abort.
                 match self.response(seq, Instant::now() + ABORT_BOUND) {
-                    Ok(response) if response["success"] == true => response,
+                    // Answered, or ended otherwise than by the abort: its
+                    // own word.
+                    Ok(response) if response["message"] != ABORTED => response,
                     Err(Unanswered::Ended) => return Err(self.ended_refusal()),
                     _ => {
                         return Err(format!(
@@ -1220,15 +1231,23 @@ fn held_text(held: &Held) -> String {
     text
 }
 
-/// A response's body, or the message of an error response.
+/// A response's body, or the message of an error response, which is said
+/// on the standard error too, so that a refusal nobody expected shows
+/// the request it answers.
 fn body_of(response: &Value) -> Result<Value, String> {
     if response["success"] == true {
         Ok(response["body"].clone())
     } else {
-        Err(response["message"]
+        let message = response["message"]
             .as_str()
             .unwrap_or("the debugger refused it")
-            .to_string())
+            .to_string();
+        eprintln!(
+            "ns-next mcp: the agent refused `{}` (request {}): {message}",
+            response["command"].as_str().unwrap_or_default(),
+            response["request_seq"]
+        );
+        Err(message)
     }
 }
 

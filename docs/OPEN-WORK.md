@@ -3458,20 +3458,6 @@ program's subclass of `String` as an argument, the error of a
   `NS_NEXT_STRESS_ZONE` for it, and the exemption's comment names this
   item, so that it is removed, and the tests hold under the zone stress
   mode again, with the fix.
-- **`ns-next mcp`'s program outlives a server that is killed** (noted
-  2026-11-17, with the MCP server). The server kills its session's child
-  when the client closes its standard input, at the next `debug_start`
-  and at `debug_stop`; a server killed outright leaves the child, whose
-  agent, its client gone, detaches and lets the program run on -- an
-  endless loop for good. A job object on Windows and a parent-death
-  signal on Linux would end it with the server; neither is used, since
-  `ns-cli` has no `unsafe` and neither is in `std`. On Windows the
-  process the client starts hands over to its copy and ends at once
-  (`mcp/shadow.rs`), the client's pipes held by the copy: a client that
-  takes the started process's end for the server's, rather than the end
-  of its pipes, would see the server end at its start, and no test starts
-  the server as Claude Code starts it from `.mcp.json`
-  ([debugger.md](design/debugger.md), "The MCP server").
 
 ## Missing tests
 
