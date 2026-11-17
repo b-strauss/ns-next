@@ -4226,13 +4226,19 @@ The objects found are values a stop holds, as the variables view's are
 and withheld ("Marking objects") -- shown, but never marked, so that no
 walk puts a private kernel object or the mirror within an expression's
 reach: an instance, when a shipped mixin declares its class, a class
-object of a shipped declaration's class side among them; a closure or a
-frame object, when the body it captured or runs is a shipped module's,
-the variables view's rule, rather than by Kernel's `Closure` and
-`Activation`; and an object whose class has no declaration, which the
-view cannot place, so that the VM mirror's class, nameless by lock 4,
-is withheld here as `Mutator::is_withheld` withholds it, with its
-metaclass, in every view.
+object of a shipped declaration's class side among them, and an object
+whose class has no declaration, which the view cannot place; a frame
+object -- Kernel's private `Activation` -- always, whatever body it
+runs, in every view (`StopValues::describe`), since no program ever
+holds one ("a program sees the Error, never the activation", `Kernel.ns`)
+and a program's way to activations is a mirror; a closure, when its body
+belongs to a shipped module, decided by its code -- the registered mixin
+whose member's family holds it (`stack::code_is_shipped`) -- rather than
+by Kernel's `Closure` or the frame it captured. The VM mirror's class
+and its metaclass, nameless by lock 4, have a placeholder mixin and a
+class side for declarations, so the fail-closed rule does not reach
+them: `Mutator::is_withheld` withholds both, in every view, as it
+withholds the mirror.
 
 ### Folding the shipped frames
 

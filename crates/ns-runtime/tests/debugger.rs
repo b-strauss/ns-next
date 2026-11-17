@@ -16418,17 +16418,27 @@ mod memory_view {
         /// object the block captured is `run`'s variables, not an object.
         /// The answer pages over the whole list.
         fn the_referrers_of_an_object_are_found(lowering) {
-            let (found, paged, holder) = looking(lowering, |remote| {
+            let (found, paged, holder, closures) = looking(lowering, |remote| {
                 let item = item(remote);
-                let found = summary(&referrers(remote, item.id, 0, 100));
+                let answer = referrers(remote, item.id, 0, 100);
+                let found = summary(&answer);
+                let closures: Vec<bool> = objects(&answer)
+                    .iter()
+                    .filter(|object| object.class_name == "Closure")
+                    .map(|object| object.withheld)
+                    .collect();
                 let paged = summary(&referrers(remote, item.id, 1, 2));
                 let holders = instances(remote, memory_class(&["Holder"]), 0, 10);
                 let holder = summary(&referrers(remote, shown(&holders[0]).id, 0, 100));
-                (found, paged, holder)
+                (found, paged, holder, closures)
             });
             let mut expected = vec!["frame 0 anItem", "frame 1 item", "#3 Holder", "#4 Holder"];
             if lowering == Lowering::Optimized {
                 expected.push("#5 Closure");
+                // A program's closure, which the program holds.
+                assert_eq!(closures, [false]);
+            } else {
+                assert!(closures.is_empty());
             }
             assert_eq!(found, expected);
             assert_eq!(paged, ["frame 1 item", "#3 Holder"]);
@@ -16530,6 +16540,104 @@ mod memory_view {
                 "{labels:?}"
             );
             assert!(labels.iter().all(|(_, withheld)| *withheld), "{labels:?}");
+            for refusal in refusals {
+                assert!(
+                    matches!(
+                        &refusal,
+                        Event::Refused { reason, .. } if reason == "the value is withheld"
+                    ),
+                    "{refusal:?}"
+                );
+            }
+        }
+    }
+
+    /// A method that answers a block over its argument, so that its frame
+    /// object, the block's captured frame, returns -- under the lowering
+    /// that reads the argument by reference, keeping its registers --
+    /// while the program holds the block: stopped in `look:`.
+    const KEEPING: &str = indoc! {"
+        class Keeping = Object new () (
+          class Item = () ()
+          public run = (
+            | item block |
+            item:: Item new.
+            block:: self keep: item.
+            ^(self look: item) + (block value == item ifTrue: [1] ifFalse: [0])
+          )
+          keep: anItem = (
+            ^[anItem]
+          )
+          look: anItem = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A program's frame object -- returned, its registers kept -- is
+        /// a referrer of what they hold, withheld though it ran the
+        /// program's own body, and cannot be marked; the program's closure
+        /// is not withheld.
+        fn a_program_s_frame_object_is_withheld(lowering) {
+            let offset = line_start(KEEPING, "^1");
+            let (mut interpreter, class) = interpreted(KEEPING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((found, frames, closures, refusals), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Keeping", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Keeping"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let item = value_of(
+                        &variables(remote, Command::Variables { frame: 0 }),
+                        "anItem",
+                    )
+                    .clone();
+                    let answer = referrers(remote, item.id, 0, 100);
+                    let found = summary(&answer);
+                    let objects = objects(&answer);
+                    let of_class = |class: &str| -> Vec<&ValueDescription> {
+                        objects
+                            .iter()
+                            .copied()
+                            .filter(|object| object.class_name == class)
+                            .collect()
+                    };
+                    let frames: Vec<bool> =
+                        of_class("Activation").iter().map(|frame| frame.withheld).collect();
+                    let closures: Vec<bool> =
+                        of_class("Closure").iter().map(|closure| closure.withheld).collect();
+                    let refusals: Vec<Event> = of_class("Activation")
+                        .iter()
+                        .map(|frame| {
+                            request(
+                                remote,
+                                Command::Mark {
+                                    value: frame.id,
+                                    label: String::from("frame"),
+                                },
+                            )
+                        })
+                        .collect();
+                    set_breakpoints(remote, "Keeping", Vec::new());
+                    expect_breakpoints(remote, "Keeping");
+                    continue_stopped(remote);
+                    (found, frames, closures, refusals)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
+            match lowering {
+                Lowering::Reference => {
+                    assert_eq!(found, ["frame 0 anItem", "frame 1 item", "#3 Activation"]);
+                    assert_eq!(frames, [true]);
+                }
+                Lowering::Optimized => {
+                    assert_eq!(found, ["frame 0 anItem", "frame 1 item", "#3 Closure"]);
+                    assert_eq!(closures, [false]);
+                }
+            }
             for refusal in refusals {
                 assert!(
                     matches!(

@@ -892,27 +892,21 @@ pub(crate) fn frame_values<'gc>(
     Some((shipped, read))
 }
 
-/// Whether the frame object `frame` -- a running activation's, a
-/// suspended or a returned one -- runs a body of a shipped module, as
-/// `is_shipped` decides it for a frame of the stack: what withholds a
-/// frame object, and a closure by the frame it captured, in the memory
-/// view (`memory::referrers`). A frame that names no body, a top-level
-/// one, runs none.
-pub(crate) fn frame_object_is_shipped<'gc>(
-    mutator: &Mutator<'gc>,
-    frame: FrameReference<'gc>,
-) -> bool {
+/// Whether the body `code` belongs to a shipped module, decided by the
+/// code alone: by the registered mixin one of whose members' families
+/// holds it -- a method, an initializer or a superclass clause, or a
+/// block one of them creates -- and that mixin's module. What withholds
+/// a closure in the memory view (`memory::referrers`), whatever frame it
+/// captured, if any. `None` when no registered mixin holds it: a body of
+/// a version an edit replaced, or a top-level one.
+pub(crate) fn code_is_shipped(mutator: &Mutator<'_>, code: &Rc<CompiledCode>) -> Option<bool> {
     let heap = &mutator.heap;
-    let (read, code) = match heap.frame_activation(frame) {
-        Some(activation) => (Frame::Running(activation), heap.activation_code(activation)),
-        None => {
-            let Some(code) = heap.frame_code(frame) else {
-                return false;
-            };
-            (Frame::Suspended(frame), code)
-        }
-    };
-    origin_is_shipped(mutator, origin_of(heap, read, &code).as_ref())
+    let holder = heap
+        .mixin_ids()
+        .into_iter()
+        .filter_map(|id| heap.mixin(id))
+        .find(|mixin| member_holding(mixin, code).is_some())?;
+    Some(module_name(mutator, &holder).is_none_or(|module| module.shipped))
 }
 
 /// What reads one stopped frame's variables.

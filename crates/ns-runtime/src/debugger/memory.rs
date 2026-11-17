@@ -254,25 +254,35 @@ pub(crate) fn referrers(
     answer
 }
 
-/// Whether the memory view withholds `object`, a referrer: a closure or
-/// a frame object when the body it captured or runs is a shipped
-/// module's, as the variables view withholds a shipped frame's values
-/// (`stack::frame_object_is_shipped`); any other object when a shipped
-/// module declares its class, or when its class has no declaration --
-/// the VM mirror's class among such, which no program may name -- so
-/// that what the view cannot place is never handed out markable.
-/// `Mutator::is_withheld` applies besides (`StopValues::describe`).
+/// Whether the memory view withholds `object`, a referrer. A frame
+/// object -- Kernel's private `Activation` -- always is, whatever body it
+/// runs: no program ever holds one, and a program reaches activations
+/// only through a mirror (`StopValues::describe` withholds every frame
+/// object). A closure is withheld when its body belongs to a shipped
+/// module, decided by its code (`stack::code_is_shipped`), as the
+/// variables view withholds a shipped frame's values, and, where no
+/// registered mixin holds that code, when its class's declaration is
+/// shipped, as for any other object: an object is withheld when a
+/// shipped module declares its class, or when its class has no
+/// declaration, so that what the view cannot place is never handed out
+/// markable. The VM mirror's class and its metaclass have declarations
+/// of a sort -- a placeholder mixin and a class side -- and are withheld
+/// by `Mutator::is_withheld`, which `StopValues::describe` applies
+/// besides.
 fn object_is_withheld<'gc>(
     mutator: &Mutator<'gc>,
     declarations: &mut Declarations,
     object: ObjectReference<'gc>,
 ) -> bool {
     let heap = &mutator.heap;
-    if let Some(frame) = heap.object_frame(object) {
-        return stack::frame_object_is_shipped(mutator, frame);
+    if heap.object_frame(object).is_some() {
+        return true;
     }
-    if let Some(frame) = heap.closure_captured_frame(object) {
-        return stack::frame_object_is_shipped(mutator, frame);
+    if let Some(shipped) = heap
+        .closure_code(object)
+        .and_then(|code| stack::code_is_shipped(mutator, &code))
+    {
+        return shipped;
     }
     declarations
         .of_class(mutator, heap.object_class(object))

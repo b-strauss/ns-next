@@ -127,8 +127,9 @@ impl StopValues {
     /// `value`, held for the stop and described for the agent: withheld
     /// when `through_shipped` -- it came through a shipped activation or
     /// a field a shipped mixin declares, or is a child of a withheld value
-    /// -- or when the shipped world withholds it from every program
-    /// (`Mutator::is_withheld`), and showing its mark.
+    /// -- when it is a frame object, or when the shipped world withholds
+    /// it from every program (`Mutator::is_withheld`), and showing its
+    /// mark.
     pub(crate) fn describe<'gc>(
         &mut self,
         mutator: &Mutator<'gc>,
@@ -136,7 +137,13 @@ impl StopValues {
         through_shipped: bool,
     ) -> ValueDescription {
         let id = ValueId(self.next_first());
-        let withheld = through_shipped || mutator.is_withheld(value);
+        // A frame object is Kernel's private `Activation`, which no
+        // program ever holds: whatever body it runs, a program reaches
+        // activations only through a mirror.
+        let is_frame = value
+            .as_object()
+            .is_some_and(|object| mutator.heap.object_frame(object).is_some());
+        let withheld = through_shipped || is_frame || mutator.is_withheld(value);
         self.held.push(Held {
             root: mutator.heap.stash(value),
             withheld,
