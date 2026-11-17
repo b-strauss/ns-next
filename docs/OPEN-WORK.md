@@ -2088,17 +2088,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       "Plugin testing and gates").
   - **What stage 5's reviews left** (2026-11-17), a stop's reason or
     text wrong among them:
-    - *A failed condition at an exit by an unwind loses its text or
-      outlives its run*: a pause that aborts a method breakpoint's
+    - *A failed condition at an exit by an unwind loses its text*: a
+      pause that aborts a method breakpoint's
       condition at an exit by an unwind makes the stop report that exit
       (`StopReason::MethodExit`) rather than the pause
       (`conditions::exit_ended`); a line condition that fails at the stop
       after an exit condition failed is named with the exit's error and
       its own text dropped, and an exception's stop names the failed
-      exit's breakpoint without its error (`conditions::failure_named`);
-      and the failure (`Breakpoints::exit_failure`) is cleared at a
-      terminate and a detach but not when a run ends, so the next run's
-      first stop would name it -- untested
+      exit's breakpoint without its error (`conditions::failure_named`)
       ([debugger.md](design/debugger.md), "Hit counts and temporary
       breakpoints").
     - *An abort names no evaluation*: `Command::AbortEvaluation` aborts

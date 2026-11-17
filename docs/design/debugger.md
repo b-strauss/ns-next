@@ -3782,7 +3782,15 @@ named by the stop that reports the exit (`conditions::failure_named`,
 debugger's next stop, never a stop a stress mode's reader serves, which
 would take the failure from the debugger
 (`a_stress_pause_leaves_an_exit_s_failure_to_the_debugger`); a pause that
-aborts it makes that report the pause's stop. A temporary breakpoint needs
+aborts it makes that report the pause's stop. An exit whose unwind ends
+the run is reported by the step the next run carries (decision 17), and
+the failure goes with that step: named by its stop at the next run's
+first statement, or by a pause asked between the runs, which reports the
+step's exits; dropped with it by a `Terminate` or a detach between the
+runs; and dropped at a run's end that carries no step
+(`evaluation::run_ended`, `stepping::end`;
+`a_failure_owed_at_a_run_s_end_is_named_by_the_stop_that_reports_its_exit`,
+`a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs`). A temporary breakpoint needs
 nothing of the agent or the VM: IntelliJ's debugger session removes a
 breakpoint marked to be removed once hit when it reports the stop, which
 the `stopped` event's `hitBreakpointIds` tell it.

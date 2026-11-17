@@ -14581,6 +14581,114 @@ mod conditions {
         }
     }
 
+    /// A method a non-local return leaves on its way to the run's own
+    /// method, which then ends the run, and a method a second run sends.
+    const LEFT_AT_THE_END: &str = indoc! {"
+        class LeftAtTheEnd = Object new (
+          | entered ::= false. |
+        ) (
+          public run = (
+            self pass: [^1].
+            ^2
+          )
+          pass: block = (
+            entered:: true.
+            ^block value
+          )
+          public again = (
+            ^3
+          )
+        ) : ()
+    "};
+
+    /// The stop of the next run of `LEFT_AT_THE_END`, set up for a line
+    /// breakpoint at `again`'s statement, after a first run whose
+    /// `pass:` left by a non-local return that ended the run, its method
+    /// breakpoint's condition failing at that exit; `between` is sent
+    /// between the runs. Answers the method breakpoint's id, the line
+    /// breakpoint's and the stop's reason.
+    fn stop_after_a_failure_owed_at_a_run_s_end(
+        lowering: Lowering,
+        between: Option<Command>,
+    ) -> (BreakpointId, BreakpointId, StopReason) {
+        let mut breakpoint = method_breakpoint("LeftAtTheEnd", &[], false, "pass:");
+        breakpoint.condition = Some("entered and: [nil foo]".to_owned());
+        let again = line_start(LEFT_AT_THE_END, "^3");
+        let (mut interpreter, class) = interpreted(LEFT_AT_THE_END, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, vec![breakpoint]);
+        let (method, result, remote) = debugged_by(
+            remote,
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let events = events_until_the_end(remote);
+                assert!(events.is_empty(), "the first run reported {events:?}");
+                id
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 1);
+        if let Some(command) = between {
+            remote.send(command);
+        }
+        set_breakpoints(&remote, "LeftAtTheEnd", vec![again]);
+        let ((line, reason), result, _) = debugged_by(
+            remote,
+            |remote| {
+                let mut line = None;
+                loop {
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Breakpoints { breakpoints, .. }) => {
+                            line = Some(resolved(&breakpoints).0);
+                        }
+                        Some(Event::Refused { .. }) => {}
+                        Some(Event::Stopped { reason, .. }) => {
+                            continue_stopped(remote);
+                            return (line.expect("the line breakpoint was answered"), reason);
+                        }
+                        other => panic!("a stop was expected, not {other:?}"),
+                    }
+                }
+            },
+            || interpreter.send(&instance, Symbol::intern("again"), &[]),
+        );
+        assert_eq!(answered(&mut interpreter, result), 3);
+        (method, line, reason)
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An exit by an unwind that ends the run is reported by a step
+        /// the next run carries (decision 17), and a condition that
+        /// failed at that exit goes with it: the next run's first stop is
+        /// the failure, naming the exit's breakpoint and the one that
+        /// holds there.
+        fn a_failure_owed_at_a_run_s_end_is_named_by_the_stop_that_reports_its_exit(lowering) {
+            let (method, line, reason) = stop_after_a_failure_owed_at_a_run_s_end(lowering, None);
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [method, line]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate between runs drops the step that would report the
+        /// exit, and the failure owed at that exit with it: the next run's
+        /// first stop is its own breakpoint's, naming no failure.
+        fn a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs(lowering) {
+            let (_, line, reason) =
+                stop_after_a_failure_owed_at_a_run_s_end(lowering, Some(Command::Terminate));
+            assert!(
+                matches!(&reason, StopReason::Breakpoint { ids } if ids == &[line]),
+                "the stop was the line breakpoint's, not {reason:?}"
+            );
+        }
+    }
+
     ns_runtime::for_each_lowering! {
         /// The pause stress mode's stops, which its reader serves, leave
         /// a failure at an exit by an unwind to the attached debugger's

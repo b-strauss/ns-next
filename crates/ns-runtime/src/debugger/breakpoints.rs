@@ -760,6 +760,12 @@ impl Breakpoints {
         self.carried_step = Some(exits);
     }
 
+    /// Whether the last host run's end left a step in progress for the
+    /// next (`carry_step`).
+    pub(crate) fn carries_a_step(&self) -> bool {
+        self.carried_step.is_some()
+    }
+
     /// The step the last host run's end left in progress, taken.
     pub(crate) fn take_carried_step(&mut self) -> Option<Vec<BreakpointId>> {
         self.carried_step.take()

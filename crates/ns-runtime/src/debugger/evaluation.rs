@@ -660,11 +660,18 @@ pub(crate) fn has_ended(mutator: &Mutator<'_>) -> bool {
 
 /// The run ended: an evaluation still running ended with it unanswered,
 /// the depth limit's raise goes, and an answer no stop took -- its
-/// debugger detached meanwhile -- goes too.
+/// debugger detached meanwhile -- goes too. A failure at an exit by an
+/// unwind no stop named stays only with the step the run carries to the
+/// next, whose stop reports that exit (`stepping::run_ended`): with no
+/// such step, the next run's first stop would name a failure of an exit
+/// it does not report.
 pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
     set_running(mutator, None, 0);
     mutator.breakpoints.evaluated = None;
     mutator.breakpoints.unwound_exit = None;
+    if !mutator.breakpoints.carries_a_step() {
+        mutator.breakpoints.exit_failure = None;
+    }
 }
 
 /// The debugger terminates the run: an evaluation still running ends

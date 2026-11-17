@@ -1301,10 +1301,14 @@ fn place_of<'gc>(mutator: &Mutator<'gc>, frame: &StackFrame) -> Option<Place<'gc
 /// request bit dropped. Answers the value the step recorded last. A step
 /// the last host run carried to the next (`run_ended`) ends too, so that
 /// whatever ends a step between runs -- a `Terminate`, a detach, a pause
-/// asked between them -- ends that one.
+/// asked between them -- ends that one, and with it a failure at an exit
+/// by an unwind that only its stop would have named
+/// (`evaluation::run_ended`).
 pub(crate) fn end(mutator: &mut Mutator<'_>) -> Option<Returned> {
     let stepping = mutator.stepping.take();
-    mutator.breakpoints.take_carried_step();
+    if mutator.breakpoints.take_carried_step().is_some() {
+        mutator.breakpoints.exit_failure = None;
+    }
     mutator.breakpoints.remove_one_shots();
     drop_request(mutator);
     settle(mutator);
