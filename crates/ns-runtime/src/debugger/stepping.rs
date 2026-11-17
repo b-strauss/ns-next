@@ -247,12 +247,35 @@ pub(crate) enum Aim {
 }
 
 /// A place a smart step into may stop at, as `Command::StepInTargets`
-/// answers it, and what the step aims at.
+/// answers it, what the step aims at, and the statement it was taken at.
 pub(crate) struct Target {
     pub(crate) label: String,
     pub(crate) span: Span,
     pub(crate) kind: StepInTargetKind,
     pub(crate) aim: Aim,
+    pub(crate) statement: Rc<StatementRegion>,
+}
+
+/// The code a smart step into's statement runs as the stepping frame's
+/// own: the statement's instructions in the frame's body, and the whole
+/// body of every block of an inlinable form in it the frame runs as a
+/// closure -- a fallback closure, or the reference lowering's block --
+/// whose statement starts its flood leaves out, so that the step stops
+/// at the chosen push or, as a step over, only once the statement is
+/// done, never at a statement start of an inlined block on the way.
+pub(crate) struct StatementRegion {
+    regions: Vec<(Rc<CompiledCode>, Range<u32>)>,
+}
+
+impl StatementRegion {
+    /// Whether slot `index` of `body` lies in the statement.
+    fn holds(&self, body: &Rc<CompiledCode>, index: usize) -> bool {
+        u32::try_from(index).is_ok_and(|index| {
+            self.regions
+                .iter()
+                .any(|(code, range)| Rc::ptr_eq(code, body) && range.contains(&index))
+        })
+    }
 }
 
 impl Stepping {
@@ -331,6 +354,18 @@ pub(crate) enum HeldStep {
 /// step filters filter is decided here, once: a `SetStepFilters` served
 /// while the step runs changes where it lands, not that.
 pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option<&StackFrame>) {
+    begin_in(mutator, action, shown, None);
+}
+
+/// `begin`, its flood leaving out the statement starts `statement` holds:
+/// a smart step into's, which goes on as a step over only once its
+/// statement is done (`begin_smart`).
+fn begin_in(
+    mutator: &mut Mutator<'_>,
+    action: StepAction,
+    shown: Option<&StackFrame>,
+    statement: Option<&StatementRegion>,
+) {
     end(mutator);
     let Some(top) = mutator.heap.top_activation() else {
         return;
@@ -370,6 +405,7 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         step_from,
         None,
         passed,
+        statement,
     );
     match left {
         Some(SendLeft::Called { frame, code, after }) => {
@@ -406,15 +442,26 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
 
 /// The places a smart step into from `frame` may stop at (decision 3,
 /// "Smart step into a block"): the sends of the innermost statement
-/// holding its program counter, from there to the statement's end, in
-/// the order they run, then the block literals those sends take that run
-/// as closures, in the order of their sends. A block the compiler lowers
-/// inline -- every block of a form the optimized lowering inlines, so
-/// that both lowerings offer the same -- runs in the frame, where a step
-/// over stops in it: it is no target. None for a body without metadata.
-pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame) -> Vec<Target> {
-    let (code, _, metadata) = stack::body(mutator, frame);
-    let Some(metadata) = metadata else {
+/// holding its program counter, from there -- past the send a frame
+/// below the top, `waiting`, waits on, which runs already -- to the
+/// statement's end, in the order they run, then the block literals those
+/// sends take that run as closures, in the order of their sends. None
+/// for a body without metadata.
+///
+/// An inlinable form -- `ifTrue:`, `and:`, `whileTrue:`, a mirror send's
+/// failure block -- gives the same list under both lowerings: its own
+/// selector is never a target (`forms_own_sends`), and the sends of its
+/// blocks are, once each, where the form stands, in the order the source
+/// writes them -- under the optimized lowering in the frame's own body,
+/// where the inline copy runs, and under the reference lowering in the
+/// block's body, which the frame runs as a closure the step floods for
+/// it, so that such a send target's body is that block's and its sender
+/// the step's inline code (`inline_code_of_step`). No block of such a
+/// form is a target: it runs as the frame's own code, where a step over
+/// stops in it.
+pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame, waiting: bool) -> Vec<Target> {
+    let (code, origin, metadata) = stack::body(mutator, frame);
+    let (Some(origin), Some(metadata)) = (origin, metadata) else {
         return Vec::new();
     };
     let standing = stack::program_counter(&mutator.heap, frame);
@@ -426,59 +473,177 @@ pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame) -> Vec<Targ
     else {
         return Vec::new();
     };
-    let rest = standing..statement.instructions.end;
-    let count = code.instruction_count();
-    let instruction_at = |index: u32| {
-        usize::try_from(index)
-            .ok()
-            .filter(|index| *index < count)
-            .map(|index| (index, code.instruction(index)))
+    let first = if waiting {
+        standing.saturating_add(1)
+    } else {
+        standing
     };
-    let mut targets: Vec<Target> = metadata
-        .sends
-        .iter()
-        .filter(|entry| rest.contains(&entry.index))
-        .filter_map(|entry| {
-            let (index, instruction) = instruction_at(entry.index)?;
-            Some(Target {
-                label: selector_label(&instruction)?,
+    let rest = first..statement.instructions.end;
+    let mut regions = vec![(Rc::clone(&code), statement.instructions.clone())];
+    // Every target is given the whole statement once it is known.
+    let unplaced = Rc::new(StatementRegion {
+        regions: Vec::new(),
+    });
+    // Each target keyed by where it runs: its index, behind the index of
+    // the form's send and the block's place among the form's blocks for a
+    // block body the reference lowering runs as a closure.
+    let mut sends: Vec<(Vec<u32>, Target)> = Vec::new();
+    let mut blocks: Vec<(Vec<u32>, Target)> = Vec::new();
+    // A body is listed unless it is a fallback closure, whose sends the
+    // inline copy lists: it is only part of the statement.
+    let mut pending = vec![(code, metadata, rest, Vec::new(), true)];
+    while let Some((code, metadata, rest, place, listed)) = pending.pop() {
+        let count = code.instruction_count();
+        let instruction_at = |index: u32| {
+            usize::try_from(index)
+                .ok()
+                .filter(|index| *index < count)
+                .map(|index| (index, code.instruction(index)))
+        };
+        let keyed = |index: u32| {
+            let mut key = place.clone();
+            key.push(index);
+            key
+        };
+        let own = forms_own_sends(&code, &metadata);
+        for entry in &metadata.sends {
+            if !listed || !rest.contains(&entry.index) || own.contains(&entry.index) {
+                continue;
+            }
+            let Some((index, instruction)) = instruction_at(entry.index) else {
+                continue;
+            };
+            let Some(label) = selector_label(&instruction) else {
+                continue;
+            };
+            let target = Target {
+                label,
                 span: entry.selector.first().copied().unwrap_or(entry.call),
                 kind: StepInTargetKind::Send,
                 aim: Aim::Send {
                     code: Rc::clone(&code),
                     index,
                 },
-            })
-        })
-        .collect();
-    let mut blocks: Vec<(u32, Target)> = metadata
-        .block_sends
-        .iter()
-        .filter(|entry| !entry.inlined)
-        .flat_map(|entry| entry.blocks.iter())
-        .filter_map(|block| {
-            let BlockPlace::Called { send, closure } = block.place else {
-                return None;
+                statement: Rc::clone(&unplaced),
             };
-            if !rest.contains(&send) {
-                return None;
+            sends.push((keyed(entry.index), target));
+        }
+        for entry in &metadata.block_sends {
+            let inline_spans: Vec<Span> = entry
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.place, BlockPlace::Inline(_)))
+                .map(|block| block.span)
+                .collect();
+            let mut expanded: Vec<Span> = Vec::new();
+            for (ordinal, block) in (0u32..).zip(entry.blocks.iter()) {
+                let BlockPlace::Called { send, closure } = block.place else {
+                    continue;
+                };
+                if !rest.contains(&send) {
+                    continue;
+                }
+                let Some((_, Instruction::MakeClosure { code: body, .. })) =
+                    instruction_at(closure)
+                else {
+                    continue;
+                };
+                if !entry.inlined {
+                    if !listed {
+                        continue;
+                    }
+                    let Some(label) =
+                        instruction_at(send).and_then(|(_, taking)| selector_label(&taking))
+                    else {
+                        continue;
+                    };
+                    let target = Target {
+                        label: format!("[] in {label}"),
+                        span: block.span,
+                        kind: StepInTargetKind::Block,
+                        aim: Aim::Block { code: body },
+                        statement: Rc::clone(&unplaced),
+                    };
+                    blocks.push((keyed(send), target));
+                    continue;
+                }
+                // An inlined form's block: its sends are listed where the
+                // optimized lowering's inline copy holds them -- its
+                // closure being the fallback's, run only for a receiver
+                // that is no Boolean -- or else from the block's body.
+                if expanded.contains(&block.span) {
+                    continue;
+                }
+                expanded.push(block.span);
+                let all = 0..u32::try_from(body.instruction_count()).unwrap_or(u32::MAX);
+                regions.push((Rc::clone(&body), all.clone()));
+                let Some(metadata) = Cache::metadata(mutator, &body, &origin) else {
+                    continue;
+                };
+                let mut key = keyed(send);
+                key.push(ordinal);
+                let lists = listed && !inline_spans.contains(&block.span);
+                pending.push((body, metadata, all, key, lists));
             }
-            let (_, taking) = instruction_at(send)?;
-            let (_, Instruction::MakeClosure { code: body, .. }) = instruction_at(closure)? else {
-                return None;
-            };
-            let target = Target {
-                label: format!("[] in {}", selector_label(&taking)?),
-                span: block.span,
-                kind: StepInTargetKind::Block,
-                aim: Aim::Block { code: body },
-            };
-            Some((send, target))
+        }
+    }
+    sends.sort_by(|(first, _), (second, _)| first.cmp(second));
+    blocks.sort_by(|(first, _), (second, _)| first.cmp(second));
+    let statement = Rc::new(StatementRegion { regions });
+    sends
+        .into_iter()
+        .chain(blocks)
+        .map(|(_, mut target)| {
+            target.statement = Rc::clone(&statement);
+            target
+        })
+        .collect()
+}
+
+/// The indices of `code`'s sends that are an inlinable form's own, never
+/// a target, since the optimized lowering's inline copy has no send of
+/// the form (`targets`): every `SendInlinable` -- the reference lowering's
+/// form and its loop's `value` sends -- the send at which a form's block
+/// runs as a closure -- the optimized lowering's fallback send -- and a
+/// mirror send whose failure block the optimized lowering inlines, which
+/// fails into that block's first instruction.
+fn forms_own_sends(code: &CompiledCode, metadata: &BodyMetadata) -> Vec<u32> {
+    let inlined_blocks = || {
+        metadata
+            .block_sends
+            .iter()
+            .filter(|entry| entry.inlined)
+            .flat_map(|entry| entry.blocks.iter())
+    };
+    let mut own: Vec<u32> = inlined_blocks()
+        .filter_map(|block| match block.place {
+            BlockPlace::Called { send, .. } => Some(send),
+            BlockPlace::Inline(_) => None,
         })
         .collect();
-    blocks.sort_by_key(|(send, _)| *send);
-    targets.extend(blocks.into_iter().map(|(_, target)| target));
-    targets
+    let inline_starts: Vec<u32> = inlined_blocks()
+        .filter_map(|block| match &block.place {
+            BlockPlace::Inline(range) => Some(range.start),
+            BlockPlace::Called { .. } => None,
+        })
+        .collect();
+    let count = code.instruction_count();
+    for entry in &metadata.sends {
+        let Some(index) = usize::try_from(entry.index)
+            .ok()
+            .filter(|index| *index < count)
+        else {
+            continue;
+        };
+        match code.instruction(index) {
+            Instruction::SendInlinable { .. } => own.push(entry.index),
+            Instruction::SendMirror { failure, .. } if inline_starts.contains(&failure) => {
+                own.push(entry.index);
+            }
+            _ => {}
+        }
+    }
+    own
 }
 
 /// A target's label for the send `instruction`: its selector as the
@@ -505,12 +670,17 @@ fn selector_label(instruction: &Instruction) -> Option<String> {
 /// the block runs -- in the shipped `do:`, not at a send of the frame.
 /// Either goes on as a step over once the statement is done without its
 /// aim.
-pub(crate) fn begin_smart(mutator: &mut Mutator<'_>, aim: Aim, shown: Option<&StackFrame>) {
+pub(crate) fn begin_smart(
+    mutator: &mut Mutator<'_>,
+    aim: Aim,
+    statement: &StatementRegion,
+    shown: Option<&StackFrame>,
+) {
     let action = match aim {
         Aim::Send { .. } => StepAction::Into,
         Aim::Block { .. } => StepAction::Over,
     };
-    begin(mutator, action, shown);
+    begin_in(mutator, action, shown, Some(statement));
     let Some(stepping) = &mut mutator.stepping else {
         return;
     };
@@ -1033,6 +1203,7 @@ pub(crate) fn stop_at_entry(
         Place::Running(entry),
         None,
         None,
+        None,
     );
     if let Some(stepping) = &mut mutator.stepping {
         stepping.started_filtered = true;
@@ -1064,7 +1235,7 @@ pub(crate) fn stop_at_restart(mutator: &mut Mutator<'_>, frame: &StackFrame) {
     let Some(place) = place_of(mutator, frame) else {
         return;
     };
-    start(mutator, StepAction::Out, place, place, None, None);
+    start(mutator, StepAction::Out, place, place, None, None, None);
     let Some(stepping) = &mut mutator.stepping else {
         return;
     };
@@ -1267,7 +1438,15 @@ pub(crate) fn continue_as_step_into(mutator: &mut Mutator<'_>, frame: Activation
     if matches!(place, Place::Suspended(_)) {
         mutator.breakpoints.count_step_from_suspended();
     }
-    start(mutator, StepAction::Into, place, place, returned, None);
+    start(
+        mutator,
+        StepAction::Into,
+        place,
+        place,
+        returned,
+        None,
+        None,
+    );
     if let Some(stepping) = &mut mutator.stepping {
         stepping.went_on_elsewhere = true;
     }
@@ -1477,7 +1656,7 @@ pub(crate) fn method_left(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>, lea
             let (returned, exits) = carried(mutator);
             mutator.breakpoints.remove_one_shots();
             let home = Place::Running(home);
-            start(mutator, StepAction::Out, home, home, returned, None);
+            start(mutator, StepAction::Out, home, home, returned, None, None);
             keep_exits(mutator, exits);
             settle(mutator);
         }
@@ -1962,7 +2141,7 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
     end(mutator);
     // `top` stands above the sender but is left out of `between`, which
     // only a held request reads: the request is dropped at once.
-    start(mutator, StepAction::Into, sender, sender, None, None);
+    start(mutator, StepAction::Into, sender, sender, None, None, None);
     // The push the request waits for has happened: the header stop was
     // its stop.
     drop_request(mutator);
@@ -2408,7 +2587,8 @@ fn rename(mutator: &mut Mutator<'_>, from: Holder, onto: Holder) {
 /// step out that leaves an inlined form, `passed`, flooded but for the
 /// form's own blocks -- its return point set, and the request held for a
 /// step into; the frames from `top` down to it are there already, none of
-/// them a push of the step's. The caller settles the table.
+/// them a push of the step's. A smart step into's flood leaves out the
+/// statement starts of its `statement`. The caller settles the table.
 fn start<'gc>(
     mutator: &mut Mutator<'gc>,
     action: StepAction,
@@ -2416,6 +2596,7 @@ fn start<'gc>(
     taken_in: Place<'gc>,
     returned: Option<Returned>,
     passed: Option<&LeftBlocks>,
+    statement: Option<&StatementRegion>,
 ) {
     // Its frame is named by `stepping_frame`, which may hold `taken_in` as
     // a suspended frame first.
@@ -2427,7 +2608,7 @@ fn start<'gc>(
         stepping.between = between;
     }
     if action != StepAction::Out || passed.is_some() {
-        flood(mutator, frame, body, passed);
+        flood(mutator, frame, body, passed, statement);
     }
     set_return_point(mutator, frame);
     if action == StepAction::Into {
@@ -2550,7 +2731,13 @@ fn stepping_frame<'gc>(mutator: &mut Mutator<'gc>, top: Place<'gc>) -> (Holder, 
 /// recording one (`record`), but for the blocks of the inlined form a step
 /// out leaves, `passed`. A body without metadata has no statement starts
 /// to flood.
-fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Option<&LeftBlocks>) {
+fn flood(
+    mutator: &mut Mutator<'_>,
+    frame: Holder,
+    body: FrameBody,
+    passed: Option<&LeftBlocks>,
+    statement: Option<&StatementRegion>,
+) {
     let (code, origin, metadata) = body;
     let Some(origin) = origin else {
         return;
@@ -2581,6 +2768,7 @@ fn flood(mutator: &mut Mutator<'_>, frame: Holder, body: FrameBody, passed: Opti
             .filter(|entry| !entry.instructions.is_empty())
             .filter_map(|entry| usize::try_from(entry.instructions.start).ok())
             .filter(flooded)
+            .filter(|index| !statement.is_some_and(|statement| statement.holds(&body, *index)))
             .collect();
         // A setter's answer is its receiver, never the value its
         // assignment answers: the assigned value's call stays the last.

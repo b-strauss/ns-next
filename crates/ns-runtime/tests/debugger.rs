@@ -15101,6 +15101,48 @@ mod smart_stepping {
           pair: value with: block = (
             ^block value: value
           )
+          public conditional = (
+            | x |
+            x:: true.
+            x ifTrue: [self second].
+            ^1
+          )
+          public looping = (
+            | count ::= 0. |
+            [self below: count] whileTrue: [count:: self next: count].
+            ^count
+          )
+          public accessing = (
+            | y |
+            y:: self sunk + self second.
+            ^y
+          )
+          public never = (
+            self ignore: [:value | sink: value].
+            ^sunk
+          )
+          public escaped = (
+            | first |
+            first:: self pass: nil.
+            ^self pass: first
+          )
+          below: value = (
+            ^value < 2
+          )
+          next: value = (
+            ^value + 1
+          )
+          ignore: block = (
+            ^0
+          )
+          pass: other = (
+            ^self choose: other or: [:value | sink: value]
+          )
+          choose: other or: block = (
+            other isNil ifTrue: [^block].
+            other value: 5.
+            ^sunk
+          )
         ) : ()
     "};
 
@@ -15261,6 +15303,201 @@ mod smart_stepping {
                 refusal,
                 (String::from("StepIntoTarget"), String::from("no such target"))
             );
+        }
+    }
+
+    /// Sends `selector` to an instance of `SMART` under `lowering`, stopped
+    /// at a breakpoint on the line of `line`: answers the labels of the
+    /// targets there, and where a smart step into the target labelled
+    /// `label` stopped, with the label of the top frame's variable
+    /// `variable`, if one is named.
+    fn listed_and_stepped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+        variable: Option<&'static str>,
+    ) -> (Vec<String>, (String, String), Option<String>) {
+        let offset = line_start(SMART, line);
+        let (answer, _) = stepped(
+            SMART,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Smart", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Smart");
+                let listed = targets(remote);
+                let labels = listed.iter().map(|target| target.label.clone()).collect();
+                let target = target_labelled(&listed, label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, SMART);
+                let value = variable.map(|name| top_variable(remote, name));
+                set_breakpoints(remote, "Smart", Vec::new());
+                expect_breakpoints(remote, "Smart");
+                continue_stopped(remote);
+                (labels, stood, value)
+            },
+        );
+        answer
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An inlined conditional's own selector is no target under either
+        /// lowering, its block's send is, and choosing it stops in the
+        /// method that send pushes.
+        fn targets_of_an_inlined_conditional_are_its_block_s_sends(lowering) {
+            let (labels, stood, _) = listed_and_stepped(
+                lowering,
+                "conditional",
+                "x ifTrue: [self second].",
+                "second",
+                None,
+            );
+            assert_eq!(labels, ["second"]);
+            assert_eq!(stood, (String::from("Smart>>second"), String::from("^2")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An inlined loop's targets are the sends of its two blocks, in
+        /// the order the source writes them, and choosing the body's stops
+        /// in the method it pushes, past the condition's push.
+        fn targets_of_an_inlined_loop_are_its_blocks_sends(lowering) {
+            let (labels, stood, value) = listed_and_stepped(
+                lowering,
+                "looping",
+                "[self below: count] whileTrue:",
+                "next:",
+                Some("value"),
+            );
+            assert_eq!(labels, ["below:", "next:"]);
+            assert_eq!(
+                stood,
+                (String::from("Smart>>next:"), String::from("^value + 1"))
+            );
+            assert_eq!(value.as_deref(), Some("0"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A slot's getter, which its fast path answers without a push,
+        /// is a target that steps over: the next statement, past the push
+        /// of a later send of its statement.
+        fn a_fast_path_accessor_target_steps_over(lowering) {
+            let (_, stood, _) = listed_and_stepped(
+                lowering,
+                "accessing",
+                "y:: self sunk + self second.",
+                "sunk",
+                None,
+            );
+            assert_eq!(stood, (String::from("Smart>>accessing"), String::from("^y")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A send to the shipped `do:`, which the step filters filter,
+        /// stops in the program's block it runs, at its first activation.
+        fn a_filtered_send_s_target_stops_in_the_program_s_block(lowering) {
+            let (_, stood, each) = listed_and_stepped(
+                lowering,
+                "blocks",
+                "{10. 20} do: [:each | sink: each].",
+                "do:",
+                Some("each"),
+            );
+            assert_eq!(
+                stood,
+                (String::from("[] in Smart>>blocks"), String::from("sink: each"))
+            );
+            assert_eq!(each.as_deref(), Some("10"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block target its send never runs steps over: the next
+        /// statement of the frame.
+        fn a_block_target_never_run_steps_over(lowering) {
+            let (_, stood, _) = listed_and_stepped(
+                lowering,
+                "never",
+                "self ignore: [:value | sink: value].",
+                "[] in ignore:",
+                None,
+            );
+            assert_eq!(stood, (String::from("Smart>>never"), String::from("^sunk")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A closure of the block literal another activation of the same
+        /// method made, run while the stepping frame's own closure is not,
+        /// does not stop the step: it steps over, out of its frame, to
+        /// where its caller goes on.
+        fn an_escaped_block_of_another_activation_does_not_stop(lowering) {
+            let offset = line_start(SMART, "^self choose: other or:");
+            let (stood, _) = stepped(
+                SMART,
+                lowering,
+                "escaped",
+                |remote| set_breakpoints(remote, "Smart", vec![offset]),
+                |remote| {
+                    expect_first_stop(remote, "Smart");
+                    continue_stopped(remote);
+                    expect_breakpoint_stop(remote);
+                    set_breakpoints(remote, "Smart", Vec::new());
+                    expect_breakpoints(remote, "Smart");
+                    let target = target_labelled(&targets(remote), "[] in choose:or:");
+                    step(remote, Command::StepIntoTarget { target });
+                    let stood = standing(remote, SMART);
+                    continue_stopped(remote);
+                    stood
+                },
+            );
+            assert_eq!(
+                stood,
+                (String::from("Smart>>escaped"), String::from("^self pass: first"))
+            );
+        }
+    }
+
+    /// A method whose statement sends what `nil` does not understand, and
+    /// sends again with its answer.
+    const FAILING: &str = indoc! {"
+        class Failing = Object new () (
+          public run = (
+            ^self twice: nil foo
+          )
+          twice: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// At an uncaught exception's stop the targets are those of the
+        /// frame shown first below the machinery, past the send it waits
+        /// on, which runs already.
+        fn an_exception_s_targets_start_past_the_send_in_flight(lowering) {
+            let (mut interpreter, class) = interpreted(FAILING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (labels, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |_| {},
+                |remote| {
+                    match expect_stop(remote) {
+                        StopReason::Exception { caught: false, .. } => {}
+                        other => panic!("the uncaught exception's stop was expected, not {other:?}"),
+                    }
+                    let labels: Vec<String> =
+                        targets(remote).into_iter().map(|target| target.label).collect();
+                    remote.send(Command::Terminate);
+                    labels
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(labels, ["twice:"]);
         }
     }
 }

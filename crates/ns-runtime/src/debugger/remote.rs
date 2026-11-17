@@ -211,11 +211,15 @@ pub enum Command {
     /// (`docs/design/debugger.md`, decision 3, "Smart step into a
     /// block"): the sends of the frame's statement from where it stands
     /// to the statement's end, in the order they run, then the block
-    /// literals those sends take that run as closures -- not a block the
-    /// compiler lowers inline, which runs in the frame itself, where a
-    /// step over reaches it. At an exception's stop, the top frame is the
-    /// one a step steps from, the first shown below the exception's
-    /// machinery. Served only while the program is stopped; answered by
+    /// literals those sends take that run as closures. An inlinable form
+    /// -- `ifTrue:`, `and:`, `whileTrue:` with literal blocks -- is no
+    /// target, and neither is its block, which runs as the frame's own
+    /// code: the sends its blocks hold are, once each, in the order the
+    /// source writes them, the same under both lowerings. At an
+    /// exception's stop, the top frame is the one a step steps from, the
+    /// first shown below the exception's machinery, and its targets begin
+    /// past the send it waits on. Served only while the program is
+    /// stopped; answered by
     /// `Event::StepInTargets`, empty for a frame without metadata, a
     /// factory's and an initializer's at its header stop.
     StepInTargets,
@@ -243,13 +247,18 @@ pub struct StepInTarget {
     /// The first token of a send's selector, or a block's literal, in its
     /// module's current text.
     pub span: ns_syntax::Span,
+    /// Whether choosing it stops at the push its send makes, or at the
+    /// first statement of its block, in an activation of a closure the
+    /// frame made.
     pub kind: StepInTargetKind,
 }
 
 /// What a smart step into's target is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepInTargetKind {
+    /// A send of the statement.
     Send,
+    /// A block literal a send of the statement takes, run as a closure.
     Block,
 }
 

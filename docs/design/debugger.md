@@ -519,9 +519,11 @@ The commands (`debugger::Command`):
 - `StepInTargets` -- where a smart step into from the top frame -- the
   frame a step steps from, the first shown below an exception's
   machinery -- may stop (decision 3, "Smart step into a block"): the
-  sends of the frame's statement from where it stands to the
-  statement's end, in the order they run, then the block literals those
-  sends take that run as closures; answered by `Event::StepInTargets`, a
+  sends of the frame's statement from where it stands -- past the send
+  a frame below the top waits on -- to the statement's end, in the order
+  they run, an inlinable form's own selector left out and its blocks'
+  sends listed in its place, then the block literals those sends take
+  that run as closures; answered by `Event::StepInTargets`, a
   `StepInTarget` each -- `id`, its position, valid until the program
   goes on; `label`, a send's selector (`at:put:`) or `[] in ` and the
   selector of the send that takes a block; `span`, the selector's first
@@ -2247,7 +2249,25 @@ cursor. The agent's DAP requests for smart step into
   `Command::StepIntoTarget`; `stepping::targets`,
   `stepping::begin_smart`) offers the top frame's sends from where it
   stands to its statement's end, in the order they run, then the block
-  literals those sends take that run as closures. Aimed at a send it is
+  literals those sends take that run as closures. A frame below the top,
+  at an exception's stop, waits on the send at its program counter, which
+  runs already: its list begins past it. An inlinable form -- `ifTrue:`,
+  `and:`, `whileTrue:`, a mirror send's failure block, with literal
+  blocks -- offers the same under both lowerings: its own selector is
+  never a target (the reference lowering's `SendInlinable` and its
+  loop's `value` sends, the optimized lowering's fallback send and
+  inlined mirror send; `stepping::forms_own_sends`), nor are its blocks,
+  and the sends its blocks hold are, once each, where the form stands,
+  in the order the source writes them: `[x foo] whileTrue: [x bar]`
+  offers `foo` and `bar`. Under the optimized lowering they are the
+  inline copy's, in the frame's own body; under the reference lowering
+  they are the block body's, whose closure the frame runs and the step
+  floods for it, so that the chosen send's sender is the step's inline
+  code. The step stops at no statement start of the statement on the
+  way -- of an inlined block of it, its fallback closure or the
+  reference lowering's block (`stepping::StatementRegion`) -- so that it
+  stops at the chosen push or, as a step over, once the statement is
+  done. Aimed at a send it is
   a step into whose safepoint stops only at a push whose sender -- or
   the first sender below a run of filtered frames, so that a send of
   the shipped `do:` stops in the program's block it runs -- stands at

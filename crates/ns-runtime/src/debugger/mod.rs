@@ -187,7 +187,7 @@ impl Stop {
             } else {
                 let index = self.shown_below(mutator).unwrap_or(0);
                 match self.frames(mutator).get(index) {
-                    Some(frame) => stepping::targets(mutator, frame),
+                    Some(frame) => stepping::targets(mutator, frame, index > 0),
                     None => Vec::new(),
                 }
             };
@@ -1482,18 +1482,20 @@ impl Interpreter {
                 }
                 Command::StepIntoTarget { target } => {
                     let begun = self.enter(|mutator| {
-                        let aim = usize::try_from(target).ok().and_then(|index| {
+                        let chosen = usize::try_from(target).ok().and_then(|index| {
                             let targets = stop.step_in_targets(mutator);
-                            targets.get(index).map(|target| target.aim.clone())
+                            targets.get(index).map(|target| {
+                                (target.aim.clone(), std::rc::Rc::clone(&target.statement))
+                            })
                         });
-                        let Some(aim) = aim else {
+                        let Some((aim, statement)) = chosen else {
                             return false;
                         };
                         let shown = match stop.shown_below(mutator) {
                             Some(index) => stop.frames(mutator).get(index),
                             None => None,
                         };
-                        stepping::begin_smart(mutator, aim, shown);
+                        stepping::begin_smart(mutator, aim, &statement, shown);
                         true
                     });
                     if begun {
