@@ -4370,11 +4370,12 @@ another object had moves to the object marked now, so that a label
 names one object and an object has one label; objects are told apart as
 `==` tells them, so that a number's label shows on every value of that
 number. `Command::Unmark` takes a label off, a configuration command
-served while the program runs too. Both answer `Event::Marked`. The marks are held on the `Mutator`, beside the
-breakpoints (`Breakpoints::marks`), so that a condition decided while the
-program runs reaches them, and go when the debugger detaches; each
-stop's value table starts from them, describes by them and hands back
-what its commands made of them (`values::StopValues::mark`,
+served while the program runs too. Both answer `Event::Marked`. The
+marks are held on the `Mutator`, beside the breakpoints
+(`Breakpoints::marks`), so that a condition decided while the program
+runs reaches them, and go when the debugger detaches; each stop's value
+table starts from them, describes by them and hands back what its
+commands made of them (`values::StopValues::mark`,
 `Breakpoints::set_marks`). An expression's identifier tokens that end
 in `_DebugLabel` and whose label is marked, each once in the order the
 text first names it, are its block's parameters
@@ -5473,13 +5474,13 @@ keep their objects alive no longer
 `a_departed_client_s_label_is_unknown_to_the_next_client_s_condition`);
 a mark the VM makes for the departed client after the leave, its
 request already queued, is taken off as soon as it is answered. The VM
-serves a `Continue` only at the stop an evaluation's end re-enters, refusing one
-that arrives while the evaluation runs, so a client that leaves with an
-evaluation in flight has it aborted (`Command::AbortEvaluation`) and the
-stop left once the evaluation answered
-(`a_client_leaving_during_an_evaluation_lets_the_program_go_on`); a host
-still waiting for the configuration waits for that client's, as it waited
-for the first. A stop that arrives while no client is attached goes on at
+serves a `Continue` only at the stop an evaluation's end re-enters,
+refusing one that arrives while the evaluation runs, so a client that
+leaves with an evaluation in flight has it aborted
+(`Command::AbortEvaluation`) and the stop left once the evaluation
+answered (`a_client_leaving_during_an_evaluation_lets_the_program_go_on`);
+a host still waiting for the configuration waits for that client's, as
+it waited for the first. A stop that arrives while no client is attached goes on at
 once.
 
 ### Threads

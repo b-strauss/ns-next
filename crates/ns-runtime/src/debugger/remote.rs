@@ -158,12 +158,21 @@ pub enum Command {
     /// breakpoint it meets, and the program stays stopped. Served only
     /// while the program is stopped; answered by `Event::Evaluated`, or by
     /// `Event::Refused` for:
-    /// - a frame index past the stack;
-    /// - a frame of the core library;
-    /// - a frame whose source is not known;
-    /// - an expression that does not compile;
+    /// - a frame index past the stack (`"no frame at that index"`);
+    /// - a frame of the core library (`"the frame is the core
+    ///   library's"`);
+    /// - a frame whose source is not known (`"the frame's source is not
+    ///   known"`);
+    /// - an expression that does not compile (`"the expression does not
+    ///   compile: <message>"`);
+    /// - an expression holding a `^`, nested blocks included (`"a ^
+    ///   cannot leave an evaluation"`);
+    /// - an expression that assigns a name that is no assignable variable
+    ///   of the frame -- `self`, a parameter, an immutable local --
+    ///   (`"<name> is not assignable"`);
     /// - an expression that assigns a variable a block may already hold a
-    ///   copy of (`docs/design/debugger.md`, "Assigning a captured
+    ///   copy of (`"<name> is captured by a block made before this
+    ///   point"`; `docs/design/debugger.md`, "Assigning a captured
     ///   variable");
     /// - an expression that assigns a vector variable whose frame has not
     ///   made its vector yet (`"<name> does not exist yet at this
@@ -171,6 +180,8 @@ pub enum Command {
     /// - an expression that reads or assigns a variable the variables view
     ///   shows as not available (`"<name> is not available here"`; "A
     ///   variable not available");
+    /// - an evaluation the activation stack has no room to push (`"the
+    ///   stack has no room for the evaluation"`);
     /// - any expression at a stop the debugger's termination makes, in an
     ///   `ensure:` block the termination runs (`"the program is
     ///   terminating"`; "Continuing and terminating").

@@ -15,9 +15,8 @@
 //! runs, written once per fingerprint in the user's own directory, which
 //! a stop names its shipped frames' files in. A server that starts
 //! removes what lay there untouched for a day, but its own binary's
-//! sources. Nothing is kept in the
-//! shared temporary directory, where another user could put a file of
-//! their own first.
+//! sources. Nothing is kept in the shared temporary directory, where
+//! another user could put a file of their own first.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
