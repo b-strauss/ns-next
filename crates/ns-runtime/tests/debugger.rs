@@ -15625,3 +15625,428 @@ mod smart_stepping {
         }
     }
 }
+
+/// Marking objects and the values a stop withholds
+/// (`docs/design/debugger.md`, "Marking objects", "Folding the shipped
+/// frames"): every test stops at a line breakpoint, and each one's path
+/// holds `marking`.
+mod marking {
+    use super::*;
+    use ns_runtime::debugger::{Evaluation, ValueId};
+
+    /// The source of the platform's module, whose lazy slots build the
+    /// other modules on first demand.
+    const PLATFORM_FACTORY: &str = include_str!("../core-library/PlatformFactory.ns");
+
+    /// A program handed the platform, which demands the time module the
+    /// first time: its first stop is in the program's frame, its second
+    /// in the platform module's lazy slot that builds the time module.
+    const WITHHOLDING: &str = indoc! {"
+        class Withholding = Object new (
+          | platform |
+        ) (
+          public use: aPlatform = (
+            platform:: aPlatform
+          )
+          public run = (
+            platform kernel.
+            platform time.
+            ^3
+          )
+        ) : ()
+    "};
+
+    /// A method that reads the same string twice, through a callee that
+    /// stops at each read.
+    const MARKING: &str = indoc! {"
+        class Marking = Object new () (
+          public run = (
+            | text total |
+            text:: 'abc'.
+            total:: 0.
+            1 to: 2 do: [:index | total:: total + (self sink: text)].
+            ^total
+          )
+          sink: value = (
+            ^value size
+          )
+        ) : ()
+    "};
+
+    /// `MARKING` under `lowering`, the JIT off, stopped at each read of
+    /// `sink:`: `agent` serves the stops and returns at one, which is
+    /// continued with the breakpoint gone. Answers what `agent` answered
+    /// and what the run answered.
+    fn marking<T: Send + 'static>(
+        lowering: Lowering,
+        agent: impl FnOnce(&DebugRemote, BreakpointId) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let offset = line_start(MARKING, "^value size");
+        let (mut interpreter, class) = interpreted(MARKING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Marking", vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Marking"));
+                let answer = agent(remote, id);
+                set_breakpoints(remote, "Marking", Vec::new());
+                expect_breakpoints(remote, "Marking");
+                continue_stopped(remote);
+                answer
+            },
+        );
+        (answer, answered(&mut interpreter, result))
+    }
+
+    /// The value of `sink:`'s argument at a stop in it, the top frame.
+    fn sunk(remote: &DebugRemote) -> ValueDescription {
+        value_of(&variables(remote, Command::Variables { frame: 0 }), "value").clone()
+    }
+
+    /// The value of `self` in the frame at index `frame`.
+    fn receiver(remote: &DebugRemote, frame: usize) -> ValueDescription {
+        value_of(&variables(remote, Command::Variables { frame }), "self").clone()
+    }
+
+    /// What marking `value` with `label` answers.
+    fn mark(remote: &DebugRemote, value: ValueId, label: &str) -> Event {
+        request(
+            remote,
+            Command::Mark {
+                value,
+                label: label.to_owned(),
+            },
+        )
+    }
+
+    /// Marks `value` with `label`, which must be done.
+    fn marked(remote: &DebugRemote, value: ValueId, label: &str) {
+        assert_eq!(
+            mark(remote, value, label),
+            Event::Marked {
+                label: label.to_owned()
+            }
+        );
+    }
+
+    /// Why marking `value` with `label` is refused, which it must be.
+    fn mark_refusal(remote: &DebugRemote, value: ValueId, label: &str) -> String {
+        match mark(remote, value, label) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "Mark");
+                reason
+            }
+            other => panic!("the refusal of the mark was expected, not {other:?}"),
+        }
+    }
+
+    /// What evaluating `expression` in the frame at index `frame` answers.
+    fn evaluate(remote: &DebugRemote, frame: usize, expression: &str) -> Evaluation {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Evaluated(evaluation) => evaluation,
+            other => panic!("the evaluation of {expression} was expected, not {other:?}"),
+        }
+    }
+
+    /// The value `expression` answers in the frame at index `frame`,
+    /// which must answer one.
+    fn evaluated(remote: &DebugRemote, frame: usize, expression: &str) -> ValueDescription {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Value(value) => value,
+            other => panic!("{expression} was expected to answer a value, not {other:?}"),
+        }
+    }
+
+    /// The children of `value`, all of them.
+    fn children(remote: &DebugRemote, value: &ValueDescription) -> Vec<Variable> {
+        variables(
+            remote,
+            Command::Children {
+                value: value.id,
+                start: 0,
+                count: value.child_count,
+            },
+        )
+    }
+
+    /// The offset of the line of the time module's lazy slot that tests
+    /// the root class it looked up.
+    fn time_module_line() -> u32 {
+        let lookup = PLATFORM_FACTORY
+            .find("shippedModuleClassNamed: #TimeFactory")
+            .expect("the platform's module looks the time module's class up");
+        let test = lookup
+            + PLATFORM_FACTORY[lookup..]
+                .find("rootClass isNil")
+                .expect("and tests it");
+        let start = PLATFORM_FACTORY[..test]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        u32::try_from(start).expect("a shipped module is small")
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A field a shipped mixin declares is withheld, though the
+        /// object that holds it is a program frame's value, and so is
+        /// every value of a shipped frame and every child of a withheld
+        /// value: the platform module's private `vmMirror`, which its
+        /// lazy slot's frame shows as a field of its receiver, among them.
+        /// None of them can be marked.
+        fn the_platform_s_mirror_field_is_withheld(lowering) {
+            let program = line_start(WITHHOLDING, "platform time.");
+            let shipped = time_module_line();
+            let (mut interpreter, class) = interpreted(WITHHOLDING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+                "use:",
+            );
+            let (refusals, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| {
+                    set_breakpoints(remote, "Withholding", vec![program]);
+                    set_breakpoints(remote, "PlatformFactory", vec![shipped]);
+                },
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Withholding"));
+                    let (shipped_id, _) = resolved(&expect_breakpoints(remote, "PlatformFactory"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let program = receiver(remote, 0);
+                    assert!(!program.withheld, "a program frame's receiver");
+                    let platform = value_of(&children(remote, &program), "platform").clone();
+                    assert!(!platform.withheld, "a field the program declares");
+                    let kernel = value_of(&children(remote, &platform), "kernel").clone();
+                    assert!(kernel.withheld, "a field the platform's class declares");
+                    let mut refusals = vec![mark_refusal(remote, kernel.id, "kernel")];
+                    marked(remote, platform.id, "platform");
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [shipped_id]);
+                    let frames = stack_trace(remote);
+                    assert!(frames[0].shipped, "{}", frames[0].name);
+                    let module = receiver(remote, 0);
+                    assert!(module.withheld, "a shipped frame's receiver");
+                    let mirror = value_of(&children(remote, &module), "vmMirror").clone();
+                    assert!(mirror.withheld, "the VM mirror");
+                    refusals.push(mark_refusal(remote, mirror.id, "mirror"));
+                    refusals.push(mark_refusal(remote, module.id, "module"));
+                    set_breakpoints(remote, "PlatformFactory", Vec::new());
+                    expect_breakpoints(remote, "PlatformFactory");
+                    continue_stopped(remote);
+                    refusals
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 3);
+            assert_eq!(refusals, ["the value is withheld"; 3]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A `String` a program frame shows is marked like any value, and
+        /// a label that is no identifier, or that ends in the suffix an
+        /// expression names it by, is refused.
+        fn a_string_of_a_program_frame_is_marked(lowering) {
+            let ((withheld, refusals), answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let text = sunk(remote);
+                let refusals = vec![
+                    mark_refusal(remote, text.id, "first_DebugLabel"),
+                    mark_refusal(remote, text.id, "1st"),
+                    mark_refusal(remote, text.id, "first one"),
+                    mark_refusal(remote, text.id, ""),
+                ];
+                marked(remote, text.id, "first");
+                (text.withheld, refusals)
+            });
+            assert!(!withheld);
+            assert_eq!(
+                refusals,
+                [
+                    "first_DebugLabel is not a label",
+                    "1st is not a label",
+                    "first one is not a label",
+                    " is not a label",
+                ]
+            );
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A mark outlives its stop, and an expression at a later stop
+        /// names the marked object by its label and the suffix; a label
+        /// no mark has is an ordinary name, and so is one unmarked.
+        fn a_mark_survives_a_continue_and_is_named_in_an_evaluation(lowering) {
+            let ((sizes, unknown, unmarked), answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marked(remote, sunk(remote).id, "first");
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let sizes = (
+                    evaluated(remote, 0, "first_DebugLabel size").label,
+                    evaluated(remote, 1, "first_DebugLabel == text").label,
+                );
+                let unknown = evaluate(remote, 0, "second_DebugLabel");
+                let unmark = request(
+                    remote,
+                    Command::Unmark {
+                        label: String::from("first"),
+                    },
+                );
+                assert_eq!(
+                    unmark,
+                    Event::Marked {
+                        label: String::from("first")
+                    }
+                );
+                let unmarked = evaluate(remote, 0, "first_DebugLabel");
+                (sizes, unknown, unmarked)
+            });
+            assert_eq!(sizes, (String::from("3"), String::from("true")));
+            assert!(matches!(unknown, Evaluation::Error { .. }), "{unknown:?}");
+            assert!(matches!(unmarked, Evaluation::Error { .. }), "{unmarked:?}");
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A marked object shows its label wherever a stop describes it --
+        /// a variable, an evaluation's answer, a later stop's variable --
+        /// and marking it again renames it.
+        fn a_mark_is_shown_on_the_value(lowering) {
+            let (marks, answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let before = sunk(remote).mark;
+                marked(remote, sunk(remote).id, "first");
+                let mut marks = vec![
+                    before,
+                    sunk(remote).mark,
+                    value_of(&variables(remote, Command::Variables { frame: 1 }), "text")
+                        .mark
+                        .clone(),
+                    evaluated(remote, 0, "value").mark,
+                    evaluated(remote, 0, "value size").mark,
+                ];
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marks.push(sunk(remote).mark);
+                marked(remote, sunk(remote).id, "again");
+                marks.push(sunk(remote).mark);
+                marks.push(match evaluate(remote, 0, "first_DebugLabel") {
+                    Evaluation::Value(value) => value.mark,
+                    Evaluation::Error { .. } => Some(String::from("<unnamed>")),
+                    Evaluation::Aborted => None,
+                });
+                marks
+            });
+            let first = Some(String::from("first"));
+            assert_eq!(
+                marks,
+                [
+                    None,
+                    first.clone(),
+                    first.clone(),
+                    first.clone(),
+                    None,
+                    first,
+                    Some(String::from("again")),
+                    Some(String::from("<unnamed>")),
+                ]
+            );
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame of a shipped module's body says so, and its values are
+        /// withheld; the program's frames are not.
+        fn a_shipped_frame_says_so(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (mut interpreter, class) = interpreted(QUICK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((shipped, withheld), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frames = stack_trace(remote);
+                    let shipped: Vec<(String, bool)> = frames
+                        .iter()
+                        .map(|frame| (frame.name.clone(), frame.shipped))
+                        .collect();
+                    let withheld: Vec<bool> = frames
+                        .iter()
+                        .map(|frame| frame.receiver.withheld)
+                        .collect();
+                    let arguments = variables(remote, Command::Variables { frame: 0 });
+                    assert!(value_of(&arguments, "trueBlock").withheld);
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    (shipped, withheld)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(
+                shipped,
+                [
+                    (String::from("True>>ifTrue:"), true),
+                    (String::from("Quick>>check:with:"), false),
+                    (String::from("Quick>>run"), false),
+                ]
+            );
+            assert_eq!(withheld, [true, false, false]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A withheld value cannot be the value a frame is forced to
+        /// return.
+        fn a_withheld_value_is_not_forced_as_a_return(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (mut interpreter, class) = interpreted(QUICK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (reason, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let block = value_of(
+                        &variables(remote, Command::Variables { frame: 0 }),
+                        "trueBlock",
+                    )
+                    .clone();
+                    let reason = match request(
+                        remote,
+                        Command::ForceReturn {
+                            frame: 1,
+                            value: Some(block.id),
+                        },
+                    ) {
+                        Event::Refused { reason, .. } => reason,
+                        other => panic!("the refusal was expected, not {other:?}"),
+                    };
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(reason, "the value is withheld");
+        }
+    }
+}

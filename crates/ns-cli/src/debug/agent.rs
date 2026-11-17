@@ -1667,6 +1667,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
         Event::VariableSet(_) => command == "SetVariable",
         Event::StepInTargets(_) => command == "StepInTargets",
+        Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
         Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }

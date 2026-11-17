@@ -17,9 +17,10 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
 /// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
-/// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets` and
-/// `StepIntoTarget` are served only while the program is stopped; one that
-/// arrives while it runs is refused (`Event::Refused`). `Terminate` is served either way. An agent waits
+/// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets`,
+/// `StepIntoTarget`, `Mark` and `Unmark` are served only while the program
+/// is stopped; one that arrives while it runs is refused
+/// (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
 /// sent right after `DebugRemote::pause` is refused or served depending
 /// on whether a safepoint drains the queue before the stop or the stop
@@ -233,6 +234,22 @@ pub enum Command {
     /// `Event::Refused` for an id no target has -- `"no such target"` --
     /// the program still stopped.
     StepIntoTarget { target: u32 },
+    /// Marks the value `value` names, a value the stop handed out, with
+    /// `label`, by which every later evaluation of the attachment names
+    /// it as `<label>_DebugLabel` and every value description shows it
+    /// (`docs/design/debugger.md`, "Marking objects"): held until it is
+    /// unmarked or the debugger detaches, across stops. Marking an object
+    /// marked before renames it, and a label another object had moves to
+    /// this one. Served only while the program is stopped; answered by
+    /// `Event::Marked`, or by `Event::Refused` for a value the stop did
+    /// not hand out, a withheld one -- `"the value is withheld"` -- and a
+    /// label that is no identifier or ends in `_DebugLabel` --
+    /// `"<label> is not a label"`.
+    Mark { value: ValueId, label: String },
+    /// Takes the mark `label` off the object it marks, if one does.
+    /// Served only while the program is stopped; answered by
+    /// `Event::Marked`.
+    Unmark { label: String },
 }
 
 /// A place a smart step into may stop at (`Command::StepInTargets`).
@@ -459,6 +476,8 @@ impl Command {
             Command::ForceReturn { .. } => "ForceReturn",
             Command::StepInTargets => "StepInTargets",
             Command::StepIntoTarget { .. } => "StepIntoTarget",
+            Command::Mark { .. } => "Mark",
+            Command::Unmark { .. } => "Unmark",
         }
     }
 }
@@ -535,6 +554,9 @@ pub enum Event {
     },
     /// The answer to `Command::StepInTargets`, in the order of their ids.
     StepInTargets(Vec<StepInTarget>),
+    /// The answer to `Command::Mark` and `Command::Unmark`: the mark
+    /// `label` is set or gone.
+    Marked { label: String },
 }
 
 /// What `Event::ModuleText` says of a module's text.
@@ -664,6 +686,11 @@ pub struct FrameDescription {
     /// frames stay in the trace, so that a frame's index is the same at
     /// every stop.
     pub hidden: bool,
+    /// Whether the frame runs a body of a shipped module -- the step
+    /// filter's test -- which a client folds away
+    /// (`docs/design/debugger.md`, "Folding the shipped frames"); its
+    /// receiver and variables are withheld.
+    pub shipped: bool,
 }
 
 /// Where a frame stands, in the current text of its module.
@@ -751,7 +778,7 @@ pub struct ReturnedValue {
 
 /// A value as the agent shows it: its id for `Command::Children`, its
 /// label, its class's name, how many children it has and whether they are
-/// elements.
+/// elements, whether it is withheld and its mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueDescription {
     pub id: ValueId,
@@ -761,6 +788,15 @@ pub struct ValueDescription {
     /// Whether its children are elements, named `[1]` up, rather than
     /// fields: an `Array`'s, by its shape.
     pub indexed: bool,
+    /// Whether its way into the IDE passed through shipped code, so that
+    /// it can be neither marked nor forced as a frame's return
+    /// (`docs/design/debugger.md`, "Marking objects"): a shipped frame's
+    /// receiver or variable, a field a shipped mixin declares, a child of
+    /// a withheld value, or a value the shipped world withholds from every
+    /// program -- the VM mirror and every shipped module's instance.
+    pub withheld: bool,
+    /// The label the object is marked with (`Command::Mark`), if it is.
+    pub mark: Option<String>,
 }
 
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),

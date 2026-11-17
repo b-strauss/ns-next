@@ -9,7 +9,6 @@
 //! nothing but the unwinder pops.
 
 use super::evaluation::SHIPPED_FRAME;
-use super::metadata::again::module_name;
 use super::stack;
 use super::stepping::{self, StepAction};
 use super::{Command, NO_SUCH_FRAME, NO_SUCH_VALUE, Stop};
@@ -66,7 +65,9 @@ impl StartedUnwind {
 /// nothing changed, for a frame index past the stack, a frame of the core
 /// library -- forcing `signal` or an `ensure:` marker to return would
 /// break the kernel's own invariants -- a value the stop did not hand
-/// out, and a value given for an initializer's frame.
+/// out, a withheld one, which the frame's sender would hand the program
+/// (`docs/design/debugger.md`, "Marking objects"), and a value given for
+/// an initializer's frame.
 pub(crate) fn start(
     mutator: &mut Mutator<'_>,
     stop: &mut Stop,
@@ -79,10 +80,7 @@ pub(crate) fn start(
     };
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
-    let shipped = stack::origin(&mutator.heap, stack_frame)
-        .and_then(|origin| module_name(mutator, &origin.mixin))
-        .is_some_and(|module| module.shipped);
-    if shipped {
+    if stack::is_shipped(mutator, stack_frame) {
         return Err(String::from(SHIPPED_FRAME));
     }
     let action = match forced {
@@ -92,8 +90,8 @@ pub(crate) fn start(
             return Err(String::from(INITIALIZER_RETURNS_SELF));
         }
         Some(Some(id)) => {
-            let value = stop.values.fetch(mutator, id).ok_or(NO_SUCH_VALUE)?;
-            if !may_be_returned(mutator, value) {
+            let (value, withheld) = stop.values.fetch(mutator, id).ok_or(NO_SUCH_VALUE)?;
+            if withheld {
                 return Err(String::from(super::WITHHELD));
             }
             StartedAction::ForceReturn(mutator.heap.stash(value))
@@ -116,12 +114,4 @@ pub(crate) fn start(
         .heap
         .stash(Value::object(mutator.heap.frame_object(frame)));
     Ok(StartedUnwind { frame, action })
-}
-
-/// Whether `value`, a value the stop handed out, may be the value a
-/// frame is forced to return. Every one may: no value is withheld from
-/// the agent (`docs/design/debugger.md`, "Evaluation never reaches the VM
-/// mirror"), and this is where a withheld one is refused.
-fn may_be_returned(_mutator: &Mutator<'_>, _value: Value<'_>) -> bool {
-    true
 }

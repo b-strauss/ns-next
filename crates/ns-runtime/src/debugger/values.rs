@@ -1,33 +1,118 @@
 //! The values a stop hands out (`docs/design/debugger.md`, "Values the IDE
 //! holds"): each held as a `Root` in the stop's table and named to the
 //! agent by a `ValueId`, described by the heap's accessors alone -- no
-//! Newspeak code runs while the program is stopped.
+//! Newspeak code runs while the program is stopped. Each value carries
+//! whether it is withheld, decided by the way it came, and the label of
+//! its mark, if the agent marked it (`docs/design/debugger.md`, "Marking
+//! objects").
 
 use std::collections::HashMap;
 
 use super::remote::{ValueDescription, ValueId, Variable, VariableValue};
+use super::{NO_SUCH_VALUE, WITHHELD};
+use crate::builtins::object_class::identical;
 use crate::heap::{MixinId, ObjectReference, ObjectShape};
 use crate::interpreter::Mutator;
 use crate::mixin::FieldName;
 use crate::{Root, Symbol, Value, ValueKind};
 
+/// Why a label is refused, after the label: `"<label> is not a label"`.
+const NOT_A_LABEL: &str = "is not a label";
+
+/// What an expression appends to a label to name the marked object: a
+/// label is an identifier that does not end in it, so that the name is
+/// one no program is expected to spell and shadows nothing
+/// (`docs/design/debugger.md`, "Marking objects").
+pub(crate) const LABEL_SUFFIX: &str = "_DebugLabel";
+
+/// An object the agent marked (`Command::Mark`): its label and the object,
+/// held as a `Root` across stops until it is unmarked or the debugger
+/// detaches.
+#[derive(Clone)]
+pub(crate) struct Mark {
+    pub(crate) label: String,
+    pub(crate) value: Root,
+}
+
+/// One value a stop handed out: held, and whether it is withheld, which
+/// its children inherit.
+struct Held {
+    root: Root,
+    withheld: bool,
+}
+
 /// The values one stop handed out, by id. Its ids continue those of the
 /// stop before (`first`), so that an id of an earlier stop, whose table
 /// is gone, names nothing here rather than another value; the table goes
-/// with its stop, releasing every `Root`.
+/// with its stop, releasing every `Root`. It holds the attachment's marks
+/// as they stand, which every description it makes shows, and which
+/// `mark` and `unmark` change for the debugger to keep
+/// (`Debugger::marks`).
 pub(crate) struct StopValues {
     /// The id of the table's first value.
     first: u32,
-    roots: Vec<Root>,
+    held: Vec<Held>,
+    marks: Vec<Mark>,
 }
 
 impl StopValues {
-    /// An empty table whose first id is `first`.
-    pub(crate) fn starting_at(first: u32) -> StopValues {
+    /// An empty table whose first id is `first`, its descriptions showing
+    /// `marks`.
+    pub(crate) fn starting_at(first: u32, marks: Vec<Mark>) -> StopValues {
         StopValues {
             first,
-            roots: Vec::new(),
+            held: Vec::new(),
+            marks,
         }
+    }
+
+    /// The marks as they stand.
+    pub(crate) fn marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
+    /// Marks the value `id` names with `label` (`Command::Mark`): an
+    /// object marked before is renamed, and a label another object had
+    /// moves to this one. Refused, nothing changed, for a label that is no
+    /// identifier or ends in `LABEL_SUFFIX`, an id this stop did not hand
+    /// out, and a withheld value -- one whose way into the IDE passed
+    /// through shipped code, which an expression naming its label would
+    /// put within the program's reach.
+    pub(crate) fn mark(
+        &mut self,
+        mutator: &Mutator<'_>,
+        id: ValueId,
+        label: &str,
+    ) -> Result<(), String> {
+        if !is_label(label) {
+            return Err(format!("{label} {NOT_A_LABEL}"));
+        }
+        let held = self.held(id).ok_or(NO_SUCH_VALUE)?;
+        if held.withheld {
+            return Err(String::from(WITHHELD));
+        }
+        let root = held.root.clone();
+        let value = mutator.heap.fetch(&root);
+        self.marks.retain(|mark| {
+            mark.label != label && !identical(&mutator.heap, mutator.heap.fetch(&mark.value), value)
+        });
+        self.marks.push(Mark {
+            label: label.to_owned(),
+            value: root,
+        });
+        Ok(())
+    }
+
+    /// Takes the mark `label` off the object it marks, if one does
+    /// (`Command::Unmark`).
+    pub(crate) fn unmark(&mut self, label: &str) {
+        self.marks.retain(|mark| mark.label != label);
+    }
+
+    /// The value `id` names, as this stop holds it.
+    fn held(&self, id: ValueId) -> Option<&Held> {
+        let index = usize::try_from(id.0.wrapping_sub(self.first)).ok()?;
+        self.held.get(index)
     }
 
     /// The id the next stop's table starts at: past every id this one
@@ -35,31 +120,52 @@ impl StopValues {
     /// Ids wrap only after 2^32 values handed out across the stops of
     /// one attachment, far past what an agent asks for.
     pub(crate) fn next_first(&self) -> u32 {
-        let length = u32::try_from(self.roots.len()).unwrap_or(u32::MAX);
+        let length = u32::try_from(self.held.len()).unwrap_or(u32::MAX);
         self.first.wrapping_add(length)
     }
 
-    /// `value`, held for the stop and described for the agent.
+    /// `value`, held for the stop and described for the agent: withheld
+    /// when `through_shipped` -- it came through a shipped activation or
+    /// a field a shipped mixin declares, or is a child of a withheld value
+    /// -- or when the shipped world withholds it from every program
+    /// (`Mutator::is_withheld`), and showing its mark.
     pub(crate) fn describe<'gc>(
         &mut self,
         mutator: &Mutator<'gc>,
         value: Value<'gc>,
+        through_shipped: bool,
     ) -> ValueDescription {
         let id = ValueId(self.next_first());
-        self.roots.push(mutator.heap.stash(value));
+        let withheld = through_shipped || mutator.is_withheld(value);
+        self.held.push(Held {
+            root: mutator.heap.stash(value),
+            withheld,
+        });
+        let mark = self
+            .marks
+            .iter()
+            .find(|mark| identical(&mutator.heap, mutator.heap.fetch(&mark.value), value))
+            .map(|mark| mark.label.clone());
         ValueDescription {
             id,
             label: mutator.heap.describe(value),
             class_name: mutator.heap.class_display_name(mutator.class_of(value)),
             child_count: child_count(mutator, value),
             indexed: is_indexed(mutator, value),
+            withheld,
+            mark,
         }
     }
 
-    /// The value `id` names, if this stop handed it out.
-    pub(crate) fn fetch<'gc>(&self, mutator: &Mutator<'gc>, id: ValueId) -> Option<Value<'gc>> {
-        let index = usize::try_from(id.0.wrapping_sub(self.first)).ok()?;
-        self.roots.get(index).map(|root| mutator.heap.fetch(root))
+    /// The value `id` names, if this stop handed it out, and whether it is
+    /// withheld.
+    pub(crate) fn fetch<'gc>(
+        &self,
+        mutator: &Mutator<'gc>,
+        id: ValueId,
+    ) -> Option<(Value<'gc>, bool)> {
+        self.held(id)
+            .map(|held| (mutator.heap.fetch(&held.root), held.withheld))
     }
 
     /// `count` children of the value `id` names, from the `start`th: an
@@ -72,7 +178,7 @@ impl StopValues {
         start: usize,
         count: usize,
     ) -> Option<Vec<Variable>> {
-        let value = self.fetch(mutator, id)?;
+        let (value, withheld) = self.fetch(mutator, id)?;
         let total = child_count(mutator, value);
         let end = start.saturating_add(count).min(total);
         let ValueKind::Object(object) = value.kind() else {
@@ -86,11 +192,12 @@ impl StopValues {
         };
         let mut children = Vec::new();
         for index in start..end {
-            let (name, child, filling) = if is_array {
+            let (name, child, filling, shipped) = if is_array {
                 (
                     format!("[{}]", index + 1),
                     mutator.heap.array_element(object, index),
                     Filling::Always,
+                    false,
                 )
             } else {
                 let label = labels
@@ -101,6 +208,7 @@ impl StopValues {
                     label.name,
                     mutator.heap.instance_field(object, index),
                     label.filling,
+                    label.shipped,
                 )
             };
             let Some(child) = child else {
@@ -109,7 +217,7 @@ impl StopValues {
             let value = if filling.is_unfilled(child) {
                 VariableValue::NotComputed
             } else {
-                VariableValue::Shown(self.describe(mutator, child))
+                VariableValue::Shown(self.describe(mutator, child, withheld || shipped))
             };
             children.push(Variable { name, value });
         }
@@ -146,11 +254,14 @@ impl Filling {
     }
 }
 
-/// What one field of an instance is called and how it is filled.
+/// What one field of an instance is called, how it is filled and whether
+/// a shipped mixin declares it -- a private field of the core library,
+/// whose value is withheld.
 #[derive(Default)]
 struct FieldLabel {
     name: String,
     filling: Filling,
+    shipped: bool,
 }
 
 /// The names of `object`'s `field_count` fields, from the layout of its
@@ -191,6 +302,7 @@ fn field_labels<'gc>(
                     name,
                     declarer: mixin,
                     declarer_name: heap.mixin(mixin)?.name,
+                    shipped: heap.mixin(mixin)?.shipped,
                     level: field.level,
                     filling: if field.lazy {
                         Filling::Lazy
@@ -204,6 +316,7 @@ fn field_labels<'gc>(
                         name: heap.mixin(declaration)?.name,
                         declarer,
                         declarer_name: heap.mixin(declarer)?.name,
+                        shipped: heap.mixin(declarer)?.shipped,
                         level: field.level,
                         filling: Filling::NestedClass,
                     })
@@ -227,10 +340,12 @@ fn field_labels<'gc>(
             None => FieldLabel {
                 name: format!("field {index}"),
                 filling: Filling::Always,
+                shipped: false,
             },
             Some(field) if nearest.get(&field.name) == Some(&field.level) => FieldLabel {
                 name: field.name.to_string(),
                 filling: field.filling,
+                shipped: field.shipped,
             },
             Some(field) => {
                 let count = shadowed.entry((field.name, field.declarer)).or_insert(0);
@@ -245,6 +360,7 @@ fn field_labels<'gc>(
                 FieldLabel {
                     name,
                     filling: field.filling,
+                    shipped: field.shipped,
                 }
             }
         };
@@ -337,14 +453,64 @@ fn qualifiers(
 }
 
 /// One field a declaration names: the name it was declared with, the id
-/// and the name of the mixin of the level declaring it, that level's place
-/// in the chain, counted from the root, and how the field is filled.
+/// and the name of the mixin of the level declaring it and whether that
+/// mixin is shipped, that level's place in the chain, counted from the
+/// root, and how the field is filled.
 struct Declared {
     name: Symbol,
     declarer: MixinId,
     declarer_name: Symbol,
+    shipped: bool,
     level: usize,
     filling: Filling,
+}
+
+/// Whether `label` may label a mark: an identifier (§3, `id`: letters,
+/// digits and `_`, not starting with a digit) that does not end in
+/// `LABEL_SUFFIX`, so that `<label>_DebugLabel` is the one name an
+/// expression gives it.
+fn is_label(label: &str) -> bool {
+    let mut characters = label.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && !label.ends_with(LABEL_SUFFIX)
+}
+
+/// The labels `text`, an expression the debugger evaluates, names as
+/// `<label>_DebugLabel` that `marks` hold, each once, in the order the
+/// text first names them: the parameters of the expression's block,
+/// whose arguments are the marked objects (`docs/design/debugger.md`,
+/// "Marking objects"). Read from the text's identifier tokens, which the
+/// expression's tree holds as names, sends' selectors and declarations
+/// alike: a label a unary selector or a declaration spells too is a
+/// parameter nothing reads, and one a temporary of the expression
+/// declares is left to the temporary. A name whose label no mark holds is
+/// an ordinary name.
+pub(crate) fn used_labels(text: &str, marks: &[Mark], declared: &[&str]) -> Vec<(Symbol, Root)> {
+    let mut used: Vec<(Symbol, Root)> = Vec::new();
+    let Ok(tokens) = ns_syntax::lex(text) else {
+        return used;
+    };
+    for token in tokens {
+        if token.kind != ns_syntax::TokenKind::Identifier {
+            continue;
+        }
+        let Some(name) = text.get(token.span.start as usize..token.span.end as usize) else {
+            continue;
+        };
+        let Some(label) = name.strip_suffix(LABEL_SUFFIX) else {
+            continue;
+        };
+        if declared.contains(&name) || used.iter().any(|(used, _)| used.as_str() == name) {
+            continue;
+        }
+        if let Some(mark) = marks.iter().find(|mark| mark.label == label) {
+            used.push((Symbol::intern(name), mark.value.clone()));
+        }
+    }
+    used
 }
 
 /// Whether `value`'s children are elements, counted from 1, rather than

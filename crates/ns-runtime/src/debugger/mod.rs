@@ -47,7 +47,7 @@ use crate::{Symbol, Value};
 use breakpoints::Hits;
 use exceptions::ExceptionBreakpoints;
 use stepping::{HeldStep, Returned, StepAction, StepFilters};
-use values::StopValues;
+use values::{Mark, StopValues};
 
 /// The message of the error a run the debugger terminated ends with.
 const TERMINATED: &str = "the debugger terminated the program";
@@ -66,12 +66,13 @@ const NO_SUCH_TARGET: &str = "no such target";
 /// attached debugger's stop is kept while an evaluation runs.
 const NOT_KEPT: &str = "only a debugger's stop evaluates";
 
-/// Why a stop refuses `Children` or `ForceReturn` for a value it did not
-/// hand out.
+/// Why a stop refuses `Children`, `ForceReturn` or `Mark` for a value it
+/// did not hand out.
 const NO_SUCH_VALUE: &str = "no value of this stop has that id";
 
-/// Why a stop refuses a value it withholds from the agent as the value a
-/// frame is forced to return.
+/// Why a stop refuses a withheld value as the value a frame is forced to
+/// return or as a value to mark (`docs/design/debugger.md`, "Marking
+/// objects").
 pub(crate) const WITHHELD: &str = "the value is withheld";
 
 /// Why a stop a stress mode's reader serves refuses `RestartFrame` and
@@ -116,6 +117,11 @@ pub(crate) struct Debugger {
     /// The unwind a stop started to restart a frame or force it to return,
     /// held until the run loop raises it (`Served::Unwind`).
     started: Option<unwinding::StartedUnwind>,
+    /// The objects the agent marked, held across stops until unmarked or
+    /// detached (`docs/design/debugger.md`, "Marking objects"): each stop
+    /// starts from them and hands back what its `Mark` and `Unmark`
+    /// commands made of them.
+    marks: Vec<Mark>,
 }
 
 /// A stop, as the commands it serves read it: what `stop_standing` decided
@@ -350,6 +356,7 @@ impl StressReader {
             | Event::ExceptionBreakpointsSet
             | Event::ModuleText { .. }
             | Event::StepInTargets(_)
+            | Event::Marked { .. }
             | Event::Logged { .. } => {}
         }
     }
@@ -605,6 +612,7 @@ impl Interpreter {
             stop: None,
             deciding: None,
             started: None,
+            marks: Vec::new(),
         });
         DebugRemote::new(
             command_sender,
@@ -889,7 +897,14 @@ impl Interpreter {
                 .expect("internal: an evaluation that ended holds its answer");
             let answer = match outcome {
                 evaluation::Outcome::Value(value) => {
-                    Evaluation::Value(stop.values.describe(mutator, mutator.heap.fetch(&value)))
+                    // An evaluation runs only in a program's frame: what it
+                    // answers is withheld only where the shipped world
+                    // withholds it from every program.
+                    Evaluation::Value(stop.values.describe(
+                        mutator,
+                        mutator.heap.fetch(&value),
+                        false,
+                    ))
                 }
                 evaluation::Outcome::Error {
                     description,
@@ -899,7 +914,7 @@ impl Interpreter {
                         .map_or_else(Value::nil, |exception| mutator.heap.fetch(&exception));
                     Evaluation::Error {
                         description,
-                        exception: stop.values.describe(mutator, exception),
+                        exception: stop.values.describe(mutator, exception, false),
                     }
                 }
                 evaluation::Outcome::Aborted => Evaluation::Aborted,
@@ -1235,7 +1250,9 @@ impl Interpreter {
                 | Command::RestartFrame { .. }
                 | Command::ForceReturn { .. }
                 | Command::StepInTargets
-                | Command::StepIntoTarget { .. }) => {
+                | Command::StepIntoTarget { .. }
+                | Command::Mark { .. }
+                | Command::Unmark { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -1300,7 +1317,9 @@ impl Interpreter {
             | Command::RestartFrame { .. }
             | Command::ForceReturn { .. }
             | Command::StepInTargets
-            | Command::StepIntoTarget { .. } => {
+            | Command::StepIntoTarget { .. }
+            | Command::Mark { .. }
+            | Command::Unmark { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -1379,7 +1398,11 @@ impl Interpreter {
             .debugger
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
-        let mut values = StopValues::starting_at(first_value_id);
+        let marks = self
+            .debugger
+            .as_ref()
+            .map_or_else(Vec::new, |debugger| debugger.marks.clone());
+        let mut values = StopValues::starting_at(first_value_id, marks);
         // An exception's stop hides its machinery: an uncaught one's and a
         // `Halt`'s show first the frame below it, a caught one's the
         // handler about to run, the frame below the machinery next -- but
@@ -1392,7 +1415,10 @@ impl Interpreter {
         let caught = in_handler && matches!(reason, StopReason::Exception { caught: true, .. });
         let returned = returned.map(|returned| {
             self.enter(|mutator| {
-                let value = values.describe(mutator, mutator.heap.fetch(&returned.value));
+                // Answered into the frame that made the call: withheld
+                // where that frame is a shipped module's.
+                let shipped = stack::origin_is_shipped(mutator, returned.call.origin.as_ref());
+                let value = values.describe(mutator, mutator.heap.fetch(&returned.value), shipped);
                 let call = stack::call_name(mutator, returned.call);
                 ReturnedValue { call, value }
             })
@@ -1592,6 +1618,22 @@ impl Interpreter {
                     Some(children) => self.answer(&mut stop.source, Event::Variables(children)),
                     None => self.refuse(&mut stop.source, &command, NO_SUCH_VALUE),
                 },
+                Command::Mark { value, label } => {
+                    match self.enter(|mutator| stop.values.mark(mutator, value, &label)) {
+                        Ok(()) => {
+                            self.keep_marks(&stop);
+                            self.answer(&mut stop.source, Event::Marked { label });
+                        }
+                        Err(reason) => {
+                            self.refuse(&mut stop.source, &Command::Mark { value, label }, &reason);
+                        }
+                    }
+                }
+                Command::Unmark { label } => {
+                    stop.values.unmark(&label);
+                    self.keep_marks(&stop);
+                    self.answer(&mut stop.source, Event::Marked { label });
+                }
                 command @ (Command::Evaluate { .. } | Command::SetVariable { .. }) => {
                     match self.begin_evaluation(&mut stop, &command) {
                         Ok(()) => {
@@ -1664,7 +1706,7 @@ impl Interpreter {
         if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
             return Err(String::from(NOT_KEPT));
         }
-        let (frame, code) = self.enter(|mutator| match command {
+        let (frame, compiled) = self.enter(|mutator| match command {
             Command::Evaluate { frame, expression } => {
                 evaluation::compile(mutator, stop, *frame, expression).map(|code| (*frame, code))
             }
@@ -1676,8 +1718,23 @@ impl Interpreter {
                 .map(|code| (*frame, code)),
             _ => unreachable!("internal: only an `Evaluate` and a `SetVariable` evaluate"),
         })?;
-        self.enter(|mutator| evaluation::begin(mutator, stop, frame, code, &[]))
-            .map_err(String::from)
+        self.enter(|mutator| {
+            let marked: Vec<Value<'_>> = compiled
+                .marked
+                .iter()
+                .map(|root| mutator.heap.fetch(root))
+                .collect();
+            evaluation::begin(mutator, stop, frame, compiled.code, &marked)
+        })
+        .map_err(String::from)
+    }
+
+    /// The attached debugger keeps the marks `stop`'s `Mark` or `Unmark`
+    /// made, for the stops after it.
+    fn keep_marks(&mut self, stop: &Stop) {
+        if let Some(debugger) = &mut self.debugger {
+            debugger.marks = stop.values.marks().to_vec();
+        }
     }
 
     /// Starts the unwind `command` -- a `RestartFrame` or a
@@ -1864,7 +1921,9 @@ impl Interpreter {
                     | Command::RestartFrame { .. }
                     | Command::ForceReturn { .. }
                     | Command::StepInTargets
-                    | Command::StepIntoTarget { .. }),
+                    | Command::StepIntoTarget { .. }
+                    | Command::Mark { .. }
+                    | Command::Unmark { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

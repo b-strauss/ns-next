@@ -1275,9 +1275,11 @@ stop stands (`header_pattern`). Every span is in the module's current text (deci
 ### Values the IDE holds
 
 **Partial:** a stop holds the values it hands out and answers an
-instance's fields and an `Array`'s elements, paged. Holding a value past
-its stop, the elements of a `ByteArray` and a `String`, and a Newspeak
-collection's renderer are planned (below).
+instance's fields and an `Array`'s elements, paged, each saying whether
+it is withheld and its mark; a marked object is held past its stop
+("Marking objects"). Pinning any other value past its stop, the
+elements of a `ByteArray` and a `String`, and a Newspeak collection's
+renderer are planned (below).
 
 Every value a stop describes (`values::StopValues::describe`) is held as a
 `Root` (`Heap::stash`) in the stop's table and named by a `ValueId`, its
@@ -1291,7 +1293,10 @@ refused (`a_value_id_does_not_outlive_its_stop`); they wrap only after
 `Heap::describe` gives -- never `{:?}` -- the name of the value's class
 (`Heap::class_display_name`), how many children it has and whether they
 are elements, decided by the object's shape rather than its class's name,
-which a program's own class may share (`ValueDescription::indexed`).
+which a program's own class may share (`ValueDescription::indexed`),
+whether it is withheld -- decided by the way it came, which the table
+keeps beside its `Root` for its children to inherit -- and the label it
+is marked with ("Marking objects").
 
 `Children` answers, from `start` and at most `count` of them: for an
 instance, its fields (`Heap::instance_field`), in field order, each
@@ -4067,6 +4072,11 @@ access in Java, which has no capability to keep.
 
 ### Marking objects
 
+**Built** in the VM (`Command::Mark`, `Command::Unmark`,
+`debugger/values.rs`; `ValueDescription::withheld`,
+`ValueDescription::mark`); the agent's requests for them are planned with
+its stage 5 part.
+
 An object the IDE shows can be marked with a label and named in every
 later evaluation of the session as `<label>_DebugLabel`, as IntelliJ's
 Mark Object does (decided with the user on 2026-11-16). The names an
@@ -4081,18 +4091,49 @@ implicit receiver send of the same name, while `label_DebugLabel` is an
 identifier (§3, `id`) no program is expected to spell. A marked object
 is held as a `Root` across stops, until it is unmarked or the attachment
 ends, as a pinned value is ("Values the IDE holds"), and its label shows
-wherever the variables view shows it.
+wherever a stop describes it (`ValueDescription::mark`;
+`a_mark_is_shown_on_the_value`,
+`a_mark_survives_a_continue_and_is_named_in_an_evaluation`).
+
+`Command::Mark` names a value the stop handed out and a label, an
+identifier of letters, digits and `_` not starting with a digit that
+does not end in `_DebugLabel`; any other is refused with "`<label>` is
+not a label". Marking an object marked before renames it, and a label
+another object had moves to the object marked now, so that a label
+names one object and an object has one label; objects are told apart as
+`==` tells them, so that a number's label shows on every value of that
+number. `Command::Unmark` takes a label off. Both answer
+`Event::Marked`. The `Debugger` holds the marks between stops
+(`Debugger::marks`); each stop's value table starts from them, describes
+by them and hands back what its commands made of them
+(`values::StopValues::mark`). An expression's identifier tokens that end
+in `_DebugLabel` and whose label is marked, each once in the order the
+text first names it, are its block's parameters
+(`values::used_labels`, `EvaluationScope::labels`), but for a name its
+own temporaries declare; one whose label no mark holds is an ordinary
+name, resolved as any other. The block's arguments are the marked
+objects (`evaluation::Compiled::marked`). A breakpoint's condition and
+log expression are decided while the program runs, where no stop holds
+the marks, and name none.
 
 A value whose way into the IDE passed through shipped code cannot be
-marked. Every value a stop hands out carries whether it is withheld: it
-is when it was reached through a shipped activation or through a field a
-shipped mixin declares -- the platform object's private `vmMirror`,
-which the variables view shows, among them -- or is a value the
-shipped world withholds from every program (`Mutator::is_withheld`:
-the VM mirror and every recorded shipped module instance, the kernel's
-among them); a child inherits its parent's withholding. A `String`, an
+marked, nor forced as a frame's return ("Restart frame and force
+return"): both are refused with "the value is withheld". Every value a
+stop hands out carries whether it is withheld (`ValueDescription::withheld`):
+it is when it was reached through a shipped activation -- a shipped
+frame's receiver and variables, and the value a call in a shipped frame
+answered at a step's stop -- or through a field a shipped mixin declares
+-- every field of the platform object, and the platform module's private
+`vmMirror`, which a shipped frame of that module shows among its
+receiver's fields, among them -- or is a value the shipped world
+withholds from every program (`Mutator::is_withheld`: the VM mirror and
+every recorded shipped module instance, the kernel's among them); a child
+inherits its parent's withholding (`the_platform_s_mirror_field_is_withheld`).
+An evaluation runs only in a program's frame, so what it answers is
+withheld only where `Mutator::is_withheld` holds. A `String`, an
 `Array` or a number a program frame shows is marked like any value: the
-rule is the way a value came, not its class. The mirrors withhold what they
+rule is the way a value came, not its class
+(`a_string_of_a_program_frame_is_marked`). The mirrors withhold what they
 reach through a shipped level by the same rule. An object refused on one
 way can be marked where the program's own frames or fields show it. The
 Newspeak IDE's workspace scope, which binds `_` in every evaluation to
@@ -4120,6 +4161,11 @@ objects"): shown, but never marked, so that no walk puts a private
 kernel object or the mirror within an expression's reach.
 
 ### Folding the shipped frames
+
+**Partial:** the VM's part is built: every frame of the stack trace says
+whether it runs a body of a shipped module (`FrameDescription::shipped`,
+`stack::is_shipped`; `a_shipped_frame_says_so`); the agent's hints and
+the plugin's folding are planned.
 
 The agent marks a frame of a shipped module's body with DAP's
 `presentationHint` `subtle`, and its source with `deemphasize`, and the
@@ -4397,9 +4443,9 @@ refused leaves the program stopped where it was, nothing begun.
 - **The value** is one the stop handed out -- an evaluation's answer, a
   variable's or a child's value -- named by its id (`ValueId`), and an
   id the stop did not hand out is refused with "no value of this stop
-  has that id". The values evaluation withholds ("Evaluation never
-  reaches the VM mirror") are refused with "the value is withheld"
-  (`unwinding::may_be_returned`), which today withholds none.
+  has that id". A withheld value ("Marking objects"), which the frame's
+  sender would hand the program, is refused with "the value is withheld"
+  (`a_withheld_value_is_not_forced_as_a_return`).
 
 ### Hot swap and edit-and-continue
 

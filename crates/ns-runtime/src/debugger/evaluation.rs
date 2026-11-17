@@ -23,6 +23,7 @@ use ns_syntax::{Span, ast};
 use super::metadata::again::{declaration_chain, module_name};
 use super::metadata::{BodyMetadata, VariablePlace};
 use super::stack::{self, OuterFrame, StackFrame};
+use super::values::{Mark, used_labels};
 use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, RETURN_FROM_AN_EVALUATION, Stop};
 use crate::bytecode::{CompiledCode, may_have_run};
 use crate::heap::{ActivationReference, NewClosure};
@@ -62,6 +63,14 @@ pub(crate) const NO_SOURCE: &str = "the frame's source is not known";
 /// activation.
 pub(crate) const NO_ROOM: &str = "the stack has no room for the evaluation";
 
+/// An expression compiled for an evaluation, and the marked objects it
+/// names, in the order its block takes them as arguments
+/// (`docs/design/debugger.md`, "Marking objects").
+pub(crate) struct Compiled {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) marked: Vec<Root>,
+}
+
 /// An expression the debugger evaluates, from its push until its base is
 /// popped (`Breakpoints::evaluating`).
 pub(crate) struct RunningEvaluation {
@@ -93,27 +102,31 @@ pub(crate) enum Outcome {
 /// the stack, a frame of the core library, a frame whose source is not
 /// known, and an expression that does not compile -- an assignment a
 /// block may already hold a copy of the variable before among its causes
-/// (`assignabilities`).
+/// (`assignabilities`). Every `<label>_DebugLabel` it names whose label
+/// the stop's marks hold is a parameter of its block, the marked object
+/// its argument.
 pub(crate) fn compile(
     mutator: &mut Mutator<'_>,
     stop: &mut Stop,
     frame: usize,
     text: &str,
-) -> Result<Rc<CompiledCode>, String> {
+) -> Result<Compiled, String> {
+    let marks = stop.values.marks().to_vec();
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
-    compile_with(mutator, stack_frame, |_| parsed(text))
+    compile_with(mutator, stack_frame, text, &marks, |_| parsed(text))
 }
 
 /// `text` compiled as `compile` compiles it, standing in `frame`: a
 /// breakpoint's condition or log expression, in the frame that reached
-/// the breakpoint (`debugger::conditions`).
+/// the breakpoint (`debugger::conditions`). It is decided while the
+/// program runs, where no stop holds the marks, so it names none.
 pub(crate) fn compile_in(
     mutator: &mut Mutator<'_>,
     frame: &StackFrame,
     text: &str,
 ) -> Result<Rc<CompiledCode>, String> {
-    compile_with(mutator, frame, |_| parsed(text))
+    compile_with(mutator, frame, text, &[], |_| parsed(text)).map(|compiled| compiled.code)
 }
 
 /// The assignment `name:: expression` compiled as `compile` compiles an
@@ -133,10 +146,11 @@ pub(crate) fn compile_assignment(
     frame: usize,
     name: &str,
     expression: &str,
-) -> Result<Rc<CompiledCode>, String> {
+) -> Result<Compiled, String> {
+    let marks = stop.values.marks().to_vec();
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
-    compile_with(mutator, stack_frame, |metadata| {
+    compile_with(mutator, stack_frame, expression, &marks, |metadata| {
         let shown = metadata
             .variables
             .iter()
@@ -205,12 +219,15 @@ fn assignment(name: &str, expression: &str) -> Result<ast::CodeBody, String> {
 }
 
 /// `compile` of the code body `body` answers for the metadata of
-/// `stack_frame`, or its refusal.
+/// `stack_frame`, or its refusal: `text`, the expression's text, names
+/// the labels of `marks` the block takes as its parameters.
 fn compile_with(
     mutator: &mut Mutator<'_>,
     stack_frame: &StackFrame,
+    text: &str,
+    marks: &[Mark],
     body: impl FnOnce(&BodyMetadata) -> Result<ast::CodeBody, String>,
-) -> Result<Rc<CompiledCode>, String> {
+) -> Result<Compiled, String> {
     // Decided before the metadata is asked for, which compiles the body
     // again: a shipped frame is refused whatever its body.
     let origin = stack::origin(&mutator.heap, stack_frame).ok_or(NO_SOURCE)?;
@@ -241,10 +258,17 @@ fn compile_with(
             assignability,
         })
         .collect();
+    let declared: Vec<&str> = expression
+        .temporaries
+        .iter()
+        .map(|temporary| temporary.name.name.as_str())
+        .collect();
+    let (labels, marked): (Vec<Symbol>, Vec<Root>) =
+        used_labels(text, marks, &declared).into_iter().unzip();
     let scope = EvaluationScope {
         classes: &classes,
         variables: &variables,
-        labels: &[],
+        labels: &labels,
     };
     let bindings = resolve_evaluation(&expression, &scope).map_err(|message| {
         // The refusals the debugger names itself stand as they are; every
@@ -258,13 +282,14 @@ fn compile_with(
             format!("{DOES_NOT_COMPILE}{message}")
         }
     })?;
-    Ok(crate::compiler::evaluation::compile_evaluation(
+    let code = crate::compiler::evaluation::compile_evaluation(
         &expression,
         &bindings,
         &variables,
-        &[],
+        &labels,
         mutator.lowering,
-    ))
+    );
+    Ok(Compiled { code, marked })
 }
 
 /// Whether an assignment evaluated in `frame`, which runs `code` with

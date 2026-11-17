@@ -242,6 +242,23 @@ pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> 
     origin_of(heap, frame, &code)
 }
 
+/// Whether `frame` runs a body of a shipped module: a frame the client
+/// folds away, whose values are withheld (`docs/design/debugger.md`,
+/// "Marking objects", "Folding the shipped frames"), in which nothing is
+/// evaluated, restarted or forced to return -- decided as the step
+/// filter decides it (`stepping::decide_filtered`).
+pub(crate) fn is_shipped(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
+    origin_is_shipped(mutator, origin(&mutator.heap, frame).as_ref())
+}
+
+/// Whether a body of the declaration `origin` names belongs to a shipped
+/// module; `None`, a top-level frame's, belongs to none.
+pub(crate) fn origin_is_shipped(mutator: &Mutator<'_>, origin: Option<&BodyOrigin>) -> bool {
+    origin
+        .and_then(|origin| module_name(mutator, &origin.mixin))
+        .is_some_and(|module| module.shipped)
+}
+
 /// Whether `frame` is a block's activation.
 pub(crate) fn is_block(heap: &Heap<'_>, frame: &StackFrame) -> bool {
     matches!(frame.read(heap).kind(heap), ActivationKind::Closure(_))
@@ -388,7 +405,8 @@ pub(crate) fn stack_trace(
                 };
                 location(mutator, origin, metadata, &code, standing)
             });
-        let receiver = values.describe(mutator, frame.receiver(&mutator.heap));
+        let shipped = origin_is_shipped(mutator, origin.as_ref());
+        let receiver = values.describe(mutator, frame.receiver(&mutator.heap), shipped);
         descriptions.push(FrameDescription {
             kind: frame_kind(kind),
             name,
@@ -397,6 +415,7 @@ pub(crate) fn stack_trace(
             location,
             receiver,
             hidden: hidden.contains(&index),
+            shipped,
         });
     }
     descriptions
@@ -815,7 +834,8 @@ fn one_line(text: &str) -> String {
 /// past the stack: `self`, then, with the body's metadata, each named
 /// variable once, the innermost of a name, read where it lives
 /// (`named_variables`); without it, each argument and each register below
-/// the first scratch register (`numbered_variables`).
+/// the first scratch register (`numbered_variables`). A shipped frame's
+/// are withheld, its outer variables too.
 pub(crate) fn variables(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
@@ -823,7 +843,8 @@ pub(crate) fn variables(
     values: &mut StopValues,
 ) -> Option<Vec<Variable>> {
     let stack_frame = frames.get(frame)?;
-    let (code, _, metadata) = body_of(mutator, stack_frame);
+    let (code, origin, metadata) = body_of(mutator, stack_frame);
+    let shipped = origin_is_shipped(mutator, origin.as_ref());
     let heap = &mutator.heap;
     let frame = stack_frame.read(heap);
     let program_counter = u32::try_from(frame.program_counter(heap))
@@ -845,7 +866,7 @@ pub(crate) fn variables(
             .map(|(name, value)| Variable {
                 name,
                 value: value.map_or(VariableValue::Unavailable, |value| {
-                    VariableValue::Shown(values.describe(mutator, value))
+                    VariableValue::Shown(values.describe(mutator, value, shipped))
                 }),
             })
             .collect(),
