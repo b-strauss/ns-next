@@ -22,6 +22,7 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -48,6 +49,8 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
+import com.intellij.xdebugger.evaluation.EvaluationMode
+import com.intellij.xdebugger.evaluation.XDebuggerEvaluator
 import com.intellij.xdebugger.frame.XCompositeNode
 import com.intellij.xdebugger.frame.XDebuggerTreeNodeHyperlink
 import com.intellij.xdebugger.frame.XExecutionStack
@@ -56,6 +59,7 @@ import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XValue
 import com.intellij.xdebugger.frame.XValueChildrenList
 import com.intellij.xdebugger.frame.XValueContainer
+import com.intellij.xdebugger.frame.XValueModifier
 import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
@@ -77,6 +81,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -628,6 +633,124 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
         onEdt { debugging.session.resume() }
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * The Evaluate dialog's evaluator, the frame's: an expression over a
+     * local answers its value, with children where it has some; one that
+     * does not compile answers the agent's reason as its error. A hover
+     * offers a local's name, and no other, since any other may be a send.
+     */
+    fun testEvaluateAnswersALocalsValue() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+
+        assertEquals(Presentation(null, "Integer", "4", false), presentationOf(evaluated(frame, "count + 1")))
+        val elements = evaluated(frame, "elements")
+        assertTrue(presentationOf(elements).hasChildren)
+        assertEquals(listOf("[1]", "[2]", "[3]"), childrenOf(elements).keys.toList())
+        assertTrue(evaluationError(frame, "count +").startsWith("the expression does not compile"))
+
+        val document = EditorFactory.getInstance().createDocument("count printString. platform nothing")
+        val evaluator = checkNotNull(frame.evaluator)
+        fun hovered(offset: Int): String? =
+            evaluator.getExpressionInfoAtOffsetAsync(project, document, offset, false).blockingGet(WAIT_SECONDS.toInt() * 1000)
+                ?.let { info -> info.textRange.subSequence(document.charsSequence).toString() }
+        assertEquals("count", hovered(2))
+        assertNull("a send's name is not hovered", hovered(8))
+        assertEquals("a parameter is a variable", "platform", hovered(22))
+        assertNull("nor a name no variable has", hovered(30))
+
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * A watch is evaluated at every stop by the evaluator of the stop's
+     * frame, which answers that stop's value: a loop's index, at each of
+     * its three stops.
+     */
+    fun testAWatchIsEvaluatedAtEachStop() {
+        val program = program("Loop", LOOP)
+        toggleBreakpoint(program, line = 4)
+        val debugging = debug(program)
+        val watched = (1..3).map { _ ->
+            debugging.nextPause()
+            val value = presentationOf(evaluated(checkNotNull(debugging.session.currentStackFrame), "index * 10")).value
+            onEdt { debugging.session.resume() }
+            value
+        }
+        assertEquals(listOf("10", "20", "30"), watched)
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * Set Value on a frame's variable sets it in the program, which goes
+     * on with the value; a value's child is not set, nor is the value of
+     * an evaluation.
+     */
+    fun testSetValueChangesTheProgramsOutput() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        val locals = childrenOf(frame)
+        val modified = CompletableFuture<Unit>()
+        checkNotNull(locals.getValue("count").modifier) { "a frame's variable is set" }.setValue(
+            XDebuggerUtil.getInstance().createExpression("6 * 7", null, null, EvaluationMode.EXPRESSION),
+            object : XValueModifier.XModificationCallback {
+                override fun valueModified() {
+                    modified.complete(Unit)
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    modified.completeExceptionally(AssertionError(errorMessage))
+                }
+            },
+        )
+        modified.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertNull("an element is no frame's variable", childrenOf(locals.getValue("elements")).getValue("[1]").modifier)
+        assertNull("nor is an evaluation's value", evaluated(frame, "count").modifier)
+
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue(debugging.output(), debugging.output().contains("42"))
+    }
+
+    /** The value [expression] answers in [frame], through its evaluator. */
+    private fun evaluated(frame: XStackFrame, expression: String): XValue = evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+    /** The error [expression] answers in [frame]. */
+    private fun evaluationError(frame: XStackFrame, expression: String): String {
+        try {
+            evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (failure: ExecutionException) {
+            return failure.cause?.message.orEmpty()
+        }
+        throw AssertionError("`$expression` answered a value")
+    }
+
+    private fun evaluation(frame: XStackFrame, expression: String): CompletableFuture<XValue> {
+        val answer = CompletableFuture<XValue>()
+        checkNotNull(frame.evaluator).evaluate(
+            expression,
+            object : XDebuggerEvaluator.XEvaluationCallback {
+                override fun evaluated(result: XValue) {
+                    answer.complete(result)
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    answer.completeExceptionally(AssertionError(errorMessage))
+                }
+            },
+            null,
+        )
+        return answer
     }
 
     /** Waits, bounded, until [agent] received [count] requests [command]. */
@@ -1332,6 +1455,16 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             class Shared = Object new () (
               public greeting = (
                 ^'hello'
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A loop whose body, line 4, runs three times. */
+        val LOOP = """
+            class Loop = Object new () (
+              public main: platform args: arguments = (
+                1 to: 3 do: [:index |
+                  platform transcript show: index printString; newLine].
               )
             ) : ()
         """.trimIndent() + "\n"

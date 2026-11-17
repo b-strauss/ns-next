@@ -28,6 +28,7 @@ import com.intellij.xdebugger.XDebuggerManager
 import com.intellij.xdebugger.XDebuggerManagerListener
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.breakpoints.SuspendPolicy
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import io.github.bstrauss.newspeak.NewspeakBundle
@@ -262,6 +263,103 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         assertSame(method, handler.breakpointOf(7))
     }
 
+    /** A breakpoint's condition is the agent's `condition`, a line breakpoint's and a method breakpoint's alike, which the runtime decides. */
+    fun testAConditionIsSentAsTheCondition() {
+        val file = program("Lines", LINES)
+        val line = addLineBreakpoint(file, 4, NewspeakLineBreakpointProperties())
+        val method = addMethodBreakpoint("Lines>>main:args:")
+        runInEdtAndWait {
+            line.setCondition("arguments size > 1")
+            method.setCondition("  ")
+        }
+        val agent = RecordingAgent { command ->
+            JsonParser.parseString(if (command == "setBreakpoints") """{"breakpoints":[{"id":1,"verified":true}]}""" else """{"breakpoints":[{"id":2,"verified":true}]}""").asJsonObject
+        }
+        val lines = NewspeakLineBreakpointHandler(RecordingSession().proxy)
+        val methods = NewspeakMethodBreakpointHandler(RecordingSession().proxy)
+        lines.registerBreakpoint(line)
+        methods.registerBreakpoint(method)
+        (lines.sendAll(agent.client) + methods.sendAll(agent.client)).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+        assertEquals(
+            JsonParser.parseString("""[{"line":5,"condition":"arguments size > 1"}]"""),
+            agent.requests("setBreakpoints").last().getAsJsonArray("breakpoints"),
+        )
+        // A blank condition is none.
+        assertEquals(
+            JsonParser.parseString("""{"breakpoints":[{"name":"Lines>>main:args:"}]}"""),
+            agent.requests("setFunctionBreakpoints").last(),
+        )
+
+        runInEdtAndWait { method.setCondition("arguments isEmpty") }
+        // The platform reports the change, which unregisters and registers the breakpoint again.
+        methods.unregisterBreakpoint(method, false)
+        methods.registerBreakpoint(method)
+        waitUntil("the method set is sent again") { agent.requests("setFunctionBreakpoints").size == 3 }
+        assertEquals(
+            JsonParser.parseString("""{"breakpoints":[{"name":"Lines>>main:args:","condition":"arguments isEmpty"}]}"""),
+            agent.requests("setFunctionBreakpoints").last(),
+        )
+    }
+
+    /**
+     * A log expression of a line breakpoint that needs no stop is the
+     * agent's `logMessage`, the expression in braces -- after a blank
+     * where it starts with a tuple's brace, since `{{` escapes a brace --
+     * and the agent logs it without stopping; one that suspends, or logs
+     * its hit, stops, and the session evaluates it there instead.
+     */
+    fun testALogExpressionIsSentAsTheLogMessage() {
+        val file = program("Lines", LINES)
+        val logged = addLineBreakpoint(file, 4, NewspeakLineBreakpointProperties())
+        val tuple = addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties())
+        val suspending = addLineBreakpoint(file, 5, NewspeakLineBreakpointProperties())
+        runInEdtAndWait {
+            for (breakpoint in listOf(logged, tuple)) breakpoint.suspendPolicy = SuspendPolicy.NONE
+            logged.setLogExpression("arguments size printString")
+            tuple.setLogExpression("{1. 2} size")
+            suspending.setLogExpression("arguments")
+        }
+        val agent = RecordingAgent { _ ->
+            JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true},{"id":2,"verified":true},{"id":3,"verified":true}]}""").asJsonObject
+        }
+        val handler = NewspeakLineBreakpointHandler(RecordingSession().proxy)
+        for (breakpoint in listOf(logged, tuple, suspending)) handler.registerBreakpoint(breakpoint)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+        assertEquals(
+            JsonParser.parseString(
+                """[{"line":5,"logMessage":"{arguments size printString}"},{"line":4,"logMessage":"{ {1. 2} size}"},{"line":6}]""",
+            ),
+            agent.requests("setBreakpoints").last().getAsJsonArray("breakpoints"),
+        )
+        assertFalse("a breakpoint that suspends stops, and is no logpoint", isLogpoint(suspending))
+        runInEdtAndWait { logged.isLogMessage = true }
+        assertFalse("one that logs its hit stops too", isLogpoint(logged))
+    }
+
+    /**
+     * Review Focus 4: the runtime decides a condition, once at each hit,
+     * and nothing in the IDE evaluates it again. The condition counts its
+     * evaluations in a slot the program prints at its end: three hits,
+     * each stopped at and resumed, count three.
+     */
+    fun testAConditionIsEvaluatedByTheRuntimeOnly() {
+        NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        cache.fetcher = { null }
+        val program = program("Counted", COUNTED)
+        val breakpoint = addLineBreakpoint(program, COUNTED_BODY_LINE, NewspeakLineBreakpointProperties())
+        runInEdtAndWait { breakpoint.setCondition("countHit") }
+        val debugging = debug(program)
+
+        repeat(3) { hit ->
+            assertEquals("the stop at hit ${hit + 1}", COUNTED_BODY_LINE, debugging.nextPause().line)
+            runInEdtAndWait { debugging.session.resume() }
+        }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue("no fourth stop: ${debugging.pauses}", debugging.pauses.isEmpty())
+        assertTrue(debugging.output(), debugging.output().contains("hits 3"))
+    }
+
     fun testAnExceptionBreakpointSendsItsFiltersAndClasses() {
         val type = exceptionType()
         val any = breakpoints.getDefaultBreakpoints(type).single()
@@ -400,6 +498,12 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
     ): XLineBreakpoint<NewspeakLineBreakpointProperties> = runInEdtAndGet {
         WriteAction.compute<XLineBreakpoint<NewspeakLineBreakpointProperties>, Throwable> {
             breakpoints.addLineBreakpoint(lineType(), file.url, line, properties).apply { isTemporary = temporary }
+        }
+    }
+
+    private fun addMethodBreakpoint(name: String): XBreakpoint<NewspeakMethodBreakpointProperties> = runInEdtAndGet {
+        WriteAction.compute<XBreakpoint<NewspeakMethodBreakpointProperties>, Throwable> {
+            breakpoints.addBreakpoint(methodType(), NewspeakMethodBreakpointProperties().apply { methodName = name })
         }
     }
 
@@ -572,5 +676,27 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             ) : ()
         """.trimIndent() + "\n"
         const val LOOP_BODY_LINE = 3
+
+        /**
+         * A loop of three whose body, line 6 counted from 0, a condition
+         * stands on that counts its evaluations, which the program prints.
+         */
+        val COUNTED = """
+            class Counted = Object new (
+              | hits ::= 0. |
+            ) (
+              public main: platform args: arguments = (
+                1 to: 3 do: [:index |
+                  index printString.
+                ].
+                platform transcript show: 'hits ' , hits printString; newLine.
+              )
+              countHit = (
+                hits:: hits + 1.
+                ^true
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+        const val COUNTED_BODY_LINE = 5
     }
 }

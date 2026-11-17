@@ -6,9 +6,14 @@ import io.github.bstrauss.newspeak.debugger.dap.DapBreakpoint
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapExitedEvent
+import io.github.bstrauss.newspeak.debugger.dap.DapRequestFailedException
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
+import io.github.bstrauss.newspeak.debugger.dap.DapVariable
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
@@ -16,6 +21,7 @@ import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -106,6 +112,65 @@ class DapSessionTest {
                 assertEquals("hi", Files.readString(standardOutput).trim())
             } catch (failure: Throwable) {
                 throw AssertionError("${failure.message}; ${written()}", failure)
+            } finally {
+                process.destroyForcibly()
+                process.waitFor(WAIT_SECONDS, TimeUnit.SECONDS)
+                directory.toFile().deleteRecursively()
+            }
+        }
+    }
+
+    /**
+     * At a breakpoint's stop `evaluate` answers an expression's value in
+     * the top frame as a variable shows one, with the value reference
+     * marks and referrers name it by, and an expression that does not
+     * compile is a failed response with the agent's reason.
+     */
+    @Test
+    fun evaluateAnswersAValue() {
+        val directory = Files.createTempDirectory("dap-session")
+        val program = directory.resolve("Hello.ns")
+        Files.writeString(program, HELLO)
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { serverSocket ->
+            val process = ProcessBuilder(runtime.toString(), "run", "--debug-connect=127.0.0.1:${serverSocket.localPort}", program.toString())
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            try {
+                val client = DapClient(DapConnection.accept(serverSocket, WAIT_MILLISECONDS))
+                try {
+                    val initialized = eventFuture(client, "initialized")
+                    val stopped = eventFuture(client, "stopped")
+                    awaited(client.request("initialize", JsonObject().apply { addProperty("adapterID", "ns-next") }))
+                    awaited(client.request("attach", JsonObject().apply { addProperty("stopOnEntry", false) }))
+                    awaited(initialized)
+                    awaited(
+                        client.request(
+                            "setBreakpoints",
+                            JsonObject().apply {
+                                add("source", JsonObject().apply { addProperty("path", program.toAbsolutePath().toString()) })
+                                add("breakpoints", JsonArray().apply { add(JsonObject().apply { addProperty("line", BREAKPOINT_LINE) }) })
+                            },
+                        ),
+                    )
+                    awaited(client.request("configurationDone"))
+                    awaited(stopped)
+
+                    val answer = awaited(client.request("evaluate", JsonObject().apply { addProperty("expression", "3 + 4") }))
+                    val value = DapVariable.evaluated("3 + 4", answer)
+                    assertEquals("7", value.value)
+                    assertNotNull("a value the program reaches has a value reference: $answer", value.valueReference)
+                    assertFalse(value.readOnly)
+
+                    val refused = client.request("evaluate", JsonObject().apply { addProperty("expression", "3 +") })
+                    val failure = assertThrows(ExecutionException::class.java) { refused.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+                    assertTrue(failure.cause.toString(), failure.cause is DapRequestFailedException)
+                    assertTrue(failure.cause?.message, failure.cause?.message.orEmpty().startsWith("the expression does not compile"))
+                    client.request("terminate")
+                } finally {
+                    client.close()
+                }
+                assertTrue("ns-next ends", process.waitFor(WAIT_SECONDS, TimeUnit.SECONDS))
             } finally {
                 process.destroyForcibly()
                 process.waitFor(WAIT_SECONDS, TimeUnit.SECONDS)

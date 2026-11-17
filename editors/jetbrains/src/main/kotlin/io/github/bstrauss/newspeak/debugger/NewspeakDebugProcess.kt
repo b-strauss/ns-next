@@ -20,6 +20,7 @@ import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XExpression
 import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.evaluation.EvaluationMode
 import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
@@ -36,6 +37,7 @@ import io.github.bstrauss.newspeak.debugger.dap.DapOutputEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapProcessEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
+import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.io.IOException
 import java.net.ServerSocket
@@ -304,12 +306,44 @@ class NewspeakDebugProcess(
         }
         if (breakpoint == null) {
             session.positionReached(context)
-        } else if (!session.breakpointReached(breakpoint, null, context)) {
+        } else if (!session.breakpointReached(breakpoint, loggedAt(client, breakpoint, event, frames), context)) {
             // The platform's own decision not to suspend there, as a logging breakpoint's.
             resume(context)
             return
         }
-        exceptionMessage(event)?.let { message -> session.reportMessage(message, MessageType.WARNING) }
+        (exceptionMessage(event) ?: failedConditionMessage(event))?.let { message -> session.reportMessage(message, MessageType.WARNING) }
+    }
+
+    /**
+     * The text a breakpoint that stops logs: its log expression's value,
+     * evaluated once, here, in the stop's top frame -- a logpoint's the
+     * agent logs itself without stopping, and one whose condition or log
+     * message failed stops with the error instead, which is not evaluated
+     * again. The error of an evaluation that fails is the text logged, as
+     * the platform's own debuggers log it.
+     */
+    private fun loggedAt(client: DapClient, breakpoint: XBreakpoint<*>, event: DapStoppedEvent, frames: List<NewspeakStackFrame>): String? {
+        val expression = logExpressionOf(breakpoint) ?: return null
+        if (isLogpoint(breakpoint) || event.text != null) return null
+        val arguments = JsonObject().apply {
+            addProperty("expression", expression)
+            frames.firstOrNull()?.let { frame -> addProperty("frameId", frame.id) }
+        }
+        val text = try {
+            client.request("evaluate", arguments).get(ANSWER_SECONDS, TimeUnit.SECONDS).stringOrNull("result").orEmpty()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (exception: Exception) {
+            messageOf(exception)
+        }
+        return text + "\n"
+    }
+
+    /** What a breakpoint's stop with an error tells the user: its condition or log message failed, and why. */
+    private fun failedConditionMessage(event: DapStoppedEvent): String? {
+        if (event.reason != "breakpoint") return null
+        return event.text?.let { text -> NewspeakBundle.message("debugger.stopped.condition.failed", text) }
     }
 
     /**
@@ -567,7 +601,12 @@ class NewspeakDebugProcess(
     }
 }
 
-/** The editor of an expression; evaluation is not supported yet, so it is plain Newspeak text. */
+/**
+ * The editor of an expression -- the Evaluate dialog's, a watch's, a
+ * breakpoint's condition and log expression, a value set -- as Newspeak
+ * text, which the agent compiles in the stop's scope; it resolves nothing
+ * itself, since the names it may use are the frame's.
+ */
 object NewspeakDebuggerEditorsProvider : XDebuggerEditorsProvider() {
     override fun getFileType(): FileType = NewspeakFileType
 

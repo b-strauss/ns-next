@@ -2551,14 +2551,15 @@ machine code, and for the pause it would take late.
 
 ### 8. An expression is evaluated as a block in the stop's scope
 
-**Partial:** an expression is resolved and compiled as a block in a
+**Built:** an expression is resolved and compiled as a block in a
 stopped frame's scope (`resolver::resolve_evaluation`,
 `compiler/evaluation.rs`) and run at a stop (`Command::Evaluate`,
 `debugger/evaluation.rs`; "Evaluation"), as a variable's new value
 (`Command::SetVariable`; "Writing a frame") and as a breakpoint's
 condition and a logpoint's message ("Hit counts and temporary
 breakpoints"), and the agent serves `evaluate` in every context, a
-watch's among them; the plugin's evaluator and watches are planned.
+watch's among them, and the plugin evaluates through it in the Evaluate
+dialog, its watches and its hovers ("The JetBrains plugin").
 
 An expression -- `evaluate`, a breakpoint's condition, a log message, a
 watch, `setVariable` as `name:: expression` -- is resolved and compiled as
@@ -5717,16 +5718,52 @@ without a session running, and in a session sends the breakpoint's set
 several times -- once at each unregister and register -- of which the
 last is the one that counts.
 
+Each frame evaluates through the agent (`NewspeakEvaluator`, the
+frame's `XStackFrame.getEvaluator`): the Evaluate dialog, every watch at
+each stop and the editor's hover send `evaluate` with the frame's id,
+and the answer is shown as a `NewspeakValue`, its children paged as a
+variable's; an exception that ended it, or the agent's refusal -- "the
+expression does not compile: …" -- is the error shown in the value's
+place. A hover takes the identifier under the pointer only when it names
+one of the frame's variables, read from its `Locals` once a stop: reading
+a variable runs no code, while any other name may be a send of the
+receiver's, which a hover would run unasked; so a hover cannot hang and
+needs none of the agent's hover bound. A frame's own variable has a
+`NewspeakValueModifier` (`XValue.getModifier`), Set Value, which sends
+`setVariable` to the frame's `Locals` reference and has the platform read
+the frame again; a withheld value -- the agent's `readOnly` -- a value's
+child and an evaluation's value have none, since the agent sets a frame's
+variables only (`testEvaluateAnswersALocalsValue`,
+`testAWatchIsEvaluatedAtEachStop`, `testSetValueChangesTheProgramsOutput`).
+
+The line and method breakpoint types give the platform's condition and
+log expression fields Newspeak's editor (`getEditorsProvider`). The
+platform evaluates neither: `XDebugSession.breakpointReached` leaves a
+condition to the debug process, and the handlers send it as the agent's
+`condition`, which the runtime decides at each hit, once, so that a
+condition with a side effect runs once a hit
+(`testAConditionIsSentAsTheCondition`,
+`testAConditionIsEvaluatedByTheRuntimeOnly`). A line breakpoint's log
+expression is the agent's `logMessage`, the expression in braces, where
+nothing needs the stop -- it suspends nothing and logs neither its hit
+nor the stack, which the platform does only at a stop -- and the agent
+logs it as an `output` event and goes on
+(`testALogExpressionIsSentAsTheLogMessage`). Every other log expression,
+of a breakpoint that stops and of a method breakpoint, to which DAP gives
+no log message, the session evaluates at the stop, once, in the top
+frame, and hands to `breakpointReached` to log. A stop whose condition
+or log message failed says why in the debugger's balloon.
+
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of
 breakpoint over a scripted agent and stops at a temporary one with the
 real runtime (`NewspeakBreakpointTypesTest`;
 [editor-support.md](editor-support.md), "Plugin testing and gates").
 
-Planned: the plugin will add, over that client, an `XDebuggerEvaluator`,
-an `XSmartStepIntoHandler` over `stepInTargets`, restart frame, force
-return and a hot-swap action on the agent's own requests, and inline
-values and step times.
+Planned: the plugin will add, over that client, an `XSmartStepIntoHandler`
+over `stepInTargets`, restart frame, force return, marks, the memory
+view, the shipped frames folded as library frames, a hot-swap action on
+the agent's own requests, and inline values and step times.
 
 ## Planned: the order of building it
 

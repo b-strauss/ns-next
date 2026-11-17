@@ -5,6 +5,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.evaluation.XDebuggerEvaluator
 import com.intellij.xdebugger.frame.XCompositeNode
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XValueChildrenList
@@ -30,7 +31,19 @@ class NewspeakStackFrame(
     /** A frame the agent hides by default -- the shipped modules' own -- stays listed, drawn greyed. */
     val hidden: Boolean get() = frame.presentationHint == "subtle"
 
+    /** A frame of a shipped module's body: a library frame, which the frames view folds with its neighbours. */
+    val shipped: Boolean get() = frame.shipped
+
+    /** Whether the agent restarts the frame: never one of the core library's. */
+    val canRestart: Boolean get() = frame.canRestart
+
+    /** The agent's id of the frame at this stop. */
+    val id: Int get() = frame.id
+
     override fun getSourcePosition(): XSourcePosition? = position
+
+    /** Evaluates in this frame: the Evaluate dialog, watches and the editor's hovers. */
+    override fun getEvaluator(): XDebuggerEvaluator = NewspeakEvaluator(client, this)
 
     /**
      * What the platform keeps the variables view's expanded nodes by and
@@ -91,9 +104,33 @@ class NewspeakStackFrame(
                 } else if (locals == null) {
                     node.addChildren(XValueChildrenList.EMPTY, true)
                 }
-                if (locals != null) addVariablePage(client, locals.variablesReference, 0, null, node)
+                if (locals != null) addVariablePage(client, locals.variablesReference, 0, null, node, locals = true)
             }
         }
+    }
+
+    /**
+     * The names of the frame's variables, asked once for the stop: a hover
+     * evaluates only these, since reading a variable runs no code, where
+     * any other name may be a send.
+     */
+    internal val variableNames: CompletableFuture<Set<String>> by lazy {
+        client.request("scopes", JsonObject().apply { addProperty("frameId", frame.id) })
+            .thenCompose { body ->
+                val locals = body.get("scopes")
+                    ?.takeIf { element -> element.isJsonArray }
+                    ?.asJsonArray
+                    ?.filter { element -> element.isJsonObject }
+                    ?.map { element -> DapScope.from(element.asJsonObject) }
+                    ?.firstOrNull { scope -> scope.presentationHint == "locals" }
+                    ?: return@thenCompose CompletableFuture.completedFuture(emptySet())
+                val arguments = JsonObject().apply {
+                    addProperty("variablesReference", locals.variablesReference)
+                    addProperty("start", 0)
+                    addProperty("count", VARIABLES_PAGE)
+                }
+                client.request("variables", arguments).thenApply { variables -> variablesOf(variables).map(DapVariable::name).toSet() }
+            }
     }
 
     private fun returnedValues(scope: DapScope?): CompletableFuture<List<DapVariable>> {

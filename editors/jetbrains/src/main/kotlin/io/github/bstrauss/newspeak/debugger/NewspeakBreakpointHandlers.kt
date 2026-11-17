@@ -6,6 +6,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.ui.MessageType
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.xdebugger.XDebugSession
+import com.intellij.xdebugger.breakpoints.SuspendPolicy
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.breakpoints.XBreakpointType
@@ -28,6 +29,40 @@ import java.util.concurrent.ConcurrentHashMap
  * then on. Answers come in the order of the requests, so the last answer
  * for a set is its latest.
  */
+
+/*
+ * A breakpoint's condition is decided by the runtime, as the agent's
+ * `condition`, never by the session: the platform leaves a condition to
+ * the debug process, and this one sends it, so that a condition with a
+ * side effect runs once at each hit. A log expression is the agent's
+ * `logMessage` where nothing else needs the stop (`isLogpoint`): the
+ * agent logs it and goes on, as a DAP logpoint. Where the breakpoint
+ * stops anyway -- it suspends, or the platform logs its hit or the stack
+ * there, or it is a method breakpoint, which DAP gives no log message --
+ * the session evaluates the expression at the stop, in its top frame,
+ * once, and hands the platform its text to log.
+ */
+
+/** The breakpoint's condition, null for none or a blank one. */
+internal fun conditionOf(breakpoint: XBreakpoint<*>): String? = breakpoint.conditionExpression?.expression?.trim()?.takeIf(String::isNotEmpty)
+
+/** The breakpoint's log expression, null for none or a blank one. */
+internal fun logExpressionOf(breakpoint: XBreakpoint<*>): String? = breakpoint.logExpressionObject?.expression?.trim()?.takeIf(String::isNotEmpty)
+
+/** Whether a line breakpoint is the agent's logpoint: it logs an expression and nothing needs it to stop. */
+internal fun isLogpoint(breakpoint: XBreakpoint<*>): Boolean =
+    breakpoint is XLineBreakpoint<*> &&
+        logExpressionOf(breakpoint) != null &&
+        breakpoint.suspendPolicy == SuspendPolicy.NONE &&
+        !breakpoint.isLogMessage &&
+        !breakpoint.isLogStack
+
+/**
+ * The agent's log message that logs [expression]'s value: the expression
+ * in braces, after a blank where it starts with a brace of its own, since
+ * `{{` is the message's escape of a brace.
+ */
+internal fun logMessageOf(expression: String): String = "{" + (if (expression.startsWith("{")) " " else "") + expression + "}"
 
 private typealias NewspeakLineBreakpoint = XLineBreakpoint<NewspeakLineBreakpointProperties>
 private typealias NewspeakMethodBreakpoint = XBreakpoint<NewspeakMethodBreakpointProperties>
@@ -157,6 +192,8 @@ class NewspeakLineBreakpointHandler(session: XDebugSession) :
                                 addProperty("line", breakpoint.line + 1)
                                 breakpoint.properties?.column?.let { column -> addProperty("column", column + 1) }
                                 breakpoint.properties?.hitCondition?.let { condition -> addProperty("hitCondition", condition) }
+                                conditionOf(breakpoint)?.let { condition -> addProperty("condition", condition) }
+                                if (isLogpoint(breakpoint)) addProperty("logMessage", logMessageOf(checkNotNull(logExpressionOf(breakpoint))))
                             },
                         )
                     }
@@ -212,6 +249,7 @@ class NewspeakMethodBreakpointHandler(session: XDebugSession) :
                             JsonObject().apply {
                                 addProperty("name", breakpoint.properties.methodName.orEmpty().trim())
                                 breakpoint.properties.hitCondition?.let { condition -> addProperty("hitCondition", condition) }
+                                conditionOf(breakpoint)?.let { condition -> addProperty("condition", condition) }
                             },
                         )
                     }
