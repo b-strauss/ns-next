@@ -2143,8 +2143,10 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       evaluate only a frame's variable names -- so the agent's hover
       bound and its abort never apply to them; the memory view's panel
       is tested through its model only; and Force Return, Step Into
-      Shipped and Mark Object… under the split debugger are checked by no
-      test, the plugin's tests running the monolithic one
+      Shipped, Mark Object…, Smart Step Into, Reset Frame and the memory
+      panel under the split debugger were checked by hand on 2026-11-17
+      (IntelliJ 2026.2, `xdebugger.toolwindow.split` on) but by no test,
+      the plugin's tests running the monolithic one
       ([debugger.md](design/debugger.md), "The JetBrains plugin").
     - *Tests*: `an_error_is_the_result_and_the_program_goes_on` asserts
       only that the error's description is not empty,
