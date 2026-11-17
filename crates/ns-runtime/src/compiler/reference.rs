@@ -209,7 +209,8 @@ pub(crate) fn compile_lazy_slot_getter(
 /// An expression evaluated in a stopped frame (`super::evaluation`), as a
 /// block of `argument_count` arguments and the expression's temporaries,
 /// every `Binding::FrameVariable` in it and in the blocks it makes reached
-/// at the place `frame_variables` gives it.
+/// at the place `frame_variables` gives it (`docs/design/debugger.md`,
+/// decision 8, "Evaluation").
 pub(crate) fn compile_evaluation(
     expression: &ast::CodeBody,
     bindings: &Bindings,

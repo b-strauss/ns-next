@@ -2181,8 +2181,9 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
 }
 
 /// The index a step into stops at in `frame`, the frame it just pushed --
-/// or one the debugger restarts (`stop_at_restart`) -- running `code`: its first statement start -- index 0, or index 1 for a
-/// body whose first instruction makes its indirection vector
+/// or one the debugger restarts (`stop_at_restart`) -- running `code`:
+/// its first statement start -- index 0, or index 1 for a body whose
+/// first instruction makes its indirection vector
 /// (`MakeVector`, emitted before every statement) -- but for an
 /// initializer of a declaration that writes no superclass clause, whose
 /// first statement is the clause that stands for `Object new` (§6.1),

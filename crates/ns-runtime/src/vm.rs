@@ -290,9 +290,8 @@ fn take_safepoint(
     interpreter: &mut Interpreter,
     frame: &mut FrameRegisters,
     floor: usize,
-    at_loop_head: bool,
+    mut at_loop_head: bool,
 ) -> AfterSafepoint {
-    let mut at_loop_head = at_loop_head;
     loop {
         if let Some(after) = safepoint_once(interpreter, frame, floor, at_loop_head) {
             return after;
