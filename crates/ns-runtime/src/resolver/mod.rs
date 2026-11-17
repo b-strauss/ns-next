@@ -33,6 +33,10 @@ pub(crate) struct FrameVariable {
     pub(crate) place: VariablePlace,
     /// Whether an assignment may write it.
     pub(crate) assignability: Assignability,
+    /// Whether the stopped frame holds it where it reads it: `false` for
+    /// one the variables view shows as not available, which a read and
+    /// an assignment alike refuse (`debugger::stack::available`).
+    pub(crate) available: bool,
 }
 
 /// Whether an evaluated assignment may write a frame variable.
@@ -495,14 +499,19 @@ impl Resolver<'_> {
     }
 
     /// The frame variable an evaluated expression's `name` reads: the first
-    /// of that name, the innermost scope's; `None` outside an evaluation.
-    fn frame_variable(&self, name: Symbol) -> Option<u16> {
+    /// of that name, the innermost scope's -- the one the variables view
+    /// shows -- or the refusal of a read of one not available; `None`
+    /// outside an evaluation.
+    fn frame_variable(&self, name: Symbol) -> Option<Result<u16, String>> {
         let evaluating = self.evaluating.as_ref()?;
         let position = evaluating
             .variables
             .iter()
             .position(|variable| variable.name == name)?;
-        Some(frame_variable_index(position))
+        if !evaluating.variables[position].available {
+            return Some(Err(format!("{name} {}", crate::debugger::NOT_AVAILABLE)));
+        }
+        Some(Ok(frame_variable_index(position)))
     }
 
     /// The frame variable `name:: e` writes in an evaluated expression, or
@@ -512,8 +521,8 @@ impl Resolver<'_> {
     /// with none to pass on to, and a marked label, are refused -- the
     /// frame's own variable, never a slot of the same name, is what the
     /// user means -- and so is the mutable local it names when a block may
-    /// already hold a copy of it. `None` outside an evaluation, and for a
-    /// name the frame does not hold.
+    /// already hold a copy of it, or when it is not available. `None`
+    /// outside an evaluation, and for a name the frame does not hold.
     fn frame_variable_target(&self, name: Symbol) -> Option<Result<u16, String>> {
         let evaluating = self.evaluating.as_ref()?;
         let refusal = || Err(format!("{name} {}", crate::debugger::NOT_ASSIGNABLE));
@@ -530,6 +539,9 @@ impl Resolver<'_> {
         Some(
             match named.find(|(_, variable)| variable.assignability != Assignability::NotAssignable)
             {
+                Some((_, variable)) if !variable.available => {
+                    Err(format!("{name} {}", crate::debugger::NOT_AVAILABLE))
+                }
                 Some((_, variable)) if variable.assignability == Assignability::Captured => {
                     Err(format!("{name} {}", crate::debugger::CAPTURED))
                 }
@@ -628,9 +640,19 @@ impl Resolver<'_> {
             self.bindings.insert(id.span, binding);
             return;
         }
-        if let Some(index) = self.frame_variable(name) {
-            self.bindings.insert(id.span, Binding::FrameVariable(index));
-            return;
+        match self.frame_variable(name) {
+            Some(Ok(index)) => {
+                self.bindings.insert(id.span, Binding::FrameVariable(index));
+                return;
+            }
+            Some(Err(message)) => {
+                self.errors.push(ResolveError {
+                    span: id.span,
+                    message,
+                });
+                return;
+            }
+            None => {}
         }
         let depth = sends::find_member_depth(chain, name).unwrap_or(0);
         self.bindings

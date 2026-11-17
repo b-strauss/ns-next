@@ -907,6 +907,20 @@ pub(crate) fn vector_not_made(
     holder.is_some_and(|holder| holder.is_nil())
 }
 
+/// Whether `stack_frame` holds the variable at each of `places`, read as
+/// the variables view reads it (`Reader::place`): `false` for one the view
+/// shows as not available, which an evaluation refuses to read or write.
+pub(crate) fn available(
+    heap: &Heap<'_>,
+    stack_frame: &StackFrame,
+    places: impl Iterator<Item = VariablePlace>,
+) -> Vec<bool> {
+    let code = code(heap, stack_frame);
+    with_reader(heap, stack_frame, &code, |reader| {
+        places.map(|place| reader.place(place).is_some()).collect()
+    })
+}
+
 /// Whether the body `code` belongs to a shipped module, decided by the
 /// code alone: by the registered mixin one of whose members' families
 /// holds it -- a method, an initializer or a superclass clause, or a

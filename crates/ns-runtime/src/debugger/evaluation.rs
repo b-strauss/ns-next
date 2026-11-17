@@ -24,7 +24,10 @@ use super::metadata::again::{declaration_chain, module_name};
 use super::metadata::{BodyMetadata, VariablePlace};
 use super::stack::{self, OuterFrame, StackFrame};
 use super::values::{Mark, used_labels};
-use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, NOT_MADE, RETURN_FROM_AN_EVALUATION, Stop};
+use super::{
+    CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, NOT_AVAILABLE, NOT_MADE, RETURN_FROM_AN_EVALUATION,
+    Stop,
+};
 use crate::bytecode::{CompiledCode, may_have_run};
 use crate::heap::{ActivationReference, FrameReference, NewClosure};
 use crate::interpreter::{
@@ -303,14 +306,21 @@ fn compile_with(
         })
         .collect();
     let assignabilities = assignabilities(mutator, stack_frame, &code, &metadata);
+    let available = stack::available(
+        &mutator.heap,
+        stack_frame,
+        metadata.variables.iter().map(|entry| entry.place),
+    );
     let variables: Vec<FrameVariable> = metadata
         .variables
         .iter()
         .zip(assignabilities)
-        .map(|(entry, assignability)| FrameVariable {
+        .zip(available)
+        .map(|((entry, assignability), available)| FrameVariable {
             name: entry.name,
             place: entry.place,
             assignability,
+            available,
         })
         .collect();
     let declared: Vec<&str> = expression
@@ -332,6 +342,7 @@ fn compile_with(
             || message.ends_with(NOT_ASSIGNABLE)
             || message.ends_with(CAPTURED)
             || message.ends_with(NOT_MADE)
+            || message.ends_with(NOT_AVAILABLE)
         {
             message
         } else {

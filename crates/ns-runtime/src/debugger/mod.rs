@@ -118,6 +118,14 @@ pub(crate) const CAPTURED: &str = "is captured by a block made before this point
 /// "Evaluation").
 pub(crate) const NOT_MADE: &str = "does not exist yet at this point";
 
+/// What follows a variable's name in the refusal of a read or an
+/// assignment of a frame variable the variables view shows as not
+/// available: `"<name> is not available here"`. It lives nowhere any more
+/// -- its frame returned without keeping its registers, or the register is
+/// not live at the stop -- so a read would answer a nil it never held and
+/// a write would go nowhere (`docs/design/debugger.md`, "Evaluation").
+pub(crate) const NOT_AVAILABLE: &str = "is not available here";
+
 /// The VM's end of an attached debugger, held by its `Interpreter`.
 pub(crate) struct Debugger {
     commands: Receiver<Command>,
@@ -314,8 +322,9 @@ pub(crate) struct StressReader {
     /// `Variables` answer that is no value's children.
     top_variables_read: bool,
     /// The variables evaluated, in the order of their `Evaluate`s, each
-    /// with the value the variables view showed.
-    expected: std::collections::VecDeque<(String, ValueDescription)>,
+    /// with the value the variables view showed -- `None` for one it
+    /// showed as not available.
+    expected: std::collections::VecDeque<(String, Option<ValueDescription>)>,
     /// The variable last evaluated, with the id of the value the variables
     /// view showed and of the one the evaluation answered, which the stop
     /// holds to being the same object (`Interpreter::check_stress_identity`)
@@ -352,14 +361,34 @@ impl StressReader {
 
     /// Checks the answer of the evaluation of the next variable expected:
     /// the value the variables view showed, by its class, its label and
-    /// its children -- or a refusal the stopped frame gives a reason for,
-    /// a frame without metadata or a stack without room for the push.
+    /// its children, or, for one it showed as not available, exactly the
+    /// refusal of it -- or a refusal the stopped frame gives a reason for,
+    /// a frame without metadata, a stack without room for the push or a
+    /// stop during the debugger's termination.
     fn evaluated(&mut self, answer: Result<&Evaluation, &str>) {
         let (name, shown) = self
             .expected
             .pop_front()
             .expect("internal: the stress mode's reader answered an evaluation it did not ask for");
         let frame = self.top_frame.as_deref().unwrap_or_default();
+        let Some(shown) = shown else {
+            let refused = format!("{name} {NOT_AVAILABLE}");
+            match answer {
+                Err(reason)
+                    if reason == refused
+                        || reason == evaluation::NO_SOURCE
+                        || reason == TERMINATING => {}
+                Ok(answer) => panic!(
+                    "internal: the {} stress mode's evaluation of {name} in {frame}, shown as not available, answered {answer:?}",
+                    self.mode
+                ),
+                Err(reason) => panic!(
+                    "internal: the {} stress mode's evaluation of {name} in {frame}, shown as not available, was refused: {reason}",
+                    self.mode
+                ),
+            }
+            return;
+        };
         match answer {
             Ok(Evaluation::Value(value))
                 if value.class_name == shown.class_name
@@ -425,12 +454,17 @@ impl StressReader {
                             })
                         }));
                     if !self.top_variables_read && self.top_frame.is_some() {
-                        // A variable not computed or not available has no
-                        // value the evaluation could be held to.
-                        let evaluated: Vec<(String, ValueDescription)> = variables
+                        // A variable not available is held to the refusal
+                        // of it; a frame's variable is never one not
+                        // computed, which only a field is.
+                        let evaluated: Vec<(String, Option<ValueDescription>)> = variables
                             .iter()
-                            .filter_map(|variable| {
-                                Some((variable.name.clone(), variable.value.shown()?.clone()))
+                            .filter_map(|variable| match &variable.value {
+                                VariableValue::Shown(value) => {
+                                    Some((variable.name.clone(), Some(value.clone())))
+                                }
+                                VariableValue::Unavailable => Some((variable.name.clone(), None)),
+                                VariableValue::NotComputed => None,
                             })
                             .take(StressReader::EVALUATIONS)
                             .collect();

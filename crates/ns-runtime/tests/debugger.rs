@@ -13972,6 +13972,30 @@ mod evaluation {
             }
         }
     }
+
+    /// A variable the variables view shows as not available lives nowhere
+    /// the evaluation could read or write it: `unused`, which `make:`'s
+    /// frame dropped as it returned, is refused for a read and for a
+    /// `SetVariable` alike, never read as nil. Only the optimized
+    /// lowering's frame drops it.
+    #[test]
+    fn an_unavailable_variable_is_refused_for_reads_and_writes() {
+        let (shown, read, written, set) =
+            while_stopped_under(Lowering::Optimized, RETURNED, |remote| {
+                let variables = frame_and_variables(remote, "[] in Returned>>make:").1;
+                let shown = named(&variables, "unused").value.clone();
+                let frames = stack_trace(remote);
+                let frame = frame_named(&frames, "[] in Returned>>make:");
+                let read = refusal(remote, frame, "unused");
+                let written = refusal(remote, frame, "unused:: 5");
+                let set = set_refusal(remote, frame, "unused", "5");
+                (shown, read, written, set)
+            });
+        assert_eq!(shown, VariableValue::Unavailable);
+        assert_eq!(read, "unused is not available here");
+        assert_eq!(written, "unused is not available here");
+        assert_eq!(set, "unused is not available here");
+    }
 }
 
 /// Conditional breakpoints and logpoints, decided by the VM

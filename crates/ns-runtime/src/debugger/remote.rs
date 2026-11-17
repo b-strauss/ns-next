@@ -163,7 +163,9 @@ pub enum Command {
     /// already hold a copy of (`docs/design/debugger.md`, "Assigning a
     /// captured variable") or a vector variable whose frame has not made
     /// its vector yet (`"<name> does not exist yet at this point"`; "A
-    /// vector not made yet"), and at a stop the debugger's termination
+    /// vector not made yet"), one that reads or assigns a variable the
+    /// variables view shows as not available (`"<name> is not available
+    /// here"`; "A variable not available"), and at a stop the debugger's termination
     /// makes in an `ensure:` block it runs (`"the program is
     /// terminating"`; "Continuing and terminating").
     Evaluate { frame: usize, expression: String },
@@ -179,7 +181,8 @@ pub enum Command {
     /// by a block made before this point"` (`docs/design/debugger.md`,
     /// "Assigning a captured variable") -- and a vector variable whose
     /// vector does not exist yet -- `"<name> does not exist yet at this
-    /// point"`.
+    /// point"` -- and a variable not available -- `"<name> is not
+    /// available here"`.
     SetVariable {
         frame: usize,
         name: String,

@@ -184,6 +184,7 @@ mod tests {
                 } else {
                     Assignability::Assignable
                 },
+                available: true,
             })
             .collect();
         let classes = chain

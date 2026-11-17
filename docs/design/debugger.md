@@ -1446,8 +1446,9 @@ first. No debugger need be attached: the stop takes its commands from a
 (`debugger::StressReader`), which asks for the stack trace, the variables
 of every frame and the first eight children of every value a variable has,
 evaluates the first eight named variables of the top frame that have a
-value, then continues; a refusal is the stop misreading its own stack, and
-panics. The stack trace and the variables are read through the metadata
+value or are shown as not available, then continues; a refusal is the
+stop misreading its own stack, and panics. The stack trace and the
+variables are read through the metadata
 as an agent's are, so every frame's body is found by its declaration and
 compiled again on the first stop in it, and its name, its location and
 its named variables, the outer chain of a block included, are read at
@@ -1456,9 +1457,12 @@ Each evaluation (`Command::Evaluate`, the variable's name as the
 expression; "Evaluation") must answer the value the variables view
 showed -- its class, its label, its child count and whether its children
 are elements, since a stop hands out a fresh id for every value it
-describes -- or be refused for a reason the stopped frame gives, a frame
-without metadata or a stack without room for the push; any other answer
-panics, naming the variable, the frame and both answers. The top frame is
+describes -- or, for a variable the view showed as not available, be
+refused with exactly `"<name> is not available here"`, or be refused for
+a reason the stopped frame gives, a frame without metadata, a stack
+without room for the push or a stop during the debugger's termination;
+any other answer panics, naming the variable, the frame and both
+answers. The top frame is
 evaluated only when it is no shipped one, which refuses every evaluation,
 and only at a stop made while no evaluation runs or waits for its stop,
 no step is in progress and no breakpoint's token waits for its frame's
@@ -3971,6 +3975,16 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   the value would have nowhere to live, and a vector the debugger made
   would be replaced by the frame's own `MakeVector`
   (`a_vector_variable_before_its_vector_reads_nil_and_refuses_assignment`).
+
+- **A variable not available.** A variable the variables view shows as
+  not available -- a home's variable its frame dropped as it returned,
+  or a register not live at the stop -- lives nowhere: a read would
+  answer a nil it never held, and a write would go nowhere. Both are
+  refused, `"<name> is not available here"`, decided per frame variable
+  by the reader the view reads with (`FrameVariable::available`,
+  `stack::available`), for the variable a read names -- the innermost of
+  its name, the one the view shows -- and for the one an assignment
+  writes (`an_unavailable_variable_is_refused_for_reads_and_writes`).
 
 - **Where it lies.** The expression's activation is pushed above every
   live frame's whole register window (`Mutator::push_step`, which lays
