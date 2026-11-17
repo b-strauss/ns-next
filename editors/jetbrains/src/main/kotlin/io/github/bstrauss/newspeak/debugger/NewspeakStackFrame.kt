@@ -124,13 +124,22 @@ class NewspeakStackFrame(
                     ?.map { element -> DapScope.from(element.asJsonObject) }
                     ?.firstOrNull { scope -> scope.presentationHint == "locals" }
                     ?: return@thenCompose CompletableFuture.completedFuture(emptySet())
-                val arguments = JsonObject().apply {
-                    addProperty("variablesReference", locals.variablesReference)
-                    addProperty("start", 0)
-                    addProperty("count", VARIABLES_PAGE)
-                }
-                client.request("variables", arguments).thenApply { variables -> variablesOf(variables).map(DapVariable::name).toSet() }
+                namesFrom(locals.variablesReference, 0, emptySet())
             }
+    }
+
+    /** The names of the variables of [reference] from [start] on, every page of them, added to [found]. */
+    private fun namesFrom(reference: Int, start: Int, found: Set<String>): CompletableFuture<Set<String>> {
+        val arguments = JsonObject().apply {
+            addProperty("variablesReference", reference)
+            addProperty("start", start)
+            addProperty("count", VARIABLES_PAGE)
+        }
+        return client.request("variables", arguments).thenCompose { body ->
+            val page = variablesOf(body)
+            val names = found + page.map(DapVariable::name)
+            if (page.size < VARIABLES_PAGE) CompletableFuture.completedFuture(names) else namesFrom(reference, start + page.size, names)
+        }
     }
 
     private fun returnedValues(scope: DapScope?): CompletableFuture<List<DapVariable>> {

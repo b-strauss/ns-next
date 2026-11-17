@@ -344,8 +344,18 @@ class NewspeakDebugProcess(
         val (frames, total) = framesFrom(client, 0)
         val context = NewspeakSuspendContext(NewspeakExecutionStack(this, frames, total))
         lastStop = context
+        // The platform's `breakpointReached` takes one breakpoint: a stop that several hit shows the first of them.
         val breakpoint = event.hitBreakpointIds.firstNotNullOfOrNull { id ->
             lineBreakpoints.breakpointOf(id) ?: methodBreakpoints.breakpointOf(id)
+        }
+        val failed = failedConditionMessage(event)
+        if (failed != null) {
+            // The runtime stops where a condition or log message failed, whatever the breakpoint's suspend
+            // policy, so that the error is seen: never asking `breakpointReached`, which would resume a
+            // breakpoint that suspends nothing and drop the error unseen.
+            session.positionReached(context)
+            session.reportMessage(failed, MessageType.WARNING)
+            return
         }
         if (breakpoint == null) {
             session.positionReached(context)
@@ -354,7 +364,7 @@ class NewspeakDebugProcess(
             resume(context)
             return
         }
-        (exceptionMessage(event) ?: failedConditionMessage(event))?.let { message -> session.reportMessage(message, MessageType.WARNING) }
+        exceptionMessage(event)?.let { message -> session.reportMessage(message, MessageType.WARNING) }
     }
 
     /**

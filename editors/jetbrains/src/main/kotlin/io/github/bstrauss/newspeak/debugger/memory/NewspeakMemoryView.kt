@@ -57,7 +57,8 @@ class NewspeakMemoryView(private val session: XDebugSession, private val client:
         session.addSessionListener(
             object : XDebugSessionListener {
                 override fun sessionPaused() {
-                    if (built?.panel?.isShowing == true) refresh()
+                    // Whether the panel is shown is Swing's to say, on the event dispatch thread.
+                    ApplicationManager.getApplication().invokeLater { if (built?.panel?.isShowing == true) refresh() }
                 }
 
                 override fun sessionResumed() {

@@ -5754,8 +5754,14 @@ logs it as an `output` event and goes on
 (`testALogExpressionIsSentAsTheLogMessage`). Every other log expression,
 of a breakpoint that stops and of a method breakpoint, to which DAP gives
 no log message, the session evaluates at the stop, once, in the top
-frame, and hands to `breakpointReached` to log. A stop whose condition
-or log message failed says why in the debugger's balloon.
+frame, and hands to `breakpointReached` to log
+(`testALogExpressionAtAStopIsLoggedOnce`). A stop whose condition or log
+message failed -- the agent's `breakpoint` stop with a `text` -- is shown
+as a stop and says why in the debugger's balloon, whatever the
+breakpoint's suspend policy, never through `breakpointReached`, which
+would resume a breakpoint that suspends nothing, a logpoint among them,
+and drop the error unseen; nor is its log expression evaluated
+(`testAFailedConditionStopsAndSaysWhy`).
 
 Smart Step Into is `NewspeakSmartStepIntoHandler`, an
 `XSmartStepIntoHandler` over `stepInTargets`: the sends of the stop's
@@ -5778,8 +5784,11 @@ and a refusal is reported with the program still at its stop
 (`testForceReturnSendsTheExpression`).
 
 Mark Object… and Unmark Object (`NewspeakMarkObjectAction`, in the value
-trees' menu) mark a value the agent hands out a value reference for with
-a label the user gives -- an identifier, the value's name by default --
+trees' menu, an `XDebuggerTreeBackendOnlyActionBase`, which hands it the
+debug process's own value under the split debugger too, where the tree's
+node holds a frontend proxy of it) mark a value the agent hands out a
+value reference for -- not a withheld one
+(`testAWithheldValueIsNeitherSetNorMarked`) -- with a label the user gives -- an identifier, the value's name by default --
 by `nsNext/mark`, and take a value's label off by `nsNext/unmark`; the
 session reads its views again, and the agent shows the label after the
 value's text wherever a stop shows it, which the session reads back as
@@ -5823,6 +5832,16 @@ on past a page held until it ends; the top frame, where the program
 stands, is always shown. The fold is the plugin's own frame: the
 platform's, `HiddenStackFramesItem`, is internal API, which only Java's
 stack builds (`testShippedFramesAreLibraryFrames`).
+
+The plugin uses platform API marked experimental, which the platform may
+change and `verifyPlugin` reports as warnings: `XDropFrameHandler` (Reset
+Frame) and `XDebuggerTreeBackendOnlyActionBase` (Mark Object…). It uses
+classes of the platform's `impl` packages that are not marked internal:
+`XDebuggerTree` and `XValueNodeImpl`, the memory view's value trees. It
+uses no
+internal API: where only internal API offers a feature -- the platform's
+Mark Object labels, its fold of hidden frames -- the plugin builds its
+own.
 
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of

@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.TextRange
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.frame.XSuspendContext
 import com.intellij.xdebugger.stepping.XSmartStepIntoHandler
@@ -34,14 +35,15 @@ class NewspeakSmartStepIntoHandler(private val process: NewspeakDebugProcess) :
 
     override fun computeSmartStepVariantsAsync(position: XSourcePosition): Promise<List<Target>> {
         val answer = AsyncPromise<List<Target>>()
-        process.stepInTargets().whenComplete { targets, failure ->
+        // The answer completes on the client's reader thread, which must never wait for a read action.
+        process.stepInTargets().whenCompleteAsync({ targets, failure ->
             if (failure != null) {
                 answer.setError(messageOf(failure))
-                return@whenComplete
+                return@whenCompleteAsync
             }
             val document = ReadAction.computeBlocking<Document?, RuntimeException> { FileDocumentManager.getInstance().getDocument(position.file) }
             answer.setResult(targets.map { target -> Target(target, document?.let { rangeOf(it, target) }) })
-        }
+        }, AppExecutorUtil.getAppExecutorService())
         return answer
     }
 

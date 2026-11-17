@@ -19,6 +19,8 @@ import com.intellij.ide.util.treeView.AbstractTreeNode
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
@@ -26,6 +28,8 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.ui.TestDialogManager
+import com.intellij.openapi.ui.TestInputDialog
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -48,6 +52,7 @@ import com.intellij.xdebugger.XDebuggerManagerListener
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
+import com.intellij.xdebugger.breakpoints.SuspendPolicy
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.xdebugger.evaluation.EvaluationMode
@@ -791,7 +796,22 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val markers = (debugging.process as NewspeakDebugProcess).markers
         val elements = childrenOf(checkNotNull(debugging.session.currentStackFrame)).getValue("elements") as NewspeakValue
         assertNull(markers.labelOf(elements))
-        markers.mark(elements, "numbers").get(WAIT_SECONDS, TimeUnit.SECONDS)
+        // Mark Object…, as the value tree's menu runs it, the label typed in its dialog.
+        val action = NewspeakMarkObjectAction()
+        val event = sessionEvent(action, debugging.session)
+        assertTrue(action.isEnabled(elements, "elements", event))
+        TestDialogManager.setTestInputDialog(TestInputDialog { _ -> "numbers" })
+        try {
+            onEdt { action.perform(elements, "elements", event) }
+        } finally {
+            TestDialogManager.setTestInputDialog(TestInputDialog.DEFAULT)
+        }
+        // The mark is answered asynchronously; once the agent took it, every stop shows the object with its label.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (markers.labelOf(childrenOf(checkNotNull(debugging.session.currentStackFrame)).getValue("elements") as NewspeakValue) == null) {
+            if (System.nanoTime() > deadline) throw AssertionError("the mark was not taken within $WAIT_SECONDS s")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
 
         val frame = checkNotNull(debugging.session.currentStackFrame)
         assertEquals("3", presentationOf(evaluated(frame, "numbers_DebugLabel size")).value)
@@ -938,6 +958,135 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         assertNull("which is not set", onTheStack.modifier)
         assertEquals(32, agent.requests("nsNext/referrers").single().get("valueReference").asInt)
     }
+
+    /**
+     * A condition or log message the runtime could not decide stops the
+     * program, whatever the breakpoint's suspend policy, so that its error
+     * is seen: the session shows the stop and says why, and neither
+     * resumes it nor evaluates the log expression.
+     */
+    fun testAFailedConditionStopsAndSaysWhy() {
+        val breakpoint = lineBreakpointWithLog(SuspendPolicy.NONE)
+        assertTrue(isLogpoint(breakpoint))
+        val reported = notifications()
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked, ::loggingAgentAnswer)
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", failedConditionStop())
+        faked.debugging.nextPause()
+        assertEquals(NewspeakBundle.message("debugger.stopped.condition.failed", FAILURE), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue("still stopped", faked.debugging.session.isSuspended)
+        assertFalse(agent.commands().toString(), agent.commands().contains("continue"))
+        assertFalse(agent.commands().toString(), agent.commands().contains("evaluate"))
+    }
+
+    /**
+     * A log expression of a breakpoint that stops is evaluated by the
+     * session at the stop, once, in the top frame; a stop whose condition
+     * or log message failed evaluates nothing.
+     */
+    fun testALogExpressionAtAStopIsLoggedOnce() {
+        lineBreakpointWithLog(SuspendPolicy.ALL)
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked, ::loggingAgentAnswer)
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonParser.parseString("""{"reason":"breakpoint","hitBreakpointIds":[$LOGGED_BREAKPOINT]}""").asJsonObject)
+        faked.debugging.nextPause()
+        assertEquals(listOf("""{"expression":"count printString","frameId":1}"""), agent.requests("evaluate").map(JsonObject::toString))
+
+        onEdt { faked.debugging.session.resume() }
+        agent.event("stopped", failedConditionStop())
+        faked.debugging.nextPause()
+        assertEquals("not evaluated again at a failed stop", 1, agent.requests("evaluate").size)
+    }
+
+    /**
+     * A withheld value -- read-only, without a value reference -- is
+     * neither set nor marked; a frame's other variable is both, Mark
+     * Object… sending its value reference and the label typed.
+     */
+    fun testAWithheldValueIsNeitherSetNorMarked() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "scopes" -> JsonParser.parseString(
+                    """{"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":$LOCALS_REFERENCE,"expensive":false}]}""",
+                ).asJsonObject
+                "variables" -> JsonParser.parseString(
+                    """{"variables":[
+                      {"name":"vmMirror","value":"a VMMirror","type":"VMMirror","variablesReference":0,"presentationHint":{"attributes":["readOnly"]}},
+                      {"name":"count","value":"3","type":"Integer","variablesReference":0,"nsNext/valueReference":5}
+                    ]}""",
+                ).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val locals = childrenOf(checkNotNull(faked.debugging.session.currentStackFrame))
+        val withheld = locals.getValue("vmMirror")
+        val count = locals.getValue("count")
+        assertNull("a withheld value is not set", withheld.modifier)
+        assertNotNull(count.modifier)
+
+        val action = NewspeakMarkObjectAction()
+        val event = sessionEvent(action, faked.debugging.session)
+        assertFalse("nor marked", action.isEnabled(withheld, "vmMirror", event))
+        assertTrue(action.isEnabled(count, "count", event))
+        TestDialogManager.setTestInputDialog(TestInputDialog { _ -> "counted" })
+        try {
+            onEdt { action.perform(count, "count", event) }
+        } finally {
+            TestDialogManager.setTestInputDialog(TestInputDialog.DEFAULT)
+        }
+        awaitRequests(agent, "nsNext/mark", 1)
+        assertEquals("""{"valueReference":5,"label":"counted"}""", agent.requests("nsNext/mark").single().toString())
+    }
+
+    /** A line breakpoint of the policy [policy] that logs `count printString`, on a file of its own, before the session starts. */
+    private fun lineBreakpointWithLog(policy: SuspendPolicy): XLineBreakpoint<NewspeakLineBreakpointProperties> {
+        val file = program("Logged", STOPS)
+        val type = XDebuggerUtil.getInstance().findBreakpointType(NewspeakLineBreakpointType::class.java)
+        var added: XLineBreakpoint<NewspeakLineBreakpointProperties>? = null
+        runInEdtAndWait {
+            WriteAction.run<Throwable> {
+                added = XDebuggerManager.getInstance(project).breakpointManager
+                    .addLineBreakpoint(type, file.url, 5, NewspeakLineBreakpointProperties())
+                    .apply {
+                        suspendPolicy = policy
+                        setLogExpression("count printString")
+                    }
+            }
+        }
+        return checkNotNull(added)
+    }
+
+    /** A scripted agent's answers for a stop at the logging breakpoint, which it sets under [LOGGED_BREAKPOINT]. */
+    private fun loggingAgentAnswer(command: String, @Suppress("UNUSED_PARAMETER") arguments: JsonObject): JsonObject =
+        when (command) {
+            "setBreakpoints" -> JsonParser.parseString("""{"breakpoints":[{"id":$LOGGED_BREAKPOINT,"verified":true}]}""").asJsonObject
+            "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+            "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+            "evaluate" -> JsonObject().apply { addProperty("result", "'3'") }
+            else -> JsonObject()
+        }
+
+    /** The agent's stop at the logging breakpoint whose condition failed, its error the `text`. */
+    private fun failedConditionStop(): JsonObject = JsonObject().apply {
+        addProperty("reason", "breakpoint")
+        add("hitBreakpointIds", JsonArray().apply { add(LOGGED_BREAKPOINT) })
+        addProperty("text", FAILURE)
+    }
+
+    /** An action event of [session]'s tree, as its menu makes one. */
+    private fun sessionEvent(action: AnAction, session: XDebugSession): AnActionEvent =
+        TestActionEvent.createTestEvent(
+            action,
+            SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build(),
+        )
 
     /** The value [expression] answers in [frame], through its evaluator. */
     private fun evaluated(frame: XStackFrame, expression: String): XValue = evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
@@ -1596,6 +1745,10 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val LOCALS_REFERENCE = 100
         const val ELEMENTS_REFERENCE = 200
         const val ELEMENT_COUNT = 150
+
+        /** The scripted agent's id of the logging breakpoint, and the error its condition failed with. */
+        const val LOGGED_BREAKPOINT = 9
+        const val FAILURE = "ZeroDivide: division by zero"
 
         /** The fake agent's reference of a step's stop's "Return value" scope. */
         const val RETURNED_REFERENCE = 300

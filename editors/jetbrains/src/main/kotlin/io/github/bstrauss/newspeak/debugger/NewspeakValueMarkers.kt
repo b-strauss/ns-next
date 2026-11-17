@@ -7,8 +7,8 @@ import com.intellij.openapi.ui.InputValidator
 import com.intellij.openapi.ui.Messages
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerManager
-import com.intellij.xdebugger.impl.ui.tree.actions.XDebuggerTreeActionBase
-import com.intellij.xdebugger.impl.ui.tree.nodes.XValueNodeImpl
+import com.intellij.xdebugger.frame.XValue
+import com.intellij.xdebugger.impl.ui.tree.actions.XDebuggerTreeBackendOnlyActionBase
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import java.util.concurrent.CompletableFuture
@@ -32,8 +32,8 @@ class NewspeakValueMarkers(private val session: XDebugSession, private val clien
 
     /** Marks [value] with [label], which moves from any object it marked before, and shows every value again with its mark. */
     fun mark(value: NewspeakValue, label: String): CompletableFuture<*> {
-        val reference = value.variable.valueReference ?: return CompletableFuture.failedFuture<Unit>(IllegalArgumentException("the value is withheld"))
-        val client = client() ?: return CompletableFuture.failedFuture<Unit>(IllegalStateException("no session"))
+        val reference = value.variable.valueReference ?: return CompletableFuture.failedFuture<Unit>(IllegalArgumentException(NewspeakBundle.message("debugger.mark.withheld")))
+        val client = client() ?: return notStarted()
         val arguments = JsonObject().apply {
             addProperty("valueReference", reference)
             addProperty("label", label)
@@ -48,21 +48,26 @@ class NewspeakValueMarkers(private val session: XDebugSession, private val clien
 
     /** Takes [label] off the object it marks. */
     fun unmark(label: String): CompletableFuture<*> {
-        val client = client() ?: return CompletableFuture.failedFuture<Unit>(IllegalStateException("no session"))
+        val client = client() ?: return notStarted()
         return client.request("nsNext/unmark", JsonObject().apply { addProperty("label", label) }).thenRun {
             labels.remove(label)
             session.rebuildViews()
         }
     }
 
-    /** The label [value] is marked with, as its text ends: one of this session's. */
+    /**
+     * The label [value] is marked with: one of the labels this session
+     * marked an object with, which the agent writes after the value's text
+     * wherever a stop shows the object. A text that merely ends in
+     * brackets -- a string's, say -- names no mark the session made.
+     */
     fun labelOf(value: NewspeakValue): String? {
         val text = value.variable.value
-        if (!text.endsWith("]")) return null
-        val open = text.lastIndexOf(" [")
-        if (open < 0) return null
-        return text.substring(open + 2, text.length - 1).takeIf(labels::contains)
+        return labels.firstOrNull { label -> text.endsWith(" [$label]") }
     }
+
+    private fun notStarted(): CompletableFuture<*> =
+        CompletableFuture.failedFuture<Unit>(IllegalStateException(NewspeakBundle.message("debugger.error.not.started")))
 
     companion object {
         /** A label the agent takes: an identifier of letters, digits and `_`, not starting with a digit, not ending in the suffix it names it by. */
@@ -82,9 +87,11 @@ class NewspeakValueMarkers(private val session: XDebugSession, private val clien
  * asks for a label -- the value's name, by default, where it is one --
  * and marks the object with it, or takes the value's label off. Shown for
  * a Newspeak session, enabled on a value the agent hands out a value
- * reference for, which a withheld one has not.
+ * reference for, which a withheld one has not. It acts on the backend's
+ * value, which the platform hands it under the split debugger too, where
+ * the tree's own node holds a frontend proxy of it.
  */
-class NewspeakMarkObjectAction : XDebuggerTreeActionBase() {
+class NewspeakMarkObjectAction : XDebuggerTreeBackendOnlyActionBase() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
@@ -92,20 +99,20 @@ class NewspeakMarkObjectAction : XDebuggerTreeActionBase() {
         e.presentation.isVisible = markers != null
         if (markers == null) return
         super.update(e)
-        val value = getSelectedNode(e.dataContext)?.valueContainer as? NewspeakValue
+        val value = getSelectedValue(e.dataContext) as? NewspeakValue
         e.presentation.text = NewspeakBundle.message(
             if (value != null && markers.labelOf(value) != null) "debugger.mark.object.unmark" else "debugger.mark.object.mark",
         )
     }
 
-    override fun isEnabled(node: XValueNodeImpl, e: AnActionEvent): Boolean =
-        (node.valueContainer as? NewspeakValue)?.variable?.valueReference != null
+    public override fun isEnabled(value: XValue, nodeName: String?, e: AnActionEvent): Boolean =
+        nodeName != null && (value as? NewspeakValue)?.variable?.valueReference != null
 
-    override fun perform(node: XValueNodeImpl, nodeName: String, e: AnActionEvent) {
+    public override fun perform(value: XValue, nodeName: String, e: AnActionEvent) {
         val markers = markersOf(e) ?: return
-        val value = node.valueContainer as? NewspeakValue ?: return
+        val shown = value as? NewspeakValue ?: return
         val session = sessionOf(e) ?: return
-        val marked = markers.labelOf(value)
+        val marked = markers.labelOf(shown)
         val done = if (marked != null) {
             markers.unmark(marked)
         } else {
@@ -117,7 +124,7 @@ class NewspeakMarkObjectAction : XDebuggerTreeActionBase() {
                 nodeName.takeIf(NewspeakValueMarkers::isLabel).orEmpty(),
                 LabelValidator,
             ) ?: return
-            markers.mark(value, label)
+            markers.mark(shown, label)
         }
         done.whenComplete { _, failure ->
             if (failure != null) session.reportError(NewspeakBundle.message("debugger.error.request", messageOf(failure)))
