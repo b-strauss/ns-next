@@ -185,8 +185,8 @@ pub(crate) fn instances<'gc>(
 /// of its own; one married to an activation below the run, which the
 /// stack does not show, is an object whose live registers count, read
 /// as the variables view reads them (`registers_refer_to`). A returned
-/// frame object that no object and no running frame's variable refers to
-/// is left out (`unreferred_returned_frames`): a frame object is the
+/// frame object that nothing living refers to -- no object, and nothing
+/// the stack keeps, a running block's closure included -- is left out (`unreferred_returned_frames`): a frame object is the
 /// implementation's artefact, reified for a program's block or for the
 /// debugger's evaluation alike, and one nothing refers to keeps nothing
 /// alive, while every other object nothing reaches is answered as the walk
@@ -203,14 +203,24 @@ pub(crate) fn referrers(
 ) -> Vec<Referrer> {
     let mut on_stack: Vec<Referrer> = Vec::new();
     let mut running: Vec<ActivationReference> = Vec::new();
-    // The closures and frame objects a running frame's variable holds,
-    // which keep a returned frame object they reach among the referrers.
+    // The closures and frame objects the stack keeps alive -- a running
+    // block's closure, held in its activation's header and perhaps
+    // nowhere else, a suspended frame's object, and what a running
+    // frame's variable holds -- which keep a returned frame object they
+    // reach among the referrers.
     let mut frames_held: Vec<Root> = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        let StackFrame::Running(activation) = frame else {
-            continue;
+        let activation = match frame {
+            StackFrame::Running(activation) => *activation,
+            StackFrame::Suspended(frame_object) => {
+                frames_held.push(frame_object.clone());
+                continue;
+            }
         };
-        running.push(*activation);
+        if let Some(closure) = mutator.heap.activation_closure(activation) {
+            frames_held.push(mutator.heap.stash(Value::object(closure)));
+        }
+        running.push(activation);
         // Read afresh for each frame: reading one may compile its body's
         // metadata, across which no handle is held.
         let Some((_, read)) = stack::frame_values(mutator, frames, index) else {
@@ -286,8 +296,9 @@ pub(crate) fn referrers(
 /// So the closures and returned frame objects that refer to them, and
 /// those that refer to these, are followed by walks of the space until no
 /// new one is met, every other referrer -- an object of any other kind, a
-/// frame object married to an activation, or one a running frame's
-/// variable holds, `held` -- counting as living, and liveness carried
+/// frame object married to an activation, or one the stack keeps, `held`:
+/// a running block's closure, a suspended frame's object, or what a
+/// running frame's variable holds -- counting as living, and liveness carried
 /// along the references met. Walks of the space allocate nothing on the
 /// heap.
 fn unreferred_returned_frames<'gc>(

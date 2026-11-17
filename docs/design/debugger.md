@@ -4274,7 +4274,9 @@ the space, which allocate nothing on the heap: a closure or a returned
 frame object that refers to it is followed in turn, as the evaluation's
 own closure over the frame is, garbage once the evaluation ended, and
 every other referrer -- an object of any other kind, a frame object
-married to an activation, or a closure or frame object a running
+married to an activation, or a closure or frame object the stack
+keeps: a running block's closure, held in its activation's header and
+perhaps nowhere else, a suspended frame's object, and what a running
 frame's variable holds -- counts as living, its liveness carried along
 the references followed. So a frame an evaluation reified is no
 referrer of its receiver once it returned

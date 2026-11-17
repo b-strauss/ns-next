@@ -16952,4 +16952,53 @@ mod memory_view {
             assert_eq!(answer, 2);
         }
     }
+
+    /// A block that runs after its method returned, held by no named
+    /// variable: only its activation's header and its caller's scratch
+    /// register hold its closure.
+    const OUTLIVING: &str = indoc! {"
+        class Outliving = Object new () (
+          public run = (
+            ^(self make: 3) value
+          )
+          make: limit = (
+            ^[
+              limit + 1
+            ]
+          )
+        ) : ()
+    "};
+
+    /// The running block's closure keeps its returned home's frame
+    /// object, which the reference lowering's block reaches by reference
+    /// for `limit`: that frame object refers to the receiver, and is
+    /// listed among its referrers, withheld.
+    #[test]
+    fn a_running_block_keeps_its_returned_home_s_frame_object() {
+        let offset = line_start(OUTLIVING, "limit + 1");
+        let (mut interpreter, class) = interpreted(OUTLIVING, Lowering::Reference);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let ((found, frames), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Outliving", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Outliving"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let block = variables(remote, Command::Variables { frame: 0 });
+                let found = referrers(remote, value_of(&block, "self").id, 0, 100);
+                let frames: Vec<bool> = objects(&found)
+                    .iter()
+                    .filter(|object| object.class_name == "Activation")
+                    .map(|object| object.withheld)
+                    .collect();
+                set_breakpoints(remote, "Outliving", Vec::new());
+                expect_breakpoints(remote, "Outliving");
+                continue_stopped(remote);
+                (summary(&found), frames)
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 4);
+        assert_eq!(frames, [true], "{found:?}");
+    }
 }
