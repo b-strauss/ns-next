@@ -2067,6 +2067,18 @@ not.
   `run-corpus` "ran 6, failed 0, skipped 205" plain and under each mode
   -- `linux`, `aarch64`, whose suite took 385.7 s, and
   `plugin-verification`.
+- **Stage 5's end-of-batch gates** passed on its final tree
+  (`904fec56`, 2026-11-17): `images`, `caches`, `benchmarks`,
+  `release-checks`, `codegen`, `stress` -- the suite under the fifteen
+  modes and with `NS_NEXT_NO_JIT=1`, 3,719 tests each (WIDE 5,514), and
+  `run-corpus` "ran 6, failed 0, skipped 205" plain and under each mode
+  -- and `plugin-verification`, compatible with each of the six IDEs it
+  checks. Their first run found two defects and three tests the pause
+  stress mode's evaluations broke, fixed before the final tree: the
+  memory view answered a frame the suspend stress mode had suspended as
+  its frame object, and the pause stress mode began an evaluation while
+  a breakpoint's token waited for its frame. The Docker groups `linux`
+  and `aarch64` were not run.
 - **The `codegen` gate** holds the run loop with the `Cell` slots and
   the `Breakpoint` arm to its budgets: the arm shares the out-of-line arm
   of the simultaneous slot clauses, since an arm of its own grew

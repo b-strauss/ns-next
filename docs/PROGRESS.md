@@ -8176,7 +8176,19 @@ the hot path of a program run without a debugger, so the stage was not
 measured ("What stage 5 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen` where
-its files changed).
+its files changed). The end-of-batch gates passed on the final tree,
+`904fec56`: `images`, `caches`, `benchmarks`, `release-checks`,
+`codegen`, `stress` -- the suite under the fifteen stress modes and with
+`NS_NEXT_NO_JIT=1`, 3,719 tests each (WIDE 5,514), and `run-corpus`
+"ran 6, failed 0, skipped 205" plain and under each mode -- and
+`plugin-verification`, compatible with all six IDEs it checks. Their
+first run found the memory view answering a frame the suspend stress
+mode had suspended as its frame object, the pause stress mode beginning
+an evaluation while a breakpoint's token waited for its frame, and three
+tests that count allocations or safepoints exactly or bound an
+evaluation's time, which the pause stress mode's evaluations or the
+collect stress mode broke; all were fixed before the final tree. The
+Docker groups `linux` and `aarch64` were not run.
 
 - `c5d72d74`, `89603ae9`, `8722f621` -- stage 5's questions decided and
   the plan (`docs/superpowers/plans/2026-11-16-2110-debugger-stage-5.md`).
@@ -8204,6 +8216,10 @@ its files changed).
   return and memory view.
 - `44374a7b`, `21f851a1`, `627e381c` -- `ns-next mcp`.
 - `b7af1534`, `4f0585c1`, `00313cd7`, `815137ed` -- the plugin.
+- `04ed10db`, `94397570` -- the stage's cosmetic minors and the
+  documents brought to the stage.
+- `99ac2ad5`, `a79c26cd`, `904fec56` -- what the end-of-batch gates
+  found.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 6:
 hot swap, edit-and-continue and `ActivationMirror`) and "The debugger"
