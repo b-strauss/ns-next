@@ -12377,6 +12377,54 @@ mod evaluation {
         }
     }
 
+    /// `make:`'s local `unused`, which the block `make:` runs never reads,
+    /// and which a block an evaluation in that block stores may read after
+    /// `make:` returned.
+    const KEEPING: &str = indoc! {"
+        class Keeping = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            self make: 3.
+            ^holder value
+          )
+          make: limit = (
+            | unused |
+            unused:: 42.
+            ^self apply: [:each |
+              each + 1] to: limit
+          )
+          apply: block to: value = (
+            ^block value: value
+          )
+          keep: block = (
+            holder:: block
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block an expression evaluated in a block stores away reads a
+        /// variable of the block's home that the block never read after
+        /// the home returned: its value, never nil. The stopped block made
+        /// its home keep nothing, reaching no variable of it, so the
+        /// evaluation keeps every frame its own block reaches.
+        fn a_block_an_evaluation_stored_reads_an_enclosing_frame_after_it_returned(lowering) {
+            let (stored, answer) = stopped_at(
+                KEEPING,
+                lowering,
+                "Keeping",
+                "each + 1] to: limit",
+                |remote| match evaluate(remote, 0, "self keep: [unused]") {
+                    Evaluation::Value(value) => value.class_name,
+                    other => panic!("the store was expected to answer the receiver, not {other:?}"),
+                },
+            );
+            assert!(!stored.is_empty());
+            assert_eq!(answer, 42);
+        }
+    }
+
     ns_runtime::for_each_lowering! {
         /// An expression in a frame of the core library is refused: it
         /// could reach the VM mirror.

@@ -4020,8 +4020,16 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   (`Heap::frame_retain_registers`, which marks a suspended frame's
   record too), or it would drop its registers when it returns and the
   block would read `nil` at exit status 0
-  (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`). An
-  expression that only reads or writes the frame's variables reaches
+  (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`).
+  So is every frame further along the frame's captured chain that the
+  block reaches -- an `outer_reach` of 3 marks the frame's captured
+  frame too, and so on (`evaluation::retain_reached_frames`): a block of
+  the program marked its creator only as far as its own reach, so a
+  stopped block that never read its home's `unused` left the home
+  unmarked, and the expression's `[unused]` would read `nil` once the
+  home returned
+  (`a_block_an_evaluation_stored_reads_an_enclosing_frame_after_it_returned`).
+  An expression that only reads or writes the frame's variables reaches
   them while the frame is stopped, so its frame is not marked: retaining
   its registers would keep alive what the frame drops at its return and
   show it to every later stop

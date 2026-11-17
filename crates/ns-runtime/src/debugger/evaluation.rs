@@ -26,7 +26,7 @@ use super::stack::{self, OuterFrame, StackFrame};
 use super::values::{Mark, used_labels};
 use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, NOT_MADE, RETURN_FROM_AN_EVALUATION, Stop};
 use crate::bytecode::{CompiledCode, may_have_run};
-use crate::heap::{ActivationReference, NewClosure};
+use crate::heap::{ActivationReference, FrameReference, NewClosure};
 use crate::interpreter::{
     Arguments, EVALUATION_DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator, Step,
     StepArguments,
@@ -419,10 +419,11 @@ fn assignabilities(
 /// counter it stores, which a block reading it by reference would read
 /// otherwise, is reified, as a `MakeClosure` in it would reify it, and goes
 /// on interpreted from here (`docs/design/debugger.md`, "Writing a
-/// frame"); it keeps its registers past its return when the expression
-/// creates a block that reaches it, since such a block may be stored and
-/// read them (`makes_a_block_reaching_the_frame`); and the expression's closure, made
-/// over it, is pushed above every live frame's window, whichever frame it
+/// frame"); it and every frame of its captured chain a block the
+/// expression creates reaches keep their registers past their return,
+/// since such a block may be stored and read them
+/// (`retain_reached_frames`); and the expression's closure, made over it,
+/// is pushed above every live frame's window, whichever frame it
 /// evaluates in -- a frame below the top has its callees above it -- with
 /// `Continuation::Evaluated`. Breakpoints, exception breakpoints and the
 /// unwinder see the evaluation from here until its base is popped, and
@@ -465,9 +466,7 @@ pub(crate) fn begin_in<'gc>(
         mutator.heap.clear_compiled(*activation);
     }
     let captured_frame = stack::reified(&mut mutator.heap, stack_frame);
-    if makes_a_block_reaching_the_frame(&code) {
-        mutator.heap.frame_retain_registers(captured_frame);
-    }
+    retain_reached_frames(mutator, captured_frame, farthest_reach(&code));
     let closure = mutator.new_closure(NewClosure {
         code,
         captured_frame,
@@ -503,18 +502,44 @@ pub(crate) fn begin_in<'gc>(
     Ok(())
 }
 
-/// Whether `code`, an evaluation's body, creates a block that reaches the
-/// frame it stands in by reference -- one hop past the body's own frame, so
-/// an `outer_reach` of 2 or more, which counts the blocks nested in it --
-/// and so may read the frame's registers after it returned: `MakeClosure`'s
-/// own rule for a creator. An expression that only reads or writes the
-/// frame's variables reaches them while the frame is stopped, so retaining
-/// them would only keep alive what the frame drops at its return, and show
-/// it to every later stop (`docs/design/debugger.md`, "Evaluation").
-fn makes_a_block_reaching_the_frame(code: &CompiledCode) -> bool {
+/// The farthest a block `code`, an evaluation's body, creates reaches
+/// by reference, counted in hops from the created block -- its
+/// `outer_reach`, which counts the blocks nested in it: 1 is the
+/// evaluation's own frame, 2 the frame it stands in, 3 that frame's
+/// captured frame, and so on; 0 when it creates none.
+fn farthest_reach(code: &CompiledCode) -> u16 {
     code.body()
         .created_blocks()
-        .any(|block| block.code.outer_reach >= 2)
+        .map(|block| block.code.outer_reach)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Keeps the registers of every frame on the captured chain from
+/// `stood_in`, the frame the evaluation stands in, that a block it creates
+/// reaches by reference (`reach`, `farthest_reach`), past the frame's
+/// return: such a block may be stored and read them after it. A frame
+/// the program made a block in kept its own when that block reaches it
+/// (`MakeClosure`'s rule for a creator), but the evaluation's block
+/// reaches past the stopped frame's own reach -- a variable of its home
+/// the stopped block never read -- so every frame up to its reach is kept
+/// here. An expression that only reads or writes the frames' variables
+/// reaches them while the frames are stopped, so retaining them then
+/// would only keep alive what the frames drop at their return, and show
+/// it to every later stop (`docs/design/debugger.md`, "Evaluation").
+fn retain_reached_frames<'gc>(
+    mutator: &mut Mutator<'gc>,
+    stood_in: FrameReference<'gc>,
+    reach: u16,
+) {
+    let mut frame = Some(stood_in);
+    for _ in 2..=reach {
+        let Some(reached) = frame else {
+            return;
+        };
+        mutator.heap.frame_retain_registers(reached);
+        frame = mutator.heap.frame_captured(reached);
+    }
 }
 
 /// The evaluation's block returned `value`, its answer: recorded for the
