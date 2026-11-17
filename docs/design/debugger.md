@@ -5596,8 +5596,8 @@ the way not taken: every question would run the program from its start.
   and two modules of one name never meet; a relative path is refused.
   The shipped modules are files too: `debug_start` writes the started
   binary's embedded sources with `ns-next shipped-sources` into
-  `ns-next-core/<fingerprint>/` below the temporary directory, once per
-  fingerprint, and hands the directory to the agent at the attach as
+  `ns-next/core-library/<fingerprint>/` in the user's own directory
+  (below), once per fingerprint, and hands the directory to the agent at the attach as
   `coreLibrary`, as the plugin hands its library, so that a frame in
   `Kernel.ns` names a file whose text is the running binary's. A
   location that names no module of the program or of the shipped ones is
@@ -5632,13 +5632,23 @@ the way not taken: every question would run the program from its start.
   Elsewhere a running file can be replaced as it is
   (`the_server_frees_its_executable_for_the_next_build`). `debug_start`
   starts the binary at the path the server was started from -- the
-  current build -- unless `runtime` names another, from a copy in
-  `ns-next-mcp/<hash>/` below the temporary directory, the hash FNV-1a
-  over the executable's bytes, as the shipped sources' fingerprint is;
-  a copy is written under a name of its process's and renamed into
-  place, so that no process runs a half written one, and a directory of
-  copies untouched for a day is removed when a server starts. A change to
-  the program's runtime thus takes effect at the next `debug_start`; a
+  current build -- unless `runtime` names another. Elsewhere than on
+  Windows it starts that file itself, which a build replaces as it runs;
+  on Windows it starts a copy in `ns-next/mcp-copies/<hash>/`, the hash
+  FNV-1a over the executable's bytes, as the shipped sources' fingerprint
+  is. The copies and the shipped sources lie in the user's own
+  directory -- on Windows the local application data directory
+  (`%LOCALAPPDATA%`), elsewhere the cache directory (`$XDG_CACHE_HOME`,
+  or `~/.cache`) -- never in the shared temporary directory, where
+  another user could put a file of their own at the path first, which
+  the server would run (decided on 2026-11-17). A copy found there is
+  run only when it holds exactly the executable's bytes, and written
+  again otherwise
+  (`a_session_runs_a_verified_copy_in_the_user_s_own_directory`); a copy
+  is written under a name of its process's and renamed into place, so
+  that no process runs a half written one, and a directory of copies
+  untouched for a day is removed when a server starts. A change to the
+  program's runtime thus takes effect at the next `debug_start`; a
   change to the server itself, at the client's next connection.
 
 ## The JetBrains plugin

@@ -8,23 +8,31 @@
 //! ends -- so on Windows it renames its own executable aside, which
 //! Windows permits for a running image within its volume, and puts a
 //! copy back at the original path, which a build then overwrites; every
-//! program a session starts runs a copy below the temporary directory, in
-//! a directory named by a hash of the binary's bytes. And the shipped
-//! sources of the binary a session runs, written once per fingerprint,
-//! which a stop names its shipped frames' files in.
+//! program a session starts on Windows runs a copy in the user's own local
+//! data directory, in a directory named by a hash of the binary's bytes,
+//! the copy checked against the binary's bytes before it runs; elsewhere
+//! the binary itself. And the shipped sources of the binary a session
+//! runs, written once per fingerprint in the user's own directory, which
+//! a stop names its shipped frames' files in. Nothing is kept in the
+//! shared temporary directory, where another user could put a file of
+//! their own first.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::target_runner;
 
-/// The directory below the temporary directory that holds the copies of
-/// executables, one directory per hash.
-const COPIES_DIRECTORY: &str = "ns-next-mcp";
+/// The directory in the user's own local data directory that holds what
+/// the server keeps (`own_directory`).
+const OWN_DIRECTORY: &str = "ns-next";
 
-/// The directory below the temporary directory that holds the shipped
-/// sources, one directory per fingerprint.
-const CORE_LIBRARY_DIRECTORY: &str = "ns-next-core";
+/// The directory below `OWN_DIRECTORY` that holds the copies of
+/// executables, one directory per hash.
+const COPIES_DIRECTORY: &str = "mcp-copies";
+
+/// The directory below `OWN_DIRECTORY` that holds the shipped sources, one
+/// directory per fingerprint.
+const CORE_LIBRARY_DIRECTORY: &str = "core-library";
 
 /// The suffix of an executable a server renamed aside: `<file
 /// name>.<process id>.running`, beside the original.
@@ -120,21 +128,50 @@ fn remove_unused_renamed(executable: &Path) {
     }
 }
 
-/// The copy of `executable` in the directory its bytes' hash names, made
-/// when it is not there yet. The copy is written under a name of this
-/// process's and renamed into place, so that no process ever runs a half
-/// written copy, and two servers that copy at once both find a whole one.
+/// The directory the server keeps its files in, the user's own: on
+/// Windows `ns-next` in the local application data directory
+/// (`%LOCALAPPDATA%`), elsewhere in the user's cache directory
+/// (`$XDG_CACHE_HOME`, or `~/.cache`). Never the shared temporary
+/// directory, where another user could put a file of their own first --
+/// a copy the server would run, or sources it would show.
+fn own_directory() -> Result<PathBuf, String> {
+    let absolute = |variable: &str| {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let base = if cfg!(windows) {
+        absolute("LOCALAPPDATA").ok_or("LOCALAPPDATA names no directory")?
+    } else {
+        absolute("XDG_CACHE_HOME")
+            .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
+            .ok_or("neither XDG_CACHE_HOME nor HOME names a directory")?
+    };
+    Ok(base.join(OWN_DIRECTORY))
+}
+
+/// What a session runs for `executable`: on Windows, where a running file
+/// can be neither replaced nor removed, its copy in the directory its
+/// bytes' hash names, made when it is not there yet and written again when
+/// the file there is not the executable's bytes; elsewhere, where a build
+/// replaces a running file as it is, the executable itself. The copy is
+/// written under a name of this process's and renamed into place, so that
+/// no process ever runs a half written copy, and two servers that copy at
+/// once both find a whole one.
 pub(crate) fn copy_of(executable: &Path) -> Result<PathBuf, String> {
+    if !cfg!(windows) {
+        return Ok(executable.to_path_buf());
+    }
     let hash = hash_of_file(executable)
         .map_err(|error| format!("reading {}: {error}", executable.display()))?;
     let Some(name) = executable.file_name() else {
         return Err(format!("{} names no file", executable.display()));
     };
-    let directory = std::env::temp_dir()
+    let directory = own_directory()?
         .join(COPIES_DIRECTORY)
         .join(format!("{hash:016x}"));
     let copy = directory.join(name);
-    if copy.is_file() {
+    if same_bytes(executable, &copy) {
         return Ok(copy);
     }
     std::fs::create_dir_all(&directory)
@@ -149,11 +186,42 @@ pub(crate) fn copy_of(executable: &Path) -> Result<PathBuf, String> {
     if let Err(error) = std::fs::rename(&partial, &copy) {
         let _ = std::fs::remove_file(&partial);
         // Another server put the same bytes there first.
-        if !copy.is_file() {
+        if !same_bytes(executable, &copy) {
             return Err(format!("writing {}: {error}", copy.display()));
         }
     }
     Ok(copy)
+}
+
+/// Whether the file `copy` holds exactly the bytes of `executable`: the
+/// hash that names the copy's directory says nothing of what the file in
+/// it holds, which a crash or anyone with access may have left otherwise.
+fn same_bytes(executable: &Path, copy: &Path) -> bool {
+    use std::io::Read;
+    let open = |path: &Path| {
+        std::fs::File::open(path).map(|file| std::io::BufReader::with_capacity(1 << 20, file))
+    };
+    let (Ok(mut original), Ok(mut copied)) = (open(executable), open(copy)) else {
+        return false;
+    };
+    let mut original_chunk = vec![0; 1 << 16];
+    let mut copied_chunk = vec![0; 1 << 16];
+    loop {
+        let Ok(read) = original.read(&mut original_chunk) else {
+            return false;
+        };
+        if read == 0 {
+            // The copy must end where the executable does.
+            return copied
+                .read(&mut copied_chunk[..1])
+                .is_ok_and(|more| more == 0);
+        }
+        if copied.read_exact(&mut copied_chunk[..read]).is_err()
+            || original_chunk[..read] != copied_chunk[..read]
+        {
+            return false;
+        }
+    }
 }
 
 /// FNV-1a over the file's bytes, the hash the shipped sources' fingerprint
@@ -179,7 +247,10 @@ fn hash_of_file(path: &Path) -> std::io::Result<u64> {
 /// Removes the directories of copies untouched for `STALE_COPIES`; what
 /// cannot be removed is left.
 fn remove_stale_copies() {
-    let root = std::env::temp_dir().join(COPIES_DIRECTORY);
+    let Ok(own) = own_directory() else {
+        return;
+    };
+    let root = own.join(COPIES_DIRECTORY);
     let Ok(entries) = std::fs::read_dir(&root) else {
         return;
     };
@@ -197,7 +268,8 @@ fn remove_stale_copies() {
 }
 
 /// The shipped sources of the binary `runtime` and their fingerprint: the
-/// directory below the temporary directory its fingerprint names, written
+/// directory in the user's own directory (`own_directory`) its fingerprint
+/// names, written
 /// by `runtime shipped-sources` when it is not there yet, under a name of
 /// this process's and renamed into place.
 pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> {
@@ -210,7 +282,7 @@ pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> 
             runtime.display()
         ));
     }
-    let root = std::env::temp_dir().join(CORE_LIBRARY_DIRECTORY);
+    let root = own_directory()?.join(CORE_LIBRARY_DIRECTORY);
     let directory = root.join(&fingerprint);
     if written_with(&directory, &fingerprint) {
         return Ok((directory, fingerprint));

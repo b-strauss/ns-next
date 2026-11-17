@@ -568,7 +568,7 @@ fn the_server_frees_its_executable_for_the_next_build() {
         assert!(aside.is_file(), "nothing renamed aside");
     }
     // A build overwrites the executable while the server runs.
-    std::fs::copy(binary(), &executable).expect("overwrite the executable");
+    replace_as_a_build_does(&executable);
     let (_directory, path) = program("Counter", COUNTER);
     let ended = server.succeed("debug_start", json!({ "program": path }));
     assert!(ended.starts_with("ended: exit status 0"), "{ended}");
@@ -581,8 +581,88 @@ fn the_server_frees_its_executable_for_the_next_build() {
         "debug_start",
         json!({ "program": path, "stop_on_entry": true }),
     );
-    std::fs::copy(binary(), &executable).expect("overwrite the executable during a session");
+    replace_as_a_build_does(&executable);
     assert!(server.runs(), "the process started ended");
+}
+
+/// Every file below `directory` whose name is `name`, at any depth.
+fn files_named(directory: &Path, name: &OsStr) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name() == Some(name) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// A session runs the binary it names from a copy only on Windows, where
+/// a running file cannot be replaced, and that copy lies in the user's
+/// own local data directory, never in the shared temporary one, where
+/// another user could have put a file of their own first: a copy found
+/// there whose bytes are not the binary's is written again before it
+/// runs. Elsewhere nothing is copied.
+#[test]
+fn a_session_runs_a_verified_copy_in_the_user_s_own_directory() {
+    let data = ScratchDirectory::new("local-data");
+    let temporary = ScratchDirectory::new("temporary");
+    let data_path = data.path().display().to_string();
+    let temporary_path = temporary.path().display().to_string();
+    let mut server = McpServer::start_from_a_copy(&[
+        ("LOCALAPPDATA", data_path.as_str()),
+        ("XDG_CACHE_HOME", data_path.as_str()),
+        ("TEMP", temporary_path.as_str()),
+        ("TMP", temporary_path.as_str()),
+        ("TMPDIR", temporary_path.as_str()),
+    ]);
+    let (_directory, path) = program("Counter", COUNTER);
+    let ended = server.succeed("debug_start", json!({ "program": path }));
+    assert!(ended.starts_with("ended: exit status 0"), "{ended}");
+    let name = Path::new(binary()).file_name().expect("a file name");
+    let mut copies = files_named(data.path(), name);
+    copies.extend(files_named(temporary.path(), name));
+    if cfg!(windows) {
+        let [copy] = copies.as_slice() else {
+            panic!("one copy was expected, not {copies:?}");
+        };
+        std::fs::write(copy, "not the binary").expect("replace the copy");
+        let ended = server.succeed("debug_start", json!({ "program": path }));
+        assert!(ended.starts_with("ended: exit status 0"), "{ended}");
+        let written = std::fs::read(copy).expect("read the copy");
+        let original = std::fs::read(binary()).expect("read the binary");
+        assert!(written == original, "the copy was not written again");
+        assert!(
+            copy.starts_with(data.path()),
+            "the copy lies outside the user's own directory: {}",
+            copy.display()
+        );
+    } else {
+        assert!(copies.is_empty(), "the binary was copied: {copies:?}");
+    }
+    assert!(
+        std::fs::read_dir(temporary.path()).is_ok_and(|mut entries| entries.next().is_none()),
+        "the shared temporary directory holds the server's files"
+    );
+}
+
+/// Puts a new file at `executable`'s path as a build does: written beside
+/// it and moved into place, which replaces a file a process runs on every
+/// system but Windows, and on Windows one that no process runs.
+fn replace_as_a_build_does(executable: &Path) {
+    let mut written = executable.as_os_str().to_os_string();
+    written.push(".written");
+    let written = PathBuf::from(written);
+    std::fs::copy(binary(), &written).expect("write the new build");
+    std::fs::rename(&written, executable).expect("move the new build into place");
 }
 
 /// Whether a process of the id `process` runs.
