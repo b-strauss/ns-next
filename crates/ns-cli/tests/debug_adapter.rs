@@ -3856,6 +3856,40 @@ const CENSUS: &str = indoc! {"
     ) : ()
 "};
 
+/// A root that holds 1,500 instances of its nested `Point` at line 6.
+const CROWD: &str = indoc! {"
+    class Crowd = Object new () (
+      class Point = Object new () () : ()
+      public main: platform args: arguments = (
+        | points |
+        points:: Array new: 1500. 1 to: 1500 do: [:index | points at: index put: Point new].
+        platform transcript show: points size printString; newLine.
+      )
+    ) : ()
+"};
+
+/// `nsNext/instances` and `nsNext/referrers` without a `count` answer at
+/// most 1,000, never a class's every instance in one response.
+#[test]
+fn a_page_without_a_count_is_at_most_a_thousand() {
+    let (_directory, path) = program("Crowd", CROWD);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let instances = client.succeed("nsNext/instances", json!({ "name": "Crowd.Point" }));
+    let instances = dap::array(&instances["variables"]);
+    assert_eq!(instances.len(), 1_000);
+    let rest = client.succeed(
+        "nsNext/instances",
+        json!({ "name": "Crowd.Point", "start": 1_000 }),
+    );
+    assert_eq!(dap::array(&rest["variables"]).len(), 500);
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "1500\n");
+}
+
 #[test]
 fn instance_counts_name_the_program_s_classes() {
     let (_directory, path) = program("Census", CENSUS);

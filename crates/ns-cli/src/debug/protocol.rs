@@ -357,7 +357,7 @@ pub(crate) struct InstancesArguments {
     pub(crate) name: String,
     pub(crate) shipped: Option<bool>,
     pub(crate) start: Option<usize>,
-    /// `None` or 0: every one from `start`.
+    /// `None` or 0: at most 1,000 from `start`.
     pub(crate) count: Option<usize>,
 }
 
@@ -368,7 +368,7 @@ pub(crate) struct InstancesArguments {
 pub(crate) struct ReferrersArguments {
     pub(crate) value_reference: i64,
     pub(crate) start: Option<usize>,
-    /// `None` or 0: every one from `start`.
+    /// `None` or 0: at most 1,000 from `start`.
     pub(crate) count: Option<usize>,
 }
 

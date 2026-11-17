@@ -358,10 +358,16 @@ impl Agent {
     }
 }
 
-/// A page's count as the VM takes it: every one from its start for none
-/// or 0, as `variables` pages.
+/// The most of a heap walk's answer -- instances or referrers -- a
+/// request without a `count` is answered: a class with millions of
+/// instances would otherwise be described whole, every one held as a
+/// value of the stop, in one response.
+const LARGEST_PAGE: usize = 1_000;
+
+/// A page's count as the VM takes it: `LARGEST_PAGE` from its start for
+/// none or 0.
 fn page_count(count: Option<usize>) -> usize {
-    count.filter(|count| *count > 0).unwrap_or(usize::MAX)
+    count.filter(|count| *count > 0).unwrap_or(LARGEST_PAGE)
 }
 
 /// The name a class declaration is shown and asked for by,
