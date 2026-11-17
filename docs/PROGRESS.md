@@ -8176,19 +8176,41 @@ the hot path of a program run without a debugger, so the stage was not
 measured ("What stage 5 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen` where
-its files changed). The end-of-batch gates passed on the final tree,
-`904fec56`: `images`, `caches`, `benchmarks`, `release-checks`,
-`codegen`, `stress` -- the suite under the fifteen stress modes and with
-`NS_NEXT_NO_JIT=1`, 3,719 tests each (WIDE 5,514), and `run-corpus`
-"ran 6, failed 0, skipped 205" plain and under each mode -- and
-`plugin-verification`, compatible with all six IDEs it checks. Their
-first run found the memory view answering a frame the suspend stress
-mode had suspended as its frame object, the pause stress mode beginning
-an evaluation while a breakpoint's token waited for its frame, and three
-tests that count allocations or safepoints exactly or bound an
-evaluation's time, which the pause stress mode's evaluations or the
-collect stress mode broke; all were fixed before the final tree. The
-Docker groups `linux` and `aarch64` were not run.
+its files changed). The end-of-batch gates passed on `904fec56`:
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
+and `plugin-verification`. Their first run found three problems, all
+fixed before that tree: the memory view answering a frame the suspend
+stress mode had suspended as its frame object; the pause stress mode
+beginning an evaluation while a breakpoint's token waited for its
+frame; and three tests that count allocations or safepoints exactly, or
+bound an evaluation's time, which the pause stress mode's evaluations
+or the collect stress mode broke. The final whole-branch review then
+found five defects, each fixed with a test that failed before it:
+- a stop at a breakpoint in an `ensure:` block the debugger's
+  termination ran served an evaluation that never answered, and the
+  next run's every safepoint took the kept stop for its own;
+- a block an evaluation stored read nil from an enclosing frame the
+  stopped block never reached;
+- an evaluation read a variable the variables view shows as not
+  available as nil;
+- a client that left a listening agent during an evaluation stranded
+  the program, and left its marks to the next client;
+- the MCP server ran a copy of its binary it found in the shared
+  temporary directory.
+
+With those and its minors fixed, the end-of-batch gates passed again on
+the final tree, `16facac0`:
+- `images` 2,180 tests;
+- `caches` 545;
+- `benchmarks` 177;
+- `release-checks` 7,382, with both lints;
+- `codegen`, every budget held;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,724 tests each (WIDE 5,519), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups `linux` and `aarch64` were not run.
 
 - `c5d72d74`, `89603ae9`, `8722f621` -- stage 5's questions decided and
   the plan (`docs/superpowers/plans/2026-11-16-2110-debugger-stage-5.md`).
@@ -8220,6 +8242,9 @@ Docker groups `linux` and `aarch64` were not run.
   documents brought to the stage.
 - `99ac2ad5`, `a79c26cd`, `904fec56` -- what the end-of-batch gates
   found.
+- `aa0c0be2`, `fe008c9e`, `1639d8cd`, `0faeaa09`, `bef88272`,
+  `7262abe2`, `236b7c51`, `6a969cd8`, `16facac0` -- what the final
+  review found.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 6:
 hot swap, edit-and-continue and `ActivationMirror`) and "The debugger"
