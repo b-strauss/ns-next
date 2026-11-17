@@ -21,6 +21,7 @@ pub(crate) mod breakpoints;
 pub(crate) mod conditions;
 pub(crate) mod evaluation;
 pub(crate) mod exceptions;
+mod memory;
 pub(crate) mod metadata;
 mod remote;
 mod stack;
@@ -31,10 +32,10 @@ mod values;
 pub use metadata::breakable::BreakableStatement;
 pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
-    Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
-    LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
-    SendLocation, StepInTarget, StepInTargetKind, StopReason, ValueDescription, ValueId, Variable,
-    VariableValue,
+    Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, InstanceCount,
+    LineBreakpoint, LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer,
+    ReturnedValue, SendLocation, StepInTarget, StepInTargetKind, StopReason, ValueDescription,
+    ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -66,8 +67,8 @@ const NO_SUCH_TARGET: &str = "no such target";
 /// attached debugger's stop is kept while an evaluation runs.
 const NOT_KEPT: &str = "only a debugger's stop evaluates";
 
-/// Why a stop refuses `Children`, `ForceReturn` or `Mark` for a value it
-/// did not hand out.
+/// Why a stop refuses `Children`, `ForceReturn`, `Mark` or `Referrers` for
+/// a value it did not hand out.
 const NO_SUCH_VALUE: &str = "no value of this stop has that id";
 
 /// Why a stop refuses a withheld value as the value a frame is forced to
@@ -352,6 +353,7 @@ impl StressReader {
             | Event::ModuleText { .. }
             | Event::StepInTargets(_)
             | Event::Marked { .. }
+            | Event::InstanceCounts(_)
             | Event::Logged { .. } => {}
         }
     }
@@ -1246,7 +1248,10 @@ impl Interpreter {
                 | Command::StepInTargets
                 | Command::StepIntoTarget { .. }
                 | Command::Mark { .. }
-                | Command::Unmark { .. }) => {
+                | Command::Unmark { .. }
+                | Command::InstanceCounts
+                | Command::Instances { .. }
+                | Command::Referrers { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -1313,7 +1318,10 @@ impl Interpreter {
             | Command::StepInTargets
             | Command::StepIntoTarget { .. }
             | Command::Mark { .. }
-            | Command::Unmark { .. } => {
+            | Command::Unmark { .. }
+            | Command::InstanceCounts
+            | Command::Instances { .. }
+            | Command::Referrers { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -1625,6 +1633,37 @@ impl Interpreter {
                     self.keep_marks(&stop);
                     self.answer(&mut stop.source, Event::Marked { label });
                 }
+                Command::InstanceCounts => {
+                    let counts = self.enter(|mutator| memory::instance_counts(mutator));
+                    self.answer(&mut stop.source, Event::InstanceCounts(counts));
+                }
+                Command::Instances {
+                    ref class,
+                    start,
+                    count,
+                } => {
+                    let instances = self.enter(|mutator| {
+                        memory::instances(mutator, &mut stop.values, class, start, count)
+                    });
+                    self.answer(&mut stop.source, Event::Variables(instances));
+                }
+                Command::Referrers {
+                    value,
+                    start,
+                    count,
+                } => match self.enter(|mutator| {
+                    let (value, _) = stop.values.fetch(mutator, value)?;
+                    Some(memory::referrers(
+                        mutator,
+                        &mut stop.values,
+                        value,
+                        start,
+                        count,
+                    ))
+                }) {
+                    Some(referrers) => self.answer(&mut stop.source, Event::Variables(referrers)),
+                    None => self.refuse(&mut stop.source, &command, NO_SUCH_VALUE),
+                },
                 command @ (Command::Evaluate { .. } | Command::SetVariable { .. }) => {
                     match self.begin_evaluation(&mut stop, &command) {
                         Ok(()) => {
@@ -1913,7 +1952,10 @@ impl Interpreter {
                     | Command::StepInTargets
                     | Command::StepIntoTarget { .. }
                     | Command::Mark { .. }
-                    | Command::Unmark { .. }),
+                    | Command::Unmark { .. }
+                    | Command::InstanceCounts
+                    | Command::Instances { .. }
+                    | Command::Referrers { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

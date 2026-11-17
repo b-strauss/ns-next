@@ -2139,7 +2139,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `ObjectMirror>>referringObjects` (`:1655`), each a walk of the heap. Both
   must keep the shipped-level rule: an instance of a shipped class or a
   referrer that is a shipped module's root or the VM mirror is not a value
-  a mirror may hand out.
+  a mirror may hand out. The walk exists, the debugger's memory view's
+  (`Heap::each_object`, `Heap::refers_to`; [debugger.md](design/debugger.md),
+  "The memory view").
 - **Metadata through mirrors** (2026-10-18): §4.3 makes metadata comments,
   `(*:id: ... *)`, "available at runtime via mirrors" (`newspeak-spec.pdf`
   p. 21), as Primordial Soup's mirrors answer `metadata`

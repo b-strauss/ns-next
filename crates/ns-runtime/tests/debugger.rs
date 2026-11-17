@@ -16216,3 +16216,249 @@ mod marking {
         }
     }
 }
+
+mod memory_view {
+    use super::*;
+    use ns_runtime::debugger::{InstanceCount, ValueId};
+
+    /// Three `Point`s made, the second dropped at once, an `Item` held by
+    /// a slot of each of two holders and read by a block, and a `String`:
+    /// stopped in `look:`, where the memory view finds them.
+    const MEMORY: &str = indoc! {"
+        class Memory = Object new () (
+          class Point x: anX = (
+            | public x = anX. |
+          ) ()
+          class Item = () ()
+          class Holder = (
+            | public first ::= nil. public second ::= nil. |
+          ) ()
+          public run = (
+            | kept other item left right block text |
+            text:: 'abc'.
+            kept:: Point x: 1.
+            Point x: 2.
+            other:: Point x: 3.
+            item:: Item new.
+            left:: Holder new.
+            left first: item.
+            right:: Holder new.
+            right second: item.
+            block:: [item].
+            ^(self look: item) + kept x + other x + (block value == item ifTrue: [text size - 2] ifFalse: [0])
+          )
+          look: anItem = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    /// The class declaration `path` of the program's module `Memory`.
+    fn memory_class(path: &[&str]) -> ClassName {
+        ClassName {
+            module: ModuleName::program("Memory"),
+            path: path.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    /// `MEMORY` under `lowering`, the JIT off, stopped in `look:`:
+    /// `agent` serves the stop, which is continued with the breakpoint
+    /// gone. Answers what `agent` answered.
+    fn looking<T: Send + 'static>(
+        lowering: Lowering,
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> T {
+        let offset = line_start(MEMORY, "^1");
+        let (mut interpreter, class) = interpreted(MEMORY, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Memory", vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Memory"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let answer = agent(remote);
+                set_breakpoints(remote, "Memory", Vec::new());
+                expect_breakpoints(remote, "Memory");
+                continue_stopped(remote);
+                answer
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 6);
+        answer
+    }
+
+    /// The instance counts of the stop.
+    fn instance_counts(remote: &DebugRemote) -> Vec<InstanceCount> {
+        match request(remote, Command::InstanceCounts) {
+            Event::InstanceCounts(counts) => counts,
+            other => panic!("the instance counts were expected, not {other:?}"),
+        }
+    }
+
+    /// The count of `class` among `counts`, 0 when it has none.
+    fn count_of(counts: &[InstanceCount], class: &ClassName) -> usize {
+        counts
+            .iter()
+            .find(|count| count.class == *class)
+            .map_or(0, |count| count.count)
+    }
+
+    /// `count` instances of `class`, from the `start`th.
+    fn instances(
+        remote: &DebugRemote,
+        class: ClassName,
+        start: usize,
+        count: usize,
+    ) -> Vec<Variable> {
+        variables(
+            remote,
+            Command::Instances {
+                class,
+                start,
+                count,
+            },
+        )
+    }
+
+    /// `count` referrers of `value`, from the `start`th.
+    fn referrers(
+        remote: &DebugRemote,
+        value: ValueId,
+        start: usize,
+        count: usize,
+    ) -> Vec<Variable> {
+        variables(
+            remote,
+            Command::Referrers {
+                value,
+                start,
+                count,
+            },
+        )
+    }
+
+    /// The value of `look:`'s argument, the `Item`.
+    fn item(remote: &DebugRemote) -> ValueDescription {
+        value_of(
+            &variables(remote, Command::Variables { frame: 0 }),
+            "anItem",
+        )
+        .clone()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A class's instances are counted under its declaration -- the
+        /// one dropped too, should no scavenge have run since, as a stop
+        /// collects nothing -- the counts ordered by count, and listed
+        /// paged, each named by its place.
+        fn instances_of_a_class_are_counted_and_listed(lowering) {
+            let (counts, first, rest, past) = looking(lowering, |remote| {
+                let counts = instance_counts(remote);
+                let point = memory_class(&["Point"]);
+                let first = instances(remote, point.clone(), 0, 1);
+                let rest = instances(remote, point.clone(), 1, 100);
+                let past = instances(remote, point, 100, 1);
+                (counts, first, rest, past)
+            });
+            let points = count_of(&counts, &memory_class(&["Point"]));
+            assert!(points >= 2, "{points}");
+            assert_eq!(count_of(&counts, &memory_class(&["Holder"])), 2);
+            assert_eq!(count_of(&counts, &memory_class(&["Item"])), 1);
+            assert!(
+                counts.windows(2).all(|pair| pair[0].count >= pair[1].count),
+                "{counts:?}"
+            );
+            assert_eq!(names(&first), ["#1"]);
+            assert_eq!(rest.len(), points - 1);
+            assert_eq!(rest[0].name, "#2");
+            assert!(past.is_empty());
+            for point in first.iter().chain(&rest) {
+                let point = shown(point);
+                assert_eq!(point.class_name, "Point");
+                assert!(!point.withheld);
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An object held by a slot of each of two holders and read by a
+        /// block has the holders for its referrers, and the frame object
+        /// of the activation the block captured, whose registers hold it
+        /// -- and, under a lowering that copies it into the block, the
+        /// closure -- but not `look:`'s activation, which no block
+        /// captured and so is no object. A holder only that frame holds.
+        fn the_referrers_of_an_object_are_found(lowering) {
+            let (found, holder) = looking(lowering, |remote| {
+                let item = item(remote);
+                let found: Vec<(String, String)> = referrers(remote, item.id, 0, 100)
+                    .iter()
+                    .map(|referrer| (referrer.name.clone(), shown(referrer).class_name.clone()))
+                    .collect();
+                let holders = instances(remote, memory_class(&["Holder"]), 0, 10);
+                let holder: Vec<String> = referrers(remote, shown(&holders[0]).id, 0, 100)
+                    .iter()
+                    .map(|referrer| shown(referrer).class_name.clone())
+                    .collect();
+                (found, holder)
+            });
+            let mut classes: Vec<&str> = found
+                .iter()
+                .map(|(_, class)| class.as_str())
+                .filter(|class| *class != "Closure")
+                .collect();
+            classes.sort_unstable();
+            assert_eq!(classes, ["Activation", "Holder", "Holder"], "{found:?}");
+            assert!(found.len() <= 4, "{found:?}");
+            let names: Vec<String> = found.iter().map(|(name, _)| name.clone()).collect();
+            let expected: Vec<String> = (1..=found.len()).map(|place| format!("#{place}")).collect();
+            assert_eq!(names, expected);
+            assert_eq!(holder, ["Activation"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An instance of a class a shipped mixin declares is withheld,
+        /// counted under its shipped declaration, and so is a referrer of
+        /// a shipped class, a frame object; a value the stop did not hand
+        /// out is refused.
+        fn a_shipped_instance_is_withheld(lowering) {
+            let (strings, frames, refused) = looking(lowering, |remote| {
+                let counts = instance_counts(remote);
+                let string = ClassName {
+                    module: ModuleName::shipped("Kernel"),
+                    path: vec![String::from("String")],
+                };
+                assert!(count_of(&counts, &string) > 0, "{counts:?}");
+                let strings = instances(remote, string, 0, 5);
+                let item = item(remote);
+                let frames: Vec<bool> = referrers(remote, item.id, 0, 100)
+                    .iter()
+                    .filter(|referrer| shown(referrer).class_name == "Activation")
+                    .map(|referrer| shown(referrer).withheld)
+                    .collect();
+                let refused = request(
+                    remote,
+                    Command::Referrers {
+                        value: ValueId(u32::MAX),
+                        start: 0,
+                        count: 1,
+                    },
+                );
+                (strings, frames, refused)
+            });
+            assert!(!strings.is_empty());
+            assert!(strings.iter().all(|string| shown(string).withheld));
+            assert_eq!(frames, [true]);
+            assert!(
+                matches!(
+                    &refused,
+                    Event::Refused { command, reason }
+                        if command == "Referrers" && reason == "no value of this stop has that id"
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+}

@@ -18,13 +18,13 @@ use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
 /// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
 /// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets`,
-/// `StepIntoTarget`, `Mark` and `Unmark` are served only while the program
-/// is stopped; one that arrives while it runs is refused
-/// (`Event::Refused`). `Terminate` is served either way. An agent waits
-/// for `Event::Stopped` before it sends a command only a stop serves: one
-/// sent right after `DebugRemote::pause` is refused or served depending
-/// on whether a safepoint drains the queue before the stop or the stop
-/// serves it. A command is served by the run it arrives during; one
+/// `StepIntoTarget`, `Mark`, `Unmark`, `InstanceCounts`, `Instances` and
+/// `Referrers` are served only while the program is stopped; one that
+/// arrives while it runs is refused (`Event::Refused`). `Terminate` is
+/// served either way. An agent waits for `Event::Stopped` before it sends
+/// a command only a stop serves: one sent right after `DebugRemote::pause`
+/// is refused or served depending on whether a safepoint drains the queue
+/// before the stop or the stop serves it. A command is served by the run it arrives during; one
 /// queued while no run executes, or still queued when a run ends, is
 /// dropped and answered by `Event::Refused`, its reason that no run
 /// executes. A configuration command -- `SetBreakpoints`,
@@ -250,6 +250,41 @@ pub enum Command {
     /// Served only while the program is stopped; answered by
     /// `Event::Marked`.
     Unmark { label: String },
+    /// How many instances each class declaration has
+    /// (`docs/design/debugger.md`, "The memory view"), counted by a walk
+    /// of the object space: every object it holds, those nothing reaches
+    /// any more too, since a stop collects nothing. Served only while the
+    /// program is stopped; answered by `Event::InstanceCounts`.
+    InstanceCounts,
+    /// `count` of the instances of the class declaration `class` names,
+    /// from the `start`th, found as `InstanceCounts` counts them, grouped
+    /// by the application they are instances of: each named `#<n>`, its
+    /// place among them counted from 1, and held for the stop as every
+    /// value it hands out, an instance of a class a shipped module
+    /// declares withheld. Served only while the program is stopped;
+    /// answered by `Event::Variables`, empty for a name no declaration
+    /// with instances has.
+    Instances {
+        class: ClassName,
+        start: usize,
+        count: usize,
+    },
+    /// `count` of the objects that refer to the value `value` names, a
+    /// value the stop handed out, from the `start`th: each object a word
+    /// of which that keeps what it names alive names the value -- a
+    /// closure's copied values and captured frame, a frame object's
+    /// fields and its running activation's registers included -- but for
+    /// its class word, named and held as `Instances` names and holds them,
+    /// a referrer of a class a shipped module declares withheld. An
+    /// activation no block captured is no object and no referrer. Served
+    /// only while the program is stopped; answered by `Event::Variables`,
+    /// empty for a value that is no object, or by `Event::Refused` for a
+    /// value the stop did not hand out.
+    Referrers {
+        value: ValueId,
+        start: usize,
+        count: usize,
+    },
 }
 
 /// A place a smart step into may stop at (`Command::StepInTargets`).
@@ -478,6 +513,9 @@ impl Command {
             Command::StepIntoTarget { .. } => "StepIntoTarget",
             Command::Mark { .. } => "Mark",
             Command::Unmark { .. } => "Unmark",
+            Command::InstanceCounts => "InstanceCounts",
+            Command::Instances { .. } => "Instances",
+            Command::Referrers { .. } => "Referrers",
         }
     }
 }
@@ -507,7 +545,8 @@ pub enum Event {
     },
     /// The answer to `Command::StackTrace`.
     StackTrace(Vec<FrameDescription>),
-    /// The answer to `Command::Variables` and `Command::Children`.
+    /// The answer to `Command::Variables`, `Command::Children`,
+    /// `Command::Instances` and `Command::Referrers`.
     Variables(Vec<Variable>),
     /// The command `command` names (`Command::name`) was not served, for
     /// `reason`.
@@ -557,6 +596,23 @@ pub enum Event {
     /// The answer to `Command::Mark` and `Command::Unmark`: the mark
     /// `label` is set or gone.
     Marked { label: String },
+    /// The answer to `Command::InstanceCounts`: one count per class
+    /// declaration with instances, the largest first, those of one count
+    /// ordered by their names.
+    InstanceCounts(Vec<InstanceCount>),
+}
+
+/// How many instances one class declaration has (`Command::InstanceCounts`):
+/// counted by declaration, never by class object, of which a declaration
+/// has one per enclosing instance, so that the instances of every
+/// application of it count together. A builtin class -- `String`,
+/// `Array` -- is named by its declaration in the kernel; a class side's
+/// instances, class objects, are not counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceCount {
+    /// The declaration, as a step filter names it.
+    pub class: ClassName,
+    pub count: usize,
 }
 
 /// What `Event::ModuleText` says of a module's text.

@@ -7559,6 +7559,58 @@ impl<'gc> Heap<'gc> {
         (classes, instances)
     }
 
+    /// Hands every object of the space to `visit`, in the space's order:
+    /// the past survivor space, eden, then the old space, each from its
+    /// start; changes nothing. The debugger's memory view walks it at a
+    /// stop (`debugger/memory.rs`). An object nothing reaches any more is
+    /// handed over as well, since only a collection tells the two apart
+    /// and a stop runs none; a forwarder and a gap are no objects and are
+    /// skipped, as `classes_and_instances_over` skips them.
+    pub(crate) fn each_object(&self, mut visit: impl FnMut(ObjectReference<'gc>)) {
+        let words = self.space.words();
+        for range in self.space.occupied() {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                position = next;
+                let format = Header(words[header]).format();
+                if matches!(format, Format::Free | Format::Forwarded) {
+                    continue;
+                }
+                visit(self.object_handle(offset_of_header(header)));
+            }
+        }
+    }
+
+    /// Whether a word of `holder` that keeps what it names alive names
+    /// `target`: a word of the strong pointer ranges the collectors trace
+    /// (`object::strong_pointer_ranges`), but for the class word -- every
+    /// instance names its class, which the memory view lists as its
+    /// instances, not its referrers -- and an `Ephemeron`'s key, which
+    /// keeps nothing alive; an `Ephemeron`'s other fields count, as they
+    /// do while its key lives. A married frame's registers are its
+    /// activation's, which the ranges leave out; its caller reads them
+    /// where they live (`debugger/memory.rs`).
+    pub(crate) fn refers_to(
+        &self,
+        holder: ObjectReference<'gc>,
+        target: ObjectReference<'gc>,
+    ) -> bool {
+        self.check_object_origin(holder);
+        self.check_object_origin(target);
+        let words = self.space.words();
+        let index = header_index(holder.offset);
+        let block = block_range(words, index);
+        let format = Header(words[index]).format();
+        let key = block.start + FIELDS;
+        let ranges = object::strong_pointer_ranges(format, &words[block.clone()], |_| true);
+        ranges
+            .skip(1)
+            .flat_map(|range| range.start + block.start..range.end + block.start)
+            .filter(|position| format != Format::Ephemeron || *position != key)
+            .any(|position| Word::from_bits(words[position]).object_offset() == Some(target.offset))
+    }
+
     /// Stamps each of `objects` with the id its class now answers. The
     /// decoder's one pass, after `rebuild_applications` has given every
     /// decoded class its application, and the install's restamp of the

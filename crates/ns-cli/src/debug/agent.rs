@@ -1652,7 +1652,10 @@ fn answers(event: &Event, pending: &Pending) -> bool {
             command: refused, ..
         } => refused == command,
         Event::StackTrace(_) => command == "StackTrace",
-        Event::Variables(_) => matches!(command, "Variables" | "Children"),
+        Event::Variables(_) => matches!(
+            command,
+            "Variables" | "Children" | "Instances" | "Referrers"
+        ),
         Event::Breakpoints { module, .. } => {
             command == "SetBreakpoints" && pending.module.as_ref() == Some(module)
         }
@@ -1668,6 +1671,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::VariableSet(_) => command == "SetVariable",
         Event::StepInTargets(_) => command == "StepInTargets",
         Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
+        Event::InstanceCounts(_) => command == "InstanceCounts",
         Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }

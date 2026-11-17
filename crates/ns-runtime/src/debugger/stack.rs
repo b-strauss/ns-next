@@ -976,7 +976,7 @@ impl<'gc> Reader<'_, 'gc> {
 
 /// Whether `register` is one a body names: an argument, or one past the
 /// header's numbers and below the first scratch register.
-fn is_named_register(code: &CompiledCode, register: u16) -> bool {
+pub(crate) fn is_named_register(code: &CompiledCode, register: u16) -> bool {
     register < code.argument_count
         || (code.argument_count + HEADER_REGISTERS..code.local_count).contains(&register)
 }

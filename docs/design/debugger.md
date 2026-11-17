@@ -4162,21 +4162,51 @@ expression's reach.
 
 ### The memory view
 
+**Built** in the VM (`Command::InstanceCounts`, `Command::Instances`,
+`Command::Referrers`, `debugger/memory.rs`, `Heap::each_object`,
+`Heap::refers_to`; tests `memory_view` in `tests/debugger.rs`); the
+agent's requests for it are planned with its stage 5 part.
+
 At a stop the IDE can ask for the instances of a class and for the
 objects that refer to one (decided with the user on 2026-11-16, in stage
 5), as IntelliJ's memory view asks JDWP's `InstanceCounts`, `Instances`
 and `ReferringObjects`, and as the Newspeak IDE's workspace offers
 `instancesOf:`, `pointersTo:` and `pathTo:`
-(`newspeak/squeak/WorkspaceManagerForSqueak.ns`). Both are a walk of the
-object space at the stop, where no Newspeak code runs and so nothing
-collects. A class object exists per enclosing instance in Newspeak
-([object-model.md](object-model.md), "Three layers, not one"), so the
-counts are grouped by mixin -- by declaration -- and within a mixin by
-application, never by class object. The objects found are values a
-stop holds, as the variables view's are ("Values the IDE holds"), and
-an instance of a class a shipped mixin declares is withheld ("Marking
-objects"): shown, but never marked, so that no walk puts a private
-kernel object or the mirror within an expression's reach.
+(`newspeak/squeak/WorkspaceManagerForSqueak.ns`). Each is a walk of the
+object space at the stop (`Heap::each_object`, over the past survivor
+space, eden and the old space, forwarders and gaps skipped), where no
+Newspeak code runs and so nothing collects: the walk finds every object
+the space holds, those nothing reaches any more too, which only a
+collection would tell apart. A class object exists per enclosing
+instance in Newspeak ([object-model.md](object-model.md), "Three layers,
+not one"), so the counts are grouped by mixin -- by declaration
+(`Heap::class_declaration`), named as a step filter names one
+(`ClassName`), a builtin class such as `String` under its declaration in
+the kernel -- never by class object, and `Instances` lists a
+declaration's instances grouped by application, in the order the walk
+first meets each. A class side's instances, the class objects, are not
+counted, since a `ClassName` names the instance side; nor is the VM
+mirror, whose class has no declaration and so no name ("The VM mirror is
+the whole Rust boundary" in [core-library.md](core-library.md)).
+
+A referrer is an object a word of which that keeps what it names alive
+names the value: the strong pointer words the collectors trace
+(`Heap::refers_to`) but the class word -- an instance names its class,
+which `Instances` answers -- and an `Ephemeron`'s key. A closure refers
+to what it copied and to the frame it captured, and a frame object to
+its receiver, its sender and home, and to what its registers hold: a
+returned or suspended frame's own copy, and a married frame's running
+activation's registers where they live, only the named ones the
+leftover analysis does not find tainted, as the variables view reads
+them ("Reading the stack at a stop"). An activation no block captured
+has no frame object, so it is no referrer, as a JVM's stack frames are
+no `ReferringObjects`; the stack shows what it holds. The objects found
+are values a stop holds, as the variables view's are ("Values the IDE
+holds"), each named `#<n>` by its place among them, and an instance of
+a class a shipped mixin declares is withheld ("Marking objects"), a
+frame object -- Kernel's `Activation` -- among them: shown, but never
+marked, so that no walk puts a private kernel object or the mirror
+within an expression's reach.
 
 ### Folding the shipped frames
 
