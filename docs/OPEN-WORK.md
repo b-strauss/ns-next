@@ -15,38 +15,32 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 5: evaluation, conditional breakpoints and
-logpoints, watches and setting variables, smart step into, restart
-frame and force return** (decided with the user on 2026-11-11: the
-debugger goes on before road step 9 resumes;
+**The debugger's stage 6: hot swap, then edit-and-continue of running
+activations, and `ActivationMirror` for programs** (decided with the
+user on 2026-11-11: the debugger goes on before road step 9 resumes;
 [debugger.md](design/debugger.md), "Planned: the order of building
-it"). An expression -- `evaluate`, a breakpoint's condition, a log
-message, a watch, `setVariable` -- is compiled as a block standing at
-the stopped frame's `program_counter` and run above it as ordinary
-program code (decision 8, "Evaluation", "Evaluation never reaches the
-VM mirror"); a condition is decided where a hit is counted, before the
-count ("Hit counts and temporary breakpoints"); a write reaches the
-frame through the variable table ("Writing a frame", "Assigning a
-captured variable"); smart step into stops only at a push from the
-chosen call site (decision 3, "Smart step into a block"); and restart
-and force return unwind to the frame ("Restart frame and force
-return"); over DAP's `evaluate`, `setVariable`, `stepInTargets`,
-`restartFrame` and a request of ns-next's own, and the plugin's
-`XDebuggerEvaluator`, `XSmartStepIntoHandler` and actions ("The
-JetBrains plugin"). Stages 1 to 4 are built (2026-11-11 to 2026-11-14;
-"The debugging API at the safepoint", "Launching, the start and the
-end", "The JetBrains plugin"): from stage 4 the debugger is usable in
-the IDE. Stage 5 also marks objects and names them in later
-evaluations ("Marking objects"), shows the memory view ("The memory
-view") and folds the shipped frames ("Folding the shipped frames").
-It needs a plan of its own; the open questions it met are decided
-(2026-11-16): access control in evaluation, marking objects, evaluation
-at the depth limit, restart and force return beyond the plain case,
-restart and the indirection vector, assigning a captured variable, and
-which further IntelliJ features stage 5 takes
-([debugger.md](design/debugger.md), "Evaluation never reaches the VM
-mirror", "Evaluation", "Restart frame and force return", "Assigning a
-captured variable", "Planned: the order of building it").
+it"). Hot swap installs a saved module's changed declarations through
+the MirrorBuilder's atomic install and sets the breakpoints again on the
+new bodies; edit-and-continue recompiles an edited method and moves its
+running activations onto the new code at a statement boundary, its
+values moved by name through both bodies' variable tables, a running
+activation divorced into a larger frame object through the bulk
+forward; and `ActivationMirror` in `MirrorsFactory.ns` gives a program
+the access to activations §8.2 asks of mirrors, withholding a shipped
+activation's values ("Hot swap and edit-and-continue", decision 1,
+"Evaluation never reaches the VM mirror"; the item "The activation and
+thread mirrors" below). With the install, "Create Method" for an
+uncaught `MessageNotUnderstood` and the forced `nil` from
+`Object>>doesNotUnderstand:` when it is declined ("Exceptions"). Over
+DAP, requests of ns-next's own, and in the plugin a hot-swap action.
+Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
+at the safepoint", "Launching, the start and the end", "The MCP
+server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
+variables, decides conditions and logpoints, restarts frames and forces
+returns, smart-steps into a chosen send, marks objects, shows the memory
+view and folds the shipped frames, in the VM, the DAP agent and the
+plugin, and `ns-next mcp` lets an agent debug a program. It needs its
+questions decided and a plan of its own.
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1884,23 +1878,36 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   so it stops at the next poll, the return to `signal`, after the override
   answered; a handler that is no block and whose `cull:` a fast path answers
   likewise stops after it ran ([debugger.md](design/debugger.md),
-  "Exceptions"). The rest, in this order: evaluation as a block in the
-  stop's scope, conditional breakpoints and logpoints, watches and setting
-  variables, marking objects, smart step into, restart frame, force
-  return, the memory view and folding the shipped frames ("Next" above);
-  hot swap, edit-and-continue and `ActivationMirror`; after stage 6,
-  attaching to an `ns-next` started without `--debug`
-  ([debugger.md](design/debugger.md), "Planned: the order of building
-  it"). The time a step took,
-  shown inline, stays planned in no stage yet (decided with the user on
-  2026-11-15; [debugger.md](design/debugger.md), "The time a step took").
-  "Create Method" for an uncaught `MessageNotUnderstood`, and the forced
-  `nil` from `Object>>doesNotUnderstand:` when it is declined, need stage
-  5's forced return and stage 6's install; until then going on from such a
-  stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It
-  needs no yield path out of `vm::run`. Still to decide, before a stage
-  takes it: watchpoints on slots ([debugger.md](design/debugger.md),
-  "Open questions").
+  "Exceptions"). Its fifth stage is built (2026-11-17): an expression
+  evaluated as a block in a stopped frame's scope, setting a variable,
+  conditional breakpoints and logpoints, restart frame and force return,
+  smart step into, marking objects, the memory view and folding the
+  shipped frames, in the VM, the DAP agent and the plugin, and `ns-next
+  mcp`, an MCP server through which an agent debugs a program
+  ([debugger.md](design/debugger.md), "Evaluation", "Writing a frame",
+  "Restart frame and force return", "The MCP server", "What stage 5
+  moved"). The rest: hot swap, edit-and-continue and `ActivationMirror`
+  ("Next" above); after stage 6, attaching to an `ns-next` started
+  without `--debug` ([debugger.md](design/debugger.md), "Planned: the
+  order of building it"). The time a step took, shown inline, stays
+  planned in no stage yet (decided with the user on 2026-11-15;
+  [debugger.md](design/debugger.md), "The time a step took"), and so do
+  the variables' values shown inline in the editor, which the plugin
+  would add over its client ([debugger.md](design/debugger.md), "The
+  JetBrains plugin"). "Create Method" for an uncaught
+  `MessageNotUnderstood`, and the forced `nil` from
+  `Object>>doesNotUnderstand:` when it is declined, need stage 6's
+  install, the forced return being built; until then going on from such
+  a stop ends the run ([debugger.md](design/debugger.md), "Exceptions").
+  It needs no yield path out of `vm::run`. Still to decide, before a
+  stage takes it: watchpoints on slots ([debugger.md](design/debugger.md),
+  "Open questions"). What the values view still lacks: a Newspeak
+  collection's renderer -- `List`, `Map` and `Set` show their slots,
+  where a renderer would run `size`, `do:` and `printString` as an
+  evaluation under a limit of time and sends -- the elements of a
+  `ByteArray` and a `String`, read by the heap's accessors and paged,
+  and pinning a value other than by a mark past its stop
+  ([debugger.md](design/debugger.md), "Values the IDE holds").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description
@@ -2079,6 +2086,55 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       repetition have
       none ([editor-support.md](design/editor-support.md), "Known gaps",
       "Plugin testing and gates").
+  - **What stage 5's reviews left** (2026-11-17), a stop's reason or
+    text wrong among them:
+    - *A failed condition at an exit by an unwind loses its text or
+      outlives its run*: a pause that aborts a method breakpoint's
+      condition at an exit by an unwind makes the stop report that exit
+      (`StopReason::MethodExit`) rather than the pause
+      (`conditions::exit_ended`); a line condition that fails at the stop
+      after an exit condition failed is named with the exit's error and
+      its own text dropped, and an exception's stop names the failed
+      exit's breakpoint without its error (`conditions::failure_named`);
+      and the failure (`Breakpoints::exit_failure`) is cleared at a
+      terminate and a detach but not when a run ends, so the next run's
+      first stop would name it -- untested
+      ([debugger.md](design/debugger.md), "Hit counts and temporary
+      breakpoints").
+    - *An abort names no evaluation*: `Command::AbortEvaluation` aborts
+      whichever evaluation runs, so an abort the agent sends for a hover
+      the VM answered meanwhile can abort the client's next `evaluate`,
+      which answers "evaluation aborted"; and dropping a remote's
+      `DebugEvents` alone, its `DebugControl` kept, never aborts an
+      endless evaluation ([debugger.md](design/debugger.md),
+      "Evaluation").
+    - *A shipped module's root class is not withheld everywhere*:
+      `Mutator::is_withheld` holds for the VM mirror, its class and
+      metaclass and a recorded shipped module's instance, but not for that
+      instance's class object and metaclass, which the memory view
+      withholds by their class alone ([debugger.md](design/debugger.md),
+      "Marking objects", "The memory view").
+    - *Instances of an unknown class*: `nsNext/instances` of a class name
+      no module declares answers an empty page rather than a refusal
+      ([debugger.md](design/debugger.md), "The memory view").
+    - *The plugin*: its hovers send no `context: "hover"` -- they
+      evaluate only a frame's variable names -- so the agent's hover
+      bound and its abort never apply to them; the memory view's panel
+      is tested through its model only; and Force Return, Step Into
+      Shipped and Mark Object… under the split debugger are checked by no
+      test, the plugin's tests running the monolithic one
+      ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *Tests*: `an_error_is_the_result_and_the_program_goes_on` asserts
+      only that the error's description is not empty,
+      `a_collection_during_an_evaluation_keeps_the_stop_s_values` does
+      not show that a collection ran, and
+      `a_block_an_evaluation_stored_reads_the_frame_after_it_returned`
+      asserts only that the answer has a class name; none evaluates in a
+      frame whose optimized code inlined scopes, restarts the initializer
+      of a declaration with no slots, smart-steps in a `whileFalse:` loop
+      over a bare local, or detaches with marks set; and the endless
+      evaluations' tests (`start_endless`) wait for the evaluation to
+      start by a sleep (`crates/ns-runtime/tests/debugger.rs`).
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,

@@ -98,9 +98,11 @@
 > evaluates in the Evaluate dialog, its watches and its hovers, sets
 > values, sends conditions and log expressions, smart-steps, resets
 > frames, forces returns, marks objects, shows the memory view and folds
-> the shipped frames as library frames ("The JetBrains plugin").
-> Everything else is planned: hot swap and edit-and-continue (stage 6)
-> ("Planned: the order of building it"). The
+> the shipped frames as library frames ("The JetBrains plugin"); none
+> of it adds to the hot path of a program run without a debugger ("What
+> stage 5 moved"). Everything else is planned: hot swap,
+> edit-and-continue and `ActivationMirror` (stage 6) ("Planned: the
+> order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
 > decisions"), on the mechanisms they imply, stage 4's questions among
@@ -117,7 +119,10 @@
 > runs, the stop, a module's text by revision, the arming lock `Arming`,
 > the pause stress mode's `StressReader`, the step stress mode's
 > `StepReader` and `StepStress`; `evaluation.rs`: an expression compiled
-> in a stopped frame, pushed and its end; `unwinding.rs`: a frame
+> in a stopped frame, pushed and its end, a variable set and the
+> marks' labels; `conditions.rs`: a breakpoint's condition and a
+> logpoint's message decided at the safepoint; `memory.rs`: the memory
+> view's counts, instances and referrers; `unwinding.rs`: a frame
 > restarted or forced to return, the unwind the stop starts and the step
 > it begins; `breakpoints.rs`: the breakpoint table,
 > line breakpoints, the one-shots, the hit counts and the breakpoint
@@ -136,7 +141,10 @@
 > `Interpreter::check_debug_metadata` (`check.rs`)), the collection in
 > both lowerers (`compiler/lower.rs`, `compiler/reference.rs`, the
 > `collector` parameter of the entry points in `compiler/mod.rs`),
-> `Mutator::mixin_level` (`interpreter/instantiate.rs`),
+> the evaluated expression parsed, resolved and compiled
+> (`ns_syntax::parse_code_body`, `resolver::resolve_evaluation`,
+> `compiler/evaluation.rs`), `Mutator::mixin_level`
+> (`interpreter/instantiate.rs`),
 > `bytecode::compiles_alike`, the cache cleared at an install
 > (`interpreter/install.rs`), the selector spans
 > (`ns_syntax::ast::MessageSend::selector_spans`), the request word's
@@ -164,7 +172,8 @@
 > `crates/ns-cli/src/debug/` (`mod.rs`, its start and the event pump;
 > `wire.rs`; `connection.rs`, the connection and its writer thread;
 > `agent.rs`, `host.rs`, `protocol.rs`, `stopped.rs`, `sources.rs`,
-> `breakpoints.rs`, `stepping.rs`), its token drawn by `ns-memory`'s
+> `breakpoints.rs`, `stepping.rs`, `evaluation.rs`), the MCP server
+> `crates/ns-cli/src/mcp/`, its token drawn by `ns-memory`'s
 > `random.rs` and its lines and columns counted by `ns-tooling`'s
 > `lines.rs`; the breakable
 > lines are `crates/ns-analyzer/src/breakable.rs`; and the plugin's
@@ -175,7 +184,8 @@
 > breakpoint and step stress modes), `debugger/metadata/tests.rs`, the
 > oracle's runners `crates/ns-cli/tests/debug_metadata.rs` and
 > `golden_round_trips.rs`, the agent's
-> `crates/ns-cli/tests/debug_adapter.rs`, and the plugin's
+> `crates/ns-cli/tests/debug_adapter.rs`, the MCP server's
+> `crates/ns-cli/tests/mcp.rs`, and the plugin's
 > `DapSessionTest`, `NewspeakDebugProcessTest` and
 > `NewspeakBreakpointTypesTest` ("Testing and gates"). The groundwork is
 > in `crates/ns-runtime/src/bytecode.rs`
@@ -376,16 +386,20 @@ debugging API at the safepoint". What it and the later stages build on:
 
 ## The debugging API at the safepoint
 
-Stages 1 to 4 of the debugger ("Planned: the order of building it") are
-built: the VM's side of decisions 7 and 9 and the part of decision 1 that
-pausing, reading and ending a run need; the metadata of decisions 4, 5
+Stages 1 to 5 of the debugger ("Planned: the order of building it") are
+built: the VM's side of decisions 7 and 9 and of decision 1 but for
+`ActivationMirror`; the metadata of decisions 4, 5
 and 10 to 15, which give a stopped frame its name, its place and its
 named variables ("Reading the stack at a stop", "Compiling the metadata
-again"); the breakpoints and steps of decisions 2, 3, 16 and 17; and
+again"); the breakpoints and steps of decisions 2, 3, 16 and 17;
 decision 6's agent with what it asks of the VM -- the remote's two
 halves, hit conditions, a module's text by revision, the breakable
 statements of a module not loaded, and a pause between runs stopping the
-run's first activation at its first statement. It lives in
+run's first activation at its first statement; and decision 8's
+evaluation, with what is built on it -- setting a variable, a
+breakpoint's condition and a logpoint's message, marks -- beside a
+frame restarted or forced to return, smart step into and the memory
+view. It lives in
 `crates/ns-runtime/src/debugger/` and is reached through
 `Interpreter::attach_debugger`; its clients are the test suite
 (`crates/ns-runtime/tests/debugger.rs`), the pause, breakpoint and step
@@ -395,8 +409,9 @@ to cursor's target or a method breakpoint's entry or exit ("Stopping at
 and going past a breakpoint", "Method breakpoints"), where a step arrives
 ("Step over in recursion and blocks"), and at an exception an exception
 breakpoint takes ("Exceptions"); at a stop an expression is evaluated in
-a stopped frame, and may write its variables ("Evaluation"), which is
-the one write of a frame that exists yet.
+a stopped frame, and may write its variables ("Evaluation"), a variable
+is set, and a frame restarted or forced to return ("Writing a frame",
+"Restart frame and force return").
 
 ### The attachment and the remote
 
@@ -999,8 +1014,8 @@ its receiver and, from its body's metadata ("Compiling the metadata
 again"), the statement and the send it stands at in its module's current
 text and its named variables over its whole lexical chain (decisions 10,
 12 and 13); a frame whose body has no metadata shows its arguments and its
-registers below the first scratch register, by number. Writing a frame --
-an evaluation's assignment, a variable set -- is stage 5's ("Writing a
+registers below the first scratch register, by number. A frame is
+written by an evaluation's assignment and a variable set ("Writing a
 frame").
 
 The run's frames (`stack::frames`) are walked from the top activation
@@ -1386,11 +1401,11 @@ through the variable's reference
 
 Planned: an object the IDE pins outlives its stop, as JDWP's object ids
 and their `DisableCollection` do; a `ByteArray`'s and a `String`'s
-elements are read by the heap's accessors and paged; a Newspeak collection
-(`List`, `Map`, `Set` of `CollectionsFactory.ns`) shows its slots until
-evaluation exists, then a renderer that runs Newspeak code (`size`, `do:`,
-`printString`) under a limit of time and sends, skipping breakpoints as
-every evaluation does.
+elements are read by the heap's accessors and paged; and a Newspeak
+collection (`List`, `Map`, `Set` of `CollectionsFactory.ns`), which shows
+its slots, is shown by a renderer that runs Newspeak code (`size`, `do:`,
+`printString`) as an evaluation ("Evaluation") under a limit of time and
+sends, skipping breakpoints as every evaluation does.
 
 ### The pause stress mode
 
@@ -1611,10 +1626,10 @@ most steps stop.
 
 ### Testing and gates
 
-**Partial:** the tests of stages 1 to 4, the pause stress mode, the
+**Partial:** the tests of stages 1 to 5, the pause stress mode, the
 breakpoint stress mode and the step stress mode exist; the model test of
-the poll words' ordering, the debugger goldens, and every later stage's
-tests do not.
+the poll words' ordering, the debugger goldens, and stage 6's tests do
+not.
 
 - **The debugging API's tests** (`crates/ns-runtime/tests/debugger.rs`):
   a pause before the run and from another thread, continue and
@@ -1905,6 +1920,55 @@ tests do not.
   path off, the callee's loop sending `ifTrue:` with a block until the
   breakpoint stops it, so that the stop does not depend on when the
   breakpoint is served.
+- **Stage 5's tests** (`tests/debugger.rs`, each under both lowerings
+  where a lowering can tell): `evaluation::*` -- a local read and
+  written, a frame below the top and a stopped block's home read, a
+  private method reached by an implicit receiver send and another
+  object's refused, an error as the answer with the program's handlers
+  below untouched, a program's block whose `^` would return to a home
+  below answering `CannotReturn` (an evaluated `^` is refused by
+  `compiler/evaluation.rs`'s own tests), breakpoints gone past, a
+  compiled loop's iteration and a compiled frame below the top written, a collection during an
+  evaluation, a stored block reading the frame after it returned, a
+  shipped frame refused, a pause, `AbortEvaluation`, a terminate and a
+  detach ending an endless evaluation, the depth reserve at a stack
+  overflow and near the limit; setting a variable, the copied variable
+  refused after its capture and assigned before it, through a fallback
+  block and a vector, before its vector is made, and a read leaving the
+  frame to drop its registers; `conditions::*` -- a condition counted
+  before the hit condition and evaluated once a hit, a logpoint, a
+  failing condition and log expression, a step's and a step into's
+  stop, a method breakpoint's entry and exit, an exit by an exception and
+  by a non-local return, an endless condition aborted, two conditions at
+  one statement, beside an exception's stop and in a compiled loop;
+  `restarting::*` -- a method, a block, a factory and an initializer
+  restarted and forced to return, `ensure:` blocks run, the vector kept,
+  a clause-less initializer and a body without metadata, an exception's
+  machinery unwound, compiled frames below the top, a shipped frame
+  refused; `smart_stepping::*` -- the targets in source order, an
+  inlined conditional's and loop's blocks' sends, a fast-path accessor, a
+  filtered send's block, a block never run, an escaped block of another
+  activation, an exception's targets and a target in a loop;
+  `marking::*` -- a mark held past a continue, named in a later
+  evaluation and a condition, moved and removed, the platform's mirror
+  field withheld; and `memory_view::*` -- instances counted and listed,
+  referrers from objects and from the stack, a shipped instance, the
+  mirror's class and a frame object withheld, weak words and an
+  ephemeron's key no references, and returned frame objects. The agent's
+  (`crates/ns-cli/tests/debug_adapter.rs`): `evaluate`, its error, a
+  hover's bound and `cancel`, `setVariable`, a conditional breakpoint, a
+  failing condition, a logpoint, a mark named later, a withheld value
+  read-only, `stepInTargets` and `stepIn` with a target, a stale target
+  refused, `restartFrame`, `nsNext/forceReturn` with and without an
+  expression and during an evaluation, the memory view's requests, a
+  shipped frame deemphasized, and a lost connection ending the program in
+  the connecting mode. The MCP server's (`crates/ns-cli/tests/mcp.rs`):
+  its tools, a start stopping at a breakpoint with its summary, a step
+  and an evaluation, an endless loop paused, a shipped frame's file, a
+  reference expanded and a mark, an endless evaluation aborted, the
+  executable freed for the next build and a killed server ending its
+  program. The plugin's tests cover the stage's actions over a scripted
+  agent and the real runtime ("The JetBrains plugin").
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -2157,6 +2221,35 @@ to the connection's writer thread and were bounded, which adds a thread
 and a queued message per answer to an attached run, nothing to a
 program's own thread.
 
+### What stage 5 moved
+
+Nothing on the hot path of a program run without a debugger, so stage 5
+was not measured, as stage 2 was not. No instruction, wire tag, golden,
+`run-corpus` outcome or image changed; the lowerers compile an
+evaluation only when the debugger asks for one, and the metadata's
+`copied_by` lists only when the debugger compiles a body again. What
+the stage adds to the VM's paths runs out of line: the run loop's arms
+for an evaluation's end and a condition's answer at an exit by an
+unwind (`Continuation::Evaluated`, `Continuation::ExitEvaluated`) and
+the unwind a stop starts (`SafepointOutcome::Unwind`) are cold
+functions beside `take_safepoint`, itself cold; the depth limit an
+evaluation raises is read only on the cold path of a push past L
+(`Mutator::ordinary_depth_limit`), the push's own check still comparing
+with L; and the unwinder tests whether an unwind is the debugger's
+restart or forced return (`arrives_at_any_frame`) only after
+`catches_return` answered false, at a target that is no method, and
+whether it stands at an evaluation's base only in the copy that follows
+unwinds for the debugger. The `codegen` gate held `vm::run`,
+`resume_caller`, `finish` and the push and return paths to their
+budgets unchanged at the end of the batch ("Testing and gates").
+
+With a debugger attached, what a program pays is what it asks for: a
+breakpoint with a condition or a log leaves every reach to the safepoint
+and runs an evaluation there, which a reach without them never does
+(conditions and logpoints in hot code, "Hit counts and temporary
+breakpoints", are unmeasured), and the memory view walks the whole heap
+at each request.
+
 ## The decisions
 
 Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
@@ -2166,19 +2259,15 @@ specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
 mechanisms each implies are in "Planned: the mechanisms". Decisions 2,
-5, 7 and 10 to 17 are built; of decisions 1 and 9 what pausing, reading
-the stack, ending a run, breakpoints and steps need: the debugging API
-without evaluation and writing a frame, its first client, the DAP agent,
-and the stop waiting at the safepoint ("The debugging API at the
-safepoint"); of decision 3 every step; of decision 4 the tables, the
-stops at statement starts and return points, smart step into's targets
-and the agent's stepping by line; and of
-decision 6 the session, breakpoints of every kind, steps, run to cursor,
-pause and inspection over DAP, without evaluation, conditions,
-logpoints, smart step into, restart frame, force return and hot swap;
-and of decision 8 the expression's resolution and compilation, which
-nothing runs yet. Everything else they decide is planned, and is written below as the
-design to build.
+3, 5, 7 to 17 are built; of decision 1 the debugging API and its first
+client, the DAP agent ("The debugging API at the safepoint"), without
+`ActivationMirror`; of decision 4 the tables, the stops at statement
+starts and return points, smart step into's targets and the agent's
+stepping by line; and of decision 6 the session over DAP with every
+request stages 1 to 5 need, without `breakpointLocations` and the
+requests of ns-next's own for hot swap and edit-and-continue. Everything
+else they decide is planned, and is written below as the design to
+build.
 
 ### 1. One debugging API in Rust, two clients over it
 
@@ -2186,22 +2275,23 @@ design to build.
 `crates/ns-runtime/src/debugger/` -- attaching, pausing, the commands
 served while running, the stop, reading the stack and its values,
 continuing and terminating ("The debugging API at the safepoint"), the
-breakpoints of every kind and the steps with their filters -- and so
-does its first client, the DAP agent in `ns-cli`
+breakpoints of every kind and the steps with their filters, evaluation,
+writing, restarting and forcing a frame to return, marks and the memory
+view -- and so does its first client, the DAP agent in `ns-cli`
 (`crates/ns-cli/src/debug/`; "Launching, the start and the end"),
 beside the tests and the pause, breakpoint and step stress modes;
-evaluation, writing a frame and
-`ActivationMirror` are planned.
+`ActivationMirror` is planned.
 
 Every mechanism -- stopping and going on, the breakpoint instruction, the
 stepping state, reading and writing frames, the metadata,
-deoptimization -- sits, or will sit, behind one debugging API of
-`ns-runtime`. It has two clients: the remote agent in `ns-cli`, which
-speaks the protocol to an IDE and is built, and `ActivationMirror` in
-`MirrorsFactory.ns`, through new mirror leaves, which gives a program the
-access to activations §8.2 asks of mirrors and is planned. Evaluation and
-edit-and-continue will run Newspeak code through the existing resolver,
-compiler and install.
+deoptimization -- sits behind one debugging API of `ns-runtime`. It has
+two clients: the remote agent in `ns-cli`, which speaks the protocol to
+an IDE and is built, and `ActivationMirror` in `MirrorsFactory.ns`,
+through new mirror leaves, which gives a program the access to
+activations §8.2 asks of mirrors and is planned. Evaluation runs
+Newspeak code through the existing resolver and compiler
+("Evaluation"), and edit-and-continue will run it through the install
+too.
 
 HotSpot is cut the same way: JVMTI is the one API, and the JDWP agent
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/`) one of its clients.
@@ -3216,9 +3306,9 @@ questions"). The mechanisms stages 1 and 2 built -- the poll words as
 atomics, the commands served while the program runs, reading the stack at
 a stop, compiling the metadata again and the values a stop holds -- are
 described in "The debugging API at the safepoint", with what of them is
-still planned; a mechanism below that stage 3 or 4 built says so, and
-what of it is still planned, in its first line; one that says nothing is
-planned whole.
+still planned; a mechanism below that stage 3, 4 or 5 built says so,
+and what of it is still planned, in its first line; one that says
+nothing is planned whole.
 
 ### Where the original lives
 
@@ -3639,8 +3729,8 @@ holds, and the step's otherwise, and a logpoint there logs
 exit by an unwind -- an exception a caller handles, a non-local return
 past it or arriving at it -- is decided in the frame the unwind leaves,
 before the unwinder pops it or returns from it, as it runs an `ensure:`
-block there (decided in stage 5; JVMTI's `MethodExit` fires for an exit
-by an exception in the frame still on the stack): the
+block there, as JVMTI's `MethodExit` fires for an exit by an exception
+in the frame still on the stack: the
 unwinder pushes the condition's evaluation above that frame with the
 unwind it interrupts (`Continuation::ExitEvaluated`), whose return
 decides the exit and raises the unwind again, and an error that ends it
@@ -4007,8 +4097,8 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   pause, finding an evaluation running at the kept stop
   (`Interpreter::serve_evaluation`), marks it aborted
   (`evaluation::abort`), answers the command `Event::AbortTaken`, and
-  answers `Served::Abort`, which the run loop takes as a termination -- the debugger's termination signal unwound
-  from the top activation (`vm::unwind_at_safepoint`) -- but for the
+  answers `Served::Abort`, which the run loop takes as a termination --
+  the debugger's termination signal unwound from the top activation (`vm::unwind_at_safepoint`) -- but for the
   termination flag, which it leaves clear, so that the evaluation's base
   ends the unwind: every `ensure:` block above the base runs, and the
   stop answers `Event::Evaluated(Evaluation::Aborted)`, whatever an
@@ -4059,6 +4149,9 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   its limit will be stopped the same way.
 
 ### Assigning a captured variable
+
+**Built** (`VariableEntry::copied_by`, `bytecode::may_have_run`,
+`debugger::evaluation::assignabilities`).
 
 Closure conversion copies a captured mutable local into the closure
 unless something can write it once a block holds it
@@ -4127,6 +4220,9 @@ already made, which names no frame when its `outer_reach` is 0.
 
 ### Evaluation never reaches the VM mirror
 
+**Built** for the debugger's evaluation (`debugger::evaluation::compile`,
+`Mutator::is_withheld`); `ActivationMirror`'s part is planned with it.
+
 The VM mirror is a capability (`CLAUDE.md`, "The VM mirror is a
 capability"). An expression evaluated in a shipped module's frame -- a
 frame of `Kernel.ns` a step into reached -- would resolve `vmMirror` as
@@ -4140,9 +4236,9 @@ read by the agent and held as `Root`s, which never enter the program. A
 value the IDE shows enters the program only through an expression the user
 typed in a program frame, and an object reached through a shipped
 activation or a shipped mixin's field can be neither marked nor named in
-one ("Marking objects"). `ActivationMirror`
-withholds every value of a shipped activation, as the mirrors withhold
-what they reach through a shipped level.
+one ("Marking objects"). `ActivationMirror`, planned, withholds every
+value of a shipped activation, as the mirrors withhold what they reach
+through a shipped level.
 
 An expression obeys access control as the frame's method does (decided
 with the user on 2026-11-16): resolved as a block in the frame's scope,

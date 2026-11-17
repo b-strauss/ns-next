@@ -14,7 +14,8 @@ Rust 1.100.0, edition 2024, seven crates:
   comments"); `parse` refuses a source
   with errors, `parse_for_editor` answers a recovered module for the editor,
   its recovery bounded by a work budget (`docs/design/frontend.md`,
-  "Recovery"); the printer (`printer/`: `print_module` writes a module back
+  "Recovery"), and `parse_code_body` parses a code body that is the whole
+  input -- the debugger's evaluated expression; the printer (`printer/`: `print_module` writes a module back
   as source, `format` parses and reprints one) has one layout and no options
   (`docs/design/formatting.md`).
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
@@ -143,10 +144,27 @@ Rust 1.100.0, edition 2024, seven crates:
   runs stops the run's first activation at its first statement;
   exception breakpoints are decided by two mirror rows the kernel's
   handler search sends, a leaf and the exit that reads the handler it
-  found (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
-  at the safepoint", "Compiling the metadata again", "Where the
-  original lives", "Step over in recursion and blocks", "Exceptions",
-  "Hit counts and temporary breakpoints"),
+  found (`debugger/exceptions.rs`); and at a stop: an expression
+  compiled as a block standing at the stopped frame's program counter
+  (`compiler/evaluation.rs`, `resolver::resolve_evaluation`) and pushed
+  above it as program code, every breakpoint gone past, its base ending
+  every unwind and handler search from within it, with a depth reserve
+  of its own and aborted by a sequenced command
+  (`debugger/evaluation.rs`); a variable set as such an assignment,
+  refused where a block may already hold a copy
+  (`VariableEntry::copied_by`); a breakpoint's condition and a
+  logpoint's message evaluated where the hit is counted
+  (`debugger/conditions.rs`); a frame restarted or forced to return
+  through the one unwinder (`debugger/unwinding.rs`); smart step into a
+  chosen send (`stepping::begin_smart`); objects marked with labels later
+  evaluations name, and the memory view's instance counts, instances
+  and referrers over a heap walk, withheld values never handed out
+  (`debugger/memory.rs`, `Mutator::is_withheld`); `debugger.md`, "The
+  debugging API at the safepoint", "Compiling the metadata again",
+  "Where the original lives", "Step over in recursion and blocks",
+  "Exceptions", "Hit counts and temporary breakpoints", "Evaluation",
+  "Writing a frame", "Restart frame and force return", "Marking
+  objects", "The memory view"),
   the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
@@ -824,7 +842,10 @@ implementing part of a batch is told this staggering explicitly.
 
 A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt`
-in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
+in the same commit. Runtime work changes neither the lexer nor the grammar
+under `crates/ns-syntax`; what it may add there is an entry into the
+existing parser for source it compiles outside a module, as the
+debugger's `parse_code_body` is.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
 Only a build without debug assertions runs the size tests

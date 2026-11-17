@@ -18,8 +18,10 @@
 
 Turns source bytes into a `Module` AST with source spans, and reports lexer and
 parser diagnostics; for an editor, it answers a recovered module for any
-source ("Recovery"). It has no dependency on `ns-runtime`, and nothing here
-should change for runtime work.
+source ("Recovery"). It has no dependency on `ns-runtime`. Runtime work
+changes neither its lexer nor its grammar; what it may add is an entry into
+the existing parser for source compiled outside a module, as
+`parse_code_body` is for the debugger's evaluated expression.
 
 ## What a source file looks like
 
