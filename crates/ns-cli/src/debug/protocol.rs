@@ -85,6 +85,7 @@ pub(crate) struct Capabilities {
     pub(crate) supports_set_variable: bool,
     pub(crate) supports_step_in_targets_request: bool,
     pub(crate) supports_restart_frame: bool,
+    pub(crate) supports_cancel_request: bool,
     pub(crate) supports_terminate_request: bool,
     pub(crate) supports_exception_filter_options: bool,
     pub(crate) exception_breakpoint_filters: Vec<ExceptionBreakpointsFilter>,
@@ -114,6 +115,7 @@ impl Capabilities {
             supports_set_variable: true,
             supports_step_in_targets_request: true,
             supports_restart_frame: true,
+            supports_cancel_request: true,
             supports_terminate_request: true,
             supports_exception_filter_options: true,
             exception_breakpoint_filters: vec![
@@ -567,6 +569,14 @@ pub(crate) struct EvaluateArguments {
     pub(crate) expression: String,
     pub(crate) frame_id: Option<i64>,
     pub(crate) context: Option<String>,
+}
+
+/// `cancel`: the request `requestId` names is cancelled, which only an
+/// `evaluate` the VM has not answered heeds.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct CancelArguments {
+    pub(crate) request_id: Option<i64>,
 }
 
 /// `setVariable`: the variable `name` of the frame whose `Locals` scope

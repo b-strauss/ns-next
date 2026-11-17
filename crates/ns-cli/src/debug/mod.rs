@@ -18,7 +18,7 @@ mod protocol;
 mod sources;
 mod stepping;
 mod stopped;
-mod wire;
+pub(crate) mod wire;
 
 use std::net::TcpStream;
 use std::process::ExitCode;
@@ -27,6 +27,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+pub(crate) use agent::SECRET_VARIABLE;
+pub(crate) use connection::Token;
 pub(crate) use host::{HostLink, HostStart, report_terminated, status_of, terminated_before_run};
 pub(crate) use sources::{ProgramModule, file_identity};
 

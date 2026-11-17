@@ -12,6 +12,7 @@ mod command_line;
 mod commands;
 mod debug;
 mod entry;
+mod mcp;
 mod program;
 mod project;
 mod target_runner;
@@ -19,7 +20,9 @@ mod target_runner;
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
 /// (`bench`), an application written as an image (`build`), and the core
-/// library's sources the binary embeds (`shipped-sources`). What looks
+/// library's sources the binary embeds (`shipped-sources`), and a Model
+/// Context Protocol server through which an agent debugs a program
+/// (`mcp`). What looks
 /// at Newspeak without running it -- parsing, disassembly, image inspection,
 /// the language server -- is `ns-next-analyzer`.
 #[derive(Parser)]
@@ -198,6 +201,12 @@ enum Command {
         #[arg(long)]
         fingerprint: bool,
     },
+    /// Serve the Model Context Protocol on standard input and output: an
+    /// agent such as Claude debugs a program through its tools, each
+    /// program run in a child under the debugger. The server and its
+    /// programs run from copies of their executables below the temporary
+    /// directory, so that a build can replace this one meanwhile.
+    Mcp,
 }
 
 /// The native stack the interpreter runs on. Nothing re-enters the run loop
@@ -305,5 +314,6 @@ fn execute(command: Command) -> ExitCode {
             directory,
             fingerprint,
         } => commands::shipped_sources::execute(directory.as_deref(), fingerprint),
+        Command::Mcp => mcp::execute(),
     }
 }

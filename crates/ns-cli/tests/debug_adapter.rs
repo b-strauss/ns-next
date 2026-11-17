@@ -3140,6 +3140,36 @@ fn a_hover_evaluation_that_does_not_answer_is_aborted() {
     continue_to_the_end(client);
 }
 
+/// A `cancel` naming an evaluation the VM has not answered aborts it, the
+/// program still stopped and its stop served; a cancel of a request that
+/// answered already is moot and answered with success, and a continue then
+/// runs the program to its end, stopping nowhere.
+#[test]
+fn a_cancelled_evaluation_is_aborted() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode(&path);
+    let capabilities = client.initialize();
+    assert_eq!(
+        capabilities["body"]["supportsCancelRequest"], true,
+        "{capabilities}"
+    );
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[6]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let endless = client.connection.send(
+        "evaluate",
+        json!({ "expression": "[true] whileTrue: []", "frameId": 1, "context": "repl" }),
+    );
+    client.succeed("cancel", json!({ "requestId": endless }));
+    let aborted = client.connection.response_to(endless, "evaluate");
+    assert_eq!(aborted["success"], false, "{aborted}");
+    assert_eq!(aborted["message"], "evaluation aborted", "{aborted}");
+    client.succeed("cancel", json!({ "requestId": endless }));
+    assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    continue_to_the_end(client);
+}
+
 /// The variable through which a debug build's agent takes its bound of a
 /// hover's evaluation, in milliseconds.
 const HOVER_BOUND: &str = "NS_NEXT_DEBUG_HOVER_BOUND_MILLISECONDS";

@@ -486,6 +486,33 @@ impl Agent {
         }
     }
 
+    /// `cancel`: aborts the `evaluate` its `requestId` names while the VM
+    /// has not answered it, by `Command::AbortEvaluation` as a hover's
+    /// bound does, so that a client which stops waiting for an expression
+    /// that does not end -- the MCP server past its wait -- gets the stop
+    /// back. The evaluation is then answered "evaluation aborted". Any
+    /// other request, or one answered already, is not cancelled: DAP makes
+    /// a cancel a hint, answered with success either way.
+    fn cancel(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) = self.arguments::<protocol::CancelArguments>(connection, request)
+        else {
+            return;
+        };
+        let evaluating = arguments.request_id.is_some_and(|seq| {
+            self.pending.iter().any(|pending| {
+                matches!(
+                    &pending.reply,
+                    Reply::Request { connection: asked, request_seq, command, .. }
+                        if *asked == connection && *request_seq == seq && command == "evaluate"
+                )
+            })
+        });
+        if evaluating {
+            self.command(Command::AbortEvaluation, Reply::Internal);
+        }
+        self.respond(connection, request, None);
+    }
+
     fn serve(&mut self, input: Input) {
         match input {
             Input::Connected(stream) => self.connected(stream),
@@ -623,6 +650,7 @@ impl Agent {
             "scopes" => self.scopes(connection, &request),
             "variables" => self.variables(connection, &request),
             "evaluate" => self.evaluate(connection, &request),
+            "cancel" => self.cancel(connection, &request),
             "setVariable" => self.set_variable(connection, &request),
             "nsNext/mark" => self.mark(connection, &request),
             "nsNext/unmark" => self.unmark(connection, &request),
