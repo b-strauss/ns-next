@@ -16851,4 +16851,105 @@ mod memory_view {
             }
         }
     }
+    /// A `Box` whose `fill` returns before `look:` is reached, and whose
+    /// slot `kept` an evaluation may store a block in.
+    const RETURNING: &str = indoc! {"
+        class Returning = Object new () (
+          class Box = (
+            | public kept ::= nil. |
+          ) (
+            public fill = (
+              | inside |
+              inside:: 1.
+              ^inside + 0
+            )
+          )
+          public run = (
+            | box |
+            box:: Box new.
+            box fill.
+            ^self look: box
+          )
+          look: aBox = (
+            ^aBox kept isNil ifTrue: [1] ifFalse: [2]
+          )
+        ) : ()
+    "};
+
+    /// Runs `RETURNING` under `lowering`, stopped first in `fill`, where
+    /// `expression` is evaluated, then in `look:`, where the `Box`'s
+    /// referrers are asked for: answers them as `summary` writes them,
+    /// with whether each frame object among them is withheld, and the
+    /// small integer the run answered.
+    fn referrers_after_evaluating(
+        lowering: Lowering,
+        expression: &'static str,
+    ) -> ((Vec<String>, Vec<bool>), i64) {
+        let offsets = vec![
+            line_start(RETURNING, "^inside + 0"),
+            line_start(RETURNING, "^aBox kept"),
+        ];
+        let (mut interpreter, class) = interpreted(RETURNING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Returning", offsets),
+            move |remote| {
+                expect_breakpoints(remote, "Returning");
+                expect_breakpoint_stop(remote);
+                match request(
+                    remote,
+                    Command::Evaluate {
+                        frame: 0,
+                        expression: expression.to_owned(),
+                    },
+                ) {
+                    Event::Evaluated(Evaluation::Value(_)) => {}
+                    other => panic!("{expression} was expected to answer a value, not {other:?}"),
+                }
+                continue_stopped(remote);
+                expect_breakpoint_stop(remote);
+                let look = variables(remote, Command::Variables { frame: 0 });
+                let found = referrers(remote, value_of(&look, "aBox").id, 0, 100);
+                let withheld = objects(&found)
+                    .iter()
+                    .filter(|object| object.class_name == "Activation")
+                    .map(|object| object.withheld)
+                    .collect();
+                set_breakpoints(remote, "Returning", Vec::new());
+                expect_breakpoints(remote, "Returning");
+                continue_stopped(remote);
+                (summary(&found), withheld)
+            },
+        );
+        (answer, answered(&mut interpreter, result))
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The frame an evaluation reified, once it returned, is a frame
+        /// object nothing refers to: it keeps nothing alive, and the
+        /// receiver it holds lists only the stack's variables among its
+        /// referrers.
+        fn a_returned_frame_object_nothing_refers_to_is_no_referrer(lowering) {
+            let ((found, frames), answer) = referrers_after_evaluating(lowering, "inside");
+            assert_eq!(found, ["frame 0 aBox", "frame 1 box"]);
+            assert!(frames.is_empty());
+            assert_eq!(answer, 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block an evaluation stored in the receiver's slot keeps the
+        /// frames it reaches, the returned `fill`'s among them, whose
+        /// frame objects are listed among the receiver's referrers,
+        /// withheld as every frame object is.
+        fn a_returned_frame_object_a_stored_block_keeps_is_a_referrer(lowering) {
+            let ((found, frames), answer) = referrers_after_evaluating(lowering, "kept:: [inside]");
+            assert_eq!(found[..2], ["frame 0 aBox", "frame 1 box"]);
+            assert!(!frames.is_empty(), "{found:?}");
+            assert!(frames.iter().all(|withheld| *withheld));
+            assert_eq!(answer, 2);
+        }
+    }
 }

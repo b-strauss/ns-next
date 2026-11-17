@@ -284,7 +284,9 @@ pub enum Command {
     /// object's fields and registers, but neither an object's class word,
     /// a weak word nor an `Ephemeron`'s key. A frame object married to a
     /// running frame of the stack is that frame's variables, never an
-    /// object of its own. An object is named and held as `Instances`
+    /// object of its own, and a returned frame object nothing living
+    /// refers to -- the implementation's artefact, which keeps nothing
+    /// alive -- is left out. An object is named and held as `Instances`
     /// names and holds them, numbered by its place in the whole answer,
     /// and withheld when a shipped module declares its class -- a closure
     /// and a frame object when the body it captured or runs is shipped --

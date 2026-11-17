@@ -184,10 +184,15 @@ pub(crate) fn instances<'gc>(
 /// running frame of `frames` is that frame's variables, not an object
 /// of its own; one married to an activation below the run, which the
 /// stack does not show, is an object whose live registers count, read
-/// as the variables view reads them (`registers_refer_to`). An object is
-/// named `#<n>` by its place in the whole answer and withheld as
-/// `object_is_withheld` says. Empty for an immediate value, which no
-/// word names.
+/// as the variables view reads them (`registers_refer_to`). A returned
+/// frame object that no object and no running frame's variable refers to
+/// is left out (`unreferred_returned_frames`): a frame object is the
+/// implementation's artefact, reified for a program's block or for the
+/// debugger's evaluation alike, and one nothing refers to keeps nothing
+/// alive, while every other object nothing reaches is answered as the walk
+/// finds it. An object is named `#<n>` by its place in the whole answer
+/// and withheld as `object_is_withheld` says. Empty for an immediate
+/// value, which no word names.
 pub(crate) fn referrers(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
@@ -198,6 +203,9 @@ pub(crate) fn referrers(
 ) -> Vec<Referrer> {
     let mut on_stack: Vec<Referrer> = Vec::new();
     let mut running: Vec<ActivationReference> = Vec::new();
+    // The closures and frame objects a running frame's variable holds,
+    // which keep a returned frame object they reach among the referrers.
+    let mut frames_held: Vec<Root> = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
         let StackFrame::Running(activation) = frame else {
             continue;
@@ -211,6 +219,14 @@ pub(crate) fn referrers(
         let Some(object) = mutator.heap.fetch(target).as_object() else {
             return Vec::new();
         };
+        for (_, value) in &read {
+            if let Some(held) = value.and_then(|value| value.as_object())
+                && (mutator.heap.object_frame(held).is_some()
+                    || mutator.heap.closure_code(held).is_some())
+            {
+                frames_held.push(mutator.heap.stash(Value::object(held)));
+            }
+        }
         on_stack.extend(read.into_iter().filter_map(|(name, value)| {
             value?
                 .as_object()
@@ -235,6 +251,12 @@ pub(crate) fn referrers(
             found.push(holder);
         }
     });
+    let held: Vec<ObjectReference<'_>> = frames_held
+        .iter()
+        .filter_map(|root| heap.fetch(root).as_object())
+        .collect();
+    let unreferred = unreferred_returned_frames(mutator, &found, &held);
+    found.retain(|holder| !unreferred.iter().any(|frame| frame.same(*holder)));
     let stack_count = on_stack.len();
     let mut declarations = Declarations::default();
     let objects = found
@@ -252,6 +274,107 @@ pub(crate) fn referrers(
         }));
     }
     answer
+}
+
+/// The returned frame objects among `found` -- their activations popped,
+/// not suspended -- that nothing living refers to. A frame object is
+/// referred to by a closure that captured it, by another frame object --
+/// its sender or home, or a register of one -- and by any object a word
+/// of which names it; a closure or a returned frame object that nothing
+/// living refers to in turn is garbage, as the evaluation's own closure
+/// over the frame is once the evaluation ended, and keeps nothing alive.
+/// So the closures and returned frame objects that refer to them, and
+/// those that refer to these, are followed by walks of the space until no
+/// new one is met, every other referrer -- an object of any other kind, a
+/// frame object married to an activation, or one a running frame's
+/// variable holds, `held` -- counting as living, and liveness carried
+/// along the references met. Walks of the space allocate nothing on the
+/// heap.
+fn unreferred_returned_frames<'gc>(
+    mutator: &Mutator<'gc>,
+    found: &[ObjectReference<'gc>],
+    held: &[ObjectReference<'gc>],
+) -> Vec<ObjectReference<'gc>> {
+    let heap = &mutator.heap;
+    let returned_frame = |object: ObjectReference<'gc>| {
+        heap.object_frame(object).is_some_and(|frame| {
+            heap.frame_activation(frame).is_none() && !heap.frame_is_suspended(frame)
+        })
+    };
+    let is_held = |object: ObjectReference<'gc>| held.iter().any(|other| other.same(object));
+    // The closures and returned frame objects followed, the first of them
+    // the frame objects among `found`; whether each is living; and which
+    // refers to which.
+    let mut nodes: Vec<ObjectReference<'gc>> = found
+        .iter()
+        .copied()
+        .filter(|holder| returned_frame(*holder))
+        .collect();
+    let candidates = nodes.len();
+    if candidates == 0 {
+        return Vec::new();
+    }
+    let mut living: Vec<bool> = nodes.iter().map(|node| is_held(*node)).collect();
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut first_new = 0;
+    while first_new < nodes.len() {
+        let targets: Vec<(usize, ObjectReference<'gc>)> = (first_new..nodes.len())
+            .map(|index| (index, nodes[index]))
+            .collect();
+        first_new = nodes.len();
+        let mut met: Vec<ObjectReference<'gc>> = Vec::new();
+        let mut found_edges: Vec<(ObjectReference<'gc>, usize)> = Vec::new();
+        let mut living_targets: Vec<usize> = Vec::new();
+        heap.each_object(|other| {
+            for (index, target) in &targets {
+                if other.same(*target)
+                    || !(heap.refers_to(other, *target)
+                        || registers_refer_to(mutator, other, *target))
+                {
+                    continue;
+                }
+                let followed = heap.closure_code(other).is_some() || returned_frame(other);
+                if followed && !is_held(other) {
+                    found_edges.push((other, *index));
+                    if !met.iter().any(|known| known.same(other)) {
+                        met.push(other);
+                    }
+                } else {
+                    living_targets.push(*index);
+                }
+            }
+        });
+        for index in living_targets {
+            living[index] = true;
+        }
+        for other in met {
+            if !nodes.iter().any(|node| node.same(other)) {
+                nodes.push(other);
+                living.push(false);
+            }
+        }
+        for (other, target) in found_edges {
+            if let Some(from) = nodes.iter().position(|node| node.same(other)) {
+                edges.push((from, target));
+            }
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (from, into) in &edges {
+            if living[*from] && !living[*into] {
+                living[*into] = true;
+                changed = true;
+            }
+        }
+    }
+    nodes
+        .into_iter()
+        .zip(living)
+        .take(candidates)
+        .filter_map(|(node, living)| (!living).then_some(node))
+        .collect()
 }
 
 /// Whether the memory view withholds `object`, a referrer. A frame

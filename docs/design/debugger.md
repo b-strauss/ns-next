@@ -4240,7 +4240,24 @@ variables, never an object of its own; one married to an activation
 below the run, which the stack does not show, is an object whose live
 registers count, read as the variables view reads them. A returned
 frame that kept its registers still refers to what they held, as the
-garbage it may be: the stop collects nothing.
+garbage it may be: the stop collects nothing. But a returned frame
+object that nothing living refers to is left out
+(`unreferred_returned_frames`): a frame object is the
+implementation's artefact -- reified for a program's block or for the
+debugger's evaluation alike -- not the program's, and one nothing refers
+to keeps nothing alive. Its referrers are decided by further walks of
+the space, which allocate nothing on the heap: a closure or a returned
+frame object that refers to it is followed in turn, as the evaluation's
+own closure over the frame is, garbage once the evaluation ended, and
+every other referrer -- an object of any other kind, a frame object
+married to an activation, or a closure or frame object a running
+frame's variable holds -- counts as living, its liveness carried along
+the references followed. So a frame an evaluation reified is no
+referrer of its receiver once it returned
+(`a_returned_frame_object_nothing_refers_to_is_no_referrer`), while one
+a block stored in a slot keeps is listed, withheld as every frame
+object is (`a_returned_frame_object_a_stored_block_keeps_is_a_referrer`).
+Every other object nothing reaches is answered as the walk finds it.
 
 The objects found are values a stop holds, as the variables view's are
 ("Values the IDE holds"), each named `#<n>` by its place in the answer,
