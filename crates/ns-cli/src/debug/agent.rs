@@ -1632,7 +1632,13 @@ impl Agent {
 fn is_going_on(name: &str) -> bool {
     matches!(
         name,
-        "Continue" | "StepOver" | "StepInto" | "StepOut" | "RunToPosition"
+        "Continue"
+            | "StepOver"
+            | "StepInto"
+            | "StepOut"
+            | "RunToPosition"
+            | "RestartFrame"
+            | "ForceReturn"
     )
 }
 

@@ -84,8 +84,8 @@ impl Trace for PendingUnwind<'_> {
             tracer.frame(target);
         }
         match action {
-            UnwindAction::Return(value) => tracer.value(value),
-            UnwindAction::Restart => {}
+            UnwindAction::Return(value) | UnwindAction::ForceReturn(value) => tracer.value(value),
+            UnwindAction::Restart | UnwindAction::RestartFrame => {}
             UnwindAction::Terminate(error) => {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);

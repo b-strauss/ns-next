@@ -74,6 +74,11 @@ pub(crate) enum Signal<'gc> {
     /// of deep sends and returns that never signals
     /// (`docs/design/execution.md`, "What exceptions cost").
     Terminate(Box<NewspeakError<'gc>>),
+    /// The debugger's restart of a frame or its forced return
+    /// (`UnwindAction::RestartFrame`, `UnwindAction::ForceReturn`), started
+    /// at a stop and raised again as it was once an `ensure:` block it ran
+    /// returned (`unwind::signal_of`). Boxed, as `Terminate` is.
+    Unwind(Box<PendingUnwind<'gc>>),
 }
 
 pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
@@ -1871,6 +1876,9 @@ impl<'gc> Mutator<'gc> {
             // one. A restart then aimed, like such a `^`, at no activation
             // of the host's.
             Err(Signal::Return(..) | Signal::Restart(_)) => Err(HostSignal::Return),
+            Err(Signal::Unwind(_)) => {
+                unreachable!("internal: only a run's stop starts the debugger's unwind")
+            }
         }
     }
 

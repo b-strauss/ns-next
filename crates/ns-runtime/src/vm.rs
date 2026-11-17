@@ -308,7 +308,20 @@ fn take_safepoint(
             interpreter.enter(|mutator| after_safepoint(mutator, frame, at_loop_head)),
         ),
         SafepointOutcome::Terminate => {
-            match interpreter.enter(|mutator| terminate_at_safepoint(mutator, frame, floor)) {
+            match interpreter.enter(|mutator| {
+                let signal = crate::debugger::termination(mutator);
+                unwind_at_safepoint(mutator, frame, floor, signal)
+            }) {
+                Some(result) => AfterSafepoint::Exit(result),
+                None => AfterSafepoint::Run(None),
+            }
+        }
+        SafepointOutcome::Unwind => {
+            let started = interpreter.take_started_unwind();
+            match interpreter.enter(|mutator| {
+                let signal = started.signal(mutator);
+                unwind_at_safepoint(mutator, frame, floor, signal)
+            }) {
                 Some(result) => AfterSafepoint::Exit(result),
                 None => AfterSafepoint::Run(None),
             }
@@ -363,21 +376,24 @@ fn after_safepoint(
     })
 }
 
-/// The debugger terminated the run at the safepoint the stretch left
-/// `frame` for: the termination is raised in the top activation and
-/// handed to the one unwinder, as a leaf's termination is, so that every
-/// pending `ensure:` block runs on the way to the floor -- or aborted an
-/// evaluation, whose base ends the unwind and leaves the frame it stood
-/// above stopped where it was, interpreted. Answers the run's result once
-/// the unwind popped the floor, or `None` with `frame` the block the
-/// unwind runs next, or the stopped frame, which the loop goes on with,
-/// interpreted.
+/// The debugger started an unwind at the safepoint the stretch left
+/// `frame` for, `signal` raised in the top activation and handed to the
+/// one unwinder, as a leaf's is, so that every pending `ensure:` block
+/// runs on its way: it terminated the run, which ends at the floor; it
+/// aborted an evaluation, whose base ends the unwind and leaves the frame
+/// it stood above stopped where it was; or it restarts a frame or forces
+/// it to return (`debugger::Served::Unwind`), which ends at that frame.
+/// Answers the run's result once the unwind popped the floor, or `None`
+/// with `frame` the frame the loop goes on with, interpreted: the block
+/// the unwind runs next, the stopped frame, the restarted one, or the one
+/// a forced return went on in.
 #[cold]
 #[inline(never)]
-fn terminate_at_safepoint(
-    mutator: &mut Mutator<'_>,
+fn unwind_at_safepoint<'gc>(
+    mutator: &mut Mutator<'gc>,
     frame: &mut FrameRegisters,
     floor: usize,
+    signal: Signal<'gc>,
 ) -> Option<HostResult> {
     let mut handoff = Handoff {
         activation: frame.activation,
@@ -387,7 +403,6 @@ fn terminate_at_safepoint(
         exit: None,
         resume_in_machine_code: false,
     };
-    let signal = crate::debugger::termination(mutator);
     match unwind(mutator, signal, floor, &mut handoff) {
         Transfer::Exited => Some(
             handoff
@@ -396,11 +411,14 @@ fn terminate_at_safepoint(
                 .expect("internal: an exit carries its result"),
         ),
         Transfer::Switched => {
-            // A termination's unwind switches only to an `ensure:` or
-            // `ifCurtailed:` block it pushed (`switch_to`), which starts
-            // interpreted, or to the frame an aborted evaluation stood
-            // above, which goes on interpreted: no frame it switches to
-            // resumes machine code.
+            // A block the unwind pushed starts interpreted, and so do the
+            // stopped and the restarted frame; a caller a forced return
+            // resumed may have stopped in machine code, whose words are the
+            // interpreter's at the call, and goes on interpreted too, as a
+            // caller resumed for a safepoint does.
+            if handoff.resume_in_machine_code {
+                mutator.heap.clear_compiled(handoff.activation);
+            }
             *frame =
                 FrameRegisters::of_activation(mutator, handoff.activation, handoff.program_counter);
             None

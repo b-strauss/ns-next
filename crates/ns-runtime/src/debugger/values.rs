@@ -57,7 +57,7 @@ impl StopValues {
     }
 
     /// The value `id` names, if this stop handed it out.
-    fn fetch<'gc>(&self, mutator: &Mutator<'gc>, id: ValueId) -> Option<Value<'gc>> {
+    pub(crate) fn fetch<'gc>(&self, mutator: &Mutator<'gc>, id: ValueId) -> Option<Value<'gc>> {
         let index = usize::try_from(id.0.wrapping_sub(self.first)).ok()?;
         self.roots.get(index).map(|root| mutator.heap.fetch(root))
     }

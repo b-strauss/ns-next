@@ -45,6 +45,12 @@ pub(crate) enum SafepointOutcome {
     /// aborted an evaluation, whose base ends the same unwind
     /// (`debugger::Served::Abort`).
     Terminate,
+    /// The debugger restarts a frame or forces it to return
+    /// (`debugger::Served::Unwind`): the loop unwinds from the top
+    /// activation with the signal the stop started
+    /// (`Interpreter::take_started_unwind`), as for `Terminate`, and the
+    /// unwind ends at that frame.
+    Unwind,
 }
 
 impl Interpreter {
@@ -106,7 +112,8 @@ impl Interpreter {
     /// is in, every activation there suspended into its frame and the top
     /// one resumed -- never in a release build -- and
     /// `SafepointOutcome::Terminate` when the debugger terminated the run
-    /// or aborted an evaluation.
+    /// or aborted an evaluation, and `SafepointOutcome::Unwind` when it
+    /// restarts a frame or forces one to return.
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
@@ -116,6 +123,9 @@ impl Interpreter {
             crate::debugger::Served::Terminate | crate::debugger::Served::Abort
         ) {
             return SafepointOutcome::Terminate;
+        }
+        if served == crate::debugger::Served::Unwind {
+            return SafepointOutcome::Unwind;
         }
         #[cfg(not(debug_assertions))]
         let _ = floor;

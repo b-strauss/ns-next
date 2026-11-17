@@ -254,6 +254,12 @@ pub(crate) fn is_factory(heap: &Heap<'_>, frame: &StackFrame) -> bool {
     matches!(frame.read(heap).kind(heap), ActivationKind::Factory(_))
 }
 
+/// Whether `frame` is an initializer's activation, which answers its
+/// instance whatever ends it.
+pub(crate) fn is_initializer(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Initializer(..))
+}
+
 /// The body `frame` runs.
 pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
     frame.read(heap).code(heap)

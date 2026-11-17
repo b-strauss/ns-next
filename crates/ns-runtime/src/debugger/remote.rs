@@ -178,6 +178,35 @@ pub enum Command {
         name: String,
         expression: String,
     },
+    /// Runs the frame at index `frame` of the stack trace again from its
+    /// start: every frame above it is unwound, its `ensure:` and
+    /// `ifCurtailed:` blocks run, and the frame's named temporaries are
+    /// `nil` again, its arguments and a block's copied values kept --
+    /// its indirection vector too, its elements `nil`, so that a block
+    /// its first run made sees the second's (`docs/design/debugger.md`,
+    /// "Restart frame and force return"). Answered by `Event::Continued`,
+    /// then the stop at the frame's first statement start, a step into's
+    /// (`StopReason::Step`), or any other stop the program makes first;
+    /// refused, the program still stopped, for a frame index past the
+    /// stack and a frame of the core library.
+    RestartFrame { frame: usize },
+    /// Makes the frame at index `frame` of the stack trace return `value`
+    /// -- a value the stop handed out, `nil` when `None` -- to its sender
+    /// at once: every frame above it is unwound, its `ensure:` and
+    /// `ifCurtailed:` blocks run, and its sender takes the value as it
+    /// takes the frame's own return's, a superclass clause's value
+    /// checked as the class it must be. An initializer's frame answers
+    /// its instance, as its end does, the slots it did not initialize
+    /// `nil`. Answered by `Event::Continued`, then the stop where the
+    /// sender goes on, a step out's (`StopReason::Step`), or any other
+    /// stop the program makes first; refused, the program still stopped,
+    /// for a frame index past the stack, a frame of the core library, a
+    /// value the stop did not hand out and a value given for an
+    /// initializer's frame -- `"an initializer returns self"`.
+    ForceReturn {
+        frame: usize,
+        value: Option<ValueId>,
+    },
 }
 
 /// What an evaluation answered (`Command::Evaluate`).
@@ -373,6 +402,8 @@ impl Command {
             Command::ModuleText { .. } => "ModuleText",
             Command::Evaluate { .. } => "Evaluate",
             Command::SetVariable { .. } => "SetVariable",
+            Command::RestartFrame { .. } => "RestartFrame",
+            Command::ForceReturn { .. } => "ForceReturn",
         }
     }
 }

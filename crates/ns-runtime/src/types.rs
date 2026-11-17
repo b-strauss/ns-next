@@ -500,6 +500,14 @@ pub enum UnwindAction<'gc> {
     /// runs every pending `ensure:` and `ifCurtailed:` block down to the
     /// run's floor, and the run then leaves with this error.
     Terminate(NewspeakError<'gc>),
+    /// The debugger's restart of a frame (`Command::RestartFrame`): the
+    /// target, of any kind, runs again from its start, its named
+    /// temporaries `nil` again (`interpreter::unwind`, `restart_frame`).
+    RestartFrame,
+    /// The debugger's forced return of a frame (`Command::ForceReturn`):
+    /// the target, of any kind, returns this value to its sender -- an
+    /// initializer its receiver, whatever the value.
+    ForceReturn(Value<'gc>),
 }
 
 /// A nested class being created for one enclosing object

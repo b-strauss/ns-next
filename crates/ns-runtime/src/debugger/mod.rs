@@ -25,6 +25,7 @@ pub(crate) mod metadata;
 mod remote;
 mod stack;
 pub(crate) mod stepping;
+mod unwinding;
 mod values;
 
 pub use metadata::breakable::BreakableStatement;
@@ -61,8 +62,18 @@ const NO_SUCH_FRAME: &str = "no frame at that index";
 /// attached debugger's stop is kept while an evaluation runs.
 const NOT_KEPT: &str = "only a debugger's stop evaluates";
 
-/// Why a stop refuses `Children` for a value it did not hand out.
+/// Why a stop refuses `Children` or `ForceReturn` for a value it did not
+/// hand out.
 const NO_SUCH_VALUE: &str = "no value of this stop has that id";
+
+/// Why a stop refuses a value it withholds from the agent as the value a
+/// frame is forced to return.
+pub(crate) const WITHHELD: &str = "the value is withheld";
+
+/// Why a stop a stress mode's reader serves refuses `RestartFrame` and
+/// `ForceReturn`: only an attached debugger holds the unwind they start
+/// until the run loop raises it.
+const NOT_A_DEBUGGER: &str = "only a debugger's stop restarts or returns a frame";
 
 /// Why an expression with a `^` is refused: the evaluation's block has no
 /// home among the program's frames that a return could leave for, and a
@@ -98,6 +109,9 @@ pub(crate) struct Debugger {
     /// end asks for goes on deciding it (`Interpreter::decide`). Dropped
     /// with the debugger, as the stop is.
     deciding: Option<conditions::Deciding>,
+    /// The unwind a stop started to restart a frame or force it to return,
+    /// held until the run loop raises it (`Served::Unwind`).
+    started: Option<unwinding::StartedUnwind>,
 }
 
 /// A stop, as the commands it serves read it: what `stop_standing` decided
@@ -499,6 +513,12 @@ pub(crate) enum Served {
     /// (`evaluation::abort`), whose end asks for the stop that serves the
     /// kept one again -- or, the remote gone, lets the program run on.
     Abort,
+    /// The stop started an unwind to restart a frame or force it to
+    /// return, held by the debugger (`Debugger::started`): the run loop
+    /// raises it from the top activation, as it raises a termination for
+    /// `Terminate`, and the unwind ends at that frame
+    /// (`Interpreter::take_started_unwind`).
+    Unwind,
 }
 
 impl Interpreter {
@@ -537,6 +557,7 @@ impl Interpreter {
             next_value_id: 0,
             stop: None,
             deciding: None,
+            started: None,
         });
         DebugRemote::new(
             command_sender,
@@ -1161,7 +1182,9 @@ impl Interpreter {
                 | Command::Variables { .. }
                 | Command::Children { .. }
                 | Command::Evaluate { .. }
-                | Command::SetVariable { .. }) => {
+                | Command::SetVariable { .. }
+                | Command::RestartFrame { .. }
+                | Command::ForceReturn { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -1222,7 +1245,9 @@ impl Interpreter {
             | Command::Variables { .. }
             | Command::Children { .. }
             | Command::Evaluate { .. }
-            | Command::SetVariable { .. } => {
+            | Command::SetVariable { .. }
+            | Command::RestartFrame { .. }
+            | Command::ForceReturn { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -1492,6 +1517,18 @@ impl Interpreter {
                         Err(reason) => self.refuse(&mut stop.source, &command, &reason),
                     }
                 }
+                command @ (Command::RestartFrame { .. } | Command::ForceReturn { .. }) => {
+                    match self.start_unwind(&mut stop, &command) {
+                        Ok(started) => {
+                            if let Some(debugger) = &mut self.debugger {
+                                debugger.started = Some(started);
+                            }
+                            self.answer(&mut stop.source, Event::Continued);
+                            break Served::Unwind;
+                        }
+                        Err(reason) => self.refuse(&mut stop.source, &command, &reason),
+                    }
+                }
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
                 | Command::SetStepFilters { .. }
@@ -1547,6 +1584,30 @@ impl Interpreter {
         })?;
         self.enter(|mutator| evaluation::begin(mutator, stop, frame, code, &[]))
             .map_err(String::from)
+    }
+
+    /// Starts the unwind `command` -- a `RestartFrame` or a
+    /// `ForceReturn` -- asks for at `stop` (`unwinding::start`); the
+    /// refusal's reason otherwise, the program still stopped where it
+    /// was. Only a stop the attached debugger serves starts one.
+    fn start_unwind(
+        &mut self,
+        stop: &mut Stop,
+        command: &Command,
+    ) -> Result<unwinding::StartedUnwind, String> {
+        if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
+            return Err(String::from(NOT_A_DEBUGGER));
+        }
+        self.enter(|mutator| unwinding::start(mutator, stop, command))
+    }
+
+    /// The unwind the last stop started (`Served::Unwind`), which the run
+    /// loop raises at once.
+    pub(crate) fn take_started_unwind(&mut self) -> unwinding::StartedUnwind {
+        self.debugger
+            .as_mut()
+            .and_then(|debugger| debugger.started.take())
+            .expect("internal: a stop that started an unwind holds it")
     }
 
     /// The run ends: a pause still pending is moot, so its bit goes, and
@@ -1705,7 +1766,9 @@ impl Interpreter {
                     | Command::Variables { .. }
                     | Command::Children { .. }
                     | Command::Evaluate { .. }
-                    | Command::SetVariable { .. }),
+                    | Command::SetVariable { .. }
+                    | Command::RestartFrame { .. }
+                    | Command::ForceReturn { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

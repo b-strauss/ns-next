@@ -16,7 +16,7 @@
 use super::Arguments;
 use super::breakpoint;
 use crate::Symbol;
-use crate::bytecode::UnwindMarker;
+use crate::bytecode::{HEADER_REGISTERS, Instruction, UnwindMarker};
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
 
@@ -236,6 +236,7 @@ pub(crate) fn unwind_signal<'gc>(
             target: None,
             action: UnwindAction::Terminate(*error),
         },
+        Signal::Unwind(pending) => *pending,
         error @ Signal::Error(_) => {
             // Popped as the unwind below pops, so that every suspended
             // activation of the run comes back onto the stack on the way
@@ -259,7 +260,9 @@ pub(crate) fn unwind_signal<'gc>(
 /// frame until the pops resume it), that the pops reach as the top
 /// (`Heap::frame_activation`, asked again before every pop), at or above
 /// the run's floor, and that catches a return (`Mutator::catches_return`: a
-/// method, or a superclass clause or its message) ends the unwind: everything
+/// method, or a superclass clause or its message) -- or, for the debugger's
+/// restart of a frame or its forced return, any frame
+/// (`arrives_at_any_frame`) -- ends the unwind: everything
 /// above it is popped, and it returns the value through the ordinary return
 /// path, or runs again from its start for a restart. Any other target -- a home that has
 /// returned meanwhile, or a running initializer, which catches none (the
@@ -343,7 +346,7 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             .is_some_and(|target| {
                 top.same(target)
                     && mutator.heap.activation_position(target) >= floor
-                    && mutator.catches_return(target)
+                    && (mutator.catches_return(target) || arrives_at_any_frame(&pending.action))
             });
         if arrived {
             // A method a return's unwind arrives at returns without a
@@ -352,7 +355,9 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             // decided in it first.
             if FOLLOWED {
                 let mut returned = Vec::new();
-                if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
+                if let (UnwindAction::Return(_) | UnwindAction::ForceReturn(_), Some(frame)) =
+                    (&pending.action, pending.target)
+                {
                     (returned, pending) =
                         match breakpoint::returning_by_unwind(mutator, top, frame, pending) {
                             Ok(decided) => decided,
@@ -413,7 +418,15 @@ fn at_evaluation_base<'gc>(
             value,
             "cannotReturn: the enclosing method activation is outside the evaluation",
         ),
-        UnwindAction::Restart => dead_activation_error(Symbol::intern("restart"), Value::nil()),
+        UnwindAction::Restart | UnwindAction::RestartFrame => {
+            dead_activation_error(Symbol::intern("restart"), Value::nil())
+        }
+        UnwindAction::ForceReturn(value) => NewspeakError::cannot_return(
+            Symbol::CARET,
+            value,
+            value,
+            "cannotReturn: the enclosing method activation is outside the evaluation",
+        ),
     };
     match start_signalling(mutator, &error, floor) {
         Some(outcome) => Ok(outcome),
@@ -506,6 +519,19 @@ fn block_to_run<'gc>(
     Some(mutator.heap.activation_local(activation, block_register))
 }
 
+/// Whether an unwind of `action` arrives at its target whatever the
+/// target runs: the debugger's restart and forced return, defined for
+/// every frame of a program (`docs/design/debugger.md`, "Restart frame and
+/// force return"), where a `^` or a `retry` arrives only at a frame that
+/// catches a return. Tested after `catches_return`, so that the unwinds a
+/// program raises pay nothing more for a method's frame.
+fn arrives_at_any_frame(action: &UnwindAction<'_>) -> bool {
+    matches!(
+        action,
+        UnwindAction::RestartFrame | UnwindAction::ForceReturn(_)
+    )
+}
+
 /// What the unwind does at its target, now the top of the stack.
 fn arrive<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -518,10 +544,72 @@ fn arrive<'gc>(
             mutator.heap.activation_set_program_counter(target, 0);
             UnwindOutcome::Restarted { target }
         }
+        UnwindAction::RestartFrame => restart_frame(mutator, target),
+        UnwindAction::ForceReturn(value) => {
+            // An initializer answers its instance, as its own end does.
+            let value = match mutator.heap.activation_kind(target) {
+                ActivationKind::Initializer(..) => mutator.heap.activation_receiver(target),
+                _ => value,
+            };
+            UnwindOutcome::Returned { target, value }
+        }
         UnwindAction::Terminate(_) => {
             unreachable!("internal: a termination has no target to arrive at")
         }
     }
+}
+
+/// The debugger's restart arrives at `target`: its named temporaries --
+/// the registers between its arguments, header and copied values and its
+/// first scratch register -- are `nil` again, its arguments and copied
+/// values kept, and it goes on from its first instruction, interpreted.
+/// A body whose first instruction makes its indirection vector keeps the
+/// vector it made, its elements `nil` again, and goes on past that
+/// instruction: a block the first run made holds that vector, and sees
+/// the second run's assignments only through it (`docs/design/debugger.md`,
+/// "Restart frame and force return"). The scratch registers are left as
+/// they are: the leftover analysis finds every one of them tainted there.
+#[cold]
+#[inline(never)]
+fn restart_frame<'gc>(
+    mutator: &mut Mutator<'gc>,
+    target: ActivationReference,
+) -> UnwindOutcome<'gc> {
+    let code = mutator.heap.activation_code(target);
+    // A frame stopped at its push has not made its vector yet, and makes
+    // it as it starts again.
+    let made = mutator.heap.activation_program_counter(target) > 0;
+    let vector = if made && code.instruction_count() > 1 {
+        match code.instruction(0) {
+            Instruction::MakeVector { destination, size } => Some((destination, size)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let named = code.argument_count + HEADER_REGISTERS + code.copied_count;
+    for register in named..code.local_count {
+        match vector {
+            Some((destination, size)) if destination == register => {
+                if let Some(object) = mutator.heap.activation_local(target, register).as_object() {
+                    for index in 0..usize::from(size) {
+                        let written = mutator.heap.array_set_element(object, index, Value::nil());
+                        debug_assert!(written, "internal: a vector holds its variables");
+                    }
+                }
+            }
+            _ => mutator
+                .heap
+                .activation_set_local(target, register, Value::nil()),
+        }
+    }
+    // The frame's words are the interpreter's: a frame that stopped in
+    // machine code goes on interpreted from its start.
+    mutator.heap.clear_compiled(target);
+    mutator
+        .heap
+        .activation_set_program_counter(target, usize::from(vector.is_some()));
+    UnwindOutcome::Restarted { target }
 }
 
 /// The signal `pending` was, raised again: how an unwind carries on once a
@@ -542,6 +630,9 @@ pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
             Signal::Restart(target)
         }
         UnwindAction::Terminate(error) => Signal::Terminate(Box::new(error)),
+        UnwindAction::RestartFrame | UnwindAction::ForceReturn(_) => {
+            Signal::Unwind(Box::new(pending))
+        }
     }
 }
 
@@ -559,6 +650,16 @@ fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
             Value::nil(),
         )),
         UnwindAction::Return(_) => signal_of(pending),
+        // The debugger names a frame of the stopped run, which nothing can
+        // return from before its unwind arrives; one that is gone all the
+        // same is the `cannotReturn` of an activation that has returned.
+        UnwindAction::RestartFrame => Signal::Error(dead_activation_error(
+            Symbol::intern("restart"),
+            Value::nil(),
+        )),
+        UnwindAction::ForceReturn(value) => {
+            Signal::Error(dead_activation_error(Symbol::intern("return:"), value))
+        }
     }
 }
 

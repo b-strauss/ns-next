@@ -873,6 +873,39 @@ pub(crate) fn stop_at_entry(
     settle(mutator);
 }
 
+/// The debugger restarts `frame` (`Command::RestartFrame`), whose unwind
+/// is about to start it again: it is flooded as a step over's is, before
+/// the unwind, so that the first one-shot it reaches once it starts again
+/// is its first statement start's -- where a step into stops a pushed
+/// frame -- and the stop a step's. A factory, which has no statement
+/// start, stops at its first instruction, its entry, as a step into's
+/// push of it does. It stops there whatever the step filters say, as a
+/// step begun in a filtered frame steps in it; the frames the unwind pops
+/// above it are reported to the step as any unwind's are.
+pub(crate) fn stop_at_restart(mutator: &mut Mutator<'_>, frame: &StackFrame) {
+    end(mutator);
+    let Some(place) = place_of(mutator, frame) else {
+        return;
+    };
+    start(mutator, StepAction::Over, place, place, None, None);
+    let Some(stepping) = &mut mutator.stepping else {
+        return;
+    };
+    stepping.started_filtered = true;
+    let holder = stepping.frame;
+    if stack::is_factory(&mutator.heap, frame) {
+        let code = stack::code(&mutator.heap, frame);
+        let one_shot = OneShot {
+            holder,
+            stops: true,
+            records: false,
+            leaves: false,
+        };
+        patch(mutator, &code, 0, one_shot);
+    }
+    settle(mutator);
+}
+
 /// Whether the step in progress stands for a pause a host run started
 /// with (`stop_at_entry`).
 pub(crate) fn is_at_entry(mutator: &Mutator<'_>) -> bool {

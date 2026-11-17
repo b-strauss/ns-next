@@ -86,9 +86,11 @@
 > block may already hold a copy of ("Writing a frame", "Assigning a
 > captured variable"), and decides a breakpoint's condition and a
 > logpoint's message, each an evaluation in the frame that reached it
-> ("Hit counts and temporary breakpoints"). Everything else is planned:
+> ("Hit counts and temporary breakpoints"), and restarts a stopped frame
+> or forces it to return, through the one unwinder ("Restart frame and
+> force return"). Everything else is planned:
 > conditions and logpoints in the agent and the plugin, watches, smart
-> step into, restart frame and force return (stage 5, next), hot swap and
+> step into (stage 5, next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
@@ -106,7 +108,9 @@
 > runs, the stop, a module's text by revision, the arming lock `Arming`,
 > the pause stress mode's `StressReader`, the step stress mode's
 > `StepReader` and `StepStress`; `evaluation.rs`: an expression compiled
-> in a stopped frame, pushed and its end; `breakpoints.rs`: the breakpoint table,
+> in a stopped frame, pushed and its end; `unwinding.rs`: a frame
+> restarted or forced to return, the unwind the stop starts and the step
+> it begins; `breakpoints.rs`: the breakpoint table,
 > line breakpoints, the one-shots, the hit counts and the breakpoint
 > stress mode's patches; `stepping.rs`: the step in progress,
 > `Stepping`; `exceptions.rs`: the exception breakpoints, decided by the
@@ -134,7 +138,7 @@
 > words as atomics behind an `Arc`), `interpreter/safepoint.rs`
 > (`Interpreter::safepoint`, which serves the debugger first,
 > `SafepointOutcome`, the pause stress mode's schedule), `vm.rs`
-> (`take_safepoint`, `terminate_at_safepoint`), `jit/mod.rs`
+> (`take_safepoint`, `unwind_at_safepoint`), `jit/mod.rs`
 > (`deoptimize_stopped_at_poll`, in every JIT build); the patchable
 > slots and their originals (`bytecode/compact.rs`,
 > `EncodedBody::patch`, `restore`, `original`; `CompiledCode::patch`,
@@ -325,8 +329,10 @@ debugging API at the safepoint". What it and the later stages build on:
   `Interpreter::safepoint` serves an attached debugger first and answers
   a `SafepointOutcome` (`interpreter/safepoint.rs`): `Unchanged`;
   `Rebuilt` when the suspend stress mode rebuilt the stack, so that the
-  loop reads its state again, never in a release build; and `Terminate`
-  when the debugger terminated the run, in every build.
+  loop reads its state again, never in a release build; `Terminate`
+  when the debugger terminated the run, in every build; and `Unwind`
+  when it restarts a frame or forces one to return ("Restart frame and
+  force return").
 - **The words the poll reads** are two of the heap's machine words,
   `Arc<[AtomicU64; WORD_COUNT]>` (`heap/machine_words.rs`), which machine
   code addresses from one base (`BlockWord::MachineWords`) and a clone of
@@ -497,6 +503,19 @@ The commands (`debugger::Command`):
   not an assignable variable the frame shows -- `self` among them -- and
   "the expression does not compile: a variable's new value is one
   expression" for statements or temporaries.
+- `RestartFrame { frame }` -- runs the activation at index `frame` again
+  from its start, every frame above it unwound and its `ensure:` blocks
+  run ("Restart frame and force return"); answered by `Continued`, then
+  the stop at the frame's first statement start, a step's, or refused,
+  the program still stopped, with "no frame at that index" or "the frame
+  is the core library's".
+- `ForceReturn { frame, value }` -- makes the activation at index
+  `frame` return `value`, a value of the stop, or `nil` for `None`, to
+  its sender, every frame above it unwound; answered by `Continued`, then
+  the stop where the sender goes on, a step out's, or refused, the
+  program still stopped, as `RestartFrame` is, with "no value of this
+  stop has that id", or "an initializer returns self" for a value given
+  to an initializer's frame.
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
@@ -875,7 +894,8 @@ senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
 stack at a stop", "Values the IDE holds"), `Evaluate` ("Evaluation"),
 `SetVariable` ("Writing a frame") and the configuration commands until a
-`Continue`, a step or a `Terminate`; a step begins there
+`Continue`, a step, a `RestartFrame`, a `ForceReturn` ("Restart frame
+and force return") or a `Terminate`; a step begins there
 (`stepping::begin`), is answered by `Continued` and goes on as a
 `Continue` does. A command the stop serves was queued with its
 bit set, which stays set: once the program goes on, the next safepoint
@@ -912,7 +932,7 @@ an optimized poll left go on in baseline code, so that the unwind pops
 interpreter frames, and makes `Interpreter::safepoint` answer
 `SafepointOutcome::Terminate` at once, the rest of the safepoint undone: a
 request still standing is served at the next poll. The run loop
-(`vm::take_safepoint`) calls `vm::terminate_at_safepoint`, which raises the
+(`vm::take_safepoint`) calls `vm::unwind_at_safepoint`, which raises the
 termination in the top activation (`debugger::termination`: a
 `Signal::Terminate` whose error has the selector `terminate`, the top
 activation's receiver and the message "the debugger terminated the
@@ -3208,9 +3228,9 @@ decides"), so the check would cost every send of every fast-path method.
 **Partial:** the stop and the going past are built for every patched
 slot -- a line breakpoint's, a method breakpoint's, a step's and run to
 cursor's one-shots, and the breakpoint stress mode's -- and so are hit
-counts, conditions and logpoints, and an evaluation goes past every slot
-uncounted; what a restart, a forced return and edit-and-continue do
-with the token is planned.
+counts, conditions and logpoints, an evaluation goes past every slot
+uncounted, and a restart and a forced return leave no token; what
+edit-and-continue does with the token is planned.
 
 A `Breakpoint` slot shares the run loop's out-of-line arm of the
 simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an arm
@@ -3255,9 +3275,12 @@ dropped at the next `Breakpoint` arm the loop executes -- after a
 to look at it -- and dropped when a run ends, since a termination leaves
 it unexecuted, and when its slot is restored. The suspend stress mode,
 which resumes the stopped frame at another offset, moves it there.
-Planned: a restart, a forced return and edit-and-continue drop it
-explicitly, since a restart does not pop its activation and would
-otherwise skip the breakpoint at its first statement. Breakpoints an
+A restart and a forced return leave none: the stop that starts one goes
+on without paying the token it owes (`Served::Unwind`), since a restart
+does not pop its activation and would otherwise go past the one-shot at
+its first statement, and the step out a forced return begins drops the
+token it sets for the frame on top, which the unwind pops. Planned:
+edit-and-continue drops it explicitly too. Breakpoints an
 evaluation goes past neither consume nor drop it: the arm decides so
 before it takes the tokens (`Breakpoints::evaluating`), and the stop
 names the top frame afresh once the evaluation is over, the suspend
@@ -3643,9 +3666,10 @@ stops.
 
 ### Writing a frame
 
-**Partial:** a frame an evaluation reads and writes, and setting a
-variable, are built (`debugger::evaluation::begin`,
-`Command::SetVariable`); a restart and a forced return are planned.
+**Built:** a frame an evaluation reads and writes, setting a
+variable (`debugger::evaluation::begin`, `Command::SetVariable`), and a
+frame restarted or forced to return (`Command::RestartFrame`,
+`Command::ForceReturn`; "Restart frame and force return").
 
 A variable is set by an evaluation: `Command::SetVariable { frame, name,
 expression }` compiles the assignment `name:: expression` in the frame
@@ -3852,7 +3876,7 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   (`Interpreter::serve_evaluation`), marks it aborted
   (`evaluation::abort`) and answers `Served::Abort`, which the run loop
   takes as a termination -- the debugger's termination signal unwound
-  from the top activation (`vm::terminate_at_safepoint`) -- but for the
+  from the top activation (`vm::unwind_at_safepoint`) -- but for the
   termination flag, which it leaves clear, so that the evaluation's base
   ends the unwind: every `ensure:` block above the base runs, and the
   stop answers `Event::Evaluated(Evaluation::Aborted)`, whatever an
@@ -4047,8 +4071,8 @@ frames are shipped is the test the step filter already makes (decision
 **Built** (`debugger/exceptions.rs`; `Command::SetExceptionBreakpoints`;
 the mirror rows `exceptionUnhandled:ifFail:`, a leaf, and
 `exceptionCaught:at:ifFail:`, an exit, `builtins/activation.rs`), but for "Create Method" and the declined
-`MessageNotUnderstood`'s forced `nil`, which are planned with the forced
-return ("Restart frame and force return"). The handler search of
+`MessageNotUnderstood`'s forced `nil`, which are planned; the forced
+return they need is built ("Restart frame and force return"). The handler search of
 `Kernel.ns` reports its outcome through two mirror rows:
 `invokeNextHandler`, having found no handler, sends
 `exceptionUnhandled:ifFail:` just before `defaultAction`, and
@@ -4198,11 +4222,46 @@ itself -- goes on as it was, past the handler, to its next statement.
 
 ### Restart frame and force return
 
-- **Restart** unwinds to the frame's `FrameReference` and sets its
-  `program_counter` back to 0, the `Restarted` outcome `retry` uses
-  (`interpreter/unwind.rs:34-38`), which keeps
-  the registers as they are: a restart also nils the named temporaries
-  between the copied values and `local_count`, while the scratch registers
+**Built** (`Command::RestartFrame`, `Command::ForceReturn`;
+`debugger/unwinding.rs`; `UnwindAction::RestartFrame`,
+`UnwindAction::ForceReturn` in `interpreter/unwind.rs`), but for the
+forced `nil` of a declined "Create Method" ("Shipped frames" below).
+
+A stop serves either command by naming the frame -- by the frame object
+of its activation, reified, a `FrameReference`, since the `ensure:`
+blocks the unwind runs may reuse a popped activation's offset -- and,
+for a forced return, the value, both rooted
+(`unwinding::StartedUnwind`, held by the `Debugger`); it begins the step
+that makes the next stop and answers `Continued`, and the safepoint
+answers `SafepointOutcome::Unwind` for its `Served::Unwind`, the rest of
+the safepoint undone, as for a termination. The run loop
+(`vm::unwind_at_safepoint`) raises the unwind in the top activation as a
+`Signal::Unwind`, the pending unwind itself, and hands it to the one
+unwinder, which runs every `ensure:` and `ifCurtailed:` block above the
+frame, each raising it again as it was once it returns
+(`unwind::signal_of`), and arrives at the frame whatever it runs
+(`arrives_at_any_frame`, tested after `catches_return`, so that a
+program's `^` and `retry` arrive where they did): a block, an
+initializer, a factory, a superclass clause, the top level. The frame
+the loop goes on with runs interpreted -- the restarted frame, and a
+caller a forced return resumed, whose machine code it leaves as a caller
+resumed for a safepoint does (`Heap::clear_compiled`). A command that is
+refused leaves the program stopped where it was, nothing begun.
+
+- **The next stop.** A restart floods the frame as a step over does,
+  before the unwind (`stepping::stop_at_restart`), so that the first
+  one-shot it reaches once it starts again is its first statement
+  start's, where a step into stops a pushed frame -- a factory, which has
+  none, its first instruction -- and the stop is a step's
+  (`StopReason::Step`), whatever the step filters say. A forced return
+  begins a step out of the frame (`stepping::begin`), so that the stop
+  is where its sender goes on, reporting the value it returned, or where
+  a superclass clause's error is handled.
+- **Restart** arrives at the frame and resets it (`restart_frame`): its
+  `program_counter` goes back to 0, as `retry`'s `Restarted` outcome
+  sets it, and the registers it keeps are the arguments, the header and
+  a block's copied values, while it nils the named temporaries
+  between the copied values and `local_count`; the scratch registers
   are tainted at index 0 anyway. A block's copied values stay
   (Primordial Soup's restart, `primordialsoup/newspeak/Mirrors.ns:2325-2353`).
   Under the optimized lowering a body with vector variables makes its
@@ -4215,7 +4274,9 @@ itself -- goes on as it was, past the handler, to its next statement.
   elements -- a vector variable's own register is always `nil`, so
   nilling the named temporaries alone would not reset it -- and restarts
   at index 1, past `MakeVector`, and the first run's blocks see the reset
-  and every later assignment, as the reference lowering's do. What
+  and every later assignment, as the reference lowering's do; a frame
+  standing at index 0, stopped at its push, has made no vector yet, and
+  makes it as it starts again. What
   remains between the lowerings is a variable closure conversion copied,
   one nothing writes once a block holds it: a first-run block keeps its
   copy, where the reference lowering's reads the register the restart
@@ -4234,8 +4295,9 @@ itself -- goes on as it was, past the handler, to its next statement.
   the value as before; a factory's allocates a fresh instance, an
   instance of the first run that escaped staying as far initialized as
   it got. Each runs its side effects again, as every restart does.
-- **Force return** unwinds to the frame and answers a value to its
-  sender, defined for every program frame (decided with the user on
+- **Force return** arrives at the frame and returns the value to its
+  sender through the ordinary return path (`UnwindOutcome::Returned`),
+  defined for every program frame (decided with the user on
   2026-11-16), by its continuation: `Deliver` hands the value to the send,
   a factory's included, so the value becomes the factory send's; a
   superclass clause's `NestedClass` takes the value as the superclass,
@@ -4260,9 +4322,18 @@ itself -- goes on as it was, past the handler, to its next statement.
 - **Shipped frames.** Setting a variable, restarting and forcing a return
   are refused in a shipped module's frame, as evaluation is: forcing
   `signal` or an `ensure:` marker to return would break the kernel's own
-  invariants. The one exception is the forced `nil` from
+  invariants. A frame whose body belongs to a shipped module is refused
+  with "the frame is the core library's", decided from its declaration's
+  module before anything is begun. The one exception, planned with
+  "Create Method", is the forced `nil` from
   `Object>>doesNotUnderstand:` when "Create Method" is declined
-  ("Exceptions"), which the debugger issues itself.
+  ("Exceptions"), which the debugger will issue itself.
+- **The value** is one the stop handed out -- an evaluation's answer, a
+  variable's or a child's value -- named by its id (`ValueId`), and an
+  id the stop did not hand out is refused with "no value of this stop
+  has that id". The values evaluation withholds ("Evaluation never
+  reaches the VM mirror") are refused with "the value is withheld"
+  (`unwinding::may_be_returned`), which today withholds none.
 
 ### Hot swap and edit-and-continue
 
