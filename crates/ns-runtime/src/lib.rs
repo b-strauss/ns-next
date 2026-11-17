@@ -49,7 +49,8 @@ pub use debugger::{
     BreakableStatement, BreakpointId, BreakpointState, ClassName, Command, DebugControl,
     DebugEvents, DebugRemote, Event, FrameDescription, FrameLocation, HitCondition, LineBreakpoint,
     LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
-    SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
+    SendLocation, StepInTarget, StepInTargetKind, StopReason, ValueDescription, ValueId, Variable,
+    VariableValue,
 };
 
 /// Test helper: turns one test body into a module holding an `optimized` and

@@ -39,7 +39,7 @@ use std::sync::PoisonError;
 use super::breakpoints::{AfterPast, OneShot, PastOnce, address, settle};
 use super::metadata::again::{BodyOrigin, declaration_path};
 use super::metadata::{BlockPlace, BlockSendEntry, BodyMetadata, Cache, TakenBlock};
-use super::remote::{BreakpointId, ClassName};
+use super::remote::{BreakpointId, ClassName, StepInTargetKind};
 use super::stack::{self, StackFrame};
 use ns_syntax::Span;
 
@@ -224,6 +224,35 @@ pub(crate) struct Stepping {
     /// Whether `origin` left: the step's stop is then in another
     /// activation (`went_on_elsewhere`).
     origin_left: bool,
+    /// The one place a smart step into stops before the statement is done
+    /// (`begin_smart`); `None` for every other step, and for one that went
+    /// on as a step into from elsewhere, which is a step of its own.
+    aim: Option<Aim>,
+}
+
+/// What a smart step into stops at (`docs/design/debugger.md`, decision
+/// 3, "Smart step into a block"). It names bodies and an index, never a
+/// handle, so that the stop may keep it while an evaluation runs.
+#[derive(Clone)]
+pub(crate) enum Aim {
+    /// A push whose sender, or the first sender below a run of filtered
+    /// frames, runs `code` and stands at its slot `index`, the chosen send.
+    Send {
+        code: Rc<CompiledCode>,
+        index: usize,
+    },
+    /// The first statement start of `code`, a block's body, in an
+    /// activation of a closure the stepping frame made.
+    Block { code: Rc<CompiledCode> },
+}
+
+/// A place a smart step into may stop at, as `Command::StepInTargets`
+/// answers it, and what the step aims at.
+pub(crate) struct Target {
+    pub(crate) label: String,
+    pub(crate) span: Span,
+    pub(crate) kind: StepInTargetKind,
+    pub(crate) aim: Aim,
 }
 
 impl Stepping {
@@ -260,6 +289,7 @@ impl Stepping {
             went_on_elsewhere: false,
             origin: None,
             origin_left: false,
+            aim: None,
         }
     }
 }
@@ -372,6 +402,148 @@ pub(crate) fn begin(mutator: &mut Mutator<'_>, action: StepAction, shown: Option
         after: AfterPast::Nothing,
     };
     mutator.breakpoints.go_past_once(standing);
+}
+
+/// The places a smart step into from `frame` may stop at (decision 3,
+/// "Smart step into a block"): the sends of the innermost statement
+/// holding its program counter, from there to the statement's end, in
+/// the order they run, then the block literals those sends take that run
+/// as closures, in the order of their sends. A block the compiler lowers
+/// inline -- every block of a form the optimized lowering inlines, so
+/// that both lowerings offer the same -- runs in the frame, where a step
+/// over stops in it: it is no target. None for a body without metadata.
+pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame) -> Vec<Target> {
+    let (code, _, metadata) = stack::body(mutator, frame);
+    let Some(metadata) = metadata else {
+        return Vec::new();
+    };
+    let standing = stack::program_counter(&mutator.heap, frame);
+    let Some(statement) = metadata
+        .statements
+        .iter()
+        .filter(|entry| entry.instructions.contains(&standing))
+        .min_by_key(|entry| entry.instructions.len())
+    else {
+        return Vec::new();
+    };
+    let rest = standing..statement.instructions.end;
+    let count = code.instruction_count();
+    let instruction_at = |index: u32| {
+        usize::try_from(index)
+            .ok()
+            .filter(|index| *index < count)
+            .map(|index| (index, code.instruction(index)))
+    };
+    let mut targets: Vec<Target> = metadata
+        .sends
+        .iter()
+        .filter(|entry| rest.contains(&entry.index))
+        .filter_map(|entry| {
+            let (index, instruction) = instruction_at(entry.index)?;
+            Some(Target {
+                label: selector_label(&instruction)?,
+                span: entry.selector.first().copied().unwrap_or(entry.call),
+                kind: StepInTargetKind::Send,
+                aim: Aim::Send {
+                    code: Rc::clone(&code),
+                    index,
+                },
+            })
+        })
+        .collect();
+    let mut blocks: Vec<(u32, Target)> = metadata
+        .block_sends
+        .iter()
+        .filter(|entry| !entry.inlined)
+        .flat_map(|entry| entry.blocks.iter())
+        .filter_map(|block| {
+            let BlockPlace::Called { send, closure } = block.place else {
+                return None;
+            };
+            if !rest.contains(&send) {
+                return None;
+            }
+            let (_, taking) = instruction_at(send)?;
+            let (_, Instruction::MakeClosure { code: body, .. }) = instruction_at(closure)? else {
+                return None;
+            };
+            let target = Target {
+                label: format!("[] in {}", selector_label(&taking)?),
+                span: block.span,
+                kind: StepInTargetKind::Block,
+                aim: Aim::Block { code: body },
+            };
+            Some((send, target))
+        })
+        .collect();
+    blocks.sort_by_key(|(send, _)| *send);
+    targets.extend(blocks.into_iter().map(|(_, target)| target));
+    targets
+}
+
+/// A target's label for the send `instruction`: its selector as the
+/// source writes it -- a super send's without `super` -- or a mirror
+/// send's mirror selector; `None` for an instruction that is no send.
+fn selector_label(instruction: &Instruction) -> Option<String> {
+    let (_, call) = call_of(instruction)?;
+    Some(match call {
+        Call::Send(selector) | Call::Super(selector) => selector.to_string(),
+        Call::Mirror(_)
+        | Call::Future
+        | Call::Initializer
+        | Call::SuperclassInitializer
+        | Call::MixinInitializer => call.name(),
+    })
+}
+
+/// Begins a smart step into aimed at `aim` from the frame a stop stands
+/// in, or `shown`, as `begin` does (decision 3). At a send it is a step
+/// into whose held request stops only at a push from that send
+/// (`stands_at_aim`); at a block a step over plus a one-shot for the
+/// stepping frame at the block body's first statement start, which
+/// `takes` in every activation of a closure that frame made, wherever
+/// the block runs -- in the shipped `do:`, not at a send of the frame.
+/// Either goes on as a step over once the statement is done without its
+/// aim.
+pub(crate) fn begin_smart(mutator: &mut Mutator<'_>, aim: Aim, shown: Option<&StackFrame>) {
+    let action = match aim {
+        Aim::Send { .. } => StepAction::Into,
+        Aim::Block { .. } => StepAction::Over,
+    };
+    begin(mutator, action, shown);
+    let Some(stepping) = &mut mutator.stepping else {
+        return;
+    };
+    let frame = stepping.frame;
+    let block = match &aim {
+        Aim::Block { code } => Some(Rc::clone(code)),
+        Aim::Send { .. } => None,
+    };
+    stepping.aim = Some(aim);
+    if let Some(code) = block {
+        let one_shot = OneShot {
+            holder: frame,
+            stops: true,
+            records: false,
+            leaves: false,
+        };
+        patch(mutator, &code, first_statement(&code), one_shot);
+        settle(mutator);
+    }
+}
+
+/// Whether `activation`, where a step stops, runs the block a smart step
+/// into aimed at: it stopped in a frame the stepping frame did not run,
+/// as a step into's push does, so it reports no value of a call.
+pub(crate) fn in_aimed_block(mutator: &Mutator<'_>, activation: ActivationReference) -> bool {
+    let Some(Aim::Block { code }) = mutator
+        .stepping
+        .as_ref()
+        .and_then(|stepping| stepping.aim.as_ref())
+    else {
+        return false;
+    };
+    Rc::ptr_eq(code, &mutator.heap.activation_code(activation))
 }
 
 /// The send a step out taken in a block leaves (decision 17), in `frame`,
@@ -1825,10 +1997,7 @@ fn first_stop(
     frame: &StackFrame,
     code: &Rc<CompiledCode>,
 ) -> Option<usize> {
-    let first = usize::from(
-        code.instruction_count() > 1
-            && matches!(code.instruction(0), Instruction::MakeVector { .. }),
-    );
+    let first = first_statement(code);
     if !stack::is_initializer(&mutator.heap, frame) {
         return Some(first);
     }
@@ -1869,12 +2038,24 @@ fn first_stop(
         .and_then(|start| usize::try_from(start).ok())
 }
 
+/// The first statement start of `code`: index 0, or index 1 for a body
+/// whose first instruction makes its indirection vector (`MakeVector`,
+/// emitted before every statement).
+fn first_statement(code: &CompiledCode) -> usize {
+    usize::from(
+        code.instruction_count() > 1
+            && matches!(code.instruction(0), Instruction::MakeVector { .. }),
+    )
+}
+
 /// Whether the step's frame, or a block the step flooded for it, sent to
 /// `top`: its sender is one of them, or a frame the step filters filter
 /// whose sender is, and so on down: the shipped `do:` the stepping frame
 /// sent, which runs a block of the program. A frame between the one the
 /// step was taken in and the stepping frame, and a frame the step stops
-/// in, end the walk: what they send is not the step's.
+/// in, end the walk: what they send is not the step's. A smart step into
+/// a send takes only what the walk reaches standing at that send
+/// (`stands_at_aim`).
 fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
     let Some(stepping) = &mutator.stepping else {
         return false;
@@ -1890,7 +2071,12 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
             Place::Running(activation) => {
                 let held = Holder::Running(activation);
                 if stepping_frame.same_frame(held) || inline_code_of_step(mutator, activation) {
-                    return true;
+                    let heap = &mutator.heap;
+                    let standing = (
+                        heap.activation_code(activation),
+                        heap.activation_program_counter(activation),
+                    );
+                    return stands_at_aim(mutator, Some(standing));
                 }
                 if is_between(held) || !is_filtered(mutator, &StackFrame::Running(activation)) {
                     return false;
@@ -1904,7 +2090,11 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
                 if let Some(key) = suspended_key(mutator, frame) {
                     let held = Holder::Suspended(key);
                     if stepping_frame.same_frame(held) {
-                        return true;
+                        let heap = &mutator.heap;
+                        let standing = heap
+                            .frame_code(frame)
+                            .map(|code| (code, heap.frame_stored_program_counter(frame)));
+                        return stands_at_aim(mutator, standing);
                     }
                     if is_between(held) {
                         return false;
@@ -1921,6 +2111,23 @@ fn sent_by_step(mutator: &Mutator<'_>, top: ActivationReference) -> bool {
                 }
             }
         };
+    }
+}
+
+/// Whether a frame of the step standing at `standing` -- its body and
+/// the slot it stands at, a sender's being its call, or `None` where its
+/// body is not known -- sends what the step stops in: any call for a step
+/// into, only the chosen send for a smart step into a send (decision 3).
+fn stands_at_aim(mutator: &Mutator<'_>, standing: Option<(Rc<CompiledCode>, usize)>) -> bool {
+    match mutator
+        .stepping
+        .as_ref()
+        .and_then(|stepping| stepping.aim.as_ref())
+    {
+        Some(Aim::Send { code: aimed, index }) => {
+            standing.is_some_and(|(code, standing)| Rc::ptr_eq(aimed, &code) && *index == standing)
+        }
+        Some(Aim::Block { .. }) | None => true,
     }
 }
 

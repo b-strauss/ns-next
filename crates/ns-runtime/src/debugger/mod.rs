@@ -33,7 +33,8 @@ pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, LineBreakpoint,
     LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer, ReturnedValue,
-    SendLocation, StopReason, ValueDescription, ValueId, Variable, VariableValue,
+    SendLocation, StepInTarget, StepInTargetKind, StopReason, ValueDescription, ValueId, Variable,
+    VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -57,6 +58,9 @@ const RUNNING: &str = "the program is running";
 /// Why a stop refuses `Variables` or `Evaluate` for a frame index past its
 /// stack.
 const NO_SUCH_FRAME: &str = "no frame at that index";
+
+/// Why a stop refuses `StepIntoTarget` for an id none of its targets has.
+const NO_SUCH_TARGET: &str = "no such target";
 
 /// Why a stop a stress mode's reader serves refuses `Evaluate`: only an
 /// attached debugger's stop is kept while an evaluation runs.
@@ -144,6 +148,11 @@ pub(crate) struct Stop {
     /// The name of the variable the running evaluation sets
     /// (`Command::SetVariable`), whose value it answers as the variable.
     setting: Option<String>,
+    /// The targets of a smart step into, computed at the first command
+    /// that names them and kept until the program goes on, so that an id
+    /// `StepInTargets` answered names the same target at
+    /// `StepIntoTarget`, whatever an evaluation installed between them.
+    targets: Option<Vec<stepping::Target>>,
 }
 
 impl Stop {
@@ -151,6 +160,40 @@ impl Stop {
     pub(crate) fn frames(&mut self, mutator: &Mutator<'_>) -> &[stack::StackFrame] {
         self.frames
             .get_or_insert_with(|| stack::frames(mutator, self.floor))
+    }
+
+    /// The index among the run's frames of the frame a step from this
+    /// stop steps from when that is not the top one: at an uncaught
+    /// exception's stop and a `Halt`'s, the frame it shows first, as the
+    /// user sees it, never the machinery above it the debugger chose to
+    /// stop in; a caught one's steps in the handler it stands in, which
+    /// it shows first.
+    fn shown_below(&mut self, mutator: &Mutator<'_>) -> Option<usize> {
+        let shows_below = self.exceptional && !self.caught;
+        shows_below.then(|| {
+            let frames = self.frames(mutator);
+            exceptions::first_shown(mutator, frames)
+        })
+    }
+
+    /// The targets of a smart step into from the frame a step from this
+    /// stop steps from (`stepping::targets`), computed at the first ask:
+    /// none at an initializer's header stop, which stands before the
+    /// initializer's first statement.
+    fn step_in_targets(&mut self, mutator: &mut Mutator<'_>) -> &[stepping::Target] {
+        if self.targets.is_none() {
+            let targets = if self.at_header {
+                Vec::new()
+            } else {
+                let index = self.shown_below(mutator).unwrap_or(0);
+                match self.frames(mutator).get(index) {
+                    Some(frame) => stepping::targets(mutator, frame),
+                    None => Vec::new(),
+                }
+            };
+            self.targets = Some(targets);
+        }
+        self.targets.as_deref().unwrap_or_default()
     }
 }
 
@@ -269,6 +312,9 @@ impl StressReader {
     fn take(&mut self, event: Event) {
         match event {
             Event::StackTrace(frames) => {
+                // The targets of a smart step into too, which read the
+                // top frame's metadata at every stop the mode makes.
+                self.pending.push_back(Command::StepInTargets);
                 self.pending
                     .extend((0..frames.len()).map(|frame| Command::Variables { frame }));
             }
@@ -303,6 +349,7 @@ impl StressReader {
             | Event::StepFiltersSet
             | Event::ExceptionBreakpointsSet
             | Event::ModuleText { .. }
+            | Event::StepInTargets(_)
             | Event::Logged { .. } => {}
         }
     }
@@ -970,14 +1017,16 @@ impl Interpreter {
             let unwound = stepping::take_exits(mutator);
             let at_entry = stepping::is_at_entry(mutator);
             let elsewhere = stepping::went_on_elsewhere(mutator);
+            let in_aimed_block = stepping::in_aimed_block(mutator, breakpoint.slot.activation);
             let returned = stepping::end(mutator);
             // A slot only a step's one-shot or the run to cursor stopped
             // at is the step's stop, which reports the value of the last
             // call -- or the pause's, for the one-shot a pause pending at
             // a run's start set; a breakpoint the debugger set there makes
             // it the breakpoint's.
-            // A step into's stop at a push reports no value of a call.
-            let returned = returned.filter(|_| pushed.is_none());
+            // A step into's stop at a push reports no value of a call, nor
+            // does a smart step into's in the block it aimed at.
+            let returned = returned.filter(|_| pushed.is_none() && !in_aimed_block);
             let reason = breakpoint.hits.reason(unwound);
             match (decided, reason) {
                 // Every breakpoint the stop is for and every exit it
@@ -1184,7 +1233,9 @@ impl Interpreter {
                 | Command::Evaluate { .. }
                 | Command::SetVariable { .. }
                 | Command::RestartFrame { .. }
-                | Command::ForceReturn { .. }) => {
+                | Command::ForceReturn { .. }
+                | Command::StepInTargets
+                | Command::StepIntoTarget { .. }) => {
                     self.refuse(&mut CommandSource::Remote, &command, RUNNING);
                 }
             }
@@ -1247,7 +1298,9 @@ impl Interpreter {
             | Command::Evaluate { .. }
             | Command::SetVariable { .. }
             | Command::RestartFrame { .. }
-            | Command::ForceReturn { .. } => {
+            | Command::ForceReturn { .. }
+            | Command::StepInTargets
+            | Command::StepIntoTarget { .. } => {
                 unreachable!("internal: only a configuration command configures")
             }
         }
@@ -1348,6 +1401,7 @@ impl Interpreter {
             after,
             evaluated: false,
             setting: None,
+            targets: None,
         };
         self.answer(
             &mut stop.source,
@@ -1396,27 +1450,58 @@ impl Interpreter {
                         Command::StepInto => StepAction::Into,
                         _ => StepAction::Out,
                     };
-                    // An uncaught exception's and a `Halt`'s stop steps
-                    // from the frame it shows first, as the user sees it,
-                    // never in the machinery above it the debugger chose
-                    // to stop in; a caught one's steps in the handler it
-                    // stands in, which it shows first.
-                    let shows_below = stop.exceptional && !stop.caught;
                     let at_header = stop.at_header;
                     self.enter(|mutator| {
-                        let shown = shows_below.then(|| {
-                            let frames = stop.frames(mutator);
-                            let first = exceptions::first_shown(mutator, frames);
-                            frames.get(first)
-                        });
+                        let shown = match stop.shown_below(mutator) {
+                            Some(index) => stop.frames(mutator).get(index),
+                            None => None,
+                        };
                         if at_header {
                             stepping::begin_at_header(mutator, action);
                         } else {
-                            stepping::begin(mutator, action, shown.flatten());
+                            stepping::begin(mutator, action, shown);
                         }
                     });
                     self.answer(&mut stop.source, Event::Continued);
                     break Served::GoOn;
+                }
+                Command::StepInTargets => {
+                    let targets = self.enter(|mutator| {
+                        stop.step_in_targets(mutator)
+                            .iter()
+                            .zip(0..)
+                            .map(|(target, id)| StepInTarget {
+                                id,
+                                label: target.label.clone(),
+                                span: target.span,
+                                kind: target.kind,
+                            })
+                            .collect()
+                    });
+                    self.answer(&mut stop.source, Event::StepInTargets(targets));
+                }
+                Command::StepIntoTarget { target } => {
+                    let begun = self.enter(|mutator| {
+                        let aim = usize::try_from(target).ok().and_then(|index| {
+                            let targets = stop.step_in_targets(mutator);
+                            targets.get(index).map(|target| target.aim.clone())
+                        });
+                        let Some(aim) = aim else {
+                            return false;
+                        };
+                        let shown = match stop.shown_below(mutator) {
+                            Some(index) => stop.frames(mutator).get(index),
+                            None => None,
+                        };
+                        stepping::begin_smart(mutator, aim, shown);
+                        true
+                    });
+                    if begun {
+                        self.answer(&mut stop.source, Event::Continued);
+                        break Served::GoOn;
+                    }
+                    let command = Command::StepIntoTarget { target };
+                    self.refuse(&mut stop.source, &command, NO_SUCH_TARGET);
                 }
                 Command::RunToPosition { module, offset } => {
                     match self.enter(|mutator| breakpoints::run_to(mutator, &module, offset)) {
@@ -1768,7 +1853,9 @@ impl Interpreter {
                     | Command::Evaluate { .. }
                     | Command::SetVariable { .. }
                     | Command::RestartFrame { .. }
-                    | Command::ForceReturn { .. }),
+                    | Command::ForceReturn { .. }
+                    | Command::StepInTargets
+                    | Command::StepIntoTarget { .. }),
                 ) => {
                     // A `Terminate` ends the step the run before left in
                     // progress, as it ends one in a run, though no run

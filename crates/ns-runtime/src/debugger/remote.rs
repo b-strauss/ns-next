@@ -16,10 +16,10 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate` and
-/// `SetVariable` are served only
-/// while the program is stopped; one that arrives while it runs is refused
-/// (`Event::Refused`). `Terminate` is served either way. An agent waits
+/// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
+/// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets` and
+/// `StepIntoTarget` are served only while the program is stopped; one that
+/// arrives while it runs is refused (`Event::Refused`). `Terminate` is served either way. An agent waits
 /// for `Event::Stopped` before it sends a command only a stop serves: one
 /// sent right after `DebugRemote::pause` is refused or served depending
 /// on whether a safepoint drains the queue before the stop or the stop
@@ -207,6 +207,50 @@ pub enum Command {
         frame: usize,
         value: Option<ValueId>,
     },
+    /// The places a smart step into from the top frame may stop at
+    /// (`docs/design/debugger.md`, decision 3, "Smart step into a
+    /// block"): the sends of the frame's statement from where it stands
+    /// to the statement's end, in the order they run, then the block
+    /// literals those sends take that run as closures -- not a block the
+    /// compiler lowers inline, which runs in the frame itself, where a
+    /// step over reaches it. At an exception's stop, the top frame is the
+    /// one a step steps from, the first shown below the exception's
+    /// machinery. Served only while the program is stopped; answered by
+    /// `Event::StepInTargets`, empty for a frame without metadata, a
+    /// factory's and an initializer's at its header stop.
+    StepInTargets,
+    /// A step into that stops only at the target `target` names, its id
+    /// among the targets `StepInTargets` answers at this stop: a send's
+    /// stops at a push whose sender stands at that send, a block's at the
+    /// block body's first statement start in an activation of a closure
+    /// the top frame made; either stops as a step over does once the
+    /// statement is done without it -- the send answered without a push,
+    /// the block never run. Answered as `StepInto` is, or by
+    /// `Event::Refused` for an id no target has -- `"no such target"` --
+    /// the program still stopped.
+    StepIntoTarget { target: u32 },
+}
+
+/// A place a smart step into may stop at (`Command::StepInTargets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepInTarget {
+    /// What `Command::StepIntoTarget` names it by: its position among the
+    /// targets, valid until the program goes on.
+    pub id: u32,
+    /// A send's selector, `at:put:`; a block's `[] in ` and the selector
+    /// of the send that takes it.
+    pub label: String,
+    /// The first token of a send's selector, or a block's literal, in its
+    /// module's current text.
+    pub span: ns_syntax::Span,
+    pub kind: StepInTargetKind,
+}
+
+/// What a smart step into's target is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepInTargetKind {
+    Send,
+    Block,
 }
 
 /// What an evaluation answered (`Command::Evaluate`).
@@ -404,6 +448,8 @@ impl Command {
             Command::SetVariable { .. } => "SetVariable",
             Command::RestartFrame { .. } => "RestartFrame",
             Command::ForceReturn { .. } => "ForceReturn",
+            Command::StepInTargets => "StepInTargets",
+            Command::StepIntoTarget { .. } => "StepIntoTarget",
         }
     }
 }
@@ -478,6 +524,8 @@ pub enum Event {
         breakpoint: BreakpointId,
         text: String,
     },
+    /// The answer to `Command::StepInTargets`, in the order of their ids.
+    StepInTargets(Vec<StepInTarget>),
 }
 
 /// What `Event::ModuleText` says of a module's text.

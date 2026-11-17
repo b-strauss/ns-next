@@ -1639,6 +1639,7 @@ fn is_going_on(name: &str) -> bool {
             | "RunToPosition"
             | "RestartFrame"
             | "ForceReturn"
+            | "StepIntoTarget"
     )
 }
 
@@ -1665,6 +1666,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         // that error as an evaluation does.
         Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
         Event::VariableSet(_) => command == "SetVariable",
+        Event::StepInTargets(_) => command == "StepInTargets",
         Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }

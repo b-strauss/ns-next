@@ -15059,3 +15059,208 @@ mod restarting {
         }
     }
 }
+
+mod smart_stepping {
+    use super::*;
+    use ns_runtime::debugger::{StepInTarget, StepInTargetKind};
+
+    /// A method whose statement sends a method to an argument another send
+    /// answers, one that hands a block to the shipped `do:`, one whose
+    /// first send a primitive answers before a send pushes, and one that
+    /// sends twice and hands a block to a method of its own.
+    const SMART: &str = indoc! {"
+        class Smart = Object new (
+          | sunk ::= 0. |
+        ) (
+          public nested = (
+            | x |
+            x:: self first: (self second).
+            ^x
+          )
+          public blocks = (
+            {10. 20} do: [:each | sink: each].
+            ^sunk
+          )
+          public arithmetic = (
+            | y |
+            y:: 3 + 4 + self second.
+            ^y * 2
+          )
+          public listed = (
+            ^self pair: (self second) with: [:value | value + 1]
+          )
+          first: value = (
+            ^value + 1
+          )
+          second = (
+            ^2
+          )
+          sink: value = (
+            sunk:: sunk + value
+          )
+          pair: value with: block = (
+            ^block value: value
+          )
+        ) : ()
+    "};
+
+    /// The stopped top frame's targets of a smart step into.
+    fn targets(remote: &DebugRemote) -> Vec<StepInTarget> {
+        match request(remote, Command::StepInTargets) {
+            Event::StepInTargets(targets) => targets,
+            other => panic!("the targets were expected, not {other:?}"),
+        }
+    }
+
+    /// The id of the target labelled `label`, which there must be.
+    fn target_labelled(targets: &[StepInTarget], label: &str) -> u32 {
+        targets
+            .iter()
+            .find(|target| target.label == label)
+            .unwrap_or_else(|| panic!("a target labelled {label} among {targets:?}"))
+            .id
+    }
+
+    /// Sends `selector` to an instance of `SMART` under `lowering`, stopped
+    /// at a breakpoint on the line of `line`, and takes a smart step into
+    /// the target labelled `label`: answers where it stopped, the names of
+    /// the frames on the stack and the label of the variable `variable` of
+    /// the top frame, if one is named.
+    fn smart_stepped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+        variable: Option<&'static str>,
+    ) -> ((String, String), Vec<String>, Option<String>) {
+        let offset = line_start(SMART, line);
+        let (stopped, _) = stepped(
+            SMART,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Smart", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Smart");
+                let target = target_labelled(&targets(remote), label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, SMART);
+                let names: Vec<String> = stack_trace(remote)
+                    .iter()
+                    .map(|frame| frame.name.clone())
+                    .collect();
+                let value = variable.map(|name| top_variable(remote, name));
+                set_breakpoints(remote, "Smart", Vec::new());
+                expect_breakpoints(remote, "Smart");
+                continue_stopped(remote);
+                (stood, names, value)
+            },
+        );
+        stopped
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into the outer of two sends stops in the method it
+        /// sends, past the one that computes its argument.
+        fn smart_step_into_stops_in_the_chosen_send(lowering) {
+            let (stood, names, _) = smart_stepped(
+                lowering,
+                "nested",
+                "x:: self first: (self second).",
+                "first:",
+                None,
+            );
+            assert_eq!(
+                stood,
+                (String::from("Smart>>first:"), String::from("^value + 1"))
+            );
+            assert_eq!(names, ["Smart>>first:", "Smart>>nested"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a block the shipped `do:` runs stops at the
+        /// block's first statement, in its first activation.
+        fn smart_step_into_a_block_stops_in_its_body(lowering) {
+            let (stood, names, each) = smart_stepped(
+                lowering,
+                "blocks",
+                "{10. 20} do: [:each | sink: each].",
+                "[] in do:",
+                Some("each"),
+            );
+            assert_eq!(
+                stood,
+                (String::from("[] in Smart>>blocks"), String::from("sink: each"))
+            );
+            assert_eq!(names.first().map(String::as_str), Some("[] in Smart>>blocks"));
+            assert_eq!(names.last().map(String::as_str), Some("Smart>>blocks"));
+            assert_eq!(each.as_deref(), Some("10"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a send a primitive answers, which pushes
+        /// nothing, stops where a step over would: at the next statement,
+        /// past the push of a later send of its own.
+        fn a_target_answered_without_a_push_steps_over(lowering) {
+            let (stood, names, _) =
+                smart_stepped(lowering, "arithmetic", "y:: 3 + 4 + self second.", "+", None);
+            assert_eq!(
+                stood,
+                (String::from("Smart>>arithmetic"), String::from("^y * 2"))
+            );
+            assert_eq!(names, ["Smart>>arithmetic"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The targets are the statement's sends in the order they run,
+        /// then the blocks they take that run as closures, each placed at
+        /// its selector's first token or its literal; an id past them is
+        /// refused, the program still stopped.
+        fn targets_are_the_statement_s_sends_in_order(lowering) {
+            let offset = line_start(SMART, "^self pair: (self second) with:");
+            let ((listed, refusal), _) = stepped(
+                SMART,
+                lowering,
+                "listed",
+                |remote| set_breakpoints(remote, "Smart", vec![offset]),
+                |remote| {
+                    expect_first_stop(remote, "Smart");
+                    let listed: Vec<(u32, String, String, StepInTargetKind)> = targets(remote)
+                        .into_iter()
+                        .map(|target| {
+                            let text = target.span.text(SMART).to_owned();
+                            (target.id, target.label, text, target.kind)
+                        })
+                        .collect();
+                    let refusal = match request(remote, Command::StepIntoTarget { target: 3 }) {
+                        Event::Refused { command, reason } => (command, reason),
+                        other => panic!("the refusal was expected, not {other:?}"),
+                    };
+                    set_breakpoints(remote, "Smart", Vec::new());
+                    expect_breakpoints(remote, "Smart");
+                    continue_stopped(remote);
+                    (listed, refusal)
+                },
+            );
+            assert_eq!(
+                listed,
+                [
+                    (0, String::from("second"), String::from("second"), StepInTargetKind::Send),
+                    (1, String::from("pair:with:"), String::from("pair:"), StepInTargetKind::Send),
+                    (
+                        2,
+                        String::from("[] in pair:with:"),
+                        String::from("[:value | value + 1]"),
+                        StepInTargetKind::Block
+                    ),
+                ]
+            );
+            assert_eq!(
+                refusal,
+                (String::from("StepIntoTarget"), String::from("no such target"))
+            );
+        }
+    }
+}

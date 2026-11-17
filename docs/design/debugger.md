@@ -516,6 +516,21 @@ The commands (`debugger::Command`):
   program still stopped, as `RestartFrame` is, with "no value of this
   stop has that id", or "an initializer returns self" for a value given
   to an initializer's frame.
+- `StepInTargets` -- where a smart step into from the top frame -- the
+  frame a step steps from, the first shown below an exception's
+  machinery -- may stop (decision 3, "Smart step into a block"): the
+  sends of the frame's statement from where it stands to the
+  statement's end, in the order they run, then the block literals those
+  sends take that run as closures; answered by `Event::StepInTargets`, a
+  `StepInTarget` each -- `id`, its position, valid until the program
+  goes on; `label`, a send's selector (`at:put:`) or `[] in ` and the
+  selector of the send that takes a block; `span`, the selector's first
+  token or the block literal; `kind`, `Send` or `Block` -- empty for a
+  frame without metadata, a factory's and an initializer's at its
+  header stop.
+- `StepIntoTarget { target }` -- a smart step into aimed at the target
+  of that id; answered by `Continued`, then the step's stop, or refused,
+  the program still stopped, with "no such target".
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
   breakpoint of the module `module` names, its root class's name as
   `FrameLocation::module` names it, by `breakpoints`, each a
@@ -2113,9 +2128,9 @@ mechanisms each implies are in "Planned: the mechanisms". Decisions 2,
 the stack, ending a run, breakpoints and steps need: the debugging API
 without evaluation and writing a frame, its first client, the DAP agent,
 and the stop waiting at the safepoint ("The debugging API at the
-safepoint"); of decision 3 every step but smart step into; of decision 4
-the tables, the stops at statement starts and return points and the
-agent's stepping by line, without smart step into's targets; and of
+safepoint"); of decision 3 every step; of decision 4 the tables, the
+stops at statement starts and return points, smart step into's targets
+and the agent's stepping by line; and of
 decision 6 the session, breakpoints of every kind, steps, run to cursor,
 pause and inspection over DAP, without evaluation, conditions,
 logpoints, smart step into, restart frame, force return and hot swap;
@@ -2197,14 +2212,15 @@ is in included.
 
 ### 3. Stepping by one-shot breakpoints and the safepoint
 
-**Partial:** step over, step into and step out are built
-(`debugger/stepping.rs`; "Step over in recursion and blocks", "Step
-into's held request", "The return value of the last call"), the frame
-left by a return to its caller's return point, and the reports of a
-frame left otherwise, by an unwind or a continuation other than
-`Deliver` (decision 17), the handler search's report ("Exceptions"),
-the step filters (decision 16), and run to cursor; smart step into is
-planned.
+**Built** (`debugger/stepping.rs`; "Step over in recursion and
+blocks", "Step into's held request", "The return value of the last
+call", "Smart step into a block"): step over, step into, step out and
+smart step into, the frame left by a return to its caller's return
+point, and the reports of a frame left otherwise, by an unwind or a
+continuation other than `Deliver` (decision 17), the handler search's
+report ("Exceptions"), the step filters (decision 16), and run to
+cursor. The agent's DAP requests for smart step into
+(`stepInTargets`) are not built.
 
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
@@ -2227,8 +2243,23 @@ planned.
   push, which the debugger's safepoint stops at, at the new body's first
   statement start. A send answered by a primitive or a leaf pushes
   nothing, and the next one-shot breakpoint stops.
-- **Smart step into** is a step into whose safepoint stops only at a push
-  from the chosen `CallSite`.
+- **Smart step into** (`Command::StepInTargets`,
+  `Command::StepIntoTarget`; `stepping::targets`,
+  `stepping::begin_smart`) offers the top frame's sends from where it
+  stands to its statement's end, in the order they run, then the block
+  literals those sends take that run as closures. Aimed at a send it is
+  a step into whose safepoint stops only at a push whose sender -- or
+  the first sender below a run of filtered frames, so that a send of
+  the shipped `do:` stops in the program's block it runs -- stands at
+  the chosen send (`stepping::stands_at_aim`): the body and the index,
+  which within one body names the send as its `CallSite` does. Any other
+  push keeps the request, which is taken at every poll as a step into's
+  is until the chosen push or a one-shot stops; a send answered without
+  a push leaves the step a step over. Aimed at a block, it is a step
+  over plus a one-shot ("Smart step into a block"). A target is named
+  by its position in the list, valid until the program goes on; the
+  stop keeps the list, so that an evaluation that installs between the
+  two commands changes no id.
 - **Run to cursor** (`Command::RunToPosition`) is a one-shot breakpoint
   at the target, resolved as a line breakpoint is
   (`breakpoints::run_to`) and taken in any activation, since the cursor
@@ -2260,8 +2291,9 @@ call would run it interpreted.
 **Partial:** the tables are built (`debugger::metadata::BodyMetadata`,
 "Compiling the metadata again"), a stopped frame's location reads them,
 line breakpoints and steps stop at their statement starts and return
-points, and the agent steps by line (`crates/ns-cli/src/debug/stepping.rs`);
-smart step into's targets are planned.
+points, and the agent steps by line (`crates/ns-cli/src/debug/stepping.rs`),
+and smart step into's targets read the sends and the blocks they take
+(`stepping::targets`).
 
 The metadata of a body lists:
 
@@ -4467,11 +4499,21 @@ and stops every activation of it at its entry and at each of its exits.
 
 ### Smart step into a block
 
-IntelliJ offers a lambda on the line as a target. Here a block argument's
-body is pushed from inside its callee -- `do:`'s loop, not the chosen
-`CallSite` -- so a block target is a one-shot breakpoint at the block
-body's first statement start, carried for every activation of that block
-created by the stepping frame, rather than a push from a call site.
+**Built** (`stepping::begin_smart`). IntelliJ offers a lambda on the
+line as a target. Here a block argument's body is pushed from inside its
+callee -- `do:`'s loop, not the chosen `CallSite` -- so a block target
+is a one-shot breakpoint at the block body's first statement start
+(index 0, or 1 past a `MakeVector`), held for the stepping frame, which
+`stepping::takes` takes in every activation of a closure whose captured
+frames lead to it -- every activation of that block created by the
+stepping frame -- rather than a push from a call site. The step is
+otherwise a step over, so that a block never run stops at the next
+statement start or the return point, and its stop in the block reports
+no value of a call, as a step into's push does
+(`stepping::in_aimed_block`). A block the compiler lowers inline is no
+target -- every block of a form the optimized lowering inlines, under
+both lowerings, so that both offer the same: it runs in the frame
+itself, where a step over stops in it.
 
 ### The return value of the last call
 
