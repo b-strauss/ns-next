@@ -353,15 +353,25 @@ pub(crate) fn begin<'gc>(
 ) -> Result<(), &'static str> {
     let frames = stop.frames(mutator);
     let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
-    begin_in(mutator, stack_frame, code, arguments)
+    begin_in(
+        mutator,
+        stack_frame,
+        code,
+        arguments,
+        Continuation::Evaluated,
+    )
 }
 
-/// `begin` in `stack_frame`, the frame `code` was compiled for.
+/// `begin` in `stack_frame`, the frame `code` was compiled for, its base
+/// going on with `then` once it returns: `Continuation::Evaluated`, or,
+/// for a method breakpoint's condition at an exit by an unwind,
+/// `Continuation::ExitEvaluated` with the unwind it interrupted.
 pub(crate) fn begin_in<'gc>(
     mutator: &mut Mutator<'gc>,
     stack_frame: &StackFrame,
     code: Rc<CompiledCode>,
     arguments: &[Value<'gc>],
+    then: Continuation<'gc>,
 ) -> Result<(), &'static str> {
     if let StackFrame::Running(activation) = stack_frame {
         mutator.heap.nil_tainted_registers(*activation);
@@ -391,7 +401,7 @@ pub(crate) fn begin_in<'gc>(
         Step::Block {
             closure,
             arguments: StepArguments::Owned(arguments.to_vec()),
-            then: Continuation::Evaluated,
+            then,
         },
         Arguments::NONE,
         sender,
@@ -422,6 +432,14 @@ pub(crate) fn ended_by<'gc>(
     mutator: &mut Mutator<'gc>,
     error: &NewspeakError<'gc>,
 ) -> ActivationReference {
+    let outcome = ending(mutator, error);
+    end(mutator, outcome)
+}
+
+/// The answer of the running evaluation `error` ended: the error,
+/// described with the exception whose default action ended it, when one
+/// did -- or that the debugger aborted it.
+fn ending<'gc>(mutator: &mut Mutator<'gc>, error: &NewspeakError<'gc>) -> Outcome {
     let (exception, aborted) = mutator
         .breakpoints
         .evaluation_mut()
@@ -429,7 +447,7 @@ pub(crate) fn ended_by<'gc>(
             (evaluation.exception.take(), evaluation.aborted)
         });
     if aborted {
-        return end(mutator, Outcome::Aborted);
+        return Outcome::Aborted;
     }
     let description = match &exception {
         Some(exception) => {
@@ -438,13 +456,30 @@ pub(crate) fn ended_by<'gc>(
         }
         None => String::from(&*error.message),
     };
-    end(
-        mutator,
-        Outcome::Error {
-            description,
-            exception,
-        },
-    )
+    Outcome::Error {
+        description,
+        exception,
+    }
+}
+
+/// The evaluation of a condition at a method's exit by an unwind
+/// returned (`Continuation::ExitEvaluated`): it is over, and asks for no
+/// stop -- the unwind it interrupted goes on at once.
+pub(crate) fn exit_returned(mutator: &mut Mutator<'_>) {
+    set_running(mutator, None, 0);
+}
+
+/// An error ended the evaluation of a condition at a method's exit by an
+/// unwind, its base popped (`interpreter::unwind`): answers what
+/// `ended_by` would, and asks for no stop -- the unwind it interrupted
+/// goes on at once.
+pub(crate) fn exit_ended_by<'gc>(
+    mutator: &mut Mutator<'gc>,
+    error: &NewspeakError<'gc>,
+) -> Outcome {
+    let outcome = ending(mutator, error);
+    set_running(mutator, None, 0);
+    outcome
 }
 
 /// The `terminate:` leaf runs for `exception`, whose default action ends
@@ -490,6 +525,7 @@ pub(crate) fn has_ended(mutator: &Mutator<'_>) -> bool {
 pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
     set_running(mutator, None, 0);
     mutator.breakpoints.evaluated = None;
+    mutator.breakpoints.unwound_exit = None;
 }
 
 /// The debugger terminates the run: an evaluation still running ends
@@ -501,6 +537,8 @@ pub(crate) fn run_ended(mutator: &mut Mutator<'_>) {
 pub(crate) fn terminated(mutator: &mut Mutator<'_>) {
     mutator.breakpoints.set_evaluation(None);
     mutator.breakpoints.evaluated = None;
+    mutator.breakpoints.unwound_exit = None;
+    mutator.breakpoints.exit_failure = None;
 }
 
 /// Begins (`Some`) or ends (`None`) the running evaluation, the depth

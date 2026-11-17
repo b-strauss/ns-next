@@ -18,7 +18,7 @@
 //! (`exceptions.rs`).
 
 pub(crate) mod breakpoints;
-mod conditions;
+pub(crate) mod conditions;
 pub(crate) mod evaluation;
 pub(crate) mod exceptions;
 pub(crate) mod metadata;
@@ -433,6 +433,20 @@ impl StepStress {
     }
 }
 
+/// What deciding a reach's conditions makes of its stop beyond its
+/// breakpoints (`Interpreter::serve_breakpoint`).
+enum Decided {
+    /// The conditions or log expressions of `failed` failed, as `error`
+    /// says first: the stop is their failure.
+    Failed {
+        failed: Vec<BreakpointId>,
+        error: String,
+    },
+    /// A pause aborted a condition: the stop is the breakpoints' that
+    /// held, or else the pause's.
+    Aborted,
+}
+
 /// Where a stop stands, beyond its frames.
 #[derive(Clone, Copy)]
 struct Standing {
@@ -630,7 +644,7 @@ impl Interpreter {
                 // breakpoints with it.
                 breakpoint.conditions.clear();
             }
-            if let Some(served) = self.serve_breakpoint(breakpoint, floor, None) {
+            if let Some(served) = self.serve_breakpoint(breakpoint, floor, None, None) {
                 return served;
             }
         }
@@ -677,26 +691,52 @@ impl Interpreter {
             // The pushed frame stands at its first statement start, which
             // it fetches as it goes on: a breakpoint there makes the stop
             // the breakpoint's -- a method breakpoint's entry -- and lets
-            // it past once. A factory stands at its `InitializeInstance`.
-            let (reason, standing, elsewhere) = self
-                .enter(|mutator| {
+            // it past once, a condition or a log standing there decided in
+            // the frame first. A factory stands at its
+            // `InitializeInstance`.
+            let rebuilt = matches!(held, HeldStep::StopInFactory);
+            let mut reached = self.enter(|mutator| {
+                let top = mutator.heap.top_activation()?;
+                let (hits, after, passed, conditions) =
+                    crate::interpreter::breakpoint::standing_hits(mutator, top);
+                let code = mutator.heap.activation_code(top);
+                let slot = breakpoints::PastOnce {
+                    activation: top,
+                    body: breakpoints::address(&code),
+                    index: mutator.heap.activation_program_counter(top),
+                    after,
+                };
+                Some(breakpoints::PendingStop {
+                    slot,
+                    hits,
+                    step_stops: true,
+                    passed,
+                    conditions,
+                })
+            });
+            let decides = reached
+                .as_ref()
+                .is_some_and(|reached| !reached.conditions.is_empty());
+            if decides
+                && self.debugger.is_some()
+                && let Some(reached) = reached.take()
+            {
+                return self.decide(conditions::Deciding::at_push(reached, floor, rebuilt));
+            }
+            let (reason, standing, elsewhere) = match reached {
+                Some(reached) => self.enter(|mutator| {
                     let unwound = stepping::take_exits(mutator);
                     let elsewhere = stepping::went_on_elsewhere(mutator);
                     stepping::end(mutator);
-                    let top = mutator.heap.top_activation()?;
-                    let (hits, after) = crate::interpreter::breakpoint::standing_hits(mutator, top);
-                    let code = mutator.heap.activation_code(top);
-                    let standing = breakpoints::PastOnce {
-                        activation: top,
-                        body: breakpoints::address(&code),
-                        index: mutator.heap.activation_program_counter(top),
-                        after,
-                    };
-                    Some((hits.reason(unwound), standing, elsewhere))
-                })
-                .map_or((None, None, false), |(reason, standing, elsewhere)| {
-                    (reason, Some(standing), elsewhere)
-                });
+                    (reached.hits.reason(unwound), Some(reached.slot), elsewhere)
+                }),
+                None => self.enter(|mutator| {
+                    let unwound = stepping::take_exits(mutator);
+                    let elsewhere = stepping::went_on_elsewhere(mutator);
+                    stepping::end(mutator);
+                    (Hits::default().reason(unwound), None, elsewhere)
+                }),
+            };
             let stood = Standing {
                 elsewhere: reason.is_none() && elsewhere,
                 ..Standing::ON_TOP
@@ -705,7 +745,7 @@ impl Interpreter {
             let source = self.step_agent();
             let after = AfterStop {
                 past: standing,
-                rebuilt: matches!(held, HeldStep::StopInFactory),
+                rebuilt,
             };
             return self.stop_owing(reason, None, floor, source, stood, after);
         }
@@ -727,7 +767,12 @@ impl Interpreter {
         let (kept, deciding) = self.debugger.as_ref().map_or((false, false), |debugger| {
             (debugger.stop.is_some(), debugger.deciding.is_some())
         });
-        if !kept && !deciding {
+        // An evaluation at a method's exit by an unwind is served as one a
+        // stop is kept for while it runs; it ends without asking for the
+        // safepoint, its unwind going on.
+        let exiting =
+            self.debugger.is_some() && self.enter(|mutator| conditions::exit_evaluating(mutator));
+        if !kept && !deciding && !exiting {
             return None;
         }
         if !self.enter(|mutator| evaluation::has_ended(mutator)) {
@@ -844,6 +889,7 @@ impl Interpreter {
             failed,
             error,
             aborted,
+            pushed,
         } = decision;
         if stop.hits.only_a_step() && !stop.step_stops && failed.is_empty() && !aborted {
             self.enter(|mutator| mutator.breakpoints.go_past_once(stop.slot));
@@ -854,17 +900,17 @@ impl Interpreter {
         else {
             return Served::GoOn;
         };
-        let reason = if !failed.is_empty() {
-            Some(StopReason::ConditionFailed {
-                ids: failed,
+        let decided = if !failed.is_empty() {
+            Some(Decided::Failed {
+                failed,
                 error: error.unwrap_or_default(),
             })
-        } else if aborted && stop.hits.only_a_step() && !stop.step_stops {
-            Some(StopReason::Pause)
+        } else if aborted {
+            Some(Decided::Aborted)
         } else {
             None
         };
-        self.serve_breakpoint(stop, floor, reason)
+        self.serve_breakpoint(stop, floor, decided, pushed)
             .unwrap_or(Served::GoOn)
     }
 
@@ -879,10 +925,12 @@ impl Interpreter {
         &mut self,
         breakpoint: breakpoints::PendingStop,
         floor: usize,
-        reason: Option<StopReason>,
+        decided: Option<Decided>,
+        pushed: Option<bool>,
     ) -> Option<Served> {
         let filtered = self.has_agent()
-            && reason.is_none()
+            && decided.is_none()
+            && pushed.is_none()
             && breakpoint.hits.only_a_step()
             && self.enter(|mutator| {
                 stepping::went_on_past_filtered(mutator, breakpoint.slot.activation)
@@ -907,9 +955,27 @@ impl Interpreter {
             // call -- or the pause's, for the one-shot a pause pending at
             // a run's start set; a breakpoint the debugger set there makes
             // it the breakpoint's.
-            match (reason, breakpoint.hits.reason(unwound)) {
-                (Some(reason), _) | (None, Some(reason)) => (reason, None, false),
-                (None, None) if at_entry => (StopReason::Pause, None, false),
+            // A step into's stop at a push reports no value of a call.
+            let returned = returned.filter(|_| pushed.is_none());
+            let reason = breakpoint.hits.reason(unwound);
+            match (decided, reason) {
+                // Every breakpoint the stop is for and every exit it
+                // reports is named after the failed ones, so that a
+                // temporary breakpoint hit there is removed all the same.
+                (Some(Decided::Failed { mut failed, error }), reason) => {
+                    for id in reason.map(conditions::named_by).unwrap_or_default() {
+                        if !failed.contains(&id) {
+                            failed.push(id);
+                        }
+                    }
+                    let ids = failed;
+                    (StopReason::ConditionFailed { ids, error }, None, false)
+                }
+                (Some(Decided::Aborted), reason) => {
+                    (reason.unwrap_or(StopReason::Pause), None, false)
+                }
+                (None, Some(reason)) => (reason, None, false),
+                (None, None) if at_entry && pushed.is_none() => (StopReason::Pause, None, false),
                 (None, None) => (StopReason::Step, returned, elsewhere),
             }
         });
@@ -922,7 +988,7 @@ impl Interpreter {
         // breakpoint it stopped at lets it past once.
         let after = AfterStop {
             past: Some(breakpoint.slot),
-            rebuilt: false,
+            rebuilt: pushed.unwrap_or(false),
         };
         Some(self.stop_owing(reason, returned, floor, source, standing, after))
     }
@@ -1220,6 +1286,9 @@ impl Interpreter {
             at_header,
             elsewhere,
         } = standing;
+        // A condition that failed at a method's exit by an unwind since
+        // the last stop is named by this one, which reports the exit.
+        let reason = self.enter(|mutator| conditions::failure_named(mutator, reason));
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         let first_value_id = self
             .debugger

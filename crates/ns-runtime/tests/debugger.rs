@@ -13726,6 +13726,465 @@ mod conditions {
         }
     }
 
+    /// A method a step into enters, whose first statement the tests set
+    /// breakpoints at.
+    const STEPPING_IN: &str = indoc! {"
+        class SteppingIn = Object new () (
+          public run = (
+            | total ::= 0. |
+            total:: self twice: 3.
+            ^total
+          )
+          twice: value = (
+            | doubled |
+            doubled:: value * 2.
+            ^doubled
+          )
+        ) : ()
+    "};
+
+    /// A step into `twice:` from the breakpoint on `run`'s call of it,
+    /// with a conditional breakpoint whose condition is `condition` and a
+    /// logpoint at `twice:`'s first statement: the stop's reason, and the
+    /// breakpoints' ids -- the conditional one's first -- and what was
+    /// logged before the stop.
+    fn stepped_into(
+        lowering: Lowering,
+        condition: &'static str,
+    ) -> (StopReason, Vec<BreakpointId>, Vec<String>) {
+        let call = line_start(STEPPING_IN, "total:: self twice: 3.");
+        let first = line_start(STEPPING_IN, "doubled:: value * 2.");
+        let (answer, result) = debugged(
+            STEPPING_IN,
+            lowering,
+            move |remote| {
+                let logpoint = LineBreakpoint {
+                    log: Some(vec![
+                        LogPart::Text("in ".to_owned()),
+                        LogPart::Expression("value".to_owned()),
+                    ]),
+                    ..LineBreakpoint::at_offset(first)
+                };
+                set_line_breakpoints(
+                    remote,
+                    "SteppingIn",
+                    vec![
+                        LineBreakpoint::at_offset(call),
+                        conditional(first, condition),
+                        logpoint,
+                    ],
+                );
+            },
+            |remote| {
+                let breakpoints = expect_breakpoints(remote, "SteppingIn");
+                assert_eq!(expect_breakpoint_stop(remote), [breakpoints[0].id]);
+                remote.send(Command::StepInto);
+                let mut logged = Vec::new();
+                let reason = loop {
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        Some(Event::Logged { text, .. }) => logged.push(text),
+                        Some(Event::Stopped { reason, .. }) => break reason,
+                        other => panic!("the step's stop was expected, not {other:?}"),
+                    }
+                };
+                continue_stopped(remote);
+                let ids = breakpoints[1..].iter().map(|state| state.id).collect();
+                (reason, ids, logged)
+            },
+        );
+        expect_ok(result, "run");
+        answer
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A step into a method whose first statement holds a conditional
+        /// breakpoint decides it in the pushed frame: where it holds, the
+        /// stop is the breakpoint's, and a logpoint there logs.
+        fn a_step_into_decides_a_condition_at_the_first_statement(lowering) {
+            let (reason, ids, logged) = stepped_into(lowering, "value = 3");
+            assert_eq!(reason, StopReason::Breakpoint { ids: vec![ids[0]] });
+            assert_eq!(logged, ["in 3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Where the condition does not hold, a step into's stop at the
+        /// first statement is the step's, and the logpoint still logs.
+        fn a_step_into_s_stop_is_the_step_s_where_the_condition_fails(lowering) {
+            let (reason, _, logged) = stepped_into(lowering, "value = 4");
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(logged, ["in 3"]);
+        }
+    }
+
+    /// Methods an unwind leaves: `fail:` by an exception its caller
+    /// handles, `find:` by a non-local return from a block another method
+    /// runs.
+    const LEAVING: &str = indoc! {"
+        class Leaving = Object new () (
+          public run = (
+            | total ::= 0. |
+            1 to: 3 do: [:index |
+              total:: total + ([self fail: index] on: Error do: [:error | index]).
+              total:: total + (self find: index)].
+            ^total
+          )
+          fail: index = (
+            Error signal: 'no'.
+            ^0
+          )
+          find: index = (
+            self each: [:value |
+              value = index ifTrue: [^value]].
+            ^0
+          )
+          each: block = (
+            1 to: 3 do: [:value |
+              block value: value]
+          )
+        ) : ()
+    "};
+
+    /// Every stop's reason and every message logged while `LEAVING` runs
+    /// with `breakpoint` set, the run continued after each; the
+    /// breakpoint's id.
+    fn leaving(
+        lowering: Lowering,
+        breakpoint: MethodBreakpoint,
+    ) -> (BreakpointId, Vec<StopReason>, Vec<String>) {
+        let (answer, result) = debugged(
+            LEAVING,
+            lowering,
+            move |remote| set_method_breakpoints(remote, vec![breakpoint]),
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let mut stops = Vec::new();
+                let mut logged = Vec::new();
+                for event in events_until_the_end(remote) {
+                    match event {
+                        Event::Stopped { reason, .. } => stops.push(reason),
+                        Event::Logged { text, .. } => logged.push(text),
+                        Event::Continued => {}
+                        other => panic!("only stops and logs were expected, not {other:?}"),
+                    }
+                }
+                (id, stops, logged)
+            },
+        );
+        expect_ok(result, "run");
+        answer
+    }
+
+    /// The entry's and the exit's stop of the method breakpoint `id`.
+    fn entered_and_left(id: BreakpointId) -> [StopReason; 2] {
+        [
+            StopReason::MethodEntry {
+                id,
+                others: Vec::new(),
+            },
+            StopReason::MethodExit {
+                id,
+                others: Vec::new(),
+            },
+        ]
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A conditional method breakpoint's exit by an exception is
+        /// decided in the frame the unwind leaves, before it is popped:
+        /// it stops where its condition holds, at the second call only.
+        fn a_condition_decides_an_exit_by_an_exception(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index = 2".to_owned());
+            let (id, stops, logged) = leaving(lowering, breakpoint);
+            assert_eq!(stops, entered_and_left(id));
+            assert!(logged.is_empty());
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A conditional method breakpoint's exit by a non-local return,
+        /// which the unwind arrives at, is decided in that frame before it
+        /// returns: it stops where its condition holds, at the second call
+        /// only.
+        fn a_condition_decides_an_exit_by_a_non_local_return(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "find:");
+            breakpoint.condition = Some("index = 2".to_owned());
+            let (id, stops, logged) = leaving(lowering, breakpoint);
+            assert_eq!(stops, entered_and_left(id));
+            assert!(logged.is_empty());
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A method logpoint logs at an exit by an exception as at an
+        /// entry, its expression evaluated in the frame the unwind is
+        /// about to pop, and never stops.
+        fn a_method_logpoint_logs_an_exit_by_an_exception(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.log = Some(vec![
+                LogPart::Text("at ".to_owned()),
+                LogPart::Expression("index".to_owned()),
+            ]);
+            let (_, stops, logged) = leaving(lowering, breakpoint);
+            assert!(stops.is_empty(), "{stops:?}");
+            assert_eq!(logged, ["at 1", "at 1", "at 2", "at 2", "at 3", "at 3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A method logpoint logs at an exit by a non-local return too.
+        fn a_method_logpoint_logs_an_exit_by_a_non_local_return(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "find:");
+            breakpoint.log = Some(vec![LogPart::Expression("index".to_owned())]);
+            let (_, stops, logged) = leaving(lowering, breakpoint);
+            assert!(stops.is_empty(), "{stops:?}");
+            assert_eq!(logged, ["1", "1", "2", "2", "3", "3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition that fails at an exit by an unwind is named by the
+        /// stop that reports the exit, where the program goes on.
+        fn a_condition_failing_at_an_exit_by_an_unwind_is_named(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let (id, stops, _) = leaving(lowering, breakpoint);
+            // Each call's entry and exit fail, each a stop.
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, error } => {
+                        assert_eq!(ids, [id]);
+                        assert!(error.contains("MessageNotUnderstood"), "{error}");
+                    }
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A log expression that raises an error stops at its logpoint,
+        /// and the stop says what the error was.
+        fn a_failing_log_expression_stops_and_says_why(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let breakpoint = LineBreakpoint {
+                log: Some(vec![LogPart::Expression("index foo".to_owned())]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let ((id, reason), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                    let reason = expect_stop(remote);
+                    continue_stopped(remote);
+                    (id, reason)
+                },
+            );
+            expect_ok(result, "run");
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [id]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed log expression's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition that fails beside a breakpoint that holds at the
+        /// same statement stops naming both, the failed one first, so
+        /// that a temporary breakpoint hit there is removed all the same.
+        fn a_failed_condition_s_stop_names_the_breakpoints_that_held(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let (events, result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| {
+                    set_line_breakpoints(
+                        remote,
+                        "Sinking",
+                        vec![
+                            LineBreakpoint::at_offset(offset),
+                            conditional(offset, "index foo"),
+                        ],
+                    );
+                },
+                |remote| {
+                    let breakpoints = expect_breakpoints(remote, "Sinking");
+                    let reason = expect_stop(remote);
+                    continue_stopped(remote);
+                    (breakpoints, reason)
+                },
+            );
+            expect_ok(result, "run");
+            let (breakpoints, reason) = events;
+            match reason {
+                StopReason::ConditionFailed { ids, .. } => {
+                    assert_eq!(ids, [breakpoints[1].id, breakpoints[0].id]);
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    /// A loop whose breakpoint has two conditions, each counting in an
+    /// object of its own.
+    const TWO_COUNTERS: &str = indoc! {"
+        class TwoCounters = Object new (
+          |
+            first = Counter new.
+            second = Counter new.
+          |
+        ) (
+          class Counter = Object new (
+            | count ::= 0. |
+          ) (
+            public increment = (
+              count:: count + 1
+            )
+            public value = (
+              ^count
+            )
+          )
+          public run = (
+            1 to: 5 do: [:index |
+              sink: index].
+            ^first value * 10 + second value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// Two conditions with side effects at one statement are each
+        /// evaluated once per reach: five passes count five in each.
+        fn two_conditions_at_one_statement_each_run_once_per_reach(lowering) {
+            let offset = line_start(TWO_COUNTERS, "sink: index].");
+            let breakpoints = vec![
+                conditional(offset, "first increment. false"),
+                conditional(offset, "second increment. false"),
+            ];
+            let (events, answer) = {
+                let (mut interpreter, class) = interpreted(TWO_COUNTERS, lowering);
+                let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+                let (events, result) = debugged_in(
+                    &mut interpreter,
+                    &instance,
+                    move |remote| set_line_breakpoints(remote, "TwoCounters", breakpoints),
+                    |remote| {
+                        expect_breakpoints(remote, "TwoCounters");
+                        events_until_the_end(remote)
+                    },
+                );
+                (events, answered(&mut interpreter, result))
+            };
+            assert_no_stop(&events);
+            assert_eq!(answer, 55);
+        }
+    }
+
+    /// A run whose quiet error's default action answers at once -- a quick
+    /// method, which pushes no frame -- so that the exception's stop and
+    /// the conditional breakpoint's reach right after it are asked of the
+    /// same safepoint.
+    const LOSING: &str = indoc! {"
+        class Losing = Object new (
+          | counter = Counter new. |
+        ) (
+          class Counter = Object new (
+            | count ::= 0. |
+          ) (
+            public increment = (
+              count:: count + 1
+            )
+            public value = (
+              ^count
+            )
+          )
+          class Quiet = Error new () (
+            public defaultAction = (
+              ^nil
+            )
+          ) : ()
+          public run = (
+            | value |
+            value:: Quiet new signal.
+            sink: value.
+            ^counter value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A reach asked of the same safepoint as an exception's stop is
+        /// decided once, and each of its conditions evaluated once. The
+        /// kernel's handler search records the uncaught exception's stop
+        /// and goes on to the statement that sends `defaultAction`
+        /// without a push -- no safepoint between -- where a conditional
+        /// breakpoint stands: the exception's stop waits for the frame
+        /// the search runs next, so the reach is decided first -- its
+        /// condition fails, a frame of the core library evaluating
+        /// nothing -- and the exception stops after it; the program's own
+        /// conditional breakpoint then holds once, its condition counting
+        /// once.
+        fn a_condition_beside_an_exception_s_stop_is_decided_once(lowering) {
+            let kernel = line_start(KERNEL, "      ^self defaultAction.
+    )");
+            let offset = line_start(LOSING, "sink: value.");
+            let (mut interpreter, class) = interpreted(LOSING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((kernel_id, id, reasons), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                move |remote| {
+                    set_line_breakpoints(remote, "Kernel", vec![conditional(kernel, "true")]);
+                    set_line_breakpoints(
+                        remote,
+                        "Losing",
+                        vec![conditional(offset, "counter increment. true")],
+                    );
+                },
+                |remote| {
+                    let (kernel_id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Losing"));
+                    let reasons: Vec<StopReason> = events_until_the_end(remote)
+                        .into_iter()
+                        .filter_map(|event| match event {
+                            Event::Stopped { reason, .. } => Some(reason),
+                            _ => None,
+                        })
+                        .collect();
+                    (kernel_id, id, reasons)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(reasons.len(), 3, "{reasons:?}");
+            match &reasons[0] {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(*ids, [kernel_id]);
+                    assert_eq!(error, "the frame is the core library's");
+                }
+                other => panic!("the kernel condition's failure was expected, not {other:?}"),
+            }
+            assert!(
+                matches!(reasons[1], StopReason::Exception { .. }),
+                "{reasons:?}"
+            );
+            assert_eq!(reasons[2], StopReason::Breakpoint { ids: vec![id] });
+        }
+    }
+
     /// A loop of ten thousand passes.
     const HOT: &str = indoc! {"
         class Hot = Object new (

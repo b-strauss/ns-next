@@ -326,6 +326,16 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
                 Ok(outcome) => return outcome,
                 Err(pending) => pending,
             };
+            // A condition's evaluation at a method's exit by an unwind
+            // ended with an error: its base is popped, and the unwind it
+            // interrupted goes on from the frame below.
+            if !mutator
+                .heap
+                .top_activation()
+                .is_some_and(|now| now.same(top))
+            {
+                continue;
+            }
         }
         let arrived = pending
             .target
@@ -338,12 +348,19 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
         if arrived {
             // A method a return's unwind arrives at returns without a
             // return instruction of its own, whose exit a method
-            // breakpoint reports (`breakpoint::returning_by_unwind`).
+            // breakpoint reports (`breakpoint::returning_by_unwind`),
+            // decided in it first.
             if FOLLOWED {
-                breakpoint::unwind_stopped(mutator);
+                let mut returned = Vec::new();
                 if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
-                    breakpoint::returning_by_unwind(mutator, top, frame);
+                    (returned, pending) =
+                        match breakpoint::returning_by_unwind(mutator, top, frame, pending) {
+                            Ok(decided) => decided,
+                            Err(outcome) => return outcome,
+                        };
                 }
+                breakpoint::unwind_stopped(mutator);
+                breakpoint::returned_by_unwind(mutator, top, returned);
             }
             return arrive(mutator, top, pending.action);
         }
@@ -357,7 +374,10 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             };
         }
         if FOLLOWED {
-            pop_followed(mutator, top, &pending.action);
+            pending = match pop_followed(mutator, top, pending) {
+                Ok(pending) => pending,
+                Err(outcome) => return outcome,
+            };
         } else {
             mutator.pop_for_unwind_as::<false>(top);
         }
@@ -386,11 +406,7 @@ fn at_evaluation_base<'gc>(
         return Err(pending);
     }
     let error = match pending.action {
-        UnwindAction::Terminate(error) => {
-            mutator.pop_for_unwind(base);
-            let stopped = crate::debugger::evaluation::ended_by(mutator, &error);
-            return Ok(UnwindOutcome::EvaluationEnded { stopped });
-        }
+        UnwindAction::Terminate(error) => return end_at_base(mutator, base, &error),
         UnwindAction::Return(value) => NewspeakError::cannot_return(
             Symbol::CARET,
             value,
@@ -401,31 +417,58 @@ fn at_evaluation_base<'gc>(
     };
     match start_signalling(mutator, &error, floor) {
         Some(outcome) => Ok(outcome),
+        None => end_at_base(mutator, base, &error),
+    }
+}
+
+/// `error` ends the evaluation whose base, `base`, is on top: the base is
+/// popped and the evaluation answers the error. One a stop was kept for
+/// leaves the frame below stopped, where the safepoint re-enters the stop
+/// (`UnwindOutcome::EvaluationEnded`); one of a condition at a method's
+/// exit by an unwind decides the exit (`conditions::exit_ended`), and the
+/// unwind it interrupted goes on (`Err`), from the frame it was about to
+/// pop.
+fn end_at_base<'gc>(
+    mutator: &mut Mutator<'gc>,
+    base: ActivationReference,
+    error: &NewspeakError<'gc>,
+) -> Result<UnwindOutcome<'gc>, PendingUnwind<'gc>> {
+    let interrupted = mutator.heap.activation_interrupted_unwind(base);
+    mutator.pop_for_unwind(base);
+    match interrupted {
+        Some(interrupted) => {
+            let outcome = crate::debugger::evaluation::exit_ended_by(mutator, error);
+            crate::debugger::conditions::exit_ended(mutator, outcome);
+            Err(interrupted)
+        }
         None => {
-            mutator.pop_for_unwind(base);
-            let stopped = crate::debugger::evaluation::ended_by(mutator, &error);
+            let stopped = crate::debugger::evaluation::ended_by(mutator, error);
             Ok(UnwindOutcome::EvaluationEnded { stopped })
         }
     }
 }
 
-/// Pops `top` for an unwind the debugger follows. A method the unwind
-/// pops is left without a return, whose exit a method breakpoint reports;
-/// a termination, which ends the run, reports none.
+/// Pops `top` for `pending`, an unwind the debugger follows, and answers
+/// the unwind to carry on. A method the unwind pops is left without a
+/// return, whose exit a method breakpoint reports, decided in `top` before
+/// it is popped -- its condition evaluated there, the outcome answered
+/// instead while that evaluation runs above `top`, which stays; a
+/// termination, which ends the run, reports none.
 fn pop_followed<'gc>(
     mutator: &mut Mutator<'gc>,
     top: ActivationReference,
-    action: &UnwindAction<'gc>,
-) {
-    let exits = if matches!(action, UnwindAction::Terminate(_)) {
-        Vec::new()
+    pending: PendingUnwind<'gc>,
+) -> Result<PendingUnwind<'gc>, UnwindOutcome<'gc>> {
+    let (exits, pending) = if matches!(pending.action, UnwindAction::Terminate(_)) {
+        (Vec::new(), pending)
     } else {
-        breakpoint::leaving_by_unwind(mutator, top)
+        breakpoint::leaving_by_unwind(mutator, top, pending)?
     };
     mutator.pop_for_unwind(top);
     if !exits.is_empty() {
         breakpoint::left_by_unwind(mutator, exits);
     }
+    Ok(pending)
 }
 
 /// The block `activation` asks to be run before it is popped, marked run: an

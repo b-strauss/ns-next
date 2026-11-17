@@ -3027,7 +3027,22 @@ impl<'gc> Mutator<'gc> {
             Continuation::Evaluated => {
                 unreachable!("internal: vm::finish ends an evaluation itself")
             }
+            // A method breakpoint's condition at an exit by an unwind
+            // answered: the exit is decided, and the unwind goes on.
+            Continuation::ExitEvaluated(pending) => Err(self.exit_evaluated(*pending, value)),
         }
+    }
+
+    /// `resume` of a method breakpoint's condition at an exit by an unwind,
+    /// which answered `value`: the exit is decided, and the unwind it
+    /// interrupted, `pending`, is raised again. Out of line and cold: only
+    /// a debugged program's condition returns this way, and `resume` is on
+    /// every native's return path.
+    #[cold]
+    #[inline(never)]
+    fn exit_evaluated(&mut self, pending: PendingUnwind<'gc>, value: Value<'gc>) -> Signal<'gc> {
+        crate::debugger::conditions::exit_answered(self, value);
+        unwind::signal_of(pending)
     }
 
     /// What a continuation undoes when its activation is thrown away rather

@@ -57,7 +57,9 @@ impl Trace for Continuation<'_> {
         match self {
             Continuation::Deliver | Continuation::Reexecute | Continuation::Evaluated => {}
             Continuation::NestedClass(state) => state.trace(tracer),
-            Continuation::Unwind(pending) => pending.trace(tracer),
+            Continuation::Unwind(pending) | Continuation::ExitEvaluated(pending) => {
+                pending.trace(tracer)
+            }
             Continuation::VmErrorSignalled(error) => {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);

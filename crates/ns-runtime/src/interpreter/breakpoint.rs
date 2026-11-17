@@ -21,7 +21,9 @@ use crate::debugger::breakpoints::{
 use crate::debugger::stepping::{self, Leaving};
 use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::locals::filled_own_slot;
+use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{Mutator, Signal};
+use crate::types::PendingUnwind;
 
 /// What the `Breakpoint` arm goes on with.
 pub(crate) enum BreakpointDecision {
@@ -349,19 +351,47 @@ pub(crate) fn follows_unwinds(mutator: &Mutator<'_>) -> bool {
     mutator.stepping.is_some() || mutator.breakpoints.follows_unwinds()
 }
 
-/// The unwinder is about to pop `top`, for an unwind other than a
-/// termination the debugger follows (`follows_unwinds`): the method
-/// breakpoints whose method it is a body of, whose exit the pop is
-/// (`left_by_unwind`). Empty while no method breakpoint is set, and while
-/// an evaluation runs, which counts no breakpoint.
-pub(crate) fn leaving_by_unwind(
-    mutator: &Mutator<'_>,
+/// The unwinder is about to pop `top`, for `pending`, an unwind other
+/// than a termination the debugger follows (`follows_unwinds`): the
+/// method breakpoints whose method it is a body of, whose exit the pop is,
+/// decided in `top` while it is still on the stack -- each counted, a
+/// condition or a log evaluated first (`conditions::decide_unwound_exits`)
+/// -- the ones to report where the program goes on (`left_by_unwind`),
+/// with the unwind to carry on; or, once an evaluation of theirs is
+/// begun, the outcome the run loop goes on with, the unwind raised again
+/// when it returns. None while no method breakpoint is set, and while an
+/// evaluation runs, which counts no breakpoint.
+pub(crate) fn leaving_by_unwind<'gc>(
+    mutator: &mut Mutator<'gc>,
     top: ActivationReference,
-) -> Vec<BreakpointId> {
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
     if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
-        return Vec::new();
+        return Ok((Vec::new(), pending));
     }
-    exits_of(mutator, top)
+    decide_exits(mutator, top, pending)
+}
+
+/// The exits of the method breakpoints whose method `top` runs, decided
+/// in it before an unwind pops it or returns from it -- or the decision
+/// an evaluation's return goes on with (`conditions::decide_unwound_exits`).
+#[cold]
+#[inline(never)]
+fn decide_exits<'gc>(
+    mutator: &mut Mutator<'gc>,
+    top: ActivationReference,
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    let going_on = mutator.breakpoints.deciding_unwound_exit();
+    let ids = if going_on {
+        Vec::new()
+    } else {
+        exits_of(mutator, top)
+    };
+    if ids.is_empty() && !going_on {
+        return Ok((ids, pending));
+    }
+    crate::debugger::conditions::decide_unwound_exits(mutator, top, ids, pending)
 }
 
 /// The method breakpoints whose method `activation` runs.
@@ -373,67 +403,62 @@ fn exits_of(mutator: &Mutator<'_>, activation: ActivationReference) -> Vec<Break
 }
 
 /// The unwinder popped a frame of the methods of the method breakpoints
-/// `ids` (`leaving_by_unwind`): each counts the exit as a hit, and the
-/// exit of those whose hit condition holds is reported where the program
-/// goes on (`stepping::method_left`).
+/// `ids`, the exits `leaving_by_unwind` decided hold: each is reported
+/// where the program goes on (`stepping::method_left`).
 #[cold]
 #[inline(never)]
 pub(crate) fn left_by_unwind(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>) {
-    let ids = count_unwound_exits(mutator, ids);
-    if !ids.is_empty() {
-        stepping::method_left(mutator, ids, Leaving::Popped);
-    }
+    stepping::method_left(mutator, ids, Leaving::Popped);
 }
 
-/// A return's unwind arrived at `home`, the top frame, whose frame is
-/// `frame`, and returns from it to its caller: if a method breakpoint
-/// names its method, and the non-local return that began the unwind did
-/// not count the exit already, each such breakpoint counts it as a hit,
-/// and the exit of those whose hit condition holds is reported where the
-/// program goes on, the caller's return point (`stepping::method_left`).
+/// A return's unwind, `pending`, arrived at `home`, the top frame, whose
+/// frame is `frame`, and returns from it to its caller: if a method
+/// breakpoint names its method, and the non-local return that began the
+/// unwind did not count the exit already, its exits are decided in `home`
+/// as `leaving_by_unwind` decides them, and those that hold are answered,
+/// to be reported where the program goes on (`returned_by_unwind`).
 pub(crate) fn returning_by_unwind<'gc>(
     mutator: &mut Mutator<'gc>,
     home: ActivationReference,
     frame: FrameReference<'gc>,
-) {
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
     if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
-        return;
+        return Ok((Vec::new(), pending));
     }
-    report_return(mutator, home, frame);
+    decide_return(mutator, home, frame, pending)
 }
 
-/// `returning_by_unwind`'s report, out of line.
+/// `returning_by_unwind`'s decision, out of line.
 #[cold]
 #[inline(never)]
-fn report_return<'gc>(
+fn decide_return<'gc>(
     mutator: &mut Mutator<'gc>,
     home: ActivationReference,
     frame: FrameReference<'gc>,
-) {
-    if mutator
-        .breakpoints
-        .returned_home_reported(&mutator.heap, frame)
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    if !mutator.breakpoints.deciding_unwound_exit()
+        && mutator
+            .breakpoints
+            .returned_home_reported(&mutator.heap, frame)
     {
-        return;
+        return Ok((Vec::new(), pending));
     }
-    let ids = exits_of(mutator, home);
-    let ids = count_unwound_exits(mutator, ids);
+    decide_exits(mutator, home, pending)
+}
+
+/// The exits `returning_by_unwind` decided hold at `home`, reported where
+/// the program goes on, the caller's return point
+/// (`stepping::method_left`).
+pub(crate) fn returned_by_unwind(
+    mutator: &mut Mutator<'_>,
+    home: ActivationReference,
+    ids: Vec<BreakpointId>,
+) {
     if !ids.is_empty() {
         stepping::method_left(mutator, ids, Leaving::Returning(home));
     }
-}
-
-/// Of `ids`, method breakpoints whose method an unwind left, those whose
-/// hit condition holds at the exit, each counted. One with a condition or
-/// a log is left out, neither counted nor reported: the frame its
-/// condition would be evaluated in is popped, and the program goes on
-/// elsewhere.
-fn count_unwound_exits(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>) -> Vec<BreakpointId> {
-    let unconditional = ids
-        .into_iter()
-        .filter(|id| !mutator.breakpoints.is_conditional(*id))
-        .collect();
-    mutator.breakpoints.count_hits(unconditional)
 }
 
 /// The breakpoints the debugger set that the top frame `activation`, a
@@ -441,24 +466,23 @@ fn count_unwound_exits(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>) -> Vec
 /// there, where a step into stops it at the safepoint without running
 /// its slot, each counting the reach as a hit; and what going past the
 /// stop owes. The step's stop is made whatever the hit conditions say,
-/// and names only the breakpoints whose condition holds. One with a
-/// condition or a log is neither evaluated, counted nor named: the stop
-/// is the step's, made before any code runs, and lets the frame past the
-/// slot.
+/// and names only the breakpoints whose condition holds. Answers too the
+/// breakpoints counted that do not hold, and those with a condition or a
+/// log, left uncounted for the safepoint to decide in the pushed frame
+/// before it makes the step's stop (`conditions::Deciding::at_push`).
 pub(crate) fn standing_hits(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
-) -> (Hits, AfterPast) {
+) -> (Hits, AfterPast, Vec<BreakpointId>, Vec<Conditional>) {
     let code = mutator.heap.activation_code(activation);
     let index = mutator.heap.activation_program_counter(activation);
     if !code.is_patched(index) {
-        return (Hits::default(), AfterPast::Nothing);
+        return (Hits::default(), AfterPast::Nothing, Vec::new(), Vec::new());
     }
     let standing = mutator.breakpoints.kinds_at(address(&code), index);
     // The stop is the step's whatever the hits say, and lets the frame
     // past the slot once: nothing it passed is fetched again.
-    let (hits, after, _, _) = hits_of(mutator, activation, &code, index, standing, None);
-    (hits, after)
+    hits_of(mutator, activation, &code, index, standing, None)
 }
 
 /// The run loop popped a frame and goes on otherwise than by handing its

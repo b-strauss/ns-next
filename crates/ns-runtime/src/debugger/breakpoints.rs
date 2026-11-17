@@ -91,6 +91,13 @@ pub(crate) struct Breakpoints {
     /// What the evaluation answered, from its end until the stop it was
     /// asked at takes it.
     pub(super) evaluated: Option<super::evaluation::Outcome>,
+    /// The decision of a method's exit by an unwind, kept while an
+    /// evaluation of its runs (`conditions::decide_unwound_exits`).
+    pub(super) unwound_exit: Option<super::conditions::UnwoundExit>,
+    /// The breakpoints whose condition or log failed at a method's exit
+    /// by an unwind since the last stop, and the first failure's
+    /// description, which the next stop names (`conditions::failure_named`).
+    pub(super) exit_failure: Option<(Vec<BreakpointId>, String)>,
     /// The method exits of the step a host run's end left in progress,
     /// which goes on in the program's next run (`stepping::run_ended`);
     /// `None` while no step is carried.
@@ -663,6 +670,14 @@ impl Breakpoints {
         self.terminating
     }
 
+    /// Whether a method's exit by an unwind is being decided, an
+    /// evaluation of its condition or log having begun
+    /// (`conditions::decide_unwound_exits`): the unwind's return to the
+    /// frame goes on with it.
+    pub(crate) fn deciding_unwound_exit(&self) -> bool {
+        self.unwound_exit.is_some()
+    }
+
     /// Whether an expression the debugger evaluates is running.
     #[inline(always)]
     pub(crate) fn evaluating(&self) -> bool {
@@ -790,18 +805,13 @@ impl Breakpoints {
         standing
     }
 
-    /// Counts a hit of each of `ids`, the breakpoints the debugger set
-    /// that a frame reached, and answers those whose hit condition holds
-    /// at it, the ones it stops for. Counted here, in the run loop's cold
-    /// decision, so that a hit that does not stop costs no stop and no
-    /// round trip to the agent (`docs/design/debugger.md`, "Hit counts and
-    /// temporary breakpoints").
-    pub(crate) fn count_hits(&mut self, ids: Vec<BreakpointId>) -> Vec<BreakpointId> {
-        ids.into_iter().filter(|id| self.count_hit(*id)).collect()
-    }
-
-    /// Counts a hit of the breakpoint `id`, and answers whether its hit
-    /// condition holds at it.
+    /// Counts a hit of the breakpoint `id`, a breakpoint the debugger set
+    /// that a frame reached, and answers whether its hit condition holds
+    /// at it, whether it stops. Counted only in the run loop's cold
+    /// decisions and at the safepoint, so that a hit that does not stop
+    /// costs no stop and no round trip to the agent
+    /// (`docs/design/debugger.md`, "Hit counts and temporary
+    /// breakpoints").
     pub(crate) fn count_hit(&mut self, id: BreakpointId) -> bool {
         let counted = self.record_mut(id);
         // Every id a patch holds is one of the table's, which removes a
@@ -1549,6 +1559,8 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.counted_reach = None;
     table.pending_stop = None;
     table.pending_exception = None;
+    table.unwound_exit = None;
+    table.exit_failure = None;
     table.terminating = false;
     table.step_filters = StepFilters::default();
     table.filter_decisions.forget();

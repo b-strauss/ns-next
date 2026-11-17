@@ -214,8 +214,9 @@ pub struct MethodBreakpoint {
     /// set; `None` stops at every one.
     pub hit_condition: Option<HitCondition>,
     /// An expression evaluated in the frame at each hit before the hit is
-    /// counted: only a hit at which it answers `true` is counted and
-    /// decided by `hit_condition`; `None` counts every hit.
+    /// counted -- at an exit by an unwind, in the frame the unwind leaves,
+    /// before it is popped: only a hit at which it answers `true` is
+    /// counted and decided by `hit_condition`; `None` counts every hit.
     pub condition: Option<String>,
     /// What the breakpoint logs, a logpoint's message, instead of
     /// stopping: sent as `Event::Logged` at every hit that would stop;
@@ -508,9 +509,12 @@ pub enum StopReason {
     /// on resumes it with nil, which its `halt` answers. `exits` as for
     /// `Exception`.
     Halt { exits: Vec<BreakpointId> },
-    /// The program reached the statement the breakpoints `ids` stand at,
-    /// and their condition or log expression did not compile or raised an
-    /// error, which `error` describes -- the first's, when several failed.
+    /// A condition or log expression did not compile or raised an error,
+    /// which `error` describes -- the first's, when several failed --
+    /// where the program reached a breakpoint's statement, or where it
+    /// goes on after a method's exit by an unwind. `ids` names the
+    /// breakpoints that failed first, then every other the stop is for:
+    /// those that held there and the exits by an unwind it reports.
     ConditionFailed {
         ids: Vec<BreakpointId>,
         error: String,

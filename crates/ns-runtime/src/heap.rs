@@ -9561,8 +9561,21 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn activation_is_evaluation_base(&self, activation: ActivationReference) -> bool {
         matches!(
             self.activation_own_continuation(activation),
-            Continuation::Evaluated
+            Continuation::Evaluated | Continuation::ExitEvaluated(_)
         )
+    }
+
+    /// The unwind an evaluation's base `activation` interrupted, for a
+    /// method's exit by an unwind (`Continuation::ExitEvaluated`); `None`
+    /// for any other activation.
+    pub(crate) fn activation_interrupted_unwind(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<PendingUnwind<'gc>> {
+        match self.activation_own_continuation(activation) {
+            Continuation::ExitEvaluated(pending) => Some(PendingUnwind::clone(pending)),
+            _ => None,
+        }
     }
 
     /// `activation_is_evaluation_base` for the activation `frame` holds,
@@ -9573,7 +9586,7 @@ impl<'gc> Heap<'gc> {
         }
         matches!(
             self.frame_suspended_continuation(frame),
-            Some(Continuation::Evaluated)
+            Some(Continuation::Evaluated | Continuation::ExitEvaluated(_))
         )
     }
 

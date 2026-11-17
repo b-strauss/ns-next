@@ -450,6 +450,13 @@ pub enum Continuation<'gc> {
     /// from above (`docs/design/debugger.md`, "Evaluation"). No image is
     /// written while an evaluation runs, so it is never encoded.
     Evaluated,
+    /// The block of a method breakpoint's condition or log expression,
+    /// evaluated in a frame an unwind is about to pop -- the method's exit
+    /// by an unwind -- returned (`debugger::conditions::exit_answered`):
+    /// its value decides the exit, and the unwind it interrupted goes on,
+    /// raised again as `Unwind` raises it. An evaluation's base, as
+    /// `Evaluated`'s is.
+    ExitEvaluated(Box<PendingUnwind<'gc>>),
 }
 
 /// What a resumed activation returns to when its sender is suspended

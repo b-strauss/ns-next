@@ -3390,7 +3390,7 @@ and the compiler alone knows where a statement compiled to an instruction.
 
 ### Hit counts and temporary breakpoints
 
-**Built** (`HitCondition`, `Breakpoints::count_hits`,
+**Built** (`HitCondition`, `Breakpoints::count_hit`,
 `interpreter/breakpoint.rs`; the agent's parsing,
 `crates/ns-cli/src/debug/breakpoints.rs`), and so are conditions and
 logpoints in the VM (`LineBreakpoint::condition` and `log`,
@@ -3481,7 +3481,11 @@ that does not compile -- a `^` among its causes, as in every evaluation
 -- or raises an error stops the program at the slot with
 `StopReason::ConditionFailed`, naming every breakpoint that failed there
 and the first failure's description, as IntelliJ stops when a condition
-fails (`a_failing_condition_stops_and_says_why`). A reach none of whose
+fails (`a_failing_condition_stops_and_says_why`,
+`a_failing_log_expression_stops_and_says_why`), and, after them, every
+breakpoint that held there and every method exit by an unwind the stop
+reports, so that IntelliJ removes a temporary breakpoint hit there all
+the same (`a_failed_condition_s_stop_names_the_breakpoints_that_held`). A reach none of whose
 breakpoints holds and no step stops at goes past the slot as a resumed
 stop's token lets it (`PastOnce`); otherwise the stop is made as the
 arm's would be, every condition decided first, and the commands served
@@ -3492,16 +3496,35 @@ passed (`CountedReach`), so that the fetch of the slot again evaluates
 none of them twice; a condition not yet evaluated when an exception's
 stop is made instead is evaluated by that fetch, once. A pause asked
 while a condition runs aborts it ("Evaluation", "Aborting") and stops
-the program at the slot, as the pause's stop. Each expression is
+the program at the slot, for the breakpoints that held there and the
+exits it reports, or else as the pause's stop. Each expression is
 compiled once per breakpoint, body and slot and kept on the
 breakpoint's record (`CompiledConditions`), dropped with the
 breakpoint and at every install, which changes the text it was resolved
-against. Where no frame stands at the slot, nothing is evaluated: a
-step into's stop at a pushed frame's first statement is made before any
-code runs, and neither evaluates, counts nor names a conditional
-breakpoint standing there, which it lets the frame past; a method's exit
-by an unwind has popped the frame its condition would read, and a
-conditional method breakpoint neither counts nor reports it. A temporary breakpoint needs
+against. A step into's stop at a pushed frame's first statement, which
+is the step's whatever the breakpoints there say, decides their
+conditions in that frame first, as the safepoint decides a reach
+(`conditions::Deciding::at_push`): it is the breakpoint's where one
+holds, and the step's otherwise, and a logpoint there logs
+(`a_step_into_decides_a_condition_at_the_first_statement`). A method's
+exit by an unwind -- an exception a caller handles, a non-local return
+past it or arriving at it -- is decided in the frame the unwind leaves,
+before the unwinder pops it or returns from it, as it runs an `ensure:`
+block there (decided in stage 5; JVMTI's `MethodExit` fires for an exit
+by an exception in the frame still on the stack): the
+unwinder pushes the condition's evaluation above that frame with the
+unwind it interrupts (`Continuation::ExitEvaluated`), whose return
+decides the exit and raises the unwind again, and an error that ends it
+does the same at its base (`interpreter/unwind.rs`, `end_at_base`); the
+exit is then counted and decided as an ordinary one, logged, or
+reported where the program goes on, as every exit by an unwind is
+(`conditions::decide_unwound_exits`;
+`a_condition_decides_an_exit_by_an_exception`,
+`a_condition_decides_an_exit_by_a_non_local_return`,
+`a_method_logpoint_logs_an_exit_by_an_exception`). A failure there is
+named by the stop that reports the exit (`conditions::failure_named`,
+`a_condition_failing_at_an_exit_by_an_unwind_is_named`); a pause that
+aborts it makes that report the pause's stop. A temporary breakpoint needs
 nothing of the agent or the VM: IntelliJ's debugger session removes a
 breakpoint marked to be removed once hit when it reports the stop, which
 the `stopped` event's `hitBreakpointIds` tell it.
