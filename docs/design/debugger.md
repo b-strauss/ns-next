@@ -1996,9 +1996,9 @@ not.
   endless evaluation aborted, a start without a runtime running the
   server's own executable, stale shipped sources removed, and a killed
   server ending its program; `xtask/src/mcp.rs`'s tests hold the copy
-  `cargo xtask mcp` puts, and that a copy already there stays. The plugin's tests cover the stage's
-  actions over a scripted agent and the real runtime ("The JetBrains
-  plugin").
+  `cargo xtask mcp` puts, that a copy already there stays and the
+  refusal without a build. The plugin's tests cover the stage's actions
+  over a scripted agent and the real runtime ("The JetBrains plugin").
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -5655,8 +5655,10 @@ the way not taken: every question would run the program from its start.
   that no process of the server's locks what cargo writes: on Windows a
   running executable can be neither replaced nor removed, and a server
   run from `target/debug/ns-next` would keep `cargo build` from writing
-  it, as a long-lived launcher run through cargo would keep it from
-  relinking its own executable. The client starts the path as given,
+  it. A long-lived `cargo xtask` launcher, which the client would start
+  and which would start the server, is the way not taken: it would run
+  for the whole connection and keep cargo from relinking `xtask` after a
+  change to it or to `ns-runtime`. The client starts the path as given,
   without a shell; Node's `child_process`, on which the MCP SDKs' stdio
   transports are built, starts `target/mcp/ns-next` on Windows without
   the `.exe`, which the system adds (checked 2026-11-17). `cargo xtask
@@ -5664,7 +5666,8 @@ the way not taken: every question would run the program from its start.
   nothing, refuses, naming `cargo build -p ns-cli`, when there is no
   build, and copies `target/debug/ns-next` to `target/mcp/ns-next`,
   written under a name of its process's and renamed into place, only
-  when nothing is there; a copy already there stays, since a server may
+  when nothing is there, after removing the partial copies a task that
+  died midway left; a copy already there stays, since a server may
   run from it, and the task says so. Until the task has run, the client
   fails to start the server. The server and the programs it debugs run
   from that copy until it is refreshed -- `target/mcp/` deleted while no

@@ -238,8 +238,9 @@ Rust 1.100.0, edition 2024, seven crates:
   (`debugger.md`, "Launching, the start and the end"; tests
   `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
   standard input and output (`mcp/`), registered by `.mcp.json` from
-  the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools an agent debugs a program: each `debug_start` runs it in a
-  child `ns-next run --debug-connect` the server is a DAP client of, and
+  the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools
+  an agent debugs a program: each `debug_start` runs it in a child
+  `ns-next run --debug-connect` the server is a DAP client of, and
   each stop is answered as a summary in text; a child runs the server's
   own executable unless `runtime` names another, and the server knows
   nothing of the build (`debugger.md`, "The MCP server"; tests

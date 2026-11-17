@@ -1753,7 +1753,9 @@ xtask::bin/xtask codegen::tests::every_budget_names_a_function_once
 xtask::bin/xtask codegen::tests::every_narrow_write_to_the_stack_is_a_store
 xtask::bin/xtask codegen::tests::the_listing_gives_each_function_its_size
 xtask::bin/xtask mcp::tests::a_copy_already_there_stays
+xtask::bin/xtask mcp::tests::a_stale_partial_copy_is_removed_and_a_fresh_one_stays
 xtask::bin/xtask mcp::tests::the_build_is_copied_when_no_copy_is_there
+xtask::bin/xtask mcp::tests::without_a_build_the_task_refuses
 xtask::bin/xtask tests::a_linked_worktree_mounts_the_repositorys_git_metadata
 xtask::bin/xtask tests::a_stress_run_of_the_corpus_sets_its_switch
 xtask::bin/xtask tests::a_volume_is_named_after_its_checkout

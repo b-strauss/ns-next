@@ -12,9 +12,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 /// The directory below the target directory that holds the copy.
 const COPY_DIRECTORY: &str = "mcp";
+
+/// The suffix of a copy being written, before it is renamed into place.
+const PARTIAL_SUFFIX: &str = ".partial";
+
+/// How long a partial copy stays before a task removes it: far longer
+/// than a copy takes, so that no task removes one another task is still
+/// writing, while one a task that died midway left goes at the next run.
+const PARTIAL_STALE: Duration = Duration::from_secs(60);
 
 /// The name of the executable, the build's and its copy's.
 fn executable_name() -> String {
@@ -33,21 +42,11 @@ enum Placed {
 /// Copies the debug build to `target/mcp/` unless a copy is there, saying
 /// which on the standard error.
 pub(crate) fn place(root: &Path) -> ExitCode {
-    let target = target_directory(root);
-    let build = target.join("debug").join(executable_name());
-    if !build.is_file() {
-        eprintln!(
-            "cargo xtask mcp: there is no build of ns-next at {}; build it with \
-             `cargo build -p ns-cli`, then run `cargo xtask mcp` again",
-            build.display()
-        );
-        return ExitCode::FAILURE;
-    }
-    match place_copy(&build, &target.join(COPY_DIRECTORY)) {
+    match place_in(&target_directory(root)) {
         Ok(Placed::Copied(copy)) => {
             eprintln!(
-                "cargo xtask mcp: copied {} to {}; (re)connect the MCP client (`/mcp`)",
-                build.display(),
+                "cargo xtask mcp: copied the debug build to {}; (re)connect the MCP client \
+                 (`/mcp`)",
                 copy.display()
             );
             ExitCode::SUCCESS
@@ -79,6 +78,20 @@ fn target_directory(root: &Path) -> PathBuf {
     )
 }
 
+/// Copies the debug build of the target directory `target` into its
+/// copy's directory unless a copy is there; refuses when there is no
+/// build, saying how to make one.
+fn place_in(target: &Path) -> Result<Placed, String> {
+    let build = target.join("debug").join(executable_name());
+    if !build.is_file() {
+        return Err(format!(
+            "there is no build of ns-next at {}; build it with `cargo build -p ns-cli`,              then run `cargo xtask mcp` again",
+            build.display()
+        ));
+    }
+    place_copy(&build, &target.join(COPY_DIRECTORY))
+}
+
 /// Copies `build` into `directory` under the executable's name unless a
 /// file is there already. The copy is written under a name of this
 /// process's and renamed into place, so that a client never starts a half
@@ -90,8 +103,9 @@ fn place_copy(build: &Path, directory: &Path) -> Result<Placed, String> {
     }
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("creating {}: {error}", directory.display()))?;
+    remove_stale_partials(directory);
     let partial = directory.join(format!(
-        "{}.{}.partial",
+        "{}.{}{PARTIAL_SUFFIX}",
         executable_name(),
         std::process::id()
     ));
@@ -105,6 +119,29 @@ fn place_copy(build: &Path, directory: &Path) -> Result<Placed, String> {
         ));
     }
     Ok(Placed::Copied(copy))
+}
+
+/// Removes the partial copies in `directory` older than `PARTIAL_STALE`,
+/// which a task that died between its copy and its rename left; a removal
+/// that fails leaves the file.
+fn remove_stale_partials(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let partial = entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(PARTIAL_SUFFIX);
+        let stale = std::fs::metadata(entry.path())
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > PARTIAL_STALE);
+        if partial && stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +192,43 @@ mod tests {
             "the build"
         );
         assert_eq!(names_in(&directory), [executable_name()]);
+    }
+
+    /// Without a build the task refuses, naming the command that makes
+    /// one, and writes nothing.
+    #[test]
+    fn without_a_build_the_task_refuses() {
+        let scratch = Scratch::new("refuses");
+        let refusal = place_in(&scratch.0).expect_err("a refusal");
+        assert!(refusal.contains("cargo build -p ns-cli"), "{refusal}");
+        assert!(names_in(&scratch.0).is_empty(), "the task wrote something");
+    }
+
+    /// A partial copy a task that died midway left is removed; a fresh
+    /// one, which another task may still be writing, stays.
+    #[test]
+    fn a_stale_partial_copy_is_removed_and_a_fresh_one_stays() {
+        let scratch = Scratch::new("partials");
+        let build = scratch.0.join("build");
+        std::fs::write(&build, "the build").expect("write the build");
+        let directory = scratch.0.join("mcp");
+        std::fs::create_dir_all(&directory).expect("create the copy's directory");
+        let stale = format!("{}.7{PARTIAL_SUFFIX}", executable_name());
+        let fresh = format!("{}.8{PARTIAL_SUFFIX}", executable_name());
+        std::fs::write(directory.join(&stale), "half").expect("write a stale partial copy");
+        std::fs::write(directory.join(&fresh), "half").expect("write a fresh partial copy");
+        let two_minutes_ago = std::time::SystemTime::now() - Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(directory.join(&stale))
+            .and_then(|file| file.set_modified(two_minutes_ago))
+            .expect("age the stale partial copy");
+        place_copy(&build, &directory).expect("a copy");
+        let mut names = names_in(&directory);
+        names.sort();
+        let mut expected = vec![executable_name(), fresh];
+        expected.sort();
+        assert_eq!(names, expected);
     }
 
     /// A copy already there stays as it is, whatever the build holds: a
