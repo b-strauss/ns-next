@@ -2267,7 +2267,14 @@ cursor. The agent's DAP requests for smart step into
   way -- of an inlined block of it, its fallback closure or the
   reference lowering's block (`stepping::StatementRegion`) -- so that it
   stops at the chosen push or, as a step over, once the statement is
-  done. Aimed at a send it is
+  done; its own first statement start stops it, since a frame that
+  comes back there has done the statement -- the next iteration of a
+  loop the optimized lowering inlines, whose condition may have no
+  statement start, as `[going] whileTrue: [...]`'s has none, reaches
+  the statement again where the reference lowering's next condition
+  block stops
+  (`a_smart_step_in_a_loop_reading_a_local_stops_at_the_next_iteration`).
+  Aimed at a send it is
   a step into whose safepoint stops only at a push whose sender -- or
   the first sender below a run of filtered frames, so that a send of
   the shipped `do:` stops in the program's block it runs -- stands at

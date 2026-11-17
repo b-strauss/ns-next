@@ -263,18 +263,32 @@ pub(crate) struct Target {
 /// whose statement starts its flood leaves out, so that the step stops
 /// at the chosen push or, as a step over, only once the statement is
 /// done, never at a statement start of an inlined block on the way.
+/// The statement's own first start is no part of it: a frame that comes
+/// back there -- in the next iteration of a loop the optimized lowering
+/// inlines, whose condition may have no statement start of its own --
+/// has done the statement and begins it afresh, which a step over stops
+/// at as the reference lowering's does in the loop's next block.
 pub(crate) struct StatementRegion {
-    regions: Vec<(Rc<CompiledCode>, Range<u32>)>,
+    /// The statement's body and its instructions in it.
+    statement: (Rc<CompiledCode>, Range<u32>),
+    /// The whole body of each block of an inlinable form in the
+    /// statement the frame runs as a closure.
+    blocks: Vec<Rc<CompiledCode>>,
 }
 
 impl StatementRegion {
-    /// Whether slot `index` of `body` lies in the statement.
+    /// Whether slot `index` of `body` lies in the statement, past its
+    /// first start.
     fn holds(&self, body: &Rc<CompiledCode>, index: usize) -> bool {
-        u32::try_from(index).is_ok_and(|index| {
-            self.regions
+        let (code, range) = &self.statement;
+        let in_statement = Rc::ptr_eq(code, body)
+            && u32::try_from(index)
+                .is_ok_and(|index| index != range.start && range.contains(&index));
+        in_statement
+            || self
+                .blocks
                 .iter()
-                .any(|(code, range)| Rc::ptr_eq(code, body) && range.contains(&index))
-        })
+                .any(|block| Rc::ptr_eq(block, body) && index < block.instruction_count())
     }
 }
 
@@ -479,10 +493,12 @@ pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame, waiting: bo
         standing
     };
     let rest = first..statement.instructions.end;
-    let mut regions = vec![(Rc::clone(&code), statement.instructions.clone())];
+    let in_statement = (Rc::clone(&code), statement.instructions.clone());
+    let mut blocks_run = Vec::new();
     // Every target is given the whole statement once it is known.
     let unplaced = Rc::new(StatementRegion {
-        regions: Vec::new(),
+        statement: in_statement.clone(),
+        blocks: Vec::new(),
     });
     // Each target keyed by where it runs: its index, behind the index of
     // the form's send and the block's place among the form's blocks for a
@@ -576,7 +592,7 @@ pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame, waiting: bo
                 }
                 expanded.push(block.span);
                 let all = 0..u32::try_from(body.instruction_count()).unwrap_or(u32::MAX);
-                regions.push((Rc::clone(&body), all.clone()));
+                blocks_run.push(Rc::clone(&body));
                 let Some(metadata) = Cache::metadata(mutator, &body, &origin) else {
                     continue;
                 };
@@ -589,7 +605,10 @@ pub(crate) fn targets(mutator: &mut Mutator<'_>, frame: &StackFrame, waiting: bo
     }
     sends.sort_by(|(first, _), (second, _)| first.cmp(second));
     blocks.sort_by(|(first, _), (second, _)| first.cmp(second));
-    let statement = Rc::new(StatementRegion { regions });
+    let statement = Rc::new(StatementRegion {
+        statement: in_statement,
+        blocks: blocks_run,
+    });
     sends
         .into_iter()
         .chain(blocks)

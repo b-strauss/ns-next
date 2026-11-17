@@ -15534,4 +15534,94 @@ mod smart_stepping {
             assert_eq!(labels, ["twice:"]);
         }
     }
+
+    /// Loops whose last statement sends `foo` only where `flag` holds,
+    /// which it never does: one whose condition sends, and one whose
+    /// condition is a bare read of a local.
+    const LOOPED: &str = indoc! {"
+        class Looped = Object new () (
+          public counted = (
+            | count ::= 0. flag ::= false. |
+            [count < 3] whileTrue: [
+              flag ifTrue: [self foo] ifFalse: [count:: count + 1]].
+            ^count
+          )
+          public going = (
+            | going ::= true. count ::= 0. flag ::= false. |
+            [going] whileTrue: [
+              flag ifTrue: [self bar] ifFalse: [going:: (count:: count + 1) < 3]].
+            ^count
+          )
+          foo = (
+            ^1
+          )
+          bar = (
+            ^2
+          )
+        ) : ()
+    "};
+
+    /// Sends `selector` to an instance of `LOOPED` under `lowering`,
+    /// stopped at a breakpoint on the line of `line` in the loop's first
+    /// iteration, and takes a smart step into the target labelled
+    /// `label`, which never runs: answers where it stopped and the label
+    /// of `count` there.
+    fn looped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+    ) -> ((String, String), String) {
+        let offset = line_start(LOOPED, line);
+        let (stopped, _) = stepped(
+            LOOPED,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Looped", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Looped");
+                set_breakpoints(remote, "Looped", Vec::new());
+                expect_breakpoints(remote, "Looped");
+                let target = target_labelled(&targets(remote), label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, LOOPED);
+                let count = top_variable(remote, "count");
+                continue_stopped(remote);
+                (stood, count)
+            },
+        );
+        stopped
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a send of a loop's last statement that never
+        /// runs goes on as a step over once that run of the statement is
+        /// done: it stops at the next statement start, in the loop's next
+        /// iteration, never past the loop.
+        fn a_smart_step_whose_target_never_runs_stops_at_the_next_iteration(lowering) {
+            let (stood, count) =
+                looped(lowering, "counted", "flag ifTrue: [self foo] ifFalse:", "foo");
+            assert_eq!(stood.1, "count < 3", "{stood:?}");
+            assert_eq!(count, "1");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The same, the loop's condition a bare read of a local, which
+        /// has no send of its own.
+        fn a_smart_step_in_a_loop_reading_a_local_stops_at_the_next_iteration(lowering) {
+            let (stood, count) =
+                looped(lowering, "going", "flag ifTrue: [self bar] ifFalse:", "bar");
+            // The optimized lowering's inline condition has no statement
+            // start: the next one is the statement's, begun afresh.
+            let next = match lowering {
+                Lowering::Optimized => {
+                    "flag ifTrue: [self bar] ifFalse: [going:: (count:: count + 1) < 3]"
+                }
+                Lowering::Reference => "going",
+            };
+            assert_eq!(stood.1, next, "{stood:?}");
+            assert_eq!(count, "1");
+        }
+    }
 }
