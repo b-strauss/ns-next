@@ -237,14 +237,13 @@ Rust 1.100.0, edition 2024, seven crates:
   `disconnect`
   (`debugger.md`, "Launching, the start and the end"; tests
   `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
-  standard input and output (`mcp/`), registered by `.mcp.json`, through
-  whose tools an agent debugs a program: each `debug_start` runs it in a
+  standard input and output (`mcp/`), registered by `.mcp.json` as
+  `cargo xtask mcp`, through whose tools an agent debugs a program: each `debug_start` runs it in a
   child `ns-next run --debug-connect` the server is a DAP client of, and
-  each stop is answered as a summary in text; the children run from
-  copies of their executables below the temporary directory and, on
-  Windows, the server renames its own executable aside and puts a copy
-  back, so that a build can replace `target/debug/ns-next` meanwhile
-  (`debugger.md`, "The MCP server"; tests `tests/mcp.rs`).
+  each stop is answered as a summary in text; a child runs the server's
+  own executable unless `runtime` names another, and the server knows
+  nothing of the build (`debugger.md`, "The MCP server"; tests
+  `tests/mcp.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
@@ -307,8 +306,12 @@ Rust 1.100.0, edition 2024, seven crates:
   (`execution.md`, "The foundation and the one extension point").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
-of "The gates" below, grouped, and `shipped-code`, which writes that
-artifact (`--check` only says whether it is current).
+of "The gates" below, grouped; `shipped-code`, which writes that
+artifact (`--check` only says whether it is current); and `mcp`, which
+`.mcp.json` registers: it builds nothing, copies `target/debug/ns-next` to
+`target/mcp/` and runs the copy as `ns-next mcp`, so that neither the
+server nor its programs lock the build (`mcp.rs`; `debugger.md`, "The MCP
+server", "Starting it").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every

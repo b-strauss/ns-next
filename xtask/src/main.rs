@@ -11,11 +11,14 @@
 //! logic a script would make fragile -- choosing the groups from what a
 //! change touched, for one. `unreached-tests` measures which tests no
 //! stress mode and no platform reaches, and `nextest-config` writes the
-//! profiles that leave them out (`unreached.rs`).
+//! profiles that leave them out (`unreached.rs`). `mcp` starts the
+//! repository's MCP server from a copy of the debug build, so that it never
+//! locks the build (`mcp.rs`).
 
 #![forbid(unsafe_code)]
 
 mod codegen;
+mod mcp;
 mod unreached;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +31,7 @@ usage: cargo xtask gates <group>...
        cargo xtask codegen [<tree>]
        cargo xtask unreached-tests
        cargo xtask nextest-config
+       cargo xtask mcp
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
   commit               fmt, clippy, the suite with the reach record checked against the list of unreached tests, the doctests, parse-corpus, the plugin's check
@@ -757,6 +761,9 @@ fn main() -> ExitCode {
     }
     if task == "unreached-tests" && groups.is_empty() {
         return report_outcome(unreached_tests(&repository_root()));
+    }
+    if task == "mcp" && groups.is_empty() {
+        return mcp::serve(&repository_root());
     }
     if task == "nextest-config" && groups.is_empty() {
         return report_outcome(

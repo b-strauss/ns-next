@@ -41,8 +41,8 @@ fn evaluation_wait() -> Duration {
     DEFAULT_WAIT
 }
 
-/// The server's debugging state: the one session, and the build a
-/// `debug_start` runs unless told otherwise.
+/// The server's debugging state: the one session, and the binary a
+/// `debug_start` runs unless told otherwise -- the server's own.
 pub(crate) struct Debugger {
     session: Option<Session>,
     default_runtime: PathBuf,
@@ -372,7 +372,7 @@ pub(crate) fn list() -> Value {
                 "breakpoints": { "type": "array", "items": breakpoint_schema(), "description": "Breakpoints set before the program starts." },
                 "stop_on_entry": { "type": "boolean", "description": "Stop at the first statement of main:args:." },
                 "arguments": { "type": "array", "items": { "type": "string" }, "description": "The program's arguments." },
-                "runtime": { "type": "string", "description": "The ns-next binary to run the program with; the one this server was started from by default." },
+                "runtime": { "type": "string", "description": "The ns-next binary to run the program with; this server's own executable by default." },
                 "wait": wait_schema()
             }),
             &["program"],

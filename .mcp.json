@@ -1,1 +1,1 @@
-{"mcpServers": {"ns-next": {"command": "target/debug/ns-next", "args": ["mcp"]}}}
+{"mcpServers": {"ns-next": {"command": "cargo", "args": ["xtask", "mcp"]}}}
