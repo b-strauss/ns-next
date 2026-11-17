@@ -183,6 +183,19 @@ pub enum Command {
         name: String,
         expression: String,
     },
+    /// Aborts the running evaluation -- an `Evaluate`'s, a `SetVariable`'s
+    /// or a breakpoint condition's or log expression's -- as a pause does
+    /// (`docs/design/debugger.md`, "Evaluation", "Aborting"), but in
+    /// sequence with the other commands, so that it never outlives the
+    /// evaluation it was meant for: served at the next safepoint of the
+    /// evaluation, it is answered by `Event::AbortTaken`, and the
+    /// evaluation's own answer follows once the unwind to its base ended:
+    /// `Event::Evaluated(Evaluation::Aborted)` for an `Evaluate` or a
+    /// `SetVariable`, the stop an aborted condition makes for one; where no evaluation runs -- at a stop, the evaluation
+    /// it was meant for already answered, or while the program runs -- it
+    /// is moot, answered by `Event::Refused` (`"no evaluation runs"`), and
+    /// leaves nothing armed.
+    AbortEvaluation,
     /// Runs the frame at index `frame` of the stack trace again from its
     /// start: every frame above it is unwound, its `ensure:` and
     /// `ifCurtailed:` blocks run, and the frame's named temporaries are
@@ -521,6 +534,7 @@ impl Command {
             Command::ModuleText { .. } => "ModuleText",
             Command::Evaluate { .. } => "Evaluate",
             Command::SetVariable { .. } => "SetVariable",
+            Command::AbortEvaluation => "AbortEvaluation",
             Command::RestartFrame { .. } => "RestartFrame",
             Command::ForceReturn { .. } => "ForceReturn",
             Command::StepInTargets => "StepInTargets",
@@ -599,6 +613,10 @@ pub enum Event {
     /// The answer to `Command::SetVariable`: the variable as
     /// `Command::Variables` now shows it. The program is still stopped.
     VariableSet(Variable),
+    /// The answer to `Command::AbortEvaluation` served while an
+    /// evaluation runs: the evaluation is aborted, and its own answer
+    /// follows once the unwind to its base ended (`Command::AbortEvaluation`).
+    AbortTaken,
     /// The logpoint `breakpoint` was hit where it holds, and logs `text`,
     /// its message's parts joined; sent unasked, and the program goes on.
     Logged {

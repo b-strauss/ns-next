@@ -56,6 +56,11 @@ const TERMINATED: &str = "the debugger terminated the program";
 /// Why the program cannot serve a command that only a stop serves.
 const RUNNING: &str = "the program is running";
 
+/// Why an `AbortEvaluation` is moot: no evaluation runs where it is
+/// served -- at a stop, the one it was meant for already answered, or
+/// while the program runs.
+const NO_EVALUATION: &str = "no evaluation runs";
+
 /// Why a stop refuses `Variables` or `Evaluate` for a frame index past its
 /// stack.
 const NO_SUCH_FRAME: &str = "no frame at that index";
@@ -442,6 +447,7 @@ impl StressReader {
             }
             Event::Stopped { .. }
             | Event::VariableSet(_)
+            | Event::AbortTaken
             | Event::Continued
             | Event::Breakpoints { .. }
             | Event::MethodBreakpoints(_)
@@ -761,7 +767,7 @@ impl Interpreter {
             }
         }
         if bits & DEBUGGER_COMMANDS != 0 {
-            if self.serve_queued_commands() == Served::Terminate {
+            if self.serve_queued_commands(false) == Served::Terminate {
                 return self.terminate();
             }
             // A `SetBreakpoints` just served may have removed a breakpoint
@@ -928,7 +934,8 @@ impl Interpreter {
     /// and serves the agent again, without a second `Event::Stopped`, a
     /// pause asked meanwhile moot, since the program is stopped; while it
     /// runs, a safepoint serves the commands queued meanwhile -- a
-    /// terminate ends the run -- and a pause aborts it, as does the
+    /// terminate ends the run -- and an `AbortEvaluation` or a pause
+    /// aborts it, as does the
     /// remote's departure, which detaches the debugger and lets the
     /// program run on (`Served::Abort`). `None` when no stop is kept: the
     /// answer of an evaluation whose debugger is gone waits for nobody,
@@ -951,11 +958,16 @@ impl Interpreter {
         }
         if !self.enter(|mutator| evaluation::has_ended(mutator)) {
             let bits = self.enter(|mutator| mutator.heap.debugger_bits());
-            if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
+            let served = if bits & DEBUGGER_COMMANDS != 0 {
+                self.serve_queued_commands(true)
+            } else {
+                Served::GoOn
+            };
+            if served == Served::Terminate {
                 return Some(self.terminate());
             }
             let detached = self.debugger.is_none();
-            if detached || bits & DEBUGGER_PAUSE != 0 {
+            if detached || served == Served::Abort || bits & DEBUGGER_PAUSE != 0 {
                 self.clear_debugger_bits(DEBUGGER_PAUSE);
                 return Some(self.abort_evaluation());
             }
@@ -1263,7 +1275,9 @@ impl Interpreter {
     fn serve_stress_evaluation(&mut self) -> Served {
         if !self.enter(|mutator| evaluation::has_ended(mutator)) {
             let bits = self.enter(|mutator| mutator.heap.debugger_bits());
-            if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
+            if bits & DEBUGGER_COMMANDS != 0
+                && self.serve_queued_commands(false) == Served::Terminate
+            {
                 return self.terminate();
             }
             return Served::GoOn;
@@ -1382,25 +1396,36 @@ impl Interpreter {
     /// (`docs/design/debugger.md`, "Commands while the program runs"). A
     /// `Terminate` ends the run, and the commands queued after it go with
     /// the run (`serve_between_runs`), never to the next; a configuration
-    /// command among them is served all the same.
-    fn serve_queued_commands(&mut self) -> Served {
+    /// command among them is served all the same. An `AbortEvaluation`
+    /// is taken where `evaluating` says the debugger's evaluation runs,
+    /// which the answer then says (`Served::Abort`) once the rest of the
+    /// queue is drained, and is moot otherwise.
+    fn serve_queued_commands(&mut self, evaluating: bool) -> Served {
         self.clear_debugger_bits(DEBUGGER_COMMANDS);
+        let mut served = Served::GoOn;
         loop {
             let Some(debugger) = &self.debugger else {
-                return Served::GoOn;
+                return served;
             };
             let command = match debugger.commands.try_recv() {
                 Ok(command) => command,
-                Err(TryRecvError::Empty) => return Served::GoOn,
+                Err(TryRecvError::Empty) => return served,
                 Err(TryRecvError::Disconnected) => {
                     self.detach_debugger();
-                    return Served::GoOn;
+                    return served;
                 }
             };
             match command {
                 Command::Terminate => {
                     self.serve_between_runs();
                     return Served::Terminate;
+                }
+                Command::AbortEvaluation if evaluating && served != Served::Abort => {
+                    served = Served::Abort;
+                    self.answer(&mut CommandSource::Remote, Event::AbortTaken);
+                }
+                command @ Command::AbortEvaluation => {
+                    self.refuse(&mut CommandSource::Remote, &command, NO_EVALUATION);
                 }
                 command @ (Command::SetBreakpoints { .. }
                 | Command::SetMethodBreakpoints(_)
@@ -1489,6 +1514,7 @@ impl Interpreter {
             | Command::Children { .. }
             | Command::Evaluate { .. }
             | Command::SetVariable { .. }
+            | Command::AbortEvaluation
             | Command::RestartFrame { .. }
             | Command::ForceReturn { .. }
             | Command::StepInTargets
@@ -1869,6 +1895,11 @@ impl Interpreter {
                         Err(reason) => self.refuse(&mut stop.source, &command, &reason),
                     }
                 }
+                // The evaluation it was meant for has answered, or none
+                // was begun.
+                command @ Command::AbortEvaluation => {
+                    self.refuse(&mut stop.source, &command, NO_EVALUATION);
+                }
                 command @ (Command::RestartFrame { .. } | Command::ForceReturn { .. }) => {
                     match self.start_unwind(&mut stop, &command) {
                         Ok(started) => {
@@ -2164,6 +2195,7 @@ impl Interpreter {
                     | Command::Children { .. }
                     | Command::Evaluate { .. }
                     | Command::SetVariable { .. }
+                    | Command::AbortEvaluation
                     | Command::RestartFrame { .. }
                     | Command::ForceReturn { .. }
                     | Command::StepInTargets

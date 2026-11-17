@@ -12666,6 +12666,173 @@ mod evaluation {
         }
     }
 
+    /// How long a run that a continue lets go on may take to end before
+    /// the test takes it for stopped again.
+    const RUN_END_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Waits for the end of the run the agent continued, answering every
+    /// event it reported meanwhile; a stop is
+    /// answered by a terminate, and a run not ended within
+    /// `RUN_END_TIMEOUT` terminated, so that a failing test ends.
+    fn events_until_the_run_ended(remote: &DebugRemote) -> Vec<String> {
+        let deadline = std::time::Instant::now() + RUN_END_TIMEOUT;
+        let mut reported = Vec::new();
+        while !run_finished() {
+            if std::time::Instant::now() > deadline {
+                reported.push(String::from("the run did not end"));
+                remote.send(Command::Terminate);
+                break;
+            }
+            match remote.next_event(Duration::from_millis(10)) {
+                None => {}
+                Some(stopped @ Event::Stopped { .. }) => {
+                    // The frames say where the stray stop stands.
+                    let frames: Vec<String> = stack_trace(remote)
+                        .into_iter()
+                        .map(|frame| frame.name)
+                        .collect();
+                    reported.push(format!("{stopped:?} in {frames:?}"));
+                    remote.send(Command::Terminate);
+                }
+                Some(event) => reported.push(format!("{event:?}")),
+            }
+        }
+        reported
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A continue after a pause aborted an evaluation lets the program
+        /// go on from the stop the evaluation was asked at: the breakpoint
+        /// it stopped at lets it past, and it runs to its end, stopping
+        /// nowhere -- whether the endless expression assigns a slot in an
+        /// `ensure:` or only reads one.
+        fn a_continue_after_an_aborted_evaluation_runs_to_the_end(lowering) {
+            for expression in [ENDLESS, "[true] whileTrue: [holder + 1]"] {
+                let offset = line_start(ABORTING, "^value");
+                let (mut interpreter, class) = interpreted(ABORTING, lowering);
+                let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+                let evaluated = expression.to_owned();
+                let ((aborted, reported), result) = debugged_in(
+                    &mut interpreter,
+                    &instance,
+                    |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                    move |remote| {
+                        let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+                        assert_eq!(expect_breakpoint_stop(remote), [id]);
+                        remote.send(Command::Evaluate {
+                            frame: 0,
+                            expression: evaluated,
+                        });
+                        thread::sleep(PAUSE_DELAY);
+                        remote.pause();
+                        let aborted = remote.next_event(EVENT_TIMEOUT);
+                        continue_stopped(remote);
+                        (aborted, events_until_the_run_ended(remote))
+                    },
+                );
+                assert!(
+                    matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                    "the evaluation was aborted, not {aborted:?}"
+                );
+                assert!(
+                    reported.is_empty(),
+                    "the program ran to its end, but reported {reported:?}"
+                );
+                let expected = i64::from(expression_cleans(expression));
+                assert_eq!(answered(&mut interpreter, result), expected);
+                assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+            }
+        }
+    }
+
+    /// The cleanups an aborted `expression` counts: one for `ENDLESS`'s
+    /// `ensure:` block, none for an expression without one.
+    fn expression_cleans(expression: &str) -> bool {
+        expression == ENDLESS
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` aborts the running evaluation in sequence
+        /// with the other commands: it is taken, the evaluation answers
+        /// that it was aborted, its `ensure:` block run once, and a
+        /// continue runs the program to its end, stopping nowhere.
+        fn an_abort_evaluation_command_aborts_an_endless_evaluation(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((taken, aborted, cleaned, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    let cleaned = value_label(remote, 0, "holder == #cleaned");
+                    continue_stopped(remote);
+                    (taken, aborted, cleaned, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(taken, Some(Event::AbortTaken)),
+                "the abort was taken, not {taken:?}"
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert_eq!(cleaned, "true");
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` at a stop where no evaluation runs -- the one
+        /// it was meant for answered -- is moot: refused, and it leaves
+        /// nothing armed, so that a continue runs the program to its end.
+        fn an_abort_evaluation_command_with_none_running_is_refused(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((evaluated, refused, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let evaluated = evaluate(remote, 0, "value + 1");
+                    let refused = request(remote, Command::AbortEvaluation);
+                    continue_stopped(remote);
+                    (evaluated, refused, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(evaluated, Evaluation::Value(_)),
+                "the evaluation answered a value, not {evaluated:?}"
+            );
+            assert_eq!(
+                refused,
+                Event::Refused {
+                    command: String::from("AbortEvaluation"),
+                    reason: String::from("no evaluation runs"),
+                }
+            );
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 0, "nothing was cleaned");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
     ns_runtime::for_each_lowering! {
         /// A terminate while an evaluation runs ends the run, every
         /// pending `ensure:` block of the evaluation and of the program

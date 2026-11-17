@@ -781,8 +781,10 @@ at once, answered by `Event::Refused`, but for a configuration command;
 a `SetBreakpoints` is served -- the breakpoints patched or restored,
 answered by `Event::Breakpoints` -- and so is every other configuration
 command, `SetStepFilters`, `SetMethodBreakpoints` and
-`SetExceptionBreakpoints`, and the program runs on; any other command is
-refused, "the program is running". The agent queues a command before it
+`SetExceptionBreakpoints`, and the program runs on; an
+`AbortEvaluation` aborts the evaluation that runs, and is refused, "no
+evaluation runs", where none does ("Evaluation", "Aborting"); any other
+command is refused, "the program is running". The agent queues a command before it
 sets the bit, and the VM clears the bit before it drains the queue, so
 that a command queued while the queue is drained keeps its bit set for
 the next safepoint; the other order would lose it, a `Terminate` sent to
@@ -3987,18 +3989,38 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   evaluation, the safepoints within it serve the commands queued
   meanwhile, a pause aborts it, and a pause asked after it ended stops
   the program at the next safepoint, the program not being stopped.
-- **Aborting.** An evaluation the user cancels is stopped by the agent's
-  pause bit (`DebugControl::pause`): the safepoint the pause makes,
-  finding an evaluation running at the kept stop
+- **Aborting.** An evaluation the user cancels is aborted by
+  `Command::AbortEvaluation`, or by the agent's pause bit
+  (`DebugControl::pause`): the safepoint that serves the command --
+  queued, it arms the commands bit as every command does -- or the
+  pause, finding an evaluation running at the kept stop
   (`Interpreter::serve_evaluation`), marks it aborted
-  (`evaluation::abort`) and answers `Served::Abort`, which the run loop
+  (`evaluation::abort`), answers the command `Event::AbortTaken`, and
+  answers `Served::Abort`, which the run loop
   takes as a termination -- the debugger's termination signal unwound
   from the top activation (`vm::unwind_at_safepoint`) -- but for the
   termination flag, which it leaves clear, so that the evaluation's base
   ends the unwind: every `ensure:` block above the base runs, and the
   stop answers `Event::Evaluated(Evaluation::Aborted)`, whatever an
   `ensure:` block raised on the way, and serves on, the program still
-  stopped. The remote's departure aborts it too: the last handle of a
+  stopped. The unwind leaves the frame below at the slot it stood at,
+  and the run loop takes the safepoint the evaluation's end asked for at
+  once (`vm::take_safepoint`), as the switch to that frame does when the
+  evaluation returns or an error ends it: were the frame to fetch its
+  patched slot first, with no token to go past it, it would request a
+  stop of its own, which the kept stop's serving leaves pending for a
+  later safepoint -- a stop for the same breakpoint in whatever frame
+  runs then (`a_continue_after_an_aborted_evaluation_runs_to_the_end`).
+  The command is sequenced with the others, so that it never outlives
+  the evaluation it was meant for: where none runs -- at a stop, the
+  evaluation already answered, or while the program runs -- it is moot,
+  refused with `"no evaluation runs"`, and leaves nothing armed
+  (`an_abort_evaluation_command_with_none_running_is_refused`). A pause
+  is a bit, unordered with the commands: one that comes after the
+  evaluation ended is cleared by the safepoint that serves the kept
+  stop, but one asked while that stop serves again is a pause asked
+  while stopped, and stops the program at the next safepoint once it
+  goes on ("The stop"), which is why an agent aborts by the command. The remote's departure aborts it too: the last handle of a
   `DebugControl` closes the command channel and arms the commands bit as
   it drops, so that even an evaluation that never ends reaches a
   safepoint that finds the channel closed, detaches the debugger and
@@ -4008,8 +4030,9 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   to the floor, the depth limit keeping the evaluation's raise until the
   run ended (`evaluation::terminated`), since those blocks are pushed
   where the evaluation's frames stood, which may lie past L
-  (`a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block`). A pause that comes after the evaluation ended is moot.
+  (`a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block`).
   Pinned by `an_endless_evaluation_is_aborted_by_a_pause`,
+  `an_abort_evaluation_command_aborts_an_endless_evaluation`,
   `a_detach_during_an_evaluation_aborts_it` and
   `a_terminate_during_an_evaluation_ends_the_program`. A renderer past
   its limit will be stopped the same way.

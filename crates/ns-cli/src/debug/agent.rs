@@ -1754,6 +1754,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         // that error as an evaluation does.
         Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
         Event::VariableSet(_) => command == "SetVariable",
+        Event::AbortTaken => command == "AbortEvaluation",
         Event::StepInTargets(_) => command == "StepInTargets",
         Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
         Event::InstanceCounts(_) => command == "InstanceCounts",

@@ -275,6 +275,15 @@ enum AfterSafepoint {
 /// goes on with after it, out of line: only a safepoint pays for it, and
 /// the run loop, whose size is held to a budget (`cargo xtask gates
 /// codegen`), keeps one call.
+///
+/// A debugger's abort of an evaluation unwinds to the evaluation's base,
+/// whose end leaves the frame below stopped at the slot it stood at and
+/// asks for the safepoint that serves the stop kept for it: that
+/// safepoint is taken here at once, before the frame runs another
+/// instruction -- as `evaluated` and an error's unwind switch to it with
+/// the request armed -- or the frame would fetch its patched slot again
+/// while no token lets it past, and request a stop that the kept stop's
+/// serving leaves pending for a later safepoint, in another frame.
 #[cold]
 #[inline(never)]
 fn take_safepoint(
@@ -283,7 +292,23 @@ fn take_safepoint(
     floor: usize,
     at_loop_head: bool,
 ) -> AfterSafepoint {
-    match interpreter.safepoint(floor) {
+    loop {
+        if let Some(after) = safepoint_once(interpreter, frame, floor, at_loop_head) {
+            return after;
+        }
+    }
+}
+
+/// One safepoint of `take_safepoint`: what the loop goes on with, or
+/// `None` when an abort's unwind ended an evaluation, whose stop's
+/// safepoint is taken next.
+fn safepoint_once(
+    interpreter: &mut Interpreter,
+    frame: &mut FrameRegisters,
+    floor: usize,
+    at_loop_head: bool,
+) -> Option<AfterSafepoint> {
+    let after = match interpreter.safepoint(floor) {
         // A different frame is on top -- the running activation,
         // suspended and resumed by the suspend stress mode, the factory
         // below it, whose initializer's push the debugger undid, or an
@@ -313,6 +338,11 @@ fn take_safepoint(
                 unwind_at_safepoint(mutator, frame, floor, signal)
             }) {
                 Some(result) => AfterSafepoint::Exit(result),
+                None if interpreter
+                    .enter(|mutator| crate::debugger::evaluation::has_ended(mutator)) =>
+                {
+                    return None;
+                }
                 None => AfterSafepoint::Run(None),
             }
         }
@@ -326,7 +356,8 @@ fn take_safepoint(
                 None => AfterSafepoint::Run(None),
             }
         }
-    }
+    };
+    Some(after)
 }
 
 /// The frame `run` goes on with once the safepoint is served, `frame` still

@@ -3125,7 +3125,8 @@ fn an_evaluate_error_is_a_failed_response() {
 }
 
 /// A hover's evaluation that has not answered within the agent's bound is
-/// aborted, the program still stopped and its stop served.
+/// aborted, the program still stopped and its stop served; a continue
+/// then runs the program to its end, stopping nowhere.
 #[test]
 fn a_hover_evaluation_that_does_not_answer_is_aborted() {
     let (_directory, path) = program("Stops", STOPS);
@@ -3136,9 +3137,19 @@ fn a_hover_evaluation_that_does_not_answer_is_aborted() {
     assert_eq!(endless["success"], false, "{endless}");
     assert_eq!(endless["message"], "evaluation aborted", "{endless}");
     assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
-    client.succeed("terminate", json!({}));
-    assert_eq!(exit_code_reported(&mut client), 1);
-    assert_eq!(client.finish().status, Some(1));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    let events = client.connection.events_until_closed();
+    let names = names(&events);
+    assert!(
+        !names.iter().any(|name| name == "stopped"),
+        "the program stopped again: {names:?}"
+    );
+    let exited = names
+        .iter()
+        .position(|name| name == "exited")
+        .unwrap_or_else(|| panic!("no `exited` event: {names:?}"));
+    assert_eq!(events[exited]["body"]["exitCode"], 0, "{names:?}");
+    assert_eq!(client.finish().stdout, "3\n");
 }
 
 #[test]
