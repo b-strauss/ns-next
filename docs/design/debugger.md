@@ -5131,9 +5131,13 @@ text, in which each target's span becomes its `line`, `column`,
 `endLine` and `endColumn`, 1-based, in UTF-16 columns
 (`Command::StepInTargets`); a target's id is the VM's plus 1, so that
 none is 0. `stepIn` with a `targetId` sends `Command::StepIntoTarget`
-whatever its `granularity`, the VM refusing an id no target of the stop
-has (`step_in_targets_list_the_line_s_sends`,
-`step_in_with_a_target_stops_in_it`). `restartFrame { frameId }` sends
+whatever its `granularity`, but only for a target `stepInTargets`
+handed out at this stop: the VM's ids are positions, by which an
+earlier stop's id would name another target, so any other id is
+refused, "no such target", and nothing is sent
+(`step_in_targets_list_the_line_s_sends`,
+`step_in_with_a_target_stops_in_it`,
+`a_step_in_target_of_an_earlier_stop_is_refused`). `restartFrame { frameId }` sends
 `Command::RestartFrame`, and the stop the restarted frame makes at its
 start is reported with DAP's reason `restart`
 (`a_restart_frame_runs_the_method_again`). `nsNext/forceReturn {
@@ -5141,11 +5145,18 @@ frameId, expression? }`, a request of ns-next's own, makes the frame
 return at once: `nil` without an expression, or with a blank one;
 otherwise the expression is evaluated in that frame first, as
 `evaluate` evaluates it, and its value forced (`Command::ForceReturn`).
-An evaluation that ends with an error or is aborted, and a value that
-is withheld -- "the value is withheld" -- fail the request and force
-nothing, the program still stopped
-(`a_forced_return_answers_the_expression_s_value`); the stop that
-follows is a step's.
+An evaluation that ends with an error or is aborted fails the request
+and forces nothing, the program still stopped, and so does a withheld
+value, which the agent sends and the VM refuses in its own words, "the
+value is withheld"; while the expression runs the stop counts as left,
+as while a step is on its way, so that a `continue` or a step the
+client sends meanwhile is refused rather than cross the forced return
+(`a_forced_return_answers_the_expression_s_value`,
+`a_forced_return_without_an_expression_answers_nil`,
+`a_forced_return_passes_the_vm_s_refusal_of_a_withheld_value_on`). The
+stop that follows is a step's. A frame of the core library is neither
+restarted nor forced, the VM's refusal "the frame is the core
+library's" the request's error (`a_shipped_frame_is_deemphasized`).
 
 The memory view (`evaluation.rs`): `nsNext/instanceCounts {}` answers
 `classes`, each `{ name, count }` in the VM's order, the largest count
@@ -5155,7 +5166,8 @@ a program may declare a module of a shipped module's name.
 `nsNext/instances { name, shipped?, start, count }` answers a page of the
 instances of the class `name` names, as `variables` answers, each named
 `#<n>`: the program's module of that name when it has one, the shipped
-module's otherwise, unless `shipped` picks one. `nsNext/referrers {
+module's otherwise, unless `shipped` picks one
+(`instances_of_a_shipped_class_are_asked_for_by_its_module`). `nsNext/referrers {
 valueReference, start, count }` answers a page of what refers to the
 value, as `variables` answers too: an object as a variable shows a
 value, and a frame's variable that holds the value as a variable named

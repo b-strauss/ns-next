@@ -313,6 +313,9 @@ pub(crate) struct Agent {
     /// A `restartFrame` is on its way: the next step's stop is the
     /// restart's.
     pub(super) restart_pending: bool,
+    /// A forced return's expression is being evaluated, after which the
+    /// forced return is sent: the stop counts as left (`at_stop`).
+    pub(super) force_return_evaluating: bool,
     /// The VM stands at a stop.
     stopped: bool,
     /// A `Continue`, a step or a run to cursor is on its way: the program
@@ -374,6 +377,7 @@ impl Agent {
             stop_on_entry: false,
             entry_pending: false,
             restart_pending: false,
+            force_return_evaluating: false,
             stopped: false,
             resuming: false,
             line_step: None,
@@ -811,7 +815,10 @@ impl Agent {
     /// not asked to leave; a request only a stop serves is answered by an
     /// error otherwise, never sent to the VM.
     pub(super) fn at_stop(&mut self, connection: u64, request: &protocol::Request) -> bool {
-        let at_stop = self.stopped && !self.resuming && self.line_step.is_none();
+        let at_stop = self.stopped
+            && !self.resuming
+            && !self.force_return_evaluating
+            && self.line_step.is_none();
         if !at_stop {
             self.respond_error(connection, request, "the program is running");
         }
@@ -1120,6 +1127,7 @@ impl Agent {
         }
         self.entry_pending = false;
         self.restart_pending = false;
+        self.force_return_evaluating = false;
         self.line_step = None;
         self.went_on();
     }
@@ -1183,6 +1191,7 @@ impl Agent {
         self.stop_on_entry = false;
         self.entry_pending = false;
         self.restart_pending = false;
+        self.force_return_evaluating = false;
         self.session_ended(was_attached);
     }
 
@@ -1225,6 +1234,7 @@ impl Agent {
         self.pending.clear();
         self.hovers.clear();
         self.resuming = false;
+        self.force_return_evaluating = false;
         self.line_step = None;
         self.went_on();
     }
@@ -1589,6 +1599,7 @@ impl Agent {
                 if generation != self.stop.generation() {
                     return Err("the program went on".to_string());
                 }
+                self.stop.step_in_targets_answered(targets.len());
                 Ok(Some(self.step_in_targets_body(&targets, module.as_ref())))
             }
             (Event::InstanceCounts(counts), Conversion::InstanceCounts) => {
@@ -2314,5 +2325,66 @@ mod tests {
             &Breakpoints::default(),
         ));
         assert_eq!(paused["reason"], "pause");
+    }
+
+    /// A forced return's expression answered a withheld value: the agent
+    /// sends the forced return all the same, and answers the VM's refusal
+    /// in the VM's own words, so that no copy of them can drift. While
+    /// the expression runs, the stop counts as left: a `continue` is
+    /// refused, never queued to cross the forced return.
+    #[test]
+    fn a_forced_return_passes_the_vm_s_refusal_of_a_withheld_value_on() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        let agent = &mut harness.agent;
+        agent.request(1, request(1, "attach", json!({})));
+        agent.stopped = true;
+        agent.stop.begin(None);
+        agent.request(
+            1,
+            request(
+                2,
+                "nsNext/forceReturn",
+                json!({ "frameId": 1, "expression": "anything" }),
+            ),
+        );
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("Evaluate")
+        );
+        agent.request(1, request(3, "continue", json!({ "threadId": 1 })));
+        let refused = response_to(&mut peer, 3);
+        assert_eq!(refused["message"], "the program is running", "{refused}");
+
+        let withheld = ns_runtime::ValueDescription {
+            id: ns_runtime::ValueId(7),
+            label: "a Mirror".to_string(),
+            class_name: "Mirror".to_string(),
+            child_count: 0,
+            indexed: false,
+            withheld: true,
+            mark: None,
+        };
+        agent.vm_event(Event::Evaluated(ns_runtime::debugger::Evaluation::Value(
+            withheld,
+        )));
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("ForceReturn")
+        );
+        let reason = "the value is withheld (the VM's words)";
+        agent.vm_event(Event::Refused {
+            command: "ForceReturn".to_string(),
+            reason: reason.to_string(),
+        });
+        let answered = response_to(&mut peer, 2);
+        assert_eq!(answered["success"], false, "{answered}");
+        assert_eq!(answered["message"], reason, "{answered}");
+        // The program stays at its stop.
+        agent.request(1, request(4, "continue", json!({ "threadId": 1 })));
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("Continue")
+        );
     }
 }

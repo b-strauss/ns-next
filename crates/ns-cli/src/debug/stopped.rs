@@ -59,6 +59,10 @@ pub(crate) struct Stop {
     /// evaluation that answers it -- keeps one reference.
     value_references: BTreeMap<u32, i64>,
     next_reference: i64,
+    /// How many targets `stepInTargets` handed out at this stop, if it
+    /// was answered: a `stepIn` names only one of them, since the VM's
+    /// ids are positions that another stop gives to other targets.
+    step_in_targets: Option<usize>,
 }
 
 impl Stop {
@@ -71,6 +75,7 @@ impl Stop {
             values: BTreeMap::new(),
             value_references: BTreeMap::new(),
             next_reference: 1,
+            step_in_targets: None,
         }
     }
 
@@ -97,6 +102,19 @@ impl Stop {
         self.references.clear();
         self.values.clear();
         self.value_references.clear();
+        self.step_in_targets = None;
+    }
+
+    /// `stepInTargets` handed out `count` targets at this stop.
+    pub(crate) fn step_in_targets_answered(&mut self, count: usize) {
+        self.step_in_targets = Some(count);
+    }
+
+    /// Whether the VM's target `target` is one `stepInTargets` handed out
+    /// at this stop.
+    pub(crate) fn has_step_in_target(&self, target: u32) -> bool {
+        self.step_in_targets
+            .is_some_and(|count| usize::try_from(target).is_ok_and(|target| target < count))
     }
 
     pub(crate) fn frames(&self) -> &Frames {

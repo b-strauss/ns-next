@@ -122,10 +122,13 @@ impl Agent {
             && let Some(target_id) = arguments.target_id
         {
             // A smart step into stops at its target alone, the VM's own
-            // step; an id no target of this stop has is the VM's to refuse.
+            // step. Only a target handed out at this stop is sent: the
+            // VM's ids are positions, which an earlier stop's id would
+            // name another target by.
             let Some(target) = target_id
                 .checked_sub(1)
                 .and_then(|target| u32::try_from(target).ok())
+                .filter(|target| self.stop.has_step_in_target(*target))
             else {
                 self.respond_error(connection, request, NO_SUCH_TARGET);
                 return;

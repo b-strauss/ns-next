@@ -24,10 +24,6 @@ const ABORTED: &str = "evaluation aborted";
 /// The refusal of a value reference no value of the stop has.
 const NO_SUCH_VALUE: &str = "no value of this stop has that reference";
 
-/// The refusal of a forced return of a withheld value, in the VM's words
-/// for a withheld value it is asked to take.
-const WITHHELD: &str = "the value is withheld";
-
 impl Agent {
     /// `evaluate`: the expression in the frame its `frameId` names, the
     /// top frame without one, whatever its `context`; a hover's is
@@ -139,9 +135,12 @@ impl Agent {
     /// `nsNext/forceReturn`: the frame its id names returns at once
     /// (`Command::ForceReturn`) -- `nil` without an expression, or what
     /// its expression answers, evaluated in that frame first as
-    /// `evaluate` evaluates one. An expression that does not answer a
-    /// value the frame may return -- an error, an abort, a withheld value
-    /// -- fails the request and forces nothing, the program still stopped.
+    /// `evaluate` evaluates one. An expression that ends with an error or
+    /// is aborted fails the request and forces nothing, the program still
+    /// stopped, as does a withheld value, which the VM refuses to force.
+    /// While the evaluation runs the stop counts as left, as while a step
+    /// is on its way: the client's next `continue` or step would otherwise
+    /// cross the forced return the evaluation's answer sends.
     pub(super) fn force_return(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) = self.arguments::<protocol::ForceReturnArguments>(connection, request)
         else {
@@ -169,7 +168,9 @@ impl Agent {
                     frame,
                 };
                 let command = Command::Evaluate { frame, expression };
-                self.forward_converted(connection, request, command, conversion);
+                if self.forward_converted(connection, request, command, conversion) {
+                    self.force_return_evaluating = true;
+                }
             }
         }
     }
@@ -185,6 +186,7 @@ impl Agent {
         generation: u64,
         frame: usize,
     ) {
+        self.force_return_evaluating = false;
         match self.forced_value(event, generation) {
             Ok(value) => {
                 let command = Command::ForceReturn {
@@ -204,9 +206,7 @@ impl Agent {
             return Err("the program went on".to_string());
         }
         match event {
-            Event::Evaluated(Evaluation::Value(value)) if value.withheld => {
-                Err(WITHHELD.to_string())
-            }
+            // A withheld value is the VM's to refuse, in its own words.
             Event::Evaluated(Evaluation::Value(value)) => Ok(value.id),
             Event::Evaluated(Evaluation::Error { description, .. }) => Err(description),
             Event::Evaluated(Evaluation::Aborted) => Err(ABORTED.to_string()),

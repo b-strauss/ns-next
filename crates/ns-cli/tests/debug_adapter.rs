@@ -3709,6 +3709,19 @@ fn a_shipped_frame_is_deemphasized() {
         "{shipped}"
     );
     assert_eq!(shipped["nsNext/shipped"], true, "{shipped}");
+    assert_eq!(shipped["canRestart"], false, "{shipped}");
+    // The VM neither restarts nor forces a frame of the core library.
+    for (command, arguments) in [
+        ("restartFrame", json!({ "frameId": 1 })),
+        ("nsNext/forceReturn", json!({ "frameId": 1 })),
+    ] {
+        let refused = client.request(command, arguments);
+        assert_eq!(refused["success"], false, "{refused}");
+        assert_eq!(
+            refused["message"], "the frame is the core library's",
+            "{refused}"
+        );
+    }
     let program = frames
         .iter()
         .find(|frame| frame["name"] == "Walker>>main:args:")
@@ -3723,4 +3736,114 @@ fn a_shipped_frame_is_deemphasized() {
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "12\n");
+}
+
+#[test]
+fn a_step_in_target_of_an_earlier_stop_is_refused() {
+    let (_directory, path) = program("Smart", SMART);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[4, 5]);
+    client.stopped("breakpoint");
+    let body = client.succeed("stepInTargets", json!({ "frameId": 1 }));
+    let first = dap::array(&body["targets"])[0]["id"].clone();
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.stopped("breakpoint");
+    // The VM's ids are positions, which this stop would give another
+    // target: the agent sends nothing, and the program stays stopped.
+    let stale = client.request("stepIn", json!({ "threadId": 1, "targetId": first }));
+    assert_eq!(stale["success"], false, "{stale}");
+    assert_eq!(stale["message"], "no such target", "{stale}");
+    assert_eq!(
+        top_frame(&mut client),
+        (json!("Smart>>main:args:"), json!(5))
+    );
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+#[test]
+fn a_forced_return_without_an_expression_answers_nil() {
+    for arguments in [
+        json!({ "frameId": 1 }),
+        json!({ "frameId": 1, "expression": "  " }),
+    ] {
+        let (_directory, path) = program("Again", AGAIN);
+        let mut client = DapClient::connect_mode(&path);
+        breakpoints_before_the_start(&mut client, &path, &[7]);
+        client.stopped("breakpoint");
+        client.succeed("nsNext/forceReturn", arguments);
+        client.stopped("step");
+        assert_eq!(top_frame(&mut client).0, json!("Again>>main:args:"));
+        client.set_breakpoints(file_source(&path), &[]);
+        client.succeed("continue", json!({ "threadId": 1 }));
+        assert_eq!(exit_code_reported(&mut client), 0);
+        assert_eq!(client.finish().stdout, "in\nnil\n");
+    }
+}
+
+/// While a forced return's expression runs the stop counts as left: a
+/// `continue` sent meanwhile is refused, and the run still ends on a
+/// `terminate`. The VM refuses a command that arrives while an evaluation
+/// runs in the same words, so this holds the session's end to account;
+/// the agent's own refusal, which keeps a `continue` from crossing the
+/// forced return when the evaluation answers first, is pinned by
+/// `agent.rs`'s `a_forced_return_passes_the_vm_s_refusal_of_a_withheld_value_on`.
+#[test]
+fn a_forced_return_s_evaluation_leaves_the_stop() {
+    let (_directory, path) = program("Again", AGAIN);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[7]);
+    client.stopped("breakpoint");
+    let forcing = client.connection.send(
+        "nsNext/forceReturn",
+        json!({ "frameId": 1, "expression": "[true] whileTrue: []" }),
+    );
+    let refused = client.request("continue", json!({ "threadId": 1 }));
+    assert_eq!(refused["success"], false, "{refused}");
+    assert_eq!(refused["message"], "the program is running", "{refused}");
+    client.succeed("terminate", json!({}));
+    let forced = client.connection.response_to(forcing, "nsNext/forceReturn");
+    assert_eq!(forced["success"], false, "{forced}");
+    assert_eq!(exit_code_reported(&mut client), 1);
+    assert_eq!(client.finish().status, Some(1));
+}
+
+#[test]
+fn instances_of_a_shipped_class_are_asked_for_by_its_module() {
+    let (_directory, path) = program("Kernel", OWN_KERNEL);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[5]);
+    client.stopped("breakpoint");
+    // The program's `Kernel` declares no `Array`; the shipped one does.
+    let own = client.succeed(
+        "nsNext/instances",
+        json!({ "name": "Kernel.Array", "start": 0, "count": 0 }),
+    );
+    assert_eq!(own["variables"], json!([]), "{own}");
+    let shipped = client.succeed(
+        "nsNext/instances",
+        json!({ "name": "Kernel.Array", "shipped": true, "start": 0, "count": 0 }),
+    );
+    let shipped = dap::array(&shipped["variables"]);
+    assert!(!shipped.is_empty(), "{shipped:?}");
+    assert!(
+        shipped.iter().all(|instance| instance["type"] == "Array"),
+        "{shipped:?}"
+    );
+    // The program's root names its own module.
+    let roots = client.succeed(
+        "nsNext/instances",
+        json!({ "name": "Kernel", "start": 0, "count": 0 }),
+    );
+    let roots = dap::array(&roots["variables"]);
+    assert_eq!(roots.len(), 1, "{roots:?}");
+    assert_eq!(roots[0]["type"], "Kernel", "{roots:?}");
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "6\n");
 }
