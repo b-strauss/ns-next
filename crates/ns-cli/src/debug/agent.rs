@@ -344,7 +344,8 @@ pub(crate) struct Agent {
     pub(super) step_filters_said: Vec<String>,
     /// The hovers' evaluations not answered yet (`HOVER_BOUND`).
     hovers: Vec<Hover>,
-    /// The `evaluate` requests that wait for the evaluation the VM runs:
+    /// The requests that evaluate -- `evaluate`, `setVariable`,
+    /// `nsNext/forceReturn` -- and wait for the evaluation the VM runs:
     /// the VM refuses a command that arrives while an evaluation runs,
     /// and its refusal, named by the command alone, would answer the
     /// running one's request (`queue_evaluation`).
@@ -545,8 +546,9 @@ impl Agent {
             .any(|pending| matches!(pending.command, "Evaluate" | "SetVariable"))
     }
 
-    /// Holds `request`, an `evaluate`, until the evaluation the VM runs
-    /// has answered.
+    /// Holds `request` -- an `evaluate`, a `setVariable` or an
+    /// `nsNext/forceReturn`, each of which evaluates -- until the
+    /// evaluation the VM runs has answered.
     pub(super) fn queue_evaluation(&mut self, connection: u64, request: &protocol::Request) {
         self.queued_evaluations
             .push_back((connection, request.clone()));
@@ -559,8 +561,13 @@ impl Agent {
             let Some((connection, request)) = self.queued_evaluations.pop_front() else {
                 return;
             };
-            if self.is_current(connection) {
-                self.evaluate(connection, &request);
+            if !self.is_current(connection) {
+                continue;
+            }
+            match request.command.as_str() {
+                "setVariable" => self.set_variable(connection, &request),
+                "nsNext/forceReturn" => self.force_return(connection, &request),
+                _ => self.evaluate(connection, &request),
             }
         }
     }
@@ -733,7 +740,7 @@ impl Agent {
             command => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "ns-next debugger: connection {connection} sent the unknown command                      {command:?} (seq {}), its message's keys {keys:?}",
+                    "ns-next debugger: connection {connection} sent the unknown command {command:?} (seq {}), its message's keys {keys:?}",
                     request.seq
                 );
                 let message = format!("`{command}` is not supported yet");
@@ -1272,7 +1279,10 @@ impl Agent {
     /// a terminated program's status. A listening agent's client is one of
     /// several, and the program waits for the next.
     fn connection_lost(&mut self) {
-        if matches!(self.mode, Mode::Connecting { .. }) && !self.exited {
+        if matches!(self.mode, Mode::Connecting { .. })
+            && !self.exited
+            && !self.host.terminate_requested()
+        {
             self.host.request_terminate();
             self.send_terminate();
         }
@@ -1639,6 +1649,7 @@ impl Agent {
                         arguments: Value::Null,
                     };
                     self.force_evaluated(connection, &request, event, generation, frame);
+                    self.send_queued_evaluation();
                     return;
                 }
                 let outcome = self.convert(event, conversion);

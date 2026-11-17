@@ -87,6 +87,9 @@ fn rename_aside(executable: &Path) -> Result<(), String> {
     if let Err(error) = restored {
         let _ = std::fs::remove_file(&partial);
         if !executable.is_file() {
+            // The path never stays empty: the running file goes back,
+            // and the build stays locked out as it was before.
+            let _ = std::fs::rename(&aside, executable);
             return Err(format!("copying it back: {error}"));
         }
     }

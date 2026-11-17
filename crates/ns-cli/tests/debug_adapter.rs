@@ -283,18 +283,12 @@ fn a_lost_connection_ends_the_program_in_the_connecting_mode() {
     let (_directory, path) = program("Looper", LOOPER);
     let mut client = DapClient::connect_mode(&path);
     client.start_session(false);
-    client.wait_for_stdout(
-        "looping
-",
-    );
+    client.wait_for_stdout("looping\n");
     client.connection.close();
     let finished = client.finish();
     assert_eq!(finished.status, Some(1), "{}", finished.stderr);
     assert!(
-        finished.stdout.ends_with(
-            "ensured
-"
-        ),
+        finished.stdout.ends_with("ensured\n"),
         "{}",
         finished.stdout
     );
@@ -3703,6 +3697,37 @@ fn a_forced_return_answers_the_expression_s_value() {
     );
     client.stopped("step");
     assert_eq!(top_frame(&mut client).0, json!("Again>>main:args:"));
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "in\n7\n");
+}
+
+/// A forced return sent while an evaluation runs waits for it, as a
+/// second evaluation does: once a `cancel` aborted the running one, the
+/// forced return evaluates its own expression and forces its value.
+#[test]
+fn a_forced_return_sent_during_an_evaluation_forces_its_own_value() {
+    let (_directory, path) = program("Again", AGAIN);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[7]);
+    client.stopped("breakpoint");
+    let seqs = client.connection.send_together(&[
+        (
+            "evaluate",
+            json!({ "expression": "[true] whileTrue: [3]", "frameId": 1, "context": "repl" }),
+        ),
+        (
+            "nsNext/forceReturn",
+            json!({ "frameId": 1, "expression": "3 + 4" }),
+        ),
+    ]);
+    client.succeed("cancel", json!({ "requestId": seqs[0] }));
+    let aborted = client.connection.response_to(seqs[0], "evaluate");
+    assert_eq!(aborted["message"], "evaluation aborted", "{aborted}");
+    let forced = client.connection.response_to(seqs[1], "nsNext/forceReturn");
+    assert_eq!(forced["success"], true, "{forced}");
+    client.stopped("step");
     client.set_breakpoints(file_source(&path), &[]);
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);

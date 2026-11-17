@@ -5111,14 +5111,18 @@ refused as moot and dropped, where a pause bit would stay armed at the
 stop and stop the program again once it goes on
 (`a_hover_evaluation_that_does_not_answer_is_aborted`,
 `a_hover_answered_around_its_bound_stops_nothing_later`). The agent
-sends the VM one evaluation at a time -- an `evaluate` or a
-`setVariable` -- and holds the `evaluate`s that arrive meanwhile until
-it answered: the VM refuses a command that arrives while an evaluation
-runs, and its refusal, named by the command alone, would answer the
-running evaluation's request. DAP's `cancel` (`supportsCancelRequest`)
+sends the VM one evaluation at a time -- an `evaluate`'s, a
+`setVariable`'s or an `nsNext/forceReturn`'s -- and holds every such
+request that arrives meanwhile until it answered, then serves the held
+ones in order, each as if it arrived then: the VM refuses a command that
+arrives while an evaluation runs, and its refusal, named by the command
+alone, would answer the running evaluation's request, whose value would
+then answer the other's -- a forced return would force an unrelated
+value (`a_forced_return_sent_during_an_evaluation_forces_its_own_value`).
+DAP's `cancel` (`supportsCancelRequest`)
 naming the `evaluate` the VM runs aborts it the same way, by
 `Command::AbortEvaluation`, the abort the MCP server sends past its wait
-("The MCP server"); one naming an `evaluate` still held is dropped and
+("The MCP server"); one naming a request still held is dropped and
 answered with the message "cancelled", never sent, since the abort would
 stop the running one; a cancel of another request, or of one answered
 already, is answered with success and does nothing

@@ -91,6 +91,11 @@ impl Agent {
                 return;
             }
         };
+        // One evaluation at a time, as `evaluate`'s.
+        if self.evaluation_in_flight() {
+            self.queue_evaluation(connection, request);
+            return;
+        }
         let command = Command::SetVariable {
             frame,
             name: arguments.name,
@@ -159,6 +164,12 @@ impl Agent {
             self.respond_error(connection, request, NO_SUCH_FRAME);
             return;
         };
+        // One evaluation at a time, as `evaluate`'s: the forced value's
+        // evaluation, or the return itself, waits for the one that runs.
+        if self.evaluation_in_flight() {
+            self.queue_evaluation(connection, request);
+            return;
+        }
         match arguments
             .expression
             .filter(|expression| !expression.trim().is_empty())
