@@ -160,6 +160,11 @@ pub(crate) fn compile_for_stress(
         return Ok(compiled.clone());
     }
     let compiled = compile(mutator, stop, frame, text)?;
+    // The entries of bodies freed since go, so that the table holds no
+    // more than the bodies alive and their names.
+    compilations
+        .compiled
+        .retain(|_, (held, _)| held.strong_count() > 0);
     compilations
         .compiled
         .insert(key, (Rc::downgrade(&body), compiled.clone()));

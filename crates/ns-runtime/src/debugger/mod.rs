@@ -303,6 +303,12 @@ pub(crate) struct StressReader {
     /// The variables evaluated, in the order of their `Evaluate`s, each
     /// with the value the variables view showed.
     expected: std::collections::VecDeque<(String, ValueDescription)>,
+    /// The variable last evaluated, with the id of the value the variables
+    /// view showed and of the one the evaluation answered, which the stop
+    /// holds to being the same object (`Interpreter::check_stress_identity`)
+    /// before the reader's next command: alike descriptions alone would
+    /// pass a place misread as another instance of the same class.
+    identity: Option<(String, ValueId, ValueId)>,
 }
 
 #[cfg(debug_assertions)]
@@ -327,6 +333,7 @@ impl StressReader {
             top_frame: None,
             top_variables_read: false,
             expected: std::collections::VecDeque::new(),
+            identity: None,
         }
     }
 
@@ -345,7 +352,10 @@ impl StressReader {
                 if value.class_name == shown.class_name
                     && value.label == shown.label
                     && value.child_count == shown.child_count
-                    && value.indexed == shown.indexed => {}
+                    && value.indexed == shown.indexed =>
+            {
+                self.identity = Some((name, shown.id, value.id));
+            }
             Err(reason) if reason == evaluation::NO_SOURCE || reason == evaluation::NO_ROOM => {}
             Ok(answer) => panic!(
                 "internal: the {} stress mode's evaluation of {name} in {frame} answered {answer:?}, where the variables view showed {shown:?}",
@@ -1210,6 +1220,38 @@ impl Interpreter {
         served == Served::Evaluate
     }
 
+    /// Holds the pause stress mode's last evaluation to having answered
+    /// the very value the variables view showed -- the same object, or the
+    /// same immediate value -- reading both from `stop`'s values, which the
+    /// reader cannot (`StressReader::identity`).
+    #[cfg(debug_assertions)]
+    fn check_stress_identity(&mut self, stop: &mut Stop) {
+        let CommandSource::Reader(reader) = &mut stop.source else {
+            return;
+        };
+        let Some((name, shown, answered)) = reader.identity.take() else {
+            return;
+        };
+        let mode = reader.mode;
+        let frame = reader.top_frame.clone().unwrap_or_default();
+        let values = &stop.values;
+        let same = self.enter(|mutator| {
+            match (
+                values.fetch(mutator, shown),
+                values.fetch(mutator, answered),
+            ) {
+                (Some((shown, _)), Some((answered, _))) => {
+                    crate::builtins::object_class::identical(&mutator.heap, shown, answered)
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            same,
+            "internal: the {mode} stress mode's evaluation of {name} in {frame} answered another object than the variables view showed"
+        );
+    }
+
     /// Serves the safepoints of an evaluation the pause stress mode's stop
     /// began, which the stop is kept for (`Interpreter::stress_stop`): once
     /// it ended, the kept stop takes its answer and its reader goes on; while
@@ -1588,6 +1630,8 @@ impl Interpreter {
     /// begin past this one's.
     fn serve_stop(&mut self, mut stop: Stop) -> Served {
         let served = loop {
+            #[cfg(debug_assertions)]
+            self.check_stress_identity(&mut stop);
             let command = match &mut stop.source {
                 CommandSource::Remote => {
                     let Some(debugger) = &self.debugger else {

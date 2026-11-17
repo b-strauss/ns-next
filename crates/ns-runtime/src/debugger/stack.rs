@@ -873,22 +873,17 @@ pub(crate) fn frame_values<'gc>(
     let stack_frame = frames.get(frame)?;
     let (code, origin, metadata) = body_of(mutator, stack_frame);
     let shipped = origin_is_shipped(mutator, origin.as_ref());
-    let heap = &mutator.heap;
-    let frame = stack_frame.read(heap);
-    let program_counter = u32::try_from(frame.program_counter(heap))
-        .expect("internal: a program counter fits its frame word");
-    let tainted = code.tainted_before(program_counter).to_vec();
-    let reader = Reader {
-        heap,
-        frame,
-        code: &code,
-        tainted: &tainted,
-    };
-    let mut read = vec![(String::from("self"), Some(frame.receiver(heap)))];
-    match metadata {
-        Some(metadata) => named_variables(&reader, &metadata, &mut read),
-        None => numbered_variables(&reader, &mut read),
-    }
+    let read = with_reader(&mutator.heap, stack_frame, &code, |reader| {
+        let mut read = vec![(
+            String::from("self"),
+            Some(reader.frame.receiver(reader.heap)),
+        )];
+        match metadata {
+            Some(metadata) => named_variables(reader, &metadata, &mut read),
+            None => numbered_variables(reader, &mut read),
+        }
+        read
+    });
     Some((shipped, read))
 }
 
@@ -905,20 +900,10 @@ pub(crate) fn vector_not_made(
         return false;
     };
     let code = code(heap, stack_frame);
-    let frame = stack_frame.read(heap);
-    let program_counter = u32::try_from(frame.program_counter(heap))
-        .expect("internal: a program counter fits its frame word");
-    let tainted = code.tainted_before(program_counter).to_vec();
-    let reader = Reader {
-        heap,
-        frame,
-        code: &code,
-        tainted: &tainted,
-    };
-    let holder = match vector {
+    let holder = with_reader(heap, stack_frame, &code, |reader| match vector {
         VectorHolder::Register(register) => reader.own(register),
         VectorHolder::Outer { hops, register } => reader.outer(hops, register),
-    };
+    });
     holder.is_some_and(|holder| holder.is_nil())
 }
 
@@ -937,6 +922,27 @@ pub(crate) fn code_is_shipped(mutator: &Mutator<'_>, code: &Rc<CompiledCode>) ->
         .filter_map(|id| heap.mixin(id))
         .find(|mixin| member_holding(mixin, code).is_some())?;
     Some(module_name(mutator, &holder).is_none_or(|module| module.shipped))
+}
+
+/// Answers what `read` answers with the reader of `stack_frame`, which
+/// runs `code`: the frame read where it stands, and the registers the
+/// leftover analysis finds tainted before its stored program counter.
+fn with_reader<'gc, T>(
+    heap: &Heap<'gc>,
+    stack_frame: &StackFrame,
+    code: &CompiledCode,
+    read: impl FnOnce(&Reader<'_, 'gc>) -> T,
+) -> T {
+    let frame = stack_frame.read(heap);
+    let program_counter = u32::try_from(frame.program_counter(heap))
+        .expect("internal: a program counter fits its frame word");
+    let tainted = code.tainted_before(program_counter).to_vec();
+    read(&Reader {
+        heap,
+        frame,
+        code,
+        tainted: &tainted,
+    })
 }
 
 /// What reads one stopped frame's variables.
