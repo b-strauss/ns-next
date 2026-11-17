@@ -13,7 +13,9 @@
 //! the copy checked against the binary's bytes before it runs; elsewhere
 //! the binary itself. And the shipped sources of the binary a session
 //! runs, written once per fingerprint in the user's own directory, which
-//! a stop names its shipped frames' files in. Nothing is kept in the
+//! a stop names its shipped frames' files in. A server that starts
+//! removes what lay there untouched for a day, but its own binary's
+//! sources. Nothing is kept in the
 //! shared temporary directory, where another user could put a file of
 //! their own first.
 
@@ -38,11 +40,17 @@ const CORE_LIBRARY_DIRECTORY: &str = "core-library";
 /// name>.<process id>.running`, beside the original.
 const RUNNING_SUFFIX: &str = ".running";
 
-/// How long a directory of copies stays untouched before a server that
-/// starts removes it: each build is a copy of its own, and a day is
-/// longer than any session. One still in use cannot be removed on
-/// Windows, and on other systems its running processes keep their file.
-const STALE_COPIES: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long a directory of copies, or of shipped sources, stays untouched
+/// before a server that starts removes it: each build is a copy of its
+/// own, each change of the core library a directory of sources, and a
+/// day is longer than any session. Copies are made only on Windows, where
+/// one a process still runs cannot be removed; no process runs from a
+/// directory of sources, and a session that reuses one touches it.
+const STALE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The file of a directory of shipped sources that names their
+/// fingerprint, which `shipped-sources` writes.
+const FINGERPRINT_FILE: &str = "fingerprint";
 
 /// Frees the executable this server was started from, and answers its
 /// path: the build a `debug_start` runs by default. On Windows the file is
@@ -60,6 +68,7 @@ pub(crate) fn free_the_executable() -> PathBuf {
         }
     };
     remove_stale_copies();
+    remove_stale_core_libraries();
     if cfg!(windows) {
         remove_unused_renamed(&executable);
         if let Err(error) = rename_aside(&executable) {
@@ -244,34 +253,70 @@ fn hash_of_file(path: &Path) -> std::io::Result<u64> {
     }
 }
 
-/// Removes the directories of copies untouched for `STALE_COPIES`; what
-/// cannot be removed is left.
+/// Removes the directories of copies untouched for `STALE`; what cannot be
+/// removed is left.
 fn remove_stale_copies() {
     let Ok(own) = own_directory() else {
         return;
     };
-    let root = own.join(COPIES_DIRECTORY);
-    let Ok(entries) = std::fs::read_dir(&root) else {
+    let Ok(entries) = std::fs::read_dir(own.join(COPIES_DIRECTORY)) else {
         return;
     };
     for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > STALE_COPIES);
-        if stale {
+        if older_than_stale(&entry.path()) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
 }
 
+/// Removes the directories of shipped sources untouched for `STALE` but
+/// the running binary's, which the sessions of this server most likely
+/// show: a stale one is never read again but by a session of another
+/// binary, which writes it anew. A directory's last touch is its
+/// fingerprint file's, which `core_library` touches at every reuse, or,
+/// without one -- a partial write a crash left -- the directory's own.
+/// What cannot be removed is left.
+fn remove_stale_core_libraries() {
+    let Ok(own) = own_directory() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(own.join(CORE_LIBRARY_DIRECTORY)) else {
+        return;
+    };
+    let running = ns_runtime::shipped_sources_fingerprint();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy() == running {
+            continue;
+        }
+        let fingerprint_file = path.join(FINGERPRINT_FILE);
+        let touched = if fingerprint_file.is_file() {
+            fingerprint_file
+        } else {
+            path.clone()
+        };
+        if older_than_stale(&touched) {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// Whether `path` was last modified more than `STALE` ago; `false` when its
+/// age is unknown.
+fn older_than_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > STALE)
+}
+
 /// The shipped sources of the binary `runtime` and their fingerprint: the
 /// directory in the user's own directory (`own_directory`) its fingerprint
-/// names, written
-/// by `runtime shipped-sources` when it is not there yet, under a name of
-/// this process's and renamed into place.
+/// names, written by `runtime shipped-sources` when it is not there yet,
+/// under a name of this process's and renamed into place, and touched when
+/// it is, so that no server removes it as stale
+/// (`remove_stale_core_libraries`).
 pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> {
     let fingerprint = run(runtime, &["shipped-sources", "--fingerprint"])?;
     let fingerprint = fingerprint.trim().to_string();
@@ -285,6 +330,10 @@ pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> 
     let root = own_directory()?.join(CORE_LIBRARY_DIRECTORY);
     let directory = root.join(&fingerprint);
     if written_with(&directory, &fingerprint) {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(directory.join(FINGERPRINT_FILE))
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
         return Ok((directory, fingerprint));
     }
     let partial = root.join(format!("{fingerprint}.{}.partial", std::process::id()));
@@ -308,7 +357,7 @@ pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> 
 
 /// Whether `directory` holds shipped sources of `fingerprint`.
 fn written_with(directory: &Path, fingerprint: &str) -> bool {
-    std::fs::read_to_string(directory.join("fingerprint"))
+    std::fs::read_to_string(directory.join(FINGERPRINT_FILE))
         .is_ok_and(|written| written.trim() == fingerprint)
 }
 

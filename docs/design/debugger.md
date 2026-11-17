@@ -5660,9 +5660,17 @@ the way not taken: every question would run the program from its start.
   (`a_session_runs_a_verified_copy_in_the_user_s_own_directory`); a copy
   is written under a name of its process's and renamed into place, so
   that no process runs a half written one, and a directory of copies
-  untouched for a day is removed when a server starts. A change to the
-  program's runtime thus takes effect at the next `debug_start`; a
-  change to the server itself, at the client's next connection.
+  untouched for a day is removed when a server starts. So is a directory
+  of shipped sources untouched for a day -- its `fingerprint` file's
+  time, which a `debug_start` that reuses the directory touches, or the
+  directory's own without one -- but the one of the server's own binary's
+  fingerprint; no process runs from it, and a session of a binary whose
+  sources were removed writes them again, a removal that fails leaving
+  the directory
+  (`a_starting_server_removes_stale_shipped_sources_but_its_own`). A
+  change to the program's runtime thus takes effect at the next
+  `debug_start`; a change to the server itself, at the client's next
+  connection.
 
 ## The JetBrains plugin
 

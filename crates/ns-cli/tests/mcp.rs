@@ -654,6 +654,41 @@ fn a_session_runs_a_verified_copy_in_the_user_s_own_directory() {
     );
 }
 
+/// A server that starts removes the directories of shipped sources in the
+/// user's own directory untouched for more than a day, but the one of its
+/// own binary's fingerprint, and keeps those touched since.
+#[test]
+fn a_starting_server_removes_stale_shipped_sources_but_its_own() {
+    let data = ScratchDirectory::new("local-data");
+    let root = data.path().join("ns-next").join("core-library");
+    let running = ns_runtime::shipped_sources_fingerprint();
+    let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+    let sources = |fingerprint: &str, touched: std::time::SystemTime| {
+        let directory = root.join(fingerprint);
+        std::fs::create_dir_all(&directory).expect("create the sources' directory");
+        let file = directory.join("fingerprint");
+        std::fs::write(&file, format!("{fingerprint}\n")).expect("write the fingerprint");
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|file| file.set_modified(touched))
+            .expect("age the fingerprint");
+        directory
+    };
+    let stale = sources("0123456789abcdef", two_days_ago);
+    let own = sources(&running, two_days_ago);
+    let fresh = sources("fedcba9876543210", std::time::SystemTime::now());
+    let data_path = data.path().display().to_string();
+    let server = McpServer::start_from_a_copy(&[
+        ("LOCALAPPDATA", data_path.as_str()),
+        ("XDG_CACHE_HOME", data_path.as_str()),
+    ]);
+    assert!(!stale.exists(), "the stale sources are still there");
+    assert!(own.is_dir(), "the binary's own sources were removed");
+    assert!(fresh.is_dir(), "sources touched since were removed");
+    drop(server);
+}
+
 /// Puts a new file at `executable`'s path as a build does: written beside
 /// it and moved into place, which replaces a file a process runs on every
 /// system but Windows, and on Windows one that no process runs.
