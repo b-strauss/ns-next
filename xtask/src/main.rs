@@ -11,9 +11,9 @@
 //! logic a script would make fragile -- choosing the groups from what a
 //! change touched, for one. `unreached-tests` measures which tests no
 //! stress mode and no platform reaches, and `nextest-config` writes the
-//! profiles that leave them out (`unreached.rs`). `mcp` starts the
-//! repository's MCP server from a copy of the debug build, so that it never
-//! locks the build (`mcp.rs`).
+//! profiles that leave them out (`unreached.rs`). `mcp` copies the
+//! debug build to `target/mcp/`, which `.mcp.json` starts the repository's
+//! MCP server from, so that the server never locks the build (`mcp.rs`).
 
 #![forbid(unsafe_code)]
 
@@ -763,7 +763,7 @@ fn main() -> ExitCode {
         return report_outcome(unreached_tests(&repository_root()));
     }
     if task == "mcp" && groups.is_empty() {
-        return mcp::serve(&repository_root());
+        return mcp::place(&repository_root());
     }
     if task == "nextest-config" && groups.is_empty() {
         return report_outcome(

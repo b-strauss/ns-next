@@ -1996,7 +1996,7 @@ not.
   endless evaluation aborted, a start without a runtime running the
   server's own executable, stale shipped sources removed, and a killed
   server ending its program; `xtask/src/mcp.rs`'s tests hold the copy
-  `cargo xtask mcp` starts the server from. The plugin's tests cover the stage's
+  `cargo xtask mcp` puts, and that a copy already there stays. The plugin's tests cover the stage's
   actions over a scripted agent and the real runtime ("The JetBrains
   plugin").
 - **The pause stress mode** (above).
@@ -5650,33 +5650,28 @@ the way not taken: every question would run the program from its start.
   with the server's own executable (`std::env::current_exe`) unless
   `runtime` names another binary
   (`a_start_without_a_runtime_runs_the_server_s_own_executable`). In
-  this repository `.mcp.json` registers `cargo xtask mcp`
-  (`xtask/src/mcp.rs`), which keeps the server from locking the build:
-  on Windows a running executable can be neither replaced nor removed,
-  so a server run from `target/debug/ns-next` would keep `cargo build`
-  from writing it. The task builds nothing -- a build would keep the
-  client waiting at its connection -- and refuses, naming `cargo build
-  -p ns-cli`, when there is no build; it copies `target/debug/ns-next`
-  to `target/mcp/ns-next`, written under a name of its process's and
-  renamed into place, and runs the copy as `ns-next mcp` with its own
-  standard streams, which the server inherits, so that nothing but the
-  server's output reaches the client; it waits for the server and exits
-  with its status. A copy an earlier server still runs stays, and the
-  new one takes the name `ns-next-<process id>`; as it starts, the task
-  removes every copy no process runs any more, the removal of one a
-  process runs failing on Windows. The client watches the process it
-  started, `cargo` and the task, which stay as long as the server: Node's
-  `child_process`, on which the MCP SDKs' stdio transports are built,
-  closes the server's standard input once that process ends. So the
-  server and the programs it debugs run from `target/mcp/`, and a build
-  writes `target/debug/ns-next` while they run; a new build takes effect
-  at the client's next connection (`/mcp` in Claude Code), or at once for
-  a session started with `runtime` naming `target/debug/ns-next`, which
-  then locks that file for as long as the session's program runs. The
-  task itself runs as long as the server, so on Windows it keeps cargo
-  from relinking `target/debug/xtask` meanwhile: a `cargo xtask` after a
-  change to `xtask/` or to a crate it depends on, `ns-runtime` among
-  them, fails until the client disconnects (`OPEN-WORK.md`).
+  this repository `.mcp.json` starts the server from a copy of the debug
+  build, `target/mcp/ns-next mcp`, which the client starts directly, so
+  that no process of the server's locks what cargo writes: on Windows a
+  running executable can be neither replaced nor removed, and a server
+  run from `target/debug/ns-next` would keep `cargo build` from writing
+  it, as a long-lived launcher run through cargo would keep it from
+  relinking its own executable. The client starts the path as given,
+  without a shell; Node's `child_process`, on which the MCP SDKs' stdio
+  transports are built, starts `target/mcp/ns-next` on Windows without
+  the `.exe`, which the system adds (checked 2026-11-17). `cargo xtask
+  mcp` (`xtask/src/mcp.rs`) puts the copy: it builds nothing and starts
+  nothing, refuses, naming `cargo build -p ns-cli`, when there is no
+  build, and copies `target/debug/ns-next` to `target/mcp/ns-next`,
+  written under a name of its process's and renamed into place, only
+  when nothing is there; a copy already there stays, since a server may
+  run from it, and the task says so. Until the task has run, the client
+  fails to start the server. The server and the programs it debugs run
+  from that copy until it is refreshed -- `target/mcp/` deleted while no
+  server runs from it, `cargo xtask mcp` run again and the client
+  reconnected (`/mcp` in Claude Code) -- and a session started with
+  `runtime` naming `target/debug/ns-next` runs the newest build, which
+  then locks that file for as long as the session's program runs.
 
 ## The JetBrains plugin
 

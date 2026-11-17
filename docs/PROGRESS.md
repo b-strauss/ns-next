@@ -8163,9 +8163,9 @@ ends the program when its connection is lost before a `disconnect`.
 program in a child `ns-next run --debug-connect`, step, evaluate, set
 breakpoints and read values, each stop answered as a summary in text,
 running the program with its own executable unless told otherwise; it
-knows nothing of the build, and in this repository `cargo xtask mcp`
-starts it from a copy of the debug build in `target/mcp/`, so that a
-build replaces `target/debug/ns-next` while it runs. The plugin
+knows nothing of the build, and in this repository `.mcp.json` starts it
+from the copy of the debug build `cargo xtask mcp` puts in `target/mcp/`,
+so that a build replaces `target/debug/ns-next` while it runs. The plugin
 evaluates in the Evaluate dialog, its watches and its hovers, sets
 values, sends conditions and log expressions, smart-steps, resets
 frames, forces returns, marks objects through actions of its own, shows

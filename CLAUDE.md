@@ -237,8 +237,8 @@ Rust 1.100.0, edition 2024, seven crates:
   `disconnect`
   (`debugger.md`, "Launching, the start and the end"; tests
   `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
-  standard input and output (`mcp/`), registered by `.mcp.json` as
-  `cargo xtask mcp`, through whose tools an agent debugs a program: each `debug_start` runs it in a
+  standard input and output (`mcp/`), registered by `.mcp.json` from
+  the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools an agent debugs a program: each `debug_start` runs it in a
   child `ns-next run --debug-connect` the server is a DAP client of, and
   each stop is answered as a summary in text; a child runs the server's
   own executable unless `runtime` names another, and the server knows
@@ -308,9 +308,11 @@ Rust 1.100.0, edition 2024, seven crates:
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
 of "The gates" below, grouped; `shipped-code`, which writes that
 artifact (`--check` only says whether it is current); and `mcp`, which
-`.mcp.json` registers: it builds nothing, copies `target/debug/ns-next` to
-`target/mcp/` and runs the copy as `ns-next mcp`, so that neither the
-server nor its programs lock the build (`mcp.rs`; `debugger.md`, "The MCP
+builds and starts nothing: it copies `target/debug/ns-next` to
+`target/mcp/` when no copy is there, and `.mcp.json` starts the server
+from that copy, so that neither the server nor its programs lock the
+build; refreshing it is deleting `target/mcp/` while no server runs from
+it and running the task again (`mcp.rs`; `debugger.md`, "The MCP
 server", "Starting it").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a

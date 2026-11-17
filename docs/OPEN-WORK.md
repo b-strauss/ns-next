@@ -2132,16 +2132,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       standard error, and the MCP server every refused response, so that a
       recurrence says what arrived ([debugger.md](design/debugger.md),
       "The MCP server").
-    - *`cargo xtask mcp` holds `target/debug/xtask`*: the task stays
-      for as long as the server, since the client watches the process it
-      started, so on Windows cargo cannot relink `target/debug/xtask.exe`
-      meanwhile, and every `cargo xtask` after a change to `xtask/` or to
-      a crate it depends on, `ns-runtime` among them, fails ("failed to
-      remove file") until the client disconnects (measured 2026-11-17).
-      Open: how the launcher stays out of the build's way -- a target
-      directory of its own, a launcher that depends on nothing of the
-      runtime's, or another way ([debugger.md](design/debugger.md), "The
-      MCP server", "Starting it").
+    - *The MCP server's copy is put by hand*: `.mcp.json` starts
+      `target/mcp/ns-next`, so until `cargo xtask mcp` has run -- in a
+      fresh checkout, or after `target/` was cleaned -- the client fails
+      to start the server, and the copy stays at the build it was made
+      from until `target/mcp/` is deleted and the task run again
+      ([debugger.md](design/debugger.md), "The MCP server", "Starting
+      it").
     - *The plugin*: its hovers send no `context: "hover"` -- they
       evaluate only a frame's variable names -- so the agent's hover
       bound and its abort never apply to them; the memory view's panel

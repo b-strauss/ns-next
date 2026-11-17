@@ -1752,9 +1752,8 @@ xtask::bin/xtask codegen::tests::a_wide_load_over_narrow_stores_is_counted
 xtask::bin/xtask codegen::tests::every_budget_names_a_function_once
 xtask::bin/xtask codegen::tests::every_narrow_write_to_the_stack_is_a_store
 xtask::bin/xtask codegen::tests::the_listing_gives_each_function_its_size
-xtask::bin/xtask mcp::tests::a_copy_in_use_is_left_and_the_new_one_named_by_its_process
-xtask::bin/xtask mcp::tests::a_fresh_partial_copy_of_another_task_s_stays
-xtask::bin/xtask mcp::tests::the_copy_replaces_what_no_process_holds
+xtask::bin/xtask mcp::tests::a_copy_already_there_stays
+xtask::bin/xtask mcp::tests::the_build_is_copied_when_no_copy_is_there
 xtask::bin/xtask tests::a_linked_worktree_mounts_the_repositorys_git_metadata
 xtask::bin/xtask tests::a_stress_run_of_the_corpus_sets_its_switch
 xtask::bin/xtask tests::a_volume_is_named_after_its_checkout
