@@ -168,6 +168,13 @@ impl StopValues {
             .map(|held| (mutator.heap.fetch(&held.root), held.withheld))
     }
 
+    /// The value `id` names, held as the stop holds it: what a reader
+    /// that compiles meanwhile keeps instead of a handle
+    /// (`memory::referrers`).
+    pub(crate) fn root(&self, id: ValueId) -> Option<Root> {
+        self.held(id).map(|held| held.root.clone())
+    }
+
     /// `count` children of the value `id` names, from the `start`th: an
     /// instance's fields, an `Array`'s elements; `None` for an id this
     /// stop did not hand out.

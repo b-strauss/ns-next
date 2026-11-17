@@ -4189,24 +4189,50 @@ counted, since a `ClassName` names the instance side; nor is the VM
 mirror, whose class has no declaration and so no name ("The VM mirror is
 the whole Rust boundary" in [core-library.md](core-library.md)).
 
-A referrer is an object a word of which that keeps what it names alive
-names the value: the strong pointer words the collectors trace
-(`Heap::refers_to`) but the class word -- an instance names its class,
-which `Instances` answers -- and an `Ephemeron`'s key. A closure refers
-to what it copied and to the frame it captured, and a frame object to
-its receiver, its sender and home, and to what its registers hold: a
-returned or suspended frame's own copy, and a married frame's running
-activation's registers where they live, only the named ones the
-leftover analysis does not find tainted, as the variables view reads
-them ("Reading the stack at a stop"). An activation no block captured
-has no frame object, so it is no referrer, as a JVM's stack frames are
-no `ReferringObjects`; the stack shows what it holds. The objects found
-are values a stop holds, as the variables view's are ("Values the IDE
-holds"), each named `#<n>` by its place among them, and an instance of
-a class a shipped mixin declares is withheld ("Marking objects"), a
-frame object -- Kernel's `Activation` -- among them: shown, but never
-marked, so that no walk puts a private kernel object or the mirror
-within an expression's reach.
+What refers to a value (`Command::Referrers`, answered by
+`Event::Referrers`, each a `Referrer`) is, first, every variable of a
+running frame of the stop's stack trace that holds it, its receiver as
+`self`, innermost frame first (`Referrer::Stack`, the frame's index and
+the variable's name), and then every object a word of which that keeps
+what it names alive names it (`Referrer::Object`), in the space's
+order; the answer pages over the two together. A frame's variables are
+read by the variables view's own reader (`stack::frame_values`;
+"Reading the stack at a stop"), so the two views never disagree, no
+frame is reified to be answered, and the answer is the same under both
+lowerings: whether a block copied a value or captured the frame that
+holds it changes only whether the closure is an object referrer. A
+scratch register counts for none, nor does a register the leftover
+analysis finds tainted: no variable names either, and either may hold
+a word a callee or a popped frame left -- a stale handle, or a debug
+build's poison -- which would answer a referrer the program no longer
+has, or none at all ("What a callee leaves" in
+[compiler.md](compiler.md)). An object refers through the strong
+pointer words the collectors trace (`Heap::refers_to`), but neither
+through its class word -- an instance names its class, which
+`Instances` answers -- nor through a `WeakArray`'s slots or an
+`Ephemeron`'s key, which keep nothing alive; an `Ephemeron`'s value
+counts, held while its key lives. A closure refers to what it copied
+and to the frame it captured, and a suspended or returned frame object
+to its receiver, its sender and home, and to what its registers hold. A
+frame object married to a running frame of the stack is that frame's
+variables, never an object of its own; one married to an activation
+below the run, which the stack does not show, is an object whose live
+registers count, read as the variables view reads them. A returned
+frame that kept its registers still refers to what they held, as the
+garbage it may be: the stop collects nothing.
+
+The objects found are values a stop holds, as the variables view's are
+("Values the IDE holds"), each named `#<n>` by its place in the answer,
+and withheld ("Marking objects") -- shown, but never marked, so that no
+walk puts a private kernel object or the mirror within an expression's
+reach: an instance, when a shipped mixin declares its class, a class
+object of a shipped declaration's class side among them; a closure or a
+frame object, when the body it captured or runs is a shipped module's,
+the variables view's rule, rather than by Kernel's `Closure` and
+`Activation`; and an object whose class has no declaration, which the
+view cannot place, so that the VM mirror's class, nameless by lock 4,
+is withheld here as `Mutator::is_withheld` withholds it, with its
+metaclass, in every view.
 
 ### Folding the shipped frames
 

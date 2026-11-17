@@ -11,13 +11,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::metadata::again::declaration_path;
-use super::remote::{ClassName, InstanceCount, ModuleName, Variable, VariableValue};
-use super::stack::is_named_register;
+use super::remote::{ClassName, InstanceCount, ModuleName, Referrer, Variable, VariableValue};
+use super::stack::{self, StackFrame, is_named_register};
 use super::values::StopValues;
-use crate::Value;
-use crate::heap::{ClassReference, ObjectReference};
+use crate::heap::{ActivationReference, ClassReference, ObjectReference};
 use crate::interpreter::Mutator;
 use crate::mixin::Mixin;
+use crate::{Root, Value};
 
 /// The declaration a class object is the class of, as the memory view
 /// groups by it: by mixin, never by class object, of which there is one
@@ -64,10 +64,15 @@ impl Declarations {
                         path: path.iter().map(ToString::to_string).collect(),
                     })
                 };
-                Some(Declaration {
-                    name,
-                    shipped: mixin.shipped,
-                })
+                // A class side a metaclass synthesizes for a declaration
+                // without one is no shipped mixin of its own, but its
+                // class objects are a shipped declaration's.
+                let shipped = mixin.shipped
+                    || (mixin.is_class_side()
+                        && mixin
+                            .enclosing_mixin()
+                            .is_some_and(|instance_side| instance_side.shipped));
+                Some(Declaration { name, shipped })
             })
             .clone()
     }
@@ -164,39 +169,114 @@ pub(crate) fn instances<'gc>(
     numbered(mutator, values, &found, start, count, |_| shipped)
 }
 
-/// `count` of the objects that refer to `value`, from the `start`th, in
-/// the space's order, each named `#<n>`, counted from 1 over all of them
-/// (`Command::Referrers`): every object a word of which that keeps what
-/// it names alive names `value` (`Heap::refers_to`) -- a closure by its
-/// copied values or its captured frame, a frame object by its fixed
-/// fields and its registers, a running activation's read where they live
-/// -- but for the class word. An activation no block captured has no
-/// frame object and so is no referrer: the stack shows what it holds. A
-/// referrer of a class a shipped module declares, a frame object among
-/// them, is withheld. Empty for an immediate value, which no word names.
-pub(crate) fn referrers<'gc>(
-    mutator: &Mutator<'gc>,
+/// `count` of what refers to the value `target` holds, from the
+/// `start`th (`Command::Referrers`): first every variable of a running
+/// frame of `frames` that holds it, innermost frame first and each
+/// frame's in the order the variables view shows them, `self` first --
+/// read by the variables view's own reader (`stack::frame_values`), so
+/// that a register the leftover analysis finds tainted and a scratch
+/// register, which no variable names and which may hold a word a callee
+/// or a popped frame left, count for none, and no frame is reified --
+/// then, in the space's order, every object a word of which that keeps
+/// what it names alive names it (`Heap::refers_to`): a closure by its
+/// copied values or its captured frame, a suspended or returned frame
+/// object by its fields and registers. A frame object married to a
+/// running frame of `frames` is that frame's variables, not an object
+/// of its own; one married to an activation below the run, which the
+/// stack does not show, is an object whose live registers count, read
+/// as the variables view reads them (`registers_refer_to`). An object is
+/// named `#<n>` by its place in the whole answer and withheld as
+/// `object_is_withheld` says. Empty for an immediate value, which no
+/// word names.
+pub(crate) fn referrers(
+    mutator: &mut Mutator<'_>,
+    frames: &[StackFrame],
     values: &mut StopValues,
-    value: Value<'gc>,
+    target: &Root,
     start: usize,
     count: usize,
-) -> Vec<Variable> {
-    let Some(target) = value.as_object() else {
+) -> Vec<Referrer> {
+    let mut on_stack: Vec<Referrer> = Vec::new();
+    let mut running: Vec<ActivationReference> = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let StackFrame::Running(activation) = frame else {
+            continue;
+        };
+        running.push(*activation);
+        // Read afresh for each frame: reading one may compile its body's
+        // metadata, across which no handle is held.
+        let Some((_, read)) = stack::frame_values(mutator, frames, index) else {
+            continue;
+        };
+        let Some(object) = mutator.heap.fetch(target).as_object() else {
+            return Vec::new();
+        };
+        on_stack.extend(read.into_iter().filter_map(|(name, value)| {
+            value?
+                .as_object()
+                .is_some_and(|held| held.same(object))
+                .then_some(Referrer::Stack { frame: index, name })
+        }));
+    }
+    let mutator = &*mutator;
+    let heap = &mutator.heap;
+    let Some(object) = heap.fetch(target).as_object() else {
         return Vec::new();
     };
-    let heap = &mutator.heap;
     let mut found = Vec::new();
     heap.each_object(|holder| {
-        if heap.refers_to(holder, target) || registers_refer_to(mutator, holder, target) {
+        let married_to_the_stack = heap
+            .object_frame(holder)
+            .and_then(|frame| heap.frame_activation(frame))
+            .is_some_and(|activation| running.iter().any(|other| other.same(activation)));
+        if !married_to_the_stack
+            && (heap.refers_to(holder, object) || registers_refer_to(mutator, holder, object))
+        {
             found.push(holder);
         }
     });
+    let stack_count = on_stack.len();
     let mut declarations = Declarations::default();
-    numbered(mutator, values, &found, start, count, |object| {
-        declarations
-            .of_class(mutator, heap.object_class(object))
-            .is_some_and(|declaration| declaration.shipped)
-    })
+    let objects = found
+        .into_iter()
+        .enumerate()
+        .map(|(index, holder)| (stack_count + index, holder));
+    let mut answer: Vec<Referrer> = on_stack.into_iter().skip(start).take(count).collect();
+    let remaining = count - answer.len();
+    let first_object = start.saturating_sub(stack_count);
+    for (place, holder) in objects.skip(first_object).take(remaining) {
+        let withheld = object_is_withheld(mutator, &mut declarations, holder);
+        answer.push(Referrer::Object(Variable {
+            name: format!("#{}", place + 1),
+            value: VariableValue::Shown(values.describe(mutator, Value::object(holder), withheld)),
+        }));
+    }
+    answer
+}
+
+/// Whether the memory view withholds `object`, a referrer: a closure or
+/// a frame object when the body it captured or runs is a shipped
+/// module's, as the variables view withholds a shipped frame's values
+/// (`stack::frame_object_is_shipped`); any other object when a shipped
+/// module declares its class, or when its class has no declaration --
+/// the VM mirror's class among such, which no program may name -- so
+/// that what the view cannot place is never handed out markable.
+/// `Mutator::is_withheld` applies besides (`StopValues::describe`).
+fn object_is_withheld<'gc>(
+    mutator: &Mutator<'gc>,
+    declarations: &mut Declarations,
+    object: ObjectReference<'gc>,
+) -> bool {
+    let heap = &mutator.heap;
+    if let Some(frame) = heap.object_frame(object) {
+        return stack::frame_object_is_shipped(mutator, frame);
+    }
+    if let Some(frame) = heap.closure_captured_frame(object) {
+        return stack::frame_object_is_shipped(mutator, frame);
+    }
+    declarations
+        .of_class(mutator, heap.object_class(object))
+        .is_none_or(|declaration| declaration.shipped)
 }
 
 /// Whether `holder` is a frame object married to a running activation

@@ -3486,6 +3486,21 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// Whether `value` is the VM mirror's class or that class's metaclass:
+    /// neither has a declaration, and either in a program's hands would
+    /// name what lock 4 keeps nameless (`docs/design/core-library.md`,
+    /// "The VM mirror is the whole Rust boundary").
+    pub(crate) fn is_vm_mirror_class(&self, value: Value<'gc>) -> bool {
+        let (Some(object), Some(mirror)) = (
+            value.as_object(),
+            self.vm_mirror.and_then(|mirror| mirror.as_object()),
+        ) else {
+            return false;
+        };
+        let class = self.heap.object_class(mirror);
+        object.same(class) || object.same(self.heap.object_class(class))
+    }
+
     /// A class object around an already-computed application. For an
     /// ordinary class object, this is where the invariant `dispatch::next_level`
     /// relies on is established: `superclass` is linked exactly when

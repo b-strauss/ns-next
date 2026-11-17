@@ -34,8 +34,8 @@ pub use remote::{
     BreakpointId, BreakpointState, ClassName, Command, DebugControl, DebugEvents, DebugRemote,
     Evaluation, Event, FrameDescription, FrameKind, FrameLocation, HitCondition, InstanceCount,
     LineBreakpoint, LogPart, MethodBreakpoint, MethodBreakpointState, ModuleName, ModuleTextAnswer,
-    ReturnedValue, SendLocation, StepInTarget, StepInTargetKind, StopReason, ValueDescription,
-    ValueId, Variable, VariableValue,
+    Referrer, ReturnedValue, SendLocation, StepInTarget, StepInTargetKind, StopReason,
+    ValueDescription, ValueId, Variable, VariableValue,
 };
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -354,6 +354,7 @@ impl StressReader {
             | Event::StepInTargets(_)
             | Event::Marked { .. }
             | Event::InstanceCounts(_)
+            | Event::Referrers(_)
             | Event::Logged { .. } => {}
         }
     }
@@ -1652,16 +1653,19 @@ impl Interpreter {
                     start,
                     count,
                 } => match self.enter(|mutator| {
-                    let (value, _) = stop.values.fetch(mutator, value)?;
+                    let target = stop.values.root(value)?;
+                    let Stop {
+                        frames,
+                        values,
+                        floor,
+                        ..
+                    } = &mut stop;
+                    let frames = frames.get_or_insert_with(|| stack::frames(mutator, *floor));
                     Some(memory::referrers(
-                        mutator,
-                        &mut stop.values,
-                        value,
-                        start,
-                        count,
+                        mutator, frames, values, &target, start, count,
                     ))
                 }) {
-                    Some(referrers) => self.answer(&mut stop.source, Event::Variables(referrers)),
+                    Some(referrers) => self.answer(&mut stop.source, Event::Referrers(referrers)),
                     None => self.refuse(&mut stop.source, &command, NO_SUCH_VALUE),
                 },
                 command @ (Command::Evaluate { .. } | Command::SetVariable { .. }) => {

@@ -448,6 +448,25 @@ mod tests {
         });
     }
 
+    /// The mirror's class and its metaclass are withheld as the mirror
+    /// is, so that no view of the debugger nor a reflection leaf hands
+    /// either out; `Value`, the class's superclass, is not.
+    #[test]
+    fn the_mirror_class_and_its_metaclass_are_withheld() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(crate::BuiltinClass::VmMirror);
+            let metaclass = mutator.heap.object_class(class);
+            assert!(mutator.is_withheld(Value::object(class)));
+            assert!(mutator.is_withheld(Value::object(metaclass)));
+            let value = mutator
+                .heap
+                .class_superclass(class)
+                .expect("the mirror's class has a superclass");
+            assert!(!mutator.is_withheld(Value::object(value)));
+        });
+    }
+
     #[test]
     fn the_mirror_class_cannot_be_instantiated() {
         let mut interpreter = Interpreter::bootstrap();

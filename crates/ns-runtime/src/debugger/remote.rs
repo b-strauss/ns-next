@@ -269,17 +269,25 @@ pub enum Command {
         start: usize,
         count: usize,
     },
-    /// `count` of the objects that refer to the value `value` names, a
-    /// value the stop handed out, from the `start`th: each object a word
-    /// of which that keeps what it names alive names the value -- a
-    /// closure's copied values and captured frame, a frame object's
-    /// fields and its running activation's registers included -- but for
-    /// its class word, named and held as `Instances` names and holds them,
-    /// a referrer of a class a shipped module declares withheld. An
-    /// activation no block captured is no object and no referrer. Served
-    /// only while the program is stopped; answered by `Event::Variables`,
-    /// empty for a value that is no object, or by `Event::Refused` for a
-    /// value the stop did not hand out.
+    /// `count` of what refers to the value `value` names, a value the stop
+    /// handed out, from the `start`th (`docs/design/debugger.md`, "The
+    /// memory view"): first each variable of a running frame of the stack
+    /// trace that holds it, its receiver as `self`, innermost frame first,
+    /// as `Variables` reads it -- a scratch register is no variable and
+    /// counts for none -- then each object a word of which that keeps
+    /// what it names alive names it, in the space's order: a closure's
+    /// copied values and captured frame, a suspended or returned frame
+    /// object's fields and registers, but neither an object's class word,
+    /// a weak word nor an `Ephemeron`'s key. A frame object married to a
+    /// running frame of the stack is that frame's variables, never an
+    /// object of its own. An object is named and held as `Instances`
+    /// names and holds them, numbered by its place in the whole answer,
+    /// and withheld when a shipped module declares its class -- a closure
+    /// and a frame object when the body it captured or runs is shipped --
+    /// or its class has no declaration. Served only while the program is
+    /// stopped; answered by `Event::Referrers`, empty for a value that is
+    /// no object, or by `Event::Refused` for a value the stop did not
+    /// hand out.
     Referrers {
         value: ValueId,
         start: usize,
@@ -545,8 +553,8 @@ pub enum Event {
     },
     /// The answer to `Command::StackTrace`.
     StackTrace(Vec<FrameDescription>),
-    /// The answer to `Command::Variables`, `Command::Children`,
-    /// `Command::Instances` and `Command::Referrers`.
+    /// The answer to `Command::Variables`, `Command::Children` and
+    /// `Command::Instances`.
     Variables(Vec<Variable>),
     /// The command `command` names (`Command::name`) was not served, for
     /// `reason`.
@@ -600,6 +608,19 @@ pub enum Event {
     /// declaration with instances, the largest first, those of one count
     /// ordered by their names.
     InstanceCounts(Vec<InstanceCount>),
+    /// The answer to `Command::Referrers`, in its order.
+    Referrers(Vec<Referrer>),
+}
+
+/// What refers to a value (`Command::Referrers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Referrer {
+    /// An object that holds it, named `#<n>` by its place in the answer,
+    /// counted from 1, and described as every value the stop hands out.
+    Object(Variable),
+    /// The variable `name` of the running frame at index `frame` of the
+    /// stack trace -- `self` for its receiver -- which holds it.
+    Stack { frame: usize, name: String },
 }
 
 /// How many instances one class declaration has (`Command::InstanceCounts`):

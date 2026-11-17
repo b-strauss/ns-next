@@ -16219,7 +16219,7 @@ mod marking {
 
 mod memory_view {
     use super::*;
-    use ns_runtime::debugger::{InstanceCount, ValueId};
+    use ns_runtime::debugger::{Evaluation, InstanceCount, Referrer, ValueId};
 
     /// Three `Point`s made, the second dropped at once, an `Item` held by
     /// a slot of each of two holders and read by a block, and a `String`:
@@ -16328,15 +16328,43 @@ mod memory_view {
         value: ValueId,
         start: usize,
         count: usize,
-    ) -> Vec<Variable> {
-        variables(
+    ) -> Vec<Referrer> {
+        match request(
             remote,
             Command::Referrers {
                 value,
                 start,
                 count,
             },
-        )
+        ) {
+            Event::Referrers(referrers) => referrers,
+            other => panic!("referrers were expected, not {other:?}"),
+        }
+    }
+
+    /// `referrers` as text: `frame <index> <name>` for a variable of a
+    /// running frame, `<name> <class>` for an object.
+    fn summary(referrers: &[Referrer]) -> Vec<String> {
+        referrers
+            .iter()
+            .map(|referrer| match referrer {
+                Referrer::Stack { frame, name } => format!("frame {frame} {name}"),
+                Referrer::Object(variable) => {
+                    format!("{} {}", variable.name, shown(variable).class_name)
+                }
+            })
+            .collect()
+    }
+
+    /// The objects among `referrers`.
+    fn objects(referrers: &[Referrer]) -> Vec<&ValueDescription> {
+        referrers
+            .iter()
+            .filter_map(|referrer| match referrer {
+                Referrer::Object(variable) => Some(shown(variable)),
+                Referrer::Stack { .. } => None,
+            })
+            .collect()
     }
 
     /// The value of `look:`'s argument, the `Item`.
@@ -16384,47 +16412,52 @@ mod memory_view {
 
     ns_runtime::for_each_lowering! {
         /// An object held by a slot of each of two holders and read by a
-        /// block has the holders for its referrers, and the frame object
-        /// of the activation the block captured, whose registers hold it
-        /// -- and, under a lowering that copies it into the block, the
-        /// closure -- but not `look:`'s activation, which no block
-        /// captured and so is no object. A holder only that frame holds.
+        /// block has, first, the variables of the running frames that
+        /// hold it, innermost first, then the holders, and, under the
+        /// lowering that copies it into the block, the closure; the frame
+        /// object the block captured is `run`'s variables, not an object.
+        /// The answer pages over the whole list.
         fn the_referrers_of_an_object_are_found(lowering) {
-            let (found, holder) = looking(lowering, |remote| {
+            let (found, paged, holder) = looking(lowering, |remote| {
                 let item = item(remote);
-                let found: Vec<(String, String)> = referrers(remote, item.id, 0, 100)
-                    .iter()
-                    .map(|referrer| (referrer.name.clone(), shown(referrer).class_name.clone()))
-                    .collect();
+                let found = summary(&referrers(remote, item.id, 0, 100));
+                let paged = summary(&referrers(remote, item.id, 1, 2));
                 let holders = instances(remote, memory_class(&["Holder"]), 0, 10);
-                let holder: Vec<String> = referrers(remote, shown(&holders[0]).id, 0, 100)
-                    .iter()
-                    .map(|referrer| shown(referrer).class_name.clone())
-                    .collect();
-                (found, holder)
+                let holder = summary(&referrers(remote, shown(&holders[0]).id, 0, 100));
+                (found, paged, holder)
             });
-            let mut classes: Vec<&str> = found
-                .iter()
-                .map(|(_, class)| class.as_str())
-                .filter(|class| *class != "Closure")
-                .collect();
-            classes.sort_unstable();
-            assert_eq!(classes, ["Activation", "Holder", "Holder"], "{found:?}");
-            assert!(found.len() <= 4, "{found:?}");
-            let names: Vec<String> = found.iter().map(|(name, _)| name.clone()).collect();
-            let expected: Vec<String> = (1..=found.len()).map(|place| format!("#{place}")).collect();
-            assert_eq!(names, expected);
-            assert_eq!(holder, ["Activation"]);
+            let mut expected = vec!["frame 0 anItem", "frame 1 item", "#3 Holder", "#4 Holder"];
+            if lowering == Lowering::Optimized {
+                expected.push("#5 Closure");
+            }
+            assert_eq!(found, expected);
+            assert_eq!(paged, ["frame 1 item", "#3 Holder"]);
+            assert_eq!(holder, ["frame 1 left"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An object only a running method's local holds is answered as
+        /// that variable alone, alike under both lowerings, and a frame's
+        /// receiver as its `self`.
+        fn a_local_and_a_receiver_refer_from_the_stack(lowering) {
+            let (kept, receiver) = looking(lowering, |remote| {
+                let run = variables(remote, Command::Variables { frame: 1 });
+                let kept = summary(&referrers(remote, value_of(&run, "kept").id, 0, 100));
+                let receiver = summary(&referrers(remote, value_of(&run, "self").id, 0, 2));
+                (kept, receiver)
+            });
+            assert_eq!(kept, ["frame 1 kept"]);
+            assert_eq!(receiver, ["frame 0 self", "frame 1 self"]);
         }
     }
 
     ns_runtime::for_each_lowering! {
         /// An instance of a class a shipped mixin declares is withheld,
-        /// counted under its shipped declaration, and so is a referrer of
-        /// a shipped class, a frame object; a value the stop did not hand
-        /// out is refused.
+        /// counted under its shipped declaration; a value the stop did
+        /// not hand out is refused.
         fn a_shipped_instance_is_withheld(lowering) {
-            let (strings, frames, refused) = looking(lowering, |remote| {
+            let (strings, refused) = looking(lowering, |remote| {
                 let counts = instance_counts(remote);
                 let string = ClassName {
                     module: ModuleName::shipped("Kernel"),
@@ -16432,12 +16465,6 @@ mod memory_view {
                 };
                 assert!(count_of(&counts, &string) > 0, "{counts:?}");
                 let strings = instances(remote, string, 0, 5);
-                let item = item(remote);
-                let frames: Vec<bool> = referrers(remote, item.id, 0, 100)
-                    .iter()
-                    .filter(|referrer| shown(referrer).class_name == "Activation")
-                    .map(|referrer| shown(referrer).withheld)
-                    .collect();
                 let refused = request(
                     remote,
                     Command::Referrers {
@@ -16446,11 +16473,10 @@ mod memory_view {
                         count: 1,
                     },
                 );
-                (strings, frames, refused)
+                (strings, refused)
             });
             assert!(!strings.is_empty());
             assert!(strings.iter().all(|string| shown(string).withheld));
-            assert_eq!(frames, [true]);
             assert!(
                 matches!(
                     &refused,
@@ -16459,6 +16485,146 @@ mod memory_view {
                 ),
                 "{refused:?}"
             );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `Value`'s class object is the superclass of the VM mirror's
+        /// class, which its referrers find: withheld, as every referrer
+        /// of it is -- each a class of the kernel's -- and none can be
+        /// marked.
+        fn the_mirror_s_class_is_withheld_among_value_s_referrers(lowering) {
+            let (labels, refusals) = looking(lowering, |remote| {
+                let value = match request(
+                    remote,
+                    Command::Evaluate {
+                        frame: 1,
+                        expression: String::from("Value"),
+                    },
+                ) {
+                    Event::Evaluated(Evaluation::Value(value)) => value,
+                    other => panic!("Value's class was expected, not {other:?}"),
+                };
+                let found = referrers(remote, value.id, 0, 1000);
+                let found = objects(&found);
+                let labels: Vec<(String, bool)> = found
+                    .iter()
+                    .map(|referrer| (referrer.label.clone(), referrer.withheld))
+                    .collect();
+                let refusals: Vec<Event> = found
+                    .iter()
+                    .map(|referrer| {
+                        request(
+                            remote,
+                            Command::Mark {
+                                value: referrer.id,
+                                label: String::from("taken"),
+                            },
+                        )
+                    })
+                    .collect();
+                (labels, refusals)
+            });
+            assert!(
+                labels.iter().any(|(label, _)| label.contains("VmMirror")),
+                "{labels:?}"
+            );
+            assert!(labels.iter().all(|(_, withheld)| *withheld), "{labels:?}");
+            for refusal in refusals {
+                assert!(
+                    matches!(
+                        &refusal,
+                        Event::Refused { reason, .. } if reason == "the value is withheld"
+                    ),
+                    "{refusal:?}"
+                );
+            }
+        }
+    }
+
+    /// A program handed the platform that holds an object weakly, in a
+    /// `WeakArray`'s slot and as an `Ephemeron`'s key, and another as the
+    /// ephemeron's value: stopped in `look:with:`.
+    const WEAK: &str = indoc! {"
+        class Weak = Object new (
+          | platform |
+        ) (
+          public use: aPlatform = (
+            platform:: aPlatform
+          )
+          public run = (
+            | kernel key value weak ephemeron |
+            kernel:: platform kernel.
+            key:: Object new.
+            value:: Object new.
+            weak:: kernel WeakArray new: 1.
+            weak at: 1 put: key.
+            ephemeron:: kernel Ephemeron new.
+            ephemeron key: key; value: value.
+            ^self look: key with: value
+          )
+          look: aKey with: aValue = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    /// `referrers` as `summary` writes them, but for the frame objects
+    /// among them, numbered as they come, which are answered apart with
+    /// whether each is withheld: a frame of the kernel's that returned
+    /// keeping its registers -- garbage a stop does not collect -- may
+    /// hold what it was handed, under one lowering and not the other.
+    fn without_frames(referrers: &[Referrer]) -> (Vec<String>, Vec<(String, bool)>) {
+        let mut frames = Vec::new();
+        let mut others = Vec::new();
+        for (referrer, text) in referrers.iter().zip(summary(referrers)) {
+            match referrer {
+                Referrer::Object(variable) if shown(variable).class_name == "Activation" => {
+                    frames.push((text, shown(variable).withheld));
+                }
+                _ => others.push(text),
+            }
+        }
+        (others, frames)
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A `WeakArray`'s slot and an `Ephemeron`'s key keep nothing
+        /// alive, so neither refers to what it names; an ephemeron's value
+        /// is held strongly while its key lives, so it refers to it.
+        fn weak_words_and_an_ephemeron_s_key_are_no_references(lowering) {
+            let offset = line_start(WEAK, "^1");
+            let (mut interpreter, class) = interpreted(WEAK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+                "use:",
+            );
+            let ((key, value), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Weak", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Weak"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let look = variables(remote, Command::Variables { frame: 0 });
+                    let key = without_frames(&referrers(remote, value_of(&look, "aKey").id, 0, 100));
+                    let value =
+                        without_frames(&referrers(remote, value_of(&look, "aValue").id, 0, 100));
+                    set_breakpoints(remote, "Weak", Vec::new());
+                    expect_breakpoints(remote, "Weak");
+                    continue_stopped(remote);
+                    (key, value)
+                },
+            );
+            let ((key, key_frames), (value, value_frames)) = (key, value);
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(key, ["frame 0 aKey", "frame 1 key"]);
+            assert_eq!(value, ["frame 0 aValue", "frame 1 value", "#3 Ephemeron"]);
+            for (found, withheld) in [&key_frames, &value_frames].into_iter().flatten() {
+                assert!(found.ends_with("Activation") && *withheld, "{found}");
+            }
         }
     }
 }

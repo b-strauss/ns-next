@@ -842,6 +842,34 @@ pub(crate) fn variables(
     frame: usize,
     values: &mut StopValues,
 ) -> Option<Vec<Variable>> {
+    let (shipped, read) = frame_values(mutator, frames, frame)?;
+    Some(
+        read.into_iter()
+            .map(|(name, value)| Variable {
+                name,
+                value: value.map_or(VariableValue::Unavailable, |value| {
+                    VariableValue::Shown(values.describe(mutator, value, shipped))
+                }),
+            })
+            .collect(),
+    )
+}
+
+/// A variable of a frame, by name, and its value; `None` where it lives
+/// nowhere any more.
+pub(crate) type NamedValue<'gc> = (String, Option<Value<'gc>>);
+
+/// The variables of the frame at index `frame` of the stack trace, as
+/// `variables` shows them, each named and read where it lives -- `None`
+/// for one that lives nowhere any more -- and whether the frame runs a
+/// shipped body; `None` past the stack. What the memory view reads a
+/// frame by, so that a referrer on the stack is a variable this view
+/// shows (`memory::referrers`).
+pub(crate) fn frame_values<'gc>(
+    mutator: &mut Mutator<'gc>,
+    frames: &[StackFrame],
+    frame: usize,
+) -> Option<(bool, Vec<NamedValue<'gc>>)> {
     let stack_frame = frames.get(frame)?;
     let (code, origin, metadata) = body_of(mutator, stack_frame);
     let shipped = origin_is_shipped(mutator, origin.as_ref());
@@ -861,16 +889,30 @@ pub(crate) fn variables(
         Some(metadata) => named_variables(&reader, &metadata, &mut read),
         None => numbered_variables(&reader, &mut read),
     }
-    Some(
-        read.into_iter()
-            .map(|(name, value)| Variable {
-                name,
-                value: value.map_or(VariableValue::Unavailable, |value| {
-                    VariableValue::Shown(values.describe(mutator, value, shipped))
-                }),
-            })
-            .collect(),
-    )
+    Some((shipped, read))
+}
+
+/// Whether the frame object `frame` -- a running activation's, a
+/// suspended or a returned one -- runs a body of a shipped module, as
+/// `is_shipped` decides it for a frame of the stack: what withholds a
+/// frame object, and a closure by the frame it captured, in the memory
+/// view (`memory::referrers`). A frame that names no body, a top-level
+/// one, runs none.
+pub(crate) fn frame_object_is_shipped<'gc>(
+    mutator: &Mutator<'gc>,
+    frame: FrameReference<'gc>,
+) -> bool {
+    let heap = &mutator.heap;
+    let (read, code) = match heap.frame_activation(frame) {
+        Some(activation) => (Frame::Running(activation), heap.activation_code(activation)),
+        None => {
+            let Some(code) = heap.frame_code(frame) else {
+                return false;
+            };
+            (Frame::Suspended(frame), code)
+        }
+    };
+    origin_is_shipped(mutator, origin_of(heap, read, &code).as_ref())
 }
 
 /// What reads one stopped frame's variables.
