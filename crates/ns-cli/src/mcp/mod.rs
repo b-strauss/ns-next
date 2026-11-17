@@ -11,7 +11,7 @@
 
 mod dap_client;
 mod session;
-mod shadow;
+mod shipped_sources;
 mod summary;
 mod tools;
 
@@ -31,12 +31,18 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
-/// `ns-next mcp`: frees the executable it was started from for the next
-/// build (`shadow.rs`), then serves until the client closes the standard
-/// input, one message at a time -- a tool call holds the loop for as long
-/// as it waits. The session's program ends with the server.
+/// `ns-next mcp`: removes the stale shipped sources of other binaries
+/// (`shipped_sources.rs`), then serves until the client closes the
+/// standard input, one message at a time -- a tool call holds the loop for
+/// as long as it waits. A `debug_start` runs the program with this very
+/// executable unless told otherwise. The session's program ends with the
+/// server.
 pub(crate) fn execute() -> ExitCode {
-    let default_runtime = shadow::free_the_executable();
+    shipped_sources::remove_stale_core_libraries();
+    let default_runtime = std::env::current_exe().unwrap_or_else(|error| {
+        eprintln!("ns-next mcp: the executable's path is unknown: {error}");
+        std::path::PathBuf::from("ns-next")
+    });
     let mut debugger = tools::Debugger::new(default_runtime);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

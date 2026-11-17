@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::dap_client::{DapClient, Next};
-use super::shadow;
+use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -202,8 +202,7 @@ impl Session {
     /// stop at most `options.wait`; answers the session and the start's
     /// answer, or why it could not start.
     pub(crate) fn start(options: StartOptions) -> Result<(Session, String), String> {
-        let copy = shadow::copy_of(&options.runtime)?;
-        let (core_library, fingerprint) = shadow::core_library(&copy)?;
+        let (core_library, fingerprint) = shipped_sources::core_library(&options.runtime)?;
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
         let address = listener
@@ -212,7 +211,7 @@ impl Session {
         let secret = Token::generate()
             .map_err(|error| format!("making the session's secret: {error}"))?
             .hex();
-        let mut command = target_runner::target_command(&copy);
+        let mut command = target_runner::target_command(&options.runtime);
         command
             .arg("run")
             .arg(format!("--debug-connect={address}"))
@@ -227,7 +226,7 @@ impl Session {
             .stderr(Stdio::piped());
         let mut child = command
             .spawn()
-            .map_err(|error| format!("starting {}: {error}", copy.display()))?;
+            .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
         // Said for whoever watches the server: a test, or a person
         // looking for the program's process.
         eprintln!(

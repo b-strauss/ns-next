@@ -203,9 +203,8 @@ enum Command {
     },
     /// Serve the Model Context Protocol on standard input and output: an
     /// agent such as Claude debugs a program through its tools, each
-    /// program run in a child under the debugger from a copy of its
-    /// executable. On Windows the server renames its own executable aside
-    /// and puts a copy back, so that a build can replace it meanwhile.
+    /// program run in a child under the debugger, with this executable
+    /// unless the tool's `runtime` names another.
     Mcp,
 }
 

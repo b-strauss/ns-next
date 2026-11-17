@@ -1993,10 +1993,12 @@ not.
   (`crates/ns-cli/tests/mcp.rs`): its tools, a start stopping at a
   breakpoint with its summary, a step and an evaluation, an endless loop
   paused, a shipped frame's file, a reference expanded and a mark, an
-  endless evaluation aborted, the executable freed for the next build and
-  a killed server ending its program. The plugin's tests cover the stage's
-  actions over a scripted agent and the real runtime ("The JetBrains
-  plugin").
+  endless evaluation aborted, a start without a runtime running the
+  server's own executable, stale shipped sources removed, and a killed
+  server ending its program; `xtask/src/mcp.rs`'s tests hold the copy
+  `cargo xtask mcp` puts, that a copy already there stays and the
+  refusal without a build. The plugin's tests cover the stage's actions
+  over a scripted agent and the real runtime ("The JetBrains plugin").
 - **The pause stress mode** (above).
 - **The ordering of the poll words** is held by review, by the threaded
   race test `no_pause_is_lost_to_a_racing_depth_limit_write` (`heap.rs`),
@@ -5627,51 +5629,52 @@ the way not taken: every question would run the program from its start.
   its own words. `debug_stop` ends the program as its own `terminate…` would,
   its `ensure:` blocks run, and kills it when it has not ended within
   5 s.
-- **Starting it** (`shadow.rs`). `.mcp.json` at the repository's root
-  registers `target/debug/ns-next mcp`. On Windows a running executable
-  can be neither replaced nor removed, and neither the server nor a
-  session may keep `cargo build` from writing `target`. The server stays
-  the process its client started: a client watches that process, and
-  Node's `child_process`, on which the MCP SDKs' stdio transports are
-  built, closes the server's standard input once it ends, so a server
-  that handed over to a copy of itself would end at its start (decided
-  on 2026-11-17). On Windows the server renames
-  its own executable aside, to `<file name>.<process id>.running` in its
-  directory -- Windows permits renaming a running image within its
-  volume -- and puts a copy back at the original path, written under a
-  name of its process's and renamed into place, so that a build
-  overwrites a file no process runs and the path still names the build;
-  as it starts, it removes the files earlier servers renamed aside that
-  no process runs any more, the removal of one a process runs failing.
-  Elsewhere a running file can be replaced as it is
-  (`the_server_frees_its_executable_for_the_next_build`). `debug_start`
-  starts the binary at the path the server was started from -- the
-  current build -- unless `runtime` names another. Elsewhere than on
-  Windows it starts that file itself, which a build replaces as it runs;
-  on Windows it starts a copy in `ns-next/mcp-copies/<hash>/`, the hash
-  FNV-1a over the executable's bytes, as the shipped sources' fingerprint
-  is. The copies and the shipped sources lie in the user's own
-  directory -- on Windows the local application data directory
-  (`%LOCALAPPDATA%`), elsewhere the cache directory (`$XDG_CACHE_HOME`,
-  or `~/.cache`) -- never in the shared temporary directory, where
-  another user could put a file of their own at the path first, which
-  the server would run (decided on 2026-11-17). A copy found there is
-  run only when it holds exactly the executable's bytes, and written
-  again otherwise
-  (`a_session_runs_a_verified_copy_in_the_user_s_own_directory`); a copy
-  is written under a name of its process's and renamed into place, so
-  that no process runs a half written one, and a directory of copies
-  untouched for a day is removed when a server starts. So is a directory
-  of shipped sources untouched for a day -- its `fingerprint` file's
-  time, which a `debug_start` that reuses the directory touches, or the
-  directory's own without one -- but the one of the server's own binary's
-  fingerprint; no process runs from it, and a session of a binary whose
-  sources were removed writes them again, a removal that fails leaving
-  the directory
-  (`a_starting_server_removes_stale_shipped_sources_but_its_own`). A
-  change to the program's runtime thus takes effect at the next
-  `debug_start`; a change to the server itself, at the client's next
-  connection.
+- **The shipped sources** (`shipped_sources.rs`) of the binary a session
+  runs lie in the user's own directory -- on Windows the local
+  application data directory (`%LOCALAPPDATA%`), elsewhere the cache
+  directory (`$XDG_CACHE_HOME`, or `~/.cache`) -- never in the shared
+  temporary directory, where another user could put a file of their own
+  at the path first, which the server would show (decided on
+  2026-11-17). A directory is written under a name of its process's and
+  renamed into place, so that no session reads a half written one. A
+  server that starts removes a directory of shipped sources untouched
+  for a day -- its `fingerprint` file's time, which a `debug_start` that
+  reuses the directory touches, or the directory's own without one --
+  but the one of its own binary's fingerprint; no process runs from it,
+  and a session of a binary whose sources were removed writes them
+  again, a removal that fails leaving the directory
+  (`a_starting_server_removes_stale_shipped_sources_but_its_own`).
+- **Starting it.** `ns-next mcp` is a plain server and knows nothing of
+  the build that made it: an installed `ns-next` is never rebuilt
+  (decided with the user on 2026-11-17). `debug_start` runs the program
+  with the server's own executable (`std::env::current_exe`) unless
+  `runtime` names another binary
+  (`a_start_without_a_runtime_runs_the_server_s_own_executable`). In
+  this repository `.mcp.json` starts the server from a copy of the debug
+  build, `target/mcp/ns-next mcp`, which the client starts directly, so
+  that no process of the server's locks what cargo writes: on Windows a
+  running executable can be neither replaced nor removed, and a server
+  run from `target/debug/ns-next` would keep `cargo build` from writing
+  it. A long-lived `cargo xtask` launcher, which the client would start
+  and which would start the server, is the way not taken: it would run
+  for the whole connection and keep cargo from relinking `xtask` after a
+  change to it or to `ns-runtime`. The client starts the path as given,
+  without a shell; Node's `child_process`, on which the MCP SDKs' stdio
+  transports are built, starts `target/mcp/ns-next` on Windows without
+  the `.exe`, which the system adds (checked 2026-11-17). `cargo xtask
+  mcp` (`xtask/src/mcp.rs`) puts the copy: it builds nothing and starts
+  nothing, refuses, naming `cargo build -p ns-cli`, when there is no
+  build, and copies `target/debug/ns-next` to `target/mcp/ns-next`,
+  written under a name of its process's and renamed into place, only
+  when nothing is there, after removing the partial copies a task that
+  died midway left; a copy already there stays, since a server may
+  run from it, and the task says so. Until the task has run, the client
+  fails to start the server. The server and the programs it debugs run
+  from that copy until it is refreshed -- `target/mcp/` deleted while no
+  server runs from it, `cargo xtask mcp` run again and the client
+  reconnected (`/mcp` in Claude Code) -- and a session started with
+  `runtime` naming `target/debug/ns-next` runs the newest build, which
+  then locks that file for as long as the session's program runs.
 
 ## The JetBrains plugin
 

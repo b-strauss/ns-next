@@ -60,8 +60,6 @@ const TOOLS: [(&str, &[&str], &[&str]); 16] = [
 /// built: a server that handed over to another process would lose its
 /// input then.
 struct McpServer {
-    /// The directory of the copy the server was started from, if any.
-    build: Option<ScratchDirectory>,
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     lines: Receiver<String>,
@@ -70,22 +68,14 @@ struct McpServer {
 }
 
 impl McpServer {
-    /// `ns-next mcp` started from a copy of the binary of its own, since
-    /// the server renames the file it was started from on Windows,
-    /// initialized.
+    /// `ns-next mcp`, initialized.
     fn start() -> McpServer {
-        McpServer::start_from_a_copy(&[])
+        McpServer::start_with_environment(&[])
     }
 
     /// As `start`, with the environment `variables`.
-    fn start_from_a_copy(variables: &[(&str, &str)]) -> McpServer {
-        let build = ScratchDirectory::new("server");
-        let name = Path::new(binary()).file_name().expect("a file name");
-        let executable = build.join(&name.to_string_lossy());
-        std::fs::copy(binary(), &executable).expect("copy the binary");
-        let mut server = McpServer::start_with(&executable, variables);
-        server.build = Some(build);
-        server
+    fn start_with_environment(variables: &[(&str, &str)]) -> McpServer {
+        McpServer::start_with(Path::new(binary()), variables)
     }
 
     /// `<executable> mcp` with the environment `variables`, initialized.
@@ -144,7 +134,6 @@ impl McpServer {
             }
         });
         let mut server = McpServer {
-            build: None,
             child,
             stdin,
             lines,
@@ -174,15 +163,6 @@ impl McpServer {
             .expect("the server's input, closed once the process started ended");
         writeln!(stdin, "{message}").expect("write to the server");
         stdin.flush().expect("flush the server's input");
-    }
-
-    /// Whether the process started still runs.
-    fn runs(&self) -> bool {
-        self.child
-            .lock()
-            .expect("the child")
-            .try_wait()
-            .is_ok_and(|status| status.is_none())
     }
 
     /// The process id of the program the last `debug_start` started, as
@@ -539,15 +519,12 @@ fn a_location_naming_no_module_is_refused() {
     assert!(relative.contains("absolute"), "{relative}");
 }
 
-/// The server stays the process its client started, and frees the file
-/// it was started from for the next build: a build overwrites it while
-/// the server and a session run, and the next `debug_start` runs the new
-/// file. On Windows the server renames its running file aside and puts a
-/// copy back, after removing what earlier servers renamed aside that no
-/// process runs any more.
+/// A `debug_start` that names no runtime runs the program with the
+/// server's own executable, wherever it lies, and the server leaves its
+/// directory as it found it: it renames, copies and writes nothing there.
 #[test]
-fn the_server_frees_its_executable_for_the_next_build() {
-    let build = ScratchDirectory::new("build");
+fn a_start_without_a_runtime_runs_the_server_s_own_executable() {
+    let build = ScratchDirectory::new("server");
     let name = Path::new(binary())
         .file_name()
         .expect("a file name")
@@ -555,103 +532,22 @@ fn the_server_frees_its_executable_for_the_next_build() {
         .to_string();
     let executable = std::path::absolute(build.join(&name)).expect("an absolute path");
     std::fs::copy(binary(), &executable).expect("copy the binary");
-    let leftover = build.join(&format!("{name}.4294967295.running"));
-    std::fs::write(&leftover, "an earlier server's").expect("write a leftover");
     let mut server = McpServer::start_with(&executable, &[]);
-    assert!(server.runs(), "the process started ended");
-    if cfg!(windows) {
-        assert!(!leftover.exists(), "the leftover is still there");
-        let aside = build.join(&format!(
-            "{name}.{}.running",
-            server.child.lock().expect("the child").id()
-        ));
-        assert!(aside.is_file(), "nothing renamed aside");
-    }
-    // A build overwrites the executable while the server runs.
-    replace_as_a_build_does(&executable);
     let (_directory, path) = program("Counter", COUNTER);
     let ended = server.succeed("debug_start", json!({ "program": path }));
     assert!(ended.starts_with("ended: exit status 0"), "{ended}");
+    let runtime = line_starting(&ended, "runtime: ");
     assert!(
-        line_starting(&ended, "runtime: ").contains(&executable.display().to_string()),
+        runtime.contains(&executable.display().to_string()),
         "{ended}"
     );
-    // Nor does a session hold the executable it runs.
-    server.succeed(
-        "debug_start",
-        json!({ "program": path, "stop_on_entry": true }),
-    );
-    replace_as_a_build_does(&executable);
-    assert!(server.runs(), "the process started ended");
-}
-
-/// Every file below `directory` whose name is `name`, at any depth.
-fn files_named(directory: &Path, name: &OsStr) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut pending = vec![directory.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.file_name() == Some(name) {
-                found.push(path);
-            }
-        }
-    }
-    found
-}
-
-/// A session runs the binary it names from a copy only on Windows, where
-/// a running file cannot be replaced, and that copy lies in the user's
-/// own local data directory, never in the shared temporary one, where
-/// another user could have put a file of their own first: a copy found
-/// there whose bytes are not the binary's is written again before it
-/// runs. Elsewhere nothing is copied.
-#[test]
-fn a_session_runs_a_verified_copy_in_the_user_s_own_directory() {
-    let data = ScratchDirectory::new("local-data");
-    let temporary = ScratchDirectory::new("temporary");
-    let data_path = data.path().display().to_string();
-    let temporary_path = temporary.path().display().to_string();
-    let mut server = McpServer::start_from_a_copy(&[
-        ("LOCALAPPDATA", data_path.as_str()),
-        ("XDG_CACHE_HOME", data_path.as_str()),
-        ("TEMP", temporary_path.as_str()),
-        ("TMP", temporary_path.as_str()),
-        ("TMPDIR", temporary_path.as_str()),
-    ]);
-    let (_directory, path) = program("Counter", COUNTER);
-    let ended = server.succeed("debug_start", json!({ "program": path }));
-    assert!(ended.starts_with("ended: exit status 0"), "{ended}");
-    let name = Path::new(binary()).file_name().expect("a file name");
-    let mut copies = files_named(data.path(), name);
-    copies.extend(files_named(temporary.path(), name));
-    if cfg!(windows) {
-        let [copy] = copies.as_slice() else {
-            panic!("one copy was expected, not {copies:?}");
-        };
-        std::fs::write(copy, "not the binary").expect("replace the copy");
-        let ended = server.succeed("debug_start", json!({ "program": path }));
-        assert!(ended.starts_with("ended: exit status 0"), "{ended}");
-        let written = std::fs::read(copy).expect("read the copy");
-        let original = std::fs::read(binary()).expect("read the binary");
-        assert!(written == original, "the copy was not written again");
-        assert!(
-            copy.starts_with(data.path()),
-            "the copy lies outside the user's own directory: {}",
-            copy.display()
-        );
-    } else {
-        assert!(copies.is_empty(), "the binary was copied: {copies:?}");
-    }
-    assert!(
-        std::fs::read_dir(temporary.path()).is_ok_and(|mut entries| entries.next().is_none()),
-        "the shared temporary directory holds the server's files"
-    );
+    drop(server);
+    let entries: Vec<String> = std::fs::read_dir(build.path())
+        .expect("read the server's directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(entries, [name], "the server changed its directory");
 }
 
 /// A server that starts removes the directories of shipped sources in the
@@ -679,7 +575,7 @@ fn a_starting_server_removes_stale_shipped_sources_but_its_own() {
     let own = sources(&running, two_days_ago);
     let fresh = sources("fedcba9876543210", std::time::SystemTime::now());
     let data_path = data.path().display().to_string();
-    let server = McpServer::start_from_a_copy(&[
+    let server = McpServer::start_with_environment(&[
         ("LOCALAPPDATA", data_path.as_str()),
         ("XDG_CACHE_HOME", data_path.as_str()),
     ]);
@@ -687,17 +583,6 @@ fn a_starting_server_removes_stale_shipped_sources_but_its_own() {
     assert!(own.is_dir(), "the binary's own sources were removed");
     assert!(fresh.is_dir(), "sources touched since were removed");
     drop(server);
-}
-
-/// Puts a new file at `executable`'s path as a build does: written beside
-/// it and moved into place, which replaces a file a process runs on every
-/// system but Windows, and on Windows one that no process runs.
-fn replace_as_a_build_does(executable: &Path) {
-    let mut written = executable.as_os_str().to_os_string();
-    written.push(".written");
-    let written = PathBuf::from(written);
-    std::fs::copy(binary(), &written).expect("write the new build");
-    std::fs::rename(&written, executable).expect("move the new build into place");
 }
 
 /// Whether a process of the id `process` runs.
@@ -799,7 +684,7 @@ const EVALUATION_WAIT: &str = "NS_NEXT_MCP_EVALUATION_WAIT_MILLISECONDS";
 #[test]
 fn an_evaluation_that_does_not_end_is_aborted() {
     let (_directory, path) = program("Counter", COUNTER);
-    let mut server = McpServer::start_from_a_copy(&[(EVALUATION_WAIT, "300")]);
+    let mut server = McpServer::start_with_environment(&[(EVALUATION_WAIT, "300")]);
     server.succeed(
         "debug_start",
         json!({

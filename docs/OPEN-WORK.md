@@ -2132,6 +2132,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       standard error, and the MCP server every refused response, so that a
       recurrence says what arrived ([debugger.md](design/debugger.md),
       "The MCP server").
+    - *The MCP server's copy is put by hand*: `.mcp.json` starts
+      `target/mcp/ns-next`, so until `cargo xtask mcp` has run -- in a
+      fresh checkout, or after `target/` was cleaned -- the client fails
+      to start the server, and the copy stays at the build it was made
+      from until `target/mcp/` is deleted and the task run again
+      ([debugger.md](design/debugger.md), "The MCP server", "Starting
+      it").
     - *The plugin*: its hovers send no `context: "hover"` -- they
       evaluate only a frame's variable names -- so the agent's hover
       bound and its abort never apply to them; the memory view's panel
