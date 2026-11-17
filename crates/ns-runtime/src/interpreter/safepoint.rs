@@ -117,6 +117,10 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        // Whether the pause stress mode's stop is kept for an evaluation
+        // its reader began, which this safepoint may serve.
+        #[cfg(debug_assertions)]
+        let in_stress_evaluation = self.stress_stop.is_some();
         let served = self.serve_debugger(floor);
         if matches!(
             served,
@@ -131,6 +135,18 @@ impl Interpreter {
         let _ = floor;
         #[cfg(debug_assertions)]
         let mut stressed = false;
+        // Whether the pause stress mode's stop pushed an evaluation, whose
+        // frame the loop reads as it reads a debugger's.
+        #[cfg(debug_assertions)]
+        let mut stress_evaluates = false;
+        // Neither stress mode stops at a safepoint of the pause stress
+        // mode's evaluations -- one within an evaluation, or the one its
+        // end asked for, which serves the kept stop: a stop there would
+        // nest an evaluation's stop in another's, and, where the schedule
+        // falls due at every safepoint, its evaluations' safepoints would
+        // make the next stop's before the program ran on, for ever.
+        #[cfg(debug_assertions)]
+        let at_stress_evaluation = in_stress_evaluation || self.stress_stop.is_some();
         // The pause stress mode's stop, where a debugger's pause stops:
         // first, before anything else here changes the stack or the heap.
         #[cfg(debug_assertions)]
@@ -141,19 +157,22 @@ impl Interpreter {
                 // the stack's words beside the traced size.
                 let stack_words = self.enter(|mutator| mutator.heap.activation_stack_top());
                 let paced_size = size_with_stack(traced_size, stack_words, PAUSE_STACK_WEIGHT);
-                if self
-                    .stress_pause
-                    .as_mut()
-                    .is_some_and(|stress| stress.due(paced_size))
+                if !at_stress_evaluation
+                    && self
+                        .stress_pause
+                        .as_mut()
+                        .is_some_and(|stress| stress.due(paced_size))
                 {
-                    self.stop_for_stress(floor);
+                    stress_evaluates = self.stop_for_stress(floor);
                 }
                 stressed = true;
             }
             // The step stress mode's stop, which begins a burst of steps,
             // where the pause stress mode's stops.
             if self.stress_step.is_some() {
-                self.step_for_stress(floor, traced_size);
+                if !at_stress_evaluation && !stress_evaluates {
+                    self.step_for_stress(floor, traced_size);
+                }
                 stressed = true;
             }
             // The breakpoint stress mode's patches, next, before an
@@ -178,6 +197,10 @@ impl Interpreter {
             served,
             crate::debugger::Served::Rebuilt | crate::debugger::Served::Evaluate
         );
+        #[cfg(debug_assertions)]
+        {
+            rebuilt |= stress_evaluates;
+        }
         // Under the invalidate stress mode, once optimized code spent its
         // countdown, the copies installed at earlier safepoints are freed,
         // but a backing-off body's, before this one installs the next

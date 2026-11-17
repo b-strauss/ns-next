@@ -118,6 +118,54 @@ pub(crate) fn compile(
     compile_with(mutator, stack_frame, text, &marks, |_| parsed(text))
 }
 
+/// The pause stress mode's evaluations, compiled once for each body and
+/// variable name (`compile_for_stress`): every evaluation's block is a body
+/// of its own, which takes a code id as it is pushed, so that compiling the
+/// same name again at every stop would mint a row per evaluation and grow
+/// the code id table to its limit, whose collections no program without
+/// the mode makes. Each is held with its body, weakly, so that a body
+/// freed and another allocated at its address never finds the first's.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+pub(crate) struct StressCompilations {
+    compiled: HashMap<(usize, String), (std::rc::Weak<CompiledCode>, Compiled)>,
+}
+
+/// `compile` for the pause stress mode's reader, whose expression is a
+/// variable's name: the compilation for the frame's body and the name
+/// made at an earlier stop, if one was, or compiled now and kept in
+/// `compilations`. A stop with marks compiles afresh, since a label may
+/// name a parameter of the block. A reading of a variable resolves to the
+/// same binding wherever the body stands, so the frame's program counter,
+/// which decides only what an assignment may write, is no part of the
+/// key.
+#[cfg(debug_assertions)]
+pub(crate) fn compile_for_stress(
+    mutator: &mut Mutator<'_>,
+    stop: &mut Stop,
+    frame: usize,
+    text: &str,
+    compilations: &mut StressCompilations,
+) -> Result<Compiled, String> {
+    if !stop.values.marks().is_empty() {
+        return compile(mutator, stop, frame, text);
+    }
+    let frames = stop.frames(mutator);
+    let stack_frame = frames.get(frame).ok_or(NO_SUCH_FRAME)?;
+    let body = stack::code(&mutator.heap, stack_frame);
+    let key = (Rc::as_ptr(&body) as usize, text.to_owned());
+    if let Some((held, compiled)) = compilations.compiled.get(&key)
+        && held.upgrade().is_some()
+    {
+        return Ok(compiled.clone());
+    }
+    let compiled = compile(mutator, stop, frame, text)?;
+    compilations
+        .compiled
+        .insert(key, (Rc::downgrade(&body), compiled.clone()));
+    Ok(compiled)
+}
+
 /// `text` compiled as `compile` compiles it, standing in `frame`: a
 /// breakpoint's condition or log expression, in the frame that reached
 /// the breakpoint (`debugger::conditions`), naming the marks as they

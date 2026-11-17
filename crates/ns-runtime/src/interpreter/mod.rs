@@ -697,6 +697,17 @@ pub struct Interpreter {
     /// since a stop reads the whole run's stack. Debug builds only.
     #[cfg(debug_assertions)]
     stress_pause: Option<safepoint::StressSchedule>,
+    /// The pause stress mode's stop an evaluation its reader began left to
+    /// run, kept, as the attached debugger keeps its own
+    /// (`Debugger::stop`), until the safepoint the evaluation's end asks
+    /// for re-enters it (`debugger::StressReader`). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_stop: Option<crate::debugger::Stop>,
+    /// The evaluations the pause stress mode's reader compiled, kept for
+    /// its later stops in the same bodies
+    /// (`debugger::evaluation::StressCompilations`). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_compilations: crate::debugger::evaluation::StressCompilations,
     /// Whether the breakpoint stress mode is on
     /// (`NS_NEXT_STRESS_BREAKPOINTS`, or `set_stress_breakpoints`): at
     /// every safepoint, every statement start of each running body not
@@ -783,6 +794,10 @@ impl Interpreter {
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
+            #[cfg(debug_assertions)]
+            stress_stop: None,
+            #[cfg(debug_assertions)]
+            stress_compilations: crate::debugger::evaluation::StressCompilations::default(),
             #[cfg(debug_assertions)]
             stress_breakpoints: safepoint::stress_breakpoints_from_env(),
             #[cfg(debug_assertions)]
@@ -1003,6 +1018,14 @@ impl Interpreter {
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                // An evaluation's end asks for the safepoint that re-enters
+                // the stop kept for it before the frame below runs again, so
+                // no run ends with the pause stress mode's stop still kept.
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    self.stress_stop.is_none(),
+                    "internal: the pause stress mode's stop outlived its run"
+                );
                 self.serve_between_runs();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left

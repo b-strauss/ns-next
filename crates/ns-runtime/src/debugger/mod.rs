@@ -63,8 +63,9 @@ const NO_SUCH_FRAME: &str = "no frame at that index";
 /// Why a stop refuses `StepIntoTarget` for an id none of its targets has.
 const NO_SUCH_TARGET: &str = "no such target";
 
-/// Why a stop a stress mode's reader serves refuses `Evaluate`: only an
-/// attached debugger's stop is kept while an evaluation runs.
+/// Why a stop refuses `Evaluate` when nothing keeps it while the
+/// evaluation runs: only an attached debugger's stop and the pause stress
+/// mode's are kept (`Debugger::stop`, `Interpreter::stress_stop`).
 const NOT_KEPT: &str = "only a debugger's stop evaluates";
 
 /// Why a stop refuses `Children`, `ForceReturn`, `Mark` or `Referrers` for
@@ -269,11 +270,13 @@ pub(crate) enum CommandSource {
 
 /// The pause stress mode's agent (`Interpreter::stop_for_stress`): it asks
 /// for the stack, the variables of every frame and the first children of
-/// every value those answered, then continues, so that every program the
-/// mode runs proves that reading a stopped stack -- every frame, every
-/// register the leftover analysis calls live, every value one level deep
-/// -- changes nothing and reads no dead register, which a debug build
-/// refuses (`docs/design/debugger.md`, "The pause stress mode").
+/// every value those answered, evaluates the named variables of the top
+/// frame, then continues, so that every program the mode runs proves that
+/// reading a stopped stack -- every frame, every register the leftover
+/// analysis calls live, every value one level deep -- changes nothing and
+/// reads no dead register, which a debug build refuses, and that an
+/// evaluation in the stopped frame answers the very value the variables
+/// view showed (`docs/design/debugger.md`, "The pause stress mode").
 #[cfg(debug_assertions)]
 pub(crate) struct StressReader {
     /// The stress mode the reader reads for, which a refusal names.
@@ -285,6 +288,21 @@ pub(crate) struct StressReader {
     /// Whether the command last issued asks for a value's children, whose
     /// answer is one level deep and calls for nothing more.
     reading_children: bool,
+    /// Whether the reader evaluates the top frame's variables: only the
+    /// pause stress mode's does, and only at a stop made while no
+    /// evaluation runs and no step is in progress, since evaluations do
+    /// not nest and an evaluation's push would be a step's to report.
+    evaluates: bool,
+    /// The top frame's name, which a mismatch names, once the stack trace
+    /// answered and the frame is no shipped one: `None` for a stop whose
+    /// top frame is not evaluated.
+    top_frame: Option<String>,
+    /// Whether the top frame's variables answered yet, which are the first
+    /// `Variables` answer that is no value's children.
+    top_variables_read: bool,
+    /// The variables evaluated, in the order of their `Evaluate`s, each
+    /// with the value the variables view showed.
+    expected: std::collections::VecDeque<(String, ValueDescription)>,
 }
 
 #[cfg(debug_assertions)]
@@ -292,14 +310,51 @@ impl StressReader {
     /// How many children of each value the reader asks for.
     const CHILDREN: usize = 8;
 
+    /// How many of the top frame's variables the reader evaluates at a
+    /// stop: each evaluation compiles and pushes a block, so that the
+    /// stop's cost stays bounded in a frame of many variables.
+    const EVALUATIONS: usize = 8;
+
     /// A reader for the stress mode `mode`, which has asked for nothing
-    /// yet.
-    fn for_mode(mode: &'static str) -> StressReader {
+    /// yet, and evaluates the top frame's variables when `evaluates`.
+    fn for_mode(mode: &'static str, evaluates: bool) -> StressReader {
         StressReader {
             mode,
             started: false,
             pending: std::collections::VecDeque::new(),
             reading_children: false,
+            evaluates,
+            top_frame: None,
+            top_variables_read: false,
+            expected: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Checks the answer of the evaluation of the next variable expected:
+    /// the value the variables view showed, by its class, its label and
+    /// its children -- or a refusal the stopped frame gives a reason for,
+    /// a frame without metadata or a stack without room for the push.
+    fn evaluated(&mut self, answer: Result<&Evaluation, &str>) {
+        let (name, shown) = self
+            .expected
+            .pop_front()
+            .expect("internal: the stress mode's reader answered an evaluation it did not ask for");
+        let frame = self.top_frame.as_deref().unwrap_or_default();
+        match answer {
+            Ok(Evaluation::Value(value))
+                if value.class_name == shown.class_name
+                    && value.label == shown.label
+                    && value.child_count == shown.child_count
+                    && value.indexed == shown.indexed => {}
+            Err(reason) if reason == evaluation::NO_SOURCE || reason == evaluation::NO_ROOM => {}
+            Ok(answer) => panic!(
+                "internal: the {} stress mode's evaluation of {name} in {frame} answered {answer:?}, where the variables view showed {shown:?}",
+                self.mode
+            ),
+            Err(reason) => panic!(
+                "internal: the {} stress mode's evaluation of {name} in {frame} was refused: {reason}",
+                self.mode
+            ),
         }
     }
 
@@ -325,6 +380,11 @@ impl StressReader {
                 self.pending.push_back(Command::StepInTargets);
                 self.pending
                     .extend((0..frames.len()).map(|frame| Command::Variables { frame }));
+                // A shipped frame refuses every evaluation.
+                self.top_frame = frames
+                    .first()
+                    .filter(|frame| self.evaluates && !frame.shipped)
+                    .map(|frame| frame.name.clone());
             }
             Event::Variables(variables) => {
                 if !self.reading_children {
@@ -338,7 +398,29 @@ impl StressReader {
                                 count: StressReader::CHILDREN,
                             })
                         }));
+                    if !self.top_variables_read && self.top_frame.is_some() {
+                        // A variable not computed or not available has no
+                        // value the evaluation could be held to.
+                        let evaluated: Vec<(String, ValueDescription)> = variables
+                            .iter()
+                            .filter_map(|variable| {
+                                Some((variable.name.clone(), variable.value.shown()?.clone()))
+                            })
+                            .take(StressReader::EVALUATIONS)
+                            .collect();
+                        self.pending
+                            .extend(evaluated.iter().map(|(name, _)| Command::Evaluate {
+                                frame: 0,
+                                expression: name.clone(),
+                            }));
+                        self.expected.extend(evaluated);
+                    }
+                    self.top_variables_read = true;
                 }
+            }
+            Event::Evaluated(answer) => self.evaluated(Ok(&answer)),
+            Event::Refused { command, reason } if command == "Evaluate" => {
+                self.evaluated(Err(&reason));
             }
             // The reader asks only for frames and values the stop handed
             // out: a refusal is the stop misreading its own stack.
@@ -349,7 +431,6 @@ impl StressReader {
                 )
             }
             Event::Stopped { .. }
-            | Event::Evaluated(_)
             | Event::VariableSet(_)
             | Event::Continued
             | Event::Breakpoints { .. }
@@ -482,7 +563,7 @@ impl StepStress {
         } else {
             self.left = STEP_STRESS_BURST;
         }
-        let reader = StressReader::for_mode("step");
+        let reader = StressReader::for_mode("step", false);
         if self.left == 0 {
             return StepReader {
                 reader,
@@ -843,6 +924,10 @@ impl Interpreter {
     /// answer of an evaluation whose debugger is gone waits for nobody,
     /// and goes with the run (`evaluation::run_ended`).
     fn serve_evaluation(&mut self, floor: usize) -> Option<Served> {
+        #[cfg(debug_assertions)]
+        if self.stress_stop.is_some() {
+            return Some(self.serve_stress_evaluation());
+        }
         let (kept, deciding) = self.debugger.as_ref().map_or((false, false), |debugger| {
             (debugger.stop.is_some(), debugger.deciding.is_some())
         });
@@ -894,8 +979,16 @@ impl Interpreter {
             .as_mut()
             .and_then(|debugger| debugger.stop.take())
             .expect("internal: the stop is kept");
+        let answer = self.evaluation_answer(&mut stop);
+        self.answer(&mut stop.source, answer);
+        Some(self.serve_stop(stop))
+    }
+
+    /// What `stop`, kept for an evaluation that ended, answers its agent:
+    /// the evaluation's answer, or the variable it set as it now stands.
+    fn evaluation_answer(&mut self, stop: &mut Stop) -> Event {
         let setting = stop.setting.take();
-        let answer = self.enter(|mutator| {
+        self.enter(|mutator| {
             let outcome = evaluation::take_outcome(mutator)
                 .expect("internal: an evaluation that ended holds its answer");
             let answer = match outcome {
@@ -931,9 +1024,7 @@ impl Interpreter {
                 }),
                 (_, answer) => Event::Evaluated(answer),
             }
-        });
-        self.answer(&mut stop.source, answer);
-        Some(self.serve_stop(stop))
+        })
     }
 
     /// Goes on deciding the conditions of a breakpoint's slot
@@ -1094,19 +1185,55 @@ impl Interpreter {
     }
 
     /// Stops the program as a pause does, for the pause stress mode, with
-    /// its reader as the agent; the program goes on.
+    /// its reader as the agent; the program goes on, or the reader began
+    /// an evaluation, which the answer says: the stop is kept for it
+    /// (`Interpreter::stress_stop`) and the run loop reads the
+    /// evaluation's frame, now on top. The reader evaluates only where no
+    /// evaluation runs or waits for its stop and no step is in progress.
     #[cfg(debug_assertions)]
-    pub(crate) fn stop_for_stress(&mut self, floor: usize) {
+    pub(crate) fn stop_for_stress(&mut self, floor: usize) -> bool {
+        let evaluates = self.enter(|mutator| {
+            !mutator.breakpoints.evaluating()
+                && !evaluation::has_ended(mutator)
+                && mutator.stepping.is_none()
+        });
         let served = self.stop(
             StopReason::Pause,
             None,
             floor,
-            CommandSource::Reader(StressReader::for_mode("pause")),
+            CommandSource::Reader(StressReader::for_mode("pause", evaluates)),
         );
         debug_assert!(
-            served == Served::GoOn,
+            matches!(served, Served::GoOn | Served::Evaluate),
             "internal: the pause stress mode's reader never terminates"
         );
+        served == Served::Evaluate
+    }
+
+    /// Serves the safepoints of an evaluation the pause stress mode's stop
+    /// began, which the stop is kept for (`Interpreter::stress_stop`): once
+    /// it ended, the kept stop takes its answer and its reader goes on; while
+    /// it runs, a safepoint serves the commands an attached debugger queued
+    /// meanwhile, as at any safepoint while the program runs, and leaves a
+    /// pause for a later one -- the debugger never sees the stress stop, so
+    /// its pause is not the evaluation's to take.
+    #[cfg(debug_assertions)]
+    fn serve_stress_evaluation(&mut self) -> Served {
+        if !self.enter(|mutator| evaluation::has_ended(mutator)) {
+            let bits = self.enter(|mutator| mutator.heap.debugger_bits());
+            if bits & DEBUGGER_COMMANDS != 0 && self.serve_queued_commands() == Served::Terminate {
+                return self.terminate();
+            }
+            return Served::GoOn;
+        }
+        self.clear_debugger_bits(DEBUGGER_STOP);
+        let mut stop = self
+            .stress_stop
+            .take()
+            .expect("internal: the stress stop is kept");
+        let answer = self.evaluation_answer(&mut stop);
+        self.answer(&mut stop.source, answer);
+        self.serve_stop(stop)
     }
 
     /// The step stress mode at a safepoint: when its schedule says a
@@ -1685,6 +1812,11 @@ impl Interpreter {
                                 Command::SetVariable { name, .. } => Some(name),
                                 _ => None,
                             };
+                            #[cfg(debug_assertions)]
+                            if !matches!(stop.source, CommandSource::Remote) {
+                                self.stress_stop = Some(stop);
+                                return Served::Evaluate;
+                            }
                             if let Some(debugger) = &mut self.debugger {
                                 debugger.stop = Some(stop);
                             }
@@ -1741,13 +1873,34 @@ impl Interpreter {
     /// evaluates in the frame it names of `stop`'s stack and pushes it
     /// (`evaluation::compile`, `evaluation::compile_assignment`,
     /// `evaluation::begin`); the refusal's reason otherwise. Only a stop
-    /// the attached debugger serves can be kept for an evaluation.
+    /// the attached debugger serves, and in a debug build the pause stress
+    /// mode's, can be kept for an evaluation.
     fn begin_evaluation(&mut self, stop: &mut Stop, command: &Command) -> Result<(), String> {
-        if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
+        let kept = match stop.source {
+            CommandSource::Remote => self.debugger.is_some(),
+            #[cfg(debug_assertions)]
+            CommandSource::Reader(_) => true,
+            #[cfg(debug_assertions)]
+            CommandSource::Stepper(_) => false,
+        };
+        if !kept {
             return Err(String::from(NOT_KEPT));
         }
-        let (frame, compiled) = self.enter(|mutator| match command {
+        #[cfg(debug_assertions)]
+        let mut compilations = std::mem::take(&mut self.stress_compilations);
+        let compiled = self.enter(|mutator| match command {
             Command::Evaluate { frame, expression } => {
+                #[cfg(debug_assertions)]
+                if matches!(stop.source, CommandSource::Reader(_)) {
+                    return evaluation::compile_for_stress(
+                        mutator,
+                        stop,
+                        *frame,
+                        expression,
+                        &mut compilations,
+                    )
+                    .map(|code| (*frame, code));
+                }
                 evaluation::compile(mutator, stop, *frame, expression).map(|code| (*frame, code))
             }
             Command::SetVariable {
@@ -1757,7 +1910,12 @@ impl Interpreter {
             } => evaluation::compile_assignment(mutator, stop, *frame, name, expression)
                 .map(|code| (*frame, code)),
             _ => unreachable!("internal: only an `Evaluate` and a `SetVariable` evaluate"),
-        })?;
+        });
+        #[cfg(debug_assertions)]
+        {
+            self.stress_compilations = compilations;
+        }
+        let (frame, compiled) = compiled?;
         self.enter(|mutator| {
             let marked: Vec<Value<'_>> = compiled
                 .marked
@@ -1822,9 +1980,14 @@ impl Interpreter {
         // its way to the floor, and the stop kept for it; the depth limit
         // keeps the evaluation's raise until the run ended.
         self.enter(evaluation::terminated);
-        // So does a decision of conditions an evaluation ran for.
+        // So does a decision of conditions an evaluation ran for, and the
+        // pause stress mode's stop kept for its evaluation.
         if let Some(debugger) = &mut self.debugger {
             debugger.deciding = None;
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.stress_stop = None;
         }
         if let Some(debugger) = &mut self.debugger
             && let Some(stop) = debugger.stop.take()

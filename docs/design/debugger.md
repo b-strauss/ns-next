@@ -1403,18 +1403,42 @@ first. No debugger need be attached: the stop takes its commands from a
 `CommandSource`, the attached debugger's channels or the mode's reader
 (`debugger::StressReader`), which asks for the stack trace, the variables
 of every frame and the first eight children of every value a variable has,
-then continues; a refusal is the stop misreading its own stack, and
+evaluates the first eight named variables of the top frame that have a
+value, then continues; a refusal is the stop misreading its own stack, and
 panics. The stack trace and the variables are read through the metadata
 as an agent's are, so every frame's body is found by its declaration and
 compiled again on the first stop in it, and its name, its location and
 its named variables, the outer chain of a block included, are read at
 real stops; a variable not available has no value to ask children of.
+Each evaluation (`Command::Evaluate`, the variable's name as the
+expression; "Evaluation") must answer the value the variables view
+showed -- its class, its label, its child count and whether its children
+are elements, since a stop hands out a fresh id for every value it
+describes -- or be refused for a reason the stopped frame gives, a frame
+without metadata or a stack without room for the push; any other answer
+panics, naming the variable, the frame and both answers. The top frame is
+evaluated only when it is no shipped one, which refuses every evaluation,
+and only at a stop made while no evaluation runs or waits for its stop and
+no step is in progress, since evaluations do not nest and a step would
+take the evaluation's push for its own. The stop is kept for the
+evaluation as the attached debugger's is, in `Interpreter::stress_stop`
+instead of the `Debugger`, the safepoint answering
+`SafepointOutcome::Rebuilt` so that the run loop reads the evaluation's
+frame; while it runs, a safepoint serves the commands an attached
+debugger queued and leaves its pause for later, since the debugger never
+sees the stress stop. Each body and name is compiled once
+(`evaluation::StressCompilations`): an evaluation's block is a body of
+its own, which takes a code id as it is pushed, so that compiling the
+same name at every stop would grow the code id table to its limit and
+make collections no program makes without the mode, which the goldens'
+table check refuses.
 While the mode is on it holds the stress bit
 (`hold_safepoints_for_stress`), so that every poll comes to the
 safepoint. Every golden and the corpus run under it, so reading a stopped
-stack is shown never to change a program's outcome nor to read a register
-the leftover analysis calls dead, which a debug build refuses -- a
-variable table that named a dead register included;
+stack and evaluating its top frame's variables are shown never to change
+a program's outcome nor to read a register the leftover analysis calls
+dead, which a debug build refuses -- a variable table that named a dead
+register included;
 `the_pause_stress_mode_keeps_outcomes` (`tests/stress.rs`) holds a program
 to its outcome under both lowerings with the mode on and off.
 
