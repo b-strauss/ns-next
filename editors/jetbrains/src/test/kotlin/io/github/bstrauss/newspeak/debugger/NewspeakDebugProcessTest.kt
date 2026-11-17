@@ -36,6 +36,7 @@ import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.util.ThreeState
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XDebugProcess
@@ -720,6 +721,128 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertTrue(debugging.output(), debugging.output().contains("42"))
+    }
+
+    /**
+     * Smart Step Into offers the sends of the stop's line in the order the
+     * line runs them, each highlighted in the editor, and steps into the
+     * one chosen: `first:`, whose argument `second` runs first.
+     */
+    fun testSmartStepIntoOffersTheLinesCalls() {
+        val program = program("Smart", SMART)
+        toggleBreakpoint(program, line = 4)
+        val debugging = debug(program)
+        val position = debugging.nextPause()
+
+        val handler = debugging.process.smartStepIntoHandler as NewspeakSmartStepIntoHandler
+        val variants = checkNotNull(handler.computeSmartStepVariantsAsync(position).blockingGet(WAIT_SECONDS.toInt() * 1000))
+        assertEquals(listOf("second", "first:"), variants.map { variant -> variant.text })
+        val text = String(program.contentsToByteArray(), Charsets.UTF_8)
+        for (variant in variants) {
+            val range = checkNotNull(variant.highlightRange) { "${variant.text} is highlighted" }
+            assertTrue(range.substring(text), range.substring(text).contains(variant.text.removeSuffix(":")))
+        }
+
+        onEdt { handler.startStepInto(variants[1], debugging.session.suspendContext) }
+        val stepped = debugging.nextPause()
+        assertEquals("first:'s statement, line 8, counted from 0 by the platform", 7, stepped.line)
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.output().contains("42"))
+    }
+
+    /**
+     * Reset Frame restarts the selected method: it runs again from its
+     * first statement, and the program goes on from there, printing twice
+     * what the method prints before its return.
+     */
+    fun testDropFrameRestartsTheMethod() {
+        val program = program("Restarting", RESTARTING)
+        toggleBreakpoint(program, line = 7)
+        val debugging = debug(program)
+        assertEquals(6, debugging.nextPause().line)
+
+        val handler = checkNotNull(debugging.process.dropFrameHandler)
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        assertEquals(ThreeState.YES, handler.canDropFrame(frame))
+        onEdt { handler.drop(frame) }
+        assertEquals("compute:'s first statement, line 6", 5, debugging.nextPause().line)
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue(debugging.output(), Regex("""in\s+in\s+42""").containsMatchIn(debugging.output()))
+    }
+
+    /**
+     * A marked object is named in an evaluation by its label and the
+     * agent's suffix, and shown with its label; unmarked, the name names
+     * nothing.
+     */
+    fun testAMarkedObjectIsNamedInAnEvaluation() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val markers = (debugging.process as NewspeakDebugProcess).markers
+        val elements = childrenOf(checkNotNull(debugging.session.currentStackFrame)).getValue("elements") as NewspeakValue
+        assertNull(markers.labelOf(elements))
+        markers.mark(elements, "numbers").get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        assertEquals("3", presentationOf(evaluated(frame, "numbers_DebugLabel size")).value)
+        val shown = childrenOf(frame).getValue("elements") as NewspeakValue
+        assertTrue(shown.variable.value, shown.variable.value.endsWith(" [numbers]"))
+        assertEquals("numbers", markers.labelOf(shown))
+        assertFalse("a label the agent would refuse", NewspeakValueMarkers.isLabel("numbers_DebugLabel"))
+
+        markers.unmark("numbers").get(WAIT_SECONDS, TimeUnit.SECONDS)
+        evaluationError(frame, "numbers_DebugLabel size")
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * Force Return sends the frame and the expression the user gave, none
+     * for a blank one, and is offered on a program's frame but not on one
+     * of the core library, which the agent says it cannot end.
+     */
+    fun testForceReturnSendsTheExpression() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(RESTARTABLE_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        val frames = framesOf(session)
+
+        val action = NewspeakForceReturnAction()
+        fun enabledOn(frame: XStackFrame): Boolean {
+            onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frame) }
+            val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+            val event = TestActionEvent.createTestEvent(action, context)
+            action.update(event)
+            assertTrue("shown for a Newspeak session", event.presentation.isVisible)
+            return event.presentation.isEnabled
+        }
+        assertFalse("not on a frame of the core library", enabledOn(frames[0]))
+        assertTrue(enabledOn(frames[1]))
+
+        val process = faked.debugging.process as NewspeakDebugProcess
+        checkNotNull(process.forceReturn(frames[1] as NewspeakStackFrame, "3 + 4")).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        checkNotNull(process.forceReturn(frames[1] as NewspeakStackFrame, "  ")).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(
+            listOf("""{"frameId":2,"expression":"3 + 4"}""", """{"frameId":2}"""),
+            agent.requests("nsNext/forceReturn").map(JsonObject::toString),
+        )
     }
 
     /** The value [expression] answers in [frame], through its evaluator. */
@@ -1455,6 +1578,44 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             class Shared = Object new () (
               public greeting = (
                 ^'hello'
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A stop in a shipped frame the agent cannot end, above a program's frame it can. */
+        val RESTARTABLE_STACK = """
+            {"stackFrames":[
+              {"id":1,"name":"Kernel>>value","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true,"canRestart":false},
+              {"id":2,"name":"Program>>main:args:","line":0,"column":0,"canRestart":true}
+            ],"totalFrames":2}
+        """.trimIndent()
+
+        /** A root whose line 4 sends `first:` with the result of `second`; `first:`'s statement is line 8. */
+        val SMART = """
+            class Smart = Object new () (
+              public main: platform args: arguments = (
+                | value |
+                value:: self first: self second.
+                platform transcript show: value printString; newLine.
+              )
+              first: number = (
+                ^number + 1
+              )
+              second = (
+                ^41
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A root that prints what `compute:` answers; `compute:` prints, line 6, and answers 42, line 7. */
+        val RESTARTING = """
+            class Restarting = Object new () (
+              public main: platform args: arguments = (
+                platform transcript show: (self compute: platform) printString; newLine.
+              )
+              compute: platform = (
+                platform transcript show: 'in'; newLine.
+                ^42
               )
             ) : ()
         """.trimIndent() + "\n"

@@ -143,5 +143,15 @@
                 class="io.github.bstrauss.newspeak.debugger.NewspeakStepIntoShippedAction">
             <add-to-group group-id="XDebugger.Settings" anchor="last"/>
         </action>
+        <!-- On a frame of the frames view, beside the platform's Reset Frame, as Java's Force Return. -->
+        <action id="io.github.bstrauss.newspeak.ForceReturn"
+                class="io.github.bstrauss.newspeak.debugger.NewspeakForceReturnAction">
+            <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
+        </action>
+        <!-- On a value of a Newspeak session's trees, where the platform's own Mark Object stays hidden. -->
+        <action id="io.github.bstrauss.newspeak.MarkObject"
+                class="io.github.bstrauss.newspeak.debugger.NewspeakMarkObjectAction">
+            <add-to-group group-id="XDebugger.ValueGroup" anchor="after" relative-to-action="Debugger.MarkObject"/>
+        </action>
     </actions>
 </idea-plugin>

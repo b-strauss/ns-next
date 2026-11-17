@@ -4177,8 +4177,9 @@ access in Java, which has no capability to keep.
 
 **Built** in the VM (`Command::Mark`, `Command::Unmark`,
 `debugger/values.rs`; `ValueDescription::withheld`,
-`ValueDescription::mark`) and in the agent (`nsNext/mark`,
-`nsNext/unmark`; "Launching, the start and the end").
+`ValueDescription::mark`), in the agent (`nsNext/mark`,
+`nsNext/unmark`; "Launching, the start and the end") and in the plugin
+(Mark Object…; "The JetBrains plugin").
 
 An object the IDE shows can be marked with a label and named in every
 later evaluation of the session as `<label>_DebugLabel`, as IntelliJ's
@@ -5754,16 +5755,50 @@ no log message, the session evaluates at the stop, once, in the top
 frame, and hands to `breakpointReached` to log. A stop whose condition
 or log message failed says why in the debugger's balloon.
 
+Smart Step Into is `NewspeakSmartStepIntoHandler`, an
+`XSmartStepIntoHandler` over `stepInTargets`: the sends of the stop's
+line in the order the line runs them, each highlighted at the span the
+agent answers, the chosen one stepped into by `stepIn` with its
+`targetId`; it asks the stop's top frame, and where the agent refuses it
+-- "smart step into takes the top frame", at an exception's stop, whose
+top frames are hidden machinery -- the first frame not hidden
+(`testSmartStepIntoOffersTheLinesCalls`). The platform's Reset Frame is
+`NewspeakDropFrameHandler`, the debug process's `XDropFrameHandler`, over
+`restartFrame`, offered on a frame whose `canRestart` the agent does not
+deny -- a frame of the core library's -- and the stop it makes at the
+frame's start, of the reason `restart`, is shown as any other
+(`testDropFrameRestartsTheMethod`). Force Return
+(`NewspeakForceReturnAction`, in the frames view's menu beside Reset
+Frame, as Java's) asks for an expression and sends `nsNext/forceReturn`
+with the selected frame and the expression, none for a blank one, which
+returns `nil`; the stop that follows is where the frame's sender goes on,
+and a refusal is reported with the program still at its stop
+(`testForceReturnSendsTheExpression`).
+
+Mark Object… and Unmark Object (`NewspeakMarkObjectAction`, in the value
+trees' menu) mark a value the agent hands out a value reference for with
+a label the user gives -- an identifier, the value's name by default --
+by `nsNext/mark`, and take a value's label off by `nsNext/unmark`; the
+session reads its views again, and the agent shows the label after the
+value's text wherever a stop shows it, which the session reads back as
+the value's label for the labels it gave (`NewspeakValueMarkers`), and
+names the object in every later evaluation as `<label>_DebugLabel`
+(`testAMarkedObjectIsNamedInAnEvaluation`). The platform's own Mark
+Object stays hidden for a Newspeak session, which gives it no
+`XValueMarkerProvider`: the platform hands the provider the value alone,
+never the label typed in its dialog, which it keeps in a map only its
+internal API reaches (`XDebugSessionImpl.getValueMarkers`), and the agent
+names the object by that label.
+
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of
 breakpoint over a scripted agent and stops at a temporary one with the
 real runtime (`NewspeakBreakpointTypesTest`;
 [editor-support.md](editor-support.md), "Plugin testing and gates").
 
-Planned: the plugin will add, over that client, an `XSmartStepIntoHandler`
-over `stepInTargets`, restart frame, force return, marks, the memory
-view, the shipped frames folded as library frames, a hot-swap action on
-the agent's own requests, and inline values and step times.
+Planned: the plugin will add, over that client, the memory view, the
+shipped frames folded as library frames, a hot-swap action on the
+agent's own requests, and inline values and step times.
 
 ## Planned: the order of building it
 

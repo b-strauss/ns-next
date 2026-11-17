@@ -24,9 +24,11 @@ import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.evaluation.EvaluationMode
 import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
+import com.intellij.xdebugger.frame.XDropFrameHandler
 import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XSuspendContext
+import com.intellij.xdebugger.stepping.XSmartStepIntoHandler
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapBreakpointEvent
@@ -36,6 +38,7 @@ import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
 import io.github.bstrauss.newspeak.debugger.dap.DapOutputEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapProcessEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
+import io.github.bstrauss.newspeak.debugger.dap.DapStepInTarget
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
 import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
@@ -127,7 +130,17 @@ class NewspeakDebugProcess(
     /** Completes when the agent answered the first `terminate`; for the tests of the Stop. */
     internal val terminateAnswered = CompletableFuture<Unit>()
 
+    /** The objects this session marked, which every later evaluation names by their labels. */
+    val markers = NewspeakValueMarkers(session) { client }
+
+    private val smartStepInto = NewspeakSmartStepIntoHandler(this)
+    private val dropFrame = NewspeakDropFrameHandler(this)
+
     override fun getEditorsProvider(): XDebuggerEditorsProvider = NewspeakDebuggerEditorsProvider
+
+    override fun getSmartStepIntoHandler(): XSmartStepIntoHandler<*> = smartStepInto
+
+    override fun getDropFrameHandler(): XDropFrameHandler = dropFrame
 
     override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(lineBreakpoints, methodBreakpoints, exceptionBreakpoints)
 
@@ -452,6 +465,64 @@ class NewspeakDebugProcess(
         }
     }
 
+    /**
+     * The targets of the stop's line (`stepInTargets`), asked of the frame
+     * a step steps from: the top frame, or, where the agent refuses it --
+     * an exception's stop, whose top frames are its machinery, hidden --
+     * the first frame not hidden. None when the session has no stop.
+     */
+    internal fun stepInTargets(): CompletableFuture<List<DapStepInTarget>> {
+        val client = client ?: return CompletableFuture.completedFuture(emptyList())
+        val frames = lastStop?.stack?.firstFrames.orEmpty()
+        val candidates = listOfNotNull(frames.firstOrNull(), frames.firstOrNull { frame -> !frame.hidden }).distinct()
+        fun ask(index: Int): CompletableFuture<List<DapStepInTarget>> {
+            val frame = candidates.getOrNull(index) ?: return CompletableFuture.completedFuture(emptyList())
+            return client.request("stepInTargets", JsonObject().apply { addProperty("frameId", frame.id) })
+                .thenApply { body ->
+                    body.get("targets")
+                        ?.takeIf { element -> element.isJsonArray }
+                        ?.asJsonArray
+                        ?.filter { element -> element.isJsonObject }
+                        ?.map { element -> DapStepInTarget.from(element.asJsonObject) }
+                        .orEmpty()
+                }
+                .exceptionallyCompose { failure ->
+                    if (messageOf(failure) == TOP_FRAME_ONLY && index + 1 < candidates.size) ask(index + 1) else CompletableFuture.failedFuture(failure)
+                }
+        }
+        return ask(0)
+    }
+
+    /** Steps into the send the agent's target [id] names, Smart Step Into's choice. */
+    internal fun stepIntoTarget(id: Int) = goOn("stepIn") { addProperty("targetId", id) }
+
+    /**
+     * Restarts [frame] (`restartFrame`): the agent stops at its start, a
+     * stop of the reason `restart`, which is shown as any other; a refusal
+     * is reported, and the program stays at its stop.
+     */
+    internal fun restartFrame(frame: NewspeakStackFrame) {
+        val client = client ?: return
+        client.request("restartFrame", JsonObject().apply { addProperty("frameId", frame.id) })
+            .whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
+    /**
+     * Makes [frame] return the value of [expression], evaluated in it, or
+     * `nil` for a blank one (`nsNext/forceReturn`); the stop that follows
+     * is where its sender goes on. A failed evaluation, a withheld value
+     * and a frame of the core library are refused, the program still at
+     * its stop.
+     */
+    internal fun forceReturn(frame: NewspeakStackFrame, expression: String): CompletableFuture<JsonObject>? {
+        val client = client ?: return null
+        val arguments = JsonObject().apply {
+            addProperty("frameId", frame.id)
+            if (expression.isNotBlank()) addProperty("expression", expression)
+        }
+        return client.request("nsNext/forceReturn", arguments).whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
     override fun startPausing() {
         val client = client ?: return
         client.request("pause", JsonObject().apply { addProperty("threadId", THREAD_ID) })
@@ -598,6 +669,9 @@ class NewspeakDebugProcess(
 
         /** The frames a stop reads before it is shown, and a page of the rest. */
         const val FRAMES_PAGE = 50
+
+        /** The agent's refusal of `stepInTargets` for a frame other than the one a step steps from. */
+        const val TOP_FRAME_ONLY = "smart step into takes the top frame"
     }
 }
 

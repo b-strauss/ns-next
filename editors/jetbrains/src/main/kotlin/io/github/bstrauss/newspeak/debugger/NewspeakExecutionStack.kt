@@ -12,7 +12,7 @@ import io.github.bstrauss.newspeak.NewspeakBundle
  */
 class NewspeakExecutionStack(
     private val process: NewspeakDebugProcess,
-    private val firstFrames: List<NewspeakStackFrame>,
+    internal val firstFrames: List<NewspeakStackFrame>,
     private val totalFrames: Int,
 ) : XExecutionStack(NewspeakBundle.message("debugger.thread.name")) {
     override fun getTopFrame(): XStackFrame? = firstFrames.firstOrNull()
