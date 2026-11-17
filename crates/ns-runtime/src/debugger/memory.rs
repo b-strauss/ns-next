@@ -170,8 +170,8 @@ pub(crate) fn instances<'gc>(
 }
 
 /// `count` of what refers to the value `target` holds, from the
-/// `start`th (`Command::Referrers`): first every variable of a running
-/// frame of `frames` that holds it, innermost frame first and each
+/// `start`th (`Command::Referrers`): first every variable of a frame of
+/// `frames`, running or suspended into its frame object, that holds it, innermost frame first and each
 /// frame's in the order the variables view shows them, `self` first --
 /// read by the variables view's own reader (`stack::frame_values`), so
 /// that a register the leftover analysis finds tainted and a scratch
@@ -181,8 +181,8 @@ pub(crate) fn instances<'gc>(
 /// what it names alive names it (`Heap::refers_to`): a closure by its
 /// copied values or its captured frame, a suspended or returned frame
 /// object by its fields and registers. A frame object married to a
-/// running frame of `frames` is that frame's variables, not an object
-/// of its own; one married to an activation below the run, which the
+/// running frame of `frames`, or suspended as one of them, is that
+/// frame's variables, not an object of its own; one married to an activation below the run, which the
 /// stack does not show, is an object whose live registers count, read
 /// as the variables view reads them (`registers_refer_to`). A returned
 /// frame object that nothing living refers to -- no object, and nothing
@@ -209,18 +209,25 @@ pub(crate) fn referrers(
     // frame's variable holds -- which keep a returned frame object they
     // reach among the referrers.
     let mut frames_held: Vec<Root> = Vec::new();
+    // A frame of the stack suspended into its frame object -- the suspend
+    // stress mode suspends them at a safepoint -- is a frame of the stack
+    // all the same, read as the variables view reads it: whether the
+    // stack was suspended is the implementation's, and the answer is the
+    // same either way.
+    let mut suspended: Vec<Root> = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        let activation = match frame {
-            StackFrame::Running(activation) => *activation,
+        match frame {
+            StackFrame::Running(activation) => {
+                if let Some(closure) = mutator.heap.activation_closure(*activation) {
+                    frames_held.push(mutator.heap.stash(Value::object(closure)));
+                }
+                running.push(*activation);
+            }
             StackFrame::Suspended(frame_object) => {
                 frames_held.push(frame_object.clone());
-                continue;
+                suspended.push(frame_object.clone());
             }
-        };
-        if let Some(closure) = mutator.heap.activation_closure(activation) {
-            frames_held.push(mutator.heap.stash(Value::object(closure)));
         }
-        running.push(activation);
         // Read afresh for each frame: reading one may compile its body's
         // metadata, across which no handle is held.
         let Some((_, read)) = stack::frame_values(mutator, frames, index) else {
@@ -249,13 +256,19 @@ pub(crate) fn referrers(
     let Some(object) = heap.fetch(target).as_object() else {
         return Vec::new();
     };
+    let suspended: Vec<ObjectReference<'_>> = suspended
+        .iter()
+        .filter_map(|root| heap.fetch(root).as_object())
+        .collect();
     let mut found = Vec::new();
     heap.each_object(|holder| {
         let married_to_the_stack = heap
             .object_frame(holder)
             .and_then(|frame| heap.frame_activation(frame))
             .is_some_and(|activation| running.iter().any(|other| other.same(activation)));
+        let suspended_on_the_stack = suspended.iter().any(|frame| frame.same(holder));
         if !married_to_the_stack
+            && !suspended_on_the_stack
             && (heap.refers_to(holder, object) || registers_refer_to(mutator, holder, object))
         {
             found.push(holder);

@@ -291,8 +291,8 @@ pub enum Command {
     },
     /// `count` of what refers to the value `value` names, a value the stop
     /// handed out, from the `start`th (`docs/design/debugger.md`, "The
-    /// memory view"): first each variable of a running frame of the stack
-    /// trace that holds it, its receiver as `self`, innermost frame first,
+    /// memory view"): first each variable of a frame of the stack trace,
+    /// running or suspended into its frame object, that holds it, its receiver as `self`, innermost frame first,
     /// as `Variables` reads it -- a scratch register is no variable and
     /// counts for none -- then each object a word of which that keeps
     /// what it names alive names it, in the space's order: a closure's
