@@ -13853,9 +13853,18 @@ mod conditions {
         lowering: Lowering,
         breakpoint: MethodBreakpoint,
     ) -> (BreakpointId, Vec<StopReason>, Vec<String>) {
-        let (answer, result) = debugged(
-            LEAVING,
-            lowering,
+        leaving_in(&mut interpreted(LEAVING, lowering), breakpoint)
+    }
+
+    /// `leaving` in `interpreter`, its class `LEAVING`'s.
+    fn leaving_in(
+        (interpreter, class): &mut (Interpreter, Root),
+        breakpoint: MethodBreakpoint,
+    ) -> (BreakpointId, Vec<StopReason>, Vec<String>) {
+        let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            interpreter,
+            &instance,
             move |remote| set_method_breakpoints(remote, vec![breakpoint]),
             |remote| {
                 let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
@@ -13952,6 +13961,31 @@ mod conditions {
             breakpoint.condition = Some("index foo".to_owned());
             let (id, stops, _) = leaving(lowering, breakpoint);
             // Each call's entry and exit fail, each a stop.
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, error } => {
+                        assert_eq!(ids, [id]);
+                        assert!(error.contains("MessageNotUnderstood"), "{error}");
+                    }
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The pause stress mode's stops, which its reader serves, leave
+        /// a failure at an exit by an unwind to the attached debugger's
+        /// next stop: the stop that reports the exit still names it.
+        #[cfg(debug_assertions)]
+        fn a_stress_pause_leaves_an_exit_s_failure_to_the_debugger(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let mut interpreted = interpreted(LEAVING, lowering);
+            interpreted.0.set_stress_pause(true);
+            let (id, stops, _) = leaving_in(&mut interpreted, breakpoint);
+            assert!(interpreted.0.stress_pauses() > 0, "the stress mode stopped");
             assert_eq!(stops.len(), 6, "{stops:?}");
             for reason in stops {
                 match reason {

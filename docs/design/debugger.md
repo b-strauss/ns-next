@@ -3598,7 +3598,10 @@ reported where the program goes on, as every exit by an unwind is
 `a_condition_decides_an_exit_by_a_non_local_return`,
 `a_method_logpoint_logs_an_exit_by_an_exception`). A failure there is
 named by the stop that reports the exit (`conditions::failure_named`,
-`a_condition_failing_at_an_exit_by_an_unwind_is_named`); a pause that
+`a_condition_failing_at_an_exit_by_an_unwind_is_named`), the attached
+debugger's next stop, never a stop a stress mode's reader serves, which
+would take the failure from the debugger
+(`a_stress_pause_leaves_an_exit_s_failure_to_the_debugger`); a pause that
 aborts it makes that report the pause's stop. A temporary breakpoint needs
 nothing of the agent or the VM: IntelliJ's debugger session removes a
 breakpoint marked to be removed once hit when it reports the stop, which

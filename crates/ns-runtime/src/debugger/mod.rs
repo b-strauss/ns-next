@@ -1365,8 +1365,15 @@ impl Interpreter {
             elsewhere,
         } = standing;
         // A condition that failed at a method's exit by an unwind since
-        // the last stop is named by this one, which reports the exit.
-        let reason = self.enter(|mutator| conditions::failure_named(mutator, reason));
+        // the last stop is named by this one, which reports the exit --
+        // but by none a stress mode's reader serves: the failure is the
+        // attached debugger's to hear, and a stress stop taking it would
+        // leave the debugger's next stop without it.
+        let reason = if matches!(source, CommandSource::Remote) {
+            self.enter(|mutator| conditions::failure_named(mutator, reason))
+        } else {
+            reason
+        };
         self.enter(crate::jit::deoptimize_stopped_at_poll);
         let first_value_id = self
             .debugger
