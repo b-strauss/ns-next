@@ -3201,6 +3201,115 @@ fn a_cancelled_evaluation_is_aborted() {
     continue_to_the_end(client);
 }
 
+/// A program that marks its array's stop, then waits in a loop for its
+/// slot to be cleared.
+const WAITING: &str = indoc! {"
+    class Waiting = Object new (
+      | waiting ::= true. |
+    ) (
+      public main: platform args: arguments = (
+        | elements |
+        elements:: {10. 20. 30}.
+        platform transcript show: 'first'; newLine.
+        [waiting] whileTrue: [].
+        platform transcript show: 'done'; newLine.
+      )
+    ) : ()
+"};
+
+/// A client that leaves a listening agent while an evaluation of its
+/// runs leaves the program going on: the evaluation is aborted and the
+/// stop left once it answered. The next client meets none of the first's
+/// marks.
+#[test]
+fn a_client_leaving_during_an_evaluation_lets_the_program_go_on() {
+    let (_directory, path) = program("Waiting", WAITING);
+    let mut client = DapClient::listen_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[7]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let reference = variable(&variables, "elements")["nsNext/valueReference"].clone();
+    client.succeed(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "numbers" }),
+    );
+    client.connection.send(
+        "evaluate",
+        json!({ "expression": "[true] whileTrue: []", "frameId": 1, "context": "repl" }),
+    );
+    client.succeed("disconnect", json!({}));
+    client.connection.expect_closed();
+    client.wait_for_stdout(
+        "first
+",
+    );
+
+    client.reconnect();
+    client.start_session(false);
+    client.succeed("pause", json!({ "threadId": 1 }));
+    client.stopped("pause");
+    let marked = evaluate(&mut client, "numbers_DebugLabel", Some(1), "repl");
+    assert_eq!(marked["success"], false, "{marked}");
+    evaluated(&mut client, "waiting:: false", Some(1));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "first
+done
+"
+    );
+}
+
+/// A client that leaves a listening agent while the program runs has its
+/// marks taken off at the next stop, before the next client reads it.
+#[test]
+fn a_client_leaving_while_the_program_runs_leaves_no_mark() {
+    let (_directory, path) = program("Waiting", WAITING);
+    let mut client = DapClient::listen_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[7]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let reference = variable(&variables, "elements")["nsNext/valueReference"].clone();
+    client.succeed(
+        "nsNext/mark",
+        json!({ "valueReference": reference, "label": "numbers" }),
+    );
+    client.succeed("continue", json!({ "threadId": 1 }));
+    client.wait_for_stdout(
+        "first
+",
+    );
+    client.succeed("disconnect", json!({}));
+    client.connection.expect_closed();
+
+    client.reconnect();
+    client.start_session(false);
+    client.succeed("pause", json!({ "threadId": 1 }));
+    client.stopped("pause");
+    let marked = evaluate(&mut client, "numbers_DebugLabel", Some(1), "repl");
+    assert_eq!(marked["success"], false, "{marked}");
+    evaluated(&mut client, "waiting:: false", Some(1));
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(
+        client.finish().stdout,
+        "first
+done
+"
+    );
+}
+
 /// Evaluations sent together run one at a time: a `cancel` aborts only
 /// the one the VM runs, the oldest, while one still queued behind it is
 /// answered "cancelled" and never runs, and the others run once the

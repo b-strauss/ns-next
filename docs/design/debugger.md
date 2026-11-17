@@ -5456,8 +5456,16 @@ waiting for the configuration starting no run (decided on 2026-11-17;
 listening mode that leaves, once attached, has the VM reset -- no line
 breakpoint in any module the client set one in, no method or exception
 breakpoint, since nobody would be there to go on from a stop, the default
-step filters, a stopped program going on -- and the next client is
-accepted; a host still waiting for the configuration waits for that
+step filters, none of its marks, a stopped program going on -- and the
+next client is accepted. The VM serves an `Unmark` only at a stop, so a
+client that leaves while the program runs has its marks taken off at the
+next stop, before anything else is asked there
+(`a_client_leaving_while_the_program_runs_leaves_no_mark`); and it serves
+a `Continue` only at the stop an evaluation's end re-enters, refusing one
+that arrives while the evaluation runs, so a client that leaves with an
+evaluation in flight has it aborted (`Command::AbortEvaluation`) and the
+stop left once the evaluation answered
+(`a_client_leaving_during_an_evaluation_lets_the_program_go_on`); a host still waiting for the configuration waits for that
 client's, as it waited for the first. A stop that arrives while no client
 is attached goes on at once.
 

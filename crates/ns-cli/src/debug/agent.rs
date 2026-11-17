@@ -353,6 +353,20 @@ pub(crate) struct Agent {
     /// The logpoint lines dropped since the client was last told, for a
     /// write queue too full to take them (`log`).
     dropped_logs: u64,
+    /// The labels of the marks the VM holds for the current client
+    /// (`nsNext/mark`), which a listening agent takes off when the client
+    /// leaves, so that the next client meets none of them.
+    marks: BTreeSet<String>,
+    /// A client left a listening agent while the program ran: its marks
+    /// are taken off at the next stop, the only place the VM serves an
+    /// `Unmark`, before anything else is asked there.
+    unmark_at_next_stop: bool,
+    /// A client left a listening agent while an evaluation of its ran: the
+    /// evaluation was aborted, and the stop is left -- its marks taken off,
+    /// the program going on -- once the evaluation answered, since the VM
+    /// serves a `Continue` only at the stop the evaluation's end
+    /// re-enters, and refuses one that arrives while it runs.
+    leave_after_evaluation: bool,
 }
 
 impl Agent {
@@ -400,6 +414,9 @@ impl Agent {
             hovers: Vec::new(),
             queued_evaluations: VecDeque::new(),
             dropped_logs: 0,
+            marks: BTreeSet::new(),
+            unmark_at_next_stop: false,
+            leave_after_evaluation: false,
         }
     }
 
@@ -1354,17 +1371,24 @@ impl Agent {
         self.events_detached.store(true, Ordering::SeqCst);
         self.pending.clear();
         self.hovers.clear();
+        // The VM drops the marks with the debugger.
+        self.marks.clear();
+        self.unmark_at_next_stop = false;
+        self.leave_after_evaluation = false;
         self.resuming = false;
         self.force_return_evaluating = false;
         self.line_step = None;
         self.went_on();
     }
 
-    /// Leaves the VM stopping nowhere, for the next client of a listening
-    /// agent, since nobody would be there to go on from a stop: no line or
-    /// method breakpoint and no exception stop -- not even the uncaught
-    /// exceptions and halts the VM stops at before any client configures
-    /// it -- the default step filters, and a stopped program going on.
+    /// Leaves the VM stopping nowhere and holding nothing of the client's,
+    /// for the next client of a listening agent, since nobody would be
+    /// there to go on from a stop: no line or method breakpoint and no
+    /// exception stop -- not even the uncaught exceptions and halts the VM
+    /// stops at before any client configures it -- the default step
+    /// filters, no mark, and a stopped program going on. An evaluation of
+    /// the client's still running is aborted first, and the stop left
+    /// once it answered (`leave_after_evaluation`).
     fn reset_the_vm(&mut self) {
         for module in self.breakpoints.modules() {
             self.command(
@@ -1393,8 +1417,37 @@ impl Agent {
             Reply::Internal,
         );
         self.breakpoints.clear();
+        if self.evaluation_in_flight() {
+            self.command(Command::AbortEvaluation, Reply::Internal);
+            self.leave_after_evaluation = true;
+            // The stop the evaluation stands at is being left: a next
+            // client's request of it is answered as while running.
+            self.resuming = true;
+        } else {
+            self.leave_the_stop();
+        }
+    }
+
+    /// Takes the left client's marks off and lets a stopped program go
+    /// on. The VM serves an `Unmark` only at a stop, so a program that
+    /// runs, or a stop being left already, has them taken off at its next
+    /// stop.
+    fn leave_the_stop(&mut self) {
+        if self.stopped && !self.resuming {
+            self.unmark_all();
+        } else {
+            self.unmark_at_next_stop = !self.marks.is_empty();
+        }
         if self.stopped {
             self.go_on();
+        }
+    }
+
+    /// Takes every mark the agent holds off, at the stop the program
+    /// stands at.
+    fn unmark_all(&mut self) {
+        for label in std::mem::take(&mut self.marks) {
+            self.command(Command::Unmark { label }, Reply::Internal);
         }
     }
 
@@ -1476,6 +1529,10 @@ impl Agent {
         self.stopped = true;
         self.resuming = false;
         self.stop.begin(returned);
+        if self.unmark_at_next_stop {
+            self.unmark_at_next_stop = false;
+            self.unmark_all();
+        }
         if !self.is_attached() {
             self.go_on();
             return;
@@ -1598,6 +1655,24 @@ impl Agent {
         let Some(pending) = self.pending.remove(index) else {
             return;
         };
+        if let Event::Marked { label } = &event {
+            if pending.command == "Mark" {
+                self.marks.insert(label.clone());
+            } else {
+                self.marks.remove(label);
+            }
+        }
+        let ends_an_evaluation = matches!(pending.command, "Evaluate" | "SetVariable");
+        self.answer_pending(pending, event);
+        if ends_an_evaluation && self.leave_after_evaluation && !self.evaluation_in_flight() {
+            self.leave_after_evaluation = false;
+            self.resuming = false;
+            self.leave_the_stop();
+        }
+    }
+
+    /// Hands the VM's answer `event` to `pending`, the command it answers.
+    fn answer_pending(&mut self, pending: Pending, event: Event) {
         match pending.reply {
             Reply::Internal => {}
             Reply::Repeated => {
@@ -1642,6 +1717,11 @@ impl Agent {
                     hover.connection != connection || hover.request_seq != request_seq
                 });
                 if let Conversion::ForceReturning { generation, frame } = conversion {
+                    // A client that left forces nothing: the stop is left
+                    // without it.
+                    if self.leave_after_evaluation {
+                        return;
+                    }
                     let request = protocol::Request {
                         seq: request_seq,
                         kind: "request".to_string(),
