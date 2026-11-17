@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use ns_syntax::Span;
 
 use super::Attachments;
+use super::evaluation::Compiled;
 use super::exceptions::{ExceptionBreakpoints, PendingException};
 use super::metadata::Cache;
 use super::metadata::again::PairedBodies;
@@ -134,6 +135,13 @@ pub(crate) struct Breakpoints {
     filter_decisions: FilterDecisions,
     /// Every method breakpoint, in the order the debugger set them.
     methods: Vec<MethodBreakpointEntry>,
+    /// The objects the attached debugger marked, held across stops until
+    /// unmarked or detached (`docs/design/debugger.md`, "Marking
+    /// objects"): on the `Mutator`, as the compiled conditions that name
+    /// them are, so that a condition decided while the program runs takes
+    /// them as its arguments. Set through `set_marks`, which forgets the
+    /// compiled conditions.
+    marks: Vec<super::values::Mark>,
     /// The frame object of the home whose method's exit a stop at a
     /// non-local return already reported, so that the unwind's arrival
     /// there does not report it again (`returned_home_reported`).
@@ -224,7 +232,9 @@ struct CompiledExpression {
     /// Held weakly, so that the body's address names no other body while
     /// the entry is kept, and checked at each lookup.
     body: Weak<CompiledCode>,
-    code: Rc<CompiledCode>,
+    /// The code and the marked objects it is given, current until the
+    /// marks change, which forgets it (`Breakpoints::set_marks`).
+    compiled: Compiled,
 }
 
 /// A breakpoint standing at a slot a frame reached whose condition or log
@@ -590,6 +600,19 @@ impl Breakpoints {
         self.arming.clone()
     }
 
+    /// The marks as they stand.
+    pub(crate) fn marks(&self) -> &[super::values::Mark] {
+        &self.marks
+    }
+
+    /// Replaces the marks: every compiled condition and log expression is
+    /// forgotten, since a label marked, unmarked or moved changes which of
+    /// its names are its block's parameters and what they are given.
+    pub(crate) fn set_marks(&mut self, marks: Vec<super::values::Mark>) {
+        self.marks = marks;
+        self.forget_compiled_conditions();
+    }
+
     /// Replaces the step filters.
     pub(crate) fn set_step_filters(&mut self, filters: StepFilters) {
         self.step_filters = filters;
@@ -888,14 +911,14 @@ impl Breakpoints {
         body: &Rc<CompiledCode>,
         index: usize,
         number: usize,
-    ) -> Option<Rc<CompiledCode>> {
+    ) -> Option<Compiled> {
         let record = self.record_mut(id)?;
         record
             .compiled
             .compiled
             .get(&(address(body), index, number))
             .filter(|compiled| std::ptr::eq(compiled.body.as_ptr(), Rc::as_ptr(body)))
-            .map(|compiled| Rc::clone(&compiled.code))
+            .map(|compiled| compiled.compiled.clone())
     }
 
     /// Keeps `code`, the breakpoint `id`'s expression numbered `number`
@@ -906,21 +929,22 @@ impl Breakpoints {
         body: &Rc<CompiledCode>,
         index: usize,
         number: usize,
-        code: Rc<CompiledCode>,
+        compiled: Compiled,
     ) {
         if let Some(record) = self.record_mut(id) {
             record.compiled.compiled.insert(
                 (address(body), index, number),
                 CompiledExpression {
                     body: Rc::downgrade(body),
-                    code,
+                    compiled,
                 },
             );
         }
     }
 
     /// Forgets every compiled condition: an install changed a module's
-    /// text, against which each was resolved.
+    /// text, against which each was resolved, or the marks changed, which
+    /// each names.
     fn forget_compiled_conditions(&mut self) {
         for line in self
             .modules
@@ -1553,6 +1577,8 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.remove_kinds(|kind| !kind.is_stress(), |_| false);
     table.modules.clear();
     table.methods.clear();
+    // The marks are the attachment's, and go with it.
+    table.marks.clear();
     table.refresh_follows_unwinds();
     table.reported_home = None;
     table.past_once = None;

@@ -25,14 +25,11 @@
 //! program goes on, as every exit by an unwind is; a failure there is
 //! named by that report's stop (`failure_named`).
 
-use std::rc::Rc;
-
 use super::breakpoints::{Conditional, PendingStop, ReachKind};
-use super::evaluation::{self, Outcome};
+use super::evaluation::{self, Compiled, Outcome};
 use super::remote::{BreakpointId, Event, LogPart, StopReason};
 use super::stack::StackFrame;
 use crate::Value;
-use crate::bytecode::CompiledCode;
 use crate::heap::ActivationReference;
 use crate::interpreter::Mutator;
 use crate::interpreter::unwind::UnwindOutcome;
@@ -250,9 +247,16 @@ impl Deciding {
         let activation = self.stop.slot.activation;
         let frame = StackFrame::Running(activation);
         let code = compiled(mutator, activation, self.stop.slot.index, id, number, text);
-        let begun = code.and_then(|code| {
-            evaluation::begin_in(mutator, &frame, code, &[], Continuation::Evaluated)
-                .map_err(String::from)
+        let begun = code.and_then(|compiled| {
+            let marked = marked_values(mutator, &compiled);
+            evaluation::begin_in(
+                mutator,
+                &frame,
+                compiled.code,
+                &marked,
+                Continuation::Evaluated,
+            )
+            .map_err(String::from)
         });
         match begun {
             Ok(()) => true,
@@ -316,8 +320,8 @@ impl Deciding {
 
 /// The breakpoint `id`'s expression numbered `number`, `text`, compiled
 /// for slot `index` of the body `activation` runs, in that frame -- or
-/// taken compiled for it before (`CompiledConditions`); the refusal
-/// otherwise.
+/// taken compiled for it before (`CompiledConditions`), with the marked
+/// objects it names; the refusal otherwise.
 fn compiled(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -325,20 +329,29 @@ fn compiled(
     id: BreakpointId,
     number: usize,
     text: &str,
-) -> Result<Rc<CompiledCode>, String> {
+) -> Result<Compiled, String> {
     let body = mutator.heap.activation_code(activation);
-    if let Some(code) = mutator
+    if let Some(compiled) = mutator
         .breakpoints
         .compiled_condition(id, &body, index, number)
     {
-        return Ok(code);
+        return Ok(compiled);
     }
     let frame = StackFrame::Running(activation);
-    let code = evaluation::compile_in(mutator, &frame, text)?;
+    let compiled = evaluation::compile_in(mutator, &frame, text)?;
     mutator
         .breakpoints
-        .keep_compiled_condition(id, &body, index, number, Rc::clone(&code));
-    Ok(code)
+        .keep_compiled_condition(id, &body, index, number, compiled.clone());
+    Ok(compiled)
+}
+
+/// The marked objects `compiled` names, its block's arguments.
+fn marked_values<'gc>(mutator: &Mutator<'gc>, compiled: &Compiled) -> Vec<Value<'gc>> {
+    compiled
+        .marked
+        .iter()
+        .map(|root| mutator.heap.fetch(root))
+        .collect()
 }
 
 /// What a log expression's evaluation answered, as text: `printString`
@@ -512,9 +525,11 @@ impl UnwoundExit {
     ) -> bool {
         let index = mutator.heap.activation_program_counter(top);
         let frame = StackFrame::Running(top);
-        let begun = compiled(mutator, top, index, id, number, text).and_then(|code| {
+        let begun = compiled(mutator, top, index, id, number, text).and_then(|compiled| {
             let then = Continuation::ExitEvaluated(Box::new(PendingUnwind::clone(pending)));
-            evaluation::begin_in(mutator, &frame, code, &[], then).map_err(String::from)
+            let marked = marked_values(mutator, &compiled);
+            evaluation::begin_in(mutator, &frame, compiled.code, &marked, then)
+                .map_err(String::from)
         });
         match begun {
             Ok(()) => true,

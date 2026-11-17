@@ -47,7 +47,7 @@ use crate::{Symbol, Value};
 use breakpoints::Hits;
 use exceptions::ExceptionBreakpoints;
 use stepping::{HeldStep, Returned, StepAction, StepFilters};
-use values::{Mark, StopValues};
+use values::StopValues;
 
 /// The message of the error a run the debugger terminated ends with.
 const TERMINATED: &str = "the debugger terminated the program";
@@ -117,11 +117,6 @@ pub(crate) struct Debugger {
     /// The unwind a stop started to restart a frame or force it to return,
     /// held until the run loop raises it (`Served::Unwind`).
     started: Option<unwinding::StartedUnwind>,
-    /// The objects the agent marked, held across stops until unmarked or
-    /// detached (`docs/design/debugger.md`, "Marking objects"): each stop
-    /// starts from them and hands back what its `Mark` and `Unmark`
-    /// commands made of them.
-    marks: Vec<Mark>,
 }
 
 /// A stop, as the commands it serves read it: what `stop_standing` decided
@@ -612,7 +607,6 @@ impl Interpreter {
             stop: None,
             deciding: None,
             started: None,
-            marks: Vec::new(),
         });
         DebugRemote::new(
             command_sender,
@@ -1398,10 +1392,7 @@ impl Interpreter {
             .debugger
             .as_ref()
             .map_or(0, |debugger| debugger.next_value_id);
-        let marks = self
-            .debugger
-            .as_ref()
-            .map_or_else(Vec::new, |debugger| debugger.marks.clone());
+        let marks = self.enter(|mutator| mutator.breakpoints.marks().to_vec());
         let mut values = StopValues::starting_at(first_value_id, marks);
         // An exception's stop hides its machinery: an uncaught one's and a
         // `Halt`'s show first the frame below it, a caught one's the
@@ -1729,12 +1720,11 @@ impl Interpreter {
         .map_err(String::from)
     }
 
-    /// The attached debugger keeps the marks `stop`'s `Mark` or `Unmark`
-    /// made, for the stops after it.
+    /// Keeps the marks `stop`'s `Mark` or `Unmark` made for the stops and
+    /// the conditions after it (`Breakpoints::set_marks`).
     fn keep_marks(&mut self, stop: &Stop) {
-        if let Some(debugger) = &mut self.debugger {
-            debugger.marks = stop.values.marks().to_vec();
-        }
+        let marks = stop.values.marks().to_vec();
+        self.enter(|mutator| mutator.breakpoints.set_marks(marks));
     }
 
     /// Starts the unwind `command` -- a `RestartFrame` or a

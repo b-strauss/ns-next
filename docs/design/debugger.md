@@ -4054,10 +4054,20 @@ An expression obeys access control as the frame's method does (decided
 with the user on 2026-11-16): resolved as a block in the frame's scope,
 its sends to `self`, `super`, `outer` and the implicit receiver reach
 what the method's would, and an ordinary send to any other object finds
-public methods only (§5.5, *lookupPublic*). No send ignores access: the
-platform object every program holds keeps the mirror in a private slot
-(`PlatformFactory.ns`, `vmMirror`), so `platform vmMirror` evaluated
-without access control would hand the mirror to the program, and a send
+public methods only (§5.5, *lookupPublic*). No send ignores access:
+access control is what keeps a program's sends from the private members
+of the shipped objects it holds or reaches. The platform object every
+program holds is a `Platform`, whose only fields are its public lazy
+facets -- `kernel`, `transcript` and the others, which the variables view
+shows withheld, a shipped mixin declaring them -- so `platform vmMirror`
+is not understood; but each facet is built by the platform module's
+instance, whose private slots hold the mirror (`vmMirror`) and the
+kernel's instance (`kernelModule`), and the kernel's and the other
+modules' classes keep private methods and slots of their own
+(`PlatformFactory.ns`; `the_platform_s_mirror_field_is_withheld` stops in
+the time facet's lazy slot and finds `vmMirror` a field of that frame's
+receiver, the module instance). A send that ignored access would reach
+every one of them that an expression could name, and a send
 that ignored access for program classes alone would need a send kind of
 its own in the instructions, the lookup, the caches and the JIT, and
 would let an evaluation tell a proxy from its object, which §5.5's
@@ -4103,18 +4113,26 @@ another object had moves to the object marked now, so that a label
 names one object and an object has one label; objects are told apart as
 `==` tells them, so that a number's label shows on every value of that
 number. `Command::Unmark` takes a label off. Both answer
-`Event::Marked`. The `Debugger` holds the marks between stops
-(`Debugger::marks`); each stop's value table starts from them, describes
-by them and hands back what its commands made of them
-(`values::StopValues::mark`). An expression's identifier tokens that end
+`Event::Marked`. The marks are held on the `Mutator`, beside the
+breakpoints (`Breakpoints::marks`), so that a condition decided while the
+program runs reaches them, and go when the debugger detaches; each
+stop's value table starts from them, describes by them and hands back
+what its commands made of them (`values::StopValues::mark`,
+`Breakpoints::set_marks`). An expression's identifier tokens that end
 in `_DebugLabel` and whose label is marked, each once in the order the
 text first names it, are its block's parameters
 (`values::used_labels`, `EvaluationScope::labels`), but for a name its
 own temporaries declare; one whose label no mark holds is an ordinary
 name, resolved as any other. The block's arguments are the marked
 objects (`evaluation::Compiled::marked`). A breakpoint's condition and
-log expression are decided while the program runs, where no stop holds
-the marks, and name none.
+log expression name them as every evaluation does: each is compiled with
+the marks as they stand and kept compiled with the objects it names, and
+every change of the marks -- a label marked, unmarked or moved -- forgets
+every compiled condition, so that the next hit compiles it again
+(`a_condition_names_a_marked_object`,
+`a_condition_follows_a_mark_that_changed`). A label inside a string
+literal or a comment is no identifier and stays text
+(`a_label_in_a_string_or_a_comment_is_text`).
 
 A value whose way into the IDE passed through shipped code cannot be
 marked, nor forced as a frame's return ("Restart frame and force

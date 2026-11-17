@@ -66,6 +66,7 @@ pub(crate) const NO_ROOM: &str = "the stack has no room for the evaluation";
 /// An expression compiled for an evaluation, and the marked objects it
 /// names, in the order its block takes them as arguments
 /// (`docs/design/debugger.md`, "Marking objects").
+#[derive(Clone)]
 pub(crate) struct Compiled {
     pub(crate) code: Rc<CompiledCode>,
     pub(crate) marked: Vec<Root>,
@@ -119,14 +120,15 @@ pub(crate) fn compile(
 
 /// `text` compiled as `compile` compiles it, standing in `frame`: a
 /// breakpoint's condition or log expression, in the frame that reached
-/// the breakpoint (`debugger::conditions`). It is decided while the
-/// program runs, where no stop holds the marks, so it names none.
+/// the breakpoint (`debugger::conditions`), naming the marks as they
+/// stand.
 pub(crate) fn compile_in(
     mutator: &mut Mutator<'_>,
     frame: &StackFrame,
     text: &str,
-) -> Result<Rc<CompiledCode>, String> {
-    compile_with(mutator, frame, text, &[], |_| parsed(text)).map(|compiled| compiled.code)
+) -> Result<Compiled, String> {
+    let marks = mutator.breakpoints.marks().to_vec();
+    compile_with(mutator, frame, text, &marks, |_| parsed(text))
 }
 
 /// The assignment `name:: expression` compiled as `compile` compiles an

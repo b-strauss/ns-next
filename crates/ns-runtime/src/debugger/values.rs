@@ -27,7 +27,7 @@ pub(crate) const LABEL_SUFFIX: &str = "_DebugLabel";
 
 /// An object the agent marked (`Command::Mark`): its label and the object,
 /// held as a `Root` across stops until it is unmarked or the debugger
-/// detaches.
+/// detaches (`Breakpoints::marks`).
 #[derive(Clone)]
 pub(crate) struct Mark {
     pub(crate) label: String,
@@ -47,7 +47,7 @@ struct Held {
 /// with its stop, releasing every `Root`. It holds the attachment's marks
 /// as they stand, which every description it makes shows, and which
 /// `mark` and `unmark` change for the debugger to keep
-/// (`Debugger::marks`).
+/// (`Breakpoints::set_marks`).
 pub(crate) struct StopValues {
     /// The id of the table's first value.
     first: u32,
@@ -337,6 +337,10 @@ fn field_labels<'gc>(
     let mut labels: Vec<FieldLabel> = Vec::with_capacity(field_count);
     for (index, field) in declared.iter().enumerate().rev() {
         let label = match field {
+            // No declaration names it, so none is known to be shipped: the
+            // VM lays out every instance it makes, and only a class no
+            // program can make reaches here; its parent's withholding
+            // still holds.
             None => FieldLabel {
                 name: format!("field {index}"),
                 filling: Filling::Always,

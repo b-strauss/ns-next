@@ -15967,6 +15967,172 @@ mod marking {
     }
 
     ns_runtime::for_each_lowering! {
+        /// A label inside a string literal or a comment is text, not a
+        /// name of the marked object.
+        fn a_label_in_a_string_or_a_comment_is_text(lowering) {
+            let (size, answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marked(remote, sunk(remote).id, "first");
+                evaluated(remote, 0, "'first_DebugLabel' size (* first_DebugLabel *)").label
+            });
+            assert_eq!(size, "16");
+            assert_eq!(answer, 6);
+        }
+    }
+
+    /// A loop over four strings, run twice: a breakpoint on `sink:`'s send
+    /// in the inner block reaches each of them in both rounds.
+    const PICKING: &str = indoc! {"
+        class Picking = Object new () (
+          public run = (
+            | items count |
+            items:: {'a'. 'b'. 'c'. 'd'}.
+            count:: 0.
+            1 to: 2 do: [:round |
+              items do: [:each |
+                count:: count + 1.
+                self sink: each]].
+            ^count
+          )
+          sink: each = (
+            ^each
+          )
+        ) : ()
+    "};
+
+    /// `PICKING` under `lowering`, the JIT off, stopped first at `count::
+    /// 0.`, where `first` marks `items`' element `[2]`, then at every
+    /// reach of the breakpoint on `sink:`'s send whose condition is
+    /// `each == first_DebugLabel`, which `at_hit` is handed at each stop
+    /// with the stop's `items`' elements, read through the frame below.
+    /// Answers the `each` of every such stop.
+    fn picked(
+        lowering: Lowering,
+        mut at_hit: impl FnMut(&DebugRemote, usize, &[Variable]) + Send + 'static,
+    ) -> Vec<String> {
+        let first = line_start(PICKING, "count:: 0.");
+        let hit = line_start(PICKING, "self sink: each]].");
+        let (mut interpreter, class) = interpreted(PICKING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (picks, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Picking", vec![first]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Picking"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let items =
+                    value_of(&variables(remote, Command::Variables { frame: 0 }), "items").clone();
+                let second = value_of(&children(remote, &items), "[2]").clone();
+                marked(remote, second.id, "first");
+                let conditional = LineBreakpoint {
+                    condition: Some(String::from("each == first_DebugLabel")),
+                    ..LineBreakpoint::at_offset(hit)
+                };
+                set_line_breakpoints(remote, "Picking", vec![conditional]);
+                let (conditional_id, _) = resolved(&expect_breakpoints(remote, "Picking"));
+                continue_stopped(remote);
+                let mut picks = Vec::new();
+                loop {
+                    let ended = run_finished();
+                    match remote.next_event(Duration::from_millis(10)) {
+                        Some(Event::Stopped {
+                            reason: StopReason::Breakpoint { ids },
+                            ..
+                        }) => {
+                            assert_eq!(ids, [conditional_id]);
+                            let each = value_of(
+                                &variables(remote, Command::Variables { frame: 0 }),
+                                "each",
+                            )
+                            .label
+                            .clone();
+                            let frames = stack_trace(remote);
+                            let run = frames
+                                .iter()
+                                .position(|frame| frame.kind == method("run"))
+                                .expect("run is on the stack");
+                            let items = value_of(
+                                &variables(remote, Command::Variables { frame: run }),
+                                "items",
+                            )
+                            .clone();
+                            let elements = children(remote, &items);
+                            at_hit(remote, picks.len(), &elements);
+                            picks.push(each);
+                            continue_stopped(remote);
+                        }
+                        Some(other) => {
+                            panic!("only conditional stops were expected, not {other:?}")
+                        }
+                        None if ended => return picks,
+                        None => {}
+                    }
+                }
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 8);
+        picks
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A breakpoint's condition names a marked object as every
+        /// evaluation does: marked at an earlier stop, it stops the loop
+        /// at that element only, in both rounds.
+        fn a_condition_names_a_marked_object(lowering) {
+            assert_eq!(picked(lowering, |_, _, _| {}), ["the String \"b\"", "the String \"b\""]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A label marked on another object between two hits moves to it,
+        /// and the compiled condition follows it: the next hits stop at
+        /// the newly marked element.
+        fn a_condition_follows_a_mark_that_changed(lowering) {
+            let picks = picked(lowering, |remote, hit, elements| {
+                if hit == 0 {
+                    marked(remote, value_of(elements, "[3]").id, "first");
+                }
+            });
+            assert_eq!(picks, ["the String \"b\"", "the String \"c\"", "the String \"c\""]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Marking an object with a label another object had moves the
+        /// label: the other object shows no mark any more.
+        fn a_label_moves_to_the_object_marked_with_it(lowering) {
+            let marks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = std::sync::Arc::clone(&marks);
+            picked(lowering, move |remote, hit, elements| {
+                if hit == 0 {
+                    marked(remote, value_of(elements, "[3]").id, "first");
+                    let elements = children(
+                        remote,
+                        &value_of(
+                            &variables(
+                                remote,
+                                Command::Variables {
+                                    frame: stack_trace(remote)
+                                        .iter()
+                                        .position(|frame| frame.kind == method("run"))
+                                        .expect("run is on the stack"),
+                                },
+                            ),
+                            "items",
+                        )
+                        .clone(),
+                    );
+                    let mut seen = seen.lock().expect("the marks seen");
+                    seen.extend(["[2]", "[3]"].map(|name| value_of(&elements, name).mark.clone()));
+                }
+            });
+            let marks = marks.lock().expect("the marks seen").clone();
+            assert_eq!(marks, [None, Some(String::from("first"))]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
         /// A frame of a shipped module's body says so, and its values are
         /// withheld; the program's frames are not.
         fn a_shipped_frame_says_so(lowering) {
