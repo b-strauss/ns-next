@@ -874,34 +874,39 @@ pub(crate) fn stop_at_entry(
 }
 
 /// The debugger restarts `frame` (`Command::RestartFrame`), whose unwind
-/// is about to start it again: it is flooded as a step over's is, before
-/// the unwind, so that the first one-shot it reaches once it starts again
-/// is its first statement start's -- where a step into stops a pushed
-/// frame -- and the stop a step's. A factory, which has no statement
-/// start, stops at its first instruction, its entry, as a step into's
-/// push of it does. It stops there whatever the step filters say, as a
-/// step begun in a filtered frame steps in it; the frames the unwind pops
-/// above it are reported to the step as any unwind's are.
+/// is about to start it again: before the unwind, a one-shot for it is
+/// patched where a step into stops a pushed frame (`first_stop`) -- its
+/// first statement start, index 1 past a vector it keeps, a factory's
+/// first instruction, its entry, the first slot of an initializer whose
+/// declaration writes no clause, and index 0 or 1 of a body without
+/// metadata -- so that the stop is there, a step's. The frame is not
+/// flooded: a flood patches only the statement starts the metadata names,
+/// which a body without it has none of, and the implicit clause of a
+/// clause-less initializer, where no step stops. Its return point is set
+/// as a step out's, for an initializer whose implicit clause is all it
+/// runs. It stops there whatever the step filters say, as a step begun in
+/// a filtered frame steps in it; the frames the unwind pops above it are
+/// reported to the step as any unwind's are.
 pub(crate) fn stop_at_restart(mutator: &mut Mutator<'_>, frame: &StackFrame) {
     end(mutator);
     let Some(place) = place_of(mutator, frame) else {
         return;
     };
-    start(mutator, StepAction::Over, place, place, None, None);
+    start(mutator, StepAction::Out, place, place, None, None);
     let Some(stepping) = &mut mutator.stepping else {
         return;
     };
     stepping.started_filtered = true;
     let holder = stepping.frame;
-    if stack::is_factory(&mutator.heap, frame) {
-        let code = stack::code(&mutator.heap, frame);
+    let code = stack::code(&mutator.heap, frame);
+    if let Some(first) = first_stop(mutator, frame, &code) {
         let one_shot = OneShot {
             holder,
             stops: true,
             records: false,
             leaves: false,
         };
-        patch(mutator, &code, 0, one_shot);
+        patch(mutator, &code, first, one_shot);
     }
     settle(mutator);
 }
@@ -1624,7 +1629,7 @@ fn stop_at_first(
     standing_stops: bool,
 ) -> FirstStop {
     let code = mutator.heap.activation_code(top);
-    let Some(first) = first_stop(mutator, top, &code) else {
+    let Some(first) = first_stop(mutator, &StackFrame::Running(top), &code) else {
         return FirstStop::Nowhere;
     };
     if standing_stops && mutator.heap.activation_program_counter(top) >= first {
@@ -1805,8 +1810,8 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
     settle(mutator);
 }
 
-/// The index a step into stops at in `top`, the frame it just pushed,
-/// running `code`: its first statement start -- index 0, or index 1 for a
+/// The index a step into stops at in `frame`, the frame it just pushed --
+/// or one the debugger restarts (`stop_at_restart`) -- running `code`: its first statement start -- index 0, or index 1 for a
 /// body whose first instruction makes its indirection vector
 /// (`MakeVector`, emitted before every statement) -- but for an
 /// initializer of a declaration that writes no superclass clause, whose
@@ -1817,20 +1822,17 @@ pub(crate) fn begin_at_header(mutator: &mut Mutator<'_>, action: StepAction) {
 /// without source, stops where it stands.
 fn first_stop(
     mutator: &mut Mutator<'_>,
-    top: ActivationReference,
+    frame: &StackFrame,
     code: &Rc<CompiledCode>,
 ) -> Option<usize> {
     let first = usize::from(
         code.instruction_count() > 1
             && matches!(code.instruction(0), Instruction::MakeVector { .. }),
     );
-    if !matches!(
-        mutator.heap.activation_kind(top),
-        ActivationKind::Initializer(..)
-    ) {
+    if !stack::is_initializer(&mutator.heap, frame) {
         return Some(first);
     }
-    let (_, origin, metadata) = stack::running_body(mutator, top);
+    let (_, origin, metadata) = stack::body(mutator, frame);
     let (Some(origin), Some(metadata)) = (origin, metadata) else {
         return Some(first);
     };

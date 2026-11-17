@@ -412,21 +412,17 @@ fn at_evaluation_base<'gc>(
     }
     let error = match pending.action {
         UnwindAction::Terminate(error) => return end_at_base(mutator, base, &error),
-        UnwindAction::Return(value) => NewspeakError::cannot_return(
-            Symbol::CARET,
-            value,
-            value,
-            "cannotReturn: the enclosing method activation is outside the evaluation",
-        ),
+        UnwindAction::Return(value) | UnwindAction::ForceReturn(value) => {
+            NewspeakError::cannot_return(
+                Symbol::CARET,
+                value,
+                value,
+                "cannotReturn: the enclosing method activation is outside the evaluation",
+            )
+        }
         UnwindAction::Restart | UnwindAction::RestartFrame => {
             dead_activation_error(Symbol::intern("restart"), Value::nil())
         }
-        UnwindAction::ForceReturn(value) => NewspeakError::cannot_return(
-            Symbol::CARET,
-            value,
-            value,
-            "cannotReturn: the enclosing method activation is outside the evaluation",
-        ),
     };
     match start_signalling(mutator, &error, floor) {
         Some(outcome) => Ok(outcome),

@@ -14607,26 +14607,59 @@ mod restarting {
 
     ns_runtime::for_each_lowering! {
         /// A superclass clause forced to answer what is no class signals
-        /// the error the clause would have signalled answering it.
+        /// the error the clause would have signalled answering it, which
+        /// the caught exception breakpoint stops at before its handler
+        /// answers 9.
         fn a_forced_superclass_clause_value_that_is_no_class_is_the_clause_s_error(lowering) {
-            let ((), answer) = stopped_at(CLAUSING, lowering, "Clausing", "^Object", |remote| {
-                let frames = stack_trace(remote);
-                let frame = frames
-                    .iter()
-                    .position(|frame| frame.kind == FrameKind::SuperclassClause)
-                    .expect("the clause is on the stack");
-                let value = evaluated(remote, 0, "3");
-                remote.send(Command::ForceReturn {
-                    frame,
-                    value: Some(value),
-                });
-                match remote.next_event(EVENT_TIMEOUT) {
-                    Some(Event::Continued) => {}
-                    other => panic!("the confirmation was expected, not {other:?}"),
-                }
-                set_breakpoints(remote, "Clausing", Vec::new());
-            });
-            assert_eq!(answer, 9);
+            let offset = line_start(CLAUSING, "^Object");
+            let (mut interpreter, class) = interpreted(CLAUSING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (description, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| {
+                    remote.send(Command::SetExceptionBreakpoints {
+                        uncaught: true,
+                        caught: true,
+                        halt: true,
+                        classes: Vec::new(),
+                    });
+                    set_breakpoints(remote, "Clausing", vec![offset]);
+                },
+                |remote| {
+                    expect_exception_breakpoints_set(remote);
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Clausing"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::SuperclassClause)
+                        .expect("the clause is on the stack");
+                    let value = evaluated(remote, 0, "3");
+                    remote.send(Command::ForceReturn {
+                        frame,
+                        value: Some(value),
+                    });
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        other => panic!("the confirmation was expected, not {other:?}"),
+                    }
+                    let description = match expect_stop(remote) {
+                        StopReason::Exception {
+                            description,
+                            caught: true,
+                            ..
+                        } => description,
+                        other => panic!("the clause's caught error was expected, not {other:?}"),
+                    };
+                    continue_stopped(remote);
+                    description
+                },
+            );
+            assert!(
+                description.contains("the superclass clause of class Inner did not evaluate to a class object"),
+                "{description}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 9);
         }
     }
 
@@ -14660,6 +14693,262 @@ mod restarting {
             assert_eq!(answered(&mut interpreter, result), 1);
             assert_eq!(reasons.0, "the frame is the core library's");
             assert_eq!(reasons.1, "the frame is the core library's");
+        }
+    }
+
+    /// A clause-less class whose slot initializer counts its runs.
+    const BARE: &str = indoc! {"
+        class Bare = Object new (
+          | count ::= 0. |
+        ) (
+          class Made = (
+            | public value = bump. |
+          ) ()
+          public run = (
+            | made |
+            made:: Made new.
+            ^made value + (count * 100)
+          )
+          bump = (
+            count:: count + 1.
+            ^count * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// The restart of an initializer whose declaration writes no
+        /// superclass clause stops at its first slot initializer, where a
+        /// step into its push stops, not at the implicit `Object new`.
+        fn a_restarted_clause_less_initializer_stops_at_its_first_slot(lowering) {
+            let (stood, answer) = stopped_at(BARE, lowering, "Bare", "^count * 10", |remote| {
+                let frame = stack_trace(remote)
+                    .iter()
+                    .position(|frame| frame.kind == FrameKind::Initializer)
+                    .expect("the initializer is on the stack");
+                going_on(remote, Command::RestartFrame { frame });
+                let stood = standing(remote, BARE);
+                clear_and_continue(remote, "Bare");
+                stood
+            });
+            assert_eq!(stood.1, "public value = bump.");
+            assert_eq!(answer, 220);
+        }
+    }
+
+    #[test]
+    /// The restart of a frame whose body has no metadata -- an image's
+    /// without source -- stops at its start all the same, as a step into
+    /// its push stops where it stands.
+    fn a_restarted_body_without_metadata_stops_at_its_start() {
+        let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let bytes = interpreter
+            .enter(|mutator| {
+                let class = mutator.fetch(&class).as_object().expect("the module class");
+                let modules = [ns_runtime::image::ModuleSource {
+                    class,
+                    origin: &origin,
+                    with_source: false,
+                }];
+                ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut image = ns_runtime::image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+        let instance = image.roots.remove(0);
+        let (top, _, _) = while_stopped_in(image.interpreter, &instance, PAUSE_DELAY, |remote| {
+            let frame = frame_named(&stack_trace(remote), "Stacked>>loop:with:");
+            going_on(remote, Command::RestartFrame { frame });
+            let top = stack_trace(remote).remove(0);
+            (top.name, top.program_counter, top.location)
+        });
+        assert_eq!(top, (String::from("Stacked>>loop:with:"), 0, None));
+    }
+
+    /// A block a real send runs twice, which sends a method that counts
+    /// its runs.
+    const BLOCKING: &str = indoc! {"
+        class Blocking = Object new (
+          | entered ::= 0. |
+        ) (
+          public run = (
+            ^(self twice: [:each | self note: each]) + (entered * 100)
+          )
+          twice: block = (
+            ^(block value: 1) + (block value: 2)
+          )
+          note: each = (
+            entered:: entered + 1.
+            ^each * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block's frame restarts, its parameter kept, and runs its body
+        /// again.
+        fn a_restarted_block_runs_again(lowering) {
+            let (stood, answer) =
+                stopped_at(BLOCKING, lowering, "Blocking", "^each * 10", |remote| {
+                    set_breakpoints(remote, "Blocking", Vec::new());
+                    expect_breakpoints(remote, "Blocking");
+                    let frame = frame_named(&stack_trace(remote), "[] in Blocking>>run");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let stood = standing(remote, BLOCKING);
+                    continue_stopped(remote);
+                    stood
+                });
+            assert_eq!(
+                stood,
+                (String::from("[] in Blocking>>run"), String::from("self note: each"))
+            );
+            assert_eq!(answer, 330);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block's frame forced to return hands the value to the send
+        /// that ran it, and the step out stops where the send that took
+        /// the block goes on.
+        fn a_block_forced_to_return_answers_its_value(lowering) {
+            let (top, answer) =
+                stopped_at(BLOCKING, lowering, "Blocking", "^each * 10", |remote| {
+                    set_breakpoints(remote, "Blocking", Vec::new());
+                    expect_breakpoints(remote, "Blocking");
+                    let frame = frame_named(&stack_trace(remote), "[] in Blocking>>run");
+                    let value = evaluated(remote, 0, "42");
+                    going_on(
+                        remote,
+                        Command::ForceReturn {
+                            frame,
+                            value: Some(value),
+                        },
+                    );
+                    let top = top_name(remote);
+                    continue_stopped(remote);
+                    top
+                });
+            assert_eq!(top, "Blocking>>run");
+            assert_eq!(answer, 262);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A factory's frame restarts at its entry, where a step into
+        /// stops it, and initializes a fresh instance.
+        fn a_restarted_factory_initializes_again(lowering) {
+            let (top, answer) = stopped_at(
+                INITIALIZING,
+                lowering,
+                "Initializing",
+                "^count * 10",
+                |remote| {
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::Factory)
+                        .expect("the factory is on the stack");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let top = stack_trace(remote).remove(0);
+                    clear_and_continue(remote, "Initializing");
+                    (top.kind, top.program_counter)
+                },
+            );
+            assert_eq!(top, (FrameKind::Factory, 0));
+            assert_eq!(answer, 220);
+        }
+    }
+
+    /// A factory whose instance its sender compares with 7.
+    const COMPARING: &str = indoc! {"
+        class Comparing = Object new (
+          | count ::= 0. |
+        ) (
+          class Made = Object new (
+            | public value = bump. |
+          ) ()
+          public run = (
+            | made |
+            made:: Made new.
+            ^(made = 7 ifTrue: [1] ifFalse: [0]) + (count * 100)
+          )
+          bump = (
+            count:: count + 1.
+            ^count * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A factory's frame forced to return makes the value the factory
+        /// send's.
+        fn a_factory_forced_to_return_answers_the_value(lowering) {
+            let ((), answer) =
+                stopped_at(COMPARING, lowering, "Comparing", "^count * 10", |remote| {
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::Factory)
+                        .expect("the factory is on the stack");
+                    let value = evaluated(remote, 0, "7");
+                    going_on(
+                        remote,
+                        Command::ForceReturn {
+                            frame,
+                            value: Some(value),
+                        },
+                    );
+                    clear_and_continue(remote, "Comparing");
+                });
+            assert_eq!(answer, 101);
+        }
+    }
+
+    /// A method whose first attempt sends what `nil` does not understand.
+    const RAISING: &str = indoc! {"
+        class Raising = Object new (
+          | tries ::= 0. |
+        ) (
+          public run = (
+            ^self attempt
+          )
+          attempt = (
+            tries:: tries + 1.
+            tries = 1 ifTrue: [nil foo].
+            ^tries
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A frame below an uncaught exception's machinery restarts from
+        /// the exception's stop: the kernel's frames above it are unwound,
+        /// and its second run goes on past the error.
+        fn a_restart_from_an_exception_s_stop_unwinds_its_machinery(lowering) {
+            let (mut interpreter, class) = interpreted(RAISING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (stood, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |_| {},
+                |remote| {
+                    match expect_stop(remote) {
+                        StopReason::Exception { caught: false, .. } => {}
+                        other => panic!("the uncaught exception's stop was expected, not {other:?}"),
+                    }
+                    let frames = stack_trace(remote);
+                    let frame = frame_named(&frames, "Raising>>attempt");
+                    assert!(frame > 0, "the kernel's machinery stands above the frame");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let stood = standing(remote, RAISING);
+                    continue_stopped(remote);
+                    stood
+                },
+            );
+            assert_eq!(
+                stood,
+                (String::from("Raising>>attempt"), String::from("tries:: tries + 1"))
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
         }
     }
 

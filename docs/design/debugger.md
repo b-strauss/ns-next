@@ -4248,12 +4248,16 @@ caller a forced return resumed, whose machine code it leaves as a caller
 resumed for a safepoint does (`Heap::clear_compiled`). A command that is
 refused leaves the program stopped where it was, nothing begun.
 
-- **The next stop.** A restart floods the frame as a step over does,
-  before the unwind (`stepping::stop_at_restart`), so that the first
-  one-shot it reaches once it starts again is its first statement
-  start's, where a step into stops a pushed frame -- a factory, which has
-  none, its first instruction -- and the stop is a step's
-  (`StopReason::Step`), whatever the step filters say. A forced return
+- **The next stop.** A restart patches a one-shot for the frame, before
+  the unwind (`stepping::stop_at_restart`), where a step into stops a
+  pushed frame (`stepping::first_stop`): its first statement start --
+  index 1 past the vector it keeps -- a factory's first instruction, its
+  entry, the first slot of an initializer whose declaration writes no
+  superclass clause, past the implicit `Object new`, and index 0 or 1 of
+  a body without metadata, an image's without source; the stop is a
+  step's (`StopReason::Step`), whatever the step filters say. A flood
+  would patch only the statement starts the metadata names -- none for a
+  body without it -- and the implicit clause too. A forced return
   begins a step out of the frame (`stepping::begin`), so that the stop
   is where its sender goes on, reporting the value it returned, or where
   a superclass clause's error is handled.
