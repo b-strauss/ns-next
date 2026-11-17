@@ -2297,8 +2297,15 @@ pub struct Heap<'gc> {
     machine_words: MachineWords,
     /// The limit `set_depth_limit` was last given, which the
     /// `MachineWord::DepthLimit` word holds while no request bit that
-    /// lowers it is set (`synchronize_depth_limit`).
+    /// lowers it is set (`synchronize_depth_limit`), raised by
+    /// `evaluation_depth_raise`.
     depth_limit: usize,
+    /// How far an expression the debugger evaluates raises the depth
+    /// limit while it runs, 0 otherwise: its own reserve above its base
+    /// (`docs/design/debugger.md`, "Evaluation", "At the depth limit").
+    /// Kept beside `depth_limit`, so that a reserve taken or given back
+    /// within the evaluation keeps it.
+    evaluation_depth_raise: usize,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
     /// top the allocation already has in hand, so the hot path pays one
@@ -2771,6 +2778,7 @@ impl<'gc> Heap<'gc> {
             }),
             machine_words,
             depth_limit: crate::interpreter::MAX_ACTIVATION_DEPTH,
+            evaluation_depth_raise: 0,
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -7222,6 +7230,26 @@ impl<'gc> Heap<'gc> {
         self.synchronize_depth_limit();
     }
 
+    /// Raises the depth limit by `raise` while an expression the debugger
+    /// evaluates runs, and gives it back with 0 once it ended: the limit
+    /// `set_depth_limit` sets, the reserve held or free, stands that much
+    /// higher in the word machine code compares a push against.
+    pub(crate) fn raise_depth_limit_for_evaluation(&mut self, raise: usize) {
+        self.evaluation_depth_raise = raise;
+        self.synchronize_depth_limit();
+    }
+
+    /// How far a running evaluation raises the depth limit, 0 while none
+    /// runs (`raise_depth_limit_for_evaluation`).
+    pub(crate) fn evaluation_depth_raise(&self) -> usize {
+        self.evaluation_depth_raise
+    }
+
+    /// The depth limit the word holds while no request lowers it.
+    fn raised_depth_limit(&self) -> usize {
+        self.depth_limit + self.evaluation_depth_raise
+    }
+
     /// The word of the machine words `word` names, for a test.
     #[cfg(test)]
     pub(crate) fn machine_word(&self, word: MachineWord) -> u64 {
@@ -7529,6 +7557,58 @@ impl<'gc> Heap<'gc> {
             }
         }
         (classes, instances)
+    }
+
+    /// Hands every object of the space to `visit`, in the space's order:
+    /// the past survivor space, eden, then the old space, each from its
+    /// start; changes nothing. The debugger's memory view walks it at a
+    /// stop (`debugger/memory.rs`). An object nothing reaches any more is
+    /// handed over as well, since only a collection tells the two apart
+    /// and a stop runs none; a forwarder and a gap are no objects and are
+    /// skipped, as `classes_and_instances_over` skips them.
+    pub(crate) fn each_object(&self, mut visit: impl FnMut(ObjectReference<'gc>)) {
+        let words = self.space.words();
+        for range in self.space.occupied() {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                position = next;
+                let format = Header(words[header]).format();
+                if matches!(format, Format::Free | Format::Forwarded) {
+                    continue;
+                }
+                visit(self.object_handle(offset_of_header(header)));
+            }
+        }
+    }
+
+    /// Whether a word of `holder` that keeps what it names alive names
+    /// `target`: a word of the strong pointer ranges the collectors trace
+    /// (`object::strong_pointer_ranges`), but for the class word -- every
+    /// instance names its class, which the memory view lists as its
+    /// instances, not its referrers -- and an `Ephemeron`'s key, which
+    /// keeps nothing alive; an `Ephemeron`'s other fields count, as they
+    /// do while its key lives. A married frame's registers are its
+    /// activation's, which the ranges leave out; its caller reads them
+    /// where they live (`debugger/memory.rs`).
+    pub(crate) fn refers_to(
+        &self,
+        holder: ObjectReference<'gc>,
+        target: ObjectReference<'gc>,
+    ) -> bool {
+        self.check_object_origin(holder);
+        self.check_object_origin(target);
+        let words = self.space.words();
+        let index = header_index(holder.offset);
+        let block = block_range(words, index);
+        let format = Header(words[index]).format();
+        let key = block.start + FIELDS;
+        let ranges = object::strong_pointer_ranges(format, &words[block.clone()], |_| true);
+        ranges
+            .skip(1)
+            .flat_map(|range| range.start + block.start..range.end + block.start)
+            .filter(|position| format != Format::Ephemeron || *position != key)
+            .any(|position| Word::from_bits(words[position]).object_offset() == Some(target.offset))
     }
 
     /// Stamps each of `objects` with the id its class now answers. The
@@ -9526,6 +9606,83 @@ impl<'gc> Heap<'gc> {
         )
     }
 
+    /// Whether `activation` is the base of an expression the debugger
+    /// evaluates (`Continuation::Evaluated`): the frame the handler search
+    /// and every unwind from within the expression end at. Read only while
+    /// an evaluation runs, never on a program's own path.
+    pub(crate) fn activation_is_evaluation_base(&self, activation: ActivationReference) -> bool {
+        matches!(
+            self.activation_own_continuation(activation),
+            Continuation::Evaluated | Continuation::ExitEvaluated(_)
+        )
+    }
+
+    /// The unwind an evaluation's base `activation` interrupted, for a
+    /// method's exit by an unwind (`Continuation::ExitEvaluated`); `None`
+    /// for any other activation.
+    pub(crate) fn activation_interrupted_unwind(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<PendingUnwind<'gc>> {
+        match self.activation_own_continuation(activation) {
+            Continuation::ExitEvaluated(pending) => Some(PendingUnwind::clone(pending)),
+            _ => None,
+        }
+    }
+
+    /// `activation_is_evaluation_base` for the activation `frame` holds,
+    /// married or suspended.
+    pub(crate) fn frame_is_evaluation_base(&self, frame: FrameReference<'gc>) -> bool {
+        if let Some(activation) = self.frame_activation(frame) {
+            return self.activation_is_evaluation_base(activation);
+        }
+        matches!(
+            self.frame_suspended_continuation(frame),
+            Some(Continuation::Evaluated | Continuation::ExitEvaluated(_))
+        )
+    }
+
+    /// Nils every register of `activation`'s window the leftover analysis
+    /// finds tainted before the program counter it stores -- what the
+    /// collector's pre-pass nils before a trace (`trace_stack`) -- below
+    /// the window of the frame above it, which is that frame's to decide:
+    /// so that a block the debugger makes over the frame, which reads its
+    /// registers by reference, reads nil where the frame keeps nothing,
+    /// never a word a callee or a popped frame left.
+    pub(crate) fn nil_tainted_registers(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        let code = self.activation_code(activation);
+        let Ok(program_counter) = u32::try_from(self.activation_program_counter(activation)) else {
+            unreachable!("internal: a program counter fits its frame word");
+        };
+        let start = self.stack.frame_start(activation.offset);
+        let end = self.stack.window_end(activation.offset).min(
+            self.activation_above(activation)
+                .map_or(usize::MAX, |above| self.activation_position(above)),
+        );
+        let header = activation.offset as usize..activation.offset as usize + frame_header::COUNT;
+        let tainted = code.tainted_before(program_counter).to_vec();
+        for register in tainted.into_iter().flatten() {
+            let slot = start + usize::from(register);
+            if slot < end && !header.contains(&slot) {
+                self.stack.frames.set_word(slot, Word::NIL.bits());
+            }
+        }
+    }
+
+    /// Marks the activation of `frame`, married or suspended, as one whose
+    /// registers survive its return (`retain_registers`): a block the
+    /// debugger made reads them by reference.
+    pub(crate) fn frame_retain_registers(&mut self, frame: FrameReference<'gc>) {
+        if let Some(activation) = self.frame_activation(frame) {
+            self.retain_registers(activation);
+        } else if let Some(row) = self.suspension_row(frame)
+            && let Some(Some(suspension)) = self.suspensions.rows.get_mut(row)
+        {
+            suspension.retains_registers = true;
+        }
+    }
+
     /// The VM error `activation` is the `signal` of, if the unwinder pushed
     /// it to signal one (`Continuation::VmErrorSignalled`).
     pub(crate) fn activation_signalled_vm_error(
@@ -9939,7 +10096,8 @@ impl<'gc> Heap<'gc> {
 
     /// Writes the depth limit's word after every write of the request
     /// word and of the limit: 0 while a bit of `LOWERS_DEPTH_LIMIT` is
-    /// set, the limit `set_depth_limit` last set otherwise. A compiled
+    /// set, the limit `set_depth_limit` last set otherwise, raised while
+    /// an evaluation runs (`raise_depth_limit_for_evaluation`). A compiled
     /// callee's prologue compares the depth count with that one word, so a
     /// pending request refuses every compiled push without a compare of
     /// its own, and the interpreter takes the push and the safepoint
@@ -9961,7 +10119,7 @@ impl<'gc> Heap<'gc> {
         let limit = if lowered(&self.machine_words) {
             0
         } else {
-            self.depth_limit as u64
+            self.raised_depth_limit() as u64
         };
         self.machine_words.set(MachineWord::DepthLimit, limit);
         MachineWords::fence();
@@ -10985,7 +11143,7 @@ impl<'gc> Heap<'gc> {
             .get(MachineWord::DepthCount)
             .saturating_sub(u64::from(inlined));
         let end = words.get(MachineWord::OrdinaryStackEnd);
-        depth.saturating_add(u64::from(chain)) <= self.depth_limit as u64
+        depth.saturating_add(u64::from(chain)) <= self.raised_depth_limit() as u64
             && register_base.saturating_add(u64::from(extent)) <= end
     }
 

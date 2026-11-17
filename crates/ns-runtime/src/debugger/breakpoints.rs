@@ -11,18 +11,19 @@
 //! nothing else.
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use ns_syntax::Span;
 
 use super::Attachments;
+use super::evaluation::Compiled;
 use super::exceptions::{ExceptionBreakpoints, PendingException};
 use super::metadata::Cache;
 use super::metadata::again::PairedBodies;
 use super::remote::{
-    BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, MethodBreakpoint,
+    BreakpointId, BreakpointState, Event, HitCondition, LineBreakpoint, LogPart, MethodBreakpoint,
     MethodBreakpointState, ModuleName, StopReason,
 };
 use super::stepping::{FilterDecisions, Holder, StepFilters, inlined_blocks};
@@ -76,6 +77,28 @@ pub(crate) struct Breakpoints {
     /// pending `ensure:` blocks: an exception one of them raises stops
     /// nothing, as the termination ends a step.
     terminating: bool,
+    /// The expression the debugger evaluates at a stop, from its push
+    /// until its base is popped (`super::evaluation`): while it runs every
+    /// breakpoint is gone past uncounted and nothing stops. On the
+    /// `Mutator`, as the stop's tokens are, since the arms, the leaves and
+    /// the unwinder that read it run inside an entry. Set through
+    /// `set_evaluation`, which keeps `follows_unwinds` with it.
+    evaluation: Option<super::evaluation::RunningEvaluation>,
+    /// Whether the unwinder tells the debugger of the frames it pops: a
+    /// method breakpoint is set or an evaluation runs. One word, updated
+    /// wherever either changes, so that an unwind's start in a program
+    /// run without either reads one word.
+    follows_unwinds: bool,
+    /// What the evaluation answered, from its end until the stop it was
+    /// asked at takes it.
+    pub(super) evaluated: Option<super::evaluation::Outcome>,
+    /// The decision of a method's exit by an unwind, kept while an
+    /// evaluation of its runs (`conditions::decide_unwound_exits`).
+    pub(super) unwound_exit: Option<super::conditions::UnwoundExit>,
+    /// The breakpoints whose condition or log failed at a method's exit
+    /// by an unwind since the last stop, and the first failure's
+    /// description, which the next stop names (`conditions::failure_named`).
+    pub(super) exit_failure: Option<(Vec<BreakpointId>, String)>,
     /// The method exits of the step a host run's end left in progress,
     /// which goes on in the program's next run (`stepping::run_ended`);
     /// `None` while no step is carried.
@@ -112,6 +135,13 @@ pub(crate) struct Breakpoints {
     filter_decisions: FilterDecisions,
     /// Every method breakpoint, in the order the debugger set them.
     methods: Vec<MethodBreakpointEntry>,
+    /// The objects the attached debugger marked, held across stops until
+    /// unmarked or detached (`docs/design/debugger.md`, "Marking
+    /// objects"): on the `Mutator`, as the compiled conditions that name
+    /// them are, so that a condition decided while the program runs takes
+    /// them as its arguments. Set through `set_marks`, which forgets the
+    /// compiled conditions.
+    marks: Vec<super::values::Mark>,
     /// The frame object of the home whose method's exit a stop at a
     /// non-local return already reported, so that the unwind's arrival
     /// there does not report it again (`returned_home_reported`).
@@ -135,6 +165,15 @@ pub(crate) struct Breakpoints {
     steps_from_suspended: usize,
 }
 
+/// A breakpoint's record as the reach's decision reads it.
+struct RecordMut<'table> {
+    hit_condition: Option<HitCondition>,
+    condition: Option<&'table str>,
+    log: Option<&'table [LogPart]>,
+    hits: &'table mut u32,
+    compiled: &'table mut CompiledConditions,
+}
+
 /// One method breakpoint.
 struct MethodBreakpointEntry {
     id: BreakpointId,
@@ -146,6 +185,8 @@ struct MethodBreakpointEntry {
     verified: bool,
     /// How many of its entries and exits were reached since it was set.
     hits: u32,
+    /// Its condition and log expressions compiled.
+    compiled: CompiledConditions,
 }
 
 /// The line breakpoints of one module.
@@ -162,9 +203,58 @@ struct LineBreakpointRecord {
     /// The statement it resolved to; `None` while pending.
     statement: Option<Span>,
     hit_condition: Option<HitCondition>,
+    condition: Option<String>,
+    log: Option<Vec<LogPart>>,
     /// How many times an activation reached its statement since it was
     /// set.
     hits: u32,
+    /// Its condition and log expressions compiled.
+    compiled: CompiledConditions,
+}
+
+/// A breakpoint's condition and log expressions, each compiled for a slot
+/// it stands at, by the slot's body's address, its index and the
+/// expression's number -- 0 the condition, `n` the log's `n`th part --
+/// and dropped with the breakpoint: compiling one at every hit of a hot
+/// loop would cost more than its evaluation (`docs/design/debugger.md`,
+/// "Evaluation", "Hot conditions"). An expression is compiled for its
+/// slot, since what it may assign is decided at the slot's program
+/// counter. The body is held weakly, as the metadata cache holds it: its
+/// allocation stays, so that no other body takes its address while the
+/// entry is kept.
+#[derive(Default)]
+pub(crate) struct CompiledConditions {
+    compiled: HashMap<(usize, usize, usize), CompiledExpression>,
+}
+
+/// One expression of a breakpoint's, compiled for a slot of `body`.
+struct CompiledExpression {
+    /// Held weakly, so that the body's address names no other body while
+    /// the entry is kept, and checked at each lookup.
+    body: Weak<CompiledCode>,
+    /// The code and the marked objects it is given, current until the
+    /// marks change, which forgets it (`Breakpoints::set_marks`).
+    compiled: Compiled,
+}
+
+/// A breakpoint standing at a slot a frame reached whose condition or log
+/// the safepoint evaluates before the reach is counted or stops for it
+/// (`debugger::conditions`).
+#[derive(Clone, Copy)]
+pub(crate) struct Conditional {
+    pub(crate) id: BreakpointId,
+    pub(crate) kind: ReachKind,
+}
+
+/// What a breakpoint's reach is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReachKind {
+    /// A line breakpoint's statement.
+    Line,
+    /// A method breakpoint's method entered.
+    Entry,
+    /// A method breakpoint's method left.
+    Exit,
 }
 
 /// A patched slot: its body, its index, and every breakpoint standing
@@ -293,8 +383,14 @@ pub(crate) struct PendingStop {
     pub(crate) step_stops: bool,
     /// The breakpoints the reach counted that the stop is not for: those
     /// whose hit condition did not hold, and, at a method's exit owed
-    /// past its entry, the entries the stop before was for.
+    /// past its entry, the entries the stop before was for -- and those
+    /// whose condition did not answer `true` there, and the logpoints that
+    /// logged.
     pub(crate) passed: Vec<BreakpointId>,
+    /// The breakpoints standing there whose condition or log the safepoint
+    /// evaluates before it counts them (`debugger::conditions`), neither
+    /// counted nor decided yet.
+    pub(crate) conditions: Vec<Conditional>,
 }
 
 /// A reach of a slot whose stop was not made -- a command served at its
@@ -332,39 +428,59 @@ impl PendingStop {
     /// counted (`CountedReach`). A breakpoint set there meanwhile is not
     /// added: the frame goes past the slot once after the stop, as after
     /// any other.
-    pub(crate) fn still_standing(self, table: &mut Breakpoints) -> Option<PendingStop> {
-        let PendingStop {
-            slot,
-            hits,
-            step_stops,
-            passed,
-        } = self;
-        let standing = table.kinds_at(slot.body, slot.index);
-        let still = |ids: Vec<BreakpointId>, standing: &[BreakpointId]| -> Vec<BreakpointId> {
-            ids.into_iter().filter(|id| standing.contains(id)).collect()
-        };
-        let hits = Hits {
-            lines: still(hits.lines, &standing.lines),
-            entries: still(hits.entries, &standing.entries),
-            exits: still(hits.exits, &standing.exits),
-            run_to: hits.run_to && standing.run_to,
-        };
-        let stop = PendingStop {
-            slot,
-            hits,
-            step_stops,
-            passed,
-        };
-        if stop.hits.only_a_step() && !step_stops {
-            stop.not_made(table);
+    pub(crate) fn still_standing(mut self, table: &mut Breakpoints) -> Option<PendingStop> {
+        let standing = table.kinds_at(self.slot.body, self.slot.index);
+        self.keep_standing(&standing);
+        if self.hits.only_a_step() && !self.step_stops && self.conditions.is_empty() {
+            self.not_made(table);
             return None;
         }
-        Some(stop)
+        Some(self)
+    }
+
+    /// The stop the safepoint decided once every condition at its slot was
+    /// evaluated, as the table stands now, and of `failed`, whose
+    /// condition or log failed, those still standing there: the commands
+    /// served while the conditions ran may have removed some. No stop when
+    /// none is left, no step's one-shot stops there and `forced` -- the
+    /// evaluation was aborted by a pause, which the stop serves -- does
+    /// not hold, the reach remembered as `still_standing` remembers it.
+    pub(crate) fn decided_standing(
+        mut self,
+        table: &mut Breakpoints,
+        failed: Vec<BreakpointId>,
+        forced: bool,
+    ) -> Option<(PendingStop, Vec<BreakpointId>)> {
+        let standing = table.kinds_at(self.slot.body, self.slot.index);
+        self.keep_standing(&standing);
+        let failed: Vec<BreakpointId> = failed
+            .into_iter()
+            .filter(|id| standing.holds(*id))
+            .collect();
+        if self.hits.only_a_step() && !self.step_stops && failed.is_empty() && !forced {
+            self.not_made(table);
+            return None;
+        }
+        Some((self, failed))
+    }
+
+    /// Keeps only the breakpoints `standing` at the slot.
+    fn keep_standing(&mut self, standing: &Standing) {
+        let still = |ids: &mut Vec<BreakpointId>, standing: &[BreakpointId]| {
+            ids.retain(|id| standing.contains(id));
+        };
+        still(&mut self.hits.lines, &standing.lines);
+        still(&mut self.hits.entries, &standing.entries);
+        still(&mut self.hits.exits, &standing.exits);
+        self.hits.run_to &= standing.run_to;
+        self.conditions
+            .retain(|conditional| standing.holds(conditional.id));
     }
 
     /// The stop is not made: the reach it was decided at is remembered,
     /// so that the frame's fetch of the slot again counts none of its
-    /// breakpoints once more.
+    /// breakpoints once more, nor evaluates a condition decided there. A
+    /// condition not evaluated yet is evaluated by that fetch, once.
     pub(crate) fn not_made(self, table: &mut Breakpoints) {
         let PendingStop {
             slot, hits, passed, ..
@@ -444,6 +560,13 @@ pub(crate) struct Standing {
     pub(crate) stress: bool,
 }
 
+impl Standing {
+    /// Whether the breakpoint `id` the debugger set stands there.
+    fn holds(&self, id: BreakpointId) -> bool {
+        self.lines.contains(&id) || self.entries.contains(&id) || self.exits.contains(&id)
+    }
+}
+
 /// What resolving a module's breakpoints against its bodies found.
 struct Resolution {
     /// Each breakpoint's statement, in the order of the module's lines.
@@ -475,6 +598,19 @@ impl Breakpoints {
     /// The attached debugger's arming lock, if one is attached.
     pub(crate) fn arming(&self) -> Option<Arc<Mutex<Attachments>>> {
         self.arming.clone()
+    }
+
+    /// The marks as they stand.
+    pub(crate) fn marks(&self) -> &[super::values::Mark] {
+        &self.marks
+    }
+
+    /// Replaces the marks: every compiled condition and log expression is
+    /// forgotten, since a label marked, unmarked or moved changes which of
+    /// its names are its block's parameters and what they are given.
+    pub(crate) fn set_marks(&mut self, marks: Vec<super::values::Mark>) {
+        self.marks = marks;
+        self.forget_compiled_conditions();
     }
 
     /// Replaces the step filters.
@@ -513,9 +649,11 @@ impl Breakpoints {
         }
     }
 
-    /// An install changed a module's text.
+    /// An install changed a module's text: a condition compiled against
+    /// the text before is compiled again.
     pub(crate) fn raise_text_revision(&mut self) {
         self.text_revision += 1;
+        self.forget_compiled_conditions();
     }
 
     /// The stop the last `Breakpoint` arm decided, taken.
@@ -555,6 +693,61 @@ impl Breakpoints {
         self.terminating
     }
 
+    /// Whether a method's exit by an unwind is being decided, an
+    /// evaluation of its condition or log having begun
+    /// (`conditions::decide_unwound_exits`): the unwind's return to the
+    /// frame goes on with it.
+    pub(crate) fn deciding_unwound_exit(&self) -> bool {
+        self.unwound_exit.is_some()
+    }
+
+    /// Whether an expression the debugger evaluates is running.
+    #[inline(always)]
+    pub(crate) fn evaluating(&self) -> bool {
+        self.evaluation.is_some()
+    }
+
+    /// Whether a token or a reach whose stop was not made waits for its
+    /// frame's fetch of the slot again. The pause stress mode evaluates
+    /// nothing then: the suspend stress mode follows the token only to the
+    /// top frame it resumes (`move_past_once`), and under an evaluation the
+    /// token's frame lies below it, so a suspension there would leave the
+    /// token naming an offset another activation takes.
+    #[cfg(debug_assertions)]
+    pub(crate) fn waits_for_a_fetch(&self) -> bool {
+        self.past_once.is_some() || self.counted_reach.is_some()
+    }
+
+    /// Whether the unwinder tells the debugger of the frames it pops,
+    /// beside a step in progress (`interpreter::breakpoint::follows_unwinds`):
+    /// while a method breakpoint is set, and while an evaluation runs,
+    /// whose base ends every unwind.
+    #[inline(always)]
+    pub(crate) fn follows_unwinds(&self) -> bool {
+        self.follows_unwinds
+    }
+
+    /// Recomputes `follows_unwinds` after the method breakpoints or the
+    /// evaluation changed.
+    fn refresh_follows_unwinds(&mut self) {
+        self.follows_unwinds = !self.methods.is_empty() || self.evaluation.is_some();
+    }
+
+    /// Begins (`Some`) or ends (`None`) the expression the debugger
+    /// evaluates.
+    pub(super) fn set_evaluation(
+        &mut self,
+        evaluation: Option<super::evaluation::RunningEvaluation>,
+    ) {
+        self.evaluation = evaluation;
+        self.refresh_follows_unwinds();
+    }
+
+    /// The expression the debugger evaluates, while it runs.
+    pub(super) fn evaluation_mut(&mut self) -> Option<&mut super::evaluation::RunningEvaluation> {
+        self.evaluation.as_mut()
+    }
+
     /// The debugger terminated the run (`true`), or the run ended
     /// (`false`).
     pub(crate) fn set_terminating(&mut self, terminating: bool) {
@@ -565,6 +758,12 @@ impl Breakpoints {
     /// `exits`, to the program's next run.
     pub(crate) fn carry_step(&mut self, exits: Vec<BreakpointId>) {
         self.carried_step = Some(exits);
+    }
+
+    /// Whether the last host run's end left a step in progress for the
+    /// next (`carry_step`).
+    pub(crate) fn carries_a_step(&self) -> bool {
+        self.carried_step.is_some()
     }
 
     /// The step the last host run's end left in progress, taken.
@@ -646,43 +845,134 @@ impl Breakpoints {
         standing
     }
 
-    /// Counts a hit of each of `ids`, the breakpoints the debugger set
-    /// that a frame reached, and answers those whose hit condition holds
-    /// at it, the ones it stops for. Counted here, in the run loop's cold
-    /// decision, so that a hit that does not stop costs no stop and no
-    /// round trip to the agent (`docs/design/debugger.md`, "Hit counts and
-    /// temporary breakpoints").
-    pub(crate) fn count_hits(&mut self, ids: Vec<BreakpointId>) -> Vec<BreakpointId> {
-        ids.into_iter().filter(|id| self.count_hit(*id)).collect()
-    }
-
-    /// Counts a hit of the breakpoint `id`, and answers whether its hit
-    /// condition holds at it.
+    /// Counts a hit of the breakpoint `id`, a breakpoint the debugger set
+    /// that a frame reached, and answers whether its hit condition holds
+    /// at it, whether it stops. Counted only in the run loop's cold
+    /// decisions and at the safepoint, so that a hit that does not stop
+    /// costs no stop and no round trip to the agent
+    /// (`docs/design/debugger.md`, "Hit counts and temporary
+    /// breakpoints").
     pub(crate) fn count_hit(&mut self, id: BreakpointId) -> bool {
-        let line = self
-            .modules
-            .iter_mut()
-            .flat_map(|module| module.lines.iter_mut())
-            .find(|line| line.id == id)
-            .map(|line| (line.hit_condition, &mut line.hits));
-        let counted = match line {
-            Some(found) => Some(found),
-            None => self
-                .methods
-                .iter_mut()
-                .find(|entry| entry.id == id)
-                .map(|entry| (entry.method.hit_condition, &mut entry.hits)),
-        };
+        let counted = self.record_mut(id);
         // Every id a patch holds is one of the table's, which removes a
         // breakpoint's patches with it.
         debug_assert!(counted.is_some(), "internal: a patch names no breakpoint");
         // In a release build such a hit stops, as a breakpoint without a
         // condition does, rather than being lost.
-        let Some((condition, hits)) = counted else {
+        let Some(record) = counted else {
             return true;
         };
-        *hits = hits.saturating_add(1);
-        condition.is_none_or(|condition| condition.holds(*hits))
+        *record.hits = record.hits.saturating_add(1);
+        record
+            .hit_condition
+            .is_none_or(|condition| condition.holds(*record.hits))
+    }
+
+    /// The breakpoint `id`'s record, line or method breakpoint; `None`
+    /// once it is removed.
+    fn record_mut(&mut self, id: BreakpointId) -> Option<RecordMut<'_>> {
+        let line = self
+            .modules
+            .iter_mut()
+            .flat_map(|module| module.lines.iter_mut())
+            .find(|line| line.id == id)
+            .map(|line| RecordMut {
+                hit_condition: line.hit_condition,
+                condition: line.condition.as_deref(),
+                log: line.log.as_deref(),
+                hits: &mut line.hits,
+                compiled: &mut line.compiled,
+            });
+        match line {
+            Some(found) => Some(found),
+            None => self
+                .methods
+                .iter_mut()
+                .find(|entry| entry.id == id)
+                .map(|entry| RecordMut {
+                    hit_condition: entry.method.hit_condition,
+                    condition: entry.method.condition.as_deref(),
+                    log: entry.method.log.as_deref(),
+                    hits: &mut entry.hits,
+                    compiled: &mut entry.compiled,
+                }),
+        }
+    }
+
+    /// Whether the breakpoint `id` has a condition or a log, which the
+    /// safepoint evaluates before a reach of it is counted.
+    pub(crate) fn is_conditional(&mut self, id: BreakpointId) -> bool {
+        self.record_mut(id)
+            .is_some_and(|record| record.condition.is_some() || record.log.is_some())
+    }
+
+    /// The breakpoint `id`'s condition and log; `None` once it is removed.
+    pub(crate) fn conditions_of(
+        &mut self,
+        id: BreakpointId,
+    ) -> Option<(Option<String>, Option<Vec<LogPart>>)> {
+        self.record_mut(id).map(|record| {
+            (
+                record.condition.map(str::to_owned),
+                record.log.map(<[LogPart]>::to_vec),
+            )
+        })
+    }
+
+    /// The breakpoint `id`'s expression numbered `number` -- 0 its
+    /// condition, `n` its log's `n`th part -- compiled for slot `index` of
+    /// `body`, if it was.
+    pub(crate) fn compiled_condition(
+        &mut self,
+        id: BreakpointId,
+        body: &Rc<CompiledCode>,
+        index: usize,
+        number: usize,
+    ) -> Option<Compiled> {
+        let record = self.record_mut(id)?;
+        record
+            .compiled
+            .compiled
+            .get(&(address(body), index, number))
+            .filter(|compiled| std::ptr::eq(compiled.body.as_ptr(), Rc::as_ptr(body)))
+            .map(|compiled| compiled.compiled.clone())
+    }
+
+    /// Keeps `code`, the breakpoint `id`'s expression numbered `number`
+    /// compiled for slot `index` of `body`, until the breakpoint goes.
+    pub(crate) fn keep_compiled_condition(
+        &mut self,
+        id: BreakpointId,
+        body: &Rc<CompiledCode>,
+        index: usize,
+        number: usize,
+        compiled: Compiled,
+    ) {
+        if let Some(record) = self.record_mut(id) {
+            record.compiled.compiled.insert(
+                (address(body), index, number),
+                CompiledExpression {
+                    body: Rc::downgrade(body),
+                    compiled,
+                },
+            );
+        }
+    }
+
+    /// Forgets every compiled condition: an install changed a module's
+    /// text, against which each was resolved, or the marks changed, which
+    /// each names.
+    fn forget_compiled_conditions(&mut self) {
+        for line in self
+            .modules
+            .iter_mut()
+            .flat_map(|module| module.lines.iter_mut())
+        {
+            line.compiled = CompiledConditions::default();
+        }
+        for entry in &mut self.methods {
+            entry.compiled = CompiledConditions::default();
+        }
     }
 
     /// Whether any method breakpoint is set: the unwinder reports a
@@ -948,7 +1238,7 @@ impl Breakpoints {
 
     /// Sends `event` to the debugger, if one is attached; one that is gone
     /// is noticed where the interpreter next talks to it.
-    fn report(&self, event: Event) {
+    pub(super) fn report(&self, event: Event) {
         if let Some(events) = &self.events {
             let _ = events.send(event);
         }
@@ -1026,7 +1316,10 @@ pub(crate) fn set_line_breakpoints(
             offset: breakpoint.offset,
             statement: None,
             hit_condition: breakpoint.hit_condition,
+            condition: breakpoint.condition,
+            log: breakpoint.log,
             hits: 0,
+            compiled: CompiledConditions::default(),
         });
     }
     let empty = lines.is_empty();
@@ -1106,9 +1399,11 @@ pub(crate) fn set_method_breakpoints(
             bodies: Vec::new(),
             verified: false,
             hits: 0,
+            compiled: CompiledConditions::default(),
         })
         .collect();
     table.methods = methods;
+    table.refresh_follows_unwinds();
     resolve_methods(mutator, None);
     mutator.breakpoints.sweep();
     settle(mutator);
@@ -1299,11 +1594,16 @@ pub(crate) fn clear(mutator: &mut Mutator<'_>) {
     table.remove_kinds(|kind| !kind.is_stress(), |_| false);
     table.modules.clear();
     table.methods.clear();
+    // The marks are the attachment's, and go with it.
+    table.marks.clear();
+    table.refresh_follows_unwinds();
     table.reported_home = None;
     table.past_once = None;
     table.counted_reach = None;
     table.pending_stop = None;
     table.pending_exception = None;
+    table.unwound_exit = None;
+    table.exit_failure = None;
     table.terminating = false;
     table.step_filters = StepFilters::default();
     table.filter_decisions.forget();

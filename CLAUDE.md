@@ -14,7 +14,8 @@ Rust 1.100.0, edition 2024, seven crates:
   comments"); `parse` refuses a source
   with errors, `parse_for_editor` answers a recovered module for the editor,
   its recovery bounded by a work budget (`docs/design/frontend.md`,
-  "Recovery"); the printer (`printer/`: `print_module` writes a module back
+  "Recovery"), and `parse_code_body` parses a code body that is the whole
+  input -- the debugger's evaluated expression; the printer (`printer/`: `print_module` writes a module back
   as source, `format` parses and reprints one) has one layout and no options
   (`docs/design/formatting.md`).
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
@@ -143,10 +144,27 @@ Rust 1.100.0, edition 2024, seven crates:
   runs stops the run's first activation at its first statement;
   exception breakpoints are decided by two mirror rows the kernel's
   handler search sends, a leaf and the exit that reads the handler it
-  found (`debugger/exceptions.rs`); `debugger.md`, "The debugging API
-  at the safepoint", "Compiling the metadata again", "Where the
-  original lives", "Step over in recursion and blocks", "Exceptions",
-  "Hit counts and temporary breakpoints"),
+  found (`debugger/exceptions.rs`); and at a stop: an expression
+  compiled as a block standing at the stopped frame's program counter
+  (`compiler/evaluation.rs`, `resolver::resolve_evaluation`) and pushed
+  above it as program code, every breakpoint gone past, its base ending
+  every unwind and handler search from within it, with a depth reserve
+  of its own and aborted by a sequenced command
+  (`debugger/evaluation.rs`); a variable set as such an assignment,
+  refused where a block may already hold a copy
+  (`VariableEntry::copied_by`); a breakpoint's condition and a
+  logpoint's message evaluated where the hit is counted
+  (`debugger/conditions.rs`); a frame restarted or forced to return
+  through the one unwinder (`debugger/unwinding.rs`); smart step into a
+  chosen send (`stepping::begin_smart`); objects marked with labels later
+  evaluations name, and the memory view's instance counts, instances
+  and referrers over a heap walk, withheld values never handed out
+  (`debugger/memory.rs`, `Mutator::is_withheld`); `debugger.md`, "The
+  debugging API at the safepoint", "Compiling the metadata again",
+  "Where the original lives", "Step over in recursion and blocks",
+  "Exceptions", "Hit counts and temporary breakpoints", "Evaluation",
+  "Writing a frame", "Restart frame and force return", "Marking
+  objects", "The memory view"),
   the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
@@ -199,8 +217,8 @@ Rust 1.100.0, edition 2024, seven crates:
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
   `load`, `bench`, `build`, and `shipped-sources`, which writes the `.ns`
   sources the binary embeds (`Manifest.ns` included) in `core-library/`'s
-  layout with a `fingerprint` file, prints that fingerprint, or prints them
-  as JSON (`commands/shipped_sources.rs`; `core-library.md`, "The shipped
+  layout with a `fingerprint` file, or prints that fingerprint
+  (`commands/shipped_sources.rs`; `core-library.md`, "The shipped
   sources as files"). A program is one `.ns` file or a project of several
   modules: a directory whose `newspeak.json` names them, the current directory
   when no program is given (`project.rs`, `program.rs`). The file is described
@@ -214,9 +232,19 @@ Rust 1.100.0, edition 2024, seven crates:
   the connection's writer thread, every write and its queue bounded, and
   writes nothing to the program's standard streams but the listening
   line and the line a terminated run prints; the connecting mode returns
-  the secret its launcher hands it in `NS_NEXT_DEBUG_SECRET`
+  the secret its launcher hands it in `NS_NEXT_DEBUG_SECRET`, and ends
+  the program as `terminate` does when its connection is lost before a
+  `disconnect`
   (`debugger.md`, "Launching, the start and the end"; tests
-  `tests/debug_adapter.rs`).
+  `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
+  standard input and output (`mcp/`), registered by `.mcp.json`, through
+  whose tools an agent debugs a program: each `debug_start` runs it in a
+  child `ns-next run --debug-connect` the server is a DAP client of, and
+  each stop is answered as a summary in text; the children run from
+  copies of their executables below the temporary directory and, on
+  Windows, the server renames its own executable aside and puts a copy
+  back, so that a build can replace `target/debug/ns-next` meanwhile
+  (`debugger.md`, "The MCP server"; tests `tests/mcp.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
@@ -814,7 +842,10 @@ implementing part of a batch is told this staggering explicitly.
 
 A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 `editors/jetbrains/src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt`
-in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
+in the same commit. Runtime work changes neither the lexer nor the grammar
+under `crates/ns-syntax`; what it may add there is an entry into the
+existing parser for source it compiles outside a module, as the
+debugger's `parse_code_body` is.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
 Only a build without debug assertions runs the size tests
@@ -852,10 +883,7 @@ implementation decides (`docs/references/PROVENANCE.md`).
 deviation from the specification is a defect; no valid construct is carved out
 because it is rare; performance decides among semantics-preserving options,
 judged by the finished system; a guarantee is made by arranging Newspeak classes
-before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable;
-every introspection feature (debugger, profiler, code views, traces) is
-reachable from the command line first, as text or JSON, so that an agent can
-use it, and the IDE's views are clients of the same data.
+before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`

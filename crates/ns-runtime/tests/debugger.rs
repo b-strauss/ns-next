@@ -4398,6 +4398,8 @@ fn hits_after_the_rewind(lowering: Lowering, condition: HitCondition) -> usize {
             LineBreakpoint {
                 offset: slot,
                 hit_condition: Some(condition),
+                condition: None,
+                log: None,
             },
         ],
     );
@@ -8692,6 +8694,8 @@ fn method_breakpoint(
         class_side,
         selector: String::from(selector),
         hit_condition: None,
+        condition: None,
+        log: None,
     }
 }
 
@@ -10953,6 +10957,8 @@ fn indexes_stopped_at(lowering: Lowering, condition: HitCondition) -> Vec<String
                 vec![LineBreakpoint {
                     offset,
                     hit_condition: Some(condition),
+                    condition: None,
+                    log: None,
                 }],
             );
         },
@@ -11004,6 +11010,8 @@ ns_runtime::for_each_lowering! {
         let breakpoints = vec![LineBreakpoint {
             offset,
             hit_condition: Some(HitCondition::Equal(2)),
+            condition: None,
+            log: None,
         }];
         let configured = breakpoints.clone();
         let ((first, second), result) = debugged(
@@ -11078,6 +11086,8 @@ ns_runtime::for_each_lowering! {
                         LineBreakpoint {
                             offset: second,
                             hit_condition: Some(HitCondition::Equal(2)),
+                            condition: None,
+                            log: None,
                         },
                     ],
                 );
@@ -11820,5 +11830,5825 @@ ns_runtime::for_each_lowering! {
         assert_eq!(depths.0, depths.1, "the same depth");
         assert!(elsewhere, "the stop is in another activation");
         assert_eq!(answer, 21);
+    }
+}
+
+/// Evaluating an expression at a stop (`docs/design/debugger.md`, decision
+/// 8, "Evaluation"): every test stops at a line breakpoint and evaluates
+/// in a stopped frame, and each one's path holds `evaluation`.
+mod evaluation {
+    use super::*;
+    use ns_runtime::debugger::Evaluation;
+
+    /// What evaluating `expression` in the frame at index `frame` answers.
+    fn evaluate(remote: &DebugRemote, frame: usize, expression: &str) -> Evaluation {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Evaluated(evaluation) => evaluation,
+            other => panic!("the evaluation of {expression} was expected, not {other:?}"),
+        }
+    }
+
+    /// The label of the value `expression` answers in the frame at index
+    /// `frame`, which must answer one.
+    fn value_label(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Value(value) => value.label,
+            other => panic!("{expression} was expected to answer a value, not {other:?}"),
+        }
+    }
+
+    /// The description of the error `expression` answers in the frame at
+    /// index `frame`, which must answer one.
+    fn error_description(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Error { description, .. } => description,
+            other => panic!("{expression} was expected to answer an error, not {other:?}"),
+        }
+    }
+
+    /// Why evaluating `expression` in the frame at index `frame` is
+    /// refused, which it must be.
+    fn refusal(remote: &DebugRemote, frame: usize, expression: &str) -> String {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "Evaluate");
+                reason
+            }
+            other => {
+                panic!("the evaluation of {expression} was expected to be refused, not {other:?}")
+            }
+        }
+    }
+
+    /// Runs `source`'s `run` under `lowering`, the JIT off, stopped at the
+    /// line breakpoint on the line of the module `module` that holds
+    /// `line`: `agent` serves the first stop, which is continued once it
+    /// answered. Answers what `agent` answered and the small integer the
+    /// run answered.
+    fn stopped_at<T: Send + 'static>(
+        source: &str,
+        lowering: Lowering,
+        module: &'static str,
+        line: &str,
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let offset = line_start(source, line);
+        debugged_answering(
+            source,
+            lowering,
+            |remote| set_breakpoints(remote, module, vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, module));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let answer = agent(remote);
+                continue_stopped(remote);
+                answer
+            },
+        )
+    }
+
+    /// `debugged`, answering the small integer the run answered.
+    fn debugged_answering<T: Send + 'static>(
+        source: &str,
+        lowering: Lowering,
+        configure: impl FnOnce(&DebugRemote),
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let (mut interpreter, class) = interpreted(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(&mut interpreter, &instance, configure, agent);
+        (answer, answered(&mut interpreter, result))
+    }
+
+    /// A method whose local the tests read and write, a private method of
+    /// the receiver and one of another object.
+    const EVALUATING: &str = indoc! {"
+        class Evaluating = Object new (
+          | other = Other new. |
+        ) (
+          class Other = Object new () (
+            private secret = (
+              ^7
+            )
+          )
+          public run = (
+            | count ::= 41. |
+            self sink: count.
+            ^count
+          )
+          sink: value = (
+            ^value
+          )
+          private secret = (
+            ^5
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An expression reads a local of the stopped frame.
+        fn an_evaluation_reads_a_local(lowering) {
+            let (label, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "count + 1"),
+            );
+            assert_eq!(label, "42");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An assignment in an expression writes the stopped frame's
+        /// local, which the program then reads.
+        fn an_evaluation_writes_a_local_the_program_then_sees(lowering) {
+            let (label, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "count:: 7"),
+            );
+            assert_eq!(label, "7");
+            assert_eq!(answer, 7);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a frame below the top reads that frame's
+        /// local, not the top frame's.
+        fn an_evaluation_in_a_frame_below_the_top_reads_that_frame(lowering) {
+            let ((below, top), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| {
+                    (
+                        value_label(remote, 1, "count"),
+                        value_label(remote, 0, "value + 1"),
+                    )
+                },
+            );
+            assert_eq!(below, "41");
+            assert_eq!(top, "42");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An implicit receiver send of an expression reaches what the
+        /// stopped method's would: the receiver's private method.
+        fn an_implicit_receiver_send_reaches_a_private_method(lowering) {
+            let (label, _) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| value_label(remote, 0, "secret"),
+            );
+            assert_eq!(label, "5");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An ordinary send of an expression to another object finds its
+        /// public methods only: another object's private method is not
+        /// understood, and that error is the evaluation's answer.
+        fn a_private_method_of_another_object_is_not_understood(lowering) {
+            let (description, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| error_description(remote, 0, "other secret"),
+            );
+            assert!(
+                description.contains("MessageNotUnderstood") && description.contains("secret"),
+                "{description}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An error an expression raises is its answer, and the program
+        /// goes on as it would have without it.
+        fn an_error_is_the_result_and_the_program_goes_on(lowering) {
+            let ((description, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    let description = error_description(remote, 0, "1 / 0");
+                    (description, value_label(remote, 0, "count"))
+                },
+            );
+            assert!(!description.is_empty());
+            assert_eq!(label, "41", "the stop serves on after the error");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// A send inside a protected block, whose handler notes a catch.
+    const HANDLING: &str = indoc! {"
+        class Handling = Object new (
+          | caught ::= 0. |
+        ) (
+          public run = (
+            [self sink: 1] on: Error do: [:error | caught:: 1].
+            ^caught
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A handler of the program's below the evaluation does not catch
+        /// the evaluation's error: the evaluation's base ends the handler
+        /// search.
+        fn a_program_handler_below_does_not_catch_the_evaluation_s_error(lowering) {
+            let (description, answer) = stopped_at(
+                HANDLING,
+                lowering,
+                "Handling",
+                "^value",
+                |remote| error_description(remote, 0, "nil foo"),
+            );
+            assert!(description.contains("foo"), "{description}");
+            assert_eq!(answer, 0, "the program's handler never ran");
+        }
+    }
+
+    /// An error the program signals and an inner handler hands to `sink:`,
+    /// inside an outer handler that notes a catch.
+    const PASSING: &str = indoc! {"
+        class Passing = Object new (
+          | outerCaught ::= 0. |
+        ) (
+          public run = (
+            [[Error new signal] on: Error do: [:error | self sink: error]]
+              on: Error
+              do: [:error | outerCaught:: 1].
+            ^outerCaught
+          )
+          sink: error = (
+            ^error
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// The search of an exception the program signalled before the
+        /// stop, which an expression passes on, finds none of the
+        /// program's handlers: they lie below the evaluation's base.
+        fn a_pass_of_the_program_s_exception_finds_no_handler_below_the_evaluation(lowering) {
+            let (description, answer) = stopped_at(
+                PASSING,
+                lowering,
+                "Passing",
+                "^error",
+                |remote| error_description(remote, 0, "error pass"),
+            );
+            assert!(description.contains("Error"), "{description}");
+            assert_eq!(answer, 0, "the program's outer handler never ran");
+        }
+    }
+
+    /// A block whose `^` returns from `run`, held while `run` still runs.
+    const RETURNING: &str = indoc! {"
+        class Returning = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            holder:: [^1].
+            self sink: 2.
+            ^0
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// What the stack trace shows of each frame, value ids aside.
+    fn frame_shapes(remote: &DebugRemote) -> Vec<(FrameKind, String, usize)> {
+        stack_trace(remote)
+            .into_iter()
+            .map(|frame| (frame.kind, frame.name, frame.program_counter))
+            .collect()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block the expression runs whose `^` would return to a home
+        /// below the evaluation cannot return there: the evaluation answers
+        /// `CannotReturn`, and the program's frames are as they were.
+        fn a_caret_to_a_home_below_is_cannot_return(lowering) {
+            let ((before, description, after), answer) = stopped_at(
+                RETURNING,
+                lowering,
+                "Returning",
+                "^value",
+                |remote| {
+                    let before = frame_shapes(remote);
+                    let description = error_description(remote, 0, "holder value");
+                    (before, description, frame_shapes(remote))
+                },
+            );
+            assert!(description.contains("CannotReturn"), "{description}");
+            assert_eq!(before, after);
+            assert_eq!(answer, 0);
+        }
+    }
+
+    /// `tick` counts its calls; `run` calls it once, after `sink:`.
+    const TICKING: &str = indoc! {"
+        class Ticking = Object new (
+          | ticks ::= 0. |
+        ) (
+          public run = (
+            self sink: 0.
+            self tick.
+            ^ticks
+          )
+          tick = (
+            ticks:: ticks + 1.
+            ^ticks
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation goes past every breakpoint it meets, uncounted: a
+        /// breakpoint whose hit condition names the first hit still stops
+        /// at the program's first call after the evaluation called it.
+        fn an_evaluation_skips_breakpoints(lowering) {
+            let at_sink = line_start(TICKING, "^value");
+            let in_tick = line_start(TICKING, "ticks:: ticks + 1.");
+            let (label, answer) = debugged_answering(
+                TICKING,
+                lowering,
+                |remote| {
+                    set_line_breakpoints(
+                        remote,
+                        "Ticking",
+                        vec![
+                            LineBreakpoint::at_offset(at_sink),
+                            LineBreakpoint {
+                                offset: in_tick,
+                                hit_condition: Some(HitCondition::Equal(1)),
+                                condition: None,
+                                log: None,
+                            },
+                        ],
+                    );
+                },
+                |remote| {
+                    let ids: Vec<BreakpointId> = expect_breakpoints(remote, "Ticking")
+                        .iter()
+                        .map(|breakpoint| breakpoint.id)
+                        .collect();
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                    let label = value_label(remote, 0, "self tick");
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                    continue_stopped(remote);
+                    label
+                },
+            );
+            assert_eq!(label, "1");
+            assert_eq!(answer, 2);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation in a loop that ran in machine code reads the pass
+        /// the frame stopped at, and the frame goes on from it.
+        fn an_evaluation_in_a_compiled_loop_reads_the_iteration(lowering) {
+            let (mut interpreter, instance, _) = compiled(COMPILED_LOOP, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COMPILED_LOOP, "self bump].");
+            let (labels, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CompiledLoop", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CompiledLoop"));
+                    let mut labels = Vec::new();
+                    for _ in 0..3 {
+                        assert_eq!(expect_breakpoint_stop(remote), [id]);
+                        labels.push(value_label(remote, 0, "index * 10 + count"));
+                        continue_stopped(remote);
+                    }
+                    labels
+                },
+            );
+            assert_eq!(labels, ["2010", "2021", "2032"]);
+            assert_eq!(answered(&mut interpreter, result), 2003);
+        }
+    }
+
+    /// A method whose array an evaluation outlives a collection beside.
+    const COLLECTING: &str = indoc! {"
+        class Collecting = Object new () (
+          public run = (
+            | items = Array new: 2. |
+            items at: 1 put: 'kept'.
+            self sink: items.
+            ^items size
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The labels of `variables`' values, `None` for one not available.
+    fn labels(variables: &[Variable]) -> Vec<Option<String>> {
+        variables
+            .iter()
+            .map(|variable| variable.value.shown().map(|value| value.label.clone()))
+            .collect()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The values a stop handed out, and the stopped frame, survive a
+        /// collection an evaluation's allocations make: the variables read
+        /// alike after it, and a value handed out before it still answers
+        /// its children.
+        fn a_collection_during_an_evaluation_keeps_the_stop_s_values(lowering) {
+            let ((before, label, after, children), answer) = stopped_at(
+                COLLECTING,
+                lowering,
+                "Collecting",
+                "self sink: items.",
+                |remote| {
+                    let before = variables(remote, Command::Variables { frame: 0 });
+                    let items = value_of(&before, "items").id;
+                    // About 16 MiB, past eden twice, in few enough sends
+                    // that the collect stress mode's collections at
+                    // every safepoint end within the event timeout.
+                    let label = value_label(
+                        remote,
+                        0,
+                        "1 to: 2000 do: [:index | Array new: 1000]. items size",
+                    );
+                    let after = variables(remote, Command::Variables { frame: 0 });
+                    let children = variables(
+                        remote,
+                        Command::Children {
+                            value: items,
+                            start: 0,
+                            count: 2,
+                        },
+                    );
+                    (labels(&before), label, labels(&after), labels(&children))
+                },
+            );
+            assert_eq!(label, "2");
+            assert_eq!(before, after);
+            assert_eq!(children.len(), 2);
+            assert!(
+                children[0].as_deref().is_some_and(|label| label.contains("kept")),
+                "{children:?}"
+            );
+            assert_eq!(answer, 2);
+        }
+    }
+
+    /// `compute`'s local, which a block an evaluation stores may read
+    /// after `compute` returned.
+    const STORING: &str = indoc! {"
+        class Storing = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            self compute.
+            ^holder value
+          )
+          compute = (
+            | count ::= 41. |
+            self sink: count.
+            count:: count + 1.
+            ^count
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block an expression stores away reads the stopped frame's
+        /// variable after the frame returned: its last value, never nil.
+        fn a_block_an_evaluation_stored_reads_the_frame_after_it_returned(lowering) {
+            let (stored, answer) = stopped_at(
+                STORING,
+                lowering,
+                "Storing",
+                "self sink: count.",
+                |remote| match evaluate(remote, 0, "holder:: [count]") {
+                    Evaluation::Value(value) => value.class_name,
+                    other => panic!("the store was expected to answer the block, not {other:?}"),
+                },
+            );
+            assert!(!stored.is_empty());
+            assert_eq!(answer, 42);
+        }
+    }
+
+    /// `make:`'s local `unused`, which the block `make:` runs never reads,
+    /// and which a block an evaluation in that block stores may read after
+    /// `make:` returned.
+    const KEEPING: &str = indoc! {"
+        class Keeping = Object new (
+          | holder ::= nil. |
+        ) (
+          public run = (
+            self make: 3.
+            ^holder value
+          )
+          make: limit = (
+            | unused |
+            unused:: 42.
+            ^self apply: [:each |
+              each + 1] to: limit
+          )
+          apply: block to: value = (
+            ^block value: value
+          )
+          keep: block = (
+            holder:: block
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block an expression evaluated in a block stores away reads a
+        /// variable of the block's home that the block never read after
+        /// the home returned: its value, never nil. The stopped block made
+        /// its home keep nothing, reaching no variable of it, so the
+        /// evaluation keeps every frame its own block reaches.
+        fn a_block_an_evaluation_stored_reads_an_enclosing_frame_after_it_returned(lowering) {
+            let (stored, answer) = stopped_at(
+                KEEPING,
+                lowering,
+                "Keeping",
+                "each + 1] to: limit",
+                |remote| match evaluate(remote, 0, "self keep: [unused]") {
+                    Evaluation::Value(value) => value.class_name,
+                    other => panic!("the store was expected to answer the receiver, not {other:?}"),
+                },
+            );
+            assert!(!stored.is_empty());
+            assert_eq!(answer, 42);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a frame of the core library is refused: it
+        /// could reach the VM mirror.
+        fn an_evaluation_in_a_shipped_frame_is_refused(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (reason, answer) = debugged_answering(
+                QUICK,
+                lowering,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let reason = refusal(remote, 0, "trueBlock");
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(reason, "the frame is the core library's");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An expression that does not parse is refused, the program still
+        /// stopped.
+        fn a_malformed_expression_is_refused(lowering) {
+            let ((reason, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| (refusal(remote, 0, "count +"), value_label(remote, 0, "count")),
+            );
+            assert!(
+                reason.starts_with("the expression does not compile: "),
+                "{reason}"
+            );
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An assignment to a parameter of the stopped frame is refused,
+        /// as it is in the frame's own code: the compiler holds a
+        /// parameter's register unchanged.
+        fn an_assignment_to_a_parameter_in_an_evaluation_is_refused(lowering) {
+            let ((reason, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| (refusal(remote, 0, "value:: 3"), value_label(remote, 0, "value")),
+            );
+            assert_eq!(reason, "value is not assignable");
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// An exception whose default action answers 0, signalled by a method
+    /// the program never calls.
+    const DEFAULTING: &str = indoc! {"
+        class Defaulting = Object new () (
+          public class Missing = Exception new () (
+            public defaultAction = (
+              ^0
+            )
+          )
+          public run = (
+            self sink: 1.
+            ^1
+          )
+          lookUp = (
+            ^Missing new signal + 5
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An exception no handler within the expression takes runs its
+        /// default action as it would in the program: one that answers a
+        /// value lets `signal` answer it.
+        fn an_overridden_default_action_answers_as_in_the_program(lowering) {
+            let (label, answer) = stopped_at(
+                DEFAULTING,
+                lowering,
+                "Defaulting",
+                "self sink: 1.",
+                |remote| value_label(remote, 0, "self lookUp"),
+            );
+            assert_eq!(label, "5");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    /// A loop counting down a local of its own, which sends `bump` once a
+    /// pass: `warm` runs it 2,000 times, `run` three.
+    const COUNTING_DOWN: &str = indoc! {"
+        class CountingDown = Object new (
+          | count ::= 0. |
+        ) (
+          public warm = (
+            ^self loop: 2000
+          )
+          public run = (
+            ^self loop: 3
+          )
+          loop: turns = (
+            | left ::= turns. |
+            [left > 0] whileTrue: [
+              self bump.
+              left:: left - 1].
+            ^count
+          )
+          bump = (
+            count:: count + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation in a frame below the top that ran in machine code
+        /// -- the loop, waiting on its send of `bump`, which a breakpoint
+        /// stops in -- reads and writes that frame, which goes on
+        /// interpreted with the written value.
+        fn an_evaluation_in_a_compiled_frame_below_the_top_writes_it(lowering) {
+            let (mut interpreter, instance, _) = compiled(COUNTING_DOWN, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COUNTING_DOWN, "count:: count + 1");
+            let ((read, written), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CountingDown", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CountingDown"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == method("loop:"))
+                        .expect("the loop's method is on the stack");
+                    let answers = (
+                        value_label(remote, frame, "left + turns"),
+                        value_label(remote, frame, "left:: 1"),
+                    );
+                    continue_stopped(remote);
+                    answers
+                },
+            );
+            assert_eq!(read, "6");
+            assert_eq!(written, "1");
+            assert_eq!(
+                answered(&mut interpreter, result),
+                2001,
+                "the pass the stop was in is the last"
+            );
+        }
+    }
+
+    /// A block, a real closure, that writes its home method's local.
+    const BLOCKING: &str = indoc! {"
+        class Blocking = Object new () (
+          public run = (
+            | count ::= 40. |
+            self twice: [:each |
+              count:: count + each].
+            ^count
+          )
+          twice: block = (
+            block value: 1.
+            block value: 2.
+            ^nil
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An expression in a stopped block's frame reads its home
+        /// method's variable, wherever the block reaches it, and an
+        /// assignment there reaches the home.
+        fn an_evaluation_in_a_stopped_block_reads_its_home_s_variable(lowering) {
+            let offset = line_start(BLOCKING, "count:: count + each].");
+            let ((read, sum, written), answer) = debugged_answering(
+                BLOCKING,
+                lowering,
+                |remote| set_breakpoints(remote, "Blocking", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Blocking"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let answers = (
+                        value_label(remote, 0, "count"),
+                        value_label(remote, 0, "count + each"),
+                        value_label(remote, 0, "count:: 100"),
+                    );
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    continue_stopped(remote);
+                    answers
+                },
+            );
+            assert_eq!(read, "40");
+            assert_eq!(sum, "41");
+            assert_eq!(written, "100");
+            assert_eq!(answer, 103);
+        }
+    }
+
+    /// A statement that calls `sink:` inside an `ensure:` whose block the
+    /// program counts, and the slots an evaluation at `sink:` loops on and
+    /// cleans up.
+    const ABORTING: &str = indoc! {"
+        class Aborting = Object new (
+          | holder ::= 0. cleanups ::= 0. ensures ::= 0. |
+        ) (
+          public run = (
+            [self sink: 1] ensure: [ensures:: ensures + 1].
+            ^cleanups
+          )
+          sink: value = (
+            ^value
+          )
+          public cleaned = (
+            ^cleanups
+          )
+          public ensured = (
+            ^ensures
+          )
+        ) : ()
+    "};
+
+    /// An expression that never ends, inside an `ensure:` whose block
+    /// marks the holder cleaned and counts its runs.
+    const ENDLESS: &str = "[[true] whileTrue: [holder:: holder + 1]] ensure: [holder:: #cleaned. cleanups:: cleanups + 1]";
+
+    /// The small integer `selector` answers, sent to `instance`.
+    fn sent_integer(interpreter: &mut Interpreter, instance: &Root, selector: &str) -> i64 {
+        let answer = expect_ok(
+            interpreter.send(instance, Symbol::intern(selector), &[]),
+            selector,
+        );
+        small_integer(interpreter, &answer)
+    }
+
+    /// Stops `ABORTING` at `sink:` and starts the endless expression
+    /// there, its answer not waited for.
+    fn start_endless(remote: &DebugRemote) {
+        let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+        assert_eq!(expect_breakpoint_stop(remote), [id]);
+        remote.send(Command::Evaluate {
+            frame: 0,
+            expression: ENDLESS.to_owned(),
+        });
+        thread::sleep(PAUSE_DELAY);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A pause while an evaluation runs aborts it: the unwind to its
+        /// base runs its `ensure:` block, the stop answers that it was
+        /// aborted, and the program stays stopped, serving the next
+        /// command.
+        fn an_endless_evaluation_is_aborted_by_a_pause(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((aborted, cleaned), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.pause();
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    let cleaned = value_label(remote, 0, "holder == #cleaned");
+                    continue_stopped(remote);
+                    (aborted, cleaned)
+                },
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert_eq!(cleaned, "true");
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    /// How long a run that a continue lets go on may take to end before
+    /// the test takes it for stopped again.
+    const RUN_END_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Waits for the end of the run the agent continued, answering every
+    /// event it reported meanwhile; a stop is
+    /// answered by a terminate, and a run not ended within
+    /// `RUN_END_TIMEOUT` terminated, so that a failing test ends.
+    fn events_until_the_run_ended(remote: &DebugRemote) -> Vec<String> {
+        let deadline = std::time::Instant::now() + RUN_END_TIMEOUT;
+        let mut reported = Vec::new();
+        while !run_finished() {
+            if std::time::Instant::now() > deadline {
+                reported.push(String::from("the run did not end"));
+                remote.send(Command::Terminate);
+                break;
+            }
+            match remote.next_event(Duration::from_millis(10)) {
+                None => {}
+                Some(stopped @ Event::Stopped { .. }) => {
+                    // The frames say where the stray stop stands.
+                    let frames: Vec<String> = stack_trace(remote)
+                        .into_iter()
+                        .map(|frame| frame.name)
+                        .collect();
+                    reported.push(format!("{stopped:?} in {frames:?}"));
+                    remote.send(Command::Terminate);
+                }
+                Some(event) => reported.push(format!("{event:?}")),
+            }
+        }
+        reported
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A continue after a pause aborted an evaluation lets the program
+        /// go on from the stop the evaluation was asked at: the breakpoint
+        /// it stopped at lets it past, and it runs to its end, stopping
+        /// nowhere -- whether the endless expression assigns a slot in an
+        /// `ensure:` or only reads one.
+        fn a_continue_after_an_aborted_evaluation_runs_to_the_end(lowering) {
+            for expression in [ENDLESS, "[true] whileTrue: [holder + 1]"] {
+                let offset = line_start(ABORTING, "^value");
+                let (mut interpreter, class) = interpreted(ABORTING, lowering);
+                let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+                let evaluated = expression.to_owned();
+                let ((aborted, reported), result) = debugged_in(
+                    &mut interpreter,
+                    &instance,
+                    |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                    move |remote| {
+                        let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+                        assert_eq!(expect_breakpoint_stop(remote), [id]);
+                        remote.send(Command::Evaluate {
+                            frame: 0,
+                            expression: evaluated,
+                        });
+                        thread::sleep(PAUSE_DELAY);
+                        remote.pause();
+                        let aborted = remote.next_event(EVENT_TIMEOUT);
+                        continue_stopped(remote);
+                        (aborted, events_until_the_run_ended(remote))
+                    },
+                );
+                assert!(
+                    matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                    "the evaluation was aborted, not {aborted:?}"
+                );
+                assert!(
+                    reported.is_empty(),
+                    "the program ran to its end, but reported {reported:?}"
+                );
+                let expected = i64::from(expression_cleans(expression));
+                assert_eq!(answered(&mut interpreter, result), expected);
+                assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+            }
+        }
+    }
+
+    /// The cleanups an aborted `expression` counts: one for `ENDLESS`'s
+    /// `ensure:` block, none for an expression without one.
+    fn expression_cleans(expression: &str) -> bool {
+        expression == ENDLESS
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` aborts the running evaluation in sequence
+        /// with the other commands: it is taken, the evaluation answers
+        /// that it was aborted, its `ensure:` block run once, and a
+        /// continue runs the program to its end, stopping nowhere.
+        fn an_abort_evaluation_command_aborts_an_endless_evaluation(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((taken, aborted, cleaned, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    let cleaned = value_label(remote, 0, "holder == #cleaned");
+                    continue_stopped(remote);
+                    (taken, aborted, cleaned, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(taken, Some(Event::AbortTaken)),
+                "the abort was taken, not {taken:?}"
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert_eq!(cleaned, "true");
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    /// A method entered once that stops at its second statement, past its
+    /// first slot, so that its body neither loops nor exits at once at its
+    /// entry: a backward jump counted against it would compile it.
+    const STOPPED_PAST_ENTRY: &str = indoc! {"
+        class StoppedPastEntry = Object new () (
+          public run = (
+            ^self sink: 1
+          )
+          sink: value = (
+            | doubled |
+            doubled:: value + value.
+            ^doubled
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation aborted at its loop's head, where its machine
+        /// code's poll left for the safepoint, leaves the stopped frame at
+        /// its slot, never at a loop head: the safepoint its end asks for
+        /// counts no backward jump against the stopped body, which a
+        /// compile at the first jump would otherwise compile and enter
+        /// mid-body. The program runs on to its end, its answer right.
+        fn an_evaluation_aborted_at_a_loop_head_counts_no_jump_of_the_stopped_frame(lowering) {
+            let offset = line_start(STOPPED_PAST_ENTRY, "^doubled");
+            let (mut interpreter, instance, class) = compiled(STOPPED_PAST_ENTRY, lowering);
+            let ((aborted, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "StoppedPastEntry", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "StoppedPastEntry"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    remote.send(Command::Evaluate {
+                        frame: 0,
+                        expression: String::from("[true] whileTrue: []"),
+                    });
+                    thread::sleep(PAUSE_DELAY);
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    assert!(matches!(taken, Some(Event::AbortTaken)), "{taken:?}");
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    continue_stopped(remote);
+                    (aborted, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
+            if runs_in_machine_code(lowering) {
+                assert!(
+                    interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern("sink:")).is_none(),
+                    "`sink:`, entered once and never looping, has no machine code"
+                );
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` at a stop where no evaluation runs -- the one
+        /// it was meant for answered -- is moot: refused, and it leaves
+        /// nothing armed, so that a continue runs the program to its end.
+        fn an_abort_evaluation_command_with_none_running_is_refused(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((evaluated, refused, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Aborting"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let evaluated = evaluate(remote, 0, "value + 1");
+                    let refused = request(remote, Command::AbortEvaluation);
+                    continue_stopped(remote);
+                    (evaluated, refused, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(evaluated, Evaluation::Value(_)),
+                "the evaluation answered a value, not {evaluated:?}"
+            );
+            assert_eq!(
+                refused,
+                Event::Refused {
+                    command: String::from("AbortEvaluation"),
+                    reason: String::from("no evaluation runs"),
+                }
+            );
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 0, "nothing was cleaned");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate while an evaluation runs ends the run, every
+        /// pending `ensure:` block of the evaluation and of the program
+        /// run once.
+        fn a_terminate_during_an_evaluation_ends_the_program(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Aborting", vec![offset]),
+                |remote| {
+                    start_endless(remote);
+                    remote.send(Command::Terminate);
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "cleaned"), 1);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A remote dropped while an evaluation runs aborts the
+        /// evaluation, its `ensure:` block run once, and the program runs
+        /// on to its end.
+        fn a_detach_during_an_evaluation_aborts_it(lowering) {
+            let offset = line_start(ABORTING, "^value");
+            let (mut interpreter, class) = interpreted(ABORTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            set_breakpoints(&remote, "Aborting", vec![offset]);
+            let agent = thread::spawn(move || {
+                start_endless(&remote);
+                drop(remote);
+            });
+            let result = run(&mut interpreter, &instance);
+            agent.join().expect("the remote's thread");
+            assert_eq!(answered(&mut interpreter, result), 1, "the cleanup ran once");
+            assert_eq!(sent_integer(&mut interpreter, &instance, "ensured"), 1);
+        }
+    }
+
+    /// A loop without end inside an `ensure:` whose block calls `clean`,
+    /// and a method a second run sends.
+    const TERMINATING: &str = indoc! {"
+        class Terminating = Object new (
+          | cleanups ::= 0. |
+        ) (
+          public run = (
+            [[true] whileTrue: []] ensure: [self clean].
+            ^cleanups
+          )
+          clean = (
+            cleanups:: cleanups + 1
+          )
+          public again = (
+            ^cleanups + 10
+          )
+        ) : ()
+    "};
+
+    /// Why `command` is refused at the stop, which it must be.
+    fn command_refusal(remote: &DebugRemote, command: Command) -> String {
+        match request(remote, command) {
+            Event::Refused { reason, .. } => reason,
+            other => panic!("a refusal was expected, not {other:?}"),
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A stop at a breakpoint in an `ensure:` block the debugger's
+        /// termination runs evaluates nothing and starts no unwind: an
+        /// evaluation's error would end the run before its answer, and the
+        /// stop kept for it would take the next run's every safepoint for
+        /// its own. The next run of the same interpreter stops at its
+        /// breakpoint and evaluates there as any run does.
+        fn a_stop_during_a_termination_refuses_evaluations_and_the_next_run_stops(lowering) {
+            let cleaning = line_start(TERMINATING, "cleanups:: cleanups + 1");
+            let again = line_start(TERMINATING, "^cleanups + 10");
+            let (mut interpreter, class) = interpreted(TERMINATING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            set_breakpoints(&remote, "Terminating", vec![cleaning]);
+            let (refusals, result, remote) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    remote.send(Command::Terminate);
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let refusals = [
+                        refusal(remote, 0, "nil foo"),
+                        set_refusal(remote, 0, "self", "nil"),
+                        command_refusal(remote, Command::RestartFrame { frame: 0 }),
+                        command_refusal(
+                            remote,
+                            Command::ForceReturn {
+                                frame: 0,
+                                value: None,
+                            },
+                        ),
+                    ];
+                    continue_stopped(remote);
+                    refusals
+                },
+                || run(&mut interpreter, &instance),
+            );
+            assert_terminated(result);
+            assert_eq!(refusals, ["the program is terminating"; 4]);
+            set_breakpoints(&remote, "Terminating", vec![again]);
+            let (read, result, _) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "cleanups");
+                    continue_stopped(remote);
+                    read
+                },
+                || interpreter.send(&instance, Symbol::intern("again"), &[]),
+            );
+            assert_eq!(read, "1");
+            assert_eq!(answered(&mut interpreter, result), 11);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition evaluated at a breakpoint in an `ensure:` block the
+        /// debugger's termination runs ends at its own base when it fails:
+        /// the stop says why, the termination goes on, and the next run of
+        /// the same interpreter stops at its breakpoint.
+        fn a_condition_failing_during_a_termination_stops_and_the_next_run_stops(lowering) {
+            let cleaning = line_start(TERMINATING, "cleanups:: cleanups + 1");
+            let again = line_start(TERMINATING, "^cleanups + 10");
+            let (mut interpreter, class) = interpreted(TERMINATING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            let breakpoint = LineBreakpoint {
+                condition: Some(String::from("nil foo")),
+                ..LineBreakpoint::at_offset(cleaning)
+            };
+            set_line_breakpoints(&remote, "Terminating", vec![breakpoint]);
+            let ((id, reason), result, remote) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    remote.send(Command::Terminate);
+                    let reason = match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Stopped { reason, .. }) => reason,
+                        other => panic!("a stop was expected, not {other:?}"),
+                    };
+                    continue_stopped(remote);
+                    (id, reason)
+                },
+                || run(&mut interpreter, &instance),
+            );
+            assert_terminated(result);
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [id]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+            set_breakpoints(&remote, "Terminating", vec![again]);
+            let (read, result, _) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "cleanups");
+                    continue_stopped(remote);
+                    read
+                },
+                || interpreter.send(&instance, Symbol::intern("again"), &[]),
+            );
+            assert_eq!(read, "1");
+            assert_eq!(answered(&mut interpreter, result), 11);
+        }
+    }
+
+    /// A recursion without end, which overflows the depth limit.
+    const OVERFLOWING: &str = indoc! {"
+        class Overflowing = Object new () (
+          public run = (
+            ^self down: 1
+          )
+          down: depth = (
+            ^(self down: depth + 1) + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// At an exception breakpoint's stop at the depth limit's own
+        /// error, an evaluation in the frame below the machinery has room:
+        /// the evaluation's reserve.
+        fn an_evaluation_at_a_stack_overflow_has_room(lowering) {
+            let (evaluated, result) = raised(
+                OVERFLOWING,
+                lowering,
+                |_, remote| set_exception_breakpoints(remote, true, false, false, Vec::new()),
+                |remote| {
+                    expect_exception_breakpoints_set(remote);
+                    expect_stop(remote);
+                    let frames = stack_trace(remote);
+                    let shown = frames
+                        .iter()
+                        .position(|frame| !frame.hidden)
+                        .expect("a frame below the machinery is shown");
+                    assert_eq!(frames[shown].name, "Overflowing>>down:");
+                    let evaluated = evaluate(remote, shown, "depth printString");
+                    continue_stopped(remote);
+                    evaluated
+                },
+            );
+            assert!(
+                matches!(evaluated, Evaluation::Value(_)),
+                "the evaluation answered a value, not {evaluated:?}"
+            );
+            assert_eq!(
+                result,
+                Err(String::from("stack overflow: recursion too deep"))
+            );
+        }
+    }
+
+    /// The depth `Deep`'s recursion stops at, at a breakpoint in `stop:`:
+    /// a few activations below the depth limit.
+    const NEAR_THE_LIMIT: i64 = 99_990;
+
+    /// A recursion that stops a few activations below the depth limit, a
+    /// recursion of a chosen depth, one without end, and one that loops
+    /// without end at its bottom, inside an `ensure:` whose block counts
+    /// its runs.
+    fn deep_source() -> String {
+        assert_eq!(
+            ns_runtime::interpreter::MAX_ACTIVATION_DEPTH,
+            100_000,
+            "the stop stands a few activations below the depth limit"
+        );
+        indoc::formatdoc! {"
+            class Deep = Object new (
+              | marks ::= 0. spins ::= 0. |
+            ) (
+              public run = (
+                ^self down: 1
+              )
+              down: depth = (
+                depth = {NEAR_THE_LIMIT} ifTrue: [^self stop: depth].
+                ^self down: depth + 1
+              )
+              stop: depth = (
+                ^depth
+              )
+              countDown: left = (
+                left = 0 ifTrue: [^0].
+                ^(self countDown: left - 1) + 1
+              )
+              recurseForever = (
+                ^self recurseForever + 1
+              )
+              descend: left = (
+                left = 0 ifTrue: [
+                  ^[[true] whileTrue: [spins:: spins + 1]] ensure: [marks:: marks + 1]].
+                ^(self descend: left - 1) + 1
+              )
+              public marked = (
+                ^marks
+              )
+            ) : ()
+        "}
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation at a stop a few activations below the depth limit
+        /// has its own reserve: a recursion of 500 activations answers.
+        fn an_evaluation_near_the_depth_limit_has_its_reserve(lowering) {
+            let source = deep_source();
+            let (label, answer) = stopped_at(&source, lowering, "Deep", "^depth", |remote| {
+                value_label(remote, 0, "self countDown: 500")
+            });
+            assert_eq!(label, "500");
+            assert_eq!(answer, NEAR_THE_LIMIT);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation near the depth limit that overruns its own
+        /// reserve answers the depth limit's error, and the program goes
+        /// on to its end.
+        fn an_evaluation_near_the_depth_limit_that_overruns_is_its_error(lowering) {
+            let source = deep_source();
+            let (description, answer) = stopped_at(&source, lowering, "Deep", "^depth", |remote| {
+                error_description(remote, 0, "self recurseForever")
+            });
+            assert!(
+                description.contains("stack overflow: recursion too deep"),
+                "{description}"
+            );
+            assert_eq!(answer, NEAR_THE_LIMIT);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate while an evaluation near the depth limit runs past
+        /// L runs the evaluation's `ensure:` block, which lies past L: the
+        /// evaluation's raise of the limit stands until the run ended.
+        fn a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block(lowering) {
+            let source = deep_source();
+            let offset = line_start(&source, "^depth");
+            let (mut interpreter, class) = interpreted(&source, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Deep", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Deep"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    remote.send(Command::Evaluate {
+                        frame: 0,
+                        expression: String::from("self descend: 500"),
+                    });
+                    thread::sleep(PAUSE_DELAY);
+                    remote.send(Command::Terminate);
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(sent_integer(&mut interpreter, &instance, "marked"), 1);
+        }
+    }
+
+    /// A method stopped far from the depth limit, and a recursion without
+    /// end.
+    const RECURSING_FOREVER: &str = indoc! {"
+        class RecursingForever = Object new () (
+          public run = (
+            self sink: 41.
+            ^41
+          )
+          sink: value = (
+            ^value
+          )
+          recurseForever = (
+            ^self recurseForever + 1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A recursion without end inside an evaluation at an ordinary
+        /// stop is the evaluation's error, never the run's end: continuing
+        /// runs the program to its normal end.
+        fn a_recursion_inside_an_evaluation_is_its_error(lowering) {
+            let (description, answer) = stopped_at(
+                RECURSING_FOREVER,
+                lowering,
+                "RecursingForever",
+                "^value",
+                |remote| error_description(remote, 0, "self recurseForever"),
+            );
+            assert!(
+                description.contains("stack overflow: recursion too deep"),
+                "{description}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// What setting `name` of the frame at index `frame` to what
+    /// `expression` answers answers.
+    fn set_variable(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> Event {
+        request(
+            remote,
+            Command::SetVariable {
+                frame,
+                name: name.to_owned(),
+                expression: expression.to_owned(),
+            },
+        )
+    }
+
+    /// The label `name` of the frame at index `frame` shows once set to
+    /// what `expression` answers, which it must be.
+    fn set_label(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> String {
+        match set_variable(remote, frame, name, expression) {
+            Event::VariableSet(variable) => {
+                assert_eq!(variable.name, name);
+                shown(&variable).label.clone()
+            }
+            other => panic!("{name} was expected to be set, not {other:?}"),
+        }
+    }
+
+    /// Why setting `name` of the frame at index `frame` is refused, which
+    /// it must be.
+    fn set_refusal(remote: &DebugRemote, frame: usize, name: &str, expression: &str) -> String {
+        match set_variable(remote, frame, name, expression) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "SetVariable");
+                reason
+            }
+            other => panic!("setting {name} was expected to be refused, not {other:?}"),
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable set at a stop holds the value the expression
+        /// answered, which the variables show and the program then reads.
+        fn a_variable_set_is_seen_by_the_program(lowering) {
+            let ((set, read), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    let set = set_label(remote, 0, "count", "6 + 1");
+                    let variables = variables(remote, Command::Variables { frame: 0 });
+                    (set, value_of(&variables, "count").label.clone())
+                },
+            );
+            assert_eq!(set, "7");
+            assert_eq!(read, "7");
+            assert_eq!(answer, 7);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable set in a loop that ran in machine code is what the
+        /// loop's next pass reads: the frame goes on interpreted with it.
+        fn a_variable_set_in_a_compiled_loop_is_seen_by_the_next_iteration(lowering) {
+            let (mut interpreter, instance, _) = compiled(COUNTING_DOWN, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+            let offset = line_start(COUNTING_DOWN, "self bump.");
+            let (set, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "CountingDown", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "CountingDown"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == method("loop:"))
+                        .expect("the loop's method is on the stack");
+                    let set = set_label(remote, frame, "left", "1");
+                    continue_stopped(remote);
+                    set
+                },
+            );
+            assert_eq!(set, "1");
+            assert_eq!(
+                answered(&mut interpreter, result),
+                2001,
+                "the pass the stop was in is the last"
+            );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A parameter is never set.
+        fn a_parameter_is_not_assignable(lowering) {
+            let (reason, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "^value",
+                |remote| set_refusal(remote, 0, "value", "3"),
+            );
+            assert_eq!(reason, "value is not assignable");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    /// A mutable local the optimized lowering copies into a block, which
+    /// its method keeps and answers the value of.
+    const CAPTURING: &str = indoc! {"
+        class Capturing = Object new (
+          | captured ::= nil. |
+        ) (
+          public run = (
+            | x ::= 1. |
+            self note: x.
+            captured:: [
+              self sink: x.
+              x].
+            self sink: 0.
+            ^captured value
+          )
+          note: value = (
+            ^value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The captured variable is refused after the block that copies it was
+    /// made: the copy would keep the old value.
+    #[test]
+    fn a_copied_variable_is_refused_after_its_capture() {
+        let (reason, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Optimized,
+            "Capturing",
+            "self sink: 0.",
+            |remote| set_refusal(remote, 0, "x", "5"),
+        );
+        assert_eq!(reason, "x is captured by a block made before this point");
+        assert_eq!(answer, 1);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The captured variable is set before the block that copies it is
+        /// made, and the block's copy holds the new value.
+        fn a_copied_variable_is_assigned_before_its_capture(lowering) {
+            let (set, answer) = stopped_at(
+                CAPTURING,
+                lowering,
+                "Capturing",
+                "self note: x.",
+                |remote| set_label(remote, 0, "x", "5"),
+            );
+            assert_eq!(set, "5");
+            assert_eq!(answer, 5);
+        }
+    }
+
+    /// The reference lowering copies nothing: the variable is set after
+    /// the block was made, and the block reads it.
+    #[test]
+    fn a_copied_variable_is_assigned_under_the_reference_lowering() {
+        let (set, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Reference,
+            "Capturing",
+            "self sink: 0.",
+            |remote| set_label(remote, 0, "x", "5"),
+        );
+        assert_eq!(set, "5");
+        assert_eq!(answer, 5);
+    }
+
+    /// In a block's own frame a copied variable is the block's copy, which
+    /// is never set.
+    #[test]
+    fn a_copy_in_a_block_s_frame_is_refused() {
+        let (reason, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Optimized,
+            "Capturing",
+            "self sink: x.",
+            |remote| set_refusal(remote, 0, "x", "5"),
+        );
+        assert_eq!(reason, "x is captured by a block made before this point");
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering a block reads its method's variable
+    /// where the method keeps it: set from the block's frame, the block
+    /// reads the new value.
+    #[test]
+    fn a_method_s_variable_is_set_from_its_block_under_the_reference_lowering() {
+        let (set, answer) = stopped_at(
+            CAPTURING,
+            Lowering::Reference,
+            "Capturing",
+            "self sink: x.",
+            |remote| set_label(remote, 0, "x", "5"),
+        );
+        assert_eq!(set, "5");
+        assert_eq!(answer, 5);
+    }
+
+    /// An evaluated assignment is refused where setting the variable is:
+    /// after the capture in the method's frame, and in the block's frame.
+    #[test]
+    fn an_evaluated_assignment_to_a_captured_variable_is_refused() {
+        let at_method = line_start(CAPTURING, "self sink: 0.");
+        let in_block = line_start(CAPTURING, "self sink: x.");
+        let ((in_method, in_its_block), answer) = debugged_answering(
+            CAPTURING,
+            Lowering::Optimized,
+            |remote| set_breakpoints(remote, "Capturing", vec![in_block, at_method]),
+            |remote| {
+                let ids: Vec<BreakpointId> = expect_breakpoints(remote, "Capturing")
+                    .iter()
+                    .map(|breakpoint| breakpoint.id)
+                    .collect();
+                assert_eq!(expect_breakpoint_stop(remote), [ids[1]]);
+                let in_method = refusal(remote, 0, "x:: 5");
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [ids[0]]);
+                let in_its_block = refusal(remote, 0, "x:: 5");
+                continue_stopped(remote);
+                (in_method, in_its_block)
+            },
+        );
+        assert_eq!(in_method, "x is captured by a block made before this point");
+        assert_eq!(
+            in_its_block,
+            "x is captured by a block made before this point"
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// A local a block writes, which lives in an indirection vector its
+    /// copies share.
+    const VECTORING: &str = indoc! {"
+        class Vectoring = Object new (
+          | adding ::= nil. |
+        ) (
+          public run = (
+            | count ::= 0. |
+            adding:: [:each | count:: count + each].
+            self note: count.
+            adding value: 1.
+            ^count
+          )
+          note: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A variable a block shares through its vector is set after the
+        /// block was made, and the block reads the new value.
+        fn a_vector_variable_is_assigned_and_the_block_sees_it(lowering) {
+            let (set, answer) = stopped_at(
+                VECTORING,
+                lowering,
+                "Vectoring",
+                "self note: count.",
+                |remote| set_label(remote, 0, "count", "5"),
+            );
+            assert_eq!(set, "5");
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A new value that is not one expression is refused, the
+        /// variable unwritten: text that would close an assignment spliced
+        /// around it early does not parse on its own, and two statements
+        /// would have the assignment write the first while the evaluation
+        /// answered the second.
+        fn a_new_value_of_more_than_one_expression_is_refused(lowering) {
+            let ((escaping, statements, label), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    (
+                        set_refusal(remote, 0, "count", "3). (9"),
+                        set_refusal(remote, 0, "count", "3. 9"),
+                        value_label(remote, 0, "count"),
+                    )
+                },
+            );
+            assert!(
+                escaping.starts_with("the expression does not compile: "),
+                "{escaping}"
+            );
+            assert_eq!(
+                statements,
+                "the expression does not compile: a variable's new value is one expression"
+            );
+            assert_eq!(label, "41");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A new value whose expression signals answers the error, as an
+        /// evaluation does, and the variable keeps its value.
+        fn a_new_value_that_signals_answers_the_error(lowering) {
+            let (event, answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| set_variable(remote, 0, "count", "count zork"),
+            );
+            assert!(
+                matches!(event, Event::Evaluated(Evaluation::Error { .. })),
+                "{event:?}"
+            );
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `self` and a name the frame does not hold are not assignable.
+        fn self_and_an_unknown_name_are_not_assignable(lowering) {
+            let ((of_self, of_unknown), answer) = stopped_at(
+                EVALUATING,
+                lowering,
+                "Evaluating",
+                "self sink: count.",
+                |remote| {
+                    (
+                        set_refusal(remote, 0, "self", "3"),
+                        set_refusal(remote, 0, "missing", "3"),
+                    )
+                },
+            );
+            assert_eq!(of_self, "self is not assignable");
+            assert_eq!(of_unknown, "missing is not assignable");
+            assert_eq!(answer, 41);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A variable of a frame of the core library is never set.
+        fn a_variable_of_a_shipped_frame_is_refused(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (reason, answer) = debugged_answering(
+                QUICK,
+                lowering,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let reason = set_refusal(remote, 0, "trueBlock", "nil");
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(reason, "the frame is the core library's");
+            assert_eq!(answer, 1);
+        }
+    }
+
+    /// A method whose local a block copies before an inlinable conditional
+    /// on a receiver that is no Boolean, whose fallback block reads the
+    /// local where the method keeps it.
+    const FALLING_BACK: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Truthy = Object new () (
+            public ifTrue: block = (
+              ^block value
+            )
+          )
+          public run = (
+            ^self run: Truthy new
+          )
+          run: condition = (
+            | x ::= 1. |
+            holder:: [x].
+            condition ifTrue: [
+              self sink: x.
+              x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// `FALLING_BACK` with the copying block made after the conditional.
+    const FALLING_BACK_FIRST: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Truthy = Object new () (
+            public ifTrue: block = (
+              ^block value
+            )
+          )
+          public run = (
+            ^self run: Truthy new
+          )
+          run: condition = (
+            | x ::= 1. |
+            condition ifTrue: [
+              self sink: x.
+              x].
+            holder:: [x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// `FALLING_BACK` whose conditional's receiver keeps the fallback
+    /// block, which runs once the method that made it returned.
+    const FALLING_BACK_LATER: &str = indoc! {"
+        class FallingBack = Object new (
+          | holder ::= nil. |
+        ) (
+          class Keeping = Object new (
+            | public kept ::= nil. |
+          ) (
+            public ifTrue: block = (
+              kept:: block.
+              ^nil
+            )
+          )
+          public run = (
+            | keeping = Keeping new. |
+            self run: keeping.
+            ^keeping kept value
+          )
+          run: condition = (
+            | x ::= 1. |
+            holder:: [x].
+            condition ifTrue: [
+              self sink: x.
+              x].
+            ^holder value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    /// The fallback block of `source` stopped in at `self sink: x.`,
+    /// setting its method's `x` to 5: the event and the run's answer.
+    fn set_in_fallback(source: &str, lowering: Lowering) -> (Event, i64) {
+        stopped_at(source, lowering, "FallingBack", "self sink: x.", |remote| {
+            set_variable(remote, 0, "x", "5")
+        })
+    }
+
+    /// The label a set answered, which it must be.
+    fn set_answer(event: &Event) -> &str {
+        match event {
+            Event::VariableSet(variable) => &shown(variable).label,
+            other => panic!("x was expected to be set, not {other:?}"),
+        }
+    }
+
+    /// In the fallback block, which reads the method's own register, the
+    /// method's local is refused once the method's block copied it.
+    #[test]
+    fn a_method_s_copied_variable_is_refused_from_its_fallback_block() {
+        let (event, answer) = set_in_fallback(FALLING_BACK, Lowering::Optimized);
+        assert_eq!(
+            event,
+            Event::Refused {
+                command: "SetVariable".to_owned(),
+                reason: "x is captured by a block made before this point".to_owned(),
+            }
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering nothing copies the local, and the
+    /// copying block reads the value set from the fallback block.
+    #[test]
+    fn a_method_s_variable_is_set_from_its_fallback_block_under_the_reference_lowering() {
+        let (event, answer) = set_in_fallback(FALLING_BACK, Lowering::Reference);
+        assert_eq!(set_answer(&event), "5");
+        assert_eq!(answer, 5);
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Before the method's block copies it, the local is set from the
+        /// fallback block, and the copy holds the new value.
+        fn a_method_s_variable_is_set_from_its_fallback_block_before_its_capture(lowering) {
+            let (event, answer) = set_in_fallback(FALLING_BACK_FIRST, lowering);
+            assert_eq!(set_answer(&event), "5");
+            assert_eq!(answer, 5);
+        }
+    }
+
+    /// Once the method returned, a local a block of it copies is refused
+    /// from the fallback block, which outlived it.
+    #[test]
+    fn a_returned_method_s_copied_variable_is_refused_from_its_fallback_block() {
+        let (event, answer) = set_in_fallback(FALLING_BACK_LATER, Lowering::Optimized);
+        assert_eq!(
+            event,
+            Event::Refused {
+                command: "SetVariable".to_owned(),
+                reason: "x is captured by a block made before this point".to_owned(),
+            }
+        );
+        assert_eq!(answer, 1);
+    }
+
+    /// Under the reference lowering the returned method's local is set
+    /// from the block that outlived it, which then answers it.
+    #[test]
+    fn a_returned_method_s_variable_is_set_from_its_block_under_the_reference_lowering() {
+        let (event, answer) = set_in_fallback(FALLING_BACK_LATER, Lowering::Reference);
+        assert_eq!(set_answer(&event), "5");
+        assert_eq!(answer, 5);
+    }
+
+    /// A loop that sends `vectored` without end, whose `count` a block
+    /// captures and writes, so that it lives in the method's indirection
+    /// vector: the only safepoint in `vectored` is its push, which stands
+    /// before its `MakeVector`.
+    const VECTORED_FOREVER: &str = indoc! {"
+        class VectoredForever = Object new () (
+          public run = (
+            [true] whileTrue: [self vectored].
+            ^0
+          )
+          vectored = (
+            | count ::= 1. |
+            [count:: count + 1] value.
+            ^count
+          )
+        ) : ()
+    "};
+
+    /// What the evaluations and the assignments of `count` answer in a
+    /// `vectored` activation stopped before its `MakeVector`, found by
+    /// pausing the loop until the pause lands at that push: the variables
+    /// view's `count`, `count` evaluated, `count:: 5` evaluated and
+    /// `SetVariable` of `count`.
+    fn before_the_vector(lowering: Lowering) -> (String, Evaluation, String, String) {
+        let (mut interpreter, instance) = instance_of(VECTORED_FOREVER, lowering);
+        interpreter.set_jit_enabled(false);
+        let remote = interpreter.attach_debugger();
+        let agent = thread::spawn(move || {
+            let answer = panic::catch_unwind(AssertUnwindSafe(|| {
+                for _ in 0..1000 {
+                    thread::sleep(Duration::from_millis(1));
+                    remote.pause();
+                    expect_paused(&remote);
+                    let frames = stack_trace(&remote);
+                    if frames[0].name == "VectoredForever>>vectored"
+                        && frames[0].program_counter == 0
+                    {
+                        let shown = variables(&remote, Command::Variables { frame: 0 });
+                        let shown = value_of(&shown, "count").label.clone();
+                        let read = evaluate(&remote, 0, "count");
+                        let assigned = refusal(&remote, 0, "count:: 5");
+                        let set = set_refusal(&remote, 0, "count", "5");
+                        return (shown, read, assigned, set);
+                    }
+                    continue_stopped(&remote);
+                }
+                panic!("no pause landed at the push of vectored");
+            }));
+            remote.send(Command::Terminate);
+            (answer, remote)
+        });
+        let result = run(&mut interpreter, &instance);
+        let (answer, remote) = agent.join().expect("the remote's thread");
+        drop(remote);
+        assert_terminated(result);
+        answer.unwrap_or_else(|failure| panic::resume_unwind(failure))
+    }
+
+    /// A vector variable read before its frame made its vector answers
+    /// nil, as the variables view shows it, and an assignment to it --
+    /// evaluated or through `SetVariable` -- is refused: the value would
+    /// have nowhere to live, and a vector the debugger made would be
+    /// replaced by the frame's own `MakeVector`. Only the optimized
+    /// lowering keeps a variable in a vector.
+    #[test]
+    fn a_vector_variable_before_its_vector_reads_nil_and_refuses_assignment() {
+        let (shown, read, assigned, set) = before_the_vector(Lowering::Optimized);
+        assert_eq!(shown, "nil");
+        match read {
+            Evaluation::Value(value) => assert_eq!(value.label, "nil"),
+            other => panic!("count was expected to answer nil, not {other:?}"),
+        }
+        assert_eq!(assigned, "count does not exist yet at this point");
+        assert_eq!(set, "count does not exist yet at this point");
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation that only reads a frame's variable leaves the
+        /// frame to drop its registers when it returns, as it would
+        /// without the evaluation: `unused`, read at a stop in `make:`
+        /// while it runs, is shown as not available once `make:` returned,
+        /// at a later stop in the block that outlived it. The reference
+        /// lowering's block reads `limit` from the method's frame, which
+        /// therefore keeps its registers and shows `unused` anyway.
+        fn a_read_at_a_stop_leaves_the_frame_to_drop_its_registers(lowering) {
+            let offset = line_start(RETURNED, "block:: [");
+            let ((read, unused), result) = debugged(
+                RETURNED,
+                lowering,
+                |remote| set_breakpoints(remote, "Returned", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Returned"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "unused");
+                    set_breakpoints(remote, "Returned", Vec::new());
+                    expect_breakpoints(remote, "Returned");
+                    continue_stopped(remote);
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    let variables = frame_and_variables(remote, "[] in Returned>>make:").1;
+                    let unused = named(&variables, "unused").value.clone();
+                    remote.send(Command::Terminate);
+                    (read, unused)
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(read, "42");
+            match (lowering, unused) {
+                (Lowering::Optimized, unused) => assert_eq!(unused, VariableValue::Unavailable),
+                (Lowering::Reference, VariableValue::Shown(value)) => assert_eq!(value.label, "42"),
+                (Lowering::Reference, other) => panic!("unused was expected to show, not {other:?}"),
+            }
+        }
+    }
+
+    /// A variable the variables view shows as not available lives nowhere
+    /// the evaluation could read or write it: `unused`, which `make:`'s
+    /// frame dropped as it returned, is refused for a read and for a
+    /// `SetVariable` alike, never read as nil. Only the optimized
+    /// lowering's frame drops it.
+    #[test]
+    fn an_unavailable_variable_is_refused_for_reads_and_writes() {
+        let (shown, read, written, set) =
+            while_stopped_under(Lowering::Optimized, RETURNED, |remote| {
+                let variables = frame_and_variables(remote, "[] in Returned>>make:").1;
+                let shown = named(&variables, "unused").value.clone();
+                let frames = stack_trace(remote);
+                let frame = frame_named(&frames, "[] in Returned>>make:");
+                let read = refusal(remote, frame, "unused");
+                let written = refusal(remote, frame, "unused:: 5");
+                let set = set_refusal(remote, frame, "unused", "5");
+                (shown, read, written, set)
+            });
+        assert_eq!(shown, VariableValue::Unavailable);
+        assert_eq!(read, "unused is not available here");
+        assert_eq!(written, "unused is not available here");
+        assert_eq!(set, "unused is not available here");
+    }
+}
+
+/// Conditional breakpoints and logpoints, decided by the VM
+/// (`docs/design/debugger.md`, "Hit counts and temporary breakpoints",
+/// "Evaluation", "Hot conditions").
+mod conditions {
+    use super::*;
+    use ns_runtime::LogPart;
+    use ns_runtime::debugger::Evaluation;
+
+    /// A line breakpoint at `offset` whose condition is `condition`.
+    fn conditional(offset: u32, condition: &str) -> LineBreakpoint {
+        LineBreakpoint {
+            condition: Some(condition.to_owned()),
+            ..LineBreakpoint::at_offset(offset)
+        }
+    }
+
+    /// The `index` of every stop of `SINKING`'s loop at `breakpoint`, set
+    /// on `sink:`, the run continued after each.
+    fn sinking_stops(lowering: Lowering, mut breakpoint: LineBreakpoint) -> Vec<String> {
+        breakpoint.offset = line_start(SINKING, "sink: index].");
+        let (indexes, result) = debugged(
+            SINKING,
+            lowering,
+            move |remote| set_line_breakpoints(remote, "Sinking", vec![breakpoint]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                indexes_at_stops(remote, id)
+            },
+        );
+        expect_ok(result, "run");
+        indexes
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A breakpoint whose condition holds at one pass of a loop stops
+        /// there only.
+        fn a_condition_stops_where_it_holds(lowering) {
+            assert_eq!(sinking_stops(lowering, conditional(0, "index = 3")), ["3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Only a hit whose condition holds is counted: the second odd
+        /// index is 3, where the hit condition `Equal(2)` stops.
+        fn a_condition_counts_before_the_hit_condition(lowering) {
+            let breakpoint = LineBreakpoint {
+                hit_condition: Some(HitCondition::Equal(2)),
+                ..conditional(0, r"index \\ 2 = 1")
+            };
+            assert_eq!(sinking_stops(lowering, breakpoint), ["3"]);
+        }
+    }
+
+    /// A loop whose breakpoint's condition counts in an object of the
+    /// module's.
+    const COUNTING: &str = indoc! {"
+        class Counting = Object new (
+          | counter = Counter new. |
+        ) (
+          class Counter = Object new (
+            | count ::= 0. |
+          ) (
+            public increment = (
+              count:: count + 1
+            )
+            public value = (
+              ^count
+            )
+          )
+          public run = (
+            1 to: 5 do: [:index |
+              sink: index].
+            ^counter value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A condition with a side effect runs exactly once per hit, by
+        /// the VM: the counter it bumps is 3 at the first stop and 5 at
+        /// the end, one for each of the loop's five passes.
+        fn a_condition_is_evaluated_once_per_hit(lowering) {
+            let offset = line_start(COUNTING, "sink: index].");
+            let breakpoint = conditional(offset, "counter increment. counter value > 2");
+            let (mut interpreter, class) = interpreted(COUNTING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((first, stops), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                move |remote| set_line_breakpoints(remote, "Counting", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Counting"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let command = Command::Evaluate {
+                        frame: 0,
+                        expression: "counter value".to_owned(),
+                    };
+                    let first = match request(remote, command) {
+                        Event::Evaluated(Evaluation::Value(value)) => value.label,
+                        other => panic!("the counter's value was expected, not {other:?}"),
+                    };
+                    continue_stopped(remote);
+                    (first, 1 + stops_until_the_end(remote))
+                },
+            );
+            assert_eq!(first, "3");
+            assert_eq!(stops, 3);
+            assert_eq!(answered(&mut interpreter, result), 5);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A logpoint logs its message at every hit, its expressions'
+        /// `printString`s among its text, and never stops.
+        fn a_logpoint_logs_without_stopping(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let breakpoint = LineBreakpoint {
+                log: Some(vec![
+                    LogPart::Text("at ".to_owned()),
+                    LogPart::Expression("index".to_owned()),
+                ]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let ((id, events), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                    (id, events_until_the_end(remote))
+                },
+            );
+            assert_no_stop(&events);
+            let logged: Vec<String> = events
+                .into_iter()
+                .map(|event| match event {
+                    Event::Logged { breakpoint, text } => {
+                        assert_eq!(breakpoint, id);
+                        text
+                    }
+                    other => panic!("only logs were expected, not {other:?}"),
+                })
+                .collect();
+            assert_eq!(logged, ["at 1", "at 2", "at 3", "at 4", "at 5"]);
+            expect_ok(result, "run");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition that raises an error stops at its breakpoint, and
+        /// the stop says what the error was.
+        fn a_failing_condition_stops_and_says_why(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let breakpoint = conditional(offset, "index foo");
+            let ((id, reason), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                    let reason = expect_stop(remote);
+                    continue_stopped(remote);
+                    (id, reason)
+                },
+            );
+            expect_ok(result, "run");
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [id]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A step's stop at a breakpoint whose condition does not hold is
+        /// the step's: the condition runs, with the step in progress, and
+        /// neither ends the step nor makes the stop the breakpoint's.
+        fn a_step_stops_at_a_breakpoint_whose_condition_is_false(lowering) {
+            let first = line_start(THREE_STATEMENTS, "count:: count + 1.");
+            let second = line_start(THREE_STATEMENTS, "count:: count + 10.");
+            let ((reason, statement), result) = debugged(
+                THREE_STATEMENTS,
+                lowering,
+                |remote| {
+                    set_line_breakpoints(
+                        remote,
+                        "Lines",
+                        vec![
+                            LineBreakpoint::at_offset(first),
+                            conditional(second, "count > 5"),
+                        ],
+                    );
+                },
+                |remote| {
+                    let breakpoints = expect_breakpoints(remote, "Lines");
+                    assert_eq!(expect_breakpoint_stop(remote), [breakpoints[0].id]);
+                    remote.send(Command::StepOver);
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        other => panic!("the step's confirmation was expected, not {other:?}"),
+                    }
+                    let reason = expect_stop(remote);
+                    let statement = top_statement(remote, THREE_STATEMENTS);
+                    continue_stopped(remote);
+                    (reason, statement)
+                },
+            );
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(statement, "count:: count + 10");
+            expect_ok(result, "run");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A method breakpoint's condition is decided at its method's
+        /// entry and at its exit alike, each a hit where it holds.
+        fn a_method_breakpoint_s_condition_decides_its_entry_and_exit(lowering) {
+            let mut breakpoint = method_breakpoint("Sinking", &[], false, "sink:");
+            breakpoint.condition = Some("value = 2".to_owned());
+            let (stops, result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_method_breakpoints(remote, vec![breakpoint]),
+                |remote| {
+                    let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                    let mut stops = Vec::new();
+                    for event in events_until_the_end(remote) {
+                        if let Event::Stopped { reason, .. } = event {
+                            stops.push(reason);
+                        }
+                    }
+                    (id, stops)
+                },
+            );
+            expect_ok(result, "run");
+            let (id, stops) = stops;
+            assert_eq!(
+                stops,
+                [
+                    StopReason::MethodEntry {
+                        id,
+                        others: Vec::new()
+                    },
+                    StopReason::MethodExit {
+                        id,
+                        others: Vec::new()
+                    },
+                ]
+            );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A pause aborts a condition that never ends, and stops the
+        /// program at the breakpoint's statement as the pause's stop. A
+        /// logpoint standing there first logs before the condition runs,
+        /// so that the pause comes while it runs.
+        fn a_pause_aborts_an_endless_condition_and_stops(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let logpoint = LineBreakpoint {
+                log: Some(vec![LogPart::Text("before".to_owned())]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let endless = conditional(offset, "[true] whileTrue: []. true");
+            let (frame, result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![logpoint, endless]),
+                |remote| {
+                    expect_breakpoints(remote, "Sinking");
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Logged { text, .. }) => assert_eq!(text, "before"),
+                        other => panic!("the logpoint's message was expected, not {other:?}"),
+                    }
+                    remote.pause();
+                    expect_paused(remote);
+                    let frame = stack_trace(remote)[0].name.clone();
+                    set_line_breakpoints(remote, "Sinking", Vec::new());
+                    expect_breakpoints(remote, "Sinking");
+                    continue_stopped(remote);
+                    frame
+                },
+            );
+            expect_ok(result, "run");
+            assert!(frame.contains("run"), "{frame}");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` aborts a condition that never ends, as a
+        /// pause does: the abort is taken, and the program stops at the
+        /// breakpoint's statement, where the condition was being decided,
+        /// as the pause's stop, no breakpoint having held there.
+        fn an_abort_evaluation_command_aborts_an_endless_condition(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let logpoint = LineBreakpoint {
+                log: Some(vec![LogPart::Text("before".to_owned())]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let endless = conditional(offset, "[true] whileTrue: []. true");
+            let ((taken, frame), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![logpoint, endless]),
+                |remote| {
+                    expect_breakpoints(remote, "Sinking");
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Logged { text, .. }) => assert_eq!(text, "before"),
+                        other => panic!("the logpoint's message was expected, not {other:?}"),
+                    }
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    expect_paused(remote);
+                    let frame = stack_trace(remote)[0].name.clone();
+                    set_line_breakpoints(remote, "Sinking", Vec::new());
+                    expect_breakpoints(remote, "Sinking");
+                    continue_stopped(remote);
+                    (taken, frame)
+                },
+            );
+            assert!(
+                matches!(taken, Some(Event::AbortTaken)),
+                "the abort was taken, not {taken:?}"
+            );
+            expect_ok(result, "run");
+            assert!(frame.contains("run"), "{frame}");
+        }
+    }
+
+    /// A method a step into enters, whose first statement the tests set
+    /// breakpoints at.
+    const STEPPING_IN: &str = indoc! {"
+        class SteppingIn = Object new () (
+          public run = (
+            | total ::= 0. |
+            total:: self twice: 3.
+            ^total
+          )
+          twice: value = (
+            | doubled |
+            doubled:: value * 2.
+            ^doubled
+          )
+        ) : ()
+    "};
+
+    /// A step into `twice:` from the breakpoint on `run`'s call of it,
+    /// with a conditional breakpoint whose condition is `condition` and a
+    /// logpoint at `twice:`'s first statement: the stop's reason, and the
+    /// breakpoints' ids -- the conditional one's first -- and what was
+    /// logged before the stop.
+    fn stepped_into(
+        lowering: Lowering,
+        condition: &'static str,
+    ) -> (StopReason, Vec<BreakpointId>, Vec<String>) {
+        let call = line_start(STEPPING_IN, "total:: self twice: 3.");
+        let first = line_start(STEPPING_IN, "doubled:: value * 2.");
+        let (answer, result) = debugged(
+            STEPPING_IN,
+            lowering,
+            move |remote| {
+                let logpoint = LineBreakpoint {
+                    log: Some(vec![
+                        LogPart::Text("in ".to_owned()),
+                        LogPart::Expression("value".to_owned()),
+                    ]),
+                    ..LineBreakpoint::at_offset(first)
+                };
+                set_line_breakpoints(
+                    remote,
+                    "SteppingIn",
+                    vec![
+                        LineBreakpoint::at_offset(call),
+                        conditional(first, condition),
+                        logpoint,
+                    ],
+                );
+            },
+            |remote| {
+                let breakpoints = expect_breakpoints(remote, "SteppingIn");
+                assert_eq!(expect_breakpoint_stop(remote), [breakpoints[0].id]);
+                remote.send(Command::StepInto);
+                let mut logged = Vec::new();
+                let reason = loop {
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        Some(Event::Logged { text, .. }) => logged.push(text),
+                        Some(Event::Stopped { reason, .. }) => break reason,
+                        other => panic!("the step's stop was expected, not {other:?}"),
+                    }
+                };
+                continue_stopped(remote);
+                let ids = breakpoints[1..].iter().map(|state| state.id).collect();
+                (reason, ids, logged)
+            },
+        );
+        expect_ok(result, "run");
+        answer
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A step into a method whose first statement holds a conditional
+        /// breakpoint decides it in the pushed frame: where it holds, the
+        /// stop is the breakpoint's, and a logpoint there logs.
+        fn a_step_into_decides_a_condition_at_the_first_statement(lowering) {
+            let (reason, ids, logged) = stepped_into(lowering, "value = 3");
+            assert_eq!(reason, StopReason::Breakpoint { ids: vec![ids[0]] });
+            assert_eq!(logged, ["in 3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Where the condition does not hold, a step into's stop at the
+        /// first statement is the step's, and the logpoint still logs.
+        fn a_step_into_s_stop_is_the_step_s_where_the_condition_fails(lowering) {
+            let (reason, _, logged) = stepped_into(lowering, "value = 4");
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(logged, ["in 3"]);
+        }
+    }
+
+    /// Methods an unwind leaves: `fail:` by an exception its caller
+    /// handles, `find:` by a non-local return from a block another method
+    /// runs.
+    const LEAVING: &str = indoc! {"
+        class Leaving = Object new () (
+          public run = (
+            | total ::= 0. |
+            1 to: 3 do: [:index |
+              total:: total + ([self fail: index] on: Error do: [:error | index]).
+              total:: total + (self find: index)].
+            ^total
+          )
+          fail: index = (
+            Error signal: 'no'.
+            ^0
+          )
+          find: index = (
+            self each: [:value |
+              value = index ifTrue: [^value]].
+            ^0
+          )
+          each: block = (
+            1 to: 3 do: [:value |
+              block value: value]
+          )
+        ) : ()
+    "};
+
+    /// Every stop's reason and every message logged while `LEAVING` runs
+    /// with `breakpoint` set, the run continued after each; the
+    /// breakpoint's id.
+    fn leaving(
+        lowering: Lowering,
+        breakpoint: MethodBreakpoint,
+    ) -> (BreakpointId, Vec<StopReason>, Vec<String>) {
+        leaving_in(&mut interpreted(LEAVING, lowering), breakpoint)
+    }
+
+    /// `leaving` in `interpreter`, its class `LEAVING`'s.
+    fn leaving_in(
+        (interpreter, class): &mut (Interpreter, Root),
+        breakpoint: MethodBreakpoint,
+    ) -> (BreakpointId, Vec<StopReason>, Vec<String>) {
+        let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            interpreter,
+            &instance,
+            move |remote| set_method_breakpoints(remote, vec![breakpoint]),
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let mut stops = Vec::new();
+                let mut logged = Vec::new();
+                for event in events_until_the_end(remote) {
+                    match event {
+                        Event::Stopped { reason, .. } => stops.push(reason),
+                        Event::Logged { text, .. } => logged.push(text),
+                        Event::Continued => {}
+                        other => panic!("only stops and logs were expected, not {other:?}"),
+                    }
+                }
+                (id, stops, logged)
+            },
+        );
+        expect_ok(result, "run");
+        answer
+    }
+
+    /// The entry's and the exit's stop of the method breakpoint `id`.
+    fn entered_and_left(id: BreakpointId) -> [StopReason; 2] {
+        [
+            StopReason::MethodEntry {
+                id,
+                others: Vec::new(),
+            },
+            StopReason::MethodExit {
+                id,
+                others: Vec::new(),
+            },
+        ]
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A conditional method breakpoint's exit by an exception is
+        /// decided in the frame the unwind leaves, before it is popped:
+        /// it stops where its condition holds, at the second call only.
+        fn a_condition_decides_an_exit_by_an_exception(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index = 2".to_owned());
+            let (id, stops, logged) = leaving(lowering, breakpoint);
+            assert_eq!(stops, entered_and_left(id));
+            assert!(logged.is_empty());
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A conditional method breakpoint's exit by a non-local return,
+        /// which the unwind arrives at, is decided in that frame before it
+        /// returns: it stops where its condition holds, at the second call
+        /// only.
+        fn a_condition_decides_an_exit_by_a_non_local_return(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "find:");
+            breakpoint.condition = Some("index = 2".to_owned());
+            let (id, stops, logged) = leaving(lowering, breakpoint);
+            assert_eq!(stops, entered_and_left(id));
+            assert!(logged.is_empty());
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A method logpoint logs at an exit by an exception as at an
+        /// entry, its expression evaluated in the frame the unwind is
+        /// about to pop, and never stops.
+        fn a_method_logpoint_logs_an_exit_by_an_exception(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.log = Some(vec![
+                LogPart::Text("at ".to_owned()),
+                LogPart::Expression("index".to_owned()),
+            ]);
+            let (_, stops, logged) = leaving(lowering, breakpoint);
+            assert!(stops.is_empty(), "{stops:?}");
+            assert_eq!(logged, ["at 1", "at 1", "at 2", "at 2", "at 3", "at 3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A method logpoint logs at an exit by a non-local return too.
+        fn a_method_logpoint_logs_an_exit_by_a_non_local_return(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "find:");
+            breakpoint.log = Some(vec![LogPart::Expression("index".to_owned())]);
+            let (_, stops, logged) = leaving(lowering, breakpoint);
+            assert!(stops.is_empty(), "{stops:?}");
+            assert_eq!(logged, ["1", "1", "2", "2", "3", "3"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition that fails at an exit by an unwind is named by the
+        /// stop that reports the exit, where the program goes on.
+        fn a_condition_failing_at_an_exit_by_an_unwind_is_named(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let (id, stops, _) = leaving(lowering, breakpoint);
+            // Each call's entry and exit fail, each a stop.
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, error } => {
+                        assert_eq!(ids, [id]);
+                        assert!(error.contains("MessageNotUnderstood"), "{error}");
+                    }
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// A method a non-local return leaves on its way to the run's own
+    /// method, which then ends the run, and a method a second run sends.
+    const LEFT_AT_THE_END: &str = indoc! {"
+        class LeftAtTheEnd = Object new (
+          | entered ::= false. |
+        ) (
+          public run = (
+            self pass: [^1].
+            ^2
+          )
+          pass: block = (
+            entered:: true.
+            ^block value
+          )
+          public again = (
+            ^3
+          )
+        ) : ()
+    "};
+
+    /// The stop of the next run of `LEFT_AT_THE_END`, set up for a line
+    /// breakpoint at `again`'s statement, after a first run whose
+    /// `pass:` left by a non-local return that ended the run, its method
+    /// breakpoint's condition failing at that exit; `between` is sent
+    /// between the runs. Answers the method breakpoint's id, the line
+    /// breakpoint's and the stop's reason.
+    fn stop_after_a_failure_owed_at_a_run_s_end(
+        lowering: Lowering,
+        between: Option<Command>,
+    ) -> (BreakpointId, BreakpointId, StopReason) {
+        let mut breakpoint = method_breakpoint("LeftAtTheEnd", &[], false, "pass:");
+        breakpoint.condition = Some("entered and: [nil foo]".to_owned());
+        let again = line_start(LEFT_AT_THE_END, "^3");
+        let (mut interpreter, class) = interpreted(LEFT_AT_THE_END, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, vec![breakpoint]);
+        let (method, result, remote) = debugged_by(
+            remote,
+            |remote| {
+                let id = only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                let events = events_until_the_end(remote);
+                assert!(events.is_empty(), "the first run reported {events:?}");
+                id
+            },
+            || run(&mut interpreter, &instance),
+        );
+        assert_eq!(answered(&mut interpreter, result), 1);
+        if let Some(command) = between {
+            remote.send(command);
+        }
+        set_breakpoints(&remote, "LeftAtTheEnd", vec![again]);
+        let ((line, reason), result, _) = debugged_by(
+            remote,
+            |remote| {
+                let mut line = None;
+                loop {
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Breakpoints { breakpoints, .. }) => {
+                            line = Some(resolved(&breakpoints).0);
+                        }
+                        Some(Event::Refused { .. }) => {}
+                        Some(Event::Stopped { reason, .. }) => {
+                            continue_stopped(remote);
+                            return (line.expect("the line breakpoint was answered"), reason);
+                        }
+                        other => panic!("a stop was expected, not {other:?}"),
+                    }
+                }
+            },
+            || interpreter.send(&instance, Symbol::intern("again"), &[]),
+        );
+        assert_eq!(answered(&mut interpreter, result), 3);
+        (method, line, reason)
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An exit by an unwind that ends the run is reported by a step
+        /// the next run carries (decision 17), and a condition that
+        /// failed at that exit goes with it: the next run's first stop is
+        /// the failure, naming the exit's breakpoint and the one that
+        /// holds there.
+        fn a_failure_owed_at_a_run_s_end_is_named_by_the_stop_that_reports_its_exit(lowering) {
+            let (method, line, reason) = stop_after_a_failure_owed_at_a_run_s_end(lowering, None);
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [method, line]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A terminate between runs drops the step that would report the
+        /// exit, and the failure owed at that exit with it: the next run's
+        /// first stop is its own breakpoint's, naming no failure.
+        fn a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs(lowering) {
+            let (_, line, reason) =
+                stop_after_a_failure_owed_at_a_run_s_end(lowering, Some(Command::Terminate));
+            assert!(
+                matches!(&reason, StopReason::Breakpoint { ids } if ids == &[line]),
+                "the stop was the line breakpoint's, not {reason:?}"
+            );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The pause stress mode's stops, which its reader serves, leave
+        /// a failure at an exit by an unwind to the attached debugger's
+        /// next stop: the stop that reports the exit still names it.
+        #[cfg(debug_assertions)]
+        fn a_stress_pause_leaves_an_exit_s_failure_to_the_debugger(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let mut interpreted = interpreted(LEAVING, lowering);
+            interpreted.0.set_stress_pause(true);
+            let (id, stops, _) = leaving_in(&mut interpreted, breakpoint);
+            assert!(interpreted.0.stress_pauses() > 0, "the stress mode stopped");
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, error } => {
+                        assert_eq!(ids, [id]);
+                        assert!(error.contains("MessageNotUnderstood"), "{error}");
+                    }
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Beside the suspend stress mode, the pause stress mode
+        /// evaluates nothing while a stop's token waits for its frame's
+        /// fetch: an evaluation's suspension would leave the token naming
+        /// an offset another activation takes. Every stop is still the
+        /// attached debugger's.
+        #[cfg(debug_assertions)]
+        fn a_stress_pause_beside_suspensions_leaves_a_token_to_its_frame(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let mut interpreted = interpreted(LEAVING, lowering);
+            interpreted.0.set_stress_pause(true);
+            interpreted.0.set_stress_suspend(true);
+            let (id, stops, _) = leaving_in(&mut interpreted, breakpoint);
+            assert!(interpreted.0.stress_pauses() > 0, "the stress mode stopped");
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, .. } => assert_eq!(ids, [id]),
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A log expression that raises an error stops at its logpoint,
+        /// and the stop says what the error was.
+        fn a_failing_log_expression_stops_and_says_why(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let breakpoint = LineBreakpoint {
+                log: Some(vec![LogPart::Expression("index foo".to_owned())]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let ((id, reason), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Sinking"));
+                    let reason = expect_stop(remote);
+                    continue_stopped(remote);
+                    (id, reason)
+                },
+            );
+            expect_ok(result, "run");
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [id]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed log expression's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition that fails beside a breakpoint that holds at the
+        /// same statement stops naming both, the failed one first, so
+        /// that a temporary breakpoint hit there is removed all the same.
+        fn a_failed_condition_s_stop_names_the_breakpoints_that_held(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let (events, result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| {
+                    set_line_breakpoints(
+                        remote,
+                        "Sinking",
+                        vec![
+                            LineBreakpoint::at_offset(offset),
+                            conditional(offset, "index foo"),
+                        ],
+                    );
+                },
+                |remote| {
+                    let breakpoints = expect_breakpoints(remote, "Sinking");
+                    let reason = expect_stop(remote);
+                    continue_stopped(remote);
+                    (breakpoints, reason)
+                },
+            );
+            expect_ok(result, "run");
+            let (breakpoints, reason) = events;
+            match reason {
+                StopReason::ConditionFailed { ids, .. } => {
+                    assert_eq!(ids, [breakpoints[1].id, breakpoints[0].id]);
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+        }
+    }
+
+    /// A loop whose breakpoint has two conditions, each counting in an
+    /// object of its own.
+    const TWO_COUNTERS: &str = indoc! {"
+        class TwoCounters = Object new (
+          |
+            first = Counter new.
+            second = Counter new.
+          |
+        ) (
+          class Counter = Object new (
+            | count ::= 0. |
+          ) (
+            public increment = (
+              count:: count + 1
+            )
+            public value = (
+              ^count
+            )
+          )
+          public run = (
+            1 to: 5 do: [:index |
+              sink: index].
+            ^first value * 10 + second value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// Two conditions with side effects at one statement are each
+        /// evaluated once per reach: five passes count five in each.
+        fn two_conditions_at_one_statement_each_run_once_per_reach(lowering) {
+            let offset = line_start(TWO_COUNTERS, "sink: index].");
+            let breakpoints = vec![
+                conditional(offset, "first increment. false"),
+                conditional(offset, "second increment. false"),
+            ];
+            let (events, answer) = {
+                let (mut interpreter, class) = interpreted(TWO_COUNTERS, lowering);
+                let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+                let (events, result) = debugged_in(
+                    &mut interpreter,
+                    &instance,
+                    move |remote| set_line_breakpoints(remote, "TwoCounters", breakpoints),
+                    |remote| {
+                        expect_breakpoints(remote, "TwoCounters");
+                        events_until_the_end(remote)
+                    },
+                );
+                (events, answered(&mut interpreter, result))
+            };
+            assert_no_stop(&events);
+            assert_eq!(answer, 55);
+        }
+    }
+
+    /// A run whose quiet error's default action answers at once -- a quick
+    /// method, which pushes no frame -- so that the exception's stop and
+    /// the conditional breakpoint's reach right after it are asked of the
+    /// same safepoint.
+    const LOSING: &str = indoc! {"
+        class Losing = Object new (
+          | counter = Counter new. |
+        ) (
+          class Counter = Object new (
+            | count ::= 0. |
+          ) (
+            public increment = (
+              count:: count + 1
+            )
+            public value = (
+              ^count
+            )
+          )
+          class Quiet = Error new () (
+            public defaultAction = (
+              ^nil
+            )
+          ) : ()
+          public run = (
+            | value |
+            value:: Quiet new signal.
+            sink: value.
+            ^counter value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A reach asked of the same safepoint as an exception's stop is
+        /// decided once, and each of its conditions evaluated once. The
+        /// kernel's handler search records the uncaught exception's stop
+        /// and goes on to the statement that sends `defaultAction`
+        /// without a push -- no safepoint between -- where a conditional
+        /// breakpoint stands: the exception's stop waits for the frame
+        /// the search runs next, so the reach is decided first -- its
+        /// condition fails, a frame of the core library evaluating
+        /// nothing -- and the exception stops after it; the program's own
+        /// conditional breakpoint then holds once, its condition counting
+        /// once.
+        fn a_condition_beside_an_exception_s_stop_is_decided_once(lowering) {
+            let kernel = line_start(KERNEL, "      ^self defaultAction.
+    )");
+            let offset = line_start(LOSING, "sink: value.");
+            let (mut interpreter, class) = interpreted(LOSING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((kernel_id, id, reasons), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                move |remote| {
+                    set_line_breakpoints(remote, "Kernel", vec![conditional(kernel, "true")]);
+                    set_line_breakpoints(
+                        remote,
+                        "Losing",
+                        vec![conditional(offset, "counter increment. true")],
+                    );
+                },
+                |remote| {
+                    let (kernel_id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Losing"));
+                    let reasons: Vec<StopReason> = events_until_the_end(remote)
+                        .into_iter()
+                        .filter_map(|event| match event {
+                            Event::Stopped { reason, .. } => Some(reason),
+                            _ => None,
+                        })
+                        .collect();
+                    (kernel_id, id, reasons)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(reasons.len(), 3, "{reasons:?}");
+            match &reasons[0] {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(*ids, [kernel_id]);
+                    assert_eq!(error, "the frame is the core library's");
+                }
+                other => panic!("the kernel condition's failure was expected, not {other:?}"),
+            }
+            assert!(
+                matches!(reasons[1], StopReason::Exception { .. }),
+                "{reasons:?}"
+            );
+            assert_eq!(reasons[2], StopReason::Breakpoint { ids: vec![id] });
+        }
+    }
+
+    /// A loop of ten thousand passes.
+    const HOT: &str = indoc! {"
+        class Hot = Object new (
+          | last ::= 0. |
+        ) (
+          public run = (
+            1 to: 10000 do: [:index |
+              sink: index].
+            ^last
+          )
+          sink: value = (
+            last:: value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A condition in a loop that ran in machine code is decided at
+        /// each of its ten thousand passes, and stops at the one where it
+        /// holds.
+        fn a_condition_in_a_compiled_loop_is_decided(lowering) {
+            let (mut interpreter, instance, _) = compiled(HOT, lowering);
+            assert_eq!(send_answered(&mut interpreter, &instance, "run"), 10000);
+            let offset = line_start(HOT, "sink: index].");
+            let breakpoint = conditional(offset, "index = 9999");
+            let (indexes, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                move |remote| set_line_breakpoints(remote, "Hot", vec![breakpoint]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Hot"));
+                    indexes_at_stops(remote, id)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 10000);
+            assert_eq!(indexes, ["9999"]);
+        }
+    }
+}
+
+mod restarting {
+    use super::*;
+    use ns_runtime::debugger::{Evaluation, ValueId};
+
+    /// Runs `source`'s `run` under `lowering`, the JIT off, stopped at the
+    /// line breakpoint on the line of the module `module` that holds
+    /// `line`: `agent` serves the first stop, and every later stop is
+    /// continued once it answered. Answers what `agent` answered and the
+    /// small integer the run answered.
+    fn stopped_at<T: Send + 'static>(
+        source: &str,
+        lowering: Lowering,
+        module: &'static str,
+        line: &str,
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let offset = line_start(source, line);
+        let (mut interpreter, class) = interpreted(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, module, vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, module));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                agent(remote)
+            },
+        );
+        (answer, answered(&mut interpreter, result))
+    }
+
+    /// The id of the value `expression` answers in the frame at index
+    /// `frame`, which must answer one.
+    fn evaluated(remote: &DebugRemote, frame: usize, expression: &str) -> ValueId {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Evaluated(Evaluation::Value(value)) => value.id,
+            other => panic!("{expression} was expected to answer a value, not {other:?}"),
+        }
+    }
+
+    /// Sends `command`, which restarts a frame or forces it to return, and
+    /// waits for its confirmation and the stop the program makes next, a
+    /// step's, whose returned value it answers.
+    fn going_on(remote: &DebugRemote, command: Command) -> Option<ReturnedValue> {
+        step(remote, command)
+    }
+
+    /// Why `command` is refused, which it must be.
+    fn refusal(remote: &DebugRemote, command: Command) -> String {
+        let name = command.name();
+        match request(remote, command) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, name);
+                reason
+            }
+            other => panic!("the refusal of {name} was expected, not {other:?}"),
+        }
+    }
+
+    /// Removes the breakpoints of `module` and continues the stopped
+    /// program.
+    fn clear_and_continue(remote: &DebugRemote, module: &str) {
+        set_breakpoints(remote, module, Vec::new());
+        expect_breakpoints(remote, module);
+        continue_stopped(remote);
+    }
+
+    /// A method that counts its entries, stopped at its end.
+    const RESTARTING: &str = indoc! {"
+        class Restarting = Object new (
+          | entered ::= 0. |
+        ) (
+          public run = (
+            ^(self work: 5) + (entered * 100)
+          )
+          work: value = (
+            | doubled |
+            entered:: entered + 1.
+            doubled:: value * 2.
+            ^doubled
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A restarted method stops at its first statement, its temporary
+        /// `nil` again and its parameter kept, and runs again from there:
+        /// it enters twice.
+        fn a_restarted_method_runs_again_from_its_start(lowering) {
+            let ((stood, doubled), answer) = stopped_at(
+                RESTARTING,
+                lowering,
+                "Restarting",
+                "^doubled",
+                |remote| {
+                    assert_eq!(top_variable(remote, "doubled"), "10");
+                    assert_eq!(going_on(remote, Command::RestartFrame { frame: 0 }), None);
+                    let stood = standing(remote, RESTARTING);
+                    let doubled = top_variable(remote, "doubled");
+                    assert_eq!(top_variable(remote, "value"), "5");
+                    clear_and_continue(remote, "Restarting");
+                    (stood, doubled)
+                },
+            );
+            assert_eq!(
+                stood,
+                (String::from("Restarting>>work:"), String::from("entered:: entered + 1"))
+            );
+            assert_eq!(doubled, "nil");
+            assert_eq!(answer, 210);
+        }
+    }
+
+    /// A method whose callee runs inside an `ensure:`.
+    const ENSURING: &str = indoc! {"
+        class Ensuring = Object new (
+          | entered ::= 0.
+            cleaned ::= 0. |
+        ) (
+          public run = (
+            ^self guarded + (cleaned * 10) + (entered * 100)
+          )
+          guarded = (
+            entered:: entered + 1.
+            ^[self inner] ensure: [cleaned:: cleaned + 1]
+          )
+          inner = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// The restart of a frame below the top unwinds to it, running the
+        /// `ensure:` block above it, and stops at its first statement.
+        fn a_restart_runs_the_ensure_blocks_above(lowering) {
+            let (stood, answer) = stopped_at(ENSURING, lowering, "Ensuring", "^1", |remote| {
+                let frame = frame_named(&stack_trace(remote), "Ensuring>>guarded");
+                going_on(remote, Command::RestartFrame { frame });
+                let stood = standing(remote, ENSURING);
+                clear_and_continue(remote, "Ensuring");
+                stood
+            });
+            assert_eq!(
+                stood,
+                (String::from("Ensuring>>guarded"), String::from("entered:: entered + 1"))
+            );
+            assert_eq!(answer, 221);
+        }
+    }
+
+    /// A method whose block, made only in its first run, reads a variable
+    /// it shares with the method, which each run assigns differently.
+    const VECTORING: &str = indoc! {"
+        class Vectoring = Object new (
+          | held ::= nil.
+            runs ::= 0. |
+        ) (
+          public run = (
+            ^self work
+          )
+          work = (
+            | value ::= 1. |
+            held isNil ifTrue: [held:: [value]].
+            runs:: runs + 1.
+            value:: value + (runs * 10).
+            self sink: value.
+            ^held value
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block the first run made reads what the second run assigns:
+        /// the restart keeps the frame's indirection vector, its elements
+        /// `nil` again, rather than making another the block never sees.
+        fn a_restart_keeps_the_vector_for_the_first_run_s_blocks(lowering) {
+            let (value, answer) = stopped_at(
+                VECTORING,
+                lowering,
+                "Vectoring",
+                "self sink: value.",
+                |remote| {
+                    going_on(remote, Command::RestartFrame { frame: 0 });
+                    let value = top_variable(remote, "value");
+                    clear_and_continue(remote, "Vectoring");
+                    value
+                },
+            );
+            assert_eq!(value, "nil");
+            assert_eq!(answer, 21);
+        }
+    }
+
+    /// An instance whose slot initializer counts its runs.
+    const INITIALIZING: &str = indoc! {"
+        class Initializing = Object new (
+          | count ::= 0. |
+        ) (
+          class Made = Object new (
+            | public value = bump. |
+          ) ()
+          public run = (
+            | made |
+            made:: Made new.
+            ^made value + (count * 100)
+          )
+          bump = (
+            count:: count + 1.
+            ^count * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A restarted initializer runs its slot initializers again, and
+        /// the slot holds the value of the second run.
+        fn a_restarted_initializer_initializes_again(lowering) {
+            let (kind, answer) = stopped_at(
+                INITIALIZING,
+                lowering,
+                "Initializing",
+                "^count * 10",
+                |remote| {
+                    let frames = stack_trace(remote);
+                    let frame = frames
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::Initializer)
+                        .expect("the initializer is on the stack");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let kind = stack_trace(remote)[0].kind.clone();
+                    clear_and_continue(remote, "Initializing");
+                    kind
+                },
+            );
+            assert_eq!(kind, FrameKind::Initializer);
+            assert_eq!(answer, 220);
+        }
+    }
+
+    /// A method whose answer its caller adds one to.
+    const FORCING: &str = indoc! {"
+        class Forcing = Object new () (
+          public run = (
+            | answered |
+            answered:: self sink: 5.
+            ^answered isNil ifTrue: [0] ifFalse: [answered + 1]
+          )
+          sink: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A forced return answers an evaluation's value to the frame's
+        /// sender, and stops where the sender goes on, as a step out does,
+        /// reporting the value; a value the stop did not hand out is
+        /// refused, the program still stopped.
+        fn a_forced_return_answers_the_value_to_the_sender(lowering) {
+            let ((reason, returned, top), answer) =
+                stopped_at(FORCING, lowering, "Forcing", "^value", |remote| {
+                    let reason = refusal(
+                        remote,
+                        Command::ForceReturn {
+                            frame: 0,
+                            value: Some(ValueId(u32::MAX)),
+                        },
+                    );
+                    let value = evaluated(remote, 0, "42");
+                    let returned = going_on(
+                        remote,
+                        Command::ForceReturn {
+                            frame: 0,
+                            value: Some(value),
+                        },
+                    )
+                    .map(|returned| returned.value.label);
+                    let top = top_name(remote);
+                    clear_and_continue(remote, "Forcing");
+                    (reason, returned, top)
+                });
+            assert_eq!(reason, "no value of this stop has that id");
+            assert_eq!(returned.as_deref(), Some("42"));
+            assert_eq!(top, "Forcing>>run");
+            assert_eq!(answer, 43);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A forced return without a value answers `nil`.
+        fn a_forced_return_without_a_value_answers_nil(lowering) {
+            let (returned, answer) = stopped_at(FORCING, lowering, "Forcing", "^value", |remote| {
+                let returned = going_on(
+                    remote,
+                    Command::ForceReturn {
+                        frame: 0,
+                        value: None,
+                    },
+                )
+                .map(|returned| returned.value.label);
+                clear_and_continue(remote, "Forcing");
+                returned
+            });
+            assert_eq!(returned.as_deref(), Some("nil"));
+            assert_eq!(answer, 0);
+        }
+    }
+
+    /// An instance with two slot initializers, the first of which sends a
+    /// method.
+    const HALF_INITIALIZED: &str = indoc! {"
+        class HalfInitialized = Object new () (
+          class Made = Object new (
+            | public first = one.
+              public second = 2. |
+          ) (
+            one = (
+              ^1
+            )
+          )
+          public run = (
+            | made |
+            made:: Made new.
+            ^(made first isNil ifTrue: [1] ifFalse: [0])
+              + (made second isNil ifTrue: [10] ifFalse: [0])
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An initializer forced to return answers its instance, its slots
+        /// not initialized yet `nil`; a value given for it is refused.
+        fn a_forced_initializer_return_leaves_the_rest_nil(lowering) {
+            let (reason, answer) =
+                stopped_at(HALF_INITIALIZED, lowering, "HalfInitialized", "^1", |remote| {
+                    let frame = frame_named(&stack_trace(remote), "Made>>one") + 1;
+                    assert_eq!(stack_trace(remote)[frame].kind, FrameKind::Initializer);
+                    let value = evaluated(remote, 0, "3");
+                    let reason = refusal(
+                        remote,
+                        Command::ForceReturn {
+                            frame,
+                            value: Some(value),
+                        },
+                    );
+                    going_on(remote, Command::ForceReturn { frame, value: None });
+                    clear_and_continue(remote, "HalfInitialized");
+                    reason
+                });
+            assert_eq!(reason, "an initializer returns self");
+            assert_eq!(answer, 11);
+        }
+    }
+
+    /// A nested class whose superclass clause sends a method, and a handler
+    /// around its use that answers 9 for any error.
+    const CLAUSING: &str = indoc! {"
+        class Clausing = Object new () (
+          public run = (
+            ^[Inner new. 0] on: Error do: [:error | 9]
+          )
+          superclass = (
+            ^Object
+          )
+          class Inner =
+            self superclass new () ()
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A superclass clause forced to answer what is no class signals
+        /// the error the clause would have signalled answering it, which
+        /// the caught exception breakpoint stops at before its handler
+        /// answers 9.
+        fn a_forced_superclass_clause_value_that_is_no_class_is_the_clause_s_error(lowering) {
+            let offset = line_start(CLAUSING, "^Object");
+            let (mut interpreter, class) = interpreted(CLAUSING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (description, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| {
+                    remote.send(Command::SetExceptionBreakpoints {
+                        uncaught: true,
+                        caught: true,
+                        halt: true,
+                        classes: Vec::new(),
+                    });
+                    set_breakpoints(remote, "Clausing", vec![offset]);
+                },
+                |remote| {
+                    expect_exception_breakpoints_set(remote);
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Clausing"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::SuperclassClause)
+                        .expect("the clause is on the stack");
+                    let value = evaluated(remote, 0, "3");
+                    remote.send(Command::ForceReturn {
+                        frame,
+                        value: Some(value),
+                    });
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Continued) => {}
+                        other => panic!("the confirmation was expected, not {other:?}"),
+                    }
+                    let description = match expect_stop(remote) {
+                        StopReason::Exception {
+                            description,
+                            caught: true,
+                            ..
+                        } => description,
+                        other => panic!("the clause's caught error was expected, not {other:?}"),
+                    };
+                    continue_stopped(remote);
+                    description
+                },
+            );
+            assert!(
+                description.contains("the superclass clause of class Inner did not evaluate to a class object"),
+                "{description}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 9);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame of the core library is neither restarted nor forced to
+        /// return, and the program stays stopped where it was.
+        fn a_shipped_frame_is_neither_restarted_nor_forced(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (mut interpreter, class) = interpreted(QUICK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (reasons, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let restart = refusal(remote, Command::RestartFrame { frame: 0 });
+                    let force = refusal(
+                        remote,
+                        Command::ForceReturn {
+                            frame: 0,
+                            value: None,
+                        },
+                    );
+                    assert_eq!(stack_trace(remote)[0].name, "True>>ifTrue:");
+                    clear_and_continue(remote, "Kernel");
+                    (restart, force)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(reasons.0, "the frame is the core library's");
+            assert_eq!(reasons.1, "the frame is the core library's");
+        }
+    }
+
+    /// A clause-less class whose slot initializer counts its runs.
+    const BARE: &str = indoc! {"
+        class Bare = Object new (
+          | count ::= 0. |
+        ) (
+          class Made = (
+            | public value = bump. |
+          ) ()
+          public run = (
+            | made |
+            made:: Made new.
+            ^made value + (count * 100)
+          )
+          bump = (
+            count:: count + 1.
+            ^count * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// The restart of an initializer whose declaration writes no
+        /// superclass clause stops at its first slot initializer, where a
+        /// step into its push stops, not at the implicit `Object new`.
+        fn a_restarted_clause_less_initializer_stops_at_its_first_slot(lowering) {
+            let (stood, answer) = stopped_at(BARE, lowering, "Bare", "^count * 10", |remote| {
+                let frame = stack_trace(remote)
+                    .iter()
+                    .position(|frame| frame.kind == FrameKind::Initializer)
+                    .expect("the initializer is on the stack");
+                going_on(remote, Command::RestartFrame { frame });
+                let stood = standing(remote, BARE);
+                clear_and_continue(remote, "Bare");
+                stood
+            });
+            assert_eq!(stood.1, "public value = bump.");
+            assert_eq!(answer, 220);
+        }
+    }
+
+    #[test]
+    /// The restart of a frame whose body has no metadata -- an image's
+    /// without source -- stops at its start all the same, as a step into
+    /// its push stops where it stands.
+    fn a_restarted_body_without_metadata_stops_at_its_start() {
+        let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let bytes = interpreter
+            .enter(|mutator| {
+                let class = mutator.fetch(&class).as_object().expect("the module class");
+                let modules = [ns_runtime::image::ModuleSource {
+                    class,
+                    origin: &origin,
+                    with_source: false,
+                }];
+                ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut image = ns_runtime::image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+        let instance = image.roots.remove(0);
+        let (top, _, _) = while_stopped_in(image.interpreter, &instance, PAUSE_DELAY, |remote| {
+            let frame = frame_named(&stack_trace(remote), "Stacked>>loop:with:");
+            going_on(remote, Command::RestartFrame { frame });
+            let top = stack_trace(remote).remove(0);
+            (top.name, top.program_counter, top.location)
+        });
+        assert_eq!(top, (String::from("Stacked>>loop:with:"), 0, None));
+    }
+
+    /// A block a real send runs twice, which sends a method that counts
+    /// its runs.
+    const BLOCKING: &str = indoc! {"
+        class Blocking = Object new (
+          | entered ::= 0. |
+        ) (
+          public run = (
+            ^(self twice: [:each | self note: each]) + (entered * 100)
+          )
+          twice: block = (
+            ^(block value: 1) + (block value: 2)
+          )
+          note: each = (
+            entered:: entered + 1.
+            ^each * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A block's frame restarts, its parameter kept, and runs its body
+        /// again.
+        fn a_restarted_block_runs_again(lowering) {
+            let (stood, answer) =
+                stopped_at(BLOCKING, lowering, "Blocking", "^each * 10", |remote| {
+                    set_breakpoints(remote, "Blocking", Vec::new());
+                    expect_breakpoints(remote, "Blocking");
+                    let frame = frame_named(&stack_trace(remote), "[] in Blocking>>run");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let stood = standing(remote, BLOCKING);
+                    continue_stopped(remote);
+                    stood
+                });
+            assert_eq!(
+                stood,
+                (String::from("[] in Blocking>>run"), String::from("self note: each"))
+            );
+            assert_eq!(answer, 330);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block's frame forced to return hands the value to the send
+        /// that ran it, and the step out stops where the send that took
+        /// the block goes on.
+        fn a_block_forced_to_return_answers_its_value(lowering) {
+            let (top, answer) =
+                stopped_at(BLOCKING, lowering, "Blocking", "^each * 10", |remote| {
+                    set_breakpoints(remote, "Blocking", Vec::new());
+                    expect_breakpoints(remote, "Blocking");
+                    let frame = frame_named(&stack_trace(remote), "[] in Blocking>>run");
+                    let value = evaluated(remote, 0, "42");
+                    going_on(
+                        remote,
+                        Command::ForceReturn {
+                            frame,
+                            value: Some(value),
+                        },
+                    );
+                    let top = top_name(remote);
+                    continue_stopped(remote);
+                    top
+                });
+            assert_eq!(top, "Blocking>>run");
+            assert_eq!(answer, 262);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A factory's frame restarts at its entry, where a step into
+        /// stops it, and initializes a fresh instance.
+        fn a_restarted_factory_initializes_again(lowering) {
+            let (top, answer) = stopped_at(
+                INITIALIZING,
+                lowering,
+                "Initializing",
+                "^count * 10",
+                |remote| {
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::Factory)
+                        .expect("the factory is on the stack");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let top = stack_trace(remote).remove(0);
+                    clear_and_continue(remote, "Initializing");
+                    (top.kind, top.program_counter)
+                },
+            );
+            assert_eq!(top, (FrameKind::Factory, 0));
+            assert_eq!(answer, 220);
+        }
+    }
+
+    /// A factory whose instance its sender compares with 7.
+    const COMPARING: &str = indoc! {"
+        class Comparing = Object new (
+          | count ::= 0. |
+        ) (
+          class Made = Object new (
+            | public value = bump. |
+          ) ()
+          public run = (
+            | made |
+            made:: Made new.
+            ^(made = 7 ifTrue: [1] ifFalse: [0]) + (count * 100)
+          )
+          bump = (
+            count:: count + 1.
+            ^count * 10
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A factory's frame forced to return makes the value the factory
+        /// send's.
+        fn a_factory_forced_to_return_answers_the_value(lowering) {
+            let ((), answer) =
+                stopped_at(COMPARING, lowering, "Comparing", "^count * 10", |remote| {
+                    let frame = stack_trace(remote)
+                        .iter()
+                        .position(|frame| frame.kind == FrameKind::Factory)
+                        .expect("the factory is on the stack");
+                    let value = evaluated(remote, 0, "7");
+                    going_on(
+                        remote,
+                        Command::ForceReturn {
+                            frame,
+                            value: Some(value),
+                        },
+                    );
+                    clear_and_continue(remote, "Comparing");
+                });
+            assert_eq!(answer, 101);
+        }
+    }
+
+    /// A method whose first attempt sends what `nil` does not understand.
+    const RAISING: &str = indoc! {"
+        class Raising = Object new (
+          | tries ::= 0. |
+        ) (
+          public run = (
+            ^self attempt
+          )
+          attempt = (
+            tries:: tries + 1.
+            tries = 1 ifTrue: [nil foo].
+            ^tries
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A frame below an uncaught exception's machinery restarts from
+        /// the exception's stop: the kernel's frames above it are unwound,
+        /// and its second run goes on past the error.
+        fn a_restart_from_an_exception_s_stop_unwinds_its_machinery(lowering) {
+            let (mut interpreter, class) = interpreted(RAISING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (stood, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |_| {},
+                |remote| {
+                    match expect_stop(remote) {
+                        StopReason::Exception { caught: false, .. } => {}
+                        other => panic!("the uncaught exception's stop was expected, not {other:?}"),
+                    }
+                    let frames = stack_trace(remote);
+                    let frame = frame_named(&frames, "Raising>>attempt");
+                    assert!(frame > 0, "the kernel's machinery stands above the frame");
+                    going_on(remote, Command::RestartFrame { frame });
+                    let stood = standing(remote, RAISING);
+                    continue_stopped(remote);
+                    stood
+                },
+            );
+            assert_eq!(
+                stood,
+                (String::from("Raising>>attempt"), String::from("tries:: tries + 1"))
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
+        }
+    }
+
+    /// A loop counting down a local of its own, which sends `bump` once a
+    /// pass: `warm` runs it 2,000 times, `run` three.
+    const COUNTING_DOWN: &str = indoc! {"
+        class CountingDown = Object new (
+          | count ::= 0. |
+        ) (
+          public warm = (
+            ^self loop: 2000
+          )
+          public run = (
+            ^self loop: 3
+          )
+          loop: turns = (
+            | left ::= turns. |
+            [left > 0] whileTrue: [
+              self bump.
+              left:: left - 1].
+            ^count
+          )
+          bump = (
+            count:: count + 1
+          )
+        ) : ()
+    "};
+
+    /// Runs `COUNTING_DOWN`'s `run` once its loop ran in machine code,
+    /// stopped in `bump`: `agent` serves the stop, given the index of the
+    /// loop's frame, which waits in machine code on its send. Answers the
+    /// small integer the run answered.
+    fn from_a_compiled_frame(
+        lowering: Lowering,
+        agent: impl FnOnce(&DebugRemote, usize) + Send + 'static,
+    ) -> i64 {
+        let (mut interpreter, instance, _) = compiled(COUNTING_DOWN, lowering);
+        assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
+        let offset = line_start(COUNTING_DOWN, "count:: count + 1");
+        let ((), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "CountingDown", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "CountingDown"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let frame = stack_trace(remote)
+                    .iter()
+                    .position(|frame| frame.kind == method("loop:"))
+                    .expect("the loop's method is on the stack");
+                agent(remote, frame);
+                clear_and_continue(remote, "CountingDown");
+            },
+        );
+        answered(&mut interpreter, result)
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame that waits in machine code restarts: its loop runs all
+        /// its turns again, interpreted.
+        fn a_compiled_frame_below_the_top_restarts(lowering) {
+            let answer = from_a_compiled_frame(lowering, |remote, frame| {
+                evaluated(remote, frame, "left:: 1");
+                going_on(remote, Command::RestartFrame { frame });
+                assert_eq!(top_name(remote), "CountingDown>>loop:");
+            });
+            assert_eq!(answer, 2003);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame that waits in machine code returns the value it is
+        /// forced to, and its caller goes on with it.
+        fn a_compiled_frame_below_the_top_is_forced_to_return(lowering) {
+            let answer = from_a_compiled_frame(lowering, |remote, frame| {
+                let value = evaluated(remote, frame, "42");
+                let returned = going_on(
+                    remote,
+                    Command::ForceReturn {
+                        frame,
+                        value: Some(value),
+                    },
+                );
+                assert_eq!(returned.map(|returned| returned.value.label).as_deref(), Some("42"));
+            });
+            assert_eq!(answer, 42);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame forced to return to a caller that waits in machine code
+        /// hands it the value, and the caller goes on, interpreted: the
+        /// forced pass counts nothing, the two after it count.
+        fn a_forced_return_into_a_compiled_caller_goes_on(lowering) {
+            let answer = from_a_compiled_frame(lowering, |remote, _| {
+                going_on(
+                    remote,
+                    Command::ForceReturn {
+                        frame: 0,
+                        value: None,
+                    },
+                );
+                // The reference lowering's loop body is a block of its own.
+                let top = top_name(remote);
+                assert!(top.ends_with("CountingDown>>loop:"), "{top}");
+            });
+            assert_eq!(answer, 2002);
+        }
+    }
+}
+
+mod smart_stepping {
+    use super::*;
+    use ns_runtime::debugger::{StepInTarget, StepInTargetKind};
+
+    /// A method whose statement sends a method to an argument another send
+    /// answers, one that hands a block to the shipped `do:`, one whose
+    /// first send a primitive answers before a send pushes, and one that
+    /// sends twice and hands a block to a method of its own.
+    const SMART: &str = indoc! {"
+        class Smart = Object new (
+          | sunk ::= 0. |
+        ) (
+          public nested = (
+            | x |
+            x:: self first: (self second).
+            ^x
+          )
+          public blocks = (
+            {10. 20} do: [:each | sink: each].
+            ^sunk
+          )
+          public arithmetic = (
+            | y |
+            y:: 3 + 4 + self second.
+            ^y * 2
+          )
+          public listed = (
+            ^self pair: (self second) with: [:value | value + 1]
+          )
+          first: value = (
+            ^value + 1
+          )
+          second = (
+            ^2
+          )
+          sink: value = (
+            sunk:: sunk + value
+          )
+          pair: value with: block = (
+            ^block value: value
+          )
+          public conditional = (
+            | x |
+            x:: true.
+            x ifTrue: [self second].
+            ^1
+          )
+          public looping = (
+            | count ::= 0. |
+            [self below: count] whileTrue: [count:: self next: count].
+            ^count
+          )
+          public accessing = (
+            | y |
+            y:: self sunk + self second.
+            ^y
+          )
+          public never = (
+            self ignore: [:value | sink: value].
+            ^sunk
+          )
+          public escaped = (
+            | first |
+            first:: self pass: nil.
+            ^self pass: first
+          )
+          below: value = (
+            ^value < 2
+          )
+          next: value = (
+            ^value + 1
+          )
+          ignore: block = (
+            ^0
+          )
+          pass: other = (
+            ^self choose: other or: [:value | sink: value]
+          )
+          choose: other or: block = (
+            other isNil ifTrue: [^block].
+            other value: 5.
+            ^sunk
+          )
+        ) : ()
+    "};
+
+    /// The stopped top frame's targets of a smart step into.
+    fn targets(remote: &DebugRemote) -> Vec<StepInTarget> {
+        match request(remote, Command::StepInTargets) {
+            Event::StepInTargets(targets) => targets,
+            other => panic!("the targets were expected, not {other:?}"),
+        }
+    }
+
+    /// The id of the target labelled `label`, which there must be.
+    fn target_labelled(targets: &[StepInTarget], label: &str) -> u32 {
+        targets
+            .iter()
+            .find(|target| target.label == label)
+            .unwrap_or_else(|| panic!("a target labelled {label} among {targets:?}"))
+            .id
+    }
+
+    /// Sends `selector` to an instance of `SMART` under `lowering`, stopped
+    /// at a breakpoint on the line of `line`, and takes a smart step into
+    /// the target labelled `label`: answers where it stopped, the names of
+    /// the frames on the stack and the label of the variable `variable` of
+    /// the top frame, if one is named.
+    fn smart_stepped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+        variable: Option<&'static str>,
+    ) -> ((String, String), Vec<String>, Option<String>) {
+        let offset = line_start(SMART, line);
+        let (stopped, _) = stepped(
+            SMART,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Smart", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Smart");
+                let target = target_labelled(&targets(remote), label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, SMART);
+                let names: Vec<String> = stack_trace(remote)
+                    .iter()
+                    .map(|frame| frame.name.clone())
+                    .collect();
+                let value = variable.map(|name| top_variable(remote, name));
+                set_breakpoints(remote, "Smart", Vec::new());
+                expect_breakpoints(remote, "Smart");
+                continue_stopped(remote);
+                (stood, names, value)
+            },
+        );
+        stopped
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into the outer of two sends stops in the method it
+        /// sends, past the one that computes its argument.
+        fn smart_step_into_stops_in_the_chosen_send(lowering) {
+            let (stood, names, _) = smart_stepped(
+                lowering,
+                "nested",
+                "x:: self first: (self second).",
+                "first:",
+                None,
+            );
+            assert_eq!(
+                stood,
+                (String::from("Smart>>first:"), String::from("^value + 1"))
+            );
+            assert_eq!(names, ["Smart>>first:", "Smart>>nested"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a block the shipped `do:` runs stops at the
+        /// block's first statement, in its first activation.
+        fn smart_step_into_a_block_stops_in_its_body(lowering) {
+            let (stood, names, each) = smart_stepped(
+                lowering,
+                "blocks",
+                "{10. 20} do: [:each | sink: each].",
+                "[] in do:",
+                Some("each"),
+            );
+            assert_eq!(
+                stood,
+                (String::from("[] in Smart>>blocks"), String::from("sink: each"))
+            );
+            assert_eq!(names.first().map(String::as_str), Some("[] in Smart>>blocks"));
+            assert_eq!(names.last().map(String::as_str), Some("Smart>>blocks"));
+            assert_eq!(each.as_deref(), Some("10"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a send a primitive answers, which pushes
+        /// nothing, stops where a step over would: at the next statement,
+        /// past the push of a later send of its own.
+        fn a_target_answered_without_a_push_steps_over(lowering) {
+            let (stood, names, _) =
+                smart_stepped(lowering, "arithmetic", "y:: 3 + 4 + self second.", "+", None);
+            assert_eq!(
+                stood,
+                (String::from("Smart>>arithmetic"), String::from("^y * 2"))
+            );
+            assert_eq!(names, ["Smart>>arithmetic"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The targets are the statement's sends in the order they run,
+        /// then the blocks they take that run as closures, each placed at
+        /// its selector's first token or its literal; an id past them is
+        /// refused, the program still stopped.
+        fn targets_are_the_statement_s_sends_in_order(lowering) {
+            let offset = line_start(SMART, "^self pair: (self second) with:");
+            let ((listed, refusal), _) = stepped(
+                SMART,
+                lowering,
+                "listed",
+                |remote| set_breakpoints(remote, "Smart", vec![offset]),
+                |remote| {
+                    expect_first_stop(remote, "Smart");
+                    let listed: Vec<(u32, String, String, StepInTargetKind)> = targets(remote)
+                        .into_iter()
+                        .map(|target| {
+                            let text = target.span.text(SMART).to_owned();
+                            (target.id, target.label, text, target.kind)
+                        })
+                        .collect();
+                    let refusal = match request(remote, Command::StepIntoTarget { target: 3 }) {
+                        Event::Refused { command, reason } => (command, reason),
+                        other => panic!("the refusal was expected, not {other:?}"),
+                    };
+                    set_breakpoints(remote, "Smart", Vec::new());
+                    expect_breakpoints(remote, "Smart");
+                    continue_stopped(remote);
+                    (listed, refusal)
+                },
+            );
+            assert_eq!(
+                listed,
+                [
+                    (0, String::from("second"), String::from("second"), StepInTargetKind::Send),
+                    (1, String::from("pair:with:"), String::from("pair:"), StepInTargetKind::Send),
+                    (
+                        2,
+                        String::from("[] in pair:with:"),
+                        String::from("[:value | value + 1]"),
+                        StepInTargetKind::Block
+                    ),
+                ]
+            );
+            assert_eq!(
+                refusal,
+                (String::from("StepIntoTarget"), String::from("no such target"))
+            );
+        }
+    }
+
+    /// Sends `selector` to an instance of `SMART` under `lowering`, stopped
+    /// at a breakpoint on the line of `line`: answers the labels of the
+    /// targets there, and where a smart step into the target labelled
+    /// `label` stopped, with the label of the top frame's variable
+    /// `variable`, if one is named.
+    fn listed_and_stepped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+        variable: Option<&'static str>,
+    ) -> (Vec<String>, (String, String), Option<String>) {
+        let offset = line_start(SMART, line);
+        let (answer, _) = stepped(
+            SMART,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Smart", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Smart");
+                let listed = targets(remote);
+                let labels = listed.iter().map(|target| target.label.clone()).collect();
+                let target = target_labelled(&listed, label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, SMART);
+                let value = variable.map(|name| top_variable(remote, name));
+                set_breakpoints(remote, "Smart", Vec::new());
+                expect_breakpoints(remote, "Smart");
+                continue_stopped(remote);
+                (labels, stood, value)
+            },
+        );
+        answer
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An inlined conditional's own selector is no target under either
+        /// lowering, its block's send is, and choosing it stops in the
+        /// method that send pushes.
+        fn targets_of_an_inlined_conditional_are_its_block_s_sends(lowering) {
+            let (labels, stood, _) = listed_and_stepped(
+                lowering,
+                "conditional",
+                "x ifTrue: [self second].",
+                "second",
+                None,
+            );
+            assert_eq!(labels, ["second"]);
+            assert_eq!(stood, (String::from("Smart>>second"), String::from("^2")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An inlined loop's targets are the sends of its two blocks, in
+        /// the order the source writes them, and choosing the body's stops
+        /// in the method it pushes, past the condition's push.
+        fn targets_of_an_inlined_loop_are_its_blocks_sends(lowering) {
+            let (labels, stood, value) = listed_and_stepped(
+                lowering,
+                "looping",
+                "[self below: count] whileTrue:",
+                "next:",
+                Some("value"),
+            );
+            assert_eq!(labels, ["below:", "next:"]);
+            assert_eq!(
+                stood,
+                (String::from("Smart>>next:"), String::from("^value + 1"))
+            );
+            assert_eq!(value.as_deref(), Some("0"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A slot's getter, which its fast path answers without a push,
+        /// is a target that steps over: the next statement, past the push
+        /// of a later send of its statement.
+        fn a_fast_path_accessor_target_steps_over(lowering) {
+            let (_, stood, _) = listed_and_stepped(
+                lowering,
+                "accessing",
+                "y:: self sunk + self second.",
+                "sunk",
+                None,
+            );
+            assert_eq!(stood, (String::from("Smart>>accessing"), String::from("^y")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A send to the shipped `do:`, which the step filters filter,
+        /// stops in the program's block it runs, at its first activation.
+        fn a_filtered_send_s_target_stops_in_the_program_s_block(lowering) {
+            let (_, stood, each) = listed_and_stepped(
+                lowering,
+                "blocks",
+                "{10. 20} do: [:each | sink: each].",
+                "do:",
+                Some("each"),
+            );
+            assert_eq!(
+                stood,
+                (String::from("[] in Smart>>blocks"), String::from("sink: each"))
+            );
+            assert_eq!(each.as_deref(), Some("10"));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block target its send never runs steps over: the next
+        /// statement of the frame.
+        fn a_block_target_never_run_steps_over(lowering) {
+            let (_, stood, _) = listed_and_stepped(
+                lowering,
+                "never",
+                "self ignore: [:value | sink: value].",
+                "[] in ignore:",
+                None,
+            );
+            assert_eq!(stood, (String::from("Smart>>never"), String::from("^sunk")));
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A closure of the block literal another activation of the same
+        /// method made, run while the stepping frame's own closure is not,
+        /// does not stop the step: it steps over, out of its frame, to
+        /// where its caller goes on.
+        fn an_escaped_block_of_another_activation_does_not_stop(lowering) {
+            let offset = line_start(SMART, "^self choose: other or:");
+            let (stood, _) = stepped(
+                SMART,
+                lowering,
+                "escaped",
+                |remote| set_breakpoints(remote, "Smart", vec![offset]),
+                |remote| {
+                    expect_first_stop(remote, "Smart");
+                    continue_stopped(remote);
+                    expect_breakpoint_stop(remote);
+                    set_breakpoints(remote, "Smart", Vec::new());
+                    expect_breakpoints(remote, "Smart");
+                    let target = target_labelled(&targets(remote), "[] in choose:or:");
+                    step(remote, Command::StepIntoTarget { target });
+                    let stood = standing(remote, SMART);
+                    continue_stopped(remote);
+                    stood
+                },
+            );
+            assert_eq!(
+                stood,
+                (String::from("Smart>>escaped"), String::from("^self pass: first"))
+            );
+        }
+    }
+
+    /// A method whose statement sends what `nil` does not understand, and
+    /// sends again with its answer.
+    const FAILING: &str = indoc! {"
+        class Failing = Object new () (
+          public run = (
+            ^self twice: nil foo
+          )
+          twice: value = (
+            ^value
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// At an uncaught exception's stop the targets are those of the
+        /// frame shown first below the machinery, past the send it waits
+        /// on, which runs already.
+        fn an_exception_s_targets_start_past_the_send_in_flight(lowering) {
+            let (mut interpreter, class) = interpreted(FAILING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (labels, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |_| {},
+                |remote| {
+                    match expect_stop(remote) {
+                        StopReason::Exception { caught: false, .. } => {}
+                        other => panic!("the uncaught exception's stop was expected, not {other:?}"),
+                    }
+                    let labels: Vec<String> =
+                        targets(remote).into_iter().map(|target| target.label).collect();
+                    remote.send(Command::Terminate);
+                    labels
+                },
+            );
+            assert_terminated(result);
+            assert_eq!(labels, ["twice:"]);
+        }
+    }
+
+    /// Loops whose last statement sends `foo` only where `flag` holds,
+    /// which it never does: one whose condition sends, and one whose
+    /// condition is a bare read of a local.
+    const LOOPED: &str = indoc! {"
+        class Looped = Object new () (
+          public counted = (
+            | count ::= 0. flag ::= false. |
+            [count < 3] whileTrue: [
+              flag ifTrue: [self foo] ifFalse: [count:: count + 1]].
+            ^count
+          )
+          public going = (
+            | going ::= true. count ::= 0. flag ::= false. |
+            [going] whileTrue: [
+              flag ifTrue: [self bar] ifFalse: [going:: (count:: count + 1) < 3]].
+            ^count
+          )
+          foo = (
+            ^1
+          )
+          bar = (
+            ^2
+          )
+        ) : ()
+    "};
+
+    /// Sends `selector` to an instance of `LOOPED` under `lowering`,
+    /// stopped at a breakpoint on the line of `line` in the loop's first
+    /// iteration, and takes a smart step into the target labelled
+    /// `label`, which never runs: answers where it stopped and the label
+    /// of `count` there.
+    fn looped(
+        lowering: Lowering,
+        selector: &'static str,
+        line: &str,
+        label: &'static str,
+    ) -> ((String, String), String) {
+        let offset = line_start(LOOPED, line);
+        let (stopped, _) = stepped(
+            LOOPED,
+            lowering,
+            selector,
+            |remote| set_breakpoints(remote, "Looped", vec![offset]),
+            move |remote| {
+                expect_first_stop(remote, "Looped");
+                set_breakpoints(remote, "Looped", Vec::new());
+                expect_breakpoints(remote, "Looped");
+                let target = target_labelled(&targets(remote), label);
+                step(remote, Command::StepIntoTarget { target });
+                let stood = standing(remote, LOOPED);
+                let count = top_variable(remote, "count");
+                continue_stopped(remote);
+                (stood, count)
+            },
+        );
+        stopped
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A smart step into a send of a loop's last statement that never
+        /// runs goes on as a step over once that run of the statement is
+        /// done: it stops at the next statement start, in the loop's next
+        /// iteration, never past the loop.
+        fn a_smart_step_whose_target_never_runs_stops_at_the_next_iteration(lowering) {
+            let (stood, count) =
+                looped(lowering, "counted", "flag ifTrue: [self foo] ifFalse:", "foo");
+            assert_eq!(stood.1, "count < 3", "{stood:?}");
+            assert_eq!(count, "1");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The same, the loop's condition a bare read of a local, which
+        /// has no send of its own.
+        fn a_smart_step_in_a_loop_reading_a_local_stops_at_the_next_iteration(lowering) {
+            let (stood, count) =
+                looped(lowering, "going", "flag ifTrue: [self bar] ifFalse:", "bar");
+            // The optimized lowering's inline condition has no statement
+            // start: the next one is the statement's, begun afresh.
+            let next = match lowering {
+                Lowering::Optimized => {
+                    "flag ifTrue: [self bar] ifFalse: [going:: (count:: count + 1) < 3]"
+                }
+                Lowering::Reference => "going",
+            };
+            assert_eq!(stood.1, next, "{stood:?}");
+            assert_eq!(count, "1");
+        }
+    }
+}
+
+/// Marking objects and the values a stop withholds
+/// (`docs/design/debugger.md`, "Marking objects", "Folding the shipped
+/// frames"): every test stops at a line breakpoint, and each one's path
+/// holds `marking`.
+mod marking {
+    use super::*;
+    use ns_runtime::debugger::{Evaluation, ValueId};
+
+    /// The source of the platform's module, whose lazy slots build the
+    /// other modules on first demand.
+    const PLATFORM_FACTORY: &str = include_str!("../core-library/PlatformFactory.ns");
+
+    /// A program handed the platform, which demands the time module the
+    /// first time: its first stop is in the program's frame, its second
+    /// in the platform module's lazy slot that builds the time module.
+    const WITHHOLDING: &str = indoc! {"
+        class Withholding = Object new (
+          | platform |
+        ) (
+          public use: aPlatform = (
+            platform:: aPlatform
+          )
+          public run = (
+            platform kernel.
+            platform time.
+            ^3
+          )
+        ) : ()
+    "};
+
+    /// A method that reads the same string twice, through a callee that
+    /// stops at each read.
+    const MARKING: &str = indoc! {"
+        class Marking = Object new () (
+          public run = (
+            | text total |
+            text:: 'abc'.
+            total:: 0.
+            1 to: 2 do: [:index | total:: total + (self sink: text)].
+            ^total
+          )
+          sink: value = (
+            ^value size
+          )
+        ) : ()
+    "};
+
+    /// `MARKING` under `lowering`, the JIT off, stopped at each read of
+    /// `sink:`: `agent` serves the stops and returns at one, which is
+    /// continued with the breakpoint gone. Answers what `agent` answered
+    /// and what the run answered.
+    fn marking<T: Send + 'static>(
+        lowering: Lowering,
+        agent: impl FnOnce(&DebugRemote, BreakpointId) -> T + Send + 'static,
+    ) -> (T, i64) {
+        let offset = line_start(MARKING, "^value size");
+        let (mut interpreter, class) = interpreted(MARKING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Marking", vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Marking"));
+                let answer = agent(remote, id);
+                set_breakpoints(remote, "Marking", Vec::new());
+                expect_breakpoints(remote, "Marking");
+                continue_stopped(remote);
+                answer
+            },
+        );
+        (answer, answered(&mut interpreter, result))
+    }
+
+    /// The value of `sink:`'s argument at a stop in it, the top frame.
+    fn sunk(remote: &DebugRemote) -> ValueDescription {
+        value_of(&variables(remote, Command::Variables { frame: 0 }), "value").clone()
+    }
+
+    /// The value of `self` in the frame at index `frame`.
+    fn receiver(remote: &DebugRemote, frame: usize) -> ValueDescription {
+        value_of(&variables(remote, Command::Variables { frame }), "self").clone()
+    }
+
+    /// What marking `value` with `label` answers.
+    fn mark(remote: &DebugRemote, value: ValueId, label: &str) -> Event {
+        request(
+            remote,
+            Command::Mark {
+                value,
+                label: label.to_owned(),
+            },
+        )
+    }
+
+    /// Marks `value` with `label`, which must be done.
+    fn marked(remote: &DebugRemote, value: ValueId, label: &str) {
+        assert_eq!(
+            mark(remote, value, label),
+            Event::Marked {
+                label: label.to_owned()
+            }
+        );
+    }
+
+    /// Why marking `value` with `label` is refused, which it must be.
+    fn mark_refusal(remote: &DebugRemote, value: ValueId, label: &str) -> String {
+        match mark(remote, value, label) {
+            Event::Refused { command, reason } => {
+                assert_eq!(command, "Mark");
+                reason
+            }
+            other => panic!("the refusal of the mark was expected, not {other:?}"),
+        }
+    }
+
+    /// What evaluating `expression` in the frame at index `frame` answers.
+    fn evaluate(remote: &DebugRemote, frame: usize, expression: &str) -> Evaluation {
+        match request(
+            remote,
+            Command::Evaluate {
+                frame,
+                expression: expression.to_owned(),
+            },
+        ) {
+            Event::Evaluated(evaluation) => evaluation,
+            other => panic!("the evaluation of {expression} was expected, not {other:?}"),
+        }
+    }
+
+    /// The value `expression` answers in the frame at index `frame`,
+    /// which must answer one.
+    fn evaluated(remote: &DebugRemote, frame: usize, expression: &str) -> ValueDescription {
+        match evaluate(remote, frame, expression) {
+            Evaluation::Value(value) => value,
+            other => panic!("{expression} was expected to answer a value, not {other:?}"),
+        }
+    }
+
+    /// The children of `value`, all of them.
+    fn children(remote: &DebugRemote, value: &ValueDescription) -> Vec<Variable> {
+        variables(
+            remote,
+            Command::Children {
+                value: value.id,
+                start: 0,
+                count: value.child_count,
+            },
+        )
+    }
+
+    /// The offset of the line of the time module's lazy slot that tests
+    /// the root class it looked up.
+    fn time_module_line() -> u32 {
+        let lookup = PLATFORM_FACTORY
+            .find("shippedModuleClassNamed: #TimeFactory")
+            .expect("the platform's module looks the time module's class up");
+        let test = lookup
+            + PLATFORM_FACTORY[lookup..]
+                .find("rootClass isNil")
+                .expect("and tests it");
+        let start = PLATFORM_FACTORY[..test]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        u32::try_from(start).expect("a shipped module is small")
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A field a shipped mixin declares is withheld, though the
+        /// object that holds it is a program frame's value, and so is
+        /// every value of a shipped frame and every child of a withheld
+        /// value: the platform module's private `vmMirror`, which its
+        /// lazy slot's frame shows as a field of its receiver, among them.
+        /// None of them can be marked.
+        fn the_platform_s_mirror_field_is_withheld(lowering) {
+            let program = line_start(WITHHOLDING, "platform time.");
+            let shipped = time_module_line();
+            let (mut interpreter, class) = interpreted(WITHHOLDING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+                "use:",
+            );
+            let (refusals, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| {
+                    set_breakpoints(remote, "Withholding", vec![program]);
+                    set_breakpoints(remote, "PlatformFactory", vec![shipped]);
+                },
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Withholding"));
+                    let (shipped_id, _) = resolved(&expect_breakpoints(remote, "PlatformFactory"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let program = receiver(remote, 0);
+                    assert!(!program.withheld, "a program frame's receiver");
+                    let platform = value_of(&children(remote, &program), "platform").clone();
+                    assert!(!platform.withheld, "a field the program declares");
+                    let kernel = value_of(&children(remote, &platform), "kernel").clone();
+                    assert!(kernel.withheld, "a field the platform's class declares");
+                    let mut refusals = vec![mark_refusal(remote, kernel.id, "kernel")];
+                    marked(remote, platform.id, "platform");
+                    continue_stopped(remote);
+                    assert_eq!(expect_breakpoint_stop(remote), [shipped_id]);
+                    let frames = stack_trace(remote);
+                    assert!(frames[0].shipped, "{}", frames[0].name);
+                    let module = receiver(remote, 0);
+                    assert!(module.withheld, "a shipped frame's receiver");
+                    let mirror = value_of(&children(remote, &module), "vmMirror").clone();
+                    assert!(mirror.withheld, "the VM mirror");
+                    refusals.push(mark_refusal(remote, mirror.id, "mirror"));
+                    refusals.push(mark_refusal(remote, module.id, "module"));
+                    set_breakpoints(remote, "PlatformFactory", Vec::new());
+                    expect_breakpoints(remote, "PlatformFactory");
+                    continue_stopped(remote);
+                    refusals
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 3);
+            assert_eq!(refusals, ["the value is withheld"; 3]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A `String` a program frame shows is marked like any value, and
+        /// a label that is no identifier, or that ends in the suffix an
+        /// expression names it by, is refused.
+        fn a_string_of_a_program_frame_is_marked(lowering) {
+            let ((withheld, refusals), answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let text = sunk(remote);
+                let refusals = vec![
+                    mark_refusal(remote, text.id, "first_DebugLabel"),
+                    mark_refusal(remote, text.id, "1st"),
+                    mark_refusal(remote, text.id, "first one"),
+                    mark_refusal(remote, text.id, ""),
+                ];
+                marked(remote, text.id, "first");
+                (text.withheld, refusals)
+            });
+            assert!(!withheld);
+            assert_eq!(
+                refusals,
+                [
+                    "first_DebugLabel is not a label",
+                    "1st is not a label",
+                    "first one is not a label",
+                    " is not a label",
+                ]
+            );
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A mark outlives its stop, and an expression at a later stop
+        /// names the marked object by its label and the suffix; a label
+        /// no mark has is an ordinary name, and so is one unmarked.
+        fn a_mark_survives_a_continue_and_is_named_in_an_evaluation(lowering) {
+            let ((sizes, unknown, unmarked), answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marked(remote, sunk(remote).id, "first");
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let sizes = (
+                    evaluated(remote, 0, "first_DebugLabel size").label,
+                    evaluated(remote, 1, "first_DebugLabel == text").label,
+                );
+                let unknown = evaluate(remote, 0, "second_DebugLabel");
+                let unmark = request(
+                    remote,
+                    Command::Unmark {
+                        label: String::from("first"),
+                    },
+                );
+                assert_eq!(
+                    unmark,
+                    Event::Marked {
+                        label: String::from("first")
+                    }
+                );
+                let unmarked = evaluate(remote, 0, "first_DebugLabel");
+                (sizes, unknown, unmarked)
+            });
+            assert_eq!(sizes, (String::from("3"), String::from("true")));
+            assert!(matches!(unknown, Evaluation::Error { .. }), "{unknown:?}");
+            assert!(matches!(unmarked, Evaluation::Error { .. }), "{unmarked:?}");
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A marked object shows its label wherever a stop describes it --
+        /// a variable, an evaluation's answer, a later stop's variable --
+        /// and marking it again renames it.
+        fn a_mark_is_shown_on_the_value(lowering) {
+            let (marks, answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let before = sunk(remote).mark;
+                marked(remote, sunk(remote).id, "first");
+                let mut marks = vec![
+                    before,
+                    sunk(remote).mark,
+                    value_of(&variables(remote, Command::Variables { frame: 1 }), "text")
+                        .mark
+                        .clone(),
+                    evaluated(remote, 0, "value").mark,
+                    evaluated(remote, 0, "value size").mark,
+                ];
+                continue_stopped(remote);
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marks.push(sunk(remote).mark);
+                marked(remote, sunk(remote).id, "again");
+                marks.push(sunk(remote).mark);
+                marks.push(match evaluate(remote, 0, "first_DebugLabel") {
+                    Evaluation::Value(value) => value.mark,
+                    Evaluation::Error { .. } => Some(String::from("<unnamed>")),
+                    Evaluation::Aborted => None,
+                });
+                marks
+            });
+            let first = Some(String::from("first"));
+            assert_eq!(
+                marks,
+                [
+                    None,
+                    first.clone(),
+                    first.clone(),
+                    first.clone(),
+                    None,
+                    first,
+                    Some(String::from("again")),
+                    Some(String::from("<unnamed>")),
+                ]
+            );
+            assert_eq!(answer, 6);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A label inside a string literal or a comment is text, not a
+        /// name of the marked object.
+        fn a_label_in_a_string_or_a_comment_is_text(lowering) {
+            let (size, answer) = marking(lowering, |remote, id| {
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                marked(remote, sunk(remote).id, "first");
+                evaluated(remote, 0, "'first_DebugLabel' size (* first_DebugLabel *)").label
+            });
+            assert_eq!(size, "16");
+            assert_eq!(answer, 6);
+        }
+    }
+
+    /// A loop over four strings, run twice: a breakpoint on `sink:`'s send
+    /// in the inner block reaches each of them in both rounds.
+    const PICKING: &str = indoc! {"
+        class Picking = Object new () (
+          public run = (
+            | items count |
+            items:: {'a'. 'b'. 'c'. 'd'}.
+            count:: 0.
+            1 to: 2 do: [:round |
+              items do: [:each |
+                count:: count + 1.
+                self sink: each]].
+            ^count
+          )
+          sink: each = (
+            ^each
+          )
+        ) : ()
+    "};
+
+    /// `PICKING` under `lowering`, the JIT off, stopped first at `count::
+    /// 0.`, where `first` marks `items`' element `[2]`, then at every
+    /// reach of the breakpoint on `sink:`'s send whose condition is
+    /// `each == first_DebugLabel`, which `at_hit` is handed at each stop
+    /// with the stop's `items`' elements, read through the frame below.
+    /// Answers the `each` of every such stop.
+    fn picked(
+        lowering: Lowering,
+        mut at_hit: impl FnMut(&DebugRemote, usize, &[Variable]) + Send + 'static,
+    ) -> Vec<String> {
+        let first = line_start(PICKING, "count:: 0.");
+        let hit = line_start(PICKING, "self sink: each]].");
+        let (mut interpreter, class) = interpreted(PICKING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (picks, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Picking", vec![first]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Picking"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let items =
+                    value_of(&variables(remote, Command::Variables { frame: 0 }), "items").clone();
+                let second = value_of(&children(remote, &items), "[2]").clone();
+                marked(remote, second.id, "first");
+                let conditional = LineBreakpoint {
+                    condition: Some(String::from("each == first_DebugLabel")),
+                    ..LineBreakpoint::at_offset(hit)
+                };
+                set_line_breakpoints(remote, "Picking", vec![conditional]);
+                let (conditional_id, _) = resolved(&expect_breakpoints(remote, "Picking"));
+                continue_stopped(remote);
+                let mut picks = Vec::new();
+                loop {
+                    let ended = run_finished();
+                    match remote.next_event(Duration::from_millis(10)) {
+                        Some(Event::Stopped {
+                            reason: StopReason::Breakpoint { ids },
+                            ..
+                        }) => {
+                            assert_eq!(ids, [conditional_id]);
+                            let each = value_of(
+                                &variables(remote, Command::Variables { frame: 0 }),
+                                "each",
+                            )
+                            .label
+                            .clone();
+                            let frames = stack_trace(remote);
+                            let run = frames
+                                .iter()
+                                .position(|frame| frame.kind == method("run"))
+                                .expect("run is on the stack");
+                            let items = value_of(
+                                &variables(remote, Command::Variables { frame: run }),
+                                "items",
+                            )
+                            .clone();
+                            let elements = children(remote, &items);
+                            at_hit(remote, picks.len(), &elements);
+                            picks.push(each);
+                            continue_stopped(remote);
+                        }
+                        Some(other) => {
+                            panic!("only conditional stops were expected, not {other:?}")
+                        }
+                        None if ended => return picks,
+                        None => {}
+                    }
+                }
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 8);
+        picks
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A breakpoint's condition names a marked object as every
+        /// evaluation does: marked at an earlier stop, it stops the loop
+        /// at that element only, in both rounds.
+        fn a_condition_names_a_marked_object(lowering) {
+            assert_eq!(picked(lowering, |_, _, _| {}), ["the String \"b\"", "the String \"b\""]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A label marked on another object between two hits moves to it,
+        /// and the compiled condition follows it: the next hits stop at
+        /// the newly marked element.
+        fn a_condition_follows_a_mark_that_changed(lowering) {
+            let picks = picked(lowering, |remote, hit, elements| {
+                if hit == 0 {
+                    marked(remote, value_of(elements, "[3]").id, "first");
+                }
+            });
+            assert_eq!(picks, ["the String \"b\"", "the String \"c\"", "the String \"c\""]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Marking an object with a label another object had moves the
+        /// label: the other object shows no mark any more.
+        fn a_label_moves_to_the_object_marked_with_it(lowering) {
+            let marks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = std::sync::Arc::clone(&marks);
+            picked(lowering, move |remote, hit, elements| {
+                if hit == 0 {
+                    marked(remote, value_of(elements, "[3]").id, "first");
+                    let elements = children(
+                        remote,
+                        &value_of(
+                            &variables(
+                                remote,
+                                Command::Variables {
+                                    frame: stack_trace(remote)
+                                        .iter()
+                                        .position(|frame| frame.kind == method("run"))
+                                        .expect("run is on the stack"),
+                                },
+                            ),
+                            "items",
+                        )
+                        .clone(),
+                    );
+                    let mut seen = seen.lock().expect("the marks seen");
+                    seen.extend(["[2]", "[3]"].map(|name| value_of(&elements, name).mark.clone()));
+                }
+            });
+            let marks = marks.lock().expect("the marks seen").clone();
+            assert_eq!(marks, [None, Some(String::from("first"))]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame of a shipped module's body says so, and its values are
+        /// withheld; the program's frames are not.
+        fn a_shipped_frame_says_so(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (mut interpreter, class) = interpreted(QUICK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((shipped, withheld), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let frames = stack_trace(remote);
+                    let shipped: Vec<(String, bool)> = frames
+                        .iter()
+                        .map(|frame| (frame.name.clone(), frame.shipped))
+                        .collect();
+                    let withheld: Vec<bool> = frames
+                        .iter()
+                        .map(|frame| frame.receiver.withheld)
+                        .collect();
+                    let arguments = variables(remote, Command::Variables { frame: 0 });
+                    assert!(value_of(&arguments, "trueBlock").withheld);
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    (shipped, withheld)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(
+                shipped,
+                [
+                    (String::from("True>>ifTrue:"), true),
+                    (String::from("Quick>>check:with:"), false),
+                    (String::from("Quick>>run"), false),
+                ]
+            );
+            assert_eq!(withheld, [true, false, false]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A withheld value cannot be the value a frame is forced to
+        /// return.
+        fn a_withheld_value_is_not_forced_as_a_return(lowering) {
+            let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
+            let (mut interpreter, class) = interpreted(QUICK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let (reason, result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Kernel", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Kernel"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let block = value_of(
+                        &variables(remote, Command::Variables { frame: 0 }),
+                        "trueBlock",
+                    )
+                    .clone();
+                    let reason = match request(
+                        remote,
+                        Command::ForceReturn {
+                            frame: 1,
+                            value: Some(block.id),
+                        },
+                    ) {
+                        Event::Refused { reason, .. } => reason,
+                        other => panic!("the refusal was expected, not {other:?}"),
+                    };
+                    set_breakpoints(remote, "Kernel", Vec::new());
+                    expect_breakpoints(remote, "Kernel");
+                    continue_stopped(remote);
+                    reason
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(reason, "the value is withheld");
+        }
+    }
+}
+
+mod memory_view {
+    use super::*;
+    use ns_runtime::debugger::{Evaluation, InstanceCount, Referrer, ValueId};
+
+    /// Three `Point`s made, the second dropped at once, an `Item` held by
+    /// a slot of each of two holders and read by a block, and a `String`:
+    /// stopped in `look:`, where the memory view finds them.
+    const MEMORY: &str = indoc! {"
+        class Memory = Object new () (
+          class Point x: anX = (
+            | public x = anX. |
+          ) ()
+          class Item = () ()
+          class Holder = (
+            | public first ::= nil. public second ::= nil. |
+          ) ()
+          public run = (
+            | kept other item left right block text |
+            text:: 'abc'.
+            kept:: Point x: 1.
+            Point x: 2.
+            other:: Point x: 3.
+            item:: Item new.
+            left:: Holder new.
+            left first: item.
+            right:: Holder new.
+            right second: item.
+            block:: [item].
+            ^(self look: item) + kept x + other x + (block value == item ifTrue: [text size - 2] ifFalse: [0])
+          )
+          look: anItem = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    /// The class declaration `path` of the program's module `Memory`.
+    fn memory_class(path: &[&str]) -> ClassName {
+        ClassName {
+            module: ModuleName::program("Memory"),
+            path: path.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    /// `MEMORY` under `lowering`, the JIT off, stopped in `look:`:
+    /// `agent` serves the stop, which is continued with the breakpoint
+    /// gone. Answers what `agent` answered.
+    fn looking<T: Send + 'static>(
+        lowering: Lowering,
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> T {
+        looking_in(interpreted(MEMORY, lowering), agent)
+    }
+
+    /// `looking` in `interpreted`, an interpreter `MEMORY` is loaded in.
+    fn looking_in<T: Send + 'static>(
+        (mut interpreter, class): (Interpreter, Root),
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> T {
+        let offset = line_start(MEMORY, "^1");
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Memory", vec![offset]),
+            move |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Memory"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let answer = agent(remote);
+                set_breakpoints(remote, "Memory", Vec::new());
+                expect_breakpoints(remote, "Memory");
+                continue_stopped(remote);
+                answer
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 6);
+        answer
+    }
+
+    /// The instance counts of the stop.
+    fn instance_counts(remote: &DebugRemote) -> Vec<InstanceCount> {
+        match request(remote, Command::InstanceCounts) {
+            Event::InstanceCounts(counts) => counts,
+            other => panic!("the instance counts were expected, not {other:?}"),
+        }
+    }
+
+    /// The count of `class` among `counts`, 0 when it has none.
+    fn count_of(counts: &[InstanceCount], class: &ClassName) -> usize {
+        counts
+            .iter()
+            .find(|count| count.class == *class)
+            .map_or(0, |count| count.count)
+    }
+
+    /// `count` instances of `class`, from the `start`th.
+    fn instances(
+        remote: &DebugRemote,
+        class: ClassName,
+        start: usize,
+        count: usize,
+    ) -> Vec<Variable> {
+        variables(
+            remote,
+            Command::Instances {
+                class,
+                start,
+                count,
+            },
+        )
+    }
+
+    /// `count` referrers of `value`, from the `start`th.
+    fn referrers(
+        remote: &DebugRemote,
+        value: ValueId,
+        start: usize,
+        count: usize,
+    ) -> Vec<Referrer> {
+        match request(
+            remote,
+            Command::Referrers {
+                value,
+                start,
+                count,
+            },
+        ) {
+            Event::Referrers(referrers) => referrers,
+            other => panic!("referrers were expected, not {other:?}"),
+        }
+    }
+
+    /// `referrers` as text: `frame <index> <name>` for a variable of a
+    /// running frame, `<name> <class>` for an object.
+    fn summary(referrers: &[Referrer]) -> Vec<String> {
+        referrers
+            .iter()
+            .map(|referrer| match referrer {
+                Referrer::Stack { frame, name } => format!("frame {frame} {name}"),
+                Referrer::Object(variable) => {
+                    format!("{} {}", variable.name, shown(variable).class_name)
+                }
+            })
+            .collect()
+    }
+
+    /// The objects among `referrers`.
+    fn objects(referrers: &[Referrer]) -> Vec<&ValueDescription> {
+        referrers
+            .iter()
+            .filter_map(|referrer| match referrer {
+                Referrer::Object(variable) => Some(shown(variable)),
+                Referrer::Stack { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The value of `look:`'s argument, the `Item`.
+    fn item(remote: &DebugRemote) -> ValueDescription {
+        value_of(
+            &variables(remote, Command::Variables { frame: 0 }),
+            "anItem",
+        )
+        .clone()
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A class's instances are counted under its declaration -- the
+        /// one dropped too, should no scavenge have run since, as a stop
+        /// collects nothing -- the counts ordered by count, and listed
+        /// paged, each named by its place.
+        fn instances_of_a_class_are_counted_and_listed(lowering) {
+            let (counts, first, rest, past) = looking(lowering, |remote| {
+                let counts = instance_counts(remote);
+                let point = memory_class(&["Point"]);
+                let first = instances(remote, point.clone(), 0, 1);
+                let rest = instances(remote, point.clone(), 1, 100);
+                let past = instances(remote, point, 100, 1);
+                (counts, first, rest, past)
+            });
+            let points = count_of(&counts, &memory_class(&["Point"]));
+            assert!(points >= 2, "{points}");
+            assert_eq!(count_of(&counts, &memory_class(&["Holder"])), 2);
+            assert_eq!(count_of(&counts, &memory_class(&["Item"])), 1);
+            assert!(
+                counts.windows(2).all(|pair| pair[0].count >= pair[1].count),
+                "{counts:?}"
+            );
+            assert_eq!(names(&first), ["#1"]);
+            assert_eq!(rest.len(), points - 1);
+            assert_eq!(rest[0].name, "#2");
+            assert!(past.is_empty());
+            for point in first.iter().chain(&rest) {
+                let point = shown(point);
+                assert_eq!(point.class_name, "Point");
+                assert!(!point.withheld);
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An object held by a slot of each of two holders and read by a
+        /// block has, first, the variables of the running frames that
+        /// hold it, innermost first, then the holders, and, under the
+        /// lowering that copies it into the block, the closure; the frame
+        /// object the block captured is `run`'s variables, not an object.
+        /// The answer pages over the whole list.
+        fn the_referrers_of_an_object_are_found(lowering) {
+            let (found, paged, holder, closures) = looking(lowering, |remote| {
+                let item = item(remote);
+                let answer = referrers(remote, item.id, 0, 100);
+                let found = summary(&answer);
+                let closures: Vec<bool> = objects(&answer)
+                    .iter()
+                    .filter(|object| object.class_name == "Closure")
+                    .map(|object| object.withheld)
+                    .collect();
+                let paged = summary(&referrers(remote, item.id, 1, 2));
+                let holders = instances(remote, memory_class(&["Holder"]), 0, 10);
+                let holder = summary(&referrers(remote, shown(&holders[0]).id, 0, 100));
+                (found, paged, holder, closures)
+            });
+            let mut expected = vec!["frame 0 anItem", "frame 1 item", "#3 Holder", "#4 Holder"];
+            if lowering == Lowering::Optimized {
+                expected.push("#5 Closure");
+                // A program's closure, which the program holds.
+                assert_eq!(closures, [false]);
+            } else {
+                assert!(closures.is_empty());
+            }
+            assert_eq!(found, expected);
+            assert_eq!(paged, ["frame 1 item", "#3 Holder"]);
+            assert_eq!(holder, ["frame 1 left"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An object only a running method's local holds is answered as
+        /// that variable alone, alike under both lowerings, and a frame's
+        /// receiver as its `self`.
+        fn a_local_and_a_receiver_refer_from_the_stack(lowering) {
+            let (kept, receiver) = looking(lowering, |remote| {
+                let run = variables(remote, Command::Variables { frame: 1 });
+                let kept = summary(&referrers(remote, value_of(&run, "kept").id, 0, 100));
+                let receiver = summary(&referrers(remote, value_of(&run, "self").id, 0, 2));
+                (kept, receiver)
+            });
+            assert_eq!(kept, ["frame 1 kept"]);
+            assert_eq!(receiver, ["frame 0 self", "frame 1 self"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame the suspend stress mode suspended into its frame object
+        /// is a frame of the stack all the same: what it holds is answered
+        /// as its variable, never as the frame object.
+        #[cfg(debug_assertions)]
+        fn a_suspended_frame_refers_from_the_stack(lowering) {
+            let mut interpreted = interpreted(MEMORY, lowering);
+            interpreted.0.set_stress_suspend(true);
+            let (kept, receiver) = looking_in(interpreted, |remote| {
+                let run = variables(remote, Command::Variables { frame: 1 });
+                let kept = summary(&referrers(remote, value_of(&run, "kept").id, 0, 100));
+                let receiver = summary(&referrers(remote, value_of(&run, "self").id, 0, 2));
+                (kept, receiver)
+            });
+            assert_eq!(kept, ["frame 1 kept"]);
+            assert_eq!(receiver, ["frame 0 self", "frame 1 self"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// An instance of a class a shipped mixin declares is withheld,
+        /// counted under its shipped declaration; a value the stop did
+        /// not hand out is refused.
+        fn a_shipped_instance_is_withheld(lowering) {
+            let (strings, refused) = looking(lowering, |remote| {
+                let counts = instance_counts(remote);
+                let string = ClassName {
+                    module: ModuleName::shipped("Kernel"),
+                    path: vec![String::from("String")],
+                };
+                assert!(count_of(&counts, &string) > 0, "{counts:?}");
+                let strings = instances(remote, string, 0, 5);
+                let refused = request(
+                    remote,
+                    Command::Referrers {
+                        value: ValueId(u32::MAX),
+                        start: 0,
+                        count: 1,
+                    },
+                );
+                (strings, refused)
+            });
+            assert!(!strings.is_empty());
+            assert!(strings.iter().all(|string| shown(string).withheld));
+            assert!(
+                matches!(
+                    &refused,
+                    Event::Refused { command, reason }
+                        if command == "Referrers" && reason == "no value of this stop has that id"
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `Value`'s class object is the superclass of the VM mirror's
+        /// class, which its referrers find: withheld, as every referrer
+        /// of it is -- each a class of the kernel's -- and none can be
+        /// marked.
+        fn the_mirror_s_class_is_withheld_among_value_s_referrers(lowering) {
+            let (labels, refusals) = looking(lowering, |remote| {
+                let value = match request(
+                    remote,
+                    Command::Evaluate {
+                        frame: 1,
+                        expression: String::from("Value"),
+                    },
+                ) {
+                    Event::Evaluated(Evaluation::Value(value)) => value,
+                    other => panic!("Value's class was expected, not {other:?}"),
+                };
+                let found = referrers(remote, value.id, 0, 1000);
+                let found = objects(&found);
+                let labels: Vec<(String, bool)> = found
+                    .iter()
+                    .map(|referrer| (referrer.label.clone(), referrer.withheld))
+                    .collect();
+                let refusals: Vec<Event> = found
+                    .iter()
+                    .map(|referrer| {
+                        request(
+                            remote,
+                            Command::Mark {
+                                value: referrer.id,
+                                label: String::from("taken"),
+                            },
+                        )
+                    })
+                    .collect();
+                (labels, refusals)
+            });
+            assert!(
+                labels.iter().any(|(label, _)| label.contains("VmMirror")),
+                "{labels:?}"
+            );
+            assert!(labels.iter().all(|(_, withheld)| *withheld), "{labels:?}");
+            for refusal in refusals {
+                assert!(
+                    matches!(
+                        &refusal,
+                        Event::Refused { reason, .. } if reason == "the value is withheld"
+                    ),
+                    "{refusal:?}"
+                );
+            }
+        }
+    }
+
+    /// A method that answers a block over its argument, so that its frame
+    /// object, the block's captured frame, returns -- under the lowering
+    /// that reads the argument by reference, keeping its registers --
+    /// while the program holds the block: stopped in `look:`.
+    const KEEPING: &str = indoc! {"
+        class Keeping = Object new () (
+          class Item = () ()
+          public run = (
+            | item block |
+            item:: Item new.
+            block:: self keep: item.
+            ^(self look: item) + (block value == item ifTrue: [1] ifFalse: [0])
+          )
+          keep: anItem = (
+            ^[anItem]
+          )
+          look: anItem = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// A program's frame object -- returned, its registers kept -- is
+        /// a referrer of what they hold, withheld though it ran the
+        /// program's own body, and cannot be marked; the program's closure
+        /// is not withheld.
+        fn a_program_s_frame_object_is_withheld(lowering) {
+            let offset = line_start(KEEPING, "^1");
+            let (mut interpreter, class) = interpreted(KEEPING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let ((found, frames, closures, refusals), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Keeping", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Keeping"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let item = value_of(
+                        &variables(remote, Command::Variables { frame: 0 }),
+                        "anItem",
+                    )
+                    .clone();
+                    let answer = referrers(remote, item.id, 0, 100);
+                    let found = summary(&answer);
+                    let objects = objects(&answer);
+                    let of_class = |class: &str| -> Vec<&ValueDescription> {
+                        objects
+                            .iter()
+                            .copied()
+                            .filter(|object| object.class_name == class)
+                            .collect()
+                    };
+                    let frames: Vec<bool> =
+                        of_class("Activation").iter().map(|frame| frame.withheld).collect();
+                    let closures: Vec<bool> =
+                        of_class("Closure").iter().map(|closure| closure.withheld).collect();
+                    let refusals: Vec<Event> = of_class("Activation")
+                        .iter()
+                        .map(|frame| {
+                            request(
+                                remote,
+                                Command::Mark {
+                                    value: frame.id,
+                                    label: String::from("frame"),
+                                },
+                            )
+                        })
+                        .collect();
+                    set_breakpoints(remote, "Keeping", Vec::new());
+                    expect_breakpoints(remote, "Keeping");
+                    continue_stopped(remote);
+                    (found, frames, closures, refusals)
+                },
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
+            match lowering {
+                Lowering::Reference => {
+                    assert_eq!(found, ["frame 0 anItem", "frame 1 item", "#3 Activation"]);
+                    assert_eq!(frames, [true]);
+                }
+                Lowering::Optimized => {
+                    assert_eq!(found, ["frame 0 anItem", "frame 1 item", "#3 Closure"]);
+                    assert_eq!(closures, [false]);
+                }
+            }
+            for refusal in refusals {
+                assert!(
+                    matches!(
+                        &refusal,
+                        Event::Refused { reason, .. } if reason == "the value is withheld"
+                    ),
+                    "{refusal:?}"
+                );
+            }
+        }
+    }
+
+    /// A program handed the platform that holds an object weakly, in a
+    /// `WeakArray`'s slot and as an `Ephemeron`'s key, and another as the
+    /// ephemeron's value: stopped in `look:with:`.
+    const WEAK: &str = indoc! {"
+        class Weak = Object new (
+          | platform |
+        ) (
+          public use: aPlatform = (
+            platform:: aPlatform
+          )
+          public run = (
+            | kernel key value weak ephemeron |
+            kernel:: platform kernel.
+            key:: Object new.
+            value:: Object new.
+            weak:: kernel WeakArray new: 1.
+            weak at: 1 put: key.
+            ephemeron:: kernel Ephemeron new.
+            ephemeron key: key; value: value.
+            ^self look: key with: value
+          )
+          look: aKey with: aValue = (
+            ^1
+          )
+        ) : ()
+    "};
+
+    /// `referrers` as `summary` writes them, but for the frame objects
+    /// among them, numbered as they come, which are answered apart with
+    /// whether each is withheld: a frame of the kernel's that returned
+    /// keeping its registers -- garbage a stop does not collect -- may
+    /// hold what it was handed, under one lowering and not the other.
+    fn without_frames(referrers: &[Referrer]) -> (Vec<String>, Vec<(String, bool)>) {
+        let mut frames = Vec::new();
+        let mut others = Vec::new();
+        for (referrer, text) in referrers.iter().zip(summary(referrers)) {
+            match referrer {
+                Referrer::Object(variable) if shown(variable).class_name == "Activation" => {
+                    frames.push((text, shown(variable).withheld));
+                }
+                _ => others.push(text),
+            }
+        }
+        (others, frames)
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A `WeakArray`'s slot and an `Ephemeron`'s key keep nothing
+        /// alive, so neither refers to what it names; an ephemeron's value
+        /// is held strongly while its key lives, so it refers to it.
+        fn weak_words_and_an_ephemeron_s_key_are_no_references(lowering) {
+            let offset = line_start(WEAK, "^1");
+            let (mut interpreter, class) = interpreted(WEAK, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("use:"), &[platform]),
+                "use:",
+            );
+            let ((key, value), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "Weak", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Weak"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let look = variables(remote, Command::Variables { frame: 0 });
+                    let key = without_frames(&referrers(remote, value_of(&look, "aKey").id, 0, 100));
+                    let value =
+                        without_frames(&referrers(remote, value_of(&look, "aValue").id, 0, 100));
+                    set_breakpoints(remote, "Weak", Vec::new());
+                    expect_breakpoints(remote, "Weak");
+                    continue_stopped(remote);
+                    (key, value)
+                },
+            );
+            let ((key, key_frames), (value, value_frames)) = (key, value);
+            assert_eq!(answered(&mut interpreter, result), 1);
+            assert_eq!(key, ["frame 0 aKey", "frame 1 key"]);
+            assert_eq!(value, ["frame 0 aValue", "frame 1 value", "#3 Ephemeron"]);
+            for (found, withheld) in [&key_frames, &value_frames].into_iter().flatten() {
+                assert!(found.ends_with("Activation") && *withheld, "{found}");
+            }
+        }
+    }
+    /// A `Box` whose `fill` returns before `look:` is reached, and whose
+    /// slot `kept` an evaluation may store a block in.
+    const RETURNING: &str = indoc! {"
+        class Returning = Object new () (
+          class Box = (
+            | public kept ::= nil. |
+          ) (
+            public fill = (
+              | inside |
+              inside:: 1.
+              ^inside + 0
+            )
+          )
+          public run = (
+            | box |
+            box:: Box new.
+            box fill.
+            ^self look: box
+          )
+          look: aBox = (
+            ^aBox kept isNil ifTrue: [1] ifFalse: [2]
+          )
+        ) : ()
+    "};
+
+    /// Runs `RETURNING` under `lowering`, stopped first in `fill`, where
+    /// `expression` is evaluated, then in `look:`, where the `Box`'s
+    /// referrers are asked for: answers them as `summary` writes them,
+    /// with whether each frame object among them is withheld, and the
+    /// small integer the run answered.
+    fn referrers_after_evaluating(
+        lowering: Lowering,
+        expression: &'static str,
+    ) -> ((Vec<String>, Vec<bool>), i64) {
+        let offsets = vec![
+            line_start(RETURNING, "^inside + 0"),
+            line_start(RETURNING, "^aBox kept"),
+        ];
+        let (mut interpreter, class) = interpreted(RETURNING, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let (answer, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Returning", offsets),
+            move |remote| {
+                expect_breakpoints(remote, "Returning");
+                expect_breakpoint_stop(remote);
+                match request(
+                    remote,
+                    Command::Evaluate {
+                        frame: 0,
+                        expression: expression.to_owned(),
+                    },
+                ) {
+                    Event::Evaluated(Evaluation::Value(_)) => {}
+                    other => panic!("{expression} was expected to answer a value, not {other:?}"),
+                }
+                continue_stopped(remote);
+                expect_breakpoint_stop(remote);
+                let look = variables(remote, Command::Variables { frame: 0 });
+                let found = referrers(remote, value_of(&look, "aBox").id, 0, 100);
+                let withheld = objects(&found)
+                    .iter()
+                    .filter(|object| object.class_name == "Activation")
+                    .map(|object| object.withheld)
+                    .collect();
+                set_breakpoints(remote, "Returning", Vec::new());
+                expect_breakpoints(remote, "Returning");
+                continue_stopped(remote);
+                (summary(&found), withheld)
+            },
+        );
+        (answer, answered(&mut interpreter, result))
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// The frame an evaluation reified, once it returned, is a frame
+        /// object nothing refers to: it keeps nothing alive, and the
+        /// receiver it holds lists only the stack's variables among its
+        /// referrers.
+        fn a_returned_frame_object_nothing_refers_to_is_no_referrer(lowering) {
+            let ((found, frames), answer) = referrers_after_evaluating(lowering, "inside");
+            assert_eq!(found, ["frame 0 aBox", "frame 1 box"]);
+            assert!(frames.is_empty());
+            assert_eq!(answer, 1);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A block an evaluation stored in the receiver's slot keeps the
+        /// frames it reaches, the returned `fill`'s among them, whose
+        /// frame objects are listed among the receiver's referrers,
+        /// withheld as every frame object is.
+        fn a_returned_frame_object_a_stored_block_keeps_is_a_referrer(lowering) {
+            let ((found, frames), answer) = referrers_after_evaluating(lowering, "kept:: [inside]");
+            assert_eq!(found[..2], ["frame 0 aBox", "frame 1 box"]);
+            assert!(!frames.is_empty(), "{found:?}");
+            assert!(frames.iter().all(|withheld| *withheld));
+            assert_eq!(answer, 2);
+        }
+    }
+
+    /// A block that runs after its method returned, held by no named
+    /// variable: only its activation's header and its caller's scratch
+    /// register hold its closure.
+    const OUTLIVING: &str = indoc! {"
+        class Outliving = Object new () (
+          public run = (
+            ^(self make: 3) value
+          )
+          make: limit = (
+            ^[
+              limit + 1
+            ]
+          )
+        ) : ()
+    "};
+
+    /// The running block's closure keeps its returned home's frame
+    /// object, which the reference lowering's block reaches by reference
+    /// for `limit`: that frame object refers to the receiver, and is
+    /// listed among its referrers, withheld.
+    #[test]
+    fn a_running_block_keeps_its_returned_home_s_frame_object() {
+        let offset = line_start(OUTLIVING, "limit + 1");
+        let (mut interpreter, class) = interpreted(OUTLIVING, Lowering::Reference);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let ((found, frames), result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Outliving", vec![offset]),
+            |remote| {
+                let (id, _) = resolved(&expect_breakpoints(remote, "Outliving"));
+                assert_eq!(expect_breakpoint_stop(remote), [id]);
+                let block = variables(remote, Command::Variables { frame: 0 });
+                let found = referrers(remote, value_of(&block, "self").id, 0, 100);
+                let frames: Vec<bool> = objects(&found)
+                    .iter()
+                    .filter(|object| object.class_name == "Activation")
+                    .map(|object| object.withheld)
+                    .collect();
+                set_breakpoints(remote, "Outliving", Vec::new());
+                expect_breakpoints(remote, "Outliving");
+                continue_stopped(remote);
+                (summary(&found), frames)
+            },
+        );
+        assert_eq!(answered(&mut interpreter, result), 4);
+        assert_eq!(frames, [true], "{found:?}");
     }
 }

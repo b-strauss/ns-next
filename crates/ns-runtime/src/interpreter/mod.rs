@@ -74,6 +74,11 @@ pub(crate) enum Signal<'gc> {
     /// of deep sends and returns that never signals
     /// (`docs/design/execution.md`, "What exceptions cost").
     Terminate(Box<NewspeakError<'gc>>),
+    /// The debugger's restart of a frame or its forced return
+    /// (`UnwindAction::RestartFrame`, `UnwindAction::ForceReturn`), started
+    /// at a stop and raised again as it was once an `ensure:` block it ran
+    /// returned (`unwind::signal_of`). Boxed, as `Terminate` is.
+    Unwind(Box<PendingUnwind<'gc>>),
 }
 
 pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
@@ -118,7 +123,9 @@ pub struct HostError {
 /// at most one per level of block nesting above each counted one, the stack
 /// holds at most 129 x (L + `DEPTH_RESERVE`) frames -- 128 being the
 /// parser's nesting ceiling, which `image::decode` holds an artifact to as
-/// well (`docs/design/execution.md`, "The depth limit").
+/// well -- and while the debugger evaluates an expression at a stop
+/// 129 x (L + 2 x `DEPTH_RESERVE` + `EVALUATION_DEPTH_RESERVE`)
+/// (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 
 /// How far past L the stack may grow while a VM error raised near L is
@@ -136,6 +143,17 @@ pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 /// unsignalled, since signalling needs the room that has just run out
 /// (`Mutator::overrun_of_the_reserve`).
 pub const DEPTH_RESERVE: usize = 1_000;
+
+/// How many counted activations an expression the debugger evaluates may
+/// push above its base, however close to L the stop stands: while it runs
+/// the limit is `max(L, base + EVALUATION_DEPTH_RESERVE)`, the base its
+/// base frame's counted depth, and a VM error within it takes
+/// `DEPTH_RESERVE` above that. The stop that needs it most is an exception
+/// breakpoint on the stack overflow itself, where every watch would fail
+/// otherwise (`docs/design/debugger.md`, "Evaluation", "At the depth
+/// limit"). Evaluations do not nest, so the stack holds at most one such
+/// term above L and its reserve.
+pub(crate) const EVALUATION_DEPTH_RESERVE: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
@@ -679,6 +697,17 @@ pub struct Interpreter {
     /// since a stop reads the whole run's stack. Debug builds only.
     #[cfg(debug_assertions)]
     stress_pause: Option<safepoint::StressSchedule>,
+    /// The pause stress mode's stop an evaluation its reader began left to
+    /// run, kept, as the attached debugger keeps its own
+    /// (`Debugger::stop`), until the safepoint the evaluation's end asks
+    /// for re-enters it (`debugger::StressReader`). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_stop: Option<crate::debugger::Stop>,
+    /// The evaluations the pause stress mode's reader compiled, kept for
+    /// its later stops in the same bodies
+    /// (`debugger::evaluation::StressCompilations`). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_compilations: crate::debugger::evaluation::StressCompilations,
     /// Whether the breakpoint stress mode is on
     /// (`NS_NEXT_STRESS_BREAKPOINTS`, or `set_stress_breakpoints`): at
     /// every safepoint, every statement start of each running body not
@@ -765,6 +794,10 @@ impl Interpreter {
             stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             stress_pause: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_PAUSE"),
+            #[cfg(debug_assertions)]
+            stress_stop: None,
+            #[cfg(debug_assertions)]
+            stress_compilations: crate::debugger::evaluation::StressCompilations::default(),
             #[cfg(debug_assertions)]
             stress_breakpoints: safepoint::stress_breakpoints_from_env(),
             #[cfg(debug_assertions)]
@@ -985,6 +1018,15 @@ impl Interpreter {
                 self.running = true;
                 let result = crate::vm::run(self, activation);
                 self.running = false;
+                // An evaluation's end asks for the safepoint that re-enters
+                // the stop kept for it before the frame below runs again, so
+                // no run ends with the pause stress mode's stop still kept.
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    self.stress_stop.is_none(),
+                    "internal: the pause stress mode's stop outlived its run"
+                );
+                self.drop_kept_at_run_end();
                 self.serve_between_runs();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
@@ -996,9 +1038,11 @@ impl Interpreter {
                     mutator.breakpoints.drop_past_once();
                     // A step the run's end left goes on in the program's
                     // next run, its frames gone. An exception's stop no
-                    // poll served goes with the run, and its request bit.
+                    // poll served goes with the run, and its request bit,
+                    // and so does an evaluation's answer no stop took.
                     crate::debugger::stepping::run_ended(mutator);
                     crate::debugger::exceptions::drop_pending(mutator);
+                    crate::debugger::evaluation::run_ended(mutator);
                 });
                 result
             }
@@ -1856,6 +1900,9 @@ impl<'gc> Mutator<'gc> {
             // one. A restart then aimed, like such a `^`, at no activation
             // of the host's.
             Err(Signal::Return(..) | Signal::Restart(_)) => Err(HostSignal::Return),
+            Err(Signal::Unwind(_)) => {
+                unreachable!("internal: only a run's stop starts the debugger's unwind")
+            }
         }
     }
 
@@ -2087,7 +2134,10 @@ impl<'gc> Mutator<'gc> {
     /// activation count does not bound. While the reserve is held -- a VM
     /// error's `signal` is running or being pushed -- the run ends instead,
     /// as an overrun of the reserve does, so that a `signal` the
-    /// reservation refuses in turn cannot raise the error again.
+    /// reservation refuses in turn cannot raise the error again -- inside
+    /// an expression the debugger evaluates, the evaluation ends instead,
+    /// at its base, which no termination but the debugger's own passes
+    /// (`interpreter::unwind`, `at_evaluation_base`).
     #[cold]
     #[inline(never)]
     fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
@@ -2098,12 +2148,17 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// A counted push at or past L. While a VM error's `signal` holds the
-    /// reserve, the push is allowed up to `DEPTH_RESERVE` further; past it,
-    /// the run ends (`overrun_of_the_reserve`). Otherwise it is refused
-    /// with L's error, which the unwinder signals -- taking the reserve --
-    /// unless it is the push of the `doesNotUnderstand:` that has just
-    /// taken it (`take_depth_reserve_for_does_not_understand`).
+    /// A counted push at or past L. Below the limit an evaluation the
+    /// debugger runs raised (`ordinary_depth_limit`) it goes ahead. While a
+    /// VM error's `signal` holds the reserve, the push is allowed up to
+    /// `DEPTH_RESERVE` further; past it, the run ends
+    /// (`overrun_of_the_reserve`) -- or, inside an evaluation, the
+    /// evaluation: the termination's unwind ends at its base, which answers
+    /// the overrun's error (`interpreter::unwind`, `at_evaluation_base`).
+    /// Otherwise it is refused with L's error, which the unwinder signals
+    /// -- taking the reserve -- unless it is the push of the
+    /// `doesNotUnderstand:` that has just taken it
+    /// (`take_depth_reserve_for_does_not_understand`).
     #[cold]
     #[inline(never)]
     fn push_past_the_limit(
@@ -2112,14 +2167,17 @@ impl<'gc> Mutator<'gc> {
         arguments: Arguments<'_, 'gc>,
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
+        let depth = self.heap.counted_depth();
+        let limit = self.ordinary_depth_limit();
         // The push that makes a freshly taken reserve held is asked about
         // first: `depth_reserve_held` would find nothing above its activation
         // yet, and forget it.
-        let refusal = if !self.pushes_the_reserves_does_not_understand(&header)
+        let refusal = if depth >= limit
+            && !self.pushes_the_reserves_does_not_understand(&header)
             && !self.depth_reserve_held()
         {
             recursion_too_deep(&header)
-        } else if self.heap.counted_depth() < MAX_ACTIVATION_DEPTH + DEPTH_RESERVE {
+        } else if depth < limit + DEPTH_RESERVE {
             return self
                 .heap
                 .push_activation(*header, arguments, temporaries)
@@ -2133,6 +2191,15 @@ impl<'gc> Mutator<'gc> {
         // anything before its push has succeeded -- a nested class's
         // creation is marked only then -- so nothing is undone here.
         Err(refusal)
+    }
+
+    /// The depth limit a counted push meets while the reserve is free: L,
+    /// or the higher limit an expression the debugger evaluates has while
+    /// it runs (`EVALUATION_DEPTH_RESERVE`). Read only on the cold paths:
+    /// the push's own check compares with L, which the evaluation's limit
+    /// never undercuts.
+    pub(crate) fn ordinary_depth_limit(&self) -> usize {
+        MAX_ACTIVATION_DEPTH + self.heap.evaluation_depth_raise()
     }
 
     /// Whether the depth limit's reserve is held: its activation is still
@@ -2238,7 +2305,7 @@ impl<'gc> Mutator<'gc> {
         defining_class: ClassReference<'gc>,
     ) {
         if !defining_class.same(self.builtin_class(BuiltinClass::Object))
-            || (self.heap.counted_depth() < MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+            || (self.heap.counted_depth() < self.ordinary_depth_limit() - DEPTH_RESERVE
                 && !self.heap.stack_is_within_the_reserve_of_its_limit())
             || self.depth_reserve_held()
         {
@@ -2989,7 +3056,25 @@ impl<'gc> Mutator<'gc> {
             Continuation::ReturnToSuspended(_) => unreachable!(
                 "internal: the run loop resumes a suspended sender before it applies the continuation"
             ),
+            Continuation::Evaluated => {
+                unreachable!("internal: vm::finish ends an evaluation itself")
+            }
+            // A method breakpoint's condition at an exit by an unwind
+            // answered: the exit is decided, and the unwind goes on.
+            Continuation::ExitEvaluated(pending) => Err(self.exit_evaluated(*pending, value)),
         }
+    }
+
+    /// `resume` of a method breakpoint's condition at an exit by an unwind,
+    /// which answered `value`: the exit is decided, and the unwind it
+    /// interrupted, `pending`, is raised again. Out of line and cold: only
+    /// a debugged program's condition returns this way, and `resume` is on
+    /// every native's return path.
+    #[cold]
+    #[inline(never)]
+    fn exit_evaluated(&mut self, pending: PendingUnwind<'gc>, value: Value<'gc>) -> Signal<'gc> {
+        crate::debugger::conditions::exit_answered(self, value);
+        unwind::signal_of(pending)
     }
 
     /// What a continuation undoes when its activation is thrown away rather
@@ -3423,6 +3508,21 @@ impl<'gc> Mutator<'gc> {
             (Some(object), Some(mirror)) => object.same(mirror),
             _ => false,
         }
+    }
+
+    /// Whether `value` is the VM mirror's class or that class's metaclass:
+    /// neither has a declaration, and either in a program's hands would
+    /// name what lock 4 keeps nameless (`docs/design/core-library.md`,
+    /// "The VM mirror is the whole Rust boundary").
+    pub(crate) fn is_vm_mirror_class(&self, value: Value<'gc>) -> bool {
+        let (Some(object), Some(mirror)) = (
+            value.as_object(),
+            self.vm_mirror.and_then(|mirror| mirror.as_object()),
+        ) else {
+            return false;
+        };
+        let class = self.heap.object_class(mirror);
+        object.same(class) || object.same(self.heap.object_class(class))
     }
 
     /// A class object around an already-computed application. For an

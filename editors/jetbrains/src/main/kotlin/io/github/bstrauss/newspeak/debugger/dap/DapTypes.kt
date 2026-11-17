@@ -20,7 +20,12 @@ data class DapSource(val name: String?, val path: String?, val sourceReference: 
     }
 }
 
-/** One frame of a `stackTrace` response; a frame without a location has no source and line 0. */
+/**
+ * One frame of a `stackTrace` response; a frame without a location has no
+ * source and line 0. [shipped] is ns-next's own `nsNext/shipped`: the
+ * frame runs a body of a shipped module, a library frame. [canRestart] is
+ * false only where the agent says so, as DAP reads a missing one.
+ */
 data class DapStackFrame(
     val id: Int,
     val name: String,
@@ -30,6 +35,8 @@ data class DapStackFrame(
     val endLine: Int?,
     val endColumn: Int?,
     val presentationHint: String?,
+    val shipped: Boolean = false,
+    val canRestart: Boolean = true,
 ) {
     companion object {
         fun from(json: JsonObject) = DapStackFrame(
@@ -41,6 +48,8 @@ data class DapStackFrame(
             endLine = json.intOrNull("endLine"),
             endColumn = json.intOrNull("endColumn"),
             presentationHint = json.stringOrNull("presentationHint"),
+            shipped = json.booleanOrNull("nsNext/shipped") ?: false,
+            canRestart = json.booleanOrNull("canRestart") ?: true,
         )
     }
 }
@@ -57,21 +66,80 @@ data class DapScope(val name: String, val presentationHint: String?, val variabl
     }
 }
 
-/** One variable of a `variables` response; [variablesReference] is 0 for a value without children. */
+/**
+ * One variable of a `variables` response, or the value an `evaluate` or a
+ * `setVariable` answers; [variablesReference] is 0 for a value without
+ * children. [valueReference] is ns-next's own `nsNext/valueReference`, by
+ * which a mark and the referrers name the value until the program goes
+ * on; a withheld value has none and is [readOnly]. A [virtual] variable
+ * names a place rather than holds a value: a referrer on the stack.
+ */
 data class DapVariable(
     val name: String,
     val value: String,
     val type: String?,
     val variablesReference: Int,
     val indexedVariables: Int?,
+    val valueReference: Int? = null,
+    val readOnly: Boolean = false,
+    val virtual: Boolean = false,
 ) {
     companion object {
-        fun from(json: JsonObject) = DapVariable(
+        fun from(json: JsonObject) = shown(json.stringOrNull("name").orEmpty(), json.stringOrNull("value").orEmpty(), json)
+
+        /** An `evaluate` response's value, named [name]: its text is the body's `result`. */
+        fun evaluated(name: String, json: JsonObject) = shown(name, json.stringOrNull("result").orEmpty(), json)
+
+        private fun shown(name: String, value: String, json: JsonObject): DapVariable {
+            val hint = json.objectOrNull("presentationHint")
+            val attributes = hint?.get("attributes")
+                ?.takeIf { element -> element.isJsonArray }
+                ?.asJsonArray
+                ?.mapNotNull { element -> element.takeIf { item -> item.isJsonPrimitive }?.asString }
+                .orEmpty()
+            return DapVariable(
+                name = name,
+                value = value,
+                type = json.stringOrNull("type"),
+                variablesReference = json.intOrNull("variablesReference") ?: 0,
+                indexedVariables = json.intOrNull("indexedVariables"),
+                valueReference = json.intOrNull("nsNext/valueReference"),
+                readOnly = "readOnly" in attributes,
+                virtual = hint?.stringOrNull("kind") == "virtual",
+            )
+        }
+    }
+}
+
+/**
+ * One target of a `stepInTargets` response: a send of the line, its id
+ * for `stepIn`'s `targetId`, and its span, 1-based, in UTF-16 columns.
+ */
+data class DapStepInTarget(val id: Int, val label: String, val line: Int?, val column: Int?, val endLine: Int?, val endColumn: Int?) {
+    companion object {
+        fun from(json: JsonObject) = DapStepInTarget(
+            id = json.intOrNull("id") ?: 0,
+            label = json.stringOrNull("label").orEmpty(),
+            line = json.intOrNull("line"),
+            column = json.intOrNull("column"),
+            endLine = json.intOrNull("endLine"),
+            endColumn = json.intOrNull("endColumn"),
+        )
+    }
+}
+
+/**
+ * One class of an `nsNext/instanceCounts` response: its name,
+ * `Module.Path.To.Class`, how many instances the object space holds, and
+ * whether a shipped module declares it -- a program may declare a module
+ * of a shipped module's name.
+ */
+data class DapInstanceCount(val name: String, val count: Int, val shipped: Boolean) {
+    companion object {
+        fun from(json: JsonObject) = DapInstanceCount(
             name = json.stringOrNull("name").orEmpty(),
-            value = json.stringOrNull("value").orEmpty(),
-            type = json.stringOrNull("type"),
-            variablesReference = json.intOrNull("variablesReference") ?: 0,
-            indexedVariables = json.intOrNull("indexedVariables"),
+            count = json.intOrNull("count") ?: 0,
+            shipped = json.booleanOrNull("nsNext/shipped") ?: false,
         )
     }
 }

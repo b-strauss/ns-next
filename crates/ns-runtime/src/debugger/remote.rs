@@ -6,6 +6,7 @@
 //! the VM's thread, so everything that crosses is text and numbers, and a
 //! value is named by a `ValueId` the stop that handed it out resolves.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -15,20 +16,22 @@ use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children` and `ModuleText` are served only
-/// while the program is stopped; one that arrives while it runs is refused
-/// (`Event::Refused`). `Terminate` is served either way. An agent waits
-/// for `Event::Stopped` before it sends a command only a stop serves: one
-/// sent right after `DebugRemote::pause` is refused or served depending
-/// on whether a safepoint drains the queue before the stop or the stop
-/// serves it. A command is served by the run it arrives during; one
-/// queued while no run executes, or still queued when a run ends, is
-/// dropped and answered by `Event::Refused`, its reason that no run
-/// executes. A configuration command -- `SetBreakpoints`,
-/// `SetMethodBreakpoints`, `SetStepFilters`, `SetExceptionBreakpoints` --
-/// is served wherever commands are taken instead: at a safepoint while
-/// the program runs, at a stop, and when a run starts or ends, for one
-/// queued between runs.
+/// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
+/// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets`,
+/// `StepIntoTarget`, `Mark`, `InstanceCounts`, `Instances` and
+/// `Referrers` are served only while the program is stopped; one that
+/// arrives while it runs is refused (`Event::Refused`). `Terminate` is
+/// served either way. An agent waits for `Event::Stopped` before it sends
+/// a command only a stop serves: one sent right after `DebugRemote::pause`
+/// is refused or served depending on whether a safepoint drains the queue
+/// before the stop or the stop serves it. A command is served by the run
+/// it arrives during; one queued while no run executes, or still queued
+/// when a run ends, is dropped and answered by `Event::Refused`, its
+/// reason that no run executes. A configuration command --
+/// `SetBreakpoints`, `SetMethodBreakpoints`, `SetStepFilters`,
+/// `SetExceptionBreakpoints`, `Unmark` -- is served wherever commands are
+/// taken instead: at a safepoint while the program runs, at a stop, and
+/// when a run starts or ends, for one queued between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// The stopped program goes on.
@@ -146,6 +149,247 @@ pub enum Command {
         module: ModuleName,
         known_revision: Option<u64>,
     },
+    /// Evaluates `expression` -- a code body, temporaries then statements,
+    /// assigning with `::` -- as a block standing in the frame at index
+    /// `frame` of the stack trace (`docs/design/debugger.md`, decision 8):
+    /// it reads and writes the frame's variables, and its implicit
+    /// receiver sends reach what the frame's method's would. It runs on
+    /// the stopped program's thread above every frame, going past every
+    /// breakpoint it meets, and the program stays stopped. Served only
+    /// while the program is stopped; answered by `Event::Evaluated`, or by
+    /// `Event::Refused` for:
+    /// - a frame index past the stack (`"no frame at that index"`);
+    /// - a frame of the core library (`"the frame is the core
+    ///   library's"`);
+    /// - a frame whose source is not known (`"the frame's source is not
+    ///   known"`);
+    /// - an expression that does not compile (`"the expression does not
+    ///   compile: <message>"`);
+    /// - an expression holding a `^`, nested blocks included (`"a ^
+    ///   cannot leave an evaluation"`);
+    /// - an expression that assigns a name that is no assignable variable
+    ///   of the frame -- `self`, a parameter, an immutable local --
+    ///   (`"<name> is not assignable"`);
+    /// - an expression that assigns a variable a block may already hold a
+    ///   copy of (`"<name> is captured by a block made before this
+    ///   point"`; `docs/design/debugger.md`, "Assigning a captured
+    ///   variable");
+    /// - an expression that assigns a vector variable whose frame has not
+    ///   made its vector yet (`"<name> does not exist yet at this
+    ///   point"`; "A vector not made yet");
+    /// - an expression that reads or assigns a variable the variables view
+    ///   shows as not available (`"<name> is not available here"`; "A
+    ///   variable not available");
+    /// - an evaluation the activation stack has no room to push (`"the
+    ///   stack has no room for the evaluation"`);
+    /// - any expression at a stop the debugger's termination makes, in an
+    ///   `ensure:` block the termination runs (`"the program is
+    ///   terminating"`; "Continuing and terminating").
+    Evaluate { frame: usize, expression: String },
+    /// Sets the variable `name` of the frame at index `frame` of the stack
+    /// trace to what `expression`, one expression, answers, evaluated as
+    /// `Evaluate` evaluates the assignment `name:: expression`, built
+    /// around the parsed expression. Served only while the program is
+    /// stopped; answered by `Event::VariableSet`, by `Event::Evaluated`
+    /// with the error the expression ended with, or by `Event::Refused`
+    /// for what `Evaluate` refuses, a name that is not an assignable
+    /// variable of the frame -- `"<name> is not assignable"` -- and a
+    /// variable a block may already hold a copy of -- `"<name> is captured
+    /// by a block made before this point"` (`docs/design/debugger.md`,
+    /// "Assigning a captured variable") -- and a vector variable whose
+    /// vector does not exist yet -- `"<name> does not exist yet at this
+    /// point"` -- and a variable not available -- `"<name> is not
+    /// available here"`.
+    SetVariable {
+        frame: usize,
+        name: String,
+        expression: String,
+    },
+    /// Aborts the running evaluation -- an `Evaluate`'s, a `SetVariable`'s
+    /// or a breakpoint condition's or log expression's -- as a pause does
+    /// (`docs/design/debugger.md`, "Evaluation", "Aborting"), but in
+    /// sequence with the other commands, so that it never outlives the
+    /// evaluation it was meant for: served at the next safepoint of the
+    /// evaluation, it is answered by `Event::AbortTaken`, and the
+    /// evaluation's own answer follows once the unwind to its base ended
+    /// -- `Event::Evaluated(Evaluation::Aborted)` for an `Evaluate` or a
+    /// `SetVariable`, the stop an aborted condition makes for one --
+    /// unless a `Terminate` ends the run first. Where no evaluation runs
+    /// -- at a stop, the evaluation it was meant for already answered,
+    /// while the program runs, or after another `AbortEvaluation` drained
+    /// at the same safepoint took the abort -- it is moot, answered by
+    /// `Event::Refused` (`"no evaluation runs"`), and leaves nothing
+    /// armed.
+    AbortEvaluation,
+    /// Runs the frame at index `frame` of the stack trace again from its
+    /// start: every frame above it is unwound, its `ensure:` and
+    /// `ifCurtailed:` blocks run, and the frame's named temporaries are
+    /// `nil` again, its arguments and a block's copied values kept --
+    /// its indirection vector too, its elements `nil`, so that a block
+    /// its first run made sees the second's (`docs/design/debugger.md`,
+    /// "Restart frame and force return"). Answered by `Event::Continued`,
+    /// then the stop at the frame's first statement start, a step into's
+    /// (`StopReason::Step`), or any other stop the program makes first;
+    /// refused, the program still stopped, for a frame index past the
+    /// stack, a frame of the core library and a stop during the
+    /// debugger's termination (`"the program is terminating"`).
+    RestartFrame { frame: usize },
+    /// Makes the frame at index `frame` of the stack trace return `value`
+    /// -- a value the stop handed out, `nil` when `None` -- to its sender
+    /// at once: every frame above it is unwound, its `ensure:` and
+    /// `ifCurtailed:` blocks run, and its sender takes the value as it
+    /// takes the frame's own return's, a superclass clause's value
+    /// checked as the class it must be. An initializer's frame answers
+    /// its instance, as its end does, the slots it did not initialize
+    /// `nil`. Answered by `Event::Continued`, then the stop where the
+    /// sender goes on, a step out's (`StopReason::Step`), or any other
+    /// stop the program makes first; refused, the program still stopped,
+    /// for a frame index past the stack, a frame of the core library, a
+    /// value the stop did not hand out and a value given for an
+    /// initializer's frame -- `"an initializer returns self"` -- and a
+    /// stop during the debugger's termination (`"the program is
+    /// terminating"`).
+    ForceReturn {
+        frame: usize,
+        value: Option<ValueId>,
+    },
+    /// The places a smart step into from the top frame may stop at
+    /// (`docs/design/debugger.md`, decision 3, "Smart step into a
+    /// block"): the sends of the frame's statement from where it stands
+    /// to the statement's end, in the order they run, then the block
+    /// literals those sends take that run as closures. An inlinable form
+    /// -- `ifTrue:`, `and:`, `whileTrue:` with literal blocks -- is no
+    /// target, and neither is its block, which runs as the frame's own
+    /// code: the sends its blocks hold are, once each, in the order the
+    /// source writes them, the same under both lowerings. At an
+    /// exception's stop, the top frame is the one a step steps from, the
+    /// first shown below the exception's machinery, and its targets begin
+    /// past the send it waits on. Served only while the program is
+    /// stopped; answered by
+    /// `Event::StepInTargets`, empty for a frame without metadata, a
+    /// factory's and an initializer's at its header stop.
+    StepInTargets,
+    /// A step into that stops only at the target `target` names, its id
+    /// among the targets `StepInTargets` answers at this stop: a send's
+    /// stops at a push whose sender stands at that send, a block's at the
+    /// block body's first statement start in an activation of a closure
+    /// the top frame made; either stops as a step over does once the
+    /// statement is done without it -- the send answered without a push,
+    /// the block never run. Answered as `StepInto` is, or by
+    /// `Event::Refused` for an id no target has -- `"no such target"` --
+    /// the program still stopped.
+    StepIntoTarget { target: u32 },
+    /// Marks the value `value` names, a value the stop handed out, with
+    /// `label`, by which every later evaluation of the attachment names
+    /// it as `<label>_DebugLabel` and every value description shows it
+    /// (`docs/design/debugger.md`, "Marking objects"): held until it is
+    /// unmarked or the debugger detaches, across stops. Marking an object
+    /// marked before renames it, and a label another object had moves to
+    /// this one. Served only while the program is stopped; answered by
+    /// `Event::Marked`, or by `Event::Refused` for a value the stop did
+    /// not hand out, a withheld one -- `"the value is withheld"` -- and a
+    /// label that is no identifier or ends in `_DebugLabel` --
+    /// `"<label> is not a label"`.
+    Mark { value: ValueId, label: String },
+    /// Takes the mark `label` off the object it marks, if one does. A
+    /// configuration command, served while the program runs too, so that
+    /// an agent whose client left takes the client's marks off before
+    /// any condition of the next client's is decided against them, and
+    /// they keep their objects alive no longer; answered by
+    /// `Event::Marked`.
+    Unmark { label: String },
+    /// How many instances each class declaration has
+    /// (`docs/design/debugger.md`, "The memory view"), counted by a walk
+    /// of the object space: every object it holds, those nothing reaches
+    /// any more too, since a stop collects nothing. Served only while the
+    /// program is stopped; answered by `Event::InstanceCounts`.
+    InstanceCounts,
+    /// `count` of the instances of the class declaration `class` names,
+    /// from the `start`th, found as `InstanceCounts` counts them, grouped
+    /// by the application they are instances of: each named `#<n>`, its
+    /// place among them counted from 1, and held for the stop as every
+    /// value it hands out, an instance of a class a shipped module
+    /// declares withheld. Served only while the program is stopped;
+    /// answered by `Event::Variables`, empty for a name no declaration
+    /// with instances has.
+    Instances {
+        class: ClassName,
+        start: usize,
+        count: usize,
+    },
+    /// `count` of what refers to the value `value` names, a value the stop
+    /// handed out, from the `start`th (`docs/design/debugger.md`, "The
+    /// memory view"): first each variable of a frame of the stack trace,
+    /// running or suspended into its frame object, that holds it, its
+    /// receiver as `self`, innermost frame first, as `Variables` reads it
+    /// -- a scratch register is no variable and counts for none -- then
+    /// each object a word of which that keeps what it names alive names
+    /// it, in the space's order: a closure's copied values and captured
+    /// frame, a suspended or returned frame object's fields and registers,
+    /// but neither an object's class word, a weak word nor an
+    /// `Ephemeron`'s key. A frame object married to a running frame of the
+    /// stack, or suspended as one of them, is that frame's variables,
+    /// never an object of its own, and a returned frame object nothing
+    /// living refers to -- the implementation's artefact, which keeps
+    /// nothing alive -- is left out. An object is named and held as `Instances`
+    /// names and holds them, numbered by its place in the whole answer,
+    /// and withheld when a shipped module declares its class -- a closure
+    /// and a frame object when the body it captured or runs is shipped --
+    /// or its class has no declaration. Served only while the program is
+    /// stopped; answered by `Event::Referrers`, empty for a value that is
+    /// no object, or by `Event::Refused` for a value the stop did not
+    /// hand out.
+    Referrers {
+        value: ValueId,
+        start: usize,
+        count: usize,
+    },
+}
+
+/// A place a smart step into may stop at (`Command::StepInTargets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepInTarget {
+    /// What `Command::StepIntoTarget` names it by: its position among the
+    /// targets, valid until the program goes on.
+    pub id: u32,
+    /// A send's selector, `at:put:`; a block's `[] in ` and the selector
+    /// of the send that takes it.
+    pub label: String,
+    /// The first token of a send's selector, or a block's literal, in its
+    /// module's current text.
+    pub span: ns_syntax::Span,
+    /// Whether choosing it stops at the push its send makes, or at the
+    /// first statement of its block, in an activation of a closure the
+    /// frame made.
+    pub kind: StepInTargetKind,
+}
+
+/// What a smart step into's target is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepInTargetKind {
+    /// A send of the statement.
+    Send,
+    /// A block literal a send of the statement takes, run as a closure.
+    Block,
+}
+
+/// What an evaluation answered (`Command::Evaluate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Evaluation {
+    /// The expression's value, held for the stop as every value it hands
+    /// out.
+    Value(ValueDescription),
+    /// An exception no handler within the expression took, whose default
+    /// action ended the evaluation as it would have ended the run: its
+    /// `description` names the exception's class and gives its text, and
+    /// `exception` is the exception itself -- nil for an error the VM
+    /// ended the evaluation with that no exception carried.
+    Error {
+        description: String,
+        exception: ValueDescription,
+    },
+    /// The evaluation was stopped before it answered.
+    Aborted,
 }
 
 /// A method a method breakpoint names: by its selector, the class
@@ -162,6 +406,15 @@ pub struct MethodBreakpoint {
     /// while the debugger is attached from the moment the breakpoint is
     /// set; `None` stops at every one.
     pub hit_condition: Option<HitCondition>,
+    /// An expression evaluated in the frame at each hit before the hit is
+    /// counted -- at an exit by an unwind, in the frame the unwind leaves,
+    /// before it is popped: only a hit at which it answers `true` is
+    /// counted and decided by `hit_condition`; `None` counts every hit.
+    pub condition: Option<String>,
+    /// What the breakpoint logs, a logpoint's message, instead of
+    /// stopping: sent as `Event::Logged` at every hit that would stop;
+    /// `None` stops.
+    pub log: Option<Vec<LogPart>>,
 }
 
 /// A line breakpoint as `Command::SetBreakpoints` asks for it.
@@ -173,6 +426,10 @@ pub struct LineBreakpoint {
     /// statement is a hit, counted while the debugger is attached from the
     /// moment the breakpoint is set; `None` stops at every one.
     pub hit_condition: Option<HitCondition>,
+    /// As `MethodBreakpoint::condition`.
+    pub condition: Option<String>,
+    /// As `MethodBreakpoint::log`.
+    pub log: Option<Vec<LogPart>>,
 }
 
 impl LineBreakpoint {
@@ -181,8 +438,21 @@ impl LineBreakpoint {
         LineBreakpoint {
             offset,
             hit_condition: None,
+            condition: None,
+            log: None,
         }
     }
+}
+
+/// A part of a logpoint's message (`docs/design/debugger.md`, "Hit counts
+/// and temporary breakpoints").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogPart {
+    /// Text logged as it is.
+    Text(String),
+    /// An expression evaluated in the frame at the hit, as a condition is,
+    /// whose `printString` is logged.
+    Expression(String),
 }
 
 /// Which hits of a breakpoint stop, by the hit's number, the first being
@@ -294,6 +564,18 @@ impl Command {
             Command::SetMethodBreakpoints(_) => "SetMethodBreakpoints",
             Command::SetExceptionBreakpoints { .. } => "SetExceptionBreakpoints",
             Command::ModuleText { .. } => "ModuleText",
+            Command::Evaluate { .. } => "Evaluate",
+            Command::SetVariable { .. } => "SetVariable",
+            Command::AbortEvaluation => "AbortEvaluation",
+            Command::RestartFrame { .. } => "RestartFrame",
+            Command::ForceReturn { .. } => "ForceReturn",
+            Command::StepInTargets => "StepInTargets",
+            Command::StepIntoTarget { .. } => "StepIntoTarget",
+            Command::Mark { .. } => "Mark",
+            Command::Unmark { .. } => "Unmark",
+            Command::InstanceCounts => "InstanceCounts",
+            Command::Instances { .. } => "Instances",
+            Command::Referrers { .. } => "Referrers",
         }
     }
 }
@@ -323,7 +605,8 @@ pub enum Event {
     },
     /// The answer to `Command::StackTrace`.
     StackTrace(Vec<FrameDescription>),
-    /// The answer to `Command::Variables` and `Command::Children`.
+    /// The answer to `Command::Variables`, `Command::Children` and
+    /// `Command::Instances`.
     Variables(Vec<Variable>),
     /// The command `command` names (`Command::name`) was not served, for
     /// `reason`.
@@ -356,6 +639,59 @@ pub enum Event {
         revision: u64,
         text: ModuleTextAnswer,
     },
+    /// The answer to `Command::Evaluate`, once the evaluation ended; the
+    /// program is still stopped, at the stop it was evaluated at.
+    Evaluated(Evaluation),
+    /// The answer to `Command::SetVariable`: the variable as
+    /// `Command::Variables` now shows it. The program is still stopped.
+    VariableSet(Variable),
+    /// The answer to `Command::AbortEvaluation` served while an
+    /// evaluation runs: the evaluation is aborted, and its own answer
+    /// follows once the unwind to its base ended
+    /// (`Command::AbortEvaluation`).
+    AbortTaken,
+    /// The logpoint `breakpoint` was hit where it holds, and logs `text`,
+    /// its message's parts joined; sent unasked, and the program goes on.
+    Logged {
+        breakpoint: BreakpointId,
+        text: String,
+    },
+    /// The answer to `Command::StepInTargets`, in the order of their ids.
+    StepInTargets(Vec<StepInTarget>),
+    /// The answer to `Command::Mark` and `Command::Unmark`: the mark
+    /// `label` is set or gone.
+    Marked { label: String },
+    /// The answer to `Command::InstanceCounts`: one count per class
+    /// declaration with instances, the largest first, those of one count
+    /// ordered by their names.
+    InstanceCounts(Vec<InstanceCount>),
+    /// The answer to `Command::Referrers`, in its order.
+    Referrers(Vec<Referrer>),
+}
+
+/// What refers to a value (`Command::Referrers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Referrer {
+    /// An object that holds it, named `#<n>` by its place in the answer,
+    /// counted from 1, and described as every value the stop hands out.
+    Object(Variable),
+    /// The variable `name` of the frame at index `frame` of the stack
+    /// trace, running or suspended into its frame object -- `self` for its
+    /// receiver -- which holds it.
+    Stack { frame: usize, name: String },
+}
+
+/// How many instances one class declaration has (`Command::InstanceCounts`):
+/// counted by declaration, never by class object, of which a declaration
+/// has one per enclosing instance, so that the instances of every
+/// application of it count together. A builtin class -- `String`,
+/// `Array` -- is named by its declaration in the kernel; a class side's
+/// instances, class objects, are not counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceCount {
+    /// The declaration, as a step filter names it.
+    pub class: ClassName,
+    pub count: usize,
 }
 
 /// What `Event::ModuleText` says of a module's text.
@@ -418,6 +754,16 @@ pub enum StopReason {
     /// on resumes it with nil, which its `halt` answers. `exits` as for
     /// `Exception`.
     Halt { exits: Vec<BreakpointId> },
+    /// A condition or log expression did not compile or raised an error,
+    /// which `error` describes -- the first's, when several failed --
+    /// where the program reached a breakpoint's statement, or where it
+    /// goes on after a method's exit by an unwind. `ids` names the
+    /// breakpoints that failed first, then every other the stop is for:
+    /// those that held there and the exits by an unwind it reports.
+    ConditionFailed {
+        ids: Vec<BreakpointId>,
+        error: String,
+    },
 }
 
 /// A breakpoint, by the number the VM gave it when it was set.
@@ -475,6 +821,11 @@ pub struct FrameDescription {
     /// frames stay in the trace, so that a frame's index is the same at
     /// every stop.
     pub hidden: bool,
+    /// Whether the frame runs a body of a shipped module -- the step
+    /// filter's test -- which a client folds away
+    /// (`docs/design/debugger.md`, "Folding the shipped frames"); its
+    /// receiver and variables are withheld.
+    pub shipped: bool,
 }
 
 /// Where a frame stands, in the current text of its module.
@@ -562,7 +913,7 @@ pub struct ReturnedValue {
 
 /// A value as the agent shows it: its id for `Command::Children`, its
 /// label, its class's name, how many children it has and whether they are
-/// elements.
+/// elements, whether it is withheld and its mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueDescription {
     pub id: ValueId,
@@ -572,11 +923,21 @@ pub struct ValueDescription {
     /// Whether its children are elements, named `[1]` up, rather than
     /// fields: an `Array`'s, by its shape.
     pub indexed: bool,
+    /// Whether its way into the IDE passed through shipped code, so that
+    /// it can be neither marked nor forced as a frame's return
+    /// (`docs/design/debugger.md`, "Marking objects"): a shipped frame's
+    /// receiver or variable, a field a shipped mixin declares, a child of
+    /// a withheld value, or a value the shipped world withholds from every
+    /// program -- the VM mirror and every shipped module's instance.
+    pub withheld: bool,
+    /// The label the object is marked with (`Command::Mark`), if it is.
+    pub mark: Option<String>,
 }
 
 /// The agent's end of an attached debugger (`Interpreter::attach_debugger`),
 /// which may move to another thread. Dropping it detaches the debugger: the
-/// program runs on, a stopped one included.
+/// program runs on, a stopped one included, an evaluation running at a
+/// stop aborted.
 ///
 /// It is served from another thread than the one running the interpreter:
 /// a stop blocks the running thread until a `Continue` or a `Terminate`
@@ -593,13 +954,20 @@ pub struct DebugRemote {
 /// threads of an agent command the VM at once, each through its own handle.
 ///
 /// The VM notices that every handle is gone where it next takes commands:
-/// at a safepoint that finds the commands bit, or at a stop, whose wait for
-/// a command ends. Dropping the control alone therefore detaches the
-/// debugger at the next stop or drain, and dropping `DebugEvents` alone at
-/// the next event the VM cannot send.
-#[derive(Clone)]
+/// at a stop, whose wait for a command ends, or at the safepoint the last
+/// handle's drop asks for with the commands bit, so that a program that
+/// runs without a stop -- an evaluation that never ends among them, which
+/// the departure aborts -- notices it too. Dropping the control alone
+/// therefore detaches the debugger at the next safepoint, and dropping `DebugEvents`
+/// alone at the next event the VM cannot send.
 pub struct DebugControl {
-    commands: Sender<Command>,
+    /// `None` only within `drop`, which lets it go before it arms the
+    /// commands bit, so that the safepoint that finds the bit finds the
+    /// channel closed.
+    commands: Option<Sender<Command>>,
+    /// How many handles of this control live, shared among its clones:
+    /// the last one's drop arms the bit.
+    handles: Arc<AtomicUsize>,
     words: MachineWords,
     /// The interpreter's arming lock: held across the two writes that arm
     /// the poll, so that the VM's clearing of a bit cannot fall between
@@ -627,7 +995,8 @@ impl DebugRemote {
     ) -> DebugRemote {
         DebugRemote {
             control: DebugControl {
-                commands,
+                commands: Some(commands),
+                handles: Arc::new(AtomicUsize::new(1)),
                 words,
                 arming,
                 attachment,
@@ -675,7 +1044,11 @@ impl DebugControl {
     /// Queued before the bit is set, so that the safepoint that finds the
     /// bit finds the command; a remote whose VM is gone queues it nowhere.
     pub fn send(&self, command: Command) {
-        if self.commands.send(command).is_ok() {
+        if self
+            .commands
+            .as_ref()
+            .is_some_and(|commands| commands.send(command).is_ok())
+        {
             self.arm(DEBUGGER_COMMANDS);
         }
     }
@@ -696,6 +1069,33 @@ impl DebugControl {
         self.words.fetch_or(MachineWord::SafepointRequested, bit);
         self.words
             .set_sequentially_consistent(MachineWord::DepthLimit, 0);
+    }
+}
+
+impl Clone for DebugControl {
+    fn clone(&self) -> DebugControl {
+        self.handles.fetch_add(1, Ordering::Relaxed);
+        DebugControl {
+            commands: self.commands.clone(),
+            handles: Arc::clone(&self.handles),
+            words: self.words.clone(),
+            arming: Arc::clone(&self.arming),
+            attachment: self.attachment,
+        }
+    }
+}
+
+impl Drop for DebugControl {
+    /// The last handle gone, the channel is closed first and the commands
+    /// bit armed after, so that the next safepoint finds the departure
+    /// and detaches the debugger -- every handle's sender dropped before
+    /// its count is taken off, the last count's taker sees them all
+    /// closed.
+    fn drop(&mut self) {
+        drop(self.commands.take());
+        if self.handles.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.arm(DEBUGGER_COMMANDS);
+        }
     }
 }
 

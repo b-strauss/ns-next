@@ -16,13 +16,11 @@
 use super::Arguments;
 use super::breakpoint;
 use crate::Symbol;
-use crate::bytecode::UnwindMarker;
+use crate::bytecode::{HEADER_REGISTERS, Instruction, UnwindMarker};
 use crate::heap::{ActivationHeader, ActivationReference, FrameReference, Heap};
 use crate::types::*;
 
-use super::{
-    DEPTH_RESERVE, EvaluationResult, MAX_ACTIVATION_DEPTH, Mutator, Signal, Step, StepArguments,
-};
+use super::{DEPTH_RESERVE, EvaluationResult, Mutator, Signal, Step, StepArguments};
 
 /// Where an unwind stopped.
 pub(crate) enum UnwindOutcome<'gc> {
@@ -51,6 +49,11 @@ pub(crate) enum UnwindOutcome<'gc> {
     Signalling(ActivationReference),
     /// Popped down to the run's floor: the run ends with this.
     Exit(EvaluationResult<'gc>),
+    /// Popped the base of an expression the debugger evaluated, which an
+    /// error ended (`at_evaluation_base`): the loop goes on with `stopped`,
+    /// the frame below, from the program counter it stopped at, where the
+    /// safepoint the end asked for re-enters the stop.
+    EvaluationEnded { stopped: ActivationReference },
 }
 
 /// An activation a walk from the top of the stack towards the run's base
@@ -178,6 +181,15 @@ impl<'gc> WalkedActivation<'gc> {
         }
     }
 
+    /// Whether the activation is the base of an expression the debugger
+    /// evaluates (`Continuation::Evaluated`).
+    pub(crate) fn is_evaluation_base(self, heap: &Heap<'gc>) -> bool {
+        match self {
+            WalkedActivation::Live(activation) => heap.activation_is_evaluation_base(activation),
+            WalkedActivation::Suspended(frame) => heap.frame_is_evaluation_base(frame),
+        }
+    }
+
     /// `signalled_vm_error` without cloning the error of a live frame.
     pub(crate) fn signals_a_vm_error(self, heap: &Heap<'gc>) -> bool {
         match self {
@@ -224,6 +236,7 @@ pub(crate) fn unwind_signal<'gc>(
             target: None,
             action: UnwindAction::Terminate(*error),
         },
+        Signal::Unwind(pending) => *pending,
         error @ Signal::Error(_) => {
             // Popped as the unwind below pops, so that every suspended
             // activation of the run comes back onto the stack on the way
@@ -247,7 +260,9 @@ pub(crate) fn unwind_signal<'gc>(
 /// frame until the pops resume it), that the pops reach as the top
 /// (`Heap::frame_activation`, asked again before every pop), at or above
 /// the run's floor, and that catches a return (`Mutator::catches_return`: a
-/// method, or a superclass clause or its message) ends the unwind: everything
+/// method, or a superclass clause or its message) -- or, for the debugger's
+/// restart of a frame or its forced return, any frame
+/// (`arrives_at_any_frame`) -- ends the unwind: everything
 /// above it is popped, and it returns the value through the ordinary return
 /// path, or runs again from its start for a restart. Any other target -- a home that has
 /// returned meanwhile, or a running initializer, which catches none (the
@@ -290,7 +305,7 @@ pub(crate) fn unwind<'gc>(
 /// `unwind`, the debugger's reports made only when `FOLLOWED`.
 fn unwind_from<'gc, const FOLLOWED: bool>(
     mutator: &mut Mutator<'gc>,
-    pending: PendingUnwind<'gc>,
+    mut pending: PendingUnwind<'gc>,
     floor: usize,
 ) -> UnwindOutcome<'gc> {
     loop {
@@ -304,23 +319,53 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             .heap
             .top_activation()
             .expect("internal: a stack deeper than the floor has a top");
+        // Only a followed unwind can meet an evaluation's base: one runs
+        // only while the debugger follows unwinds.
+        if FOLLOWED
+            && mutator.breakpoints.evaluating()
+            && mutator.heap.activation_is_evaluation_base(top)
+        {
+            pending = match at_evaluation_base(mutator, top, pending, floor) {
+                Ok(outcome) => return outcome,
+                Err(pending) => pending,
+            };
+            // A condition's evaluation at a method's exit by an unwind
+            // ended with an error: its base is popped, and the unwind it
+            // interrupted goes on from the frame below.
+            if !mutator
+                .heap
+                .top_activation()
+                .is_some_and(|now| now.same(top))
+            {
+                continue;
+            }
+        }
         let arrived = pending
             .target
             .and_then(|frame| mutator.heap.frame_activation(frame))
             .is_some_and(|target| {
                 top.same(target)
                     && mutator.heap.activation_position(target) >= floor
-                    && mutator.catches_return(target)
+                    && (mutator.catches_return(target) || arrives_at_any_frame(&pending.action))
             });
         if arrived {
             // A method a return's unwind arrives at returns without a
             // return instruction of its own, whose exit a method
-            // breakpoint reports (`breakpoint::returning_by_unwind`).
+            // breakpoint reports (`breakpoint::returning_by_unwind`),
+            // decided in it first.
             if FOLLOWED {
-                breakpoint::unwind_stopped(mutator);
-                if let (UnwindAction::Return(_), Some(frame)) = (&pending.action, pending.target) {
-                    breakpoint::returning_by_unwind(mutator, top, frame);
+                let mut returned = Vec::new();
+                if let (UnwindAction::Return(_) | UnwindAction::ForceReturn(_), Some(frame)) =
+                    (&pending.action, pending.target)
+                {
+                    (returned, pending) =
+                        match breakpoint::returning_by_unwind(mutator, top, frame, pending) {
+                            Ok(decided) => decided,
+                            Err(outcome) => return outcome,
+                        };
                 }
+                breakpoint::unwind_stopped(mutator);
+                breakpoint::returned_by_unwind(mutator, top, returned);
             }
             return arrive(mutator, top, pending.action);
         }
@@ -334,30 +379,108 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
             };
         }
         if FOLLOWED {
-            pop_followed(mutator, top, &pending.action);
+            pending = match pop_followed(mutator, top, pending) {
+                Ok(pending) => pending,
+                Err(outcome) => return outcome,
+            };
         } else {
             mutator.pop_for_unwind_as::<false>(top);
         }
     }
 }
 
-/// Pops `top` for an unwind the debugger follows. A method the unwind
-/// pops is left without a return, whose exit a method breakpoint reports;
-/// a termination, which ends the run, reports none.
+/// An unwind reached `base`, the base of an expression the debugger
+/// evaluates, on top of the stack: no unwind from within the expression
+/// crosses it, so that the program's frames below are untouched
+/// (`docs/design/debugger.md`, "Evaluation", "Its errors"). A termination
+/// -- an exception's default action ended the run -- pops the base and
+/// ends the evaluation with its error, the program staying stopped; a
+/// return or a restart aims at a frame below, which it cannot reach from
+/// the evaluation, and so signals `CannotReturn` from the base, as a `^`
+/// to a home that has returned does. The evaluation the debugger's own
+/// termination ended is no longer running (`evaluation::terminated`), so
+/// its base never reaches here and is popped on the way to the run's
+/// floor; one begun during that termination -- a condition at a
+/// breakpoint in an `ensure:` block it runs -- ends at its base as any
+/// does, so that its answer is taken and its stop's state does not
+/// outlive the run (`docs/design/debugger.md`, "Continuing and
+/// terminating").
+#[cold]
+#[inline(never)]
+fn at_evaluation_base<'gc>(
+    mutator: &mut Mutator<'gc>,
+    base: ActivationReference,
+    pending: PendingUnwind<'gc>,
+    floor: usize,
+) -> Result<UnwindOutcome<'gc>, PendingUnwind<'gc>> {
+    let error = match pending.action {
+        UnwindAction::Terminate(error) => return end_at_base(mutator, base, &error),
+        UnwindAction::Return(value) | UnwindAction::ForceReturn(value) => {
+            NewspeakError::cannot_return(
+                Symbol::CARET,
+                value,
+                value,
+                "cannotReturn: the enclosing method activation is outside the evaluation",
+            )
+        }
+        UnwindAction::Restart | UnwindAction::RestartFrame => {
+            dead_activation_error(Symbol::intern("restart"), Value::nil())
+        }
+    };
+    match start_signalling(mutator, &error, floor) {
+        Some(outcome) => Ok(outcome),
+        None => end_at_base(mutator, base, &error),
+    }
+}
+
+/// `error` ends the evaluation whose base, `base`, is on top: the base is
+/// popped and the evaluation answers the error. One a stop was kept for
+/// leaves the frame below stopped, where the safepoint re-enters the stop
+/// (`UnwindOutcome::EvaluationEnded`); one of a condition at a method's
+/// exit by an unwind decides the exit (`conditions::exit_ended`), and the
+/// unwind it interrupted goes on (`Err`), from the frame it was about to
+/// pop.
+fn end_at_base<'gc>(
+    mutator: &mut Mutator<'gc>,
+    base: ActivationReference,
+    error: &NewspeakError<'gc>,
+) -> Result<UnwindOutcome<'gc>, PendingUnwind<'gc>> {
+    let interrupted = mutator.heap.activation_interrupted_unwind(base);
+    mutator.pop_for_unwind(base);
+    match interrupted {
+        Some(interrupted) => {
+            let outcome = crate::debugger::evaluation::exit_ended_by(mutator, error);
+            crate::debugger::conditions::exit_ended(mutator, outcome);
+            Err(interrupted)
+        }
+        None => {
+            let stopped = crate::debugger::evaluation::ended_by(mutator, error);
+            Ok(UnwindOutcome::EvaluationEnded { stopped })
+        }
+    }
+}
+
+/// Pops `top` for `pending`, an unwind the debugger follows, and answers
+/// the unwind to carry on. A method the unwind pops is left without a
+/// return, whose exit a method breakpoint reports, decided in `top` before
+/// it is popped -- its condition evaluated there, the outcome answered
+/// instead while that evaluation runs above `top`, which stays; a
+/// termination, which ends the run, reports none.
 fn pop_followed<'gc>(
     mutator: &mut Mutator<'gc>,
     top: ActivationReference,
-    action: &UnwindAction<'gc>,
-) {
-    let exits = if matches!(action, UnwindAction::Terminate(_)) {
-        Vec::new()
+    pending: PendingUnwind<'gc>,
+) -> Result<PendingUnwind<'gc>, UnwindOutcome<'gc>> {
+    let (exits, pending) = if matches!(pending.action, UnwindAction::Terminate(_)) {
+        (Vec::new(), pending)
     } else {
-        breakpoint::leaving_by_unwind(mutator, top)
+        breakpoint::leaving_by_unwind(mutator, top, pending)?
     };
     mutator.pop_for_unwind(top);
     if !exits.is_empty() {
         breakpoint::left_by_unwind(mutator, exits);
     }
+    Ok(pending)
 }
 
 /// The block `activation` asks to be run before it is popped, marked run: an
@@ -395,6 +518,19 @@ fn block_to_run<'gc>(
     Some(mutator.heap.activation_local(activation, block_register))
 }
 
+/// Whether an unwind of `action` arrives at its target whatever the
+/// target runs: the debugger's restart and forced return, defined for
+/// every frame of a program (`docs/design/debugger.md`, "Restart frame and
+/// force return"), where a `^` or a `retry` arrives only at a frame that
+/// catches a return. Tested after `catches_return`, so that the unwinds a
+/// program raises pay nothing more for a method's frame.
+fn arrives_at_any_frame(action: &UnwindAction<'_>) -> bool {
+    matches!(
+        action,
+        UnwindAction::RestartFrame | UnwindAction::ForceReturn(_)
+    )
+}
+
 /// What the unwind does at its target, now the top of the stack.
 fn arrive<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -407,10 +543,72 @@ fn arrive<'gc>(
             mutator.heap.activation_set_program_counter(target, 0);
             UnwindOutcome::Restarted { target }
         }
+        UnwindAction::RestartFrame => restart_frame(mutator, target),
+        UnwindAction::ForceReturn(value) => {
+            // An initializer answers its instance, as its own end does.
+            let value = match mutator.heap.activation_kind(target) {
+                ActivationKind::Initializer(..) => mutator.heap.activation_receiver(target),
+                _ => value,
+            };
+            UnwindOutcome::Returned { target, value }
+        }
         UnwindAction::Terminate(_) => {
             unreachable!("internal: a termination has no target to arrive at")
         }
     }
+}
+
+/// The debugger's restart arrives at `target`: its named temporaries --
+/// the registers between its arguments, header and copied values and its
+/// first scratch register -- are `nil` again, its arguments and copied
+/// values kept, and it goes on from its first instruction, interpreted.
+/// A body whose first instruction makes its indirection vector keeps the
+/// vector it made, its elements `nil` again, and goes on past that
+/// instruction: a block the first run made holds that vector, and sees
+/// the second run's assignments only through it (`docs/design/debugger.md`,
+/// "Restart frame and force return"). The scratch registers are left as
+/// they are: the leftover analysis finds every one of them tainted there.
+#[cold]
+#[inline(never)]
+fn restart_frame<'gc>(
+    mutator: &mut Mutator<'gc>,
+    target: ActivationReference,
+) -> UnwindOutcome<'gc> {
+    let code = mutator.heap.activation_code(target);
+    // A frame stopped at its push has not made its vector yet, and makes
+    // it as it starts again.
+    let made = mutator.heap.activation_program_counter(target) > 0;
+    let vector = if made && code.instruction_count() > 1 {
+        match code.instruction(0) {
+            Instruction::MakeVector { destination, size } => Some((destination, size)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let named = code.argument_count + HEADER_REGISTERS + code.copied_count;
+    for register in named..code.local_count {
+        match vector {
+            Some((destination, size)) if destination == register => {
+                if let Some(object) = mutator.heap.activation_local(target, register).as_object() {
+                    for index in 0..usize::from(size) {
+                        let written = mutator.heap.array_set_element(object, index, Value::nil());
+                        debug_assert!(written, "internal: a vector holds its variables");
+                    }
+                }
+            }
+            _ => mutator
+                .heap
+                .activation_set_local(target, register, Value::nil()),
+        }
+    }
+    // The frame's words are the interpreter's: a frame that stopped in
+    // machine code goes on interpreted from its start.
+    mutator.heap.clear_compiled(target);
+    mutator
+        .heap
+        .activation_set_program_counter(target, usize::from(vector.is_some()));
+    UnwindOutcome::Restarted { target }
 }
 
 /// The signal `pending` was, raised again: how an unwind carries on once a
@@ -431,6 +629,9 @@ pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
             Signal::Restart(target)
         }
         UnwindAction::Terminate(error) => Signal::Terminate(Box::new(error)),
+        UnwindAction::RestartFrame | UnwindAction::ForceReturn(_) => {
+            Signal::Unwind(Box::new(pending))
+        }
     }
 }
 
@@ -448,6 +649,16 @@ fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
             Value::nil(),
         )),
         UnwindAction::Return(_) => signal_of(pending),
+        // The debugger names a frame of the stopped run, which nothing can
+        // return from before its unwind arrives; one that is gone all the
+        // same is the `cannotReturn` of an activation that has returned.
+        UnwindAction::RestartFrame => Signal::Error(dead_activation_error(
+            Symbol::intern("restart"),
+            Value::nil(),
+        )),
+        UnwindAction::ForceReturn(value) => {
+            Signal::Error(dead_activation_error(Symbol::intern("return:"), value))
+        }
     }
 }
 
@@ -488,8 +699,10 @@ pub(crate) fn non_boolean_condition<'gc>(
 /// activation where the error arose -- with the continuation that ends the
 /// run should `signal` ever return (`Continuation::VmErrorSignalled`).
 ///
-/// An error raised within `DEPTH_RESERVE` activations of the depth limit,
-/// the limit's own error included, takes the reserve first, unless a
+/// An error raised within `DEPTH_RESERVE` activations of the depth limit
+/// -- the raised one of an expression the debugger evaluates, while it
+/// runs (`Mutator::ordinary_depth_limit`) --, the limit's own error
+/// included, takes the reserve first, unless a
 /// `signal` already holds it: `signal`'s activation and everything it runs
 /// may then go that far past the limit, until it is gone
 /// (`Mutator::depth_reserve_held`). Far from the limit nothing is taken, so
@@ -513,7 +726,7 @@ fn start_signalling<'gc>(
         Ok(step) => step,
     };
     let taking = !mutator.depth_reserve_held()
-        && (mutator.heap.counted_depth() >= MAX_ACTIVATION_DEPTH - DEPTH_RESERVE
+        && (mutator.heap.counted_depth() >= mutator.ordinary_depth_limit() - DEPTH_RESERVE
             || mutator.heap.stack_is_within_the_reserve_of_its_limit());
     let sender = mutator.heap.top_activation();
     let taking = taking && sender.is_some();
@@ -601,7 +814,10 @@ impl<'gc> Mutator<'gc> {
     ///
     /// Walks the activations from the top of the stack towards the run's
     /// base, the suspended ones included (`WalkedActivation::sender`): once
-    /// per run, since an overrun ends it.
+    /// per run, since an overrun ends it. Inside an expression the debugger
+    /// evaluates, the overrun ends the evaluation, so the walk stops at its
+    /// base: an error the program was signalling below it when it stopped
+    /// is not the evaluation's.
     pub(crate) fn overrun_of_the_reserve(
         &self,
         header: &ActivationHeader<'gc>,
@@ -613,6 +829,9 @@ impl<'gc> Mutator<'gc> {
         let mut above = None;
         let mut current = self.heap.top_activation().map(WalkedActivation::Live);
         while let Some(activation) = current {
+            if self.breakpoints.evaluating() && activation.is_evaluation_base(&self.heap) {
+                break;
+            }
             if let Some(error) = activation.signalled_vm_error(&self.heap) {
                 if !self.is_finding_its_handler(activation.receiver(&self.heap)) {
                     break;

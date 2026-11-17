@@ -15,34 +15,32 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 5: evaluation, conditional breakpoints and
-logpoints, watches and setting variables, smart step into, restart
-frame and force return** (decided with the user on 2026-11-11: the
-debugger goes on before road step 9 resumes;
+**The debugger's stage 6: hot swap, then edit-and-continue of running
+activations, and `ActivationMirror` for programs** (decided with the
+user on 2026-11-11: the debugger goes on before road step 9 resumes;
 [debugger.md](design/debugger.md), "Planned: the order of building
-it"). An expression -- `evaluate`, a breakpoint's condition, a log
-message, a watch, `setVariable` -- is compiled as a block standing at
-the stopped frame's `program_counter` and run above it as ordinary
-program code (decision 8, "Evaluation", "Evaluation never reaches the
-VM mirror"); a condition is decided where a hit is counted, before the
-count ("Hit counts and temporary breakpoints"); a write reaches the
-frame through the variable table ("Writing a frame", "Assigning a
-captured variable"); smart step into stops only at a push from the
-chosen call site (decision 3, "Smart step into a block"); and restart
-and force return unwind to the frame ("Restart frame and force
-return"); over DAP's `evaluate`, `setVariable`, `stepInTargets`,
-`restartFrame` and a request of ns-next's own, and the plugin's
-`XDebuggerEvaluator`, `XSmartStepIntoHandler` and actions ("The
-JetBrains plugin"). Stages 1 to 4 are built (2026-11-11 to 2026-11-14;
-"The debugging API at the safepoint", "Launching, the start and the
-end", "The JetBrains plugin"): from stage 4 the debugger is usable in
-the IDE. Stage 5 needs a plan of its own, and the open questions it
-meets decided first, one at a time: access control in evaluation,
-marking objects, evaluation at the depth limit, restart and force return
-beyond the plain case, restart and the indirection vector, assigning a
-captured variable, and the memory view and folding the shipped modules'
-frames, which the proposal puts in stage 5 ([debugger.md](design/debugger.md),
-"Open questions").
+it"). Hot swap installs a saved module's changed declarations through
+the MirrorBuilder's atomic install and sets the breakpoints again on the
+new bodies; edit-and-continue recompiles an edited method and moves its
+running activations onto the new code at a statement boundary, its
+values moved by name through both bodies' variable tables, a running
+activation divorced into a larger frame object through the bulk
+forward; and `ActivationMirror` in `MirrorsFactory.ns` gives a program
+the access to activations §8.2 asks of mirrors, withholding a shipped
+activation's values ("Hot swap and edit-and-continue", decision 1,
+"Evaluation never reaches the VM mirror"; the item "The activation and
+thread mirrors" below). With the install, "Create Method" for an
+uncaught `MessageNotUnderstood` and the forced `nil` from
+`Object>>doesNotUnderstand:` when it is declined ("Exceptions"). Over
+DAP, requests of ns-next's own, and in the plugin a hot-swap action.
+Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
+at the safepoint", "Launching, the start and the end", "The MCP
+server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
+variables, decides conditions and logpoints, restarts frames and forces
+returns, smart-steps into a chosen send, marks objects, shows the memory
+view and folds the shipped frames, in the VM, the DAP agent and the
+plugin, and `ns-next mcp` lets an agent debug a program. It needs its
+questions decided and a plan of its own.
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1880,22 +1878,36 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   so it stops at the next poll, the return to `signal`, after the override
   answered; a handler that is no block and whose `cull:` a fast path answers
   likewise stops after it ran ([debugger.md](design/debugger.md),
-  "Exceptions"). The rest, in this order: evaluation as a block in the
-  stop's scope, conditional breakpoints and logpoints, watches and setting
-  variables, smart step into, restart frame, force return ("Next" above);
-  hot swap, edit-and-continue and `ActivationMirror`. The time a step took,
-  shown inline, stays planned in no stage yet (decided with the user on
-  2026-11-15; [debugger.md](design/debugger.md), "The time a step took").
-  "Create Method" for an uncaught `MessageNotUnderstood`, and the forced
-  `nil` from `Object>>doesNotUnderstand:` when it is declined, need stage
-  5's forced return and stage 6's install; until then going on from such a
-  stop ends the run ([debugger.md](design/debugger.md), "Exceptions"). It
-  needs no yield path out of `vm::run`. Still to decide, each before the
-  stage that needs it: watchpoints on slots, access control in evaluation,
-  marking objects, evaluation at the depth limit, restart and force return
-  beyond the plain case, restart and the indirection vector, assigning a
-  captured variable, the memory view, folding shipped frames and attaching
-  ([debugger.md](design/debugger.md), "Open questions").
+  "Exceptions"). Its fifth stage is built (2026-11-17): an expression
+  evaluated as a block in a stopped frame's scope, setting a variable,
+  conditional breakpoints and logpoints, restart frame and force return,
+  smart step into, marking objects, the memory view and folding the
+  shipped frames, in the VM, the DAP agent and the plugin, and `ns-next
+  mcp`, an MCP server through which an agent debugs a program
+  ([debugger.md](design/debugger.md), "Evaluation", "Writing a frame",
+  "Restart frame and force return", "The MCP server", "What stage 5
+  moved"). The rest: hot swap, edit-and-continue and `ActivationMirror`
+  ("Next" above); after stage 6, attaching to an `ns-next` started
+  without `--debug` ([debugger.md](design/debugger.md), "Planned: the
+  order of building it"). The time a step took, shown inline, stays
+  planned in no stage yet (decided with the user on 2026-11-15;
+  [debugger.md](design/debugger.md), "The time a step took"), and so do
+  the variables' values shown inline in the editor, which the plugin
+  would add over its client ([debugger.md](design/debugger.md), "The
+  JetBrains plugin"). "Create Method" for an uncaught
+  `MessageNotUnderstood`, and the forced `nil` from
+  `Object>>doesNotUnderstand:` when it is declined, need stage 6's
+  install, the forced return being built; until then going on from such
+  a stop ends the run ([debugger.md](design/debugger.md), "Exceptions").
+  It needs no yield path out of `vm::run`. Still to decide, before a
+  stage takes it: watchpoints on slots ([debugger.md](design/debugger.md),
+  "Open questions"). What the values view still lacks: a Newspeak
+  collection's renderer -- `List`, `Map` and `Set` show their slots,
+  where a renderer would run `size`, `do:` and `printString` as an
+  evaluation under a limit of time and sends -- the elements of a
+  `ByteArray` and a `String`, read by the heap's accessors and paged,
+  and pinning a value other than by a mark past its stop
+  ([debugger.md](design/debugger.md), "Values the IDE holds").
   - **What stage 1's reviews left** (2026-11-11), none of them a wrong
     outcome:
     - *A stop holds a value once per mention*: every description
@@ -2074,6 +2086,79 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       repetition have
       none ([editor-support.md](design/editor-support.md), "Known gaps",
       "Plugin testing and gates").
+  - **What stage 5's reviews left** (2026-11-17), a stop's reason or
+    text wrong among them:
+    - *A failed condition at an exit by an unwind loses its text*: a
+      pause that aborts a method breakpoint's
+      condition at an exit by an unwind makes the stop report that exit
+      (`StopReason::MethodExit`) rather than the pause
+      (`conditions::exit_ended`); a line condition that fails at the stop
+      after an exit condition failed is named with the exit's error and
+      its own text dropped, and an exception's stop names the failed
+      exit's breakpoint without its error (`conditions::failure_named`)
+      ([debugger.md](design/debugger.md), "Hit counts and temporary
+      breakpoints").
+    - *An abort names no evaluation*: `Command::AbortEvaluation` aborts
+      whichever evaluation runs, so an abort the agent sends for a hover
+      the VM answered meanwhile can abort the client's next `evaluate`,
+      which answers "evaluation aborted"; and dropping a remote's
+      `DebugEvents` alone, its `DebugControl` kept, never aborts an
+      endless evaluation ([debugger.md](design/debugger.md),
+      "Evaluation").
+    - *A shipped module's root class is not withheld everywhere*:
+      `Mutator::is_withheld` holds for the VM mirror, its class and
+      metaclass and a recorded shipped module's instance, but not for that
+      instance's class object and metaclass, which the memory view
+      withholds by their class alone ([debugger.md](design/debugger.md),
+      "Marking objects", "The memory view").
+    - *Instances of an unknown class*: `nsNext/instances` of a class name
+      no module declares answers an empty page rather than a refusal
+      ([debugger.md](design/debugger.md), "The memory view").
+    - *The memory view's cost, unmeasured*: every `Instances` and
+      `Referrers` answer walks the whole object space again, a
+      `Referrers` answer more than once -- the referrer walk, then the
+      walks that decide which returned frame objects nothing living
+      refers to -- and the withholding of a closure asks
+      `stack::code_is_shipped` for each closure the walk meets, which
+      searches every registered mixin's members; nothing measures either
+      on a large heap ([debugger.md](design/debugger.md), "The memory
+      view").
+    - *An unexplained failure*: once, while the MCP server's start was
+      built (2026-11-17), the agent answered a request "`` is not
+      supported yet" -- a command named by an empty string -- in a run
+      whose server's standard output closed early; it did not recur in
+      more than twenty runs, nor since. A debug build's agent now logs an
+      unknown command's connection, name, seq and message keys to its
+      standard error, and the MCP server every refused response, so that a
+      recurrence says what arrived ([debugger.md](design/debugger.md),
+      "The MCP server").
+    - *The plugin*: its hovers send no `context: "hover"` -- they
+      evaluate only a frame's variable names -- so the agent's hover
+      bound and its abort never apply to them; the memory view's panel
+      is tested through its model only; and Force Return, Step Into
+      Shipped and Mark Object… under the split debugger are checked by no
+      test, the plugin's tests running the monolithic one
+      ([debugger.md](design/debugger.md), "The JetBrains plugin").
+    - *Tests*: `an_error_is_the_result_and_the_program_goes_on` asserts
+      only that the error's description is not empty,
+      `a_collection_during_an_evaluation_keeps_the_stop_s_values` does
+      not show that a collection ran, and
+      `a_block_an_evaluation_stored_reads_the_frame_after_it_returned`
+      asserts only that the answer has a class name; none evaluates in a
+      frame whose optimized code inlined scopes, restarts the initializer
+      of a declaration with no slots, smart-steps in a `whileFalse:` loop
+      over a bare local, or detaches with marks set; and the endless
+      evaluations' tests (`start_endless`) wait for the evaluation to
+      start by a sleep (`crates/ns-runtime/tests/debugger.rs`). The pause
+      stress reader's refusal to evaluate while a breakpoint's token waits
+      (`Breakpoints::waits_for_a_fetch`) is exercised only beside the
+      suspend stress mode, by one test, never by the pause mode alone; and
+      the two regression tests of the stage's end-of-batch fixes,
+      `a_suspended_frame_refers_from_the_stack` and
+      `a_stress_pause_beside_suspensions_leaves_a_token_to_its_frame`, do
+      not assert their precondition -- that a frame was suspended, that
+      a token waited when the mode stopped -- so a change that stopped
+      producing it would leave them passing vacuously.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
   at run time), a shape-changing `setClass:`, a superclass change, adding,
@@ -2134,7 +2219,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `ObjectMirror>>referringObjects` (`:1655`), each a walk of the heap. Both
   must keep the shipped-level rule: an instance of a shipped class or a
   referrer that is a shipped module's root or the VM mirror is not a value
-  a mirror may hand out.
+  a mirror may hand out. The walk exists, the debugger's memory view's
+  (`Heap::each_object`, `Heap::refers_to`; [debugger.md](design/debugger.md),
+  "The memory view").
 - **Metadata through mirrors** (2026-10-18): §4.3 makes metadata comments,
   `(*:id: ... *)`, "available at runtime via mirrors" (`newspeak-spec.pdf`
   p. 21), as Primordial Soup's mirrors answer `metadata`
@@ -2283,38 +2370,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Further `ns-next-analyzer` commands**, each looking without running: a
   heap dump and a deeper inspection of an image; what a method compiles
   to, machine code included, is the item below.
-- **A command-line debugger client** (decided with the user on
-  2026-11-15; not built): `ns-next debug <program>`, say, driven by
-  commands from a file or standard input -- `break <file>:<line>`, `run`,
-  `next`, `step`, `out`, `continue`, `stack`, `vars <frame>`,
-  `print <value>` and the like -- and printing every stop with its stack
-  and variables as plain text or JSON, a client of the same debugging API
-  the DAP agent serves (`DebugRemote`, [debugger.md](design/debugger.md),
-  "The debugging API at the safepoint"). It matters because the debugger
-  is today reachable only through DAP over a socket, which the IDE plugin
-  drives but an agent with only a shell cannot, so it does not meet the
-  principle that introspection is reachable from the command line first
-  ([design/README.md](design/README.md), "Principles"). First on the
-  command line; the plugin, which speaks DAP, is unaffected.
 - **A profiler** (asked for by the user on 2026-11-15; not designed yet):
   the time a program spends per method and per send site. It matters because
   a slow program today shows where its time goes only to a native sampling
   profiler, which sees the VM's Rust frames and the code zone's anonymous
   addresses, never a Newspeak method -- the profiles behind "Unexplained
   measurements and unmeasured decisions" below were read so. Whether it
-  samples or counts, and what it costs a run, are open. The principle it
-  follows (the user's, on 2026-11-15; [design/README.md](design/README.md),
-  "Principles"): every introspection feature is reachable from the command
-  line first -- an `ns-next` or `ns-next-analyzer` subcommand or flag, its
-  output plain text or JSON -- so that an agent such as Claude can use it
-  for debugging; the IDE plugin's views come on top, as clients of the same
-  requests -- here a `run`/`bench` flag whose report is plain text or JSON
-  before any IDE view of it.
+  samples or counts, what it costs a run, and how an agent and the IDE
+  reach its report are open.
 - **A view of what a method compiles to** (asked for by the user on
   2026-11-15): its bytecode, as `disasm` prints it, and its JIT code -- the
   baseline machine code, the optimized copies per receiver application, the
-  inlining decisions with the reasons behind each -- first on the command
-  line, then beside the source in the IDE, JITWatch's kind of view. It
+  inlining decisions with the reasons behind each -- reachable by an agent
+  and beside the source in the IDE, JITWatch's kind of view. It
   matters because a slow body is explained by what the tiers made of it,
   which today only a debugger on the process or a `dumpbin`/`objdump` of the
   code zone shows, without names. `disasm` prints the instructions only, and
@@ -2324,12 +2392,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   and the IDE's view is a client of the same request
   ([compiler.md](design/compiler.md), "Reading the output";
   [execution.md](design/execution.md), "The baseline JIT's foundation",
-  "Inlining"). The principle it follows (the user's, on 2026-11-15;
-  [design/README.md](design/README.md), "Principles"): every introspection
-  feature is reachable from the command line first -- an `ns-next` or
-  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
-  that an agent such as Claude can use it for debugging; the IDE plugin's
-  views come on top, as clients of the same requests.
+  "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15):
   tracing flags that say why a body is compiled, optimized, deoptimized or
   retired and how each inline cache goes from empty to monomorphic,
@@ -2340,15 +2403,24 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   was retired -- is answered today only by a counter or a print added for
   the occasion; `--cache-statistics`, `--collector-statistics` and
   `disasm`/`inspect` are its first pieces
-  ([compiler.md](design/compiler.md), "Reading the output"). The principle
-  it follows (the user's, on 2026-11-15;
-  [design/README.md](design/README.md), "Principles"): every introspection
-  feature is reachable from the command line first -- an `ns-next` or
-  `ns-next-analyzer` subcommand or flag, its output plain text or JSON -- so
-  that an agent such as Claude can use it for debugging; the IDE plugin's
-  views come on top, as clients of the same requests; the tracing and the
-  printing are flags of `ns-next`, the REPL a subcommand, each usable
-  without the IDE.
+  ([compiler.md](design/compiler.md), "Reading the output"); the tracing
+  and the printing are flags of `ns-next`, as `d8`'s are.
+- **The IDE's debug session as MCP tools** (asked for by the user on
+  2026-11-17; after the debugger's stage 5, not designed yet): the
+  plugin contributes the tools of `ns-next mcp` -- `debug_step`,
+  `debug_evaluate` and the rest, with the same stop summary -- to the
+  JetBrains IDE's own MCP server, acting on the IDE's running debug
+  session (`XDebugSession`) rather than on a child of their own, so that
+  an agent steps, evaluates and sets breakpoints while the user watches
+  the editor follow and can take over at any point. It matters because
+  `ns-next mcp` debugs on its own, out of the user's sight, and the IDE's
+  debugger alone is the user's; the two meet only here. Open: the
+  platform's extension point for contributed MCP tools and the IDE
+  versions that offer it, whether the tools and the summary are shared
+  with `ns-next mcp` as code or as a specification, and how the agent's
+  commands and the user's interleave in one session
+  ([debugger.md](design/debugger.md), "The MCP server", "The
+  JetBrains plugin").
 
 [editor-support.md](design/editor-support.md), "Planned later".
 

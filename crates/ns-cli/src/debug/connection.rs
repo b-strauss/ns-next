@@ -6,7 +6,7 @@
 
 use std::io::{BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -131,6 +131,13 @@ pub(crate) fn spawn_reader(
 /// answers, so that only a client that stopped reading fills it.
 const WRITE_QUEUE: usize = 1024;
 
+/// How many messages may wait before a droppable one -- a logpoint's
+/// line -- is dropped rather than queued: the rest of the queue stays for
+/// the responses and the events that carry the session's state, so that a
+/// logpoint in a hot loop never fills the queue and ends the session of a
+/// client that reads, only more slowly than the program logs.
+const DROPPABLE_LIMIT: usize = WRITE_QUEUE * 3 / 4;
+
 /// The agent's end of a connection's writer thread, which writes every
 /// message the agent queues, in order, so that the agent never waits on
 /// the socket. Each message's whole write is bounded: by the attach
@@ -143,6 +150,9 @@ const WRITE_QUEUE: usize = 1024;
 /// bounds that wait as a whole.
 pub(crate) struct Writer {
     queue: SyncSender<serde_json::Value>,
+    /// How many messages wait in `queue`, shared with the thread, which
+    /// counts each off as it takes it.
+    queued: Arc<AtomicUsize>,
     attached: Arc<AtomicBool>,
     /// The deadline `finish` set, which every write meets as well.
     finish_by: Arc<Mutex<Option<Instant>>>,
@@ -157,7 +167,18 @@ impl Writer {
     /// Queues `message`; `false` when the queue is full -- the client has
     /// not read for that long -- or the writer gave up.
     pub(crate) fn send(&self, message: serde_json::Value) -> bool {
-        self.queue.try_send(message).is_ok()
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        let sent = self.queue.try_send(message).is_ok();
+        if !sent {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+        }
+        sent
+    }
+
+    /// Whether a droppable message would be queued now: fewer than
+    /// `DROPPABLE_LIMIT` wait.
+    pub(crate) fn has_room_for_droppable(&self) -> bool {
+        self.queued.load(Ordering::SeqCst) < DROPPABLE_LIMIT
     }
 
     /// The client attached: its writes are bounded by the write bound from
@@ -232,7 +253,9 @@ fn start_writer(
     inputs: Sender<Input>,
     attached: Arc<AtomicBool>,
 ) -> std::io::Result<Writer> {
-    let (queue, queued) = std::sync::mpsc::sync_channel::<serde_json::Value>(WRITE_QUEUE);
+    let (queue, taken) = std::sync::mpsc::sync_channel::<serde_json::Value>(WRITE_QUEUE);
+    let queued = Arc::new(AtomicUsize::new(0));
+    let queued_here = Arc::clone(&queued);
     let (finished, done) = std::sync::mpsc::channel();
     let finish_by = Arc::new(Mutex::new(None::<Instant>));
     let attached_here = Arc::clone(&attached);
@@ -242,7 +265,8 @@ fn start_writer(
         .name("ns-next debugger writer".to_string())
         .spawn(move || {
             let mut failed = false;
-            for message in queued {
+            for message in taken {
+                queued_here.fetch_sub(1, Ordering::SeqCst);
                 let own = match bounds.attach_by {
                     Some(attach_by) if !attached_here.load(Ordering::SeqCst) => attach_by,
                     _ => Instant::now() + bounds.bound,
@@ -268,6 +292,7 @@ fn start_writer(
         })?;
     Ok(Writer {
         queue,
+        queued,
         attached,
         finish_by,
         close,
@@ -396,6 +421,66 @@ mod tests {
             "finish took {elapsed:?}, as long as writing the queue, {writing_the_queue:?}"
         );
         assert!(closed.load(Ordering::SeqCst), "the connection is closed");
+    }
+
+    /// A writer whose peer reads nothing until `release` is set, then
+    /// everything.
+    struct Held {
+        release: Arc<AtomicBool>,
+    }
+
+    impl Sink for Held {
+        fn set_timeout(&mut self, _: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn write_some(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(bytes.len())
+        }
+    }
+
+    /// Droppable messages stop being taken at `DROPPABLE_LIMIT`, while
+    /// the rest of the queue still takes every other message; once the
+    /// peer reads, there is room again.
+    #[test]
+    fn a_queue_near_full_refuses_only_droppable_messages() {
+        let release = Arc::new(AtomicBool::new(false));
+        let (inputs, _received) = std::sync::mpsc::channel();
+        let writer = start_writer(
+            Held {
+                release: Arc::clone(&release),
+            },
+            Arc::new(|| {}),
+            WriterBounds {
+                connection: 1,
+                attach_by: None,
+                bound: Duration::from_secs(60),
+            },
+            inputs,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .expect("a writer thread");
+        let mut droppable = 0;
+        while writer.has_room_for_droppable() {
+            assert!(writer.send(serde_json::json!({ "line": droppable })));
+            droppable += 1;
+            assert!(droppable <= WRITE_QUEUE, "the limit never came");
+        }
+        // The writer thread holds one message in its write.
+        assert!((DROPPABLE_LIMIT..=DROPPABLE_LIMIT + 1).contains(&droppable));
+        for response in 0..WRITE_QUEUE - DROPPABLE_LIMIT - 1 {
+            assert!(writer.send(serde_json::json!({ "response": response })));
+        }
+        release.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        while !writer.has_room_for_droppable() {
+            assert!(started.elapsed() < Duration::from_secs(30), "never drained");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        writer.finish(Duration::from_secs(30));
     }
 
     #[test]

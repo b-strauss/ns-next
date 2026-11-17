@@ -83,6 +83,10 @@ pub(crate) fn execute<'gc>(
         }
         ActivationPrimitive::Terminate => {
             mutator.last_unhandled_stack = mutator.heap.describe_activations();
+            // Within an evaluation the termination ends at the evaluation's
+            // base, whose answer is this exception, held here, the one
+            // place that knows it.
+            crate::debugger::evaluation::exception_unhandled(mutator, subject);
             Some(Err(terminate(mutator, arguments)))
         }
         ActivationPrimitive::Sender => {
@@ -295,13 +299,26 @@ fn method_name<'gc>(mutator: &Mutator<'gc>, frame: FrameReference<'gc>) -> Optio
 /// however many activations lie between it and its handler, and a frame a
 /// compiled tier ran is not turned back into interpreted ones only for
 /// being passed (`docs/design/execution.md`, "Planned: the deoptimization
-/// contract", "Observers").
+/// contract", "Observers"). While the debugger evaluates an expression the
+/// walk ends at the evaluation's base: a handler of the program's below it
+/// would catch the expression's error and unwind the program's frames
+/// (`docs/design/debugger.md`, "Evaluation", "Its errors"); and a walk
+/// that starts below the base -- the search of an exception the program
+/// signalled before the stop, which the expression passes or signals
+/// again -- finds none either.
 fn next_active_handler<'gc>(
     mutator: &mut Mutator<'gc>,
     start: WalkedActivation<'gc>,
 ) -> Option<FrameReference<'gc>> {
+    let evaluating = mutator.breakpoints.evaluating();
+    if evaluating && !reaches_evaluation_base(&mutator.heap, start) {
+        return None;
+    }
     let mut walked = start;
     loop {
+        if evaluating && walked.is_evaluation_base(&mutator.heap) {
+            return None;
+        }
         walked = walked.sender(&mutator.heap)?;
         if let Some(UnwindMarker::Handler {
             active_register, ..
@@ -311,6 +328,22 @@ fn next_active_handler<'gc>(
             return Some(walked.reified(&mut mutator.heap));
         }
     }
+}
+
+/// Whether `start`, or a sender of it, is the base of the expression the
+/// debugger evaluates: whether `start` runs within the evaluation.
+fn reaches_evaluation_base<'gc>(
+    heap: &crate::heap::Heap<'gc>,
+    start: WalkedActivation<'gc>,
+) -> bool {
+    let mut walked = Some(start);
+    while let Some(activation) = walked {
+        if activation.is_evaluation_base(heap) {
+            return true;
+        }
+        walked = activation.sender(heap);
+    }
+    false
 }
 
 /// The registers of the `on:do:` marker of the code `frame`'s activation

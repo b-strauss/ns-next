@@ -85,11 +85,19 @@ pub(crate) fn write_outer_local<'gc>(
 }
 
 /// The VM's `LoadVector`. A value that is not the `Array` the compiler put
-/// there, or an index past its end, can only come from a crafted image
-/// (`CLAUDE.md`, "An image is untrusted input"), so this reports rather than
-/// indexes. `register_base` is the running activation's window, which the
-/// run loop holds: read through it, the vector's register costs no read of
-/// the frame's argument count.
+/// there -- but the nil of a vector not made yet, below -- or an index past
+/// its end, can only come from a crafted image (`CLAUDE.md`, "An image is
+/// untrusted input"), so this reports rather than indexes. `register_base`
+/// is the running activation's window, which the run loop holds: read
+/// through it, the vector's register costs no read of the frame's argument
+/// count.
+///
+/// A nil holder answers nil: a vector not made yet, which only a block an
+/// evaluation made over a frame stopped before its `MakeVector` reads --
+/// the variable is in scope from its body's start and nil until written,
+/// as the variables view shows it (`docs/design/debugger.md`,
+/// "Evaluation"). Machine code exits for it, as for every holder that is
+/// no `Array`, so the decision is made here alone.
 pub(crate) fn load_vector<'gc>(
     heap: &Heap<'gc>,
     register_base: RegisterBase,
@@ -102,7 +110,19 @@ pub(crate) fn load_vector<'gc>(
             Some(element) => Ok(element),
             None => Err(vector_error(value)),
         },
-        _ => Err(vector_error(value)),
+        None => not_an_object_holder(value),
+    }
+}
+
+/// `load_vector` of a holder that is no object: nil for a vector not made
+/// yet, the error otherwise.
+#[cold]
+#[inline(never)]
+fn not_an_object_holder(value: Value<'_>) -> EvaluationResult<'_> {
+    if value.is_nil() {
+        Ok(Value::nil())
+    } else {
+        Err(vector_error(value))
     }
 }
 

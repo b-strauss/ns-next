@@ -23,8 +23,8 @@ use crate::bytecode::{
     Literal as BytecodeLiteral, register_written, registers_read,
 };
 use crate::debugger::metadata::{
-    BlockPlace, BlockSendEntry, BodyMetadata, MetadataCollector, SendEntry, StatementEntry,
-    TakenBlock, VariableEntry, VariablePlace,
+    BlockPlace, BlockSendEntry, BodyMetadata, DeclaredVariable, MetadataCollector, SendEntry,
+    StatementEntry, TakenBlock, VariableEntry, VariablePlace, VectorHolder, declared_variables,
 };
 use crate::mixin::Mixin;
 use crate::types::Binding;
@@ -206,6 +206,30 @@ pub(crate) fn compile_lazy_slot_getter(
     body.finish(span)
 }
 
+/// An expression evaluated in a stopped frame (`super::evaluation`), as a
+/// block of `argument_count` arguments and the expression's temporaries,
+/// every `Binding::FrameVariable` in it and in the blocks it makes reached
+/// at the place `frame_variables` gives it (`docs/design/debugger.md`,
+/// decision 8, "Evaluation").
+pub(crate) fn compile_evaluation(
+    expression: &ast::CodeBody,
+    bindings: &Bindings,
+    frame_variables: Rc<[VariablePlace]>,
+    argument_count: usize,
+) -> CompiledCode {
+    let mut body = Body::new(
+        CodeKind::Block,
+        argument_count,
+        &expression.temporaries,
+        bindings,
+        None,
+    );
+    body.frame_variables = Some(frame_variables);
+    body.local_initializers(&expression.temporaries);
+    body.statements_and_end(&expression.statements);
+    body.finish(expression.span)
+}
+
 /// The superclass clause as a single `^ec`. The expression is
 /// `interpreter::nested`'s, the one definition of what a clause evaluates.
 fn superclass_clause(
@@ -230,6 +254,14 @@ fn superclass_clause(
     );
     body.statements_and_end(&statements);
     Some(body.finish(clause.span))
+}
+
+/// Where an evaluated expression reaches a stopped frame's variable: a
+/// register `depth` frames out, or the slot of the indirection vector held
+/// there.
+enum FrameAccess {
+    Register { depth: u16, index: u16 },
+    Vector { depth: u16, index: u16, slot: u16 },
 }
 
 /// One body being lowered: a method, a block, an initializer or a
@@ -265,17 +297,21 @@ struct Body<'a> {
     /// `lower.rs`'s `Lowerer` does; no instruction depends on it.
     collector: Option<&'a MetadataCollector>,
     collected: Option<Collected>,
-    /// The variable names of every body this one is nested in, outermost
+    /// The variables of every body this one is nested in, outermost
     /// first, parallel to `enclosing_argument_counts`; empty when no
     /// metadata is collected.
-    enclosing_variable_names: Vec<Rc<[Symbol]>>,
+    enclosing_variable_names: Vec<Rc<[DeclaredVariable]>>,
+    /// Where the stopped frame keeps each variable an evaluated expression
+    /// names (`Binding::FrameVariable`), for the expression's body and every
+    /// block in it; `None` outside an evaluation (`super::evaluation`).
+    frame_variables: Option<Rc<[VariablePlace]>>,
 }
 
 /// The tables a collecting `Body` builds as it lowers.
 struct Collected {
-    /// The body's own variable names by resolver index: its parameters,
-    /// then its temporaries.
-    names: Rc<[Symbol]>,
+    /// The body's own variables by resolver index: its parameters, then
+    /// its temporaries.
+    names: Rc<[DeclaredVariable]>,
     statements: Vec<StatementEntry>,
     sends: Vec<SendEntry>,
     block_sends: Vec<BlockSendEntry>,
@@ -317,14 +353,7 @@ impl<'a> Body<'a> {
                 collector,
                 parameters,
             }) => {
-                let names = parameters
-                    .into_iter()
-                    .chain(
-                        temporaries
-                            .iter()
-                            .map(|temporary| Symbol::intern(&temporary.name.name)),
-                    )
-                    .collect();
+                let names = declared_variables(parameters, temporaries);
                 let collected = Collected {
                     names,
                     statements: Vec::new(),
@@ -350,6 +379,7 @@ impl<'a> Body<'a> {
             collector,
             collected,
             enclosing_variable_names: Vec::new(),
+            frame_variables: None,
         }
     }
 
@@ -398,6 +428,43 @@ impl<'a> Body<'a> {
             Some(limit) => self.pass_a_limit(limit),
             None => {
                 self.code.emit(instruction);
+            }
+        }
+    }
+
+    /// How this body reaches the stopped frame's variable at `index` of an
+    /// evaluated expression: the stopped frame is the outer frame of the
+    /// expression's body, one hop past it and every block between, and the
+    /// variable where that frame reads it as many hops further as its place
+    /// says -- the places `lower.rs`'s `frame_variable_access` reads, so
+    /// that both lowerings reach a frame variable alike.
+    fn frame_variable_access(&self, index: u16) -> FrameAccess {
+        let places = self
+            .frame_variables
+            .as_ref()
+            .expect("internal: a frame variable outside an evaluation");
+        let to_stopped = u16::try_from(self.enclosing_argument_counts.len() + 1)
+            .expect("internal: more block nesting than the parser admits");
+        let further = |hops: u16| {
+            to_stopped
+                .checked_add(hops)
+                .expect("internal: a frame variable past u16::MAX hops")
+        };
+        match places[usize::from(index)] {
+            VariablePlace::Register(register) => FrameAccess::Register {
+                depth: to_stopped,
+                index: register,
+            },
+            VariablePlace::Outer { hops, register } => FrameAccess::Register {
+                depth: further(hops),
+                index: register,
+            },
+            VariablePlace::Vector { vector, slot } => {
+                let (depth, index) = match vector {
+                    VectorHolder::Register(register) => (to_stopped, register),
+                    VectorHolder::Outer { hops, register } => (further(hops), register),
+                };
+                FrameAccess::Vector { depth, index, slot }
             }
         }
     }
@@ -735,6 +802,32 @@ impl<'a> Body<'a> {
                 });
                 destination
             }
+            Some(Binding::FrameVariable(index)) => {
+                let destination = self.target_register(into);
+                match self.frame_variable_access(index) {
+                    FrameAccess::Register { depth, index } => {
+                        self.emit(Instruction::LoadOuterLocal {
+                            destination,
+                            depth,
+                            index,
+                        });
+                    }
+                    FrameAccess::Vector { depth, index, slot } => {
+                        let vector = self.fresh();
+                        self.emit(Instruction::LoadOuterLocal {
+                            destination: vector,
+                            depth,
+                            index,
+                        });
+                        self.emit(Instruction::LoadVector {
+                            destination,
+                            vector,
+                            index: slot,
+                        });
+                    }
+                }
+                destination
+            }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&id.name);
                 let (argument_base, argument_sources) = self.arguments(&[]);
@@ -807,6 +900,30 @@ impl<'a> Body<'a> {
                     index,
                 });
             }
+            // The resolver binds an assignment only to a frame variable
+            // that is assignable (`resolver::resolve_evaluation`).
+            Some(Binding::FrameVariable(index)) => match self.frame_variable_access(index) {
+                FrameAccess::Register { depth, index } => {
+                    self.emit(Instruction::StoreOuterLocal {
+                        source: value_register,
+                        depth,
+                        index,
+                    });
+                }
+                FrameAccess::Vector { depth, index, slot } => {
+                    let vector = self.fresh();
+                    self.emit(Instruction::LoadOuterLocal {
+                        destination: vector,
+                        depth,
+                        index,
+                    });
+                    self.emit(Instruction::StoreVector {
+                        vector,
+                        index: slot,
+                        source: value_register,
+                    });
+                }
+            },
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
                 let spans = SendSpans::setter(&target.span, value);
@@ -876,7 +993,14 @@ impl<'a> Body<'a> {
             // block a real closure; one whose block the optimized lowering
             // lowers inline is marked too, so that the block's activation is
             // exempt under the same condition as `ifTrue:`'s.
-            Some(Binding::Local(_) | Binding::OuterLocal { .. } | Binding::MirrorSend) | None => {
+            // A `FrameVariable` binds an identifier, never a send.
+            Some(
+                Binding::Local(_)
+                | Binding::OuterLocal { .. }
+                | Binding::MirrorSend
+                | Binding::FrameVariable(_),
+            )
+            | None => {
                 match control_flow::recognize(send) {
                     Some(control_flow::InlineForm::WhileTrue { condition, body }) => {
                         return self.while_loop(send, condition, body, true, into);
@@ -1079,6 +1203,7 @@ impl<'a> Body<'a> {
         );
         inner.enclosing_argument_counts = self.enclosing_argument_counts.clone();
         inner.enclosing_argument_counts.push(self.argument_count);
+        inner.frame_variables = self.frame_variables.clone();
         if let Some(collected) = &self.collected {
             inner.enclosing_variable_names = self.enclosing_variable_names.clone();
             inner.enclosing_variable_names.push(collected.names.clone());
@@ -1201,12 +1326,17 @@ impl<'a> Body<'a> {
     /// into a closure, so every enclosing variable is read through the
     /// captured frames, in the register its declaring body keeps it in
     /// (`docs/design/debugger.md`, decision 10).
-    fn collected_variables(&self, names: &[Symbol]) -> Vec<VariableEntry> {
-        let own = names.iter().enumerate().map(|(index, name)| VariableEntry {
-            name: *name,
-            depth: 0,
-            place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
-        });
+    fn collected_variables(&self, names: &[DeclaredVariable]) -> Vec<VariableEntry> {
+        let own = names
+            .iter()
+            .enumerate()
+            .map(|(index, declared)| VariableEntry {
+                name: declared.name,
+                assignable: declared.assignable,
+                depth: 0,
+                place: VariablePlace::Register(self.local_register(0, super::local_index(index))),
+                copied_by: Box::new([]),
+            });
         let enclosing = self
             .enclosing_variable_names
             .iter()
@@ -1220,13 +1350,15 @@ impl<'a> Body<'a> {
                 names
                     .iter()
                     .enumerate()
-                    .map(move |(index, name)| VariableEntry {
-                        name: *name,
+                    .map(move |(index, declared)| VariableEntry {
+                        name: declared.name,
+                        assignable: declared.assignable,
                         depth,
                         place: VariablePlace::Outer {
                             hops: depth,
                             register: self.local_register(depth, super::local_index(index)),
                         },
+                        copied_by: Box::new([]),
                     })
             });
         own.chain(enclosing).collect()

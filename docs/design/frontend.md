@@ -8,7 +8,9 @@
 > without positions (`positions.rs`); for an editor, `parse_for_editor`
 > (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
 > `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop,
-> clone and `receiver_chain` (`ast.rs`); the recovery's tests in
+> clone and `receiver_chain` (`ast.rs`); for code compiled outside any
+> module -- the debugger's evaluated expression -- `parse_code_body`
+> (`lib.rs`), a code body that is the whole input; the recovery's tests in
 > `tests/recovery.rs`, the attachment's in `tests/attachment.rs`; the
 > corpus benchmark in `benches/corpus.rs`. The
 > printer that writes a module back as source is
@@ -16,8 +18,10 @@
 
 Turns source bytes into a `Module` AST with source spans, and reports lexer and
 parser diagnostics; for an editor, it answers a recovered module for any
-source ("Recovery"). It has no dependency on `ns-runtime`, and nothing here
-should change for runtime work.
+source ("Recovery"). It has no dependency on `ns-runtime`. Runtime work
+changes neither its lexer nor its grammar; what it may add is an entry into
+the existing parser for source compiled outside a module, as
+`parse_code_body` is for the debugger's evaluated expression.
 
 ## What a source file looks like
 

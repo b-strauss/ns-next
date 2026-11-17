@@ -480,7 +480,9 @@ const SIGNALLER: &str = indoc! {"
 /// A `Signaller` in an interpreter compiling with `lowering`, with every
 /// stress mode that allocates or frees at a safepoint turned off: a
 /// collection or a scavenge would change the count of objects in the
-/// space, and a suspension reifies every frame it suspends.
+/// space, a suspension reifies every frame it suspends, and the pause
+/// stress mode's evaluations reify the frame they stand in and make their
+/// closures.
 fn a_signaller(lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(SIGNALLER).expect("parse");
     let resolved = ns_runtime::resolve(
@@ -496,6 +498,7 @@ fn a_signaller(lowering: Lowering) -> (Interpreter, Root) {
         interpreter.set_stress_collect(false);
         interpreter.set_stress_scavenge(false);
         interpreter.set_stress_suspend(false);
+        interpreter.set_stress_pause(false);
     }
     let class = interpreter.load_module(&resolved);
     let signaller = expect_ok(interpreter.instantiate(&class, &[]), "Signaller new");

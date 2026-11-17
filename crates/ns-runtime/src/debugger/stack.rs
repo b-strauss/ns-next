@@ -212,12 +212,51 @@ fn body_of<'gc>(
     (code, origin, metadata)
 }
 
+/// `body_of` for any frame of the stop: what an evaluation compiles in
+/// (`evaluation::compile`).
+pub(crate) fn body(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+) -> (
+    Rc<CompiledCode>,
+    Option<BodyOrigin>,
+    Option<Rc<BodyMetadata>>,
+) {
+    body_of(mutator, frame)
+}
+
+/// The frame object of `frame`: a running activation's, reified for it,
+/// or the one a suspended activation lives in.
+pub(crate) fn reified<'gc>(heap: &mut Heap<'gc>, frame: &StackFrame) -> FrameReference<'gc> {
+    match frame.read(heap) {
+        Frame::Running(activation) => heap.reify(activation),
+        Frame::Suspended(frame) => frame,
+    }
+}
+
 /// Which declaration's member `frame` runs (`origin_of`), read without
 /// its metadata: what a step filter decides by (`stepping::is_filtered`).
 pub(crate) fn origin(heap: &Heap<'_>, frame: &StackFrame) -> Option<BodyOrigin> {
     let frame = frame.read(heap);
     let code = frame.code(heap);
     origin_of(heap, frame, &code)
+}
+
+/// Whether `frame` runs a body of a shipped module: a frame the client
+/// folds away, whose values are withheld (`docs/design/debugger.md`,
+/// "Marking objects", "Folding the shipped frames"), in which nothing is
+/// evaluated, restarted or forced to return -- decided as the step
+/// filter decides it (`stepping::decide_filtered`).
+pub(crate) fn is_shipped(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
+    origin_is_shipped(mutator, origin(&mutator.heap, frame).as_ref())
+}
+
+/// Whether a body of the declaration `origin` names belongs to a shipped
+/// module; `None`, a top-level frame's, belongs to none.
+pub(crate) fn origin_is_shipped(mutator: &Mutator<'_>, origin: Option<&BodyOrigin>) -> bool {
+    origin
+        .and_then(|origin| module_name(mutator, &origin.mixin))
+        .is_some_and(|module| module.shipped)
 }
 
 /// Whether `frame` is a block's activation.
@@ -232,9 +271,102 @@ pub(crate) fn is_factory(heap: &Heap<'_>, frame: &StackFrame) -> bool {
     matches!(frame.read(heap).kind(heap), ActivationKind::Factory(_))
 }
 
+/// Whether `frame` is an initializer's activation, which answers its
+/// instance whatever ends it.
+pub(crate) fn is_initializer(heap: &Heap<'_>, frame: &StackFrame) -> bool {
+    matches!(frame.read(heap).kind(heap), ActivationKind::Initializer(..))
+}
+
 /// The body `frame` runs.
 pub(crate) fn code(heap: &Heap<'_>, frame: &StackFrame) -> Rc<CompiledCode> {
     frame.read(heap).code(heap)
+}
+
+/// The program counter `frame` stores: the instruction it goes on from.
+pub(crate) fn program_counter(heap: &Heap<'_>, frame: &StackFrame) -> u32 {
+    u32::try_from(frame.read(heap).program_counter(heap))
+        .expect("internal: a program counter fits its frame word")
+}
+
+/// The frame `hops` closures' captured frames out from a stopped frame,
+/// as `Reader::outer` reaches it.
+pub(crate) struct OuterFrame {
+    /// Its body.
+    code: Rc<CompiledCode>,
+    /// The body's metadata, `None` where it has none.
+    metadata: Option<Rc<BodyMetadata>>,
+    /// The program counter it stands at while its activation runs or is
+    /// suspended; `None` once it returned.
+    program_counter: Option<u32>,
+}
+
+impl OuterFrame {
+    /// Whether a block may already hold a copy of the local the frame's
+    /// body keeps in `register`: one of the `MakeClosure`s its entry names
+    /// may have run before the frame's program counter, or, once the frame
+    /// returned, any of them. A register its table names no local of is
+    /// answered as copied, as is every register of a body without
+    /// metadata: nothing says otherwise.
+    pub(crate) fn may_have_copied(&self, register: u16) -> bool {
+        let Some(metadata) = &self.metadata else {
+            return true;
+        };
+        let Some(entry) = metadata
+            .variables
+            .iter()
+            .find(|entry| entry.depth == 0 && entry.place == VariablePlace::Register(register))
+        else {
+            return true;
+        };
+        !entry.copied_by.is_empty()
+            && self.program_counter.is_none_or(|program_counter| {
+                crate::bytecode::may_have_run(&self.code, &entry.copied_by, program_counter)
+            })
+    }
+}
+
+/// The frame `hops` closures' captured frames out from `frame` (`hops`
+/// above 0), its body's metadata compiled again on the first ask; `None`
+/// where a hop finds no captured frame or the frame names no body.
+pub(crate) fn outer_frame(
+    mutator: &mut Mutator<'_>,
+    frame: &StackFrame,
+    hops: u16,
+) -> Option<OuterFrame> {
+    let (code, origin, program_counter) = {
+        let heap = &mutator.heap;
+        let mut target = frame.read(heap).captured(heap)?;
+        for _ in 1..hops {
+            target = heap.frame_captured(target)?;
+        }
+        let code = heap.frame_code(target)?;
+        let (read, program_counter) = match heap.frame_activation(target) {
+            Some(activation) => (
+                Frame::Running(activation),
+                Some(heap.activation_program_counter(activation)),
+            ),
+            // A frame object names its kind and class alike whether its
+            // activation is suspended or returned.
+            None => (
+                Frame::Suspended(target),
+                heap.frame_is_suspended(target)
+                    .then(|| heap.frame_stored_program_counter(target)),
+            ),
+        };
+        let origin = origin_of(heap, read, &code);
+        let program_counter = program_counter.map(|program_counter| {
+            u32::try_from(program_counter).expect("internal: a program counter fits its frame word")
+        });
+        (code, origin, program_counter)
+    };
+    let metadata = origin
+        .as_ref()
+        .and_then(|origin| Cache::metadata(mutator, &code, origin));
+    Some(OuterFrame {
+        code,
+        metadata,
+        program_counter,
+    })
 }
 
 /// The descriptions of the run's `frames`, innermost first, every frame
@@ -273,7 +405,8 @@ pub(crate) fn stack_trace(
                 };
                 location(mutator, origin, metadata, &code, standing)
             });
-        let receiver = values.describe(mutator, frame.receiver(&mutator.heap));
+        let shipped = origin_is_shipped(mutator, origin.as_ref());
+        let receiver = values.describe(mutator, frame.receiver(&mutator.heap), shipped);
         descriptions.push(FrameDescription {
             kind: frame_kind(kind),
             name,
@@ -282,6 +415,7 @@ pub(crate) fn stack_trace(
             location,
             receiver,
             hidden: hidden.contains(&index),
+            shipped,
         });
     }
     descriptions
@@ -700,41 +834,129 @@ fn one_line(text: &str) -> String {
 /// past the stack: `self`, then, with the body's metadata, each named
 /// variable once, the innermost of a name, read where it lives
 /// (`named_variables`); without it, each argument and each register below
-/// the first scratch register (`numbered_variables`).
+/// the first scratch register (`numbered_variables`). A shipped frame's
+/// are withheld, its outer variables too.
 pub(crate) fn variables(
     mutator: &mut Mutator<'_>,
     frames: &[StackFrame],
     frame: usize,
     values: &mut StopValues,
 ) -> Option<Vec<Variable>> {
-    let stack_frame = frames.get(frame)?;
-    let (code, _, metadata) = body_of(mutator, stack_frame);
-    let heap = &mutator.heap;
-    let frame = stack_frame.read(heap);
-    let program_counter = u32::try_from(frame.program_counter(heap))
-        .expect("internal: a program counter fits its frame word");
-    let tainted = code.tainted_before(program_counter).to_vec();
-    let reader = Reader {
-        heap,
-        frame,
-        code: &code,
-        tainted: &tainted,
-    };
-    let mut read = vec![(String::from("self"), Some(frame.receiver(heap)))];
-    match metadata {
-        Some(metadata) => named_variables(&reader, &metadata, &mut read),
-        None => numbered_variables(&reader, &mut read),
-    }
+    let (shipped, read) = frame_values(mutator, frames, frame)?;
     Some(
         read.into_iter()
             .map(|(name, value)| Variable {
                 name,
                 value: value.map_or(VariableValue::Unavailable, |value| {
-                    VariableValue::Shown(values.describe(mutator, value))
+                    VariableValue::Shown(values.describe(mutator, value, shipped))
                 }),
             })
             .collect(),
     )
+}
+
+/// A variable of a frame, by name, and its value; `None` where it lives
+/// nowhere any more.
+pub(crate) type NamedValue<'gc> = (String, Option<Value<'gc>>);
+
+/// The variables of the frame at index `frame` of the stack trace, as
+/// `variables` shows them, each named and read where it lives -- `None`
+/// for one that lives nowhere any more -- and whether the frame runs a
+/// shipped body; `None` past the stack. What the memory view reads a
+/// frame by, so that a referrer on the stack is a variable this view
+/// shows (`memory::referrers`).
+pub(crate) fn frame_values<'gc>(
+    mutator: &mut Mutator<'gc>,
+    frames: &[StackFrame],
+    frame: usize,
+) -> Option<(bool, Vec<NamedValue<'gc>>)> {
+    let stack_frame = frames.get(frame)?;
+    let (code, origin, metadata) = body_of(mutator, stack_frame);
+    let shipped = origin_is_shipped(mutator, origin.as_ref());
+    let read = with_reader(&mutator.heap, stack_frame, &code, |reader| {
+        let mut read = vec![(
+            String::from("self"),
+            Some(reader.frame.receiver(reader.heap)),
+        )];
+        match metadata {
+            Some(metadata) => named_variables(reader, &metadata, &mut read),
+            None => numbered_variables(reader, &mut read),
+        }
+        read
+    });
+    Some((shipped, read))
+}
+
+/// Whether the variable at `place` of `stack_frame` is a vector variable
+/// whose vector does not exist yet: its holder, read as the variables view
+/// reads it, is nil, the frame stopped before its `MakeVector`. A holder
+/// not available is no such case -- the variable lives nowhere any more.
+pub(crate) fn vector_not_made(
+    heap: &Heap<'_>,
+    stack_frame: &StackFrame,
+    place: VariablePlace,
+) -> bool {
+    let VariablePlace::Vector { vector, .. } = place else {
+        return false;
+    };
+    let code = code(heap, stack_frame);
+    let holder = with_reader(heap, stack_frame, &code, |reader| match vector {
+        VectorHolder::Register(register) => reader.own(register),
+        VectorHolder::Outer { hops, register } => reader.outer(hops, register),
+    });
+    holder.is_some_and(|holder| holder.is_nil())
+}
+
+/// Whether `stack_frame` holds the variable at each of `places`, read as
+/// the variables view reads it (`Reader::place`): `false` for one the view
+/// shows as not available, which an evaluation refuses to read or write.
+pub(crate) fn available(
+    heap: &Heap<'_>,
+    stack_frame: &StackFrame,
+    places: impl Iterator<Item = VariablePlace>,
+) -> Vec<bool> {
+    let code = code(heap, stack_frame);
+    with_reader(heap, stack_frame, &code, |reader| {
+        places.map(|place| reader.place(place).is_some()).collect()
+    })
+}
+
+/// Whether the body `code` belongs to a shipped module, decided by the
+/// code alone: by the registered mixin one of whose members' families
+/// holds it -- a method, an initializer or a superclass clause, or a
+/// block one of them creates -- and that mixin's module. What withholds
+/// a closure in the memory view (`memory::referrers`), whatever frame it
+/// captured, if any. `None` when no registered mixin holds it: a body of
+/// a version an edit replaced, or a top-level one.
+pub(crate) fn code_is_shipped(mutator: &Mutator<'_>, code: &Rc<CompiledCode>) -> Option<bool> {
+    let heap = &mutator.heap;
+    let holder = heap
+        .mixin_ids()
+        .into_iter()
+        .filter_map(|id| heap.mixin(id))
+        .find(|mixin| member_holding(mixin, code).is_some())?;
+    Some(module_name(mutator, &holder).is_none_or(|module| module.shipped))
+}
+
+/// Answers what `read` answers with the reader of `stack_frame`, which
+/// runs `code`: the frame read where it stands, and the registers the
+/// leftover analysis finds tainted before its stored program counter.
+fn with_reader<'gc, T>(
+    heap: &Heap<'gc>,
+    stack_frame: &StackFrame,
+    code: &CompiledCode,
+    read: impl FnOnce(&Reader<'_, 'gc>) -> T,
+) -> T {
+    let frame = stack_frame.read(heap);
+    let program_counter = u32::try_from(frame.program_counter(heap))
+        .expect("internal: a program counter fits its frame word");
+    let tainted = code.tainted_before(program_counter).to_vec();
+    read(&Reader {
+        heap,
+        frame,
+        code,
+        tainted: &tainted,
+    })
 }
 
 /// What reads one stopped frame's variables.
@@ -840,7 +1062,7 @@ impl<'gc> Reader<'_, 'gc> {
 
 /// Whether `register` is one a body names: an argument, or one past the
 /// header's numbers and below the first scratch register.
-fn is_named_register(code: &CompiledCode, register: u16) -> bool {
+pub(crate) fn is_named_register(code: &CompiledCode, register: u16) -> bool {
     register < code.argument_count
         || (code.argument_count + HEADER_REGISTERS..code.local_count).contains(&register)
 }

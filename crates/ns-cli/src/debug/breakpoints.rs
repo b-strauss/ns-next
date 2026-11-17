@@ -1,6 +1,7 @@
 //! The client's breakpoints as the VM knows them: `setBreakpoints`,
 //! `setFunctionBreakpoints` and `setExceptionBreakpoints`, the parsing of
-//! their hit conditions, method names and class names, and the ids.
+//! their hit conditions, log messages, method names and class names, and
+//! the ids.
 //!
 //! A breakpoint's DAP id is the agent's own, never the VM's: the VM sets
 //! a module's whole set afresh at every `SetBreakpoints`, under new ids,
@@ -15,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use ns_runtime::{
-    BreakpointState, ClassName, Command, HitCondition, LineBreakpoint, MethodBreakpoint,
+    BreakpointState, ClassName, Command, HitCondition, LineBreakpoint, LogPart, MethodBreakpoint,
     MethodBreakpointState, ModuleName,
 };
 use ns_tooling::lines::{LineColumn, LineIndex};
@@ -142,6 +143,8 @@ pub(crate) fn parse_method_name(
             class_side,
             selector: selector.to_string(),
             hit_condition: None,
+            condition: None,
+            log: None,
         })
         .collect())
 }
@@ -473,9 +476,17 @@ impl Agent {
                 let offset = offset_of(&text, breakpoint.line, breakpoint.column)
                     .ok_or_else(|| "the module has no such line".to_string())?;
                 let hit_condition = hit_condition(breakpoint.hit_condition.as_deref())?;
+                let log = breakpoint
+                    .log_message
+                    .as_deref()
+                    .filter(|message| !message.is_empty())
+                    .map(parse_log_message)
+                    .transpose()?;
                 Ok(LineBreakpoint {
                     offset,
                     hit_condition,
+                    condition: condition(breakpoint.condition.as_deref()),
+                    log,
                 })
             })
             .collect();
@@ -527,9 +538,11 @@ impl Agent {
                 let mut methods = parse_method_name(&breakpoint.name, &|name| {
                     self.sources.modules_of_class_name(name)
                 })?;
-                let condition = hit_condition(breakpoint.hit_condition.as_deref())?;
+                let counted = hit_condition(breakpoint.hit_condition.as_deref())?;
+                let holds = condition(breakpoint.condition.as_deref());
                 for method in &mut methods {
-                    method.hit_condition = condition;
+                    method.hit_condition = counted;
+                    method.condition.clone_from(&holds);
                 }
                 Ok(methods)
             })
@@ -691,6 +704,105 @@ fn hit_condition(text: Option<&str>) -> Result<Option<HitCondition>, String> {
         .transpose()
 }
 
+/// A breakpoint's condition, passed to the VM as written, which compiles
+/// it and reports one that does not compile at the hit; a blank one is
+/// none.
+fn condition(text: Option<&str>) -> Option<String> {
+    text.filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// A logpoint's message as the VM takes it: the text outside braces as it
+/// is, `{{` and `}}` a brace of it, and each expression in braces
+/// evaluated at the hit. An expression's own braces -- a tuple, `{1. 2}`
+/// -- nest, and a brace in one of its strings or a character literal is
+/// the expression's; so an expression that begins with a brace is
+/// written after a blank, `{ {1. 2} size}`, since `{{` is a brace of the
+/// text. A brace that never closes is refused, as is an empty
+/// expression, rather than logged as text the user did not mean.
+pub(crate) fn parse_log_message(text: &str) -> Result<Vec<LogPart>, String> {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '{' | '}' if characters.next_if_eq(&character).is_some() => literal.push(character),
+            '{' => {
+                let expression = expression_in_braces(&mut characters).ok_or_else(|| {
+                    format!(
+                        "the log message `{text}` has an unclosed `{{`: write `{{{{` for a \
+                         brace of the text"
+                    )
+                })?;
+                if expression.trim().is_empty() {
+                    return Err(format!(
+                        "the log message `{text}` has an empty `{{}}`: write an expression \
+                         in it, or `{{{{}}}}` for braces of the text"
+                    ));
+                }
+                if !literal.is_empty() {
+                    parts.push(LogPart::Text(std::mem::take(&mut literal)));
+                }
+                parts.push(LogPart::Expression(expression));
+            }
+            other => literal.push(other),
+        }
+    }
+    if !literal.is_empty() {
+        parts.push(LogPart::Text(literal));
+    }
+    Ok(parts)
+}
+
+/// The expression of a log message up to the brace that closes it, which
+/// is taken; `None` when none does.
+fn expression_in_braces(
+    characters: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Option<String> {
+    let mut expression = String::new();
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    while let Some(character) = characters.next() {
+        match character {
+            // A doubled quote within a string ends it and begins it
+            // again, which reads the same.
+            '\'' => in_string = !in_string,
+            // A comment's quotes and braces are the comment's own.
+            '(' if !in_string && characters.peek() == Some(&'*') => {
+                expression.push(character);
+                // The `*` that opens the comment closes nothing.
+                expression.extend(characters.next());
+                let mut previous = None;
+                for inner in characters.by_ref() {
+                    expression.push(inner);
+                    if previous == Some('*') && inner == ')' {
+                        break;
+                    }
+                    previous = Some(inner);
+                }
+                continue;
+            }
+            // A character literal's character is never a brace or a quote
+            // of the expression's.
+            '$' if !in_string => {
+                expression.push(character);
+                if let Some(literal) = characters.next() {
+                    expression.push(literal);
+                }
+                continue;
+            }
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => match depth.checked_sub(1) {
+                Some(outer) => depth = outer,
+                None => return Some(expression),
+            },
+            _ => {}
+        }
+        expression.push(character);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,6 +836,57 @@ mod tests {
         ];
         for (text, condition) in forms {
             assert_eq!(parse_hit_condition(text), Ok(condition), "{text}");
+        }
+    }
+
+    #[test]
+    fn log_messages_parse_into_text_and_expressions() {
+        let text = |text: &str| LogPart::Text(text.to_string());
+        let expression = |text: &str| LogPart::Expression(text.to_string());
+        let forms = [
+            ("plain", vec![text("plain")]),
+            (
+                "at {index}!",
+                vec![text("at "), expression("index"), text("!")],
+            ),
+            ("{a}{b}", vec![expression("a"), expression("b")]),
+            ("{{a}} }}{{", vec![text("{a} }{")]),
+            ("a } b", vec![text("a } b")]),
+            (
+                "{ {1. 2} size} of {'}{' size} {$} value}",
+                vec![
+                    expression(" {1. 2} size"),
+                    text(" of "),
+                    expression("'}{' size"),
+                    text(" "),
+                    expression("$} value"),
+                ],
+            ),
+            ("{'it''s' size}", vec![expression("'it''s' size")]),
+            (
+                "{index (* it's } { *) + 1}!",
+                vec![expression("index (* it's } { *) + 1"), text("!")],
+            ),
+            ("{(*) ' *) 2}", vec![expression("(*) ' *) 2")]),
+        ];
+        for (message, parts) in forms {
+            assert_eq!(parse_log_message(message), Ok(parts), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_log_message_is_refused() {
+        for (message, said) in [
+            ("at {index", "unclosed `{`"),
+            ("at { {1. 2} size", "unclosed `{`"),
+            ("{'}'", "unclosed `{`"),
+            ("at {index (* } *}", "unclosed `{`"),
+            ("at {} and", "empty `{}`"),
+            ("at { }", "empty `{}`"),
+        ] {
+            let refused = parse_log_message(message).expect_err(message);
+            assert!(refused.contains(said), "{refused}");
+            assert!(refused.contains(&format!("`{message}`")), "{refused}");
         }
     }
 
@@ -763,6 +926,8 @@ mod tests {
                 class_side: false,
                 selector: "at:put:".to_string(),
                 hit_condition: None,
+                condition: None,
+                log: None,
             }
         );
         let class_side = method(" Module.Inner class >> new ");

@@ -10,6 +10,7 @@ import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointProperties
 import com.intellij.xdebugger.breakpoints.XBreakpointType
 import com.intellij.xdebugger.breakpoints.ui.XBreakpointCustomPropertiesPanel
+import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
 import io.github.bstrauss.newspeak.NewspeakBundle
 import javax.swing.Icon
 import javax.swing.JComponent
@@ -56,6 +57,16 @@ class NewspeakMethodBreakpointType :
 
     override fun createCustomPropertiesPanel(project: Project): XBreakpointCustomPropertiesPanel<XBreakpoint<NewspeakMethodBreakpointProperties>> =
         PassCountPanel()
+
+    /**
+     * Newspeak's editor for the condition, which the agent decides at each
+     * hit, and the log expression, which the session evaluates at the stop
+     * ([conditionOf], [logExpressionOf]).
+     */
+    override fun getEditorsProvider(
+        breakpoint: XBreakpoint<NewspeakMethodBreakpointProperties>,
+        project: Project,
+    ): XDebuggerEditorsProvider = NewspeakDebuggerEditorsProvider
 
     /**
      * The dialog's own check: a class and a selector around the first

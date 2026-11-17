@@ -19,12 +19,17 @@ import com.intellij.ide.util.treeView.AbstractTreeNode
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.ui.TestDialogManager
+import com.intellij.openapi.ui.TestInputDialog
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -35,6 +40,7 @@ import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.util.ThreeState
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XDebugProcess
@@ -46,8 +52,11 @@ import com.intellij.xdebugger.XDebuggerManagerListener
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpoint
+import com.intellij.xdebugger.breakpoints.SuspendPolicy
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
+import com.intellij.xdebugger.evaluation.EvaluationMode
+import com.intellij.xdebugger.evaluation.XDebuggerEvaluator
 import com.intellij.xdebugger.frame.XCompositeNode
 import com.intellij.xdebugger.frame.XDebuggerTreeNodeHyperlink
 import com.intellij.xdebugger.frame.XExecutionStack
@@ -56,11 +65,14 @@ import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XValue
 import com.intellij.xdebugger.frame.XValueChildrenList
 import com.intellij.xdebugger.frame.XValueContainer
+import com.intellij.xdebugger.frame.XValueModifier
 import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
+import com.intellij.xdebugger.impl.settings.XDebuggerSettingManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRoots
@@ -77,6 +89,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -628,6 +641,482 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
         onEdt { debugging.session.resume() }
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * The Evaluate dialog's evaluator, the frame's: an expression over a
+     * local answers its value, with children where it has some; one that
+     * does not compile answers the agent's reason as its error. A hover
+     * offers a local's name, and no other, since any other may be a send.
+     */
+    fun testEvaluateAnswersALocalsValue() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+
+        assertEquals(Presentation(null, "Integer", "4", false), presentationOf(evaluated(frame, "count + 1")))
+        val elements = evaluated(frame, "elements")
+        assertTrue(presentationOf(elements).hasChildren)
+        assertEquals(listOf("[1]", "[2]", "[3]"), childrenOf(elements).keys.toList())
+        assertTrue(evaluationError(frame, "count +").startsWith("the expression does not compile"))
+
+        val document = EditorFactory.getInstance().createDocument("count printString. platform nothing")
+        val evaluator = checkNotNull(frame.evaluator)
+        fun hovered(offset: Int): String? =
+            evaluator.getExpressionInfoAtOffsetAsync(project, document, offset, false).blockingGet(WAIT_SECONDS.toInt() * 1000)
+                ?.let { info -> info.textRange.subSequence(document.charsSequence).toString() }
+        assertEquals("count", hovered(2))
+        assertNull("a send's name is not hovered", hovered(8))
+        assertEquals("a parameter is a variable", "platform", hovered(22))
+        assertNull("nor a name no variable has", hovered(30))
+
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * A watch is evaluated at every stop by the evaluator of the stop's
+     * frame, which answers that stop's value: a loop's index, at each of
+     * its three stops.
+     */
+    fun testAWatchIsEvaluatedAtEachStop() {
+        val program = program("Loop", LOOP)
+        toggleBreakpoint(program, line = 4)
+        val debugging = debug(program)
+        val watched = (1..3).map { _ ->
+            debugging.nextPause()
+            val value = presentationOf(evaluated(checkNotNull(debugging.session.currentStackFrame), "index * 10")).value
+            onEdt { debugging.session.resume() }
+            value
+        }
+        assertEquals(listOf("10", "20", "30"), watched)
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * Set Value on a frame's variable sets it in the program, which goes
+     * on with the value; a value's child is not set, nor is the value of
+     * an evaluation.
+     */
+    fun testSetValueChangesTheProgramsOutput() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        val locals = childrenOf(frame)
+        val modified = CompletableFuture<Unit>()
+        checkNotNull(locals.getValue("count").modifier) { "a frame's variable is set" }.setValue(
+            XDebuggerUtil.getInstance().createExpression("6 * 7", null, null, EvaluationMode.EXPRESSION),
+            object : XValueModifier.XModificationCallback {
+                override fun valueModified() {
+                    modified.complete(Unit)
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    modified.completeExceptionally(AssertionError(errorMessage))
+                }
+            },
+        )
+        modified.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertNull("an element is no frame's variable", childrenOf(locals.getValue("elements")).getValue("[1]").modifier)
+        assertNull("nor is an evaluation's value", evaluated(frame, "count").modifier)
+
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue(debugging.output(), debugging.output().contains("42"))
+    }
+
+    /**
+     * Smart Step Into offers the sends of the stop's line in the order the
+     * line runs them, each highlighted in the editor, and steps into the
+     * one chosen: `first:`, whose argument `second` runs first.
+     */
+    fun testSmartStepIntoOffersTheLinesCalls() {
+        val program = program("Smart", SMART)
+        toggleBreakpoint(program, line = 4)
+        val debugging = debug(program)
+        val position = debugging.nextPause()
+
+        val handler = debugging.process.smartStepIntoHandler as NewspeakSmartStepIntoHandler
+        val variants = checkNotNull(handler.computeSmartStepVariantsAsync(position).blockingGet(WAIT_SECONDS.toInt() * 1000))
+        assertEquals(listOf("second", "first:"), variants.map { variant -> variant.text })
+        val text = String(program.contentsToByteArray(), Charsets.UTF_8)
+        for (variant in variants) {
+            val range = checkNotNull(variant.highlightRange) { "${variant.text} is highlighted" }
+            assertTrue(range.substring(text), range.substring(text).contains(variant.text.removeSuffix(":")))
+        }
+
+        onEdt { handler.startStepInto(variants[1], debugging.session.suspendContext) }
+        val stepped = debugging.nextPause()
+        assertEquals("first:'s statement, line 8, counted from 0 by the platform", 7, stepped.line)
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.output().contains("42"))
+    }
+
+    /**
+     * Reset Frame restarts the selected method: it runs again from its
+     * first statement, and the program goes on from there, printing twice
+     * what the method prints before its return.
+     */
+    fun testDropFrameRestartsTheMethod() {
+        val program = program("Restarting", RESTARTING)
+        toggleBreakpoint(program, line = 7)
+        val debugging = debug(program)
+        assertEquals(6, debugging.nextPause().line)
+
+        val handler = checkNotNull(debugging.process.dropFrameHandler)
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        assertEquals(ThreeState.YES, handler.canDropFrame(frame))
+        onEdt { handler.drop(frame) }
+        assertEquals("compute:'s first statement, line 6", 5, debugging.nextPause().line)
+
+        val breakpoints = XDebuggerManager.getInstance(project).breakpointManager
+        runInEdtAndWait { WriteAction.run<Throwable> { breakpoints.allBreakpoints.forEach(breakpoints::removeBreakpoint) } }
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertTrue(debugging.output(), Regex("""in\s+in\s+42""").containsMatchIn(debugging.output()))
+    }
+
+    /**
+     * A marked object is named in an evaluation by its label and the
+     * agent's suffix, and shown with its label; unmarked, the name names
+     * nothing.
+     */
+    fun testAMarkedObjectIsNamedInAnEvaluation() {
+        val program = program("Stops", STOPS)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val markers = (debugging.process as NewspeakDebugProcess).markers
+        val elements = childrenOf(checkNotNull(debugging.session.currentStackFrame)).getValue("elements") as NewspeakValue
+        assertNull(markers.labelOf(elements))
+        // Mark Object…, as the value tree's menu runs it, the label typed in its dialog.
+        val action = NewspeakMarkObjectAction()
+        val event = sessionEvent(action, debugging.session)
+        assertTrue(action.isEnabled(elements, "elements", event))
+        TestDialogManager.setTestInputDialog(TestInputDialog { _ -> "numbers" })
+        try {
+            onEdt { action.perform(elements, "elements", event) }
+        } finally {
+            TestDialogManager.setTestInputDialog(TestInputDialog.DEFAULT)
+        }
+        // The mark is answered asynchronously; once the agent took it, every stop shows the object with its label.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (markers.labelOf(childrenOf(checkNotNull(debugging.session.currentStackFrame)).getValue("elements") as NewspeakValue) == null) {
+            if (System.nanoTime() > deadline) throw AssertionError("the mark was not taken within $WAIT_SECONDS s")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+
+        val frame = checkNotNull(debugging.session.currentStackFrame)
+        assertEquals("3", presentationOf(evaluated(frame, "numbers_DebugLabel size")).value)
+        val shown = childrenOf(frame).getValue("elements") as NewspeakValue
+        assertTrue(shown.variable.value, shown.variable.value.endsWith(" [numbers]"))
+        assertEquals("numbers", markers.labelOf(shown))
+        assertFalse("a label the agent would refuse", NewspeakValueMarkers.isLabel("numbers_DebugLabel"))
+
+        markers.unmark("numbers").get(WAIT_SECONDS, TimeUnit.SECONDS)
+        evaluationError(frame, "numbers_DebugLabel size")
+        onEdt { debugging.session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+    }
+
+    /**
+     * Force Return sends the frame and the expression the user gave, none
+     * for a blank one, and is offered on a program's frame but not on one
+     * of the core library, which the agent says it cannot end.
+     */
+    fun testForceReturnSendsTheExpression() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(RESTARTABLE_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        val frames = framesOf(session)
+
+        val action = NewspeakForceReturnAction()
+        fun enabledOn(frame: XStackFrame): Boolean {
+            onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frame) }
+            val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+            val event = TestActionEvent.createTestEvent(action, context)
+            action.update(event)
+            assertTrue("shown for a Newspeak session", event.presentation.isVisible)
+            return event.presentation.isEnabled
+        }
+        assertFalse("not on a frame of the core library", enabledOn(frames[0]))
+        assertTrue(enabledOn(frames[1]))
+
+        val process = faked.debugging.process as NewspeakDebugProcess
+        checkNotNull(process.forceReturn(frames[1] as NewspeakStackFrame, "3 + 4")).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        checkNotNull(process.forceReturn(frames[1] as NewspeakStackFrame, "  ")).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(
+            listOf("""{"frameId":2,"expression":"3 + 4"}""", """{"frameId":2}"""),
+            agent.requests("nsNext/forceReturn").map(JsonObject::toString),
+        )
+    }
+
+    /**
+     * The core library's frames are library frames: the session respects
+     * the frames view's Show Library Frames, and while it is off each run
+     * of them below the top frame is folded into one line that counts
+     * them; the top frame, shipped or not, and the program's frames stay.
+     */
+    fun testShippedFramesAreLibraryFrames() {
+        val settings = XDebuggerSettingManagerImpl.getInstanceImpl().dataViewSettings
+        val shown = settings.isShowLibraryStackFrames
+        try {
+            val faked = fakeSession()
+            val agent = identifiedAgent(faked) { command, _ ->
+                when (command) {
+                    "stackTrace" -> JsonParser.parseString(LIBRARY_STACK).asJsonObject
+                    "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                    else -> JsonObject()
+                }
+            }
+            agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+            faked.debugging.nextPause()
+            assertTrue(faked.debugging.process.isLibraryFrameFilterSupported)
+
+            settings.isShowLibraryStackFrames = false
+            assertEquals(
+                listOf("Kernel>>value", NewspeakBundle.message("debugger.frames.library", 2), "Program>>run", NewspeakBundle.message("debugger.frames.library", 1)),
+                framesOf(faked.debugging.session).map { frame -> textOf(frame).first },
+            )
+            settings.isShowLibraryStackFrames = true
+            assertEquals(
+                listOf("Kernel>>value", "Kernel>>do:", "Kernel>>at:", "Program>>run", "Kernel>>main"),
+                framesOf(faked.debugging.session).map { frame -> textOf(frame).first },
+            )
+        } finally {
+            settings.isShowLibraryStackFrames = shown
+        }
+    }
+
+    /**
+     * The memory view lists the stop's instance counts; a class chosen
+     * lists its instances, asked by its name -- a shipped module's by its
+     * module -- each a value tree; a value's referrers are its children's
+     * provider's.
+     */
+    fun testTheMemoryViewListsInstanceCounts() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, arguments ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/instanceCounts" -> JsonParser.parseString(
+                    """{"classes":[{"name":"Census.Point","count":2},{"name":"Kernel.Array","count":1,"nsNext/shipped":true}]}""",
+                ).asJsonObject
+                "nsNext/instances" -> JsonParser.parseString(
+                    if (arguments.has("shipped")) {
+                        """{"variables":[{"name":"#1","value":"an Array","type":"Array","variablesReference":0}]}"""
+                    } else {
+                        """{"variables":[
+                          {"name":"#1","value":"a Point","type":"Point","variablesReference":0,"nsNext/valueReference":31},
+                          {"name":"#2","value":"a Point","type":"Point","variablesReference":0,"nsNext/valueReference":32}
+                        ]}"""
+                    },
+                ).asJsonObject
+                "nsNext/referrers" -> JsonParser.parseString(
+                    """{"variables":[{"name":"frame 1 points","value":"Census>>main:args:","variablesReference":0,"presentationHint":{"kind":"virtual"}}]}""",
+                ).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+
+        val view = (faked.debugging.process as NewspeakDebugProcess).memoryView
+        val counts = view.refresh().get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(listOf(DapInstanceCount("Census.Point", 2, false), DapInstanceCount("Kernel.Array", 1, true)), counts)
+
+        val points = childrenOf(view.instancesOf(counts[0]))
+        assertEquals(listOf("#1", "#2"), points.keys.toList())
+        childrenOf(view.instancesOf(counts[1]))
+        assertEquals(
+            listOf("""{"name":"Census.Point","start":0,"count":100}""", """{"name":"Kernel.Array","shipped":true,"start":0,"count":100}"""),
+            agent.requests("nsNext/instances").map(JsonObject::toString),
+        )
+
+        val referrers = childrenOf(checkNotNull(points.getValue("#2").referrersProvider).referringObjectsValue)
+        val onTheStack = referrers.getValue("frame 1 points") as NewspeakValue
+        assertTrue("a referrer on the stack names a place", onTheStack.variable.virtual)
+        assertNull("which is not set", onTheStack.modifier)
+        assertEquals(32, agent.requests("nsNext/referrers").single().get("valueReference").asInt)
+    }
+
+    /**
+     * A condition or log message the runtime could not decide stops the
+     * program, whatever the breakpoint's suspend policy, so that its error
+     * is seen: the session shows the stop and says why, and neither
+     * resumes it nor evaluates the log expression.
+     */
+    fun testAFailedConditionStopsAndSaysWhy() {
+        val breakpoint = lineBreakpointWithLog(SuspendPolicy.NONE)
+        assertTrue(isLogpoint(breakpoint))
+        val reported = notifications()
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked, ::loggingAgentAnswer)
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", failedConditionStop())
+        faked.debugging.nextPause()
+        assertEquals(NewspeakBundle.message("debugger.stopped.condition.failed", FAILURE), reported.get(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue("still stopped", faked.debugging.session.isSuspended)
+        assertFalse(agent.commands().toString(), agent.commands().contains("continue"))
+        assertFalse(agent.commands().toString(), agent.commands().contains("evaluate"))
+    }
+
+    /**
+     * A log expression of a breakpoint that stops is evaluated by the
+     * session at the stop, once, in the top frame; a stop whose condition
+     * or log message failed evaluates nothing.
+     */
+    fun testALogExpressionAtAStopIsLoggedOnce() {
+        lineBreakpointWithLog(SuspendPolicy.ALL)
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked, ::loggingAgentAnswer)
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonParser.parseString("""{"reason":"breakpoint","hitBreakpointIds":[$LOGGED_BREAKPOINT]}""").asJsonObject)
+        faked.debugging.nextPause()
+        assertEquals(listOf("""{"expression":"count printString","frameId":1}"""), agent.requests("evaluate").map(JsonObject::toString))
+
+        onEdt { faked.debugging.session.resume() }
+        agent.event("stopped", failedConditionStop())
+        faked.debugging.nextPause()
+        assertEquals("not evaluated again at a failed stop", 1, agent.requests("evaluate").size)
+    }
+
+    /**
+     * A withheld value -- read-only, without a value reference -- is
+     * neither set nor marked; a frame's other variable is both, Mark
+     * Object… sending its value reference and the label typed.
+     */
+    fun testAWithheldValueIsNeitherSetNorMarked() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "scopes" -> JsonParser.parseString(
+                    """{"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":$LOCALS_REFERENCE,"expensive":false}]}""",
+                ).asJsonObject
+                "variables" -> JsonParser.parseString(
+                    """{"variables":[
+                      {"name":"vmMirror","value":"a VMMirror","type":"VMMirror","variablesReference":0,"presentationHint":{"attributes":["readOnly"]}},
+                      {"name":"count","value":"3","type":"Integer","variablesReference":0,"nsNext/valueReference":5}
+                    ]}""",
+                ).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val locals = childrenOf(checkNotNull(faked.debugging.session.currentStackFrame))
+        val withheld = locals.getValue("vmMirror")
+        val count = locals.getValue("count")
+        assertNull("a withheld value is not set", withheld.modifier)
+        assertNotNull(count.modifier)
+
+        val action = NewspeakMarkObjectAction()
+        val event = sessionEvent(action, faked.debugging.session)
+        assertFalse("nor marked", action.isEnabled(withheld, "vmMirror", event))
+        assertTrue(action.isEnabled(count, "count", event))
+        TestDialogManager.setTestInputDialog(TestInputDialog { _ -> "counted" })
+        try {
+            onEdt { action.perform(count, "count", event) }
+        } finally {
+            TestDialogManager.setTestInputDialog(TestInputDialog.DEFAULT)
+        }
+        awaitRequests(agent, "nsNext/mark", 1)
+        assertEquals("""{"valueReference":5,"label":"counted"}""", agent.requests("nsNext/mark").single().toString())
+    }
+
+    /** A line breakpoint of the policy [policy] that logs `count printString`, on a file of its own, before the session starts. */
+    private fun lineBreakpointWithLog(policy: SuspendPolicy): XLineBreakpoint<NewspeakLineBreakpointProperties> {
+        val file = program("Logged", STOPS)
+        val type = XDebuggerUtil.getInstance().findBreakpointType(NewspeakLineBreakpointType::class.java)
+        var added: XLineBreakpoint<NewspeakLineBreakpointProperties>? = null
+        runInEdtAndWait {
+            WriteAction.run<Throwable> {
+                added = XDebuggerManager.getInstance(project).breakpointManager
+                    .addLineBreakpoint(type, file.url, 5, NewspeakLineBreakpointProperties())
+                    .apply {
+                        suspendPolicy = policy
+                        setLogExpression("count printString")
+                    }
+            }
+        }
+        return checkNotNull(added)
+    }
+
+    /** A scripted agent's answers for a stop at the logging breakpoint, which it sets under [LOGGED_BREAKPOINT]. */
+    private fun loggingAgentAnswer(command: String, @Suppress("UNUSED_PARAMETER") arguments: JsonObject): JsonObject =
+        when (command) {
+            "setBreakpoints" -> JsonParser.parseString("""{"breakpoints":[{"id":$LOGGED_BREAKPOINT,"verified":true}]}""").asJsonObject
+            "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+            "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+            "evaluate" -> JsonObject().apply { addProperty("result", "'3'") }
+            else -> JsonObject()
+        }
+
+    /** The agent's stop at the logging breakpoint whose condition failed, its error the `text`. */
+    private fun failedConditionStop(): JsonObject = JsonObject().apply {
+        addProperty("reason", "breakpoint")
+        add("hitBreakpointIds", JsonArray().apply { add(LOGGED_BREAKPOINT) })
+        addProperty("text", FAILURE)
+    }
+
+    /** An action event of [session]'s tree, as its menu makes one. */
+    private fun sessionEvent(action: AnAction, session: XDebugSession): AnActionEvent =
+        TestActionEvent.createTestEvent(
+            action,
+            SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build(),
+        )
+
+    /** The value [expression] answers in [frame], through its evaluator. */
+    private fun evaluated(frame: XStackFrame, expression: String): XValue = evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+    /** The error [expression] answers in [frame]. */
+    private fun evaluationError(frame: XStackFrame, expression: String): String {
+        try {
+            evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (failure: ExecutionException) {
+            return failure.cause?.message.orEmpty()
+        }
+        throw AssertionError("`$expression` answered a value")
+    }
+
+    private fun evaluation(frame: XStackFrame, expression: String): CompletableFuture<XValue> {
+        val answer = CompletableFuture<XValue>()
+        checkNotNull(frame.evaluator).evaluate(
+            expression,
+            object : XDebuggerEvaluator.XEvaluationCallback {
+                override fun evaluated(result: XValue) {
+                    answer.complete(result)
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    answer.completeExceptionally(AssertionError(errorMessage))
+                }
+            },
+            null,
+        )
+        return answer
     }
 
     /** Waits, bounded, until [agent] received [count] requests [command]. */
@@ -1257,6 +1746,10 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         const val ELEMENTS_REFERENCE = 200
         const val ELEMENT_COUNT = 150
 
+        /** The scripted agent's id of the logging breakpoint, and the error its condition failed with. */
+        const val LOGGED_BREAKPOINT = 9
+        const val FAILURE = "ZeroDivide: division by zero"
+
         /** The fake agent's reference of a step's stop's "Return value" scope. */
         const val RETURNED_REFERENCE = 300
 
@@ -1332,6 +1825,65 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             class Shared = Object new () (
               public greeting = (
                 ^'hello'
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A stop in a shipped frame, above a run of two shipped frames, a program's frame and a last shipped one. */
+        val LIBRARY_STACK = """
+            {"stackFrames":[
+              {"id":1,"name":"Kernel>>value","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":2,"name":"Kernel>>do:","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":3,"name":"Kernel>>at:","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":4,"name":"Program>>run","line":0,"column":0},
+              {"id":5,"name":"Kernel>>main","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true}
+            ],"totalFrames":5}
+        """.trimIndent()
+
+        /** A stop in a shipped frame the agent cannot end, above a program's frame it can. */
+        val RESTARTABLE_STACK = """
+            {"stackFrames":[
+              {"id":1,"name":"Kernel>>value","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true,"canRestart":false},
+              {"id":2,"name":"Program>>main:args:","line":0,"column":0,"canRestart":true}
+            ],"totalFrames":2}
+        """.trimIndent()
+
+        /** A root whose line 4 sends `first:` with the result of `second`; `first:`'s statement is line 8. */
+        val SMART = """
+            class Smart = Object new () (
+              public main: platform args: arguments = (
+                | value |
+                value:: self first: self second.
+                platform transcript show: value printString; newLine.
+              )
+              first: number = (
+                ^number + 1
+              )
+              second = (
+                ^41
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A root that prints what `compute:` answers; `compute:` prints, line 6, and answers 42, line 7. */
+        val RESTARTING = """
+            class Restarting = Object new () (
+              public main: platform args: arguments = (
+                platform transcript show: (self compute: platform) printString; newLine.
+              )
+              compute: platform = (
+                platform transcript show: 'in'; newLine.
+                ^42
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+
+        /** A loop whose body, line 4, runs three times. */
+        val LOOP = """
+            class Loop = Object new () (
+              public main: platform args: arguments = (
+                1 to: 3 do: [:index |
+                  platform transcript show: index printString; newLine].
               )
             ) : ()
         """.trimIndent() + "\n"

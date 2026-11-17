@@ -10,12 +10,22 @@
 //! any other reason -- a breakpoint, an exception, a pause -- ends it at
 //! once.
 
-use ns_runtime::{ClassName, Command, FrameDescription, StopReason};
+use ns_runtime::{ClassName, Command, FrameDescription, ModuleName, StepInTarget, StopReason};
 
 use super::agent::{Agent, Conversion, Reply};
 use super::breakpoints::offset_of;
 use super::protocol;
 use super::stopped::Frames;
+
+/// The refusal of a frame id no frame of the stop has.
+pub(super) const NO_SUCH_FRAME: &str = "no frame of this stop has that id";
+
+/// The refusal of `stepInTargets` for a frame other than the one a step
+/// steps from, the only one whose targets the VM answers.
+const TOP_FRAME_ONLY: &str = "smart step into takes the top frame";
+
+/// The refusal of a `stepIn` target no target has, the VM's own words.
+const NO_SUCH_TARGET: &str = "no such target";
 
 /// How far a step goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,6 +118,24 @@ impl Agent {
         if !self.at_stop(connection, request) {
             return;
         }
+        if command == Command::StepInto
+            && let Some(target_id) = arguments.target_id
+        {
+            // A smart step into stops at its target alone, the VM's own
+            // step. Only a target handed out at this stop is sent: the
+            // VM's ids are positions, which an earlier stop's id would
+            // name another target by.
+            let Some(target) = target_id
+                .checked_sub(1)
+                .and_then(|target| u32::try_from(target).ok())
+                .filter(|target| self.stop.has_step_in_target(*target))
+            else {
+                self.respond_error(connection, request, NO_SUCH_TARGET);
+                return;
+            };
+            self.forward(connection, request, Command::StepIntoTarget { target });
+            return;
+        }
         match granularity(arguments.granularity.as_deref()) {
             Granularity::Statement => self.forward(connection, request, command),
             Granularity::Line => {
@@ -132,6 +160,110 @@ impl Agent {
             && self.at_stop(connection, request)
         {
             self.forward(connection, request, Command::StepOut);
+        }
+    }
+
+    /// `stepInTargets`: the places a smart step into from the frame a step
+    /// steps from may stop at (`Command::StepInTargets`), answered once
+    /// the stop's frames are known, which says which frame that is -- the
+    /// first shown, below an exception's hidden machinery -- and the
+    /// frame's module's text, which places them.
+    pub(super) fn step_in_targets(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) =
+            self.arguments::<protocol::StepInTargetsArguments>(connection, request)
+        else {
+            return;
+        };
+        if !self.at_stop(connection, request) {
+            return;
+        }
+        if self.stop.frame_of_id(arguments.frame_id).is_none() {
+            self.respond_error(connection, request, NO_SUCH_FRAME);
+            return;
+        }
+        self.wait(connection, request);
+    }
+
+    /// Whether a waiting `stepInTargets` can be asked of the VM: `None`
+    /// while the frames or the top frame's text are on their way; the
+    /// module its targets are placed in once they are there, or why the
+    /// request is refused.
+    pub(super) fn step_in_targets_ready(
+        &mut self,
+        request: &protocol::Request,
+    ) -> Option<Result<Option<ModuleName>, String>> {
+        let arguments: protocol::StepInTargetsArguments =
+            serde_json::from_value(request.arguments.clone()).unwrap_or_default();
+        if let Err(reason) = self.frames_known()? {
+            return Some(Err(reason));
+        }
+        let Frames::Known(frames) = self.stop.frames() else {
+            return Some(Err("the stop's frames are not known".to_string()));
+        };
+        let top = frames.iter().position(|frame| !frame.hidden).unwrap_or(0);
+        let module = frames
+            .get(top)
+            .and_then(|frame| frame.location.as_ref())
+            .map(|location| location.module.clone());
+        match self.stop.frame_of_id(arguments.frame_id) {
+            Some(index) if index == top => {}
+            Some(_) => return Some(Err(TOP_FRAME_ONLY.to_string())),
+            None => return Some(Err(NO_SUCH_FRAME.to_string())),
+        }
+        if let Some(module) = &module {
+            match self.read_text(module) {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(reason) => return Some(Err(reason)),
+            }
+        }
+        Some(Ok(module))
+    }
+
+    /// `stepInTargets`' body: the VM's targets, each placed at its span
+    /// of `module`'s current text, its id the VM's plus 1, so that no
+    /// target is numbered 0, which a client may take for none.
+    pub(super) fn step_in_targets_body(
+        &self,
+        targets: &[StepInTarget],
+        module: Option<&ModuleName>,
+    ) -> serde_json::Value {
+        let targets: Vec<protocol::StepInTarget> = targets
+            .iter()
+            .map(|target| {
+                let range = module.and_then(|module| self.sources.range(module, target.span));
+                protocol::StepInTarget {
+                    id: i64::from(target.id) + 1,
+                    label: target.label.clone(),
+                    line: range.map(|(start, _)| start.line + 1),
+                    column: range.map(|(start, _)| start.column + 1),
+                    end_line: range.map(|(_, end)| end.line + 1),
+                    end_column: range.map(|(_, end)| end.column + 1),
+                }
+            })
+            .collect();
+        serde_json::json!({ "targets": targets })
+    }
+
+    /// `restartFrame`: the frame its id names runs again from its start
+    /// (`Command::RestartFrame`), its stop there reported as the
+    /// restart's; the VM refuses a frame of the core library.
+    pub(super) fn restart_frame(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) =
+            self.arguments::<protocol::RestartFrameArguments>(connection, request)
+        else {
+            return;
+        };
+        if !self.at_stop(connection, request) {
+            return;
+        }
+        let Some(frame) = self.stop.frame_of_id(arguments.frame_id) else {
+            self.respond_error(connection, request, NO_SUCH_FRAME);
+            return;
+        };
+        let command = Command::RestartFrame { frame };
+        if self.forward_converted(connection, request, command, Conversion::Plain) {
+            self.restart_pending = true;
         }
     }
 

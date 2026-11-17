@@ -34,7 +34,11 @@
           library's modules among them, with line breakpoints (on the lines a statement starts on, in a
           block of the line, with a pass count, removed once hit), method and exception breakpoints,
           stepping by line (past the core library's code unless Step Into Kernel and Platform Code is on,
-          and past the modules and classes a project's Newspeak Step Filters name), run to cursor and pause. The first Stop ends the program as its own <code>terminate</code> would; a second
+          and past the modules and classes a project's Newspeak Step Filters name), run to cursor and pause;
+          evaluation in the Evaluate dialog, watches and hovers, Set Value, breakpoint conditions and log
+          expressions decided by the runtime, Smart Step Into, Reset Frame, Force Return, Mark Object, a Memory
+          view of each class's instances and what refers to a value, and the core library's frames folded as
+          library frames. The first Stop ends the program as its own <code>terminate</code> would; a second
           one kills it.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
@@ -142,6 +146,16 @@
         <action id="io.github.bstrauss.newspeak.StepIntoShipped"
                 class="io.github.bstrauss.newspeak.debugger.NewspeakStepIntoShippedAction">
             <add-to-group group-id="XDebugger.Settings" anchor="last"/>
+        </action>
+        <!-- On a frame of the frames view, beside the platform's Reset Frame, as Java's Force Return. -->
+        <action id="io.github.bstrauss.newspeak.ForceReturn"
+                class="io.github.bstrauss.newspeak.debugger.NewspeakForceReturnAction">
+            <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
+        </action>
+        <!-- On a value of a Newspeak session's trees, where the platform's own Mark Object stays hidden. -->
+        <action id="io.github.bstrauss.newspeak.MarkObject"
+                class="io.github.bstrauss.newspeak.debugger.NewspeakMarkObjectAction">
+            <add-to-group group-id="XDebugger.ValueGroup" anchor="after" relative-to-action="Debugger.MarkObject"/>
         </action>
     </actions>
 </idea-plugin>

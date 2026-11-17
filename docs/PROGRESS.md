@@ -64,7 +64,7 @@ first.
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 | Python counterparts of the Are We Fast Yet benchmarks, the three ports aligned on the SOM class library, Python in the `benchmarks` gate and the gate image, and ns-next measured against Java and CPython as the baseline | Complete | 2026-11-10 | — |
-| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md) |
+| The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project; stage 5, evaluation and what rests on it -- an expression compiled as a block standing at a stopped frame's program counter and pushed above it, its depth reserve and its abort, setting a variable and the refusal of one a block may have copied, conditions and logpoints decided where the hit is counted, restart frame and force return through the one unwinder, smart step into, marks, the memory view and the shipped frames folded, in the VM, the DAP agent and the plugin, and `ns-next mcp`, through which an agent debugs a program | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name), 2026-11-17 (stage 5) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md), [debugger-stage-5](superpowers/plans/2026-11-16-2110-debugger-stage-5.md) |
 | Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
 ## Notes
@@ -7787,10 +7787,8 @@ below and reviewed again, but for two it deferred to the open work.
 - `0da6a9d2`, `d3786f5f` -- the writer's last words within one deadline,
   and Windows' verbatim and UNC prefixes in the path comparison.
 
-What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 5:
-evaluation, conditional breakpoints and logpoints, watches and setting
-variables, smart step into, restart frame and force return) and "The
-debugger" (what stage 4's reviews left).
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
+(what stage 4's reviews left).
 
 ## The debugger in the IDE: four reported bugs fixed (2026-11-15)
 
@@ -7874,11 +7872,9 @@ its findings are fixed (`875a1f0a` to `572f0379`).
   the send delivered: the callee's parameters, a delivery's `Message`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
-(the time a step took, planned in no stage), and four tools planned on
-the command line first: a command-line debugger client, which the
-debugger needs to meet that principle, a profiler, a view of what a
-method compiles to and a developer tool like V8's `d8` ("Planned: editor
-support and the analyzer"); the play button's Debug through the
+(the time a step took, planned in no stage), and three tools planned: a
+profiler, a view of what a method compiles to and a developer tool like
+V8's `d8` ("Planned: editor support and the analyzer"); the play button's Debug through the
 platform's own launcher is untested ("Missing tests").
 
 ## The debugger: header stops and the core library in the IDE (2026-11-15)
@@ -8098,3 +8094,158 @@ each mode. The Docker groups `linux` and `aarch64` passed there too:
 5,280 tests on x86_64 Linux and 5,280 under QEMU on AArch64. The first
 `aarch64` run had found the one `extern` block that only AArch64 Linux
 compiles (`3bafc154`).
+
+## The debugger's stage 5: evaluation, writing frames and the MCP server (2026-11-17)
+
+[debugger.md](design/debugger.md), decisions 1, 6 and 8, "Evaluation",
+"Writing a frame", "Assigning a captured variable", "Evaluation never
+reaches the VM mirror", "Hit counts and temporary breakpoints",
+"Restart frame and force return", "Smart step into a block", "Marking
+objects", "The memory view", "Folding the shipped frames", "The pause
+stress mode", "Launching, the start and the end", "The MCP server",
+"The JetBrains plugin", "What stage 5 moved".
+
+Stage 5's questions were decided with the user on 2026-11-16: an
+expression obeys access control as the frame's method does and never
+runs in a shipped frame; marks are the attachment's labels, which later
+evaluations and conditions name; an evaluation has a depth reserve of
+its own, so that it runs even at a stack overflow; restart and force
+return reach every kind of frame, an initializer's forced return
+answering its instance, a restart keeping the frame's indirection
+vector; an assignment to a variable a block may already hold a copy of
+is refused; and the stage takes the memory view and the shipped frames'
+folding beside IntelliJ's evaluation, watches, conditions, smart step
+into, reset frame and force return. On 2026-11-17 the user dropped the
+principle that every introspection feature be reachable from the
+command line first, and decided that an agent debugs through an MCP
+server, `ns-next mcp`, which runs the program as a child it speaks DAP
+to, and that `ns-next shipped-sources` prints no JSON.
+
+An expression is parsed as a code body standing alone
+(`ns_syntax::parse_code_body`, a parser entry, the lexer and the grammar
+unchanged), resolved as a block standing at the stopped frame's stored
+program counter -- the frame's variables by its variable table, every
+other name against its body's class chain, every `^` refused -- and
+compiled by either lowering as a block whose frame variables lie one
+hop past its own frames; it is pushed above every live frame of the
+stop as ordinary program code, breakpoints gone past uncounted, its base
+ending the handler search and every unwind from within it, so that an
+error is its answer and the program's frames are untouched, and the
+stop is served again once it ends. A pause or a sequenced
+`AbortEvaluation` aborts it through the one unwinder, its `ensure:`
+blocks run. Setting a variable evaluates the assignment built around
+the expression as a syntax tree node, and the variable table names the
+`MakeClosure`s that copy each mutable local, so that an assignment after
+one may have run is refused under the optimized lowering. A
+breakpoint's condition and a logpoint's message are evaluated at the
+safepoint the reach leaves for, before the hit is counted, and at a
+method breakpoint's exit by an unwind in the frame before the unwinder
+pops it. A frame is restarted or forced to return by an unwind to it,
+which the stop starts. Smart step into lists a statement's sends in
+source order under one rule for both lowerings, an inlined form's own
+selector never among them. Marks, the memory view's counts, instances
+and referrers, and the withheld values -- every object a shipped level
+reached, the VM mirror's class, a frame object -- never reach the
+program. The pause stress mode evaluates the top frame's named
+variables at its stops and holds each answer to the variables view's,
+which found two defects: a vector variable read before its
+`MakeVector`, and an evaluation that retained its frame's registers for
+a bare read.
+
+The DAP agent serves `evaluate` in every context, a hover's within a
+bound, `cancel`, `setVariable`, conditions, hit conditions and
+logpoints -- whose output it drops near a full write queue, saying how
+many lines it dropped -- `stepInTargets` and `stepIn`'s `targetId`,
+`restartFrame`, `nsNext/forceReturn`, the marks, the memory view's
+requests and the shipped frames' hints, and in the connecting mode
+ends the program when its connection is lost before a `disconnect`.
+`ns-next mcp` is a Model Context Protocol server whose tools start a
+program in a child `ns-next run --debug-connect`, step, evaluate, set
+breakpoints and read values, each stop answered as a summary in text;
+on Windows it renames its own executable aside and copies it back, so
+that a build replaces `target/debug/ns-next` while it runs. The plugin
+evaluates in the Evaluate dialog, its watches and its hovers, sets
+values, sends conditions and log expressions, smart-steps, resets
+frames, forces returns, marks objects through actions of its own, shows
+the memory view in the session's tab and folds the shipped frames as
+library frames.
+
+Compiling a program changed nothing: no golden, no `run-corpus`
+outcome, no image, no instruction and no wire tag. Nothing was added to
+the hot path of a program run without a debugger, so the stage was not
+measured ("What stage 5 moved").
+
+The commit gates passed on every commit (`commit`, and `codegen` where
+its files changed). The end-of-batch gates passed on `904fec56`:
+`images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
+and `plugin-verification`. Their first run found three problems, all
+fixed before that tree: the memory view answering a frame the suspend
+stress mode had suspended as its frame object; the pause stress mode
+beginning an evaluation while a breakpoint's token waited for its
+frame; and three tests that count allocations or safepoints exactly, or
+bound an evaluation's time, which the pause stress mode's evaluations
+or the collect stress mode broke. The final whole-branch review then
+found five defects, each fixed with a test that failed before it:
+- a stop at a breakpoint in an `ensure:` block the debugger's
+  termination ran served an evaluation that never answered, and the
+  next run's every safepoint took the kept stop for its own;
+- a block an evaluation stored read nil from an enclosing frame the
+  stopped block never reached;
+- an evaluation read a variable the variables view shows as not
+  available as nil;
+- a client that left a listening agent during an evaluation stranded
+  the program, and left its marks to the next client;
+- the MCP server ran a copy of its binary it found in the shared
+  temporary directory.
+
+With those and its minors fixed, the end-of-batch gates passed again on
+the final tree, `16facac0`:
+- `images` 2,180 tests;
+- `caches` 545;
+- `benchmarks` 177;
+- `release-checks` 7,382, with both lints;
+- `codegen`, every budget held;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,724 tests each (WIDE 5,519), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups `linux` and `aarch64` were not run.
+
+- `c5d72d74`, `89603ae9`, `8722f621` -- stage 5's questions decided and
+  the plan (`docs/superpowers/plans/2026-11-16-2110-debugger-stage-5.md`).
+- `cb5afc64` -- an expression compiles as a block in a stopped frame's
+  scope.
+- `8e8fb068`, `b61da026` -- the variable table names the closures that
+  copy a variable.
+- `7b12fdf9`, `d54a0455`, `b5231b13` -- the evaluation, its abort and
+  its depth reserve.
+- `351a8541`, `cfa30c51` -- setting a variable.
+- `d82ccdce`, `4ee811c5`, `4dafd41f`, `9fe1a281`, `d1c75a5a` -- the
+  command-line principle dropped, `shipped-sources` without JSON, and
+  the MCP server and the IDE's session as MCP tools planned.
+- `0e3731a7`, `2f6ae5b1`, `c8c40fa2` -- conditions and logpoints.
+- `800ec71b`, `23e1bef6` -- restart frame and force return.
+- `79927e46`, `61a2b637`, `f3ea6069` -- smart step into.
+- `e90b560d`, `dbb854ab` -- marks and the withheld values.
+- `7f10735f`, `806418d9`, `6e71a1ca` -- the memory view.
+- `0eafb6fb`, `0b5fb9b6`, `d59ba06a`, `4009b0c8`, `5464d99b`,
+  `2d4989e3` -- the pause stress mode's evaluations and the defects they
+  found.
+- `5fcbc455`, `a4e4196d`, `8d35f6ee`, `c54f177a` -- the agent's
+  evaluation, variables and conditions, and the abort in sequence.
+- `71dda1b4`, `61b68593` -- the agent's smart step, restart, force
+  return and memory view.
+- `44374a7b`, `21f851a1`, `627e381c` -- `ns-next mcp`.
+- `b7af1534`, `4f0585c1`, `00313cd7`, `815137ed` -- the plugin.
+- `04ed10db`, `94397570` -- the stage's cosmetic minors and the
+  documents brought to the stage.
+- `99ac2ad5`, `a79c26cd`, `904fec56` -- what the end-of-batch gates
+  found.
+- `aa0c0be2`, `fe008c9e`, `1639d8cd`, `0faeaa09`, `bef88272`,
+  `7262abe2`, `236b7c51`, `6a969cd8`, `16facac0` -- what the final
+  review found.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 6:
+hot swap, edit-and-continue and `ActivationMirror`) and "The debugger"
+(what stage 5's reviews left, and what the values view still lacks).

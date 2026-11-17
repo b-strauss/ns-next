@@ -13,6 +13,7 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.xdebugger.breakpoints.XLineBreakpointType
 import com.intellij.xdebugger.breakpoints.ui.XBreakpointCustomPropertiesPanel
+import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
 import org.eclipse.lsp4j.Position
@@ -90,6 +91,16 @@ class NewspeakLineBreakpointType :
 
     override fun createCustomPropertiesPanel(project: Project): XBreakpointCustomPropertiesPanel<XLineBreakpoint<NewspeakLineBreakpointProperties>> =
         PassCountPanel()
+
+    /**
+     * Newspeak's editor for the condition and the log expression, which
+     * the agent decides and evaluates at each hit ([conditionOf],
+     * [isLogpoint]).
+     */
+    override fun getEditorsProvider(
+        breakpoint: XLineBreakpoint<NewspeakLineBreakpointProperties>,
+        project: Project,
+    ): XDebuggerEditorsProvider = NewspeakDebuggerEditorsProvider
 
     /** A variant of this type, and the column its breakpoint is sent with. */
     private interface NewspeakVariant {

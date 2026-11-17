@@ -13,9 +13,9 @@ use crate::Symbol;
 /// (`classes::own_member_names`) -- never what it inherits
 /// (`newspeak-spec.pdf` §5.7).
 #[derive(Clone, Copy)]
-pub(super) struct EnclosingClass<'a> {
-    pub name: Symbol,
-    pub members: &'a std::collections::HashSet<Symbol>,
+pub(crate) struct EnclosingClass<'a> {
+    pub(crate) name: Symbol,
+    pub(crate) members: &'a std::collections::HashSet<Symbol>,
 }
 
 /// Runs the §5.7 depth search: the smallest `depth` (0 = innermost enclosing

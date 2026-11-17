@@ -363,7 +363,8 @@ impl Mutator<'_> {
 
 impl<'gc> Mutator<'gc> {
     /// Whether `value` is one a reflection leaf never answers: the VM
-    /// mirror, or the instance of a recorded shipped module. Either carries
+    /// mirror, its class or that class's metaclass, or the instance of a
+    /// recorded shipped module. Each carries
     /// the authority the capability's locks keep from a program, so the
     /// leaves that answer a slot's value or an enclosing object refuse it
     /// whatever level they reached it through -- behind the rule by level,
@@ -374,6 +375,7 @@ impl<'gc> Mutator<'gc> {
     #[doc(hidden)]
     pub fn is_withheld(&self, value: Value<'gc>) -> bool {
         self.is_vm_mirror(value)
+            || self.is_vm_mirror_class(value)
             || value
                 .as_object()
                 .is_some_and(|object| self.shipped_world.module_of_instance(object).is_some())

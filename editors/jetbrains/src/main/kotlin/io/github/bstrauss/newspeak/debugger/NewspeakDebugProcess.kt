@@ -6,6 +6,9 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.execution.ui.ExecutionConsole
+import com.intellij.execution.ui.RunnerLayoutUi
+import com.intellij.execution.ui.layout.PlaceInGrid
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
@@ -20,12 +23,16 @@ import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XExpression
 import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.evaluation.EvaluationMode
 import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
+import com.intellij.xdebugger.frame.XDropFrameHandler
 import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XSuspendContext
+import com.intellij.xdebugger.stepping.XSmartStepIntoHandler
+import com.intellij.xdebugger.ui.XDebugTabLayouter
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapBreakpointEvent
@@ -35,7 +42,10 @@ import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
 import io.github.bstrauss.newspeak.debugger.dap.DapOutputEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapProcessEvent
 import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
+import io.github.bstrauss.newspeak.debugger.dap.DapStepInTarget
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
+import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
+import io.github.bstrauss.newspeak.debugger.memory.NewspeakMemoryView
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.io.IOException
 import java.net.ServerSocket
@@ -125,7 +135,42 @@ class NewspeakDebugProcess(
     /** Completes when the agent answered the first `terminate`; for the tests of the Stop. */
     internal val terminateAnswered = CompletableFuture<Unit>()
 
+    /** The objects this session marked, which every later evaluation names by their labels. */
+    val markers = NewspeakValueMarkers(session) { client }
+
+    private val smartStepInto = NewspeakSmartStepIntoHandler(this)
+    private val dropFrame = NewspeakDropFrameHandler(this)
+
     override fun getEditorsProvider(): XDebuggerEditorsProvider = NewspeakDebuggerEditorsProvider
+
+    override fun getSmartStepIntoHandler(): XSmartStepIntoHandler<*> = smartStepInto
+
+    override fun getDropFrameHandler(): XDropFrameHandler = dropFrame
+
+    /** The session's memory view, a panel of its tab, made once the tab is. */
+    internal val memoryView = NewspeakMemoryView(session) { client }
+
+    /**
+     * The frames view's Show Library Frames applies to this session: the
+     * core library's frames are library frames, folded while it is off
+     * ([NewspeakExecutionStack]).
+     */
+    override fun isLibraryFrameFilterSupported(): Boolean = true
+
+    /** The session's tab gains the memory view, minimized beside the variables, as Java's Memory tab is. */
+    override fun createTabLayouter(): XDebugTabLayouter = object : XDebugTabLayouter() {
+        override fun registerAdditionalContent(ui: RunnerLayoutUi) {
+            val content = ui.createContent(
+                MEMORY_CONTENT,
+                memoryView.component,
+                NewspeakBundle.message("debugger.memory.title"),
+                AllIcons.Debugger.Db_db_object,
+                null,
+            )
+            content.isCloseable = false
+            ui.addContent(content, 0, PlaceInGrid.right, true)
+        }
+    }
 
     override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(lineBreakpoints, methodBreakpoints, exceptionBreakpoints)
 
@@ -299,17 +344,59 @@ class NewspeakDebugProcess(
         val (frames, total) = framesFrom(client, 0)
         val context = NewspeakSuspendContext(NewspeakExecutionStack(this, frames, total))
         lastStop = context
+        // The platform's `breakpointReached` takes one breakpoint: a stop that several hit shows the first of them.
         val breakpoint = event.hitBreakpointIds.firstNotNullOfOrNull { id ->
             lineBreakpoints.breakpointOf(id) ?: methodBreakpoints.breakpointOf(id)
         }
+        val failed = failedConditionMessage(event)
+        if (failed != null) {
+            // The runtime stops where a condition or log message failed, whatever the breakpoint's suspend
+            // policy, so that the error is seen: never asking `breakpointReached`, which would resume a
+            // breakpoint that suspends nothing and drop the error unseen.
+            session.positionReached(context)
+            session.reportMessage(failed, MessageType.WARNING)
+            return
+        }
         if (breakpoint == null) {
             session.positionReached(context)
-        } else if (!session.breakpointReached(breakpoint, null, context)) {
+        } else if (!session.breakpointReached(breakpoint, loggedAt(client, breakpoint, event, frames), context)) {
             // The platform's own decision not to suspend there, as a logging breakpoint's.
             resume(context)
             return
         }
         exceptionMessage(event)?.let { message -> session.reportMessage(message, MessageType.WARNING) }
+    }
+
+    /**
+     * The text a breakpoint that stops logs: its log expression's value,
+     * evaluated once, here, in the stop's top frame -- a logpoint's the
+     * agent logs itself without stopping, and one whose condition or log
+     * message failed stops with the error instead, which is not evaluated
+     * again. The error of an evaluation that fails is the text logged, as
+     * the platform's own debuggers log it.
+     */
+    private fun loggedAt(client: DapClient, breakpoint: XBreakpoint<*>, event: DapStoppedEvent, frames: List<NewspeakStackFrame>): String? {
+        val expression = logExpressionOf(breakpoint) ?: return null
+        if (isLogpoint(breakpoint) || event.text != null) return null
+        val arguments = JsonObject().apply {
+            addProperty("expression", expression)
+            frames.firstOrNull()?.let { frame -> addProperty("frameId", frame.id) }
+        }
+        val text = try {
+            client.request("evaluate", arguments).get(ANSWER_SECONDS, TimeUnit.SECONDS).stringOrNull("result").orEmpty()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (exception: Exception) {
+            messageOf(exception)
+        }
+        return text + "\n"
+    }
+
+    /** What a breakpoint's stop with an error tells the user: its condition or log message failed, and why. */
+    private fun failedConditionMessage(event: DapStoppedEvent): String? {
+        if (event.reason != "breakpoint") return null
+        return event.text?.let { text -> NewspeakBundle.message("debugger.stopped.condition.failed", text) }
     }
 
     /**
@@ -418,6 +505,64 @@ class NewspeakDebugProcess(
         }
     }
 
+    /**
+     * The targets of the stop's line (`stepInTargets`), asked of the frame
+     * a step steps from: the top frame, or, where the agent refuses it --
+     * an exception's stop, whose top frames are its machinery, hidden --
+     * the first frame not hidden. None when the session has no stop.
+     */
+    internal fun stepInTargets(): CompletableFuture<List<DapStepInTarget>> {
+        val client = client ?: return CompletableFuture.completedFuture(emptyList())
+        val frames = lastStop?.stack?.firstFrames.orEmpty()
+        val candidates = listOfNotNull(frames.firstOrNull(), frames.firstOrNull { frame -> !frame.hidden }).distinct()
+        fun ask(index: Int): CompletableFuture<List<DapStepInTarget>> {
+            val frame = candidates.getOrNull(index) ?: return CompletableFuture.completedFuture(emptyList())
+            return client.request("stepInTargets", JsonObject().apply { addProperty("frameId", frame.id) })
+                .thenApply { body ->
+                    body.get("targets")
+                        ?.takeIf { element -> element.isJsonArray }
+                        ?.asJsonArray
+                        ?.filter { element -> element.isJsonObject }
+                        ?.map { element -> DapStepInTarget.from(element.asJsonObject) }
+                        .orEmpty()
+                }
+                .exceptionallyCompose { failure ->
+                    if (messageOf(failure) == TOP_FRAME_ONLY && index + 1 < candidates.size) ask(index + 1) else CompletableFuture.failedFuture(failure)
+                }
+        }
+        return ask(0)
+    }
+
+    /** Steps into the send the agent's target [id] names, Smart Step Into's choice. */
+    internal fun stepIntoTarget(id: Int) = goOn("stepIn") { addProperty("targetId", id) }
+
+    /**
+     * Restarts [frame] (`restartFrame`): the agent stops at its start, a
+     * stop of the reason `restart`, which is shown as any other; a refusal
+     * is reported, and the program stays at its stop.
+     */
+    internal fun restartFrame(frame: NewspeakStackFrame) {
+        val client = client ?: return
+        client.request("restartFrame", JsonObject().apply { addProperty("frameId", frame.id) })
+            .whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
+    /**
+     * Makes [frame] return the value of [expression], evaluated in it, or
+     * `nil` for a blank one (`nsNext/forceReturn`); the stop that follows
+     * is where its sender goes on. A failed evaluation, a withheld value
+     * and a frame of the core library are refused, the program still at
+     * its stop.
+     */
+    internal fun forceReturn(frame: NewspeakStackFrame, expression: String): CompletableFuture<JsonObject>? {
+        val client = client ?: return null
+        val arguments = JsonObject().apply {
+            addProperty("frameId", frame.id)
+            if (expression.isNotBlank()) addProperty("expression", expression)
+        }
+        return client.request("nsNext/forceReturn", arguments).whenComplete { _, failure -> if (failure != null) refused(failure) }
+    }
+
     override fun startPausing() {
         val client = client ?: return
         client.request("pause", JsonObject().apply { addProperty("threadId", THREAD_ID) })
@@ -482,6 +627,7 @@ class NewspeakDebugProcess(
     override fun stop() {
         ended = true
         Disposer.dispose(stepFiltersSubscription)
+        Disposer.dispose(memoryView)
         handler.terminateThroughDebugger = null
         serverSocket.close()
         val client = client ?: return
@@ -564,10 +710,21 @@ class NewspeakDebugProcess(
 
         /** The frames a stop reads before it is shown, and a page of the rest. */
         const val FRAMES_PAGE = 50
+
+        /** The memory view's content in the session's tab. */
+        const val MEMORY_CONTENT = "NewspeakMemoryView"
+
+        /** The agent's refusal of `stepInTargets` for a frame other than the one a step steps from. */
+        const val TOP_FRAME_ONLY = "smart step into takes the top frame"
     }
 }
 
-/** The editor of an expression; evaluation is not supported yet, so it is plain Newspeak text. */
+/**
+ * The editor of an expression -- the Evaluate dialog's, a watch's, a
+ * breakpoint's condition and log expression, a value set -- as Newspeak
+ * text, which the agent compiles in the stop's scope; it resolves nothing
+ * itself, since the names it may use are the frame's.
+ */
 object NewspeakDebuggerEditorsProvider : XDebuggerEditorsProvider() {
     override fun getFileType(): FileType = NewspeakFileType
 

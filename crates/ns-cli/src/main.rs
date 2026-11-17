@@ -12,6 +12,7 @@ mod command_line;
 mod commands;
 mod debug;
 mod entry;
+mod mcp;
 mod program;
 mod project;
 mod target_runner;
@@ -19,7 +20,9 @@ mod target_runner;
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
 /// (`bench`), an application written as an image (`build`), and the core
-/// library's sources the binary embeds (`shipped-sources`). What looks
+/// library's sources the binary embeds (`shipped-sources`), and a Model
+/// Context Protocol server through which an agent debugs a program
+/// (`mcp`). What looks
 /// at Newspeak without running it -- parsing, disassembly, image inspection,
 /// the language server -- is `ns-next-analyzer`.
 #[derive(Parser)]
@@ -184,12 +187,12 @@ enum Command {
     /// Write the `.ns` sources this binary embeds -- the kernel, the
     /// manifest and the factories -- into DIRECTORY in the layout of
     /// `core-library/`, with a `fingerprint` file; or print their
-    /// fingerprint; or print them as JSON. The directory is created, and
-    /// refused when it holds anything that is not one of these files.
+    /// fingerprint. The directory is created, and refused when it holds
+    /// anything that is not one of these files.
     #[command(group(
         clap::ArgGroup::new("form")
             .required(true)
-            .args(["directory", "fingerprint", "json"])
+            .args(["directory", "fingerprint"])
     ))]
     ShippedSources {
         directory: Option<PathBuf>,
@@ -197,11 +200,13 @@ enum Command {
         /// of writing them. It changes with any embedded `.ns` text.
         #[arg(long)]
         fingerprint: bool,
-        /// Print `{ "fingerprint": ..., "modules": [ { "name", "path",
-        /// "text" } ] }` instead of writing.
-        #[arg(long)]
-        json: bool,
     },
+    /// Serve the Model Context Protocol on standard input and output: an
+    /// agent such as Claude debugs a program through its tools, each
+    /// program run in a child under the debugger from a copy of its
+    /// executable. On Windows the server renames its own executable aside
+    /// and puts a copy back, so that a build can replace it meanwhile.
+    Mcp,
 }
 
 /// The native stack the interpreter runs on. Nothing re-enters the run loop
@@ -308,7 +313,7 @@ fn execute(command: Command) -> ExitCode {
         Command::ShippedSources {
             directory,
             fingerprint,
-            json,
-        } => commands::shipped_sources::execute(directory.as_deref(), fingerprint, json),
+        } => commands::shipped_sources::execute(directory.as_deref(), fingerprint),
+        Command::Mcp => mcp::execute(),
     }
 }

@@ -253,6 +253,38 @@ pub(crate) fn declaration_path(
     Some((mutator.heap.mixin(module_root)?, path))
 }
 
+/// The declarations an implicit receiver send of a body of `running`'s
+/// declaration resolves against, innermost first -- the declaration's
+/// own, then each enclosing one out to the module's root -- each named
+/// with its members, read from the module's current text as the body's
+/// metadata is compiled again from it. `None` for a mixin no heap
+/// registered, and for a module without a text or whose text no longer
+/// parses or holds the declaration.
+pub(crate) fn declaration_chain(
+    mutator: &Mutator<'_>,
+    running: &Rc<Mixin>,
+) -> Option<Vec<(Symbol, HashSet<Symbol>)>> {
+    let (module_root, path) = mutator.path_from_module_root(declaration_id(mutator, running)?);
+    let text = mutator.heap.module_source(module_root)?;
+    let module = ns_syntax::parse(&text).ok()?;
+    let mut declaration = &module.root_class;
+    let mut chain = vec![declared_members(declaration)];
+    for name in &path {
+        declaration = find_declaration(declaration, std::slice::from_ref(name))?;
+        chain.push(declared_members(declaration));
+    }
+    chain.reverse();
+    Some(chain)
+}
+
+/// `declaration`'s name and its own members (`resolver::own_member_names`).
+fn declared_members(declaration: &ast::ClassDeclaration) -> (Symbol, HashSet<Symbol>) {
+    (
+        Symbol::intern(&declaration.name.name),
+        crate::resolver::own_member_names(declaration),
+    )
+}
+
 /// The shipped resolution of the shipped module whose root is named
 /// `name`, the boot's own (`interpreter::kernel::resolved_kernel`,
 /// `core_library::resolved_shipped_module`), so that the bodies' mirror
@@ -299,8 +331,10 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
         .map_while(|(position, name)| {
             Some(VariableEntry {
                 name,
+                assignable: false,
                 depth: 0,
                 place: VariablePlace::Register(u16::try_from(position).ok()?),
+                copied_by: Box::new([]),
             })
         })
         .collect();

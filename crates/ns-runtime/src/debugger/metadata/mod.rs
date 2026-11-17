@@ -135,17 +135,71 @@ pub(crate) enum BlockPlace {
     Called { send: u32, closure: u32 },
 }
 
+/// A variable a body declares, as a collecting lowerer lists it by
+/// resolver index -- its parameters, then its temporaries -- for its own
+/// variable table and those of the blocks it encloses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeclaredVariable {
+    pub(crate) name: Symbol,
+    /// See `VariableEntry::assignable`.
+    pub(crate) assignable: bool,
+}
+
+/// The variables a body of `parameters` and `temporaries` declares, in
+/// resolver order: no parameter is assignable, and a temporary is unless
+/// it is declared immutable (§3.6).
+pub(crate) fn declared_variables(
+    parameters: Vec<Symbol>,
+    temporaries: &[ns_syntax::ast::SlotDeclaration],
+) -> Rc<[DeclaredVariable]> {
+    parameters
+        .into_iter()
+        .map(|name| DeclaredVariable {
+            name,
+            assignable: false,
+        })
+        .chain(temporaries.iter().map(|temporary| DeclaredVariable {
+            name: Symbol::intern(&temporary.name.name),
+            assignable: temporary.mutability != ns_syntax::ast::SlotMutability::Immutable,
+        }))
+        .collect()
+}
+
 /// A named variable in scope over the whole body: an inlined block
 /// declares none, so every variable a body names is in scope from its
 /// start, `nil` until written (decision 13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariableEntry {
     pub(crate) name: Symbol,
+    /// Whether an assignment may write it: a mutable local's, never a
+    /// parameter's or an immutable local's (§3.6), wherever it lives --
+    /// what an expression evaluated in the frame is held to
+    /// (`resolver::FrameVariable`).
+    pub(crate) assignable: bool,
     /// The lexical distance in frame scopes from the body to the scope
     /// that declares the variable: 0 for the body's own, inlined scopes
     /// not counted.
     pub(crate) depth: u16,
     pub(crate) place: VariablePlace,
+    /// The indices of this body's `MakeClosure`s that hand the variable to
+    /// their block by value, ascending: once one of them has run
+    /// (`bytecode::may_have_run`), an assignment would leave that copy
+    /// stale (`docs/design/debugger.md`, "Assigning a captured variable").
+    /// Empty for a variable no block copies, one in an indirection vector,
+    /// a parameter and an immutable local, which nothing assigns, every
+    /// variable under the reference lowering, which copies nothing, and
+    /// every enclosing scope's variable (`depth` above 0), whose copies
+    /// this body's index space cannot name. For such a variable the place
+    /// decides: a `Register` is a copy this frame was handed, which an
+    /// assignment would leave its siblings stale beside, so it is always
+    /// refused; a `Vector` slot is shared by every copy and is assigned;
+    /// and an `Outer { hops, register }` is the declaring frame's own
+    /// register, decided by the declaring body's own depth-0 entry for
+    /// that register -- its `copied_by` and `may_have_run` at the
+    /// declaring frame's program counter in the declaring body's code --
+    /// and refused whenever that list is non-empty if the declaring frame
+    /// no longer runs.
+    pub(crate) copied_by: Box<[u32]>,
 }
 
 /// Where a frame of the body reads a variable.

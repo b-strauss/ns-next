@@ -39,11 +39,14 @@ Not built yet, and the limits worth knowing before trying it on real code:
   rather than a promise, a pattern literal evaluates to **nil**, and
   Typed-Newspeak annotations parse and are discarded. Mirrors read a program
   and a MirrorBuilder edits and installs it (`platform mirrors`).
-- **A debugger without evaluation yet.** `ns-next run --debug` speaks the
+- **A debugger without hot swap yet.** `ns-next run --debug` speaks the
   Debug Adapter Protocol, and the JetBrains plugin debugs with it: line,
-  method and exception breakpoints, steps, the stack and its values, the
-  shipped modules as a library; evaluating an expression, watches,
-  conditions and setting a variable come next (`docs/design/debugger.md`).
+  method and exception breakpoints with conditions, hit counts and log
+  messages, steps and smart step into, the stack and its values,
+  evaluation and setting a variable, restart frame and force return,
+  marked objects and a memory view, the shipped modules as a library;
+  `ns-next mcp` serves the same to an agent. Hot swap and
+  edit-and-continue come next (`docs/design/debugger.md`).
 
 `docs/design/` describes how the system works and how much of each aspect exists;
 `docs/PROGRESS.md` is the milestone chronology beside it, and `docs/OPEN-WORK.md`

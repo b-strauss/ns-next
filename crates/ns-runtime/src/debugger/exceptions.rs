@@ -79,12 +79,14 @@ pub(crate) struct PendingException {
 /// goes on, instead of running its default action. The test hook that
 /// resumes unhandled exceptions (`Interpreter::resume_unhandled_exceptions`)
 /// is served first: the exception it resumes stops nothing; and nothing
-/// stops while the debugger's termination unwinds the run. A leaf machine
+/// stops while the debugger's termination unwinds the run, nor while an
+/// evaluation runs, whose error is its answer. A leaf machine
 /// code calls (`MachineCall::Leaf`): it reads the exception and its class
 /// chain, records and sets the request bit, and nothing more.
 pub(crate) fn unhandled<'gc>(mutator: &mut Mutator<'gc>, exception: Value<'gc>) -> bool {
     if !mutator.breakpoints.attached()
         || mutator.breakpoints.terminating()
+        || mutator.breakpoints.evaluating()
         || mutator.unhandled_exceptions_to_resume > 0
     {
         return false;
@@ -131,7 +133,11 @@ pub(crate) fn caught<'gc>(
     activation: Value<'gc>,
     handler: Value<'gc>,
 ) {
-    if !mutator.breakpoints.attached() || mutator.breakpoints.terminating() {
+    // An evaluation stops nowhere, and no step is in progress during one.
+    if !mutator.breakpoints.attached()
+        || mutator.breakpoints.terminating()
+        || mutator.breakpoints.evaluating()
+    {
         return;
     }
     let breakpoints = mutator.breakpoints.exception_breakpoints().clone();

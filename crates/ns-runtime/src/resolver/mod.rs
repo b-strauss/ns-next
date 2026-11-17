@@ -6,6 +6,7 @@ mod scope;
 pub(crate) mod sends;
 
 pub use classes::RootShape;
+pub(crate) use classes::own_member_names;
 pub use classes::root_class_is_value;
 pub(crate) use classes::{root_clause_defect, root_shape};
 
@@ -16,10 +17,112 @@ use ns_syntax::Span;
 use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 
 use crate::Symbol;
+use crate::debugger::metadata::VariablePlace;
 use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
 
 use scope::{LocalScope, ScopeStack};
 use sends::EnclosingClass;
+
+/// A variable of a stopped frame an evaluated expression can name: one
+/// entry of the frame's variable table (`debugger::metadata::VariableEntry`),
+/// with whether an assignment may write it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameVariable {
+    pub(crate) name: Symbol,
+    /// Where the stopped frame reads it.
+    pub(crate) place: VariablePlace,
+    /// Whether an assignment may write it.
+    pub(crate) assignability: Assignability,
+    /// Whether the stopped frame holds it where it reads it: `false` for
+    /// one the variables view shows as not available, which a read and
+    /// an assignment alike refuse (`debugger::stack::available`).
+    pub(crate) available: bool,
+}
+
+/// Whether an evaluated assignment may write a frame variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Assignability {
+    /// A mutable local no block holds a copy of.
+    Assignable,
+    /// A parameter or an immutable local (§3.6): it declares no setter, so
+    /// an assignment passes it by for one further out of the same name.
+    NotAssignable,
+    /// A mutable local a block may already hold a copy of, which the
+    /// assignment would leave stale (`docs/design/debugger.md`, "Assigning
+    /// a captured variable"): it declares a setter, so an assignment names
+    /// it, and is refused.
+    Captured,
+    /// A vector variable whose frame has not made its vector yet -- stopped
+    /// before its `MakeVector` (`docs/design/debugger.md`, "Evaluation"):
+    /// it declares a setter, so an assignment names it, and is refused,
+    /// since the value has nowhere to live, and a vector the assignment
+    /// made would be replaced by the frame's own `MakeVector`.
+    NotMade,
+}
+
+/// What an expression evaluated in a stopped frame is resolved against
+/// (`docs/design/debugger.md`, decision 8, "Marking objects").
+pub(crate) struct EvaluationScope<'a> {
+    /// The stopped body's declaration chain, innermost first: an implicit
+    /// receiver send of the expression is resolved as the body's own are.
+    pub(crate) classes: &'a [EnclosingClass<'a>],
+    /// The frame's variables, innermost scope's first: of two of one name
+    /// the first is the one a read names.
+    pub(crate) variables: &'a [FrameVariable],
+    /// The marked labels the expression names, each spelled with its
+    /// suffix: the expression's block takes the marked objects as its
+    /// arguments, in this order.
+    pub(crate) labels: &'a [Symbol],
+}
+
+/// What a `Resolver` resolving an evaluated expression knows beyond a
+/// module's walk.
+struct Evaluating<'a> {
+    variables: &'a [FrameVariable],
+    labels: &'a [Symbol],
+}
+
+/// Resolves `expression` as the body of a block standing in a stopped
+/// frame (`docs/design/debugger.md`, decision 8): a marked label is the
+/// block's parameter, a name the frame's variable table holds is
+/// `Binding::FrameVariable`, and every other name is resolved against the
+/// stopped body's class chain as the body's own names are. The first
+/// error is the answer: an assignment to a variable that is not assignable,
+/// a `^` anywhere, nested blocks included -- the block has no home a return
+/// could leave for -- or any error a module's walk reports.
+pub(crate) fn resolve_evaluation(
+    expression: &ast::CodeBody,
+    scope: &EvaluationScope,
+) -> Result<Rc<HashMap<Span, Binding>>, String> {
+    // A `FrameVariable` counts a variable in a `u16`; a table longer than
+    // that is a frame of more variables than any body that fits the
+    // registers has, and is refused rather than read in part.
+    if scope.variables.len() > usize::from(u16::MAX) + 1 {
+        return Err("the frame has more variables than an evaluation can name".to_string());
+    }
+    let mut resolver = Resolver {
+        bindings: HashMap::new(),
+        errors: Vec::new(),
+        kernel: false,
+        evaluating: Some(Evaluating {
+            variables: scope.variables,
+            labels: scope.labels,
+        }),
+    };
+    // The labels are named by the debugger, not written in the expression,
+    // so its temporaries are the only names it declares.
+    resolver.check_activation_names(&[], &expression.temporaries, "the expression");
+    let mut scopes = ScopeStack::new();
+    scopes.push(LocalScope::new(scope.labels, &expression.temporaries));
+    resolver.resolve_local_initializers(&expression.temporaries, &mut scopes, scope.classes);
+    for statement in &expression.statements {
+        resolver.resolve_statement(statement, &mut scopes, scope.classes);
+    }
+    match resolver.errors.into_iter().next() {
+        Some(error) => Err(error.message),
+        None => Ok(Rc::new(resolver.bindings)),
+    }
+}
 
 pub fn resolve(
     module: ast::Module,
@@ -86,21 +189,26 @@ fn walk(module: &ast::Module, kernel: bool) -> (HashMap<Span, Binding>, Vec<Reso
         bindings: HashMap::new(),
         errors: Vec::new(),
         kernel,
+        evaluating: None,
     };
     resolver.resolve_class(&module.root_class, &[]);
     (resolver.bindings, resolver.errors)
 }
 
-struct Resolver {
+struct Resolver<'a> {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
     /// Whether this is shipped core-library source, whose sends to
     /// `vmMirror` are marked (`resolve_kernel`). `false` for every user
     /// module.
     kernel: bool,
+    /// The stopped frame an evaluated expression is resolved in
+    /// (`resolve_evaluation`); `None` for every module's walk, which so
+    /// records no `Binding::FrameVariable`.
+    evaluating: Option<Evaluating<'a>>,
 }
 
-impl Resolver {
+impl Resolver<'_> {
     /// `enclosing` is the chain of declarations around this one, innermost
     /// first. Each level borrows the member set of *its own* declaration,
     /// computed here as the walk enters it, so two classes of one simple name
@@ -377,11 +485,73 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
+        if self.evaluating.is_some() && matches!(statement.kind, StatementKind::Return(_)) {
+            self.errors.push(ResolveError {
+                span: statement.span,
+                message: crate::debugger::RETURN_FROM_AN_EVALUATION.to_string(),
+            });
+        }
         match &statement.kind {
             StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                 self.resolve_expression(expression, scope, chain)
             }
         }
+    }
+
+    /// The frame variable an evaluated expression's `name` reads: the first
+    /// of that name, the innermost scope's -- the one the variables view
+    /// shows -- or the refusal of a read of one not available; `None`
+    /// outside an evaluation.
+    fn frame_variable(&self, name: Symbol) -> Option<Result<u16, String>> {
+        let evaluating = self.evaluating.as_ref()?;
+        let position = evaluating
+            .variables
+            .iter()
+            .position(|variable| variable.name == name)?;
+        if !evaluating.variables[position].available {
+            return Some(Err(format!("{name} {}", crate::debugger::NOT_AVAILABLE)));
+        }
+        Some(Ok(frame_variable_index(position)))
+    }
+
+    /// The frame variable `name:: e` writes in an evaluated expression, or
+    /// the refusal of the assignment. As `ScopeStack::resolve_setter`
+    /// passes a local without a setter by, a variable that is not
+    /// assignable is passed by for one further out of the same name; one
+    /// with none to pass on to, and a marked label, are refused -- the
+    /// frame's own variable, never a slot of the same name, is what the
+    /// user means -- and so is the mutable local it names when a block may
+    /// already hold a copy of it, or when it is not available. `None`
+    /// outside an evaluation, and for a name the frame does not hold.
+    fn frame_variable_target(&self, name: Symbol) -> Option<Result<u16, String>> {
+        let evaluating = self.evaluating.as_ref()?;
+        let refusal = || Err(format!("{name} {}", crate::debugger::NOT_ASSIGNABLE));
+        if evaluating.labels.contains(&name) {
+            return Some(refusal());
+        }
+        let mut named = evaluating
+            .variables
+            .iter()
+            .enumerate()
+            .filter(|(_, variable)| variable.name == name)
+            .peekable();
+        named.peek()?;
+        Some(
+            match named.find(|(_, variable)| variable.assignability != Assignability::NotAssignable)
+            {
+                Some((_, variable)) if !variable.available => {
+                    Err(format!("{name} {}", crate::debugger::NOT_AVAILABLE))
+                }
+                Some((_, variable)) if variable.assignability == Assignability::Captured => {
+                    Err(format!("{name} {}", crate::debugger::CAPTURED))
+                }
+                Some((_, variable)) if variable.assignability == Assignability::NotMade => {
+                    Err(format!("{name} {}", crate::debugger::NOT_MADE))
+                }
+                Some((position, _)) => Ok(frame_variable_index(position)),
+                None => refusal(),
+            },
+        )
     }
 
     fn resolve_expression(
@@ -469,6 +639,20 @@ impl Resolver {
         if let Some(binding) = scope.resolve(name) {
             self.bindings.insert(id.span, binding);
             return;
+        }
+        match self.frame_variable(name) {
+            Some(Ok(index)) => {
+                self.bindings.insert(id.span, Binding::FrameVariable(index));
+                return;
+            }
+            Some(Err(message)) => {
+                self.errors.push(ResolveError {
+                    span: id.span,
+                    message,
+                });
+                return;
+            }
+            None => {}
         }
         let depth = sends::find_member_depth(chain, name).unwrap_or(0);
         self.bindings
@@ -593,6 +777,21 @@ impl Resolver {
             self.bindings.insert(target.span, binding);
             return;
         }
+        match self.frame_variable_target(name) {
+            Some(Ok(index)) => {
+                self.bindings
+                    .insert(target.span, Binding::FrameVariable(index));
+                return;
+            }
+            Some(Err(message)) => {
+                self.errors.push(ResolveError {
+                    span: target.span,
+                    message,
+                });
+                return;
+            }
+            None => {}
+        }
         let setter = Symbol::intern(&format!("{}:", target.name));
         let depth = sends::depth_search(chain, setter);
         self.bindings
@@ -679,6 +878,13 @@ fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[Enclos
     scope.resolve(name).is_none()
         && sends::find_member_depth(chain, name)
             .is_some_and(|depth| usize::from(depth) + 1 == chain.len())
+}
+
+/// A frame variable's position as `Binding::FrameVariable` holds it;
+/// `resolve_evaluation` refuses a table whose positions do not all fit.
+fn frame_variable_index(position: usize) -> u16 {
+    u16::try_from(position)
+        .expect("internal: a frame variable past the table resolve_evaluation admits")
 }
 
 fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {

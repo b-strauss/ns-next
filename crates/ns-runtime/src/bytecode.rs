@@ -1584,13 +1584,6 @@ pub(crate) fn falls_through(instruction: &Instruction) -> bool {
 /// target (`jump_target`). A send resumes at the next instruction however
 /// its callee returns, and an instruction that forces a future runs again
 /// from where it stands, so neither adds an edge.
-#[cfg_attr(
-    not(any(test, ns_jit)),
-    expect(
-        dead_code,
-        reason = "read by the baseline compiler, built only where `cfg(ns_jit)` is set, and the tests"
-    )
-)]
 pub(crate) fn successors(
     index: u32,
     instruction: &Instruction,
@@ -1601,6 +1594,53 @@ pub(crate) fn successors(
         None
     };
     [next, jump_target(instruction)].into_iter().flatten()
+}
+
+/// Whether a path from `code`'s entry to `program_counter` passes one of
+/// the instructions at `indices` -- whether one of them may have run
+/// before a frame of the body stands at `program_counter`. A path that
+/// reaches `program_counter` again through a loop's back edge counts, so
+/// a closure made later in a loop's body may have run in an earlier
+/// iteration; the instruction at `program_counter` itself has not run
+/// there. `false` for an empty `indices`. What the debugger asks before
+/// it assigns a variable a `MakeClosure` copies
+/// (`docs/design/debugger.md`, "Assigning a captured variable").
+///
+/// It reads the instructions as emitted (`CompiledCode::instruction`),
+/// which a breakpoint's patch leaves as they were, and runs only at a
+/// stop, so it is a worklist over the decoded body rather than a pass over
+/// the eight-byte encoding the run loop fetches.
+pub(crate) fn may_have_run(code: &CompiledCode, indices: &[u32], program_counter: u32) -> bool {
+    let length = code.instruction_count();
+    // A counter outside the body is reached by no path, and would answer
+    // that nothing ran -- an assignment allowed -- without a word.
+    debug_assert!(
+        (program_counter as usize) < length,
+        "internal: program counter {program_counter} outside a body of {length} instructions"
+    );
+    if indices.is_empty() {
+        return false;
+    }
+    // Each instruction is visited at most twice: before any of `indices`
+    // has run on the path, and after.
+    let mut visited = vec![[false; 2]; length];
+    let mut pending: Vec<(u32, bool)> = vec![(0, false)];
+    while let Some((index, ran)) = pending.pop() {
+        let Some(seen) = visited.get_mut(index as usize) else {
+            continue;
+        };
+        if seen[usize::from(ran)] {
+            continue;
+        }
+        seen[usize::from(ran)] = true;
+        if ran && index == program_counter {
+            return true;
+        }
+        let instruction = code.instruction(index as usize);
+        let ran_after = ran || indices.contains(&index);
+        pending.extend(successors(index, &instruction).map(|next| (next, ran_after)));
+    }
+    false
 }
 
 /// Whether a body itself addresses a slot of the level it was entered at: it
@@ -2002,6 +2042,63 @@ mod tests {
         assert_eq!(code.instruction_count(), 2);
         assert_eq!(code.register_count - code.argument_count, 1);
         assert_eq!(code, code.clone());
+    }
+
+    /// `may_have_run` follows every edge from the entry, a loop's back
+    /// edge included, and never counts the instruction it stands at, nor
+    /// one no path reaches.
+    #[test]
+    fn may_have_run_walks_the_control_flow_from_the_entry() {
+        let load = |value| Instruction::LoadLiteral {
+            destination: 0,
+            literal: Literal::SmallInteger(value),
+        };
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                load(1),
+                // The loop's head.
+                Instruction::BranchIfFalse {
+                    register: 0,
+                    target: 4,
+                },
+                load(2),
+                Instruction::Jump { target: 1 },
+                Instruction::Return { register: 0 },
+                // Reached by no path.
+                load(3),
+                Instruction::Return { register: 0 },
+            ],
+            0,
+            1,
+            0,
+            vec![],
+            Span::new(0, 0),
+        );
+        assert!(!may_have_run(&code, &[2], 0));
+        assert!(may_have_run(&code, &[2], 1), "through the back edge");
+        assert!(may_have_run(&code, &[2], 2), "in an earlier iteration");
+        assert!(may_have_run(&code, &[2], 4));
+        assert!(!may_have_run(&code, &[0], 0), "not yet run where it stands");
+        assert!(!may_have_run(&code, &[5], 6), "never reached");
+        assert!(!may_have_run(&code, &[], 4));
+    }
+
+    /// A counter past the body would answer that nothing ran there.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "outside a body")]
+    fn may_have_run_refuses_a_counter_outside_the_body() {
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 0 }],
+            1,
+            1,
+            0,
+            vec![],
+            Span::new(0, 0),
+        );
+        may_have_run(&code, &[0], 1);
     }
 
     /// A body's reach is the deepest frame anything in it addresses: its own

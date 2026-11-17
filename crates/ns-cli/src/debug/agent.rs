@@ -89,6 +89,42 @@ const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 /// not -- however busy -- delays the process's end by no more than this.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
 
+/// The message of a queued `evaluate` a `cancel` dropped.
+const CANCELLED: &str = "cancelled";
+
+/// How long an `evaluate` of the context `hover` may take before the
+/// agent aborts it (`abort_overdue_hovers`): a hover is asked as the
+/// pointer rests on a name, unbidden, and an expression that does not
+/// end -- a getter that loops -- would otherwise leave the program's stop
+/// busy until the user noticed. The console's, a watch's and the clipboard's are the user's
+/// own request, which the user cancels.
+pub(super) const HOVER_BOUND: Duration = Duration::from_secs(2);
+
+/// The variable a debug build reads `HOVER_BOUND` from, in milliseconds,
+/// as `ATTACH_DEADLINE_VARIABLE`: a test of the bound takes a fraction of
+/// it, and one of 0 aborts every hover as it is asked, which races the
+/// abort with the evaluation's own end.
+#[cfg(debug_assertions)]
+const HOVER_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_HOVER_BOUND_MILLISECONDS";
+
+/// The bound of a hover's evaluation.
+fn hover_bound() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(shortened) = debug_override(HOVER_BOUND_VARIABLE) {
+        return shortened;
+    }
+    HOVER_BOUND
+}
+
+/// The longest text of a logpoint's line the agent sends, in characters:
+/// a message whose expression answers a huge `printString` would otherwise
+/// be one write the size of the object's text, at every hit.
+const LOG_TEXT_LIMIT: usize = 10_000;
+
+/// How often the agent tries again to say how many logpoint lines it
+/// dropped, while the client has not read enough to take the line.
+const DROPPED_RETRY: Duration = Duration::from_millis(100);
+
 /// The variable a debug build reads `ENDED_LINGER` from, in milliseconds,
 /// as `ATTACH_DEADLINE_VARIABLE`.
 #[cfg(debug_assertions)]
@@ -200,6 +236,24 @@ pub(super) enum Conversion {
     FunctionBreakpoints { entries: Vec<FunctionEntry> },
     /// `setExceptionBreakpoints`': the number of filters it turned on.
     ExceptionBreakpoints { count: usize },
+    /// `evaluate`'s, asked at the stop `generation`.
+    Evaluated { generation: u64 },
+    /// `setVariable`'s, asked at the stop `generation`.
+    VariableSet { generation: u64 },
+    /// `stepInTargets`', asked at the stop `generation`, its targets
+    /// placed in the current text of `module`, the top frame's.
+    StepInTargets {
+        generation: u64,
+        module: Option<ModuleName>,
+    },
+    /// `nsNext/forceReturn`'s with an expression, whose evaluation in the
+    /// frame at `frame`, asked at the stop `generation`, answers the
+    /// value the frame is then forced to return (`evaluation.rs`).
+    ForceReturning { generation: u64, frame: usize },
+    /// `nsNext/instanceCounts`'.
+    InstanceCounts,
+    /// `nsNext/referrers`', asked at the stop `generation`.
+    Referrers { generation: u64 },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
@@ -223,6 +277,13 @@ struct Waiting {
     request: protocol::Request,
     /// The stop it was asked at.
     generation: u64,
+}
+
+/// A hover's `evaluate` the VM has not answered, aborted at `deadline`.
+struct Hover {
+    connection: u64,
+    request_seq: i64,
+    deadline: Instant,
 }
 
 /// The agent's state; `run` drives it.
@@ -252,6 +313,12 @@ pub(crate) struct Agent {
     stop_on_entry: bool,
     /// The next pause stop is the entry's.
     entry_pending: bool,
+    /// A `restartFrame` is on its way: the next step's stop is the
+    /// restart's.
+    pub(super) restart_pending: bool,
+    /// A forced return's expression is being evaluated, after which the
+    /// forced return is sent: the stop counts as left (`at_stop`).
+    pub(super) force_return_evaluating: bool,
     /// The VM stands at a stop.
     stopped: bool,
     /// A `Continue`, a step or a run to cursor is on its way: the program
@@ -275,6 +342,27 @@ pub(crate) struct Agent {
     /// out, so that a client resending the same filters is told once
     /// (`stepping.rs`, `set_step_filters`).
     pub(super) step_filters_said: Vec<String>,
+    /// The hovers' evaluations not answered yet (`HOVER_BOUND`).
+    hovers: Vec<Hover>,
+    /// The requests that evaluate -- `evaluate`, `setVariable`,
+    /// `nsNext/forceReturn` -- and wait for the evaluation the VM runs:
+    /// the VM refuses a command that arrives while an evaluation runs,
+    /// and its refusal, named by the command alone, would answer the
+    /// running one's request (`queue_evaluation`).
+    queued_evaluations: VecDeque<(u64, protocol::Request)>,
+    /// The logpoint lines dropped since the client was last told, for a
+    /// write queue too full to take them (`log`).
+    dropped_logs: u64,
+    /// The labels of the marks the VM holds for the current client
+    /// (`nsNext/mark`), which a listening agent takes off when the client
+    /// leaves, so that the next client meets none of them.
+    marks: BTreeSet<String>,
+    /// A client left a listening agent while an evaluation of its ran: the
+    /// evaluation was aborted, and the stop is left -- the program going
+    /// on -- once the evaluation answered, since the VM serves a
+    /// `Continue` only at the stop the evaluation's end re-enters, and
+    /// refuses one that arrives while it runs.
+    leave_after_evaluation: bool,
 }
 
 impl Agent {
@@ -307,6 +395,8 @@ impl Agent {
             connections: 0,
             stop_on_entry: false,
             entry_pending: false,
+            restart_pending: false,
+            force_return_evaluating: false,
             stopped: false,
             resuming: false,
             line_step: None,
@@ -317,14 +407,20 @@ impl Agent {
             stop: Stop::new(),
             waiting: Vec::new(),
             step_filters_said: Vec::new(),
+            hovers: Vec::new(),
+            queued_evaluations: VecDeque::new(),
+            dropped_logs: 0,
+            marks: BTreeSet::new(),
+            leave_after_evaluation: false,
         }
     }
 
     /// Serves every input until the process ends, and ends the session of
     /// a client of the listening mode that has not attached by its
-    /// deadline: kept here, beside the inputs, rather than by a timer per
-    /// connection, and checked before every input too, so that a peer
-    /// sending without a pause cannot keep it from passing.
+    /// deadline, and aborts a hover's evaluation past its bound: kept
+    /// here, beside the inputs, rather than by a timer each, and checked
+    /// before every input too, so that a peer sending without a pause
+    /// cannot keep a deadline from passing.
     pub(crate) fn run(mut self) {
         loop {
             if self
@@ -334,9 +430,11 @@ impl Agent {
                 self.leave();
                 continue;
             }
+            self.abort_overdue_hovers();
+            self.report_dropped_logs();
             let input = match self.deferred.pop_front() {
                 Some(input) => input,
-                None => match self.attach_by() {
+                None => match self.next_deadline() {
                     Some(deadline) => match self
                         .received
                         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -363,6 +461,131 @@ impl Agent {
             .and_then(|client| client.attach_by)
     }
 
+    /// The earliest deadline the agent keeps: the attach's, a hover's, or
+    /// the next try to say how many logpoint lines were dropped.
+    fn next_deadline(&self) -> Option<Instant> {
+        let retry = (self.dropped_logs > 0).then(|| Instant::now() + DROPPED_RETRY);
+        self.hovers
+            .iter()
+            .map(|hover| hover.deadline)
+            .chain(self.attach_by())
+            .chain(retry)
+            .min()
+    }
+
+    /// Bounds the hover `request` asked of the VM by `HOVER_BOUND`.
+    pub(super) fn bound_hover(&mut self, connection: u64, request: &protocol::Request) {
+        self.hovers.push(Hover {
+            connection,
+            request_seq: request.seq,
+            deadline: Instant::now() + hover_bound(),
+        });
+    }
+
+    /// Aborts the evaluation of each hover past its bound that the VM has
+    /// still not answered, by `Command::AbortEvaluation`, never by a
+    /// pause: the command is served in sequence with the evaluation, so
+    /// one that arrives after the evaluation answered is refused as moot
+    /// -- a refusal the agent drops -- where a pause bit would stay armed
+    /// at the stop and stop the program again once it goes on.
+    fn abort_overdue_hovers(&mut self) {
+        let now = Instant::now();
+        let (overdue, waiting): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovers)
+            .into_iter()
+            .partition(|hover| hover.deadline <= now);
+        self.hovers = waiting;
+        for hover in overdue {
+            let unanswered = self.pending.iter().any(|pending| {
+                matches!(
+                    &pending.reply,
+                    Reply::Request { connection, request_seq, .. }
+                        if *connection == hover.connection && *request_seq == hover.request_seq
+                )
+            });
+            if unanswered {
+                self.command(Command::AbortEvaluation, Reply::Internal);
+            }
+        }
+    }
+
+    /// `cancel`: the `evaluate` its `requestId` names stops. The one the
+    /// VM runs -- the oldest it was sent -- is aborted by
+    /// `Command::AbortEvaluation`, as a hover's bound aborts it, and then
+    /// answered "evaluation aborted"; one still queued behind it
+    /// (`queue_evaluation`) is dropped and answered "cancelled", never
+    /// sent; the abort would otherwise stop the running one. Any other
+    /// request, or one answered already, is not cancelled: DAP makes a
+    /// cancel a hint, answered with success either way.
+    fn cancel(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) = self.arguments::<protocol::CancelArguments>(connection, request)
+        else {
+            return;
+        };
+        if let Some(seq) = arguments.request_id {
+            let queued = self
+                .queued_evaluations
+                .iter()
+                .position(|(asked, queued)| *asked == connection && queued.seq == seq);
+            if let Some((_, cancelled)) =
+                queued.and_then(|index| self.queued_evaluations.remove(index))
+            {
+                self.respond_error(connection, &cancelled, CANCELLED);
+            } else {
+                let running = self
+                    .pending
+                    .iter()
+                    .find(|pending| pending.command == "Evaluate")
+                    .is_some_and(|pending| match &pending.reply {
+                        Reply::Request {
+                            connection: asked,
+                            request_seq,
+                            command,
+                            ..
+                        } => *asked == connection && *request_seq == seq && command == "evaluate",
+                        _ => false,
+                    });
+                if running {
+                    self.command(Command::AbortEvaluation, Reply::Internal);
+                }
+            }
+        }
+        self.respond(connection, request, None);
+    }
+
+    /// Whether the VM runs an evaluation the agent sent: an `evaluate`'s
+    /// or a `setVariable`'s.
+    pub(super) fn evaluation_in_flight(&self) -> bool {
+        self.pending
+            .iter()
+            .any(|pending| matches!(pending.command, "Evaluate" | "SetVariable"))
+    }
+
+    /// Holds `request` -- an `evaluate`, a `setVariable` or an
+    /// `nsNext/forceReturn`, each of which evaluates -- until the
+    /// evaluation the VM runs has answered.
+    pub(super) fn queue_evaluation(&mut self, connection: u64, request: &protocol::Request) {
+        self.queued_evaluations
+            .push_back((connection, request.clone()));
+    }
+
+    /// Sends the queued evaluations once none runs, each served afresh
+    /// as it arrived: one the stop no longer serves is refused then.
+    fn send_queued_evaluation(&mut self) {
+        while !self.evaluation_in_flight() {
+            let Some((connection, request)) = self.queued_evaluations.pop_front() else {
+                return;
+            };
+            if !self.is_current(connection) {
+                continue;
+            }
+            match request.command.as_str() {
+                "setVariable" => self.set_variable(connection, &request),
+                "nsNext/forceReturn" => self.force_return(connection, &request),
+                _ => self.evaluate(connection, &request),
+            }
+        }
+    }
+
     fn serve(&mut self, input: Input) {
         match input {
             Input::Connected(stream) => self.connected(stream),
@@ -372,7 +595,7 @@ impl Agent {
             } => self.request(connection, message),
             Input::Closed { connection } => {
                 if self.is_current(connection) {
-                    self.leave();
+                    self.connection_lost();
                 }
             }
             Input::Event(event) => self.vm_event(event),
@@ -460,6 +683,13 @@ impl Agent {
         if !self.is_current(connection) {
             return;
         }
+        // What a request the agent does not know carried, said in a debug
+        // build, so that a client that sends one shows itself.
+        #[cfg(debug_assertions)]
+        let keys: Vec<String> = message
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
         // A message that is no request has nothing to answer.
         let Ok(request) = serde_json::from_value::<protocol::Request>(message) else {
             return;
@@ -499,6 +729,17 @@ impl Agent {
             "stackTrace" => self.stack_trace(connection, &request),
             "scopes" => self.scopes(connection, &request),
             "variables" => self.variables(connection, &request),
+            "evaluate" => self.evaluate(connection, &request),
+            "cancel" => self.cancel(connection, &request),
+            "setVariable" => self.set_variable(connection, &request),
+            "nsNext/mark" => self.mark(connection, &request),
+            "nsNext/unmark" => self.unmark(connection, &request),
+            "stepInTargets" => self.step_in_targets(connection, &request),
+            "restartFrame" => self.restart_frame(connection, &request),
+            "nsNext/forceReturn" => self.force_return(connection, &request),
+            "nsNext/instanceCounts" => self.instance_counts(connection, &request),
+            "nsNext/instances" => self.instances(connection, &request),
+            "nsNext/referrers" => self.referrers(connection, &request),
             "source" => self.source(connection, &request),
             "setBreakpoints" => self.set_breakpoints(connection, &request),
             "setFunctionBreakpoints" => self.set_function_breakpoints(connection, &request),
@@ -511,6 +752,12 @@ impl Agent {
             "terminate" => self.terminate(connection, &request),
             "disconnect" => self.disconnect(connection, &request),
             command => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "ns-next debugger: connection {connection} sent the unknown command \
+                     {command:?} (seq {}), its message's keys {keys:?}",
+                    request.seq
+                );
                 let message = format!("`{command}` is not supported yet");
                 self.respond_error(connection, &request, &message);
             }
@@ -682,7 +929,10 @@ impl Agent {
     /// not asked to leave; a request only a stop serves is answered by an
     /// error otherwise, never sent to the VM.
     pub(super) fn at_stop(&mut self, connection: u64, request: &protocol::Request) -> bool {
-        let at_stop = self.stopped && !self.resuming && self.line_step.is_none();
+        let at_stop = self.stopped
+            && !self.resuming
+            && !self.force_return_evaluating
+            && self.line_step.is_none();
         if !at_stop {
             self.respond_error(connection, request, "the program is running");
         }
@@ -709,7 +959,7 @@ impl Agent {
     }
 
     /// Answers `request` once what it reads is there, asking the VM for it.
-    fn wait(&mut self, connection: u64, request: &protocol::Request) {
+    pub(super) fn wait(&mut self, connection: u64, request: &protocol::Request) {
         self.waiting.push(Waiting {
             connection,
             request: request.clone(),
@@ -727,10 +977,30 @@ impl Agent {
             if !self.is_current(waiting.connection) {
                 continue;
             }
-            let outcome = if waiting.generation == self.stop.generation() {
-                self.try_answer(&waiting.request)
-            } else {
+            let outcome = if waiting.generation != self.stop.generation() {
                 Some(Err("the program went on".to_string()))
+            } else if waiting.request.command == "stepInTargets" {
+                // Asked of the VM once the frames and the top frame's
+                // text are there, and answered when the VM answers.
+                match self.step_in_targets_ready(&waiting.request) {
+                    Some(Ok(module)) => {
+                        let conversion = Conversion::StepInTargets {
+                            generation: waiting.generation,
+                            module,
+                        };
+                        self.forward_converted(
+                            waiting.connection,
+                            &waiting.request,
+                            Command::StepInTargets,
+                            conversion,
+                        );
+                        continue;
+                    }
+                    Some(Err(reason)) => Some(Err(reason)),
+                    None => None,
+                }
+            } else {
+                self.try_answer(&waiting.request)
             };
             match outcome {
                 Some(outcome) => self.write_response(
@@ -866,12 +1136,7 @@ impl Agent {
         if !self.at_stop(connection, request) {
             return;
         }
-        let index = arguments
-            .frame_id
-            .checked_sub(1)
-            .and_then(|index| usize::try_from(index).ok())
-            .filter(|index| self.stop.has_frame(*index));
-        let Some(index) = index else {
+        let Some(index) = self.stop.frame_of_id(arguments.frame_id) else {
             self.respond_error(connection, request, "no frame of this stop has that id");
             return;
         };
@@ -975,6 +1240,8 @@ impl Agent {
             control.send(Command::Terminate);
         }
         self.entry_pending = false;
+        self.restart_pending = false;
+        self.force_return_evaluating = false;
         self.line_step = None;
         self.went_on();
     }
@@ -1019,6 +1286,24 @@ impl Agent {
         }
     }
 
+    /// The client's connection closed before a `disconnect`. A connecting
+    /// agent's launcher owns the process -- the plugin and the MCP server
+    /// start their child -- and is gone, so the program ends as a
+    /// `terminate` ends it: its pending `ensure:` blocks run, every stop
+    /// on the way goes on with no client there, and the process ends with
+    /// a terminated program's status. A listening agent's client is one of
+    /// several, and the program waits for the next.
+    fn connection_lost(&mut self) {
+        if matches!(self.mode, Mode::Connecting { .. })
+            && !self.exited
+            && !self.host.terminate_requested()
+        {
+            self.host.request_terminate();
+            self.send_terminate();
+        }
+        self.leave();
+    }
+
     /// The client left: by `disconnect`, by closing its connection, or
     /// refused. A client that never attached configured nothing and is
     /// only let go.
@@ -1031,10 +1316,15 @@ impl Agent {
         drop(client.writer);
         let was_attached = client.attached;
         self.waiting.clear();
+        self.hovers.clear();
+        self.queued_evaluations.clear();
+        self.dropped_logs = 0;
         self.line_step = None;
         self.step_filters_said.clear();
         self.stop_on_entry = false;
         self.entry_pending = false;
+        self.restart_pending = false;
+        self.force_return_evaluating = false;
         self.session_ended(was_attached);
     }
 
@@ -1042,6 +1332,9 @@ impl Agent {
     /// whether its client had configured anything.
     fn session_ended(&mut self, was_attached: bool) {
         match &self.mode {
+            // A program being terminated keeps its debugger until it
+            // ended, so that the queued `Terminate` is served.
+            Mode::Connecting { .. } if self.host.terminate_requested() => {}
             Mode::Connecting { .. } => {
                 // The program runs on without its debugger, and without
                 // waiting for a configuration nobody will finish.
@@ -1075,16 +1368,24 @@ impl Agent {
         self.control = None;
         self.events_detached.store(true, Ordering::SeqCst);
         self.pending.clear();
+        self.hovers.clear();
+        // The VM drops the marks with the debugger.
+        self.marks.clear();
+        self.leave_after_evaluation = false;
         self.resuming = false;
+        self.force_return_evaluating = false;
         self.line_step = None;
         self.went_on();
     }
 
-    /// Leaves the VM stopping nowhere, for the next client of a listening
-    /// agent, since nobody would be there to go on from a stop: no line or
-    /// method breakpoint and no exception stop -- not even the uncaught
-    /// exceptions and halts the VM stops at before any client configures
-    /// it -- the default step filters, and a stopped program going on.
+    /// Leaves the VM stopping nowhere and holding nothing of the client's,
+    /// for the next client of a listening agent, since nobody would be
+    /// there to go on from a stop: no line or method breakpoint and no
+    /// exception stop -- not even the uncaught exceptions and halts the VM
+    /// stops at before any client configures it -- the default step
+    /// filters, no mark, and a stopped program going on. An evaluation of
+    /// the client's still running is aborted first, and the stop left
+    /// once it answered (`leave_after_evaluation`).
     fn reset_the_vm(&mut self) {
         for module in self.breakpoints.modules() {
             self.command(
@@ -1113,6 +1414,24 @@ impl Agent {
             Reply::Internal,
         );
         self.breakpoints.clear();
+        // Served at once, while the program runs too, so that no
+        // condition of the next client's names a label of this one's.
+        for label in std::mem::take(&mut self.marks) {
+            self.command(Command::Unmark { label }, Reply::Internal);
+        }
+        if self.evaluation_in_flight() {
+            self.command(Command::AbortEvaluation, Reply::Internal);
+            self.leave_after_evaluation = true;
+            // The stop the evaluation stands at is being left: a next
+            // client's request of it is answered as while running.
+            self.resuming = true;
+        } else {
+            self.leave_the_stop();
+        }
+    }
+
+    /// Lets a stopped program go on for a client that left.
+    fn leave_the_stop(&mut self) {
         if self.stopped {
             self.go_on();
         }
@@ -1145,6 +1464,7 @@ impl Agent {
                 | Command::SetStepFilters { .. }
                 | Command::SetMethodBreakpoints(_)
                 | Command::SetExceptionBreakpoints { .. }
+                | Command::Unmark { .. }
         );
         self.pending.push_back(Pending {
             command: command.name(),
@@ -1180,6 +1500,7 @@ impl Agent {
                     self.send_terminate();
                 }
             }
+            Event::Logged { text, .. } => self.log(&text),
             event => self.answer(event),
         }
     }
@@ -1247,8 +1568,14 @@ impl Agent {
     /// Shows the client the stop the program stands at, for `reason`.
     pub(super) fn report_stop(&mut self, reason: &StopReason) {
         self.line_step = None;
-        let body = stopped_body(reason, self.entry_pending, &self.breakpoints);
+        let body = stopped_body(
+            reason,
+            self.entry_pending,
+            self.restart_pending,
+            &self.breakpoints,
+        );
         self.entry_pending = false;
+        self.restart_pending = false;
         self.event("stopped", Some(to_value(body)));
     }
 
@@ -1295,6 +1622,9 @@ impl Agent {
                 // The program stays at its stop, which the client keeps
                 // reading.
                 self.resuming = false;
+                if command == "RestartFrame" {
+                    self.restart_pending = false;
+                }
             }
             _ => {}
         }
@@ -1308,6 +1638,40 @@ impl Agent {
         let Some(pending) = self.pending.remove(index) else {
             return;
         };
+        if let Event::Marked { label } = &event {
+            if pending.command == "Mark" {
+                match pending.reply {
+                    // A mark the VM made after its client left, which the
+                    // leave's unmarking could not name yet.
+                    Reply::Request { connection, .. } if !self.is_current(connection) => {
+                        self.command(
+                            Command::Unmark {
+                                label: label.clone(),
+                            },
+                            Reply::Internal,
+                        );
+                    }
+                    _ => {
+                        self.marks.insert(label.clone());
+                    }
+                }
+            } else if !matches!(pending.reply, Reply::Internal) {
+                // The agent's own unmarking took its labels already, and
+                // the next client may have marked one of them since.
+                self.marks.remove(label);
+            }
+        }
+        let ends_an_evaluation = matches!(pending.command, "Evaluate" | "SetVariable");
+        self.answer_pending(pending, event);
+        if ends_an_evaluation && self.leave_after_evaluation && !self.evaluation_in_flight() {
+            self.leave_after_evaluation = false;
+            self.resuming = false;
+            self.leave_the_stop();
+        }
+    }
+
+    /// Hands the VM's answer `event` to `pending`, the command it answers.
+    fn answer_pending(&mut self, pending: Pending, event: Event) {
         match pending.reply {
             Reply::Internal => {}
             Reply::Repeated => {
@@ -1348,8 +1712,30 @@ impl Agent {
                     // A step by line's first step, refused: no step runs.
                     self.line_step = None;
                 }
+                self.hovers.retain(|hover| {
+                    hover.connection != connection || hover.request_seq != request_seq
+                });
+                if let Conversion::ForceReturning { generation, frame } = conversion {
+                    // A client that left forces nothing: the stop is left
+                    // without it.
+                    if self.leave_after_evaluation {
+                        return;
+                    }
+                    let request = protocol::Request {
+                        seq: request_seq,
+                        kind: "request".to_string(),
+                        command,
+                        arguments: Value::Null,
+                    };
+                    self.force_evaluated(connection, &request, event, generation, frame);
+                    self.send_queued_evaluation();
+                    return;
+                }
                 let outcome = self.convert(event, conversion);
                 self.write_response(connection, request_seq, &command, outcome);
+                if matches!(pending.command, "Evaluate" | "SetVariable") {
+                    self.send_queued_evaluation();
+                }
             }
         }
     }
@@ -1401,6 +1787,34 @@ impl Agent {
                     .collect();
                 Ok(Some(json!({ "breakpoints": breakpoints })))
             }
+            (
+                event @ (Event::Evaluated(_) | Event::VariableSet(_)),
+                conversion @ (Conversion::Evaluated { generation }
+                | Conversion::VariableSet { generation }),
+            ) => {
+                // References of a stop the program left would name nothing.
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                let setting = matches!(conversion, Conversion::VariableSet { .. });
+                self.evaluation_body(event, setting)
+            }
+            (Event::StepInTargets(targets), Conversion::StepInTargets { generation, module }) => {
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                self.stop.step_in_targets_answered(targets.len());
+                Ok(Some(self.step_in_targets_body(&targets, module.as_ref())))
+            }
+            (Event::InstanceCounts(counts), Conversion::InstanceCounts) => {
+                Ok(Some(super::evaluation::instance_counts_body(&counts)))
+            }
+            (Event::Referrers(referrers), Conversion::Referrers { generation }) => {
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                Ok(Some(self.referrers_body(&referrers)))
+            }
             _ => Ok(None),
         }
     }
@@ -1424,6 +1838,7 @@ impl Agent {
                 self.line_step = None;
                 self.answer_what_the_vm_sent();
                 if self.is_attached() {
+                    self.report_dropped_logs();
                     let exited = protocol::ExitedEventBody {
                         exit_code: i64::from(status),
                     };
@@ -1540,6 +1955,14 @@ impl Agent {
                 );
             }
         }
+        for (connection, request) in std::mem::take(&mut self.queued_evaluations) {
+            self.write_response(
+                connection,
+                request.seq,
+                &request.command,
+                Err("the program ended".to_string()),
+            );
+        }
     }
 
     // ---- Writing ----
@@ -1609,6 +2032,56 @@ impl Agent {
         });
     }
 
+    /// A logpoint's line, an `output` event in the console beside the
+    /// program's own output, which the IDE shows itself; cut at
+    /// `LOG_TEXT_LIMIT` characters, saying so. A logpoint in a hot loop
+    /// logs faster than a client may read, so its lines are the one
+    /// message the agent drops: near a full write queue it counts the
+    /// line instead (`Writer::has_room_for_droppable`), and says how many
+    /// it dropped once there is room, rather than give the client up as
+    /// one that stopped reading.
+    fn log(&mut self, text: &str) {
+        if !self.is_attached() {
+            return;
+        }
+        self.report_dropped_logs();
+        if !self.has_room_for_droppable() {
+            self.dropped_logs += 1;
+            return;
+        }
+        let output = match text.char_indices().nth(LOG_TEXT_LIMIT) {
+            Some((cut, _)) => {
+                format!("{} [cut at {LOG_TEXT_LIMIT} characters]\n", &text[..cut])
+            }
+            None => format!("{text}\n"),
+        };
+        self.event(
+            "output",
+            Some(json!({ "category": "console", "output": output })),
+        );
+    }
+
+    /// Says how many logpoint lines were dropped, once the write queue has
+    /// room for the line.
+    fn report_dropped_logs(&mut self) {
+        if self.dropped_logs == 0 || !self.has_room_for_droppable() {
+            return;
+        }
+        let output = format!("{} log lines dropped\n", self.dropped_logs);
+        self.dropped_logs = 0;
+        self.event(
+            "output",
+            Some(json!({ "category": "console", "output": output })),
+        );
+    }
+
+    /// Whether the attached client's write queue takes a droppable message.
+    fn has_room_for_droppable(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|client| client.writer.has_room_for_droppable())
+    }
+
     /// Queues the message `build` makes of the next sequence number for
     /// the client's writer, so that this thread never waits on the socket:
     /// a client that stops reading would otherwise block it in a write,
@@ -1632,7 +2105,14 @@ impl Agent {
 fn is_going_on(name: &str) -> bool {
     matches!(
         name,
-        "Continue" | "StepOver" | "StepInto" | "StepOut" | "RunToPosition"
+        "Continue"
+            | "StepOver"
+            | "StepInto"
+            | "StepOut"
+            | "RunToPosition"
+            | "RestartFrame"
+            | "ForceReturn"
+            | "StepIntoTarget"
     )
 }
 
@@ -1645,7 +2125,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
             command: refused, ..
         } => refused == command,
         Event::StackTrace(_) => command == "StackTrace",
-        Event::Variables(_) => matches!(command, "Variables" | "Children"),
+        Event::Variables(_) => matches!(command, "Variables" | "Children" | "Instances"),
         Event::Breakpoints { module, .. } => {
             command == "SetBreakpoints" && pending.module.as_ref() == Some(module)
         }
@@ -1655,18 +2135,28 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::ModuleText { module, .. } => {
             command == "ModuleText" && pending.module.as_ref() == Some(module)
         }
-        Event::Stopped { .. } => false,
+        // A `SetVariable` whose expression ended with an error answers
+        // that error as an evaluation does.
+        Event::Evaluated(_) => matches!(command, "Evaluate" | "SetVariable"),
+        Event::VariableSet(_) => command == "SetVariable",
+        Event::AbortTaken => command == "AbortEvaluation",
+        Event::StepInTargets(_) => command == "StepInTargets",
+        Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
+        Event::InstanceCounts(_) => command == "InstanceCounts",
+        Event::Referrers(_) => command == "Referrers",
+        Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }
 
 /// The `stopped` event's body for a stop of `reason`: `entry_pending`
-/// says a pause is the entry's, and a stop names the breakpoints it is for
-/// by the DAP ids `known` gave them, only those the client's latest
-/// request for their set holds, never one it replaced since the VM decided
-/// the stop.
+/// says a pause is the entry's, `restart_pending` a step's the restart's,
+/// and a stop names the breakpoints it is for by the DAP ids `known` gave
+/// them, only those the client's latest request for their set holds,
+/// never one it replaced since the VM decided the stop.
 fn stopped_body(
     reason: &StopReason,
     entry_pending: bool,
+    restart_pending: bool,
     known: &Breakpoints,
 ) -> protocol::StoppedEventBody {
     let mut body = protocol::StoppedEventBody {
@@ -1687,6 +2177,8 @@ fn stopped_body(
             body.reason = "breakpoint";
             body.hit_breakpoint_ids = named(&mut ids.iter());
         }
+        // DAP names the stop a restarted frame makes at its start so.
+        StopReason::Step if restart_pending => body.reason = "restart",
         StopReason::Step => body.reason = "step",
         StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
             body.reason = "function breakpoint";
@@ -1707,6 +2199,11 @@ fn stopped_body(
             body.reason = "exception";
             body.text = Some("halt".to_string());
             body.hit_breakpoint_ids = named(&mut exits.iter());
+        }
+        StopReason::ConditionFailed { ids, error } => {
+            body.reason = "breakpoint";
+            body.text = Some(error.clone());
+            body.hit_breakpoint_ids = named(&mut ids.iter());
         }
     }
     body
@@ -1868,6 +2365,95 @@ mod tests {
         assert_eq!(response_to(&mut peer, 2)["success"], true);
     }
 
+    fn logged(text: &str) -> Event {
+        Event::Logged {
+            breakpoint: BreakpointId(0),
+            text: text.to_string(),
+        }
+    }
+
+    /// The next `output` event the peer reads.
+    fn next_output(peer: &mut std::io::BufReader<TcpStream>) -> String {
+        loop {
+            let message = super::super::wire::read_message(peer, || usize::MAX)
+                .expect("a message")
+                .expect("the connection open");
+            if message["event"] == "output" {
+                return message["body"]["output"]
+                    .as_str()
+                    .expect("an output")
+                    .to_string();
+            }
+        }
+    }
+
+    /// A logpoint in a hot loop, logging far faster than its client reads
+    /// -- here a client that reads nothing meanwhile -- never ends the
+    /// session: past the droppable limit its lines are dropped, and once
+    /// the client read, one line says how many.
+    #[test]
+    fn a_logpoint_flood_drops_lines_and_keeps_the_session() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        harness.agent.request(1, request(1, "attach", json!({})));
+        for index in 0..100_000 {
+            harness.agent.vm_event(logged(&format!("at {index}")));
+        }
+        assert!(harness.agent.client.is_some(), "the session ended");
+        assert!(harness.agent.dropped_logs > 0, "nothing was dropped");
+        // Every line is either written or counted in a line that says so,
+        // some of which the flood itself wrote as the client's queue
+        // drained into the socket.
+        let reader = std::thread::spawn(move || {
+            let (mut kept, mut reported) = (0_u64, 0_u64);
+            while kept + reported < 100_000 {
+                let output = next_output(&mut peer);
+                match output.strip_suffix(" log lines dropped\n") {
+                    Some(count) => reported += count.parse::<u64>().expect("a count"),
+                    None => kept += 1,
+                }
+            }
+            (kept, reported)
+        });
+        let started = Instant::now();
+        while harness.agent.dropped_logs > 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "never reported"
+            );
+            harness.agent.report_dropped_logs();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (kept, reported) = reader.join().expect("the reader");
+        assert!(reported > 0 && kept > 0, "{kept} kept, {reported} dropped");
+        assert_eq!(kept + reported, 100_000);
+    }
+
+    /// A logpoint's line past `LOG_TEXT_LIMIT` characters is cut there,
+    /// and says so.
+    #[test]
+    fn a_long_log_line_is_cut() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        harness.agent.request(1, request(1, "attach", json!({})));
+        harness
+            .agent
+            .vm_event(logged(&"é".repeat(LOG_TEXT_LIMIT + 5)));
+        harness.agent.vm_event(logged(&"é".repeat(LOG_TEXT_LIMIT)));
+        let cut = next_output(&mut peer);
+        assert_eq!(
+            cut,
+            format!(
+                "{} [cut at {LOG_TEXT_LIMIT} characters]\n",
+                "é".repeat(LOG_TEXT_LIMIT)
+            )
+        );
+        assert_eq!(
+            next_output(&mut peer),
+            format!("{}\n", "é".repeat(LOG_TEXT_LIMIT))
+        );
+    }
+
     #[test]
     fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {
         let mut known = Breakpoints::default();
@@ -1878,14 +2464,14 @@ mod tests {
         let replaced = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
-        let body = to_value(stopped_body(&replaced, false, &known));
+        let body = to_value(stopped_body(&replaced, false, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");
 
         let standing = StopReason::Breakpoint {
             ids: vec![BreakpointId(1), BreakpointId(2)],
         };
-        let body = to_value(stopped_body(&standing, false, &known));
+        let body = to_value(stopped_body(&standing, false, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[1]]));
     }
 
@@ -1899,11 +2485,11 @@ mod tests {
         };
         // Sent again, unanswered: the client still holds the breakpoint.
         known.request_lines(&ModuleName::program("Loop"), vec![10]);
-        let body = to_value(stopped_body(&stop, false, &known));
+        let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[0]]));
         // Replaced by another line, unanswered: the stop names nothing.
         known.request_lines(&ModuleName::program("Loop"), vec![30]);
-        let body = to_value(stopped_body(&stop, false, &known));
+        let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");
     }
@@ -1916,18 +2502,101 @@ mod tests {
             caught: false,
             exits: Vec::new(),
         };
-        let body = to_value(stopped_body(&exception, false, &Breakpoints::default()));
+        let body = to_value(stopped_body(
+            &exception,
+            false,
+            false,
+            &Breakpoints::default(),
+        ));
         assert_eq!(body["reason"], "exception");
         assert_eq!(body["text"], "division by zero");
         assert_eq!(body["description"], "ZeroDivide");
         let halt = StopReason::Halt { exits: Vec::new() };
-        let body = to_value(stopped_body(&halt, false, &Breakpoints::default()));
+        let body = to_value(stopped_body(&halt, false, false, &Breakpoints::default()));
         assert_eq!(body["text"], "halt");
         let entry = to_value(stopped_body(
             &StopReason::Pause,
             true,
+            false,
             &Breakpoints::default(),
         ));
         assert_eq!(entry["reason"], "entry");
+        // The step a restart begins stops as the restart; any other stop
+        // keeps its own reason.
+        let restarted = to_value(stopped_body(
+            &StopReason::Step,
+            false,
+            true,
+            &Breakpoints::default(),
+        ));
+        assert_eq!(restarted["reason"], "restart");
+        let paused = to_value(stopped_body(
+            &StopReason::Pause,
+            false,
+            true,
+            &Breakpoints::default(),
+        ));
+        assert_eq!(paused["reason"], "pause");
+    }
+
+    /// A forced return's expression answered a withheld value: the agent
+    /// sends the forced return all the same, and answers the VM's refusal
+    /// in the VM's own words, so that no copy of them can drift. While
+    /// the expression runs, the stop counts as left: a `continue` is
+    /// refused, never queued to cross the forced return.
+    #[test]
+    fn a_forced_return_passes_the_vm_s_refusal_of_a_withheld_value_on() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        let agent = &mut harness.agent;
+        agent.request(1, request(1, "attach", json!({})));
+        agent.stopped = true;
+        agent.stop.begin(None);
+        agent.request(
+            1,
+            request(
+                2,
+                "nsNext/forceReturn",
+                json!({ "frameId": 1, "expression": "anything" }),
+            ),
+        );
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("Evaluate")
+        );
+        agent.request(1, request(3, "continue", json!({ "threadId": 1 })));
+        let refused = response_to(&mut peer, 3);
+        assert_eq!(refused["message"], "the program is running", "{refused}");
+
+        let withheld = ns_runtime::ValueDescription {
+            id: ns_runtime::ValueId(7),
+            label: "a Mirror".to_string(),
+            class_name: "Mirror".to_string(),
+            child_count: 0,
+            indexed: false,
+            withheld: true,
+            mark: None,
+        };
+        agent.vm_event(Event::Evaluated(ns_runtime::debugger::Evaluation::Value(
+            withheld,
+        )));
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("ForceReturn")
+        );
+        let reason = "the value is withheld (the VM's words)";
+        agent.vm_event(Event::Refused {
+            command: "ForceReturn".to_string(),
+            reason: reason.to_string(),
+        });
+        let answered = response_to(&mut peer, 2);
+        assert_eq!(answered["success"], false, "{answered}");
+        assert_eq!(answered["message"], reason, "{answered}");
+        // The program stays at its stop.
+        agent.request(1, request(4, "continue", json!({ "threadId": 1 })));
+        assert_eq!(
+            agent.pending.back().map(|pending| pending.command),
+            Some("Continue")
+        );
     }
 }

@@ -275,18 +275,50 @@ enum AfterSafepoint {
 /// goes on with after it, out of line: only a safepoint pays for it, and
 /// the run loop, whose size is held to a budget (`cargo xtask gates
 /// codegen`), keeps one call.
+///
+/// A debugger's abort of an evaluation unwinds to the evaluation's base,
+/// whose end leaves the frame below stopped at the slot it stood at and
+/// asks for the safepoint that serves the stop kept for it: that
+/// safepoint is taken here at once, before the frame runs another
+/// instruction -- as `evaluated` and an error's unwind switch to it with
+/// the request armed -- or the frame would fetch its patched slot again
+/// while no token lets it past, and request a stop that the kept stop's
+/// serving leaves pending for a later safepoint, in another frame.
 #[cold]
 #[inline(never)]
 fn take_safepoint(
     interpreter: &mut Interpreter,
     frame: &mut FrameRegisters,
     floor: usize,
-    at_loop_head: bool,
+    mut at_loop_head: bool,
 ) -> AfterSafepoint {
-    match interpreter.safepoint(floor) {
+    loop {
+        if let Some(after) = safepoint_once(interpreter, frame, floor, at_loop_head) {
+            return after;
+        }
+        // The unwind switched to the stopped frame, which stands at its
+        // slot, never at a loop head the backward jump that made the
+        // first safepoint left: that jump was the evaluation's, and
+        // counting it against the stopped body could switch the frame
+        // into machine code mid-body.
+        at_loop_head = false;
+    }
+}
+
+/// One safepoint of `take_safepoint`: what the loop goes on with, or
+/// `None` when an abort's unwind ended an evaluation, whose stop's
+/// safepoint is taken next.
+fn safepoint_once(
+    interpreter: &mut Interpreter,
+    frame: &mut FrameRegisters,
+    floor: usize,
+    at_loop_head: bool,
+) -> Option<AfterSafepoint> {
+    let after = match interpreter.safepoint(floor) {
         // A different frame is on top -- the running activation,
-        // suspended and resumed by the suspend stress mode, or the factory
-        // below it, whose initializer's push the debugger undid -- whose
+        // suspended and resumed by the suspend stress mode, the factory
+        // below it, whose initializer's push the debugger undid, or an
+        // expression the debugger pushed to evaluate above it -- whose
         // state the stretch wrote back before it left; it goes on
         // interpreted, as a frame resumed does.
         SafepointOutcome::Rebuilt => {
@@ -307,12 +339,31 @@ fn take_safepoint(
             interpreter.enter(|mutator| after_safepoint(mutator, frame, at_loop_head)),
         ),
         SafepointOutcome::Terminate => {
-            match interpreter.enter(|mutator| terminate_at_safepoint(mutator, frame, floor)) {
+            match interpreter.enter(|mutator| {
+                let signal = crate::debugger::termination(mutator);
+                unwind_at_safepoint(mutator, frame, floor, signal)
+            }) {
+                Some(result) => AfterSafepoint::Exit(result),
+                None if interpreter
+                    .enter(|mutator| crate::debugger::evaluation::has_ended(mutator)) =>
+                {
+                    return None;
+                }
+                None => AfterSafepoint::Run(None),
+            }
+        }
+        SafepointOutcome::Unwind => {
+            let started = interpreter.take_started_unwind();
+            match interpreter.enter(|mutator| {
+                let signal = started.signal(mutator);
+                unwind_at_safepoint(mutator, frame, floor, signal)
+            }) {
                 Some(result) => AfterSafepoint::Exit(result),
                 None => AfterSafepoint::Run(None),
             }
         }
-    }
+    };
+    Some(after)
 }
 
 /// The frame `run` goes on with once the safepoint is served, `frame` still
@@ -362,18 +413,24 @@ fn after_safepoint(
     })
 }
 
-/// The debugger terminated the run at the safepoint the stretch left
-/// `frame` for: the termination is raised in the top activation and
-/// handed to the one unwinder, as a leaf's termination is, so that every
-/// pending `ensure:` block runs on the way to the floor. Answers the run's
-/// result once the unwind popped the floor, or `None` with `frame` the
-/// block the unwind runs next, which the loop goes on with, interpreted.
+/// The debugger started an unwind at the safepoint the stretch left
+/// `frame` for, `signal` raised in the top activation and handed to the
+/// one unwinder, as a leaf's is, so that every pending `ensure:` block
+/// runs on its way: it terminated the run, which ends at the floor; it
+/// aborted an evaluation, whose base ends the unwind and leaves the frame
+/// it stood above stopped where it was; or it restarts a frame or forces
+/// it to return (`debugger::Served::Unwind`), which ends at that frame.
+/// Answers the run's result once the unwind popped the floor, or `None`
+/// with `frame` the frame the loop goes on with, interpreted: the block
+/// the unwind runs next, the stopped frame, the restarted one, or the one
+/// a forced return went on in.
 #[cold]
 #[inline(never)]
-fn terminate_at_safepoint(
-    mutator: &mut Mutator<'_>,
+fn unwind_at_safepoint<'gc>(
+    mutator: &mut Mutator<'gc>,
     frame: &mut FrameRegisters,
     floor: usize,
+    signal: Signal<'gc>,
 ) -> Option<HostResult> {
     let mut handoff = Handoff {
         activation: frame.activation,
@@ -383,7 +440,6 @@ fn terminate_at_safepoint(
         exit: None,
         resume_in_machine_code: false,
     };
-    let signal = crate::debugger::termination(mutator);
     match unwind(mutator, signal, floor, &mut handoff) {
         Transfer::Exited => Some(
             handoff
@@ -392,9 +448,14 @@ fn terminate_at_safepoint(
                 .expect("internal: an exit carries its result"),
         ),
         Transfer::Switched => {
-            // A termination's unwind switches only to an `ensure:` or
-            // `ifCurtailed:` block it pushed (`switch_to`), which starts
-            // interpreted: no frame it switches to resumes machine code.
+            // A block the unwind pushed starts interpreted, and so do the
+            // stopped and the restarted frame; a caller a forced return
+            // resumed may have stopped in machine code, whose words are the
+            // interpreter's at the call, and goes on interpreted too, as a
+            // caller resumed for a safepoint does.
+            if handoff.resume_in_machine_code {
+                mutator.heap.clear_compiled(handoff.activation);
+            }
             *frame =
                 FrameRegisters::of_activation(mutator, handoff.activation, handoff.program_counter);
             None
@@ -2726,6 +2787,9 @@ fn apply_continuation<'gc>(
             breakpoint::frame_left(mutator, None);
             return reexecute(mutator, floor, handoff);
         }
+        // An expression the debugger evaluated answered: out of line, as
+        // only a debugged program's evaluation returns this way.
+        Continuation::Evaluated => return evaluated(mutator, value, handoff),
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
             // step. Only a superclass clause's class is a value here, handed
@@ -2780,6 +2844,26 @@ fn return_to_suspended<'gc>(
     breakpoint::returning_to_suspended(mutator);
     mutator.resume_frame(sender);
     apply_continuation(mutator, then, counted, value, floor, handoff)
+}
+
+/// The block of an expression the debugger evaluated returned `value`:
+/// the value is recorded as the evaluation's answer and a stop asked for
+/// (`debugger::evaluation::returned`), and the loop switches to the frame
+/// below at the program counter it stopped at, without delivering
+/// anything to it -- it stands at no send -- so that the safepoint the
+/// switch takes, before that frame runs another instruction, re-enters
+/// the stop the evaluation was asked at. The frame goes on interpreted,
+/// as a frame whose instruction runs again does (`reexecute`).
+#[cold]
+#[inline(never)]
+fn evaluated<'gc>(
+    mutator: &mut Mutator<'gc>,
+    value: Value<'gc>,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let stopped = crate::debugger::evaluation::returned(mutator, value);
+    let program_counter = mutator.heap.activation_program_counter(stopped);
+    handoff.switch_to(mutator, stopped, program_counter)
 }
 
 /// Writes a callee's value into the send `caller` is stopped at, and resumes
@@ -3430,8 +3514,11 @@ fn unwind<'gc>(
                 return finish(mutator, target, value, floor, handoff);
             }
             // Where the target starts again is the unwinder's to decide, and
-            // it stored it; the loop resumes the target there.
-            UnwindOutcome::Restarted { target } => {
+            // it stored it; the loop resumes the target there. A frame an
+            // evaluation's error left stopped is resumed where it stopped,
+            // the safepoint it asked for taken first.
+            UnwindOutcome::Restarted { target }
+            | UnwindOutcome::EvaluationEnded { stopped: target } => {
                 let program_counter = mutator.heap.activation_program_counter(target);
                 return handoff.switch_to(mutator, target, program_counter);
             }

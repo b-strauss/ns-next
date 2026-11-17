@@ -8,33 +8,19 @@ use std::process::ExitCode;
 const FINGERPRINT_FILE: &str = "fingerprint";
 
 /// `ns-next shipped-sources`: the `.ns` sources this binary embeds, which
-/// `Kernel.ns`, the factories and the manifest are, in one of three forms --
-/// their fingerprint on one line (`fingerprint`), JSON on standard output
-/// (`json`), or written below `directory` in `core-library/`'s layout with a
-/// `fingerprint` file. A directory is written only when everything in it is
-/// one of these files, so a mistyped path never has its own files overwritten.
-pub(crate) fn execute(directory: Option<&Path>, fingerprint: bool, json: bool) -> ExitCode {
+/// `Kernel.ns`, the factories and the manifest are, in one of two forms --
+/// their fingerprint on one line (`fingerprint`), or written below
+/// `directory` in `core-library/`'s layout with a `fingerprint` file. A
+/// directory is written only when everything in it is one of these files,
+/// so a mistyped path never has its own files overwritten.
+pub(crate) fn execute(directory: Option<&Path>, fingerprint: bool) -> ExitCode {
     if fingerprint {
         println!("{}", ns_runtime::shipped_sources_fingerprint());
         return ExitCode::SUCCESS;
     }
-    if json {
-        let modules: Vec<serde_json::Value> = ns_runtime::shipped_source_files()
-            .iter()
-            .map(|file| {
-                serde_json::json!({ "name": file.name, "path": file.path, "text": file.text })
-            })
-            .collect();
-        let document = serde_json::json!({
-            "fingerprint": ns_runtime::shipped_sources_fingerprint(),
-            "modules": modules,
-        });
-        println!("{document}");
-        return ExitCode::SUCCESS;
-    }
     let Some(directory) = directory else {
         // clap's required group makes this unreachable.
-        eprintln!("error: shipped-sources needs a directory, --fingerprint or --json");
+        eprintln!("error: shipped-sources needs a directory or --fingerprint");
         return ExitCode::FAILURE;
     };
     match write(directory) {

@@ -41,8 +41,16 @@ pub(crate) enum SafepointOutcome {
     /// stack frame, whose state the loop reads again.
     Rebuilt,
     /// The debugger terminated the run, which the loop ends through the
-    /// unwinder from the top activation (`debugger::termination`).
+    /// unwinder from the top activation (`debugger::termination`), or
+    /// aborted an evaluation, whose base ends the same unwind
+    /// (`debugger::Served::Abort`).
     Terminate,
+    /// The debugger restarts a frame or forces it to return
+    /// (`debugger::Served::Unwind`): the loop unwinds from the top
+    /// activation with the signal the stop started
+    /// (`Interpreter::take_started_unwind`), as for `Terminate`, and the
+    /// unwind ends at that frame.
+    Unwind,
 }
 
 impl Interpreter {
@@ -97,22 +105,48 @@ impl Interpreter {
     /// Answers `SafepointOutcome::Rebuilt` when the running activation is
     /// a different stack frame and the loop must read its state again: the
     /// debugger undid an initializer's push to stop a step in its factory
-    /// (`debugger::Served::Rebuilt`), or the suspend stress mode rebuilt
+    /// (`debugger::Served::Rebuilt`) or pushed an evaluation above every
+    /// frame (`debugger::Served::Evaluate`), in every build, or the
+    /// suspend stress mode rebuilt
     /// the activation stack above `floor`, the floor of the run `vm::run`
     /// is in, every activation there suspended into its frame and the top
     /// one resumed -- never in a release build -- and
-    /// `SafepointOutcome::Terminate` when the debugger terminated the run.
+    /// `SafepointOutcome::Terminate` when the debugger terminated the run
+    /// or aborted an evaluation, and `SafepointOutcome::Unwind` when it
+    /// restarts a frame or forces one to return.
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        // Whether the pause stress mode's stop is kept for an evaluation
+        // its reader began, which this safepoint may serve.
+        #[cfg(debug_assertions)]
+        let in_stress_evaluation = self.stress_stop.is_some();
         let served = self.serve_debugger(floor);
-        if served == crate::debugger::Served::Terminate {
+        if matches!(
+            served,
+            crate::debugger::Served::Terminate | crate::debugger::Served::Abort
+        ) {
             return SafepointOutcome::Terminate;
+        }
+        if served == crate::debugger::Served::Unwind {
+            return SafepointOutcome::Unwind;
         }
         #[cfg(not(debug_assertions))]
         let _ = floor;
         #[cfg(debug_assertions)]
         let mut stressed = false;
+        // Whether the pause stress mode's stop pushed an evaluation, whose
+        // frame the loop reads as it reads a debugger's.
+        #[cfg(debug_assertions)]
+        let mut stress_evaluates = false;
+        // Neither stress mode stops at a safepoint of the pause stress
+        // mode's evaluations -- one within an evaluation, or the one its
+        // end asked for, which serves the kept stop: a stop there would
+        // nest an evaluation's stop in another's, and, where the schedule
+        // falls due at every safepoint, its evaluations' safepoints would
+        // make the next stop's before the program ran on, for ever.
+        #[cfg(debug_assertions)]
+        let at_stress_evaluation = in_stress_evaluation || self.stress_stop.is_some();
         // The pause stress mode's stop, where a debugger's pause stops:
         // first, before anything else here changes the stack or the heap.
         #[cfg(debug_assertions)]
@@ -123,19 +157,22 @@ impl Interpreter {
                 // the stack's words beside the traced size.
                 let stack_words = self.enter(|mutator| mutator.heap.activation_stack_top());
                 let paced_size = size_with_stack(traced_size, stack_words, PAUSE_STACK_WEIGHT);
-                if self
-                    .stress_pause
-                    .as_mut()
-                    .is_some_and(|stress| stress.due(paced_size))
+                if !at_stress_evaluation
+                    && self
+                        .stress_pause
+                        .as_mut()
+                        .is_some_and(|stress| stress.due(paced_size))
                 {
-                    self.stop_for_stress(floor);
+                    stress_evaluates = self.stop_for_stress(floor);
                 }
                 stressed = true;
             }
             // The step stress mode's stop, which begins a burst of steps,
             // where the pause stress mode's stops.
             if self.stress_step.is_some() {
-                self.step_for_stress(floor, traced_size);
+                if !at_stress_evaluation && !stress_evaluates {
+                    self.step_for_stress(floor, traced_size);
+                }
                 stressed = true;
             }
             // The breakpoint stress mode's patches, next, before an
@@ -147,8 +184,8 @@ impl Interpreter {
             }
         }
         // The debugger rebuilds the stack when a step stops in a factory
-        // by undoing its initializer's push, and so does the debug build's
-        // suspend stress mode.
+        // by undoing its initializer's push and when it pushes an
+        // evaluation, and so does the debug build's suspend stress mode.
         #[cfg_attr(
             not(debug_assertions),
             allow(
@@ -156,7 +193,14 @@ impl Interpreter {
                 reason = "after the debugger, only the debug build's suspend stress mode rebuilds the stack"
             )
         )]
-        let mut rebuilt = served == crate::debugger::Served::Rebuilt;
+        let mut rebuilt = matches!(
+            served,
+            crate::debugger::Served::Rebuilt | crate::debugger::Served::Evaluate
+        );
+        #[cfg(debug_assertions)]
+        {
+            rebuilt |= stress_evaluates;
+        }
         // Under the invalidate stress mode, once optimized code spent its
         // countdown, the copies installed at earlier safepoints are freed,
         // but a backing-off body's, before this one installs the next

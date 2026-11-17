@@ -7,6 +7,7 @@
 
 pub(crate) mod capture;
 pub(crate) mod control_flow;
+pub(crate) mod evaluation;
 pub(crate) mod lower;
 pub(crate) mod primitive_method;
 pub(crate) mod reference;

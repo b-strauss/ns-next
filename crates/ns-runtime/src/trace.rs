@@ -55,9 +55,11 @@ impl Trace for ActivationKind<'_> {
 impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            Continuation::Deliver | Continuation::Reexecute => {}
+            Continuation::Deliver | Continuation::Reexecute | Continuation::Evaluated => {}
             Continuation::NestedClass(state) => state.trace(tracer),
-            Continuation::Unwind(pending) => pending.trace(tracer),
+            Continuation::Unwind(pending) | Continuation::ExitEvaluated(pending) => {
+                pending.trace(tracer)
+            }
             Continuation::VmErrorSignalled(error) => {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);
@@ -82,8 +84,8 @@ impl Trace for PendingUnwind<'_> {
             tracer.frame(target);
         }
         match action {
-            UnwindAction::Return(value) => tracer.value(value),
-            UnwindAction::Restart => {}
+            UnwindAction::Return(value) | UnwindAction::ForceReturn(value) => tracer.value(value),
+            UnwindAction::Restart | UnwindAction::RestartFrame => {}
             UnwindAction::Terminate(error) => {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);

@@ -16,12 +16,14 @@ use crate::Value;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction};
 use crate::debugger::BreakpointId;
 use crate::debugger::breakpoints::{
-    AfterPast, CountedReach, Hits, PastOnce, PendingStop, Standing, address,
+    AfterPast, Conditional, CountedReach, Hits, PastOnce, PendingStop, ReachKind, Standing, address,
 };
 use crate::debugger::stepping::{self, Leaving};
 use crate::heap::{ActivationReference, FrameReference};
 use crate::interpreter::locals::filled_own_slot;
+use crate::interpreter::unwind::UnwindOutcome;
 use crate::interpreter::{Mutator, Signal};
+use crate::types::PendingUnwind;
 
 /// What the `Breakpoint` arm goes on with.
 pub(crate) enum BreakpointDecision {
@@ -41,7 +43,10 @@ pub(crate) enum BreakpointDecision {
 /// breakpoint stress mode's patch only counts its hit. Each breakpoint
 /// the debugger set there counts the reach as a hit and stops only where
 /// its hit condition holds; a reach none stops for, and no step or run to
-/// cursor, goes past the slot as a resumed stop's token lets it. The
+/// cursor, goes past the slot as a resumed stop's token lets it. A
+/// breakpoint with a condition or a log is neither counted nor decided
+/// here, where no code runs: the reach leaves for the safepoint, which
+/// evaluates it in this frame first (`debugger::conditions`). The
 /// token a resumed stop set lets the frame past the slot it stopped at
 /// once, uncounted; this arm consumes it when it names this slot, and
 /// drops it otherwise, since the activation it names may be popped from
@@ -58,6 +63,13 @@ pub(crate) fn reached(
     index: usize,
 ) -> BreakpointDecision {
     let code = mutator.heap.activation_code(activation);
+    // An evaluation goes past every breakpoint, counting none, as
+    // IntelliJ's evaluation skips them -- and before the tokens are taken:
+    // they belong to the stopped frame below, which fetches its slot again
+    // once the evaluation is over.
+    if mutator.breakpoints.evaluating() {
+        return BreakpointDecision::Execute(code.original(index));
+    }
     let body = address(&code);
     let earlier = mutator
         .breakpoints
@@ -103,7 +115,7 @@ pub(crate) fn reached(
         }
         step_stops |= one_shot.stops;
     }
-    let (hits, after, passed) = hits_of(
+    let (hits, after, passed, conditions) = hits_of(
         mutator,
         activation,
         &code,
@@ -111,7 +123,7 @@ pub(crate) fn reached(
         standing,
         earlier.as_ref(),
     );
-    if hits.only_a_step() && !step_stops {
+    if hits.only_a_step() && !step_stops && conditions.is_empty() {
         // What a stop would owe, owed all the same: a method's exit at a
         // non-local return counted here is not counted again where the
         // return arrives.
@@ -127,6 +139,7 @@ pub(crate) fn reached(
         hits,
         step_stops,
         passed,
+        conditions,
     });
     BreakpointDecision::Stop
 }
@@ -150,17 +163,17 @@ fn gone_past(
             // The entries the stop before was for are passed, so that a
             // fetch again after this stop was not made stops at none.
             let mut passed = standing.entries;
-            let mut exits = Vec::new();
-            if exit_is_taken(mutator, activation, code, index) {
-                for id in standing.exits {
-                    if mutator.breakpoints.count_hit(id) {
-                        exits.push(id);
-                    } else {
-                        passed.push(id);
-                    }
-                }
-            }
-            if !exits.is_empty() {
+            let mut conditions = Vec::new();
+            let exits = if exit_is_taken(mutator, activation, code, index) {
+                let mut decided = Decided {
+                    passed: &mut passed,
+                    conditions: &mut conditions,
+                };
+                counted(mutator, standing.exits, ReachKind::Exit, None, &mut decided)
+            } else {
+                Vec::new()
+            };
+            if !exits.is_empty() || !conditions.is_empty() {
                 mutator.breakpoints.request_stop(PendingStop {
                     slot: PastOnce {
                         activation,
@@ -174,6 +187,7 @@ fn gone_past(
                     },
                     step_stops: false,
                     passed,
+                    conditions,
                 });
                 return BreakpointDecision::Stop;
             }
@@ -199,7 +213,10 @@ fn gone_past(
 /// whether or not it stops, is not counted again where the return
 /// arrives. `earlier` is the reach of this slot by this frame whose stop
 /// was not made, whose breakpoints are not counted again. Answers too the
-/// breakpoints counted that the frame does not stop for.
+/// breakpoints counted that the frame does not stop for, and those left
+/// for the safepoint to evaluate the condition or log of. A method's
+/// entry left so may stop, so the exit standing with it is owed past it
+/// as for an entry that stops.
 fn hits_of(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
@@ -207,7 +224,7 @@ fn hits_of(
     index: usize,
     standing: Standing,
     earlier: Option<&CountedReach>,
-) -> (Hits, AfterPast, Vec<BreakpointId>) {
+) -> (Hits, AfterPast, Vec<BreakpointId>, Vec<Conditional>) {
     let Standing {
         lines,
         entries,
@@ -216,8 +233,17 @@ fn hits_of(
         ..
     } = standing;
     let mut passed = Vec::new();
-    let lines = counted(mutator, lines, earlier, &mut passed);
-    let entries = counted(mutator, entries, earlier, &mut passed);
+    let mut conditions = Vec::new();
+    let mut decided = Decided {
+        passed: &mut passed,
+        conditions: &mut conditions,
+    };
+    let lines = counted(mutator, lines, ReachKind::Line, earlier, &mut decided);
+    let entries = counted(mutator, entries, ReachKind::Entry, earlier, &mut decided);
+    let entries_wait = decided
+        .conditions
+        .iter()
+        .any(|conditional| conditional.kind == ReachKind::Entry);
     let exits = if !exits.is_empty() && exit_is_taken(mutator, activation, code, index) {
         exits
     } else {
@@ -225,7 +251,7 @@ fn hits_of(
     };
     let after = if exits.is_empty() {
         AfterPast::Nothing
-    } else if !entries.is_empty() {
+    } else if !entries.is_empty() || entries_wait {
         AfterPast::ExitDue
     } else if matches!(code.instruction(index), Instruction::NonLocalReturn { .. }) {
         AfterPast::ExitReported
@@ -235,7 +261,7 @@ fn hits_of(
     let exits = if after == AfterPast::ExitDue {
         Vec::new()
     } else {
-        counted(mutator, exits, earlier, &mut passed)
+        counted(mutator, exits, ReachKind::Exit, earlier, &mut decided)
     };
     (
         Hits {
@@ -246,31 +272,47 @@ fn hits_of(
         },
         after,
         passed,
+        conditions,
     )
 }
 
-/// Of `ids`, standing at a slot a frame reached, those it stops for: each
-/// counts the reach as a hit and stops where its hit condition holds, the
-/// others added to `passed` -- but one `earlier`, the reach whose stop was
-/// not made, counted already counts no more, and stops only if it held
-/// then.
+/// Where `counted` puts the breakpoints a reach does not stop for here.
+struct Decided<'lists> {
+    /// Those counted whose hit condition did not hold.
+    passed: &'lists mut Vec<BreakpointId>,
+    /// Those whose condition or log the safepoint evaluates first.
+    conditions: &'lists mut Vec<Conditional>,
+}
+
+/// Of `ids`, standing at a slot a frame reached as `kind`, those it stops
+/// for: each counts the reach as a hit and stops where its hit condition
+/// holds, the others added to `decided.passed` -- but one with a condition
+/// or a log, which is left to the safepoint uncounted
+/// (`decided.conditions`), and one `earlier`, the reach whose stop was not
+/// made, decided already, which counts and evaluates no more, and stops
+/// only if it held then.
 fn counted(
     mutator: &mut Mutator<'_>,
     ids: Vec<BreakpointId>,
+    kind: ReachKind,
     earlier: Option<&CountedReach>,
-    passed: &mut Vec<BreakpointId>,
+    decided: &mut Decided<'_>,
 ) -> Vec<BreakpointId> {
     let mut stopping = Vec::new();
     for id in ids {
         let holds = match earlier {
             Some(reach) if reach.held.contains(&id) => true,
             Some(reach) if reach.passed.contains(&id) => false,
+            _ if mutator.breakpoints.is_conditional(id) => {
+                decided.conditions.push(Conditional { id, kind });
+                continue;
+            }
             _ => mutator.breakpoints.count_hit(id),
         };
         if holds {
             stopping.push(id);
         } else {
-            passed.push(id);
+            decided.passed.push(id);
         }
     }
     stopping
@@ -300,25 +342,56 @@ fn exit_is_taken(
 }
 
 /// Whether the debugger hears of the frames an unwind pops: only a step in
-/// progress and a method breakpoint do. The unwinder asks once, as it
-/// starts or carries on; a pop's report can start a step only when one of
-/// them already holds, so the answer stands for the whole unwind.
+/// progress, a method breakpoint and an evaluation, whose base ends every
+/// unwind from within it, do. The unwinder asks once, as it starts or
+/// carries on; a pop's report can start a step only when one of them
+/// already holds, and nothing an unwind pops starts an evaluation, so the
+/// answer stands for the whole unwind.
 pub(crate) fn follows_unwinds(mutator: &Mutator<'_>) -> bool {
-    mutator.stepping.is_some() || mutator.breakpoints.has_method_breakpoints()
+    mutator.stepping.is_some() || mutator.breakpoints.follows_unwinds()
 }
 
-/// The unwinder is about to pop `top`, for an unwind other than a
-/// termination the debugger follows (`follows_unwinds`): the method
-/// breakpoints whose method it is a body of, whose exit the pop is
-/// (`left_by_unwind`). Empty while no method breakpoint is set.
-pub(crate) fn leaving_by_unwind(
-    mutator: &Mutator<'_>,
+/// The unwinder is about to pop `top`, for `pending`, an unwind other
+/// than a termination the debugger follows (`follows_unwinds`): the
+/// method breakpoints whose method it is a body of, whose exit the pop is,
+/// decided in `top` while it is still on the stack -- each counted, a
+/// condition or a log evaluated first (`conditions::decide_unwound_exits`)
+/// -- the ones to report where the program goes on (`left_by_unwind`),
+/// with the unwind to carry on; or, once an evaluation of theirs is
+/// begun, the outcome the run loop goes on with, the unwind raised again
+/// when it returns. None while no method breakpoint is set, and while an
+/// evaluation runs, which counts no breakpoint.
+pub(crate) fn leaving_by_unwind<'gc>(
+    mutator: &mut Mutator<'gc>,
     top: ActivationReference,
-) -> Vec<BreakpointId> {
-    if !mutator.breakpoints.has_method_breakpoints() {
-        return Vec::new();
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
+        return Ok((Vec::new(), pending));
     }
-    exits_of(mutator, top)
+    decide_exits(mutator, top, pending)
+}
+
+/// The exits of the method breakpoints whose method `top` runs, decided
+/// in it before an unwind pops it or returns from it -- or the decision
+/// an evaluation's return goes on with (`conditions::decide_unwound_exits`).
+#[cold]
+#[inline(never)]
+fn decide_exits<'gc>(
+    mutator: &mut Mutator<'gc>,
+    top: ActivationReference,
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    let going_on = mutator.breakpoints.deciding_unwound_exit();
+    let ids = if going_on {
+        Vec::new()
+    } else {
+        exits_of(mutator, top)
+    };
+    if ids.is_empty() && !going_on {
+        return Ok((ids, pending));
+    }
+    crate::debugger::conditions::decide_unwound_exits(mutator, top, ids, pending)
 }
 
 /// The method breakpoints whose method `activation` runs.
@@ -330,51 +403,59 @@ fn exits_of(mutator: &Mutator<'_>, activation: ActivationReference) -> Vec<Break
 }
 
 /// The unwinder popped a frame of the methods of the method breakpoints
-/// `ids` (`leaving_by_unwind`): each counts the exit as a hit, and the
-/// exit of those whose hit condition holds is reported where the program
-/// goes on (`stepping::method_left`).
+/// `ids`, the exits `leaving_by_unwind` decided hold: each is reported
+/// where the program goes on (`stepping::method_left`).
 #[cold]
 #[inline(never)]
 pub(crate) fn left_by_unwind(mutator: &mut Mutator<'_>, ids: Vec<BreakpointId>) {
-    let ids = mutator.breakpoints.count_hits(ids);
-    if !ids.is_empty() {
-        stepping::method_left(mutator, ids, Leaving::Popped);
-    }
+    stepping::method_left(mutator, ids, Leaving::Popped);
 }
 
-/// A return's unwind arrived at `home`, the top frame, whose frame is
-/// `frame`, and returns from it to its caller: if a method breakpoint
-/// names its method, and the non-local return that began the unwind did
-/// not count the exit already, each such breakpoint counts it as a hit,
-/// and the exit of those whose hit condition holds is reported where the
-/// program goes on, the caller's return point (`stepping::method_left`).
+/// A return's unwind, `pending`, arrived at `home`, the top frame, whose
+/// frame is `frame`, and returns from it to its caller: if a method
+/// breakpoint names its method, and the non-local return that began the
+/// unwind did not count the exit already, its exits are decided in `home`
+/// as `leaving_by_unwind` decides them, and those that hold are answered,
+/// to be reported where the program goes on (`returned_by_unwind`).
 pub(crate) fn returning_by_unwind<'gc>(
     mutator: &mut Mutator<'gc>,
     home: ActivationReference,
     frame: FrameReference<'gc>,
-) {
-    if !mutator.breakpoints.has_method_breakpoints() {
-        return;
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    if !mutator.breakpoints.has_method_breakpoints() || mutator.breakpoints.evaluating() {
+        return Ok((Vec::new(), pending));
     }
-    report_return(mutator, home, frame);
+    decide_return(mutator, home, frame, pending)
 }
 
-/// `returning_by_unwind`'s report, out of line.
+/// `returning_by_unwind`'s decision, out of line.
 #[cold]
 #[inline(never)]
-fn report_return<'gc>(
+fn decide_return<'gc>(
     mutator: &mut Mutator<'gc>,
     home: ActivationReference,
     frame: FrameReference<'gc>,
-) {
-    if mutator
-        .breakpoints
-        .returned_home_reported(&mutator.heap, frame)
+    pending: PendingUnwind<'gc>,
+) -> Result<(Vec<BreakpointId>, PendingUnwind<'gc>), UnwindOutcome<'gc>> {
+    if !mutator.breakpoints.deciding_unwound_exit()
+        && mutator
+            .breakpoints
+            .returned_home_reported(&mutator.heap, frame)
     {
-        return;
+        return Ok((Vec::new(), pending));
     }
-    let ids = exits_of(mutator, home);
-    let ids = mutator.breakpoints.count_hits(ids);
+    decide_exits(mutator, home, pending)
+}
+
+/// The exits `returning_by_unwind` decided hold at `home`, reported where
+/// the program goes on, the caller's return point
+/// (`stepping::method_left`).
+pub(crate) fn returned_by_unwind(
+    mutator: &mut Mutator<'_>,
+    home: ActivationReference,
+    ids: Vec<BreakpointId>,
+) {
     if !ids.is_empty() {
         stepping::method_left(mutator, ids, Leaving::Returning(home));
     }
@@ -385,21 +466,23 @@ fn report_return<'gc>(
 /// there, where a step into stops it at the safepoint without running
 /// its slot, each counting the reach as a hit; and what going past the
 /// stop owes. The step's stop is made whatever the hit conditions say,
-/// and names only the breakpoints whose condition holds.
+/// and names only the breakpoints whose condition holds. Answers too the
+/// breakpoints counted that do not hold, and those with a condition or a
+/// log, left uncounted for the safepoint to decide in the pushed frame
+/// before it makes the step's stop (`conditions::Deciding::at_push`).
 pub(crate) fn standing_hits(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
-) -> (Hits, AfterPast) {
+) -> (Hits, AfterPast, Vec<BreakpointId>, Vec<Conditional>) {
     let code = mutator.heap.activation_code(activation);
     let index = mutator.heap.activation_program_counter(activation);
     if !code.is_patched(index) {
-        return (Hits::default(), AfterPast::Nothing);
+        return (Hits::default(), AfterPast::Nothing, Vec::new(), Vec::new());
     }
     let standing = mutator.breakpoints.kinds_at(address(&code), index);
     // The stop is the step's whatever the hits say, and lets the frame
     // past the slot once: nothing it passed is fetched again.
-    let (hits, after, _) = hits_of(mutator, activation, &code, index, standing, None);
-    (hits, after)
+    hits_of(mutator, activation, &code, index, standing, None)
 }
 
 /// The run loop popped a frame and goes on otherwise than by handing its

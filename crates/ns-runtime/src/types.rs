@@ -280,6 +280,14 @@ pub enum Binding {
     /// (`docs/design/core-library.md`, "The VM mirror is the whole Rust
     /// boundary").
     MirrorSend,
+    /// A variable of the frame a debugger's evaluation stands in, by its
+    /// index in the evaluation's frame variables
+    /// (`resolver::FrameVariable`). Recorded only by
+    /// `resolver::resolve_evaluation`, so no module carries it: an
+    /// expression is compiled as a block whose outer frame is the stopped
+    /// frame, and reaches the variable where that frame keeps it
+    /// (`docs/design/debugger.md`, decision 8).
+    FrameVariable(u16),
 }
 
 pub struct ResolvedModule {
@@ -432,6 +440,23 @@ pub enum Continuation<'gc> {
     /// applied as before, and control then goes to the sender, resumed in
     /// turn. Boxed, as every continuation that carries state is.
     ReturnToSuspended(Box<ReturnToSuspended<'gc>>),
+    /// The block of an expression the debugger evaluates at a stop
+    /// returned (`debugger::evaluation`): its value is the evaluation's
+    /// answer, which the stop it was evaluated at serves, re-entered at
+    /// the safepoint the return asks for before the frame below runs
+    /// another instruction (`vm::evaluated`). The frame below stands at
+    /// no send, so nothing is delivered to it. The activation is the
+    /// evaluation's base, which ends the handler search and every unwind
+    /// from above (`docs/design/debugger.md`, "Evaluation"). No image is
+    /// written while an evaluation runs, so it is never encoded.
+    Evaluated,
+    /// The block of a method breakpoint's condition or log expression,
+    /// evaluated in a frame an unwind is about to pop -- the method's exit
+    /// by an unwind -- returned (`debugger::conditions::exit_answered`):
+    /// its value decides the exit, and the unwind it interrupted goes on,
+    /// raised again as `Unwind` raises it. An evaluation's base, as
+    /// `Evaluated`'s is.
+    ExitEvaluated(Box<PendingUnwind<'gc>>),
 }
 
 /// What a resumed activation returns to when its sender is suspended
@@ -475,6 +500,14 @@ pub enum UnwindAction<'gc> {
     /// runs every pending `ensure:` and `ifCurtailed:` block down to the
     /// run's floor, and the run then leaves with this error.
     Terminate(NewspeakError<'gc>),
+    /// The debugger's restart of a frame (`Command::RestartFrame`): the
+    /// target, of any kind, runs again from its start, its named
+    /// temporaries `nil` again (`interpreter::unwind`, `restart_frame`).
+    RestartFrame,
+    /// The debugger's forced return of a frame (`Command::ForceReturn`):
+    /// the target, of any kind, returns this value to its sender -- an
+    /// initializer its receiver, whatever the value.
+    ForceReturn(Value<'gc>),
 }
 
 /// A nested class being created for one enclosing object
