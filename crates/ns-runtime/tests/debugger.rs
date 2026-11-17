@@ -13430,6 +13430,82 @@ mod evaluation {
         assert_eq!(set_answer(&event), "5");
         assert_eq!(answer, 5);
     }
+
+    /// A loop that sends `vectored` without end, whose `count` a block
+    /// captures and writes, so that it lives in the method's indirection
+    /// vector: the only safepoint in `vectored` is its push, which stands
+    /// before its `MakeVector`.
+    const VECTORED_FOREVER: &str = indoc! {"
+        class VectoredForever = Object new () (
+          public run = (
+            [true] whileTrue: [self vectored].
+            ^0
+          )
+          vectored = (
+            | count ::= 1. |
+            [count:: count + 1] value.
+            ^count
+          )
+        ) : ()
+    "};
+
+    /// What the evaluations and the assignments of `count` answer in a
+    /// `vectored` activation stopped before its `MakeVector`, found by
+    /// pausing the loop until the pause lands at that push: the variables
+    /// view's `count`, `count` evaluated, `count:: 5` evaluated and
+    /// `SetVariable` of `count`.
+    fn before_the_vector(lowering: Lowering) -> (String, Evaluation, String, String) {
+        let (mut interpreter, instance) = instance_of(VECTORED_FOREVER, lowering);
+        interpreter.set_jit_enabled(false);
+        let remote = interpreter.attach_debugger();
+        let agent = thread::spawn(move || {
+            let answer = panic::catch_unwind(AssertUnwindSafe(|| {
+                for _ in 0..1000 {
+                    thread::sleep(Duration::from_millis(1));
+                    remote.pause();
+                    expect_paused(&remote);
+                    let frames = stack_trace(&remote);
+                    if frames[0].name == "VectoredForever>>vectored"
+                        && frames[0].program_counter == 0
+                    {
+                        let shown = variables(&remote, Command::Variables { frame: 0 });
+                        let shown = value_of(&shown, "count").label.clone();
+                        let read = evaluate(&remote, 0, "count");
+                        let assigned = refusal(&remote, 0, "count:: 5");
+                        let set = set_refusal(&remote, 0, "count", "5");
+                        return (shown, read, assigned, set);
+                    }
+                    continue_stopped(&remote);
+                }
+                panic!("no pause landed at the push of vectored");
+            }));
+            remote.send(Command::Terminate);
+            (answer, remote)
+        });
+        let result = run(&mut interpreter, &instance);
+        let (answer, remote) = agent.join().expect("the remote's thread");
+        drop(remote);
+        assert_terminated(result);
+        answer.unwrap_or_else(|failure| panic::resume_unwind(failure))
+    }
+
+    /// A vector variable read before its frame made its vector answers
+    /// nil, as the variables view shows it, and an assignment to it --
+    /// evaluated or through `SetVariable` -- is refused: the value would
+    /// have nowhere to live, and a vector the debugger made would be
+    /// replaced by the frame's own `MakeVector`. Only the optimized
+    /// lowering keeps a variable in a vector.
+    #[test]
+    fn a_vector_variable_before_its_vector_reads_nil_and_refuses_assignment() {
+        let (shown, read, assigned, set) = before_the_vector(Lowering::Optimized);
+        assert_eq!(shown, "nil");
+        match read {
+            Evaluation::Value(value) => assert_eq!(value.label, "nil"),
+            other => panic!("count was expected to answer nil, not {other:?}"),
+        }
+        assert_eq!(assigned, "count does not exist yet at this point");
+        assert_eq!(set, "count does not exist yet at this point");
+    }
 }
 
 /// Conditional breakpoints and logpoints, decided by the VM

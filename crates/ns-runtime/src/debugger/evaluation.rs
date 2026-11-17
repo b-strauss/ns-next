@@ -24,7 +24,7 @@ use super::metadata::again::{declaration_chain, module_name};
 use super::metadata::{BodyMetadata, VariablePlace};
 use super::stack::{self, OuterFrame, StackFrame};
 use super::values::{Mark, used_labels};
-use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, RETURN_FROM_AN_EVALUATION, Stop};
+use super::{CAPTURED, NO_SUCH_FRAME, NOT_ASSIGNABLE, NOT_MADE, RETURN_FROM_AN_EVALUATION, Stop};
 use crate::bytecode::{CompiledCode, may_have_run};
 use crate::heap::{ActivationReference, NewClosure};
 use crate::interpreter::{
@@ -278,6 +278,7 @@ fn compile_with(
         if message == RETURN_FROM_AN_EVALUATION
             || message.ends_with(NOT_ASSIGNABLE)
             || message.ends_with(CAPTURED)
+            || message.ends_with(NOT_MADE)
         {
             message
         } else {
@@ -301,7 +302,9 @@ fn compile_with(
 /// unless a block may already hold a copy of it, which the assignment
 /// would leave stale. Where that lies is decided by the variable's place:
 ///
-/// - a vector variable's copies share its slot, and it is assigned;
+/// - a vector variable's copies share its slot, and it is assigned -- but
+///   not before the frame that holds its vector made it, where it does
+///   not exist yet (`stack::vector_not_made`);
 /// - a register of the frame's own body is copied by the `MakeClosure`s
 ///   its entry names, and refused once one of them may have run before the
 ///   frame's program counter (`bytecode::may_have_run`);
@@ -330,6 +333,9 @@ fn assignabilities(
         .map(|entry| {
             if !entry.assignable {
                 return Assignability::NotAssignable;
+            }
+            if stack::vector_not_made(&mutator.heap, frame, entry.place) {
+                return Assignability::NotMade;
             }
             let captured = match entry.place {
                 VariablePlace::Vector { .. } => false,

@@ -3794,6 +3794,20 @@ no longer compiles to, a top-level frame -- and when it does not compile:
 `"the expression does not compile: <message>"`, `"<name> is not
 assignable"` or `"a ^ cannot leave an evaluation"`.
 
+- **A vector not made yet.** A frame stopped at its push stands before
+  its `MakeVector`, its vector's register still nil. A vector variable is
+  in scope from its body's start and nil until written, so the variables
+  view shows it nil, and so does the evaluation: `LoadVector` answers nil
+  for a nil holder, in the cold path its error took
+  (`interpreter::locals::load_vector`; machine code exits for every holder
+  that is no `Array`), a case only a block an evaluation made can reach.
+  An assignment to it there -- evaluated or through `SetVariable` -- is
+  refused, `"<name> does not exist yet at this point"`, decided where a
+  copy's refusal is (`Assignability::NotMade`, `stack::vector_not_made`):
+  the value would have nowhere to live, and a vector the debugger made
+  would be replaced by the frame's own `MakeVector`
+  (`a_vector_variable_before_its_vector_reads_nil_and_refuses_assignment`).
+
 - **Where it lies.** The expression's activation is pushed above every
   live frame's whole register window (`Mutator::push_step`, which lays
   every activation that does not take a send's own arguments above the

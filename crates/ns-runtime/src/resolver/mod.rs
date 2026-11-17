@@ -48,6 +48,12 @@ pub(crate) enum Assignability {
     /// a captured variable"): it declares a setter, so an assignment names
     /// it, and is refused.
     Captured,
+    /// A vector variable whose frame has not made its vector yet -- stopped
+    /// before its `MakeVector` (`docs/design/debugger.md`, "Evaluation"):
+    /// it declares a setter, so an assignment names it, and is refused,
+    /// since the value has nowhere to live, and a vector the assignment
+    /// made would be replaced by the frame's own `MakeVector`.
+    NotMade,
 }
 
 /// What an expression evaluated in a stopped frame is resolved against
@@ -526,6 +532,9 @@ impl Resolver<'_> {
             {
                 Some((_, variable)) if variable.assignability == Assignability::Captured => {
                     Err(format!("{name} {}", crate::debugger::CAPTURED))
+                }
+                Some((_, variable)) if variable.assignability == Assignability::NotMade => {
+                    Err(format!("{name} {}", crate::debugger::NOT_MADE))
                 }
                 Some((position, _)) => Ok(frame_variable_index(position)),
                 None => refusal(),

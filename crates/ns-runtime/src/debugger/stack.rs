@@ -892,6 +892,36 @@ pub(crate) fn frame_values<'gc>(
     Some((shipped, read))
 }
 
+/// Whether the variable at `place` of `stack_frame` is a vector variable
+/// whose vector does not exist yet: its holder, read as the variables view
+/// reads it, is nil, the frame stopped before its `MakeVector`. A holder
+/// not available is no such case -- the variable lives nowhere any more.
+pub(crate) fn vector_not_made(
+    heap: &Heap<'_>,
+    stack_frame: &StackFrame,
+    place: VariablePlace,
+) -> bool {
+    let VariablePlace::Vector { vector, .. } = place else {
+        return false;
+    };
+    let code = code(heap, stack_frame);
+    let frame = stack_frame.read(heap);
+    let program_counter = u32::try_from(frame.program_counter(heap))
+        .expect("internal: a program counter fits its frame word");
+    let tainted = code.tainted_before(program_counter).to_vec();
+    let reader = Reader {
+        heap,
+        frame,
+        code: &code,
+        tainted: &tainted,
+    };
+    let holder = match vector {
+        VectorHolder::Register(register) => reader.own(register),
+        VectorHolder::Outer { hops, register } => reader.outer(hops, register),
+    };
+    holder.is_some_and(|holder| holder.is_nil())
+}
+
 /// Whether the body `code` belongs to a shipped module, decided by the
 /// code alone: by the registered mixin one of whose members' families
 /// holds it -- a method, an initializer or a superclass clause, or a

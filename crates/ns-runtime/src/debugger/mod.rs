@@ -98,6 +98,12 @@ pub(crate) const NOT_ASSIGNABLE: &str = "is not assignable";
 /// (`docs/design/debugger.md`, "Assigning a captured variable").
 pub(crate) const CAPTURED: &str = "is captured by a block made before this point";
 
+/// What follows a variable's name in the refusal of an assignment to a
+/// vector variable whose frame has not made its vector yet:
+/// `"<name> does not exist yet at this point"` (`docs/design/debugger.md`,
+/// "Evaluation").
+pub(crate) const NOT_MADE: &str = "does not exist yet at this point";
+
 /// The VM's end of an attached debugger, held by its `Interpreter`.
 pub(crate) struct Debugger {
     commands: Receiver<Command>,

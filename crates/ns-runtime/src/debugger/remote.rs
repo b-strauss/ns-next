@@ -161,7 +161,9 @@ pub enum Command {
     /// core library, a frame whose source is not known, an expression
     /// that does not compile, or one that assigns a variable a block may
     /// already hold a copy of (`docs/design/debugger.md`, "Assigning a
-    /// captured variable").
+    /// captured variable") or a vector variable whose frame has not made
+    /// its vector yet (`"<name> does not exist yet at this point"`; "A
+    /// vector not made yet").
     Evaluate { frame: usize, expression: String },
     /// Sets the variable `name` of the frame at index `frame` of the stack
     /// trace to what `expression`, one expression, answers, evaluated as
@@ -173,7 +175,9 @@ pub enum Command {
     /// variable of the frame -- `"<name> is not assignable"` -- and a
     /// variable a block may already hold a copy of -- `"<name> is captured
     /// by a block made before this point"` (`docs/design/debugger.md`,
-    /// "Assigning a captured variable").
+    /// "Assigning a captured variable") -- and a vector variable whose
+    /// vector does not exist yet -- `"<name> does not exist yet at this
+    /// point"`.
     SetVariable {
         frame: usize,
         name: String,
