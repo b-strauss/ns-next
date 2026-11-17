@@ -12944,6 +12944,150 @@ mod evaluation {
         }
     }
 
+    /// A loop without end inside an `ensure:` whose block calls `clean`,
+    /// and a method a second run sends.
+    const TERMINATING: &str = indoc! {"
+        class Terminating = Object new (
+          | cleanups ::= 0. |
+        ) (
+          public run = (
+            [[true] whileTrue: []] ensure: [self clean].
+            ^cleanups
+          )
+          clean = (
+            cleanups:: cleanups + 1
+          )
+          public again = (
+            ^cleanups + 10
+          )
+        ) : ()
+    "};
+
+    /// Why `command` is refused at the stop, which it must be.
+    fn command_refusal(remote: &DebugRemote, command: Command) -> String {
+        match request(remote, command) {
+            Event::Refused { reason, .. } => reason,
+            other => panic!("a refusal was expected, not {other:?}"),
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A stop at a breakpoint in an `ensure:` block the debugger's
+        /// termination runs evaluates nothing and starts no unwind: an
+        /// evaluation's error would end the run before its answer, and the
+        /// stop kept for it would take the next run's every safepoint for
+        /// its own. The next run of the same interpreter stops at its
+        /// breakpoint and evaluates there as any run does.
+        fn a_stop_during_a_termination_refuses_evaluations_and_the_next_run_stops(lowering) {
+            let cleaning = line_start(TERMINATING, "cleanups:: cleanups + 1");
+            let again = line_start(TERMINATING, "^cleanups + 10");
+            let (mut interpreter, class) = interpreted(TERMINATING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            set_breakpoints(&remote, "Terminating", vec![cleaning]);
+            let (refusals, result, remote) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    remote.send(Command::Terminate);
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let refusals = [
+                        refusal(remote, 0, "nil foo"),
+                        set_refusal(remote, 0, "self", "nil"),
+                        command_refusal(remote, Command::RestartFrame { frame: 0 }),
+                        command_refusal(
+                            remote,
+                            Command::ForceReturn {
+                                frame: 0,
+                                value: None,
+                            },
+                        ),
+                    ];
+                    continue_stopped(remote);
+                    refusals
+                },
+                || run(&mut interpreter, &instance),
+            );
+            assert_terminated(result);
+            assert_eq!(refusals, ["the program is terminating"; 4]);
+            set_breakpoints(&remote, "Terminating", vec![again]);
+            let (read, result, _) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "cleanups");
+                    continue_stopped(remote);
+                    read
+                },
+                || interpreter.send(&instance, Symbol::intern("again"), &[]),
+            );
+            assert_eq!(read, "1");
+            assert_eq!(answered(&mut interpreter, result), 11);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A condition evaluated at a breakpoint in an `ensure:` block the
+        /// debugger's termination runs ends at its own base when it fails:
+        /// the stop says why, the termination goes on, and the next run of
+        /// the same interpreter stops at its breakpoint.
+        fn a_condition_failing_during_a_termination_stops_and_the_next_run_stops(lowering) {
+            let cleaning = line_start(TERMINATING, "cleanups:: cleanups + 1");
+            let again = line_start(TERMINATING, "^cleanups + 10");
+            let (mut interpreter, class) = interpreted(TERMINATING, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let remote = interpreter.attach_debugger();
+            let breakpoint = LineBreakpoint {
+                condition: Some(String::from("nil foo")),
+                ..LineBreakpoint::at_offset(cleaning)
+            };
+            set_line_breakpoints(&remote, "Terminating", vec![breakpoint]);
+            let ((id, reason), result, remote) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    thread::sleep(PAUSE_DELAY);
+                    remote.pause();
+                    expect_paused(remote);
+                    remote.send(Command::Terminate);
+                    let reason = match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Stopped { reason, .. }) => reason,
+                        other => panic!("a stop was expected, not {other:?}"),
+                    };
+                    continue_stopped(remote);
+                    (id, reason)
+                },
+                || run(&mut interpreter, &instance),
+            );
+            assert_terminated(result);
+            match reason {
+                StopReason::ConditionFailed { ids, error } => {
+                    assert_eq!(ids, [id]);
+                    assert!(error.contains("MessageNotUnderstood"), "{error}");
+                }
+                other => panic!("a failed condition's stop was expected, not {other:?}"),
+            }
+            set_breakpoints(&remote, "Terminating", vec![again]);
+            let (read, result, _) = debugged_by(
+                remote,
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "Terminating"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    let read = value_label(remote, 0, "cleanups");
+                    continue_stopped(remote);
+                    read
+                },
+                || interpreter.send(&instance, Symbol::intern("again"), &[]),
+            );
+            assert_eq!(read, "1");
+            assert_eq!(answered(&mut interpreter, result), 11);
+        }
+    }
+
     /// A recursion without end, which overflows the depth limit.
     const OVERFLOWING: &str = indoc! {"
         class Overflowing = Object new () (

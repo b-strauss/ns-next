@@ -397,8 +397,14 @@ fn unwind_from<'gc, const FOLLOWED: bool>(
 /// ends the evaluation with its error, the program staying stopped; a
 /// return or a restart aims at a frame below, which it cannot reach from
 /// the evaluation, and so signals `CannotReturn` from the base, as a `^`
-/// to a home that has returned does. Only the debugger's own termination
-/// goes on past the base (`Err`), to the run's floor.
+/// to a home that has returned does. The evaluation the debugger's own
+/// termination ended is no longer running (`evaluation::terminated`), so
+/// its base never reaches here and is popped on the way to the run's
+/// floor; one begun during that termination -- a condition at a
+/// breakpoint in an `ensure:` block it runs -- ends at its base as any
+/// does, so that its answer is taken and its stop's state does not
+/// outlive the run (`docs/design/debugger.md`, "Continuing and
+/// terminating").
 #[cold]
 #[inline(never)]
 fn at_evaluation_base<'gc>(
@@ -407,9 +413,6 @@ fn at_evaluation_base<'gc>(
     pending: PendingUnwind<'gc>,
     floor: usize,
 ) -> Result<UnwindOutcome<'gc>, PendingUnwind<'gc>> {
-    if mutator.breakpoints.terminating() {
-        return Err(pending);
-    }
     let error = match pending.action {
         UnwindAction::Terminate(error) => return end_at_base(mutator, base, &error),
         UnwindAction::Return(value) | UnwindAction::ForceReturn(value) => {

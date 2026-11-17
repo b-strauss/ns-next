@@ -1026,6 +1026,7 @@ impl Interpreter {
                     self.stress_stop.is_none(),
                     "internal: the pause stress mode's stop outlived its run"
                 );
+                self.drop_kept_at_run_end();
                 self.serve_between_runs();
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left

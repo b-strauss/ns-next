@@ -65,6 +65,14 @@ const NO_EVALUATION: &str = "no evaluation runs";
 /// stack.
 const NO_SUCH_FRAME: &str = "no frame at that index";
 
+/// Why a stop refuses `Evaluate`, `SetVariable`, `RestartFrame` and
+/// `ForceReturn` while the debugger's termination unwinds -- at a
+/// breakpoint in an `ensure:` block the termination runs: the run is
+/// ending, so an evaluation's error would end the run before its answer
+/// and an unwind the stop started would race the termination's own
+/// (`docs/design/debugger.md`, "Continuing and terminating").
+pub(crate) const TERMINATING: &str = "the program is terminating";
+
 /// Why a stop refuses `StepIntoTarget` for an id none of its targets has.
 const NO_SUCH_TARGET: &str = "no such target";
 
@@ -361,7 +369,10 @@ impl StressReader {
             {
                 self.identity = Some((name, shown.id, value.id));
             }
-            Err(reason) if reason == evaluation::NO_SOURCE || reason == evaluation::NO_ROOM => {}
+            Err(reason)
+                if reason == evaluation::NO_SOURCE
+                    || reason == evaluation::NO_ROOM
+                    || reason == TERMINATING => {}
             Ok(answer) => panic!(
                 "internal: the {} stress mode's evaluation of {name} in {frame} answered {answer:?}, where the variables view showed {shown:?}",
                 self.mode
@@ -1964,6 +1975,9 @@ impl Interpreter {
         if !kept {
             return Err(String::from(NOT_KEPT));
         }
+        if self.enter(|mutator| mutator.breakpoints.terminating()) {
+            return Err(String::from(TERMINATING));
+        }
         #[cfg(debug_assertions)]
         let mut compilations = std::mem::take(&mut self.stress_compilations);
         let compiled = self.enter(|mutator| match command {
@@ -2023,6 +2037,9 @@ impl Interpreter {
     ) -> Result<unwinding::StartedUnwind, String> {
         if self.debugger.is_none() || !matches!(stop.source, CommandSource::Remote) {
             return Err(String::from(NOT_A_DEBUGGER));
+        }
+        if self.enter(|mutator| mutator.breakpoints.terminating()) {
+            return Err(String::from(TERMINATING));
         }
         self.enter(|mutator| unwinding::start(mutator, stop, command))
     }
@@ -2150,6 +2167,31 @@ impl Interpreter {
                 stepping::carry_into(mutator, entry, exits);
             }
         });
+    }
+
+    /// The run ended: no evaluation outlives it, so neither does a stop
+    /// kept for one (`Debugger::stop`) nor a decision of conditions one
+    /// ran for (`Debugger::deciding`). Each ends with its evaluation's
+    /// answer, or with the termination that ended the evaluation; one
+    /// left here would take the next run's every safepoint for its
+    /// evaluation's, and serve none of them. Dropped all the same in a
+    /// release build, the next stop's ids past the kept stop's.
+    pub(crate) fn drop_kept_at_run_end(&mut self) {
+        let Some(debugger) = &mut self.debugger else {
+            return;
+        };
+        debug_assert!(
+            debugger.stop.is_none(),
+            "internal: a stop kept for an evaluation outlived its run"
+        );
+        debug_assert!(
+            debugger.deciding.is_none(),
+            "internal: a decision of conditions outlived its run"
+        );
+        debugger.deciding = None;
+        if let Some(stop) = debugger.stop.take() {
+            debugger.next_value_id = stop.values.next_first();
+        }
     }
 
     /// Takes every command queued for a run that is over, or that has not

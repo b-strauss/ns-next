@@ -163,7 +163,9 @@ pub enum Command {
     /// already hold a copy of (`docs/design/debugger.md`, "Assigning a
     /// captured variable") or a vector variable whose frame has not made
     /// its vector yet (`"<name> does not exist yet at this point"`; "A
-    /// vector not made yet").
+    /// vector not made yet"), and at a stop the debugger's termination
+    /// makes in an `ensure:` block it runs (`"the program is
+    /// terminating"`; "Continuing and terminating").
     Evaluate { frame: usize, expression: String },
     /// Sets the variable `name` of the frame at index `frame` of the stack
     /// trace to what `expression`, one expression, answers, evaluated as
@@ -209,7 +211,8 @@ pub enum Command {
     /// then the stop at the frame's first statement start, a step into's
     /// (`StopReason::Step`), or any other stop the program makes first;
     /// refused, the program still stopped, for a frame index past the
-    /// stack and a frame of the core library.
+    /// stack, a frame of the core library and a stop during the
+    /// debugger's termination (`"the program is terminating"`).
     RestartFrame { frame: usize },
     /// Makes the frame at index `frame` of the stack trace return `value`
     /// -- a value the stop handed out, `nil` when `None` -- to its sender
@@ -223,7 +226,9 @@ pub enum Command {
     /// stop the program makes first; refused, the program still stopped,
     /// for a frame index past the stack, a frame of the core library, a
     /// value the stop did not hand out and a value given for an
-    /// initializer's frame -- `"an initializer returns self"`.
+    /// initializer's frame -- `"an initializer returns self"` -- and a
+    /// stop during the debugger's termination (`"the program is
+    /// terminating"`).
     ForceReturn {
         frame: usize,
         value: Option<ValueId>,

@@ -986,6 +986,22 @@ interpreted, and once the floor is popped the host's send answers the
 error (`HostSignal::Error`; `terminate_runs_the_pending_ensure_blocks`,
 `a_terminate_queued_while_running_ends_the_run`).
 
+A breakpoint in one of those `ensure:` blocks still stops, and its stop
+reads the stack and values as any does, but refuses `Evaluate`,
+`SetVariable`, `RestartFrame` and `ForceReturn` with `"the program is
+terminating"`: an evaluation's error would take the termination's way
+past its base, ending the run before the evaluation answered, and an
+unwind the stop started would race the termination's own. A condition or
+log expression at such a breakpoint is evaluated as anywhere: the
+evaluation a termination ended is no longer running
+(`evaluation::terminated`), so only it goes past its base, and one begun
+during the termination ends at its own. No stop kept for an evaluation
+and no decision of conditions outlives the run
+(`Interpreter::drop_kept_at_run_end`, debug-asserted), so the next run
+of the same interpreter is served as any
+(`a_stop_during_a_termination_refuses_evaluations_and_the_next_run_stops`,
+`a_condition_failing_during_a_termination_stops_and_the_next_run_stops`).
+
 ### Detaching
 
 Dropping the remote detaches the debugger. The VM notices it where it next
