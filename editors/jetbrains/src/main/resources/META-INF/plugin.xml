@@ -34,7 +34,11 @@
           library's modules among them, with line breakpoints (on the lines a statement starts on, in a
           block of the line, with a pass count, removed once hit), method and exception breakpoints,
           stepping by line (past the core library's code unless Step Into Kernel and Platform Code is on,
-          and past the modules and classes a project's Newspeak Step Filters name), run to cursor and pause. The first Stop ends the program as its own <code>terminate</code> would; a second
+          and past the modules and classes a project's Newspeak Step Filters name), run to cursor and pause;
+          evaluation in the Evaluate dialog, watches and hovers, Set Value, breakpoint conditions and log
+          expressions decided by the runtime, Smart Step Into, Reset Frame, Force Return, Mark Object, a Memory
+          view of each class's instances and what refers to a value, and the core library's frames folded as
+          library frames. The first Stop ends the program as its own <code>terminate</code> would; a second
           one kills it.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was

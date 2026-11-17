@@ -92,14 +92,15 @@
 > objects, passes conditions and logpoints on, smart-steps into a chosen
 > target, restarts frames, forces returns, answers the memory view and
 > marks the shipped frames for folding ("Launching, the start and the
-> end"); and `ns-next mcp`, a Model Context Protocol server, lets an
+> end"); `ns-next mcp`, a Model Context Protocol server, lets an
 > agent such as Claude debug a program through its tools, each stop
-> answered as a summary in text ("The MCP server"). Everything else is
-> planned:
-> conditions and logpoints in the plugin, watches, smart
-> step into, restart frame, force return, the memory view and folding
-> in the plugin (stage 5, next), hot swap and
-> edit-and-continue (stage 6) ("Planned: the order of building it"). The
+> answered as a summary in text ("The MCP server"); and the plugin
+> evaluates in the Evaluate dialog, its watches and its hovers, sets
+> values, sends conditions and log expressions, smart-steps, resets
+> frames, forces returns, marks objects, shows the memory view and folds
+> the shipped frames as library frames ("The JetBrains plugin").
+> Everything else is planned: hot swap and edit-and-continue (stage 6)
+> ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
 > decisions"), on the mechanisms they imply, stage 4's questions among
@@ -4260,8 +4261,9 @@ expression's reach.
 `Command::Referrers`, `debugger/memory.rs`, `Heap::each_object`,
 `Heap::refers_to`; tests `memory_view` in `tests/debugger.rs`) and in
 the agent (`nsNext/instanceCounts`, `nsNext/instances`,
-`nsNext/referrers`; "Launching, the start and the end"); the plugin's
-view is planned.
+`nsNext/referrers`; "Launching, the start and the end") and in the
+plugin, a panel of the session's tab and Show Referring Objects ("The
+JetBrains plugin").
 
 At a stop the IDE can ask for the instances of a class and for the
 objects that refer to one (decided with the user on 2026-11-16, in stage
@@ -4357,11 +4359,11 @@ withholds the mirror.
 
 ### Folding the shipped frames
 
-**Partial:** the VM's part is built: every frame of the stack trace says
-whether it runs a body of a shipped module (`FrameDescription::shipped`,
-`stack::is_shipped`; `a_shipped_frame_says_so`); so are the agent's
-hints (`stopped::stack_frame`; `a_shipped_frame_is_deemphasized`), and
-the plugin's folding is planned.
+**Built:** every frame of the stack trace says whether it runs a body of
+a shipped module (`FrameDescription::shipped`, `stack::is_shipped`;
+`a_shipped_frame_says_so`); so do the agent's hints
+(`stopped::stack_frame`; `a_shipped_frame_is_deemphasized`), and the
+plugin folds them as library frames ("The JetBrains plugin").
 
 The agent marks a frame of a shipped module's body with DAP's
 `presentationHint` `subtle`, and its source with `deemphasize`, and the
@@ -5790,19 +5792,50 @@ never the label typed in its dialog, which it keeps in a map only its
 internal API reaches (`XDebugSessionImpl.getValueMarkers`), and the agent
 names the object by that label.
 
+The memory view (`debugger/memory/NewspeakMemoryView.kt`) is a panel of
+the session's tab, Memory, registered by the debug process's
+`XDebugTabLayouter.registerAdditionalContent` minimized beside the
+variables, as Java's Memory tab is, and so shown with every Newspeak
+session and gone with it. At a stop it is shown at, and on its Refresh,
+it lists each class's instance count, `nsNext/instanceCounts`, the
+largest first, a shipped module's class marked as the core library's --
+a walk of the whole object space, never asked while the panel is hidden;
+a class chosen lists its instances below as a value tree, the
+platform's `XDebuggerTree` under one node whose children are
+`nsNext/instances`' pages, by the class's name and, for a shipped
+module's class, `shipped`; and leaving the stop empties both, since the
+next stop knows none of the references. Every value the agent hands a
+value reference for, in the memory view and in every other tree, answers
+the platform's Show Referring Objects through its `XReferrersProvider`,
+whose value's children are `nsNext/referrers`' pages: an object, or a
+frame's variable, `frame <id> <name>`, which names a place and is neither
+expanded nor set (`testTheMemoryViewListsInstanceCounts`).
+
+The core library's frames are library frames. The platform's hook is the
+debug process's `isLibraryFrameFilterSupported`, which shows the frames
+view's Show Library Frames for the session, and the execution stack
+respects the setting it toggles
+(`XDebuggerSettingsManager.DataViewSettings.isShowLibraryStackFrames`),
+as Java's stack does: while it is off -- its default -- each run of
+frames the agent marks `nsNext/shipped` below the top frame is folded
+into one greyed line that counts them (`LibraryFrames`), a run that goes
+on past a page held until it ends; the top frame, where the program
+stands, is always shown. The fold is the plugin's own frame: the
+platform's, `HiddenStackFramesItem`, is internal API, which only Java's
+stack builds (`testShippedFramesAreLibraryFrames`).
+
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of
 breakpoint over a scripted agent and stops at a temporary one with the
 real runtime (`NewspeakBreakpointTypesTest`;
 [editor-support.md](editor-support.md), "Plugin testing and gates").
 
-Planned: the plugin will add, over that client, the memory view, the
-shipped frames folded as library frames, a hot-swap action on the
+Planned: the plugin will add, over that client, a hot-swap action on the
 agent's own requests, and inline values and step times.
 
 ## Planned: the order of building it
 
-Stages 5 and 6 remain, in this order, stage 5 next. Stage 1, the
+Stage 6 remains. Stage 1, the
 debugging API at the safepoint -- stopping, the command channel and the
 commands served while running, the atomic poll words and pause, the
 deoptimization of a stop at a poll of optimized code in every build, the
@@ -5821,12 +5854,16 @@ breakable lines the language server answers, and the plugin's
 `XDebugProcess` with its three breakpoint types, from which the debugger
 is usable in the IDE ("Launching, the start and the end", "Hit counts and
 temporary breakpoints", "A breakpoint names a source position", "The
-JetBrains plugin"). The stages keep their numbers, which the text above
-refers to.
+JetBrains plugin"); and stage 5: evaluation, conditional breakpoints and
+logpoints, watches and setting variables, marking objects, smart step
+into, restart frame and force return, the memory view and folding the
+shipped frames, in the VM, the agent and the plugin ("Evaluation",
+"Writing a frame", "Marking objects", "Smart step into a block",
+"Restart frame and force return", "The memory view", "Folding the
+shipped frames", "The JetBrains plugin"), and the MCP server ("The MCP
+server"). The stages keep their numbers, which the text above refers
+to.
 
-5. Evaluation, conditional breakpoints and logpoints, watches and setting
-   variables, marking objects, smart step into, restart frame and force
-   return, the memory view, and folding the shipped frames.
 6. Hot swap, then edit-and-continue of running activations;
    `ActivationMirror` for programs.
 

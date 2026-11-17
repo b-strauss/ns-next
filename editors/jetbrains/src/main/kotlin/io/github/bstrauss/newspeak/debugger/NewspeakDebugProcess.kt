@@ -6,6 +6,9 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.execution.ui.ExecutionConsole
+import com.intellij.execution.ui.RunnerLayoutUi
+import com.intellij.execution.ui.layout.PlaceInGrid
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
@@ -29,6 +32,7 @@ import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XSuspendContext
 import com.intellij.xdebugger.stepping.XSmartStepIntoHandler
+import com.intellij.xdebugger.ui.XDebugTabLayouter
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
 import io.github.bstrauss.newspeak.debugger.dap.DapBreakpointEvent
@@ -41,6 +45,7 @@ import io.github.bstrauss.newspeak.debugger.dap.DapStackFrame
 import io.github.bstrauss.newspeak.debugger.dap.DapStepInTarget
 import io.github.bstrauss.newspeak.debugger.dap.DapStoppedEvent
 import io.github.bstrauss.newspeak.debugger.dap.stringOrNull
+import io.github.bstrauss.newspeak.debugger.memory.NewspeakMemoryView
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.io.IOException
 import java.net.ServerSocket
@@ -141,6 +146,31 @@ class NewspeakDebugProcess(
     override fun getSmartStepIntoHandler(): XSmartStepIntoHandler<*> = smartStepInto
 
     override fun getDropFrameHandler(): XDropFrameHandler = dropFrame
+
+    /** The session's memory view, a panel of its tab, made once the tab is. */
+    internal val memoryView = NewspeakMemoryView(session) { client }
+
+    /**
+     * The frames view's Show Library Frames applies to this session: the
+     * core library's frames are library frames, folded while it is off
+     * ([NewspeakExecutionStack]).
+     */
+    override fun isLibraryFrameFilterSupported(): Boolean = true
+
+    /** The session's tab gains the memory view, minimized beside the variables, as Java's Memory tab is. */
+    override fun createTabLayouter(): XDebugTabLayouter = object : XDebugTabLayouter() {
+        override fun registerAdditionalContent(ui: RunnerLayoutUi) {
+            val content = ui.createContent(
+                MEMORY_CONTENT,
+                memoryView.component,
+                NewspeakBundle.message("debugger.memory.title"),
+                AllIcons.Debugger.Db_db_object,
+                null,
+            )
+            content.isCloseable = false
+            ui.addContent(content, 0, PlaceInGrid.right, true)
+        }
+    }
 
     override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(lineBreakpoints, methodBreakpoints, exceptionBreakpoints)
 
@@ -587,6 +617,7 @@ class NewspeakDebugProcess(
     override fun stop() {
         ended = true
         Disposer.dispose(stepFiltersSubscription)
+        Disposer.dispose(memoryView)
         handler.terminateThroughDebugger = null
         serverSocket.close()
         val client = client ?: return
@@ -669,6 +700,9 @@ class NewspeakDebugProcess(
 
         /** The frames a stop reads before it is shown, and a page of the rest. */
         const val FRAMES_PAGE = 50
+
+        /** The memory view's content in the session's tab. */
+        const val MEMORY_CONTENT = "NewspeakMemoryView"
 
         /** The agent's refusal of `stepInTargets` for a frame other than the one a step steps from. */
         const val TOP_FRAME_ONLY = "smart step into takes the top frame"

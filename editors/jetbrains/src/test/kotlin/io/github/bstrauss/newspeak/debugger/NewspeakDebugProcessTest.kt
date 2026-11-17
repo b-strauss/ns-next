@@ -64,8 +64,10 @@ import com.intellij.xdebugger.frame.XValueModifier
 import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
+import com.intellij.xdebugger.impl.settings.XDebuggerSettingManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRoots
@@ -845,6 +847,98 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * The core library's frames are library frames: the session respects
+     * the frames view's Show Library Frames, and while it is off each run
+     * of them below the top frame is folded into one line that counts
+     * them; the top frame, shipped or not, and the program's frames stay.
+     */
+    fun testShippedFramesAreLibraryFrames() {
+        val settings = XDebuggerSettingManagerImpl.getInstanceImpl().dataViewSettings
+        val shown = settings.isShowLibraryStackFrames
+        try {
+            val faked = fakeSession()
+            val agent = identifiedAgent(faked) { command, _ ->
+                when (command) {
+                    "stackTrace" -> JsonParser.parseString(LIBRARY_STACK).asJsonObject
+                    "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                    else -> JsonObject()
+                }
+            }
+            agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+            faked.debugging.nextPause()
+            assertTrue(faked.debugging.process.isLibraryFrameFilterSupported)
+
+            settings.isShowLibraryStackFrames = false
+            assertEquals(
+                listOf("Kernel>>value", NewspeakBundle.message("debugger.frames.library", 2), "Program>>run", NewspeakBundle.message("debugger.frames.library", 1)),
+                framesOf(faked.debugging.session).map { frame -> textOf(frame).first },
+            )
+            settings.isShowLibraryStackFrames = true
+            assertEquals(
+                listOf("Kernel>>value", "Kernel>>do:", "Kernel>>at:", "Program>>run", "Kernel>>main"),
+                framesOf(faked.debugging.session).map { frame -> textOf(frame).first },
+            )
+        } finally {
+            settings.isShowLibraryStackFrames = shown
+        }
+    }
+
+    /**
+     * The memory view lists the stop's instance counts; a class chosen
+     * lists its instances, asked by its name -- a shipped module's by its
+     * module -- each a value tree; a value's referrers are its children's
+     * provider's.
+     */
+    fun testTheMemoryViewListsInstanceCounts() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, arguments ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/instanceCounts" -> JsonParser.parseString(
+                    """{"classes":[{"name":"Census.Point","count":2},{"name":"Kernel.Array","count":1,"nsNext/shipped":true}]}""",
+                ).asJsonObject
+                "nsNext/instances" -> JsonParser.parseString(
+                    if (arguments.has("shipped")) {
+                        """{"variables":[{"name":"#1","value":"an Array","type":"Array","variablesReference":0}]}"""
+                    } else {
+                        """{"variables":[
+                          {"name":"#1","value":"a Point","type":"Point","variablesReference":0,"nsNext/valueReference":31},
+                          {"name":"#2","value":"a Point","type":"Point","variablesReference":0,"nsNext/valueReference":32}
+                        ]}"""
+                    },
+                ).asJsonObject
+                "nsNext/referrers" -> JsonParser.parseString(
+                    """{"variables":[{"name":"frame 1 points","value":"Census>>main:args:","variablesReference":0,"presentationHint":{"kind":"virtual"}}]}""",
+                ).asJsonObject
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+
+        val view = (faked.debugging.process as NewspeakDebugProcess).memoryView
+        val counts = view.refresh().get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertEquals(listOf(DapInstanceCount("Census.Point", 2, false), DapInstanceCount("Kernel.Array", 1, true)), counts)
+
+        val points = childrenOf(view.instancesOf(counts[0]))
+        assertEquals(listOf("#1", "#2"), points.keys.toList())
+        childrenOf(view.instancesOf(counts[1]))
+        assertEquals(
+            listOf("""{"name":"Census.Point","start":0,"count":100}""", """{"name":"Kernel.Array","shipped":true,"start":0,"count":100}"""),
+            agent.requests("nsNext/instances").map(JsonObject::toString),
+        )
+
+        val referrers = childrenOf(checkNotNull(points.getValue("#2").referrersProvider).referringObjectsValue)
+        val onTheStack = referrers.getValue("frame 1 points") as NewspeakValue
+        assertTrue("a referrer on the stack names a place", onTheStack.variable.virtual)
+        assertNull("which is not set", onTheStack.modifier)
+        assertEquals(32, agent.requests("nsNext/referrers").single().get("valueReference").asInt)
+    }
+
     /** The value [expression] answers in [frame], through its evaluator. */
     private fun evaluated(frame: XStackFrame, expression: String): XValue = evaluation(frame, expression).get(WAIT_SECONDS, TimeUnit.SECONDS)
 
@@ -1581,6 +1675,17 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
               )
             ) : ()
         """.trimIndent() + "\n"
+
+        /** A stop in a shipped frame, above a run of two shipped frames, a program's frame and a last shipped one. */
+        val LIBRARY_STACK = """
+            {"stackFrames":[
+              {"id":1,"name":"Kernel>>value","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":2,"name":"Kernel>>do:","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":3,"name":"Kernel>>at:","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true},
+              {"id":4,"name":"Program>>run","line":0,"column":0},
+              {"id":5,"name":"Kernel>>main","source":{"name":"Kernel.ns","sourceReference":7},"line":2,"column":3,"presentationHint":"subtle","nsNext/shipped":true}
+            ],"totalFrames":5}
+        """.trimIndent()
 
         /** A stop in a shipped frame the agent cannot end, above a program's frame it can. */
         val RESTARTABLE_STACK = """
