@@ -729,7 +729,10 @@ impl Session {
 
     fn reference(&self, number: i64) -> Result<Reference, String> {
         self.references.get(&number).copied().ok_or_else(|| {
-            format!("no value of this stop has the reference {number}; references last until the program goes on")
+            format!(
+                "no value of this stop has the reference {number}; references last \
+                 until the program goes on"
+            )
         })
     }
 
@@ -825,7 +828,8 @@ impl Session {
                     Err(Unanswered::Ended) => return Err(self.ended_refusal()),
                     _ => {
                         return Err(format!(
-                            "the evaluation did not end within {:.1} s and was aborted; the program is still stopped",
+                            "the evaluation did not end within {:.1} s and was aborted; \
+                             the program is still stopped",
                             wait.as_secs_f64()
                         ));
                     }

@@ -727,6 +727,7 @@ ns-cli::bin/ns-next debug::agent::tests::a_pending_replacement_hides_the_ids_it_
 ns-cli::bin/ns-next debug::agent::tests::an_exception_stop_carries_its_text_and_class
 ns-cli::bin/ns-next debug::breakpoints::tests::a_breakpoint_keeps_its_id_while_the_client_sends_it
 ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_hit_condition_is_refused
+ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_log_message_is_refused
 ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_method_name_is_refused
 ns-cli::bin/ns-next debug::breakpoints::tests::a_name_of_two_modules_names_one_class_in_each
 ns-cli::bin/ns-next debug::breakpoints::tests::a_position_is_an_offset_of_its_line
@@ -735,8 +736,10 @@ ns-cli::bin/ns-next debug::breakpoints::tests::an_empty_event_nothing_asked_for_
 ns-cli::bin/ns-next debug::breakpoints::tests::an_unasked_event_names_only_ids_an_answer_named
 ns-cli::bin/ns-next debug::breakpoints::tests::class_names_parse_from_a_list
 ns-cli::bin/ns-next debug::breakpoints::tests::hit_conditions_parse_in_every_form
+ns-cli::bin/ns-next debug::breakpoints::tests::log_messages_parse_into_text_and_expressions
 ns-cli::bin/ns-next debug::breakpoints::tests::method_names_parse_with_and_without_class_side
 ns-cli::bin/ns-next debug::connection::tests::a_message_s_whole_write_is_bounded_however_the_peer_reads
+ns-cli::bin/ns-next debug::connection::tests::a_queue_near_full_refuses_only_droppable_messages
 ns-cli::bin/ns-next debug::connection::tests::a_token_is_32_lowercase_hex_digits_and_only_itself_matches
 ns-cli::bin/ns-next debug::connection::tests::finish_ends_within_its_deadline_whatever_is_queued
 ns-cli::bin/ns-next debug::sources::tests::a_canonical_and_a_spelled_path_of_one_file_agree
@@ -751,6 +754,7 @@ ns-cli::bin/ns-next debug::sources::tests::a_source_names_a_module_by_reference_
 ns-cli::bin/ns-next debug::sources::tests::a_text_asked_at_a_stop_is_current_for_that_stop_only
 ns-cli::bin/ns-next debug::stepping::tests::a_step_by_line_goes_on_only_in_its_activation_on_its_line
 ns-cli::bin/ns-next debug::stepping::tests::a_step_goes_by_line_unless_asked_otherwise
+ns-cli::bin/ns-next debug::stopped::tests::a_value_keeps_one_value_reference_per_stop
 ns-cli::bin/ns-next debug::wire::tests::wire_reads_a_header_in_any_case_and_with_other_fields
 ns-cli::bin/ns-next debug::wire::tests::wire_refuses_a_length_above_the_bound_before_reading_it
 ns-cli::bin/ns-next debug::wire::tests::wire_refuses_a_missing_length
@@ -758,6 +762,11 @@ ns-cli::bin/ns-next debug::wire::tests::wire_refuses_an_endless_header_line
 ns-cli::bin/ns-next debug::wire::tests::wire_refuses_malformed_json_and_a_truncated_frame
 ns-cli::bin/ns-next debug::wire::tests::wire_round_trips_a_message
 ns-cli::bin/ns-next debug::wire::tests::wire_takes_the_bound_the_reader_gives_once_the_header_is_read
+ns-cli::bin/ns-next mcp::summary::tests::a_stop_is_summarized_in_its_order
+ns-cli::bin/ns-next mcp::summary::tests::an_excerpt_stays_in_the_text
+ns-cli::bin/ns-next mcp::summary::tests::long_lists_are_cut_saying_how_to_see_more
+ns-cli::bin/ns-next mcp::summary::tests::long_output_keeps_its_end
+ns-cli::bin/ns-next mcp::summary::tests::running_and_ended_say_so
 ns-cli::bin/ns-next project::tests::a_file_that_is_no_json_object_is_refused_saying_so
 ns-cli::bin/ns-next project::tests::a_file_without_main_is_refused_naming_main_whatever_else_it_holds
 ns-cli::bin/ns-next project::tests::a_key_written_twice_is_refused
@@ -2184,6 +2193,7 @@ ns-cli::cli benchmark_rejects_zero_iterations
 ns-cli::cli run_corpus_malformed_whitelist_fails_with_error
 ns-cli::cli run_corpus_refuses_a_module_whose_factory_it_cannot_fill
 ns-cli::cli run_corpus_with_an_empty_whitelist_reports_running_nothing
+ns-cli::mcp the_server_lists_its_tools
 ns-cli::project_schema the_schema_and_the_reader_agree_on_every_file
 ns-cli::run a_missing_module_file_is_refused
 ns-cli::run a_never_used_module_breaking_the_root_rule_is_refused_by_run_and_build_alike

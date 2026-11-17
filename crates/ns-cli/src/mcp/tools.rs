@@ -327,7 +327,8 @@ fn wait_schema() -> Value {
     json!({
         "type": "number",
         "minimum": 0,
-        "description": "Seconds to wait for the next stop before answering that the program runs; 30 by default."
+        "description": "Seconds to wait for the next stop before answering that the \
+                        program runs; 30 by default."
     })
 }
 
@@ -338,10 +339,20 @@ fn breakpoint_schema() -> Value {
         "properties": {
             "location": {
                 "type": "string",
-                "description": "<absolute path>:<line>, or Module.Class>>selector (Module.Class class>>selector for the class side), the class named from its module down."
+                "description": "<absolute path>:<line>, or Module.Class>>selector \
+                                (Module.Class class>>selector for the class side), the \
+                                class named from its module down."
             },
-            "condition": { "type": "string", "description": "A Newspeak expression; the breakpoint stops only where it answers true." },
-            "log": { "type": "string", "description": "A message logged instead of stopping, each {expression} in it evaluated at the hit." },
+            "condition": {
+                "type": "string",
+                "description": "A Newspeak expression; the breakpoint stops only where it \
+                                answers true."
+            },
+            "log": {
+                "type": "string",
+                "description": "A message logged instead of stopping, each {expression} in \
+                                it evaluated at the hit."
+            },
             "hit_condition": { "type": "string", "description": "Which hits stop: a count, or >= n, or % n." }
         },
         "required": ["location"]

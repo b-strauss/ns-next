@@ -379,11 +379,13 @@ impl StressReader {
                         || reason == evaluation::NO_SOURCE
                         || reason == TERMINATING => {}
                 Ok(answer) => panic!(
-                    "internal: the {} stress mode's evaluation of {name} in {frame}, shown as not available, answered {answer:?}",
+                    "internal: the {} stress mode's evaluation of {name} in {frame}, \
+                     shown as not available, answered {answer:?}",
                     self.mode
                 ),
                 Err(reason) => panic!(
-                    "internal: the {} stress mode's evaluation of {name} in {frame}, shown as not available, was refused: {reason}",
+                    "internal: the {} stress mode's evaluation of {name} in {frame}, \
+                     shown as not available, was refused: {reason}",
                     self.mode
                 ),
             }
@@ -403,11 +405,13 @@ impl StressReader {
                     || reason == evaluation::NO_ROOM
                     || reason == TERMINATING => {}
             Ok(answer) => panic!(
-                "internal: the {} stress mode's evaluation of {name} in {frame} answered {answer:?}, where the variables view showed {shown:?}",
+                "internal: the {} stress mode's evaluation of {name} in {frame} \
+                 answered {answer:?}, where the variables view showed {shown:?}",
                 self.mode
             ),
             Err(reason) => panic!(
-                "internal: the {} stress mode's evaluation of {name} in {frame} was refused: {reason}",
+                "internal: the {} stress mode's evaluation of {name} in {frame} \
+                 was refused: {reason}",
                 self.mode
             ),
         }
@@ -1117,16 +1121,16 @@ impl Interpreter {
     }
 
     /// Makes the stop `decision` says, or lets the frame past its slot: a
-    /// reach where no breakpoint holds, no condition failed, no pause
-    /// aborted one and no step stops goes past it as a resumed stop's
-    /// token lets it, so that its conditions are not evaluated again; a
-    /// failure stops for every breakpoint that failed
-    /// (`StopReason::ConditionFailed`), a pause that aborted a condition
-    /// where nothing else stops as a pause, and otherwise the stop is the
-    /// breakpoints', as the arm's would be (`serve_breakpoint`). The commands served while the conditions
-    /// ran may have removed the breakpoints it would be for: then it is
-    /// not made, and the frame's fetch of the slot again decides nothing
-    /// this reach decided (`PendingStop::decided_standing`).
+    /// reach where no breakpoint holds, no condition failed, no pause aborted
+    /// one and no step stops goes past it as a resumed stop's token lets it,
+    /// so that its conditions are not evaluated again; a failure stops for
+    /// every breakpoint that failed (`StopReason::ConditionFailed`), a pause
+    /// that aborted a condition where nothing else stops as a pause, and
+    /// otherwise the stop is the breakpoints', as the arm's would be
+    /// (`serve_breakpoint`). The commands served while the conditions ran may
+    /// have removed the breakpoints it would be for: then it is not made, and
+    /// the frame's fetch of the slot again decides nothing this reach decided
+    /// (`PendingStop::decided_standing`).
     fn decided(&mut self, decision: conditions::Decision, floor: usize) -> Served {
         let conditions::Decision {
             stop,
@@ -1308,7 +1312,8 @@ impl Interpreter {
         });
         assert!(
             same,
-            "internal: the {mode} stress mode's evaluation of {name} in {frame} answered another object than the variables view showed"
+            "internal: the {mode} stress mode's evaluation of {name} in {frame} \
+             answered another object than the variables view showed"
         );
     }
 
@@ -1340,22 +1345,22 @@ impl Interpreter {
         self.serve_stop(stop)
     }
 
-    /// The step stress mode at a safepoint: when its schedule says a
-    /// burst is due, the program stops as a pause does, with the mode's
-    /// reader as the agent, which begins the burst's first step. The
-    /// schedule is fed the traced size with the stack counted once more
-    /// for each step of a burst, since every stop of a burst reads the
-    /// whole stack (`safepoint::size_with_stack`): a deep stack's bursts
-    /// come as much rarer as they cost more, and a shallow program's are
-    /// paced about as the pause stress mode's stops. A step still in progress -- a step out of the run's first
-    /// frame, which returns to the host, or a step over a long call -- is
-    /// given `STEP_STRESS_GRACE` periods of the schedule more, and at least
-    /// `STEP_STRESS_GRACE_SAFEPOINTS` safepoints, then ended
-    /// as a debugger's pause ends it, so that no step keeps the mode from its
-    /// next burst; its frame must still be there then, or it left without
-    /// the step learning of it, which a debug build refuses. The mode
-    /// stands aside while a debugger is attached, so that it never steps
-    /// in the debugger's place.
+    /// The step stress mode at a safepoint: when its schedule says a burst is
+    /// due, the program stops as a pause does, with the mode's reader as the
+    /// agent, which begins the burst's first step. The schedule is fed the
+    /// traced size with the stack counted once more for each step of a burst,
+    /// since every stop of a burst reads the whole stack
+    /// (`safepoint::size_with_stack`): a deep stack's bursts come as much
+    /// rarer as they cost more, and a shallow program's are paced about as
+    /// the pause stress mode's stops. A step still in progress -- a step out
+    /// of the run's first frame, which returns to the host, or a step over a
+    /// long call -- is given `STEP_STRESS_GRACE` periods of the schedule
+    /// more, and at least `STEP_STRESS_GRACE_SAFEPOINTS` safepoints, then
+    /// ended as a debugger's pause ends it, so that no step keeps the mode
+    /// from its next burst; its frame must still be there then, or it left
+    /// without the step learning of it, which a debug build refuses. The mode
+    /// stands aside while a debugger is attached, so that it never steps in
+    /// the debugger's place.
     #[cfg(debug_assertions)]
     pub(crate) fn step_for_stress(&mut self, floor: usize, traced_size: usize) {
         if self.debugger.is_some() {
@@ -1405,7 +1410,8 @@ impl Interpreter {
             );
             debug_assert!(
                 stepping::still_waiting_for_a_handler(mutator),
-                "internal: the step stress mode ended a step that waits for a handler report that never came"
+                "internal: the step stress mode ended a step that waits for a \
+                 handler report that never came"
             );
             stepping::take_exits(mutator);
             stepping::end(mutator);

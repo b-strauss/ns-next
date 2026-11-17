@@ -1367,7 +1367,12 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
         return;
     };
     let heap = &mutator.heap;
-    let gone = |holder: Holder| matches!(holder, Holder::Running(activation) if heap.activation_lies_above_the_top(activation));
+    let gone = |holder: Holder| {
+        matches!(
+            holder,
+            Holder::Running(activation) if heap.activation_lies_above_the_top(activation)
+        )
+    };
     if gone(stepping.frame) {
         stepping.frame = Holder::Left;
     }
@@ -1393,15 +1398,15 @@ pub(crate) fn popped(mutator: &mut Mutator<'_>) {
 }
 
 /// A frame popped otherwise than by a return to its caller's send, and
-/// `now_on_top`, the frame the program goes on in (decision 17): the
-/// popped frame's names are forgotten first (`popped`). When it was the
-/// stepping frame, or the caller its return point is in, the step goes on
-/// as a step into from `now_on_top`, so that it stops at the next
-/// statement start the program reaches: in the caller an instruction
-/// runs again in, the frame a superclass clause's continuation goes on
-/// in, or what that pushes -- an unwind's pops are reported one by one
-/// (`popped`) and its stop once (`unwind_stopped`). Any other frame the step named above the stepping
-/// one -- one the step was taken in, a pushed frame's one-shot -- is only
+/// `now_on_top`, the frame the program goes on in (decision 17): the popped
+/// frame's names are forgotten first (`popped`). When it was the stepping
+/// frame, or the caller its return point is in, the step goes on as a step
+/// into from `now_on_top`, so that it stops at the next statement start the
+/// program reaches: in the caller an instruction runs again in, the frame a
+/// superclass clause's continuation goes on in, or what that pushes -- an
+/// unwind's pops are reported one by one (`popped`) and its stop once
+/// (`unwind_stopped`). Any other frame the step named above the stepping one
+/// -- one the step was taken in, a pushed frame's one-shot -- is only
 /// forgotten. `now_on_top` is `None` when no frame goes on yet -- the run
 /// ends, whose end carries the step to the next run (`run_ended`), or an
 /// error is about to be signalled, whose handler search, or the unwind it

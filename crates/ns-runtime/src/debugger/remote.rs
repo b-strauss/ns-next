@@ -300,17 +300,18 @@ pub enum Command {
     /// `count` of what refers to the value `value` names, a value the stop
     /// handed out, from the `start`th (`docs/design/debugger.md`, "The
     /// memory view"): first each variable of a frame of the stack trace,
-    /// running or suspended into its frame object, that holds it, its receiver as `self`, innermost frame first,
-    /// as `Variables` reads it -- a scratch register is no variable and
-    /// counts for none -- then each object a word of which that keeps
-    /// what it names alive names it, in the space's order: a closure's
-    /// copied values and captured frame, a suspended or returned frame
-    /// object's fields and registers, but neither an object's class word,
-    /// a weak word nor an `Ephemeron`'s key. A frame object married to a
-    /// running frame of the stack is that frame's variables, never an
-    /// object of its own, and a returned frame object nothing living
-    /// refers to -- the implementation's artefact, which keeps nothing
-    /// alive -- is left out. An object is named and held as `Instances`
+    /// running or suspended into its frame object, that holds it, its
+    /// receiver as `self`, innermost frame first, as `Variables` reads it
+    /// -- a scratch register is no variable and counts for none -- then
+    /// each object a word of which that keeps what it names alive names
+    /// it, in the space's order: a closure's copied values and captured
+    /// frame, a suspended or returned frame object's fields and registers,
+    /// but neither an object's class word, a weak word nor an
+    /// `Ephemeron`'s key. A frame object married to a running frame of the
+    /// stack, or suspended as one of them, is that frame's variables,
+    /// never an object of its own, and a returned frame object nothing
+    /// living refers to -- the implementation's artefact, which keeps
+    /// nothing alive -- is left out. An object is named and held as `Instances`
     /// names and holds them, numbered by its place in the whole answer,
     /// and withheld when a shipped module declares its class -- a closure
     /// and a frame object when the body it captured or runs is shipped --
@@ -654,8 +655,9 @@ pub enum Referrer {
     /// An object that holds it, named `#<n>` by its place in the answer,
     /// counted from 1, and described as every value the stop hands out.
     Object(Variable),
-    /// The variable `name` of the running frame at index `frame` of the
-    /// stack trace -- `self` for its receiver -- which holds it.
+    /// The variable `name` of the frame at index `frame` of the stack
+    /// trace, running or suspended into its frame object -- `self` for its
+    /// receiver -- which holds it.
     Stack { frame: usize, name: String },
 }
 

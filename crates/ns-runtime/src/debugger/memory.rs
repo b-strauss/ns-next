@@ -171,8 +171,9 @@ pub(crate) fn instances<'gc>(
 
 /// `count` of what refers to the value `target` holds, from the
 /// `start`th (`Command::Referrers`): first every variable of a frame of
-/// `frames`, running or suspended into its frame object, that holds it, innermost frame first and each
-/// frame's in the order the variables view shows them, `self` first --
+/// `frames`, running or suspended into its frame object, that holds it,
+/// innermost frame first and each frame's in the order the variables view
+/// shows them, `self` first --
 /// read by the variables view's own reader (`stack::frame_values`), so
 /// that a register the leftover analysis finds tainted and a scratch
 /// register, which no variable names and which may hold a word a callee
@@ -182,11 +183,13 @@ pub(crate) fn instances<'gc>(
 /// copied values or its captured frame, a suspended or returned frame
 /// object by its fields and registers. A frame object married to a
 /// running frame of `frames`, or suspended as one of them, is that
-/// frame's variables, not an object of its own; one married to an activation below the run, which the
-/// stack does not show, is an object whose live registers count, read
+/// frame's variables, not an object of its own; one married to an
+/// activation below the run, which the stack does not show, is an object
+/// whose live registers count, read
 /// as the variables view reads them (`registers_refer_to`). A returned
 /// frame object that nothing living refers to -- no object, and nothing
-/// the stack keeps, a running block's closure included -- is left out (`unreferred_returned_frames`): a frame object is the
+/// the stack keeps, a running block's closure included -- is left out
+/// (`unreferred_returned_frames`): a frame object is the
 /// implementation's artefact, reified for a program's block or for the
 /// debugger's evaluation alike, and one nothing refers to keeps nothing
 /// alive, while every other object nothing reaches is answered as the walk

@@ -480,7 +480,9 @@ fn check_tables(body: &Checked, metadata: &BodyMetadata, text: &str) -> Result<(
         // copy may already be stale; one that names an instruction copying
         // nothing refuses an assignment it should allow. An empty list is
         // what a read-only local has, which the table does not say, so the
-        // list is held to the code only where it names a copy.
+        // list is held to the code only where it names a copy: a list that
+        // names some copies must name exactly the code's, but a collector
+        // that missed every copy of a mutable local is not caught here.
         if !variable.copied_by.is_empty() {
             let (0, VariablePlace::Register(register)) = (variable.depth, variable.place) else {
                 return Err(format!(

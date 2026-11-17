@@ -757,7 +757,8 @@ impl Agent {
             command => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "ns-next debugger: connection {connection} sent the unknown command {command:?} (seq {}), its message's keys {keys:?}",
+                    "ns-next debugger: connection {connection} sent the unknown command \
+                     {command:?} (seq {}), its message's keys {keys:?}",
                     request.seq
                 );
                 let message = format!("`{command}` is not supported yet");
