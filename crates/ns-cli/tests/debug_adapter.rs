@@ -3130,13 +3130,45 @@ fn an_evaluate_error_is_a_failed_response() {
 #[test]
 fn a_hover_evaluation_that_does_not_answer_is_aborted() {
     let (_directory, path) = program("Stops", STOPS);
-    let mut client = DapClient::connect_mode(&path);
+    let mut client = DapClient::connect_mode_with("run", &path, &[(HOVER_BOUND, "200")]);
     breakpoints_before_the_start(&mut client, &path, &[6]);
     client.stopped("breakpoint");
     let endless = evaluate(&mut client, "[true] whileTrue: []", Some(1), "hover");
     assert_eq!(endless["success"], false, "{endless}");
     assert_eq!(endless["message"], "evaluation aborted", "{endless}");
     assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    continue_to_the_end(client);
+}
+
+/// The variable through which a debug build's agent takes its bound of a
+/// hover's evaluation, in milliseconds.
+const HOVER_BOUND: &str = "NS_NEXT_DEBUG_HOVER_BOUND_MILLISECONDS";
+
+/// Hovers whose bound passes as they are asked -- a bound of 0 -- race
+/// their abort with their own end: each answers its value or is aborted,
+/// and an abort that arrives after the answer is moot, leaving nothing
+/// that stops the program again once it goes on.
+#[test]
+fn a_hover_answered_around_its_bound_stops_nothing_later() {
+    let (_directory, path) = program("Stops", STOPS);
+    let mut client = DapClient::connect_mode_with("run", &path, &[(HOVER_BOUND, "0")]);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    for _ in 0..20 {
+        let hover = evaluate(&mut client, "count", Some(1), "hover");
+        if hover["success"] == true {
+            assert_eq!(hover["body"]["result"], "3", "{hover}");
+        } else {
+            assert_eq!(hover["message"], "evaluation aborted", "{hover}");
+        }
+    }
+    assert_eq!(evaluated(&mut client, "count", Some(1))["result"], "3");
+    continue_to_the_end(client);
+}
+
+/// Continues a stopped program, which must end with status 0, printing
+/// `3`, and stop nowhere on the way.
+fn continue_to_the_end(mut client: DapClient) {
     client.succeed("continue", json!({ "threadId": 1 }));
     let events = client.connection.events_until_closed();
     let names = names(&events);

@@ -767,6 +767,21 @@ fn expression_in_braces(
             // A doubled quote within a string ends it and begins it
             // again, which reads the same.
             '\'' => in_string = !in_string,
+            // A comment's quotes and braces are the comment's own.
+            '(' if !in_string && characters.peek() == Some(&'*') => {
+                expression.push(character);
+                // The `*` that opens the comment closes nothing.
+                expression.extend(characters.next());
+                let mut previous = None;
+                for inner in characters.by_ref() {
+                    expression.push(inner);
+                    if previous == Some('*') && inner == ')' {
+                        break;
+                    }
+                    previous = Some(inner);
+                }
+                continue;
+            }
             // A character literal's character is never a brace or a quote
             // of the expression's.
             '$' if !in_string => {
@@ -848,6 +863,11 @@ mod tests {
                 ],
             ),
             ("{'it''s' size}", vec![expression("'it''s' size")]),
+            (
+                "{index (* it's } { *) + 1}!",
+                vec![expression("index (* it's } { *) + 1"), text("!")],
+            ),
+            ("{(*) ' *) 2}", vec![expression("(*) ' *) 2")]),
         ];
         for (message, parts) in forms {
             assert_eq!(parse_log_message(message), Ok(parts), "{message}");
@@ -860,6 +880,7 @@ mod tests {
             ("at {index", "unclosed `{`"),
             ("at { {1. 2} size", "unclosed `{`"),
             ("{'}'", "unclosed `{`"),
+            ("at {index (* } *}", "unclosed `{`"),
             ("at {} and", "empty `{}`"),
             ("at { }", "empty `{}`"),
         ] {

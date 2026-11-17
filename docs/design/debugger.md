@@ -5055,9 +5055,18 @@ it, and each expression in braces evaluated at the hit, its own braces
 -- a tuple's -- nesting and a brace in its strings its own, so that one
 beginning with a tuple is written after a blank, `{ {1. 2} size}`; a
 brace that never closes, or an empty `{}`, leaves the breakpoint
-unverified, its message saying so (`parse_log_message`). Each line a
-logpoint logs (`Event::Logged`) is an `output` event, category
-`console`; a condition or log expression that failed stops as the
+unverified, its message saying so (`parse_log_message`); a comment's
+quotes and braces are its own. Each line a logpoint logs
+(`Event::Logged`) is an `output` event, category `console`, cut at
+`LOG_TEXT_LIMIT`, 10,000 characters, saying so. Those lines are the one
+message the agent drops: a logpoint in a hot loop logs faster than a
+client reads, and a full write queue gives the client up as one that
+stopped reading, so past `DROPPABLE_LIMIT`, three quarters of the queue,
+a line is counted instead, and once there is room one `output` line says
+`<n> log lines dropped`, the rest of the queue kept for the responses
+and the events of the session's state
+(`a_logpoint_flood_drops_lines_and_keeps_the_session`). A condition or
+log expression that failed stops as the
 breakpoint, its error the `stopped` event's `text`
 (`a_conditional_breakpoint_stops_only_where_it_holds`,
 `a_failing_condition_stops_with_its_error`,
@@ -5069,16 +5078,21 @@ frame its `frameId` names, the top frame without one, as
 exception that ended it is a failed response whose message describes
 it, an abort one of the message "evaluation aborted". Every `context` is
 evaluated alike, but a hover's, asked unbidden as the pointer rests on a
-name, is aborted by a pause when it has not answered within
-`HOVER_BOUND`, two seconds, which the agent's loop keeps beside the
-attach deadline (`a_hover_evaluation_that_does_not_answer_is_aborted`).
+name, is aborted when it has not answered within `HOVER_BOUND`, two
+seconds, which the agent's loop keeps beside the attach deadline, by
+`Command::AbortEvaluation`, never a pause: the command is served in
+sequence with the evaluation, so one that arrives after the answer is
+refused as moot and dropped, where a pause bit would stay armed at the
+stop and stop the program again once it goes on
+(`a_hover_evaluation_that_does_not_answer_is_aborted`,
+`a_hover_answered_around_its_bound_stops_nothing_later`).
 `setVariable` sets a variable of the frame whose `Locals` scope its
 reference names (`Command::SetVariable`), refusing a value's child and
 the return value: "only a frame's variables are set". Every value the
 agent shows that is not withheld carries, beside its
 `variablesReference`, a value reference of ns-next's own,
-`nsNext/valueReference`, numbered from the same count and valid until
-the program goes on, by which `nsNext/mark { valueReference, label }`
+`nsNext/valueReference`, numbered from the same count, one per value
+the stop handed out and valid until the program goes on, by which `nsNext/mark { valueReference, label }`
 marks it and a forced return will name it; a withheld value has none and
 is shown read-only (`presentationHint.attributes` `readOnly`), and a
 marked one's text ends in ` [label]`. `nsNext/unmark { label }` takes a

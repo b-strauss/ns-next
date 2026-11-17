@@ -54,6 +54,10 @@ pub(crate) struct Stop {
     /// The value references handed out, numbered from the same count as
     /// the `variablesReference`s, so that no number names both.
     values: BTreeMap<i64, ValueId>,
+    /// The value reference of each value the stop handed out, by its id,
+    /// so that a value shown twice -- a variable read again, an
+    /// evaluation that answers it -- keeps one reference.
+    value_references: BTreeMap<u32, i64>,
     next_reference: i64,
 }
 
@@ -65,6 +69,7 @@ impl Stop {
             returned: None,
             references: BTreeMap::new(),
             values: BTreeMap::new(),
+            value_references: BTreeMap::new(),
             next_reference: 1,
         }
     }
@@ -91,6 +96,7 @@ impl Stop {
         self.returned = None;
         self.references.clear();
         self.values.clear();
+        self.value_references.clear();
     }
 
     pub(crate) fn frames(&self) -> &Frames {
@@ -195,9 +201,13 @@ impl Stop {
             0
         };
         let value_reference = (!value.withheld).then(|| {
+            if let Some(reference) = self.value_references.get(&value.id.0) {
+                return *reference;
+            }
             let reference = self.next_reference;
             self.next_reference += 1;
             self.values.insert(reference, value.id);
+            self.value_references.insert(value.id.0, reference);
             reference
         });
         let text = match &value.mark {
@@ -281,5 +291,43 @@ pub(crate) fn stack_frame(
             end_column: None,
             presentation_hint,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn described(id: u32, withheld: bool) -> ValueDescription {
+        ValueDescription {
+            id: ValueId(id),
+            label: "an Object".to_string(),
+            class_name: "Object".to_string(),
+            child_count: 1,
+            indexed: false,
+            withheld,
+            mark: None,
+        }
+    }
+
+    /// A value shown twice at one stop keeps its value reference, which
+    /// names it and nothing else; the next stop hands out new ones.
+    #[test]
+    fn a_value_keeps_one_value_reference_per_stop() {
+        let mut stop = Stop::new();
+        stop.begin(None);
+        let first = stop.shown(&described(4, false)).1.value_reference;
+        let again = stop.shown(&described(4, false)).1.value_reference;
+        let other = stop.shown(&described(5, false)).1.value_reference;
+        assert_eq!(first, again);
+        assert_ne!(first, other);
+        let reference = first.expect("a value reference");
+        assert_eq!(stop.value(reference), Some(ValueId(4)));
+        assert_eq!(stop.shown(&described(6, true)).1.value_reference, None);
+        stop.end();
+        assert_eq!(stop.value(reference), None);
+        stop.begin(None);
+        let later = stop.shown(&described(4, false)).1.value_reference;
+        assert_ne!(later, first, "a reference of an earlier stop names nothing");
     }
 }

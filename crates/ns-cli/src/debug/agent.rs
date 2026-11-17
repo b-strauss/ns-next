@@ -90,12 +90,37 @@ const WRITE_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_WRITE_BOUND_MILLISECONDS";
 const ENDED_LINGER: Duration = Duration::from_secs(2);
 
 /// How long an `evaluate` of the context `hover` may take before the
-/// agent aborts it by a pause: a hover is asked as the pointer rests on a
-/// name, unbidden, and an expression that does not end -- a getter that
-/// loops -- would otherwise leave the program's stop busy until the user
-/// noticed. The console's, a watch's and the clipboard's are the user's
+/// agent aborts it (`abort_overdue_hovers`): a hover is asked as the
+/// pointer rests on a name, unbidden, and an expression that does not
+/// end -- a getter that loops -- would otherwise leave the program's stop
+/// busy until the user noticed. The console's, a watch's and the clipboard's are the user's
 /// own request, which the user cancels.
 pub(super) const HOVER_BOUND: Duration = Duration::from_secs(2);
+
+/// The variable a debug build reads `HOVER_BOUND` from, in milliseconds,
+/// as `ATTACH_DEADLINE_VARIABLE`: a test of the bound takes a fraction of
+/// it, and one of 0 aborts every hover as it is asked, which races the
+/// abort with the evaluation's own end.
+#[cfg(debug_assertions)]
+const HOVER_BOUND_VARIABLE: &str = "NS_NEXT_DEBUG_HOVER_BOUND_MILLISECONDS";
+
+/// The bound of a hover's evaluation.
+fn hover_bound() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(shortened) = debug_override(HOVER_BOUND_VARIABLE) {
+        return shortened;
+    }
+    HOVER_BOUND
+}
+
+/// The longest text of a logpoint's line the agent sends, in characters:
+/// a message whose expression answers a huge `printString` would otherwise
+/// be one write the size of the object's text, at every hit.
+const LOG_TEXT_LIMIT: usize = 10_000;
+
+/// How often the agent tries again to say how many logpoint lines it
+/// dropped, while the client has not read enough to take the line.
+const DROPPED_RETRY: Duration = Duration::from_millis(100);
 
 /// The variable a debug build reads `ENDED_LINGER` from, in milliseconds,
 /// as `ATTACH_DEADLINE_VARIABLE`.
@@ -296,6 +321,9 @@ pub(crate) struct Agent {
     pub(super) step_filters_said: Vec<String>,
     /// The hovers' evaluations not answered yet (`HOVER_BOUND`).
     hovers: Vec<Hover>,
+    /// The logpoint lines dropped since the client was last told, for a
+    /// write queue too full to take them (`log`).
+    dropped_logs: u64,
 }
 
 impl Agent {
@@ -339,6 +367,7 @@ impl Agent {
             waiting: Vec::new(),
             step_filters_said: Vec::new(),
             hovers: Vec::new(),
+            dropped_logs: 0,
         }
     }
 
@@ -358,6 +387,7 @@ impl Agent {
                 continue;
             }
             self.abort_overdue_hovers();
+            self.report_dropped_logs();
             let input = match self.deferred.pop_front() {
                 Some(input) => input,
                 None => match self.next_deadline() {
@@ -387,12 +417,15 @@ impl Agent {
             .and_then(|client| client.attach_by)
     }
 
-    /// The earliest deadline the agent keeps: the attach's, or a hover's.
+    /// The earliest deadline the agent keeps: the attach's, a hover's, or
+    /// the next try to say how many logpoint lines were dropped.
     fn next_deadline(&self) -> Option<Instant> {
+        let retry = (self.dropped_logs > 0).then(|| Instant::now() + DROPPED_RETRY);
         self.hovers
             .iter()
             .map(|hover| hover.deadline)
             .chain(self.attach_by())
+            .chain(retry)
             .min()
     }
 
@@ -401,31 +434,33 @@ impl Agent {
         self.hovers.push(Hover {
             connection,
             request_seq: request.seq,
-            deadline: Instant::now() + HOVER_BOUND,
+            deadline: Instant::now() + hover_bound(),
         });
     }
 
-    /// Pauses the VM, which aborts the evaluation running at its stop, for
-    /// a hover past its bound that the VM has still not answered. Should
-    /// the evaluation end just before the pause arrives, the pause is moot
-    /// at the stop, which the evaluation leaves as it was.
+    /// Aborts the evaluation of each hover past its bound that the VM has
+    /// still not answered, by `Command::AbortEvaluation`, never by a
+    /// pause: the command is served in sequence with the evaluation, so
+    /// one that arrives after the evaluation answered is refused as moot
+    /// -- a refusal the agent drops -- where a pause bit would stay armed
+    /// at the stop and stop the program again once it goes on.
     fn abort_overdue_hovers(&mut self) {
         let now = Instant::now();
         let (overdue, waiting): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovers)
             .into_iter()
             .partition(|hover| hover.deadline <= now);
         self.hovers = waiting;
-        let unanswered = overdue.iter().any(|hover| {
-            self.pending.iter().any(|pending| {
+        for hover in overdue {
+            let unanswered = self.pending.iter().any(|pending| {
                 matches!(
                     &pending.reply,
                     Reply::Request { connection, request_seq, .. }
                         if *connection == hover.connection && *request_seq == hover.request_seq
                 )
-            })
-        });
-        if unanswered && let Some(control) = &self.control {
-            control.pause();
+            });
+            if unanswered {
+                self.command(Command::AbortEvaluation, Reply::Internal);
+            }
         }
     }
 
@@ -1097,6 +1132,7 @@ impl Agent {
         let was_attached = client.attached;
         self.waiting.clear();
         self.hovers.clear();
+        self.dropped_logs = 0;
         self.line_step = None;
         self.step_filters_said.clear();
         self.stop_on_entry = false;
@@ -1247,12 +1283,7 @@ impl Agent {
                     self.send_terminate();
                 }
             }
-            Event::Logged { text, .. } => {
-                // A logpoint's line, in the console beside the program's
-                // own output, which the IDE shows itself.
-                let output = json!({ "category": "console", "output": format!("{text}\n") });
-                self.event("output", Some(output));
-            }
+            Event::Logged { text, .. } => self.log(&text),
             event => self.answer(event),
         }
     }
@@ -1512,6 +1543,7 @@ impl Agent {
                 self.line_step = None;
                 self.answer_what_the_vm_sent();
                 if self.is_attached() {
+                    self.report_dropped_logs();
                     let exited = protocol::ExitedEventBody {
                         exit_code: i64::from(status),
                     };
@@ -1695,6 +1727,56 @@ impl Agent {
                 body,
             })
         });
+    }
+
+    /// A logpoint's line, an `output` event in the console beside the
+    /// program's own output, which the IDE shows itself; cut at
+    /// `LOG_TEXT_LIMIT` characters, saying so. A logpoint in a hot loop
+    /// logs faster than a client may read, so its lines are the one
+    /// message the agent drops: near a full write queue it counts the
+    /// line instead (`Writer::has_room_for_droppable`), and says how many
+    /// it dropped once there is room, rather than give the client up as
+    /// one that stopped reading.
+    fn log(&mut self, text: &str) {
+        if !self.is_attached() {
+            return;
+        }
+        self.report_dropped_logs();
+        if !self.has_room_for_droppable() {
+            self.dropped_logs += 1;
+            return;
+        }
+        let output = match text.char_indices().nth(LOG_TEXT_LIMIT) {
+            Some((cut, _)) => {
+                format!("{} [cut at {LOG_TEXT_LIMIT} characters]\n", &text[..cut])
+            }
+            None => format!("{text}\n"),
+        };
+        self.event(
+            "output",
+            Some(json!({ "category": "console", "output": output })),
+        );
+    }
+
+    /// Says how many logpoint lines were dropped, once the write queue has
+    /// room for the line.
+    fn report_dropped_logs(&mut self) {
+        if self.dropped_logs == 0 || !self.has_room_for_droppable() {
+            return;
+        }
+        let output = format!("{} log lines dropped\n", self.dropped_logs);
+        self.dropped_logs = 0;
+        self.event(
+            "output",
+            Some(json!({ "category": "console", "output": output })),
+        );
+    }
+
+    /// Whether the attached client's write queue takes a droppable message.
+    fn has_room_for_droppable(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|client| client.writer.has_room_for_droppable())
     }
 
     /// Queues the message `build` makes of the next sequence number for
@@ -1975,6 +2057,95 @@ mod tests {
         assert!(harness.agent.is_attached());
         assert_eq!(response_to(&mut peer, 1)["success"], true);
         assert_eq!(response_to(&mut peer, 2)["success"], true);
+    }
+
+    fn logged(text: &str) -> Event {
+        Event::Logged {
+            breakpoint: BreakpointId(0),
+            text: text.to_string(),
+        }
+    }
+
+    /// The next `output` event the peer reads.
+    fn next_output(peer: &mut std::io::BufReader<TcpStream>) -> String {
+        loop {
+            let message = super::super::wire::read_message(peer, || usize::MAX)
+                .expect("a message")
+                .expect("the connection open");
+            if message["event"] == "output" {
+                return message["body"]["output"]
+                    .as_str()
+                    .expect("an output")
+                    .to_string();
+            }
+        }
+    }
+
+    /// A logpoint in a hot loop, logging far faster than its client reads
+    /// -- here a client that reads nothing meanwhile -- never ends the
+    /// session: past the droppable limit its lines are dropped, and once
+    /// the client read, one line says how many.
+    #[test]
+    fn a_logpoint_flood_drops_lines_and_keeps_the_session() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        harness.agent.request(1, request(1, "attach", json!({})));
+        for index in 0..100_000 {
+            harness.agent.vm_event(logged(&format!("at {index}")));
+        }
+        assert!(harness.agent.client.is_some(), "the session ended");
+        assert!(harness.agent.dropped_logs > 0, "nothing was dropped");
+        // Every line is either written or counted in a line that says so,
+        // some of which the flood itself wrote as the client's queue
+        // drained into the socket.
+        let reader = std::thread::spawn(move || {
+            let (mut kept, mut reported) = (0_u64, 0_u64);
+            while kept + reported < 100_000 {
+                let output = next_output(&mut peer);
+                match output.strip_suffix(" log lines dropped\n") {
+                    Some(count) => reported += count.parse::<u64>().expect("a count"),
+                    None => kept += 1,
+                }
+            }
+            (kept, reported)
+        });
+        let started = Instant::now();
+        while harness.agent.dropped_logs > 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "never reported"
+            );
+            harness.agent.report_dropped_logs();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (kept, reported) = reader.join().expect("the reader");
+        assert!(reported > 0 && kept > 0, "{kept} kept, {reported} dropped");
+        assert_eq!(kept + reported, 100_000);
+    }
+
+    /// A logpoint's line past `LOG_TEXT_LIMIT` characters is cut there,
+    /// and says so.
+    #[test]
+    fn a_long_log_line_is_cut() {
+        let mut harness = harness(Mode::Connecting { secret: None });
+        let mut peer = connect(&mut harness.agent);
+        harness.agent.request(1, request(1, "attach", json!({})));
+        harness
+            .agent
+            .vm_event(logged(&"é".repeat(LOG_TEXT_LIMIT + 5)));
+        harness.agent.vm_event(logged(&"é".repeat(LOG_TEXT_LIMIT)));
+        let cut = next_output(&mut peer);
+        assert_eq!(
+            cut,
+            format!(
+                "{} [cut at {LOG_TEXT_LIMIT} characters]\n",
+                "é".repeat(LOG_TEXT_LIMIT)
+            )
+        );
+        assert_eq!(
+            next_output(&mut peer),
+            format!("{}\n", "é".repeat(LOG_TEXT_LIMIT))
+        );
     }
 
     #[test]
