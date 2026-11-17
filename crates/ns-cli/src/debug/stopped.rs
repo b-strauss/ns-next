@@ -219,11 +219,38 @@ impl Stop {
             variables_reference,
             indexed_variables: indexed.then_some(value.child_count),
             presentation_hint: value.withheld.then(|| protocol::VariablePresentationHint {
+                kind: None,
                 attributes: vec!["readOnly"],
             }),
             value_reference,
         };
         (text, shown)
+    }
+
+    /// A referrer on the stack (`Referrer::Stack`): the variable `name` of
+    /// the frame at `frame`, named `frame <id> <name>` by the frame's DAP
+    /// id. What it holds is the value its referrers were asked of, so it
+    /// shows the frame's name, when the stop's frames are known, and
+    /// neither a value reference nor children: a `virtual` variable,
+    /// naming a place.
+    pub(crate) fn stack_referrer(&self, frame: usize, name: &str) -> protocol::Variable {
+        let frame_name = match &self.frames {
+            Frames::Known(frames) => frames
+                .get(frame)
+                .map(|known| known.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let (_, mut shown) = Self::without_value("");
+        shown.presentation_hint = Some(protocol::VariablePresentationHint {
+            kind: Some("virtual"),
+            attributes: Vec::new(),
+        });
+        protocol::Variable {
+            name: format!("frame {} {name}", frame + 1),
+            value: frame_name,
+            shown,
+        }
     }
 
     /// What a variable that holds no value shows, its text saying why.
@@ -252,7 +279,10 @@ impl Stop {
 /// The frame at `index` of the stack trace as a `stackTrace` response
 /// shows it. Its range is the selector of the send it waits on, for a
 /// frame below the top, and its statement otherwise, in its module's
-/// current text, which `sources` holds.
+/// current text, which `sources` holds. A shipped frame is `subtle`, its
+/// source `deemphasize`d, so that a client folds it away
+/// (`docs/design/debugger.md`, "Folding the shipped frames"), as it
+/// shows a hidden frame only on demand.
 pub(crate) fn stack_frame(
     index: usize,
     frame: &FrameDescription,
@@ -266,32 +296,31 @@ pub(crate) fn stack_frame(
         });
         let (start, end) =
             sources.range(&location.module, selector.unwrap_or(location.statement))?;
-        Some((sources.source(&location.module), start, end))
+        let mut source = sources.source(&location.module);
+        source.presentation_hint = frame.shipped.then_some("deemphasize");
+        Some((source, start, end))
     });
-    let id = i64::try_from(index + 1).unwrap_or(i64::MAX);
-    let presentation_hint = frame.hidden.then_some("subtle");
-    match place {
-        Some((source, start, end)) => protocol::StackFrame {
-            id,
-            name: frame.name.clone(),
-            source: Some(source),
-            line: start.line + 1,
-            column: start.column + 1,
-            end_line: Some(end.line + 1),
-            end_column: Some(end.column + 1),
-            presentation_hint,
-        },
-        None => protocol::StackFrame {
-            id,
-            name: frame.name.clone(),
-            source: None,
-            line: 0,
-            column: 0,
-            end_line: None,
-            end_column: None,
-            presentation_hint,
-        },
+    let mut shown = protocol::StackFrame {
+        id: i64::try_from(index + 1).unwrap_or(i64::MAX),
+        name: frame.name.clone(),
+        source: None,
+        line: 0,
+        column: 0,
+        end_line: None,
+        end_column: None,
+        presentation_hint: (frame.hidden || frame.shipped).then_some("subtle"),
+        // The VM refuses to restart a frame of the core library.
+        can_restart: frame.shipped.then_some(false),
+        shipped: frame.shipped,
+    };
+    if let Some((source, start, end)) = place {
+        shown.source = Some(source);
+        shown.line = start.line + 1;
+        shown.column = start.column + 1;
+        shown.end_line = Some(end.line + 1);
+        shown.end_column = Some(end.column + 1);
     }
+    shown
 }
 
 #[cfg(test)]

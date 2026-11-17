@@ -274,11 +274,13 @@ impl Sources {
                 name,
                 path: Some(path),
                 source_reference: None,
+                presentation_hint: None,
             },
             None => protocol::Source {
                 name,
                 path: None,
                 source_reference: Some(self.reference_of(module)),
+                presentation_hint: None,
             },
         }
     }

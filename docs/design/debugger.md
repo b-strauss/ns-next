@@ -89,10 +89,13 @@
 > ("Hit counts and temporary breakpoints"), and restarts a stopped frame
 > or forces it to return, through the one unwinder ("Restart frame and
 > force return"); the DAP agent evaluates, sets variables, marks
-> objects and passes conditions and logpoints on ("Launching, the start
-> and the end"). Everything else is planned:
+> objects, passes conditions and logpoints on, smart-steps into a chosen
+> target, restarts frames, forces returns, answers the memory view and
+> marks the shipped frames for folding ("Launching, the start and the
+> end"). Everything else is planned:
 > conditions and logpoints in the plugin, watches, smart
-> step into (stage 5, next), hot swap and
+> step into, restart frame, force return, the memory view and folding
+> in the plugin (stage 5, next), hot swap and
 > edit-and-continue (stage 6) ("Planned: the order of building it"). The
 > design rests on seventeen decisions made with the user, nine on
 > 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
@@ -2254,8 +2257,8 @@ smart step into, the frame left by a return to its caller's return
 point, and the reports of a frame left otherwise, by an unwind or a
 continuation other than `Deliver` (decision 17), the handler search's
 report ("Exceptions"), the step filters (decision 16), and run to
-cursor. The agent's DAP requests for smart step into
-(`stepInTargets`) are not built.
+cursor. The agent speaks smart step into as DAP's `stepInTargets` and
+`stepIn`'s `targetId` ("Launching, the start and the end").
 
 - **Step over** sets one-shot breakpoints at every statement start of the
   frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
@@ -2479,11 +2482,14 @@ conditions and block variants, `setFunctionBreakpoints`,
 `setExceptionBreakpoints`, `pause`, `continue`, the steps with their
 `granularity`, run to cursor, `evaluate`, `setVariable`, breakpoints'
 conditions and logpoints, the marks (`nsNext/mark`, `nsNext/unmark`),
-`terminate` and `disconnect`, and the `stopped`, `breakpoint`, `output`
-and `exited` events (`crates/ns-cli/src/debug/`, "Launching, the start
-and the end"); `breakpointLocations`, `stepInTargets`, `restartFrame`
-and the requests of ns-next's own for hot swap, edit-and-continue and
-force return are planned.
+smart step into (`stepInTargets`, `stepIn`'s `targetId`),
+`restartFrame`, force return (`nsNext/forceReturn`), the memory view
+(`nsNext/instanceCounts`, `nsNext/instances`, `nsNext/referrers`),
+the shipped frames' hints, `terminate` and `disconnect`, and the
+`stopped`, `breakpoint`, `output` and `exited` events
+(`crates/ns-cli/src/debug/`, "Launching, the start and the end");
+`breakpointLocations` and the requests of ns-next's own for hot swap
+and edit-and-continue are planned.
 
 The agent speaks the Debug Adapter Protocol, JSON in `Content-Length`
 frames, over a TCP socket bound to 127.0.0.1, since the program owns its
@@ -4247,8 +4253,10 @@ expression's reach.
 
 **Built** in the VM (`Command::InstanceCounts`, `Command::Instances`,
 `Command::Referrers`, `debugger/memory.rs`, `Heap::each_object`,
-`Heap::refers_to`; tests `memory_view` in `tests/debugger.rs`); the
-agent's requests for it are planned with its stage 5 part.
+`Heap::refers_to`; tests `memory_view` in `tests/debugger.rs`) and in
+the agent (`nsNext/instanceCounts`, `nsNext/instances`,
+`nsNext/referrers`; "Launching, the start and the end"); the plugin's
+view is planned.
 
 At a stop the IDE can ask for the instances of a class and for the
 objects that refer to one (decided with the user on 2026-11-16, in stage
@@ -4346,15 +4354,19 @@ withholds the mirror.
 
 **Partial:** the VM's part is built: every frame of the stack trace says
 whether it runs a body of a shipped module (`FrameDescription::shipped`,
-`stack::is_shipped`; `a_shipped_frame_says_so`); the agent's hints and
-the plugin's folding are planned.
+`stack::is_shipped`; `a_shipped_frame_says_so`); so are the agent's
+hints (`stopped::stack_frame`; `a_shipped_frame_is_deemphasized`), and
+the plugin's folding is planned.
 
 The agent marks a frame of a shipped module's body with DAP's
 `presentationHint` `subtle`, and its source with `deemphasize`, and the
 plugin folds each run of such frames in the stack, as IntelliJ hides
 library frames (decided with the user on 2026-11-16, in stage 5). Which
 frames are shipped is the test the step filter already makes (decision
-16).
+16). The agent also writes `nsNext/shipped: true` on such a frame, so
+that a client tells it from a hidden frame, which is `subtle` too -- a
+frame both hidden and shipped stays `subtle` -- and `canRestart:
+false`, since the VM refuses to restart a frame of the core library.
 
 ### Exceptions
 
@@ -5103,11 +5115,55 @@ agent shows that is not withheld carries, beside its
 `variablesReference`, a value reference of ns-next's own,
 `nsNext/valueReference`, numbered from the same count, one per value
 the stop handed out and valid until the program goes on, by which `nsNext/mark { valueReference, label }`
-marks it and a forced return will name it; a withheld value has none and
+marks it and `nsNext/referrers` asks what refers to it; a withheld value has none and
 is shown read-only (`presentationHint.attributes` `readOnly`), and a
 marked one's text ends in ` [label]`. `nsNext/unmark { label }` takes a
 mark off (`a_marked_object_is_named_in_a_later_evaluate`,
 `a_withheld_value_is_read_only`).
+
+Smart step into, restart and force return (`stepping.rs`,
+`evaluation.rs`): `stepInTargets { frameId }` answers the targets of
+the frame a step steps from -- the top frame, or at an exception's stop
+the first one shown below its hidden machinery -- and refuses any other
+frame: "smart step into takes the top frame". It waits for the stop's
+frames, which say which frame that is, and for that frame's module's
+text, in which each target's span becomes its `line`, `column`,
+`endLine` and `endColumn`, 1-based, in UTF-16 columns
+(`Command::StepInTargets`); a target's id is the VM's plus 1, so that
+none is 0. `stepIn` with a `targetId` sends `Command::StepIntoTarget`
+whatever its `granularity`, the VM refusing an id no target of the stop
+has (`step_in_targets_list_the_line_s_sends`,
+`step_in_with_a_target_stops_in_it`). `restartFrame { frameId }` sends
+`Command::RestartFrame`, and the stop the restarted frame makes at its
+start is reported with DAP's reason `restart`
+(`a_restart_frame_runs_the_method_again`). `nsNext/forceReturn {
+frameId, expression? }`, a request of ns-next's own, makes the frame
+return at once: `nil` without an expression, or with a blank one;
+otherwise the expression is evaluated in that frame first, as
+`evaluate` evaluates it, and its value forced (`Command::ForceReturn`).
+An evaluation that ends with an error or is aborted, and a value that
+is withheld -- "the value is withheld" -- fail the request and force
+nothing, the program still stopped
+(`a_forced_return_answers_the_expression_s_value`); the stop that
+follows is a step's.
+
+The memory view (`evaluation.rs`): `nsNext/instanceCounts {}` answers
+`classes`, each `{ name, count }` in the VM's order, the largest count
+first, its `name` `Module.Path.To.Class`, as a function breakpoint names
+a class, and `nsNext/shipped: true` for a shipped module's class, since
+a program may declare a module of a shipped module's name.
+`nsNext/instances { name, shipped?, start, count }` answers a page of the
+instances of the class `name` names, as `variables` answers, each named
+`#<n>`: the program's module of that name when it has one, the shipped
+module's otherwise, unless `shipped` picks one. `nsNext/referrers {
+valueReference, start, count }` answers a page of what refers to the
+value, as `variables` answers too: an object as a variable shows a
+value, and a frame's variable that holds the value as a variable named
+`frame <id> <name>`, the frame's DAP id, its text the frame's name,
+with `presentationHint.kind` `virtual` and neither children nor a value
+reference, since what it holds is the value asked of. A missing or 0
+`count` answers every one from `start`
+(`instance_counts_name_the_program_s_classes`).
 
 The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
 default, or by statement (decision 4); `stepOut`, one `StepOut`; and

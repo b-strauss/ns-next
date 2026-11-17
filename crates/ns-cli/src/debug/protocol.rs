@@ -83,6 +83,8 @@ pub(crate) struct Capabilities {
     pub(crate) supports_log_points: bool,
     pub(crate) supports_evaluate_for_hovers: bool,
     pub(crate) supports_set_variable: bool,
+    pub(crate) supports_step_in_targets_request: bool,
+    pub(crate) supports_restart_frame: bool,
     pub(crate) supports_terminate_request: bool,
     pub(crate) supports_exception_filter_options: bool,
     pub(crate) exception_breakpoint_filters: Vec<ExceptionBreakpointsFilter>,
@@ -110,6 +112,8 @@ impl Capabilities {
             supports_log_points: true,
             supports_evaluate_for_hovers: true,
             supports_set_variable: true,
+            supports_step_in_targets_request: true,
+            supports_restart_frame: true,
             supports_terminate_request: true,
             supports_exception_filter_options: true,
             exception_breakpoint_filters: vec![
@@ -286,11 +290,96 @@ pub(crate) struct ExceptionFilterOptions {
 }
 
 /// `next`, `stepIn` and `stepOut`: `line` (the default), `statement`, or
-/// `instruction`, which steps as `statement` does.
+/// `instruction`, which steps as `statement` does; `stepIn`'s `targetId`
+/// is a target `stepInTargets` answered at this stop, which the step
+/// stops at alone, whatever its granularity.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct StepArguments {
     pub(crate) granularity: Option<String>,
+    pub(crate) target_id: Option<i64>,
+}
+
+/// `stepInTargets`: the targets of the frame `frameId` names, which must
+/// be the one a step steps from.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct StepInTargetsArguments {
+    pub(crate) frame_id: i64,
+}
+
+/// One target of a `stepInTargets` response, placed at its selector's
+/// first token or at its block literal; unplaced where the module's text
+/// is not known.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StepInTarget {
+    pub(crate) id: i64,
+    pub(crate) label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) end_column: Option<u32>,
+}
+
+/// `restartFrame`: the frame `frameId` names runs again from its start.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct RestartFrameArguments {
+    pub(crate) frame_id: i64,
+}
+
+/// `nsNext/forceReturn`, a request of ns-next's own: the frame `frameId`
+/// names returns at once what `expression`, evaluated in that frame,
+/// answers -- `nil` without one, or with a blank one.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ForceReturnArguments {
+    pub(crate) frame_id: i64,
+    pub(crate) expression: Option<String>,
+}
+
+/// `nsNext/instances`, a request of ns-next's own: `count` of the
+/// instances of the class declaration `name` names, `Module.Path.To.Class`
+/// as `nsNext/instanceCounts` names it, from the `start`th. `shipped`
+/// picks the shipped module, or the program's, of a name both have,
+/// which `nsNext/instanceCounts` says of each class; without it, the
+/// program's module is taken where it has one.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct InstancesArguments {
+    pub(crate) name: String,
+    pub(crate) shipped: Option<bool>,
+    pub(crate) start: Option<usize>,
+    /// `None` or 0: every one from `start`.
+    pub(crate) count: Option<usize>,
+}
+
+/// `nsNext/referrers`, a request of ns-next's own: `count` of what refers
+/// to the value `valueReference` names, from the `start`th.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ReferrersArguments {
+    pub(crate) value_reference: i64,
+    pub(crate) start: Option<usize>,
+    /// `None` or 0: every one from `start`.
+    pub(crate) count: Option<usize>,
+}
+
+/// One class of an `nsNext/instanceCounts` response.
+#[derive(Serialize)]
+pub(crate) struct InstanceCount {
+    /// `Module.Path.To.Class`, as `nsNext/instances` takes it.
+    pub(crate) name: String,
+    pub(crate) count: usize,
+    /// ns-next's own: the class is a shipped module's, which a program
+    /// module of the same name does not declare.
+    #[serde(rename = "nsNext/shipped", skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) shipped: bool,
 }
 
 /// `nsNext/runToPosition`, a request of ns-next's own: the program goes
@@ -365,6 +454,9 @@ pub(crate) struct Source {
     pub(crate) path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) source_reference: Option<i64>,
+    /// `deemphasize` for a shipped frame's source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) presentation_hint: Option<&'static str>,
 }
 
 /// One frame of a `stackTrace` response; a frame without a location has
@@ -382,8 +474,16 @@ pub(crate) struct StackFrame {
     pub(crate) end_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) end_column: Option<u32>,
+    /// `subtle` for a frame a client shows only on demand or folds away:
+    /// a hidden frame, and a shipped module's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) presentation_hint: Option<&'static str>,
+    /// `false` for a frame `restartFrame` refuses, a shipped module's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) can_restart: Option<bool>,
+    /// ns-next's own: the frame runs a body of a shipped module.
+    #[serde(rename = "nsNext/shipped", skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) shipped: bool,
 }
 
 #[derive(Serialize)]
@@ -446,8 +546,14 @@ pub(crate) struct Shown {
     pub(crate) value_reference: Option<i64>,
 }
 
-#[derive(Serialize)]
+/// `attributes` `readOnly` for a withheld value; `kind` `virtual` for a
+/// variable that names a place rather than holds a value: a referrer on
+/// the stack.
+#[derive(Serialize, Default)]
 pub(crate) struct VariablePresentationHint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) attributes: Vec<&'static str>,
 }
 

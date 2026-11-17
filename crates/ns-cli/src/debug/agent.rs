@@ -237,6 +237,20 @@ pub(super) enum Conversion {
     Evaluated { generation: u64 },
     /// `setVariable`'s, asked at the stop `generation`.
     VariableSet { generation: u64 },
+    /// `stepInTargets`', asked at the stop `generation`, its targets
+    /// placed in the current text of `module`, the top frame's.
+    StepInTargets {
+        generation: u64,
+        module: Option<ModuleName>,
+    },
+    /// `nsNext/forceReturn`'s with an expression, whose evaluation in the
+    /// frame at `frame`, asked at the stop `generation`, answers the
+    /// value the frame is then forced to return (`evaluation.rs`).
+    ForceReturning { generation: u64, frame: usize },
+    /// `nsNext/instanceCounts`'.
+    InstanceCounts,
+    /// `nsNext/referrers`', asked at the stop `generation`.
+    Referrers { generation: u64 },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
@@ -296,6 +310,9 @@ pub(crate) struct Agent {
     stop_on_entry: bool,
     /// The next pause stop is the entry's.
     entry_pending: bool,
+    /// A `restartFrame` is on its way: the next step's stop is the
+    /// restart's.
+    pub(super) restart_pending: bool,
     /// The VM stands at a stop.
     stopped: bool,
     /// A `Continue`, a step or a run to cursor is on its way: the program
@@ -356,6 +373,7 @@ impl Agent {
             connections: 0,
             stop_on_entry: false,
             entry_pending: false,
+            restart_pending: false,
             stopped: false,
             resuming: false,
             line_step: None,
@@ -604,6 +622,12 @@ impl Agent {
             "setVariable" => self.set_variable(connection, &request),
             "nsNext/mark" => self.mark(connection, &request),
             "nsNext/unmark" => self.unmark(connection, &request),
+            "stepInTargets" => self.step_in_targets(connection, &request),
+            "restartFrame" => self.restart_frame(connection, &request),
+            "nsNext/forceReturn" => self.force_return(connection, &request),
+            "nsNext/instanceCounts" => self.instance_counts(connection, &request),
+            "nsNext/instances" => self.instances(connection, &request),
+            "nsNext/referrers" => self.referrers(connection, &request),
             "source" => self.source(connection, &request),
             "setBreakpoints" => self.set_breakpoints(connection, &request),
             "setFunctionBreakpoints" => self.set_function_breakpoints(connection, &request),
@@ -814,7 +838,7 @@ impl Agent {
     }
 
     /// Answers `request` once what it reads is there, asking the VM for it.
-    fn wait(&mut self, connection: u64, request: &protocol::Request) {
+    pub(super) fn wait(&mut self, connection: u64, request: &protocol::Request) {
         self.waiting.push(Waiting {
             connection,
             request: request.clone(),
@@ -832,10 +856,30 @@ impl Agent {
             if !self.is_current(waiting.connection) {
                 continue;
             }
-            let outcome = if waiting.generation == self.stop.generation() {
-                self.try_answer(&waiting.request)
-            } else {
+            let outcome = if waiting.generation != self.stop.generation() {
                 Some(Err("the program went on".to_string()))
+            } else if waiting.request.command == "stepInTargets" {
+                // Asked of the VM once the frames and the top frame's
+                // text are there, and answered when the VM answers.
+                match self.step_in_targets_ready(&waiting.request) {
+                    Some(Ok(module)) => {
+                        let conversion = Conversion::StepInTargets {
+                            generation: waiting.generation,
+                            module,
+                        };
+                        self.forward_converted(
+                            waiting.connection,
+                            &waiting.request,
+                            Command::StepInTargets,
+                            conversion,
+                        );
+                        continue;
+                    }
+                    Some(Err(reason)) => Some(Err(reason)),
+                    None => None,
+                }
+            } else {
+                self.try_answer(&waiting.request)
             };
             match outcome {
                 Some(outcome) => self.write_response(
@@ -1075,6 +1119,7 @@ impl Agent {
             control.send(Command::Terminate);
         }
         self.entry_pending = false;
+        self.restart_pending = false;
         self.line_step = None;
         self.went_on();
     }
@@ -1137,6 +1182,7 @@ impl Agent {
         self.step_filters_said.clear();
         self.stop_on_entry = false;
         self.entry_pending = false;
+        self.restart_pending = false;
         self.session_ended(was_attached);
     }
 
@@ -1351,8 +1397,14 @@ impl Agent {
     /// Shows the client the stop the program stands at, for `reason`.
     pub(super) fn report_stop(&mut self, reason: &StopReason) {
         self.line_step = None;
-        let body = stopped_body(reason, self.entry_pending, &self.breakpoints);
+        let body = stopped_body(
+            reason,
+            self.entry_pending,
+            self.restart_pending,
+            &self.breakpoints,
+        );
         self.entry_pending = false;
+        self.restart_pending = false;
         self.event("stopped", Some(to_value(body)));
     }
 
@@ -1399,6 +1451,9 @@ impl Agent {
                 // The program stays at its stop, which the client keeps
                 // reading.
                 self.resuming = false;
+                if command == "RestartFrame" {
+                    self.restart_pending = false;
+                }
             }
             _ => {}
         }
@@ -1455,6 +1510,16 @@ impl Agent {
                 self.hovers.retain(|hover| {
                     hover.connection != connection || hover.request_seq != request_seq
                 });
+                if let Conversion::ForceReturning { generation, frame } = conversion {
+                    let request = protocol::Request {
+                        seq: request_seq,
+                        kind: "request".to_string(),
+                        command,
+                        arguments: Value::Null,
+                    };
+                    self.force_evaluated(connection, &request, event, generation, frame);
+                    return;
+                }
                 let outcome = self.convert(event, conversion);
                 self.write_response(connection, request_seq, &command, outcome);
             }
@@ -1519,6 +1584,21 @@ impl Agent {
                 }
                 let setting = matches!(conversion, Conversion::VariableSet { .. });
                 self.evaluation_body(event, setting)
+            }
+            (Event::StepInTargets(targets), Conversion::StepInTargets { generation, module }) => {
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                Ok(Some(self.step_in_targets_body(&targets, module.as_ref())))
+            }
+            (Event::InstanceCounts(counts), Conversion::InstanceCounts) => {
+                Ok(Some(super::evaluation::instance_counts_body(&counts)))
+            }
+            (Event::Referrers(referrers), Conversion::Referrers { generation }) => {
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                Ok(Some(self.referrers_body(&referrers)))
             }
             _ => Ok(None),
         }
@@ -1846,13 +1926,14 @@ fn answers(event: &Event, pending: &Pending) -> bool {
 }
 
 /// The `stopped` event's body for a stop of `reason`: `entry_pending`
-/// says a pause is the entry's, and a stop names the breakpoints it is for
-/// by the DAP ids `known` gave them, only those the client's latest
-/// request for their set holds, never one it replaced since the VM decided
-/// the stop.
+/// says a pause is the entry's, `restart_pending` a step's the restart's,
+/// and a stop names the breakpoints it is for by the DAP ids `known` gave
+/// them, only those the client's latest request for their set holds,
+/// never one it replaced since the VM decided the stop.
 fn stopped_body(
     reason: &StopReason,
     entry_pending: bool,
+    restart_pending: bool,
     known: &Breakpoints,
 ) -> protocol::StoppedEventBody {
     let mut body = protocol::StoppedEventBody {
@@ -1873,6 +1954,8 @@ fn stopped_body(
             body.reason = "breakpoint";
             body.hit_breakpoint_ids = named(&mut ids.iter());
         }
+        // DAP names the stop a restarted frame makes at its start so.
+        StopReason::Step if restart_pending => body.reason = "restart",
         StopReason::Step => body.reason = "step",
         StopReason::MethodEntry { id, others } | StopReason::MethodExit { id, others } => {
             body.reason = "function breakpoint";
@@ -2158,14 +2241,14 @@ mod tests {
         let replaced = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
-        let body = to_value(stopped_body(&replaced, false, &known));
+        let body = to_value(stopped_body(&replaced, false, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");
 
         let standing = StopReason::Breakpoint {
             ids: vec![BreakpointId(1), BreakpointId(2)],
         };
-        let body = to_value(stopped_body(&standing, false, &known));
+        let body = to_value(stopped_body(&standing, false, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[1]]));
     }
 
@@ -2179,11 +2262,11 @@ mod tests {
         };
         // Sent again, unanswered: the client still holds the breakpoint.
         known.request_lines(&ModuleName::program("Loop"), vec![10]);
-        let body = to_value(stopped_body(&stop, false, &known));
+        let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[0]]));
         // Replaced by another line, unanswered: the stop names nothing.
         known.request_lines(&ModuleName::program("Loop"), vec![30]);
-        let body = to_value(stopped_body(&stop, false, &known));
+        let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");
     }
@@ -2196,18 +2279,40 @@ mod tests {
             caught: false,
             exits: Vec::new(),
         };
-        let body = to_value(stopped_body(&exception, false, &Breakpoints::default()));
+        let body = to_value(stopped_body(
+            &exception,
+            false,
+            false,
+            &Breakpoints::default(),
+        ));
         assert_eq!(body["reason"], "exception");
         assert_eq!(body["text"], "division by zero");
         assert_eq!(body["description"], "ZeroDivide");
         let halt = StopReason::Halt { exits: Vec::new() };
-        let body = to_value(stopped_body(&halt, false, &Breakpoints::default()));
+        let body = to_value(stopped_body(&halt, false, false, &Breakpoints::default()));
         assert_eq!(body["text"], "halt");
         let entry = to_value(stopped_body(
             &StopReason::Pause,
             true,
+            false,
             &Breakpoints::default(),
         ));
         assert_eq!(entry["reason"], "entry");
+        // The step a restart begins stops as the restart; any other stop
+        // keeps its own reason.
+        let restarted = to_value(stopped_body(
+            &StopReason::Step,
+            false,
+            true,
+            &Breakpoints::default(),
+        ));
+        assert_eq!(restarted["reason"], "restart");
+        let paused = to_value(stopped_body(
+            &StopReason::Pause,
+            false,
+            true,
+            &Breakpoints::default(),
+        ));
+        assert_eq!(paused["reason"], "pause");
     }
 }

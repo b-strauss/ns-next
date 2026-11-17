@@ -3447,3 +3447,280 @@ fn a_withheld_value_is_read_only() {
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "12\n");
 }
+
+/// A root whose line 4 sends `second`, then `first:` with its answer.
+const SMART: &str = indoc! {"
+    class Smart = Object new () (
+      public main: platform args: arguments = (
+        | value |
+        value:: self first: (self second).
+        platform transcript show: value printString; newLine.
+      )
+      first: number = (
+        ^number + 1
+      )
+      second = (
+        ^41
+      )
+    ) : ()
+"};
+
+/// The 1-based UTF-16 column at which `token` begins on the 1-based line
+/// `line` of `text`.
+fn column_of(text: &str, line: usize, token: &str) -> usize {
+    let line = text.lines().nth(line - 1).expect("the line");
+    let before = &line[..line.find(token).expect("the token")];
+    before.encode_utf16().count() + 1
+}
+
+#[test]
+fn step_in_targets_list_the_line_s_sends() {
+    let (_directory, path) = program("Smart", SMART);
+    let mut client = DapClient::connect_mode(&path);
+    let capabilities = client.initialize()["body"].clone();
+    assert_eq!(
+        capabilities["supportsStepInTargetsRequest"], true,
+        "{capabilities}"
+    );
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[4]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let body = client.succeed("stepInTargets", json!({ "frameId": 1 }));
+    let targets = dap::array(&body["targets"]);
+    let labels: Vec<&Value> = targets.iter().map(|target| &target["label"]).collect();
+    assert_eq!(labels, [&json!("second"), &json!("first:")], "{body}");
+    let second = column_of(SMART, 4, "second");
+    assert_eq!(targets[0]["line"], 4, "{body}");
+    assert_eq!(targets[0]["column"], second, "{body}");
+    assert_eq!(targets[0]["endLine"], 4, "{body}");
+    assert_eq!(targets[0]["endColumn"], second + "second".len(), "{body}");
+    let first = column_of(SMART, 4, "first:");
+    assert_eq!(targets[1]["column"], first, "{body}");
+    assert_eq!(targets[1]["endColumn"], first + "first:".len(), "{body}");
+    assert_ne!(targets[0]["id"], targets[1]["id"], "{body}");
+    let missing = client.request("stepInTargets", json!({ "frameId": 7 }));
+    assert_eq!(missing["success"], false, "{missing}");
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+#[test]
+fn step_in_with_a_target_stops_in_it() {
+    let (_directory, path) = program("Smart", SMART);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[4]);
+    client.stopped("breakpoint");
+    let body = client.succeed("stepInTargets", json!({ "frameId": 1 }));
+    let targets = dap::array(&body["targets"]);
+    let first = targets
+        .iter()
+        .find(|target| target["label"] == "first:")
+        .unwrap_or_else(|| panic!("no target `first:`: {body}"));
+    client.succeed("stepIn", json!({ "threadId": 1, "targetId": first["id"] }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    assert_eq!(frames.len(), 2, "{frames:?}");
+    assert_eq!(frames[0]["name"], "Smart>>first:", "{frames:?}");
+    assert_eq!(frames[0]["line"], 8, "{frames:?}");
+    // Only the frame a step steps from has targets.
+    let below = client.request("stepInTargets", json!({ "frameId": 2 }));
+    assert_eq!(below["success"], false, "{below}");
+    assert_eq!(
+        below["message"], "smart step into takes the top frame",
+        "{below}"
+    );
+    let unknown = client.request("stepIn", json!({ "threadId": 1, "targetId": 99 }));
+    assert_eq!(unknown["success"], false, "{unknown}");
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
+/// A root whose `twice:` prints `in` on line 6 before it answers 42 on
+/// line 7.
+const AGAIN: &str = indoc! {"
+    class Again = Object new () (
+      public main: platform args: arguments = (
+        platform transcript show: (self twice: platform) printString; newLine.
+      )
+      twice: platform = (
+        platform transcript show: 'in'; newLine.
+        ^21 * 2
+      )
+    ) : ()
+"};
+
+#[test]
+fn a_restart_frame_runs_the_method_again() {
+    let (_directory, path) = program("Again", AGAIN);
+    let mut client = DapClient::connect_mode(&path);
+    let capabilities = client.initialize()["body"].clone();
+    assert_eq!(capabilities["supportsRestartFrame"], true, "{capabilities}");
+    client.attach(false);
+    client.set_breakpoints(file_source(&path), &[7]);
+    client.configuration_done();
+    client.stopped("breakpoint");
+    assert_eq!(top_frame(&mut client), (json!("Again>>twice:"), json!(7)));
+    let missing = client.request("restartFrame", json!({ "frameId": 9 }));
+    assert_eq!(missing["success"], false, "{missing}");
+    client.succeed("restartFrame", json!({ "frameId": 1 }));
+    client.stopped("restart");
+    assert_eq!(top_frame(&mut client), (json!("Again>>twice:"), json!(6)));
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "in\nin\n42\n");
+}
+
+#[test]
+fn a_forced_return_answers_the_expression_s_value() {
+    let (_directory, path) = program("Again", AGAIN);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[7]);
+    client.stopped("breakpoint");
+    // An expression that fails forces nothing: the program stays stopped.
+    let failing = client.request(
+        "nsNext/forceReturn",
+        json!({ "frameId": 1, "expression": "frobnicate" }),
+    );
+    assert_eq!(failing["success"], false, "{failing}");
+    let message = failing["message"].as_str().unwrap_or_default();
+    assert!(message.contains("frobnicate"), "{failing}");
+    assert_eq!(top_frame(&mut client), (json!("Again>>twice:"), json!(7)));
+
+    client.succeed(
+        "nsNext/forceReturn",
+        json!({ "frameId": 1, "expression": "3 + 4" }),
+    );
+    client.stopped("step");
+    assert_eq!(top_frame(&mut client).0, json!("Again>>main:args:"));
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "in\n7\n");
+}
+
+/// A root that holds three instances of its nested `Point` in an Array at
+/// line 6.
+const CENSUS: &str = indoc! {"
+    class Census = Object new () (
+      class Point = Object new () () : ()
+      public main: platform args: arguments = (
+        | points |
+        points:: {Point new. Point new. Point new}.
+        platform transcript show: points size printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn instance_counts_name_the_program_s_classes() {
+    let (_directory, path) = program("Census", CENSUS);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[6]);
+    client.stopped("breakpoint");
+    let counts = client.succeed("nsNext/instanceCounts", json!({}));
+    let classes = dap::array(&counts["classes"]);
+    let point = classes
+        .iter()
+        .find(|class| class["name"] == "Census.Point")
+        .unwrap_or_else(|| panic!("no `Census.Point`: {counts}"));
+    assert_eq!(point["count"], 3, "{point}");
+    assert!(point.get("nsNext/shipped").is_none(), "{point}");
+    assert!(
+        classes
+            .iter()
+            .any(|class| class["name"] == "Kernel.Array" && class["nsNext/shipped"] == true),
+        "{counts}"
+    );
+
+    let instances = client.succeed(
+        "nsNext/instances",
+        json!({ "name": "Census.Point", "start": 1, "count": 5 }),
+    );
+    let instances = dap::array(&instances["variables"]);
+    let names: Vec<&Value> = instances.iter().map(|instance| &instance["name"]).collect();
+    assert_eq!(names, [&json!("#2"), &json!("#3")], "{instances:?}");
+    let reference = instances[0]["nsNext/valueReference"].clone();
+    assert!(reference.is_i64(), "{instances:?}");
+
+    // A Point is held by the Array, which the frame's `points` holds.
+    let referrers = client.succeed(
+        "nsNext/referrers",
+        json!({ "valueReference": reference, "start": 0, "count": 10 }),
+    );
+    let referrers = dap::array(&referrers["variables"]);
+    assert!(
+        referrers.iter().any(|referrer| referrer["type"] == "Array"),
+        "{referrers:?}"
+    );
+    let frames = client.stack_frames(0, 1);
+    let locals = locals_of(&mut client, &frames[0]);
+    let variables = client.variables(&locals, None, None);
+    let points = variable(&variables, "points")["nsNext/valueReference"].clone();
+    let referrers = client.succeed(
+        "nsNext/referrers",
+        json!({ "valueReference": points, "start": 0, "count": 10 }),
+    );
+    let referrers = dap::array(&referrers["variables"]);
+    let on_stack = variable(&referrers, "frame 1 points");
+    assert_eq!(on_stack["variablesReference"], 0, "{on_stack}");
+    assert_eq!(
+        on_stack["presentationHint"]["kind"], "virtual",
+        "{on_stack}"
+    );
+    assert!(
+        on_stack.get("nsNext/valueReference").is_none(),
+        "{on_stack}"
+    );
+
+    client.set_breakpoints(file_source(&path), &[]);
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "3\n");
+}
+
+#[test]
+fn a_shipped_frame_is_deemphasized() {
+    let (_directory, path) = program("Walker", WALKER);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(true);
+    client.succeed(
+        "nsNext/setStepFilters",
+        json!({ "shipped": false, "entries": [] }),
+    );
+    client.configuration_done();
+    client.stopped("entry");
+    client.succeed("stepIn", json!({ "threadId": 1 }));
+    client.stopped("step");
+    let frames = client.stack_frames(0, 0);
+    let shipped = &frames[0];
+    assert_eq!(shipped["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(shipped["presentationHint"], "subtle", "{shipped}");
+    assert_eq!(
+        shipped["source"]["presentationHint"], "deemphasize",
+        "{shipped}"
+    );
+    assert_eq!(shipped["nsNext/shipped"], true, "{shipped}");
+    let program = frames
+        .iter()
+        .find(|frame| frame["name"] == "Walker>>main:args:")
+        .unwrap_or_else(|| panic!("no program frame: {frames:?}"));
+    assert!(program.get("presentationHint").is_none(), "{program}");
+    assert!(
+        program["source"].get("presentationHint").is_none(),
+        "{program}"
+    );
+    assert!(program.get("nsNext/shipped").is_none(), "{program}");
+
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "12\n");
+}
