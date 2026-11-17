@@ -292,10 +292,17 @@ fn take_safepoint(
     floor: usize,
     at_loop_head: bool,
 ) -> AfterSafepoint {
+    let mut at_loop_head = at_loop_head;
     loop {
         if let Some(after) = safepoint_once(interpreter, frame, floor, at_loop_head) {
             return after;
         }
+        // The unwind switched to the stopped frame, which stands at its
+        // slot, never at a loop head the backward jump that made the
+        // first safepoint left: that jump was the evaluation's, and
+        // counting it against the stopped body could switch the frame
+        // into machine code mid-body.
+        at_loop_head = false;
     }
 }
 

@@ -189,12 +189,15 @@ pub enum Command {
     /// sequence with the other commands, so that it never outlives the
     /// evaluation it was meant for: served at the next safepoint of the
     /// evaluation, it is answered by `Event::AbortTaken`, and the
-    /// evaluation's own answer follows once the unwind to its base ended:
-    /// `Event::Evaluated(Evaluation::Aborted)` for an `Evaluate` or a
-    /// `SetVariable`, the stop an aborted condition makes for one; where no evaluation runs -- at a stop, the evaluation
-    /// it was meant for already answered, or while the program runs -- it
-    /// is moot, answered by `Event::Refused` (`"no evaluation runs"`), and
-    /// leaves nothing armed.
+    /// evaluation's own answer follows once the unwind to its base ended
+    /// -- `Event::Evaluated(Evaluation::Aborted)` for an `Evaluate` or a
+    /// `SetVariable`, the stop an aborted condition makes for one --
+    /// unless a `Terminate` ends the run first. Where no evaluation runs
+    /// -- at a stop, the evaluation it was meant for already answered,
+    /// while the program runs, or after another `AbortEvaluation` drained
+    /// at the same safepoint took the abort -- it is moot, answered by
+    /// `Event::Refused` (`"no evaluation runs"`), and leaves nothing
+    /// armed.
     AbortEvaluation,
     /// Runs the frame at index `frame` of the stack trace again from its
     /// start: every frame above it is unwound, its `ensure:` and
@@ -615,7 +618,8 @@ pub enum Event {
     VariableSet(Variable),
     /// The answer to `Command::AbortEvaluation` served while an
     /// evaluation runs: the evaluation is aborted, and its own answer
-    /// follows once the unwind to its base ended (`Command::AbortEvaluation`).
+    /// follows once the unwind to its base ended
+    /// (`Command::AbortEvaluation`).
     AbortTaken,
     /// The logpoint `breakpoint` was hit where it holds, and logs `text`,
     /// its message's parts joined; sent unasked, and the program goes on.

@@ -3996,8 +3996,7 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   pause, finding an evaluation running at the kept stop
   (`Interpreter::serve_evaluation`), marks it aborted
   (`evaluation::abort`), answers the command `Event::AbortTaken`, and
-  answers `Served::Abort`, which the run loop
-  takes as a termination -- the debugger's termination signal unwound
+  answers `Served::Abort`, which the run loop takes as a termination -- the debugger's termination signal unwound
   from the top activation (`vm::unwind_at_safepoint`) -- but for the
   termination flag, which it leaves clear, so that the evaluation's base
   ends the unwind: every `ensure:` block above the base runs, and the
@@ -4011,16 +4010,27 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   stop of its own, which the kept stop's serving leaves pending for a
   later safepoint -- a stop for the same breakpoint in whatever frame
   runs then (`a_continue_after_an_aborted_evaluation_runs_to_the_end`).
-  The command is sequenced with the others, so that it never outlives
-  the evaluation it was meant for: where none runs -- at a stop, the
-  evaluation already answered, or while the program runs -- it is moot,
-  refused with `"no evaluation runs"`, and leaves nothing armed
+  That second safepoint is not at a loop head, whatever the first was:
+  the backward jump that made the first was the evaluation's, and
+  counted against the stopped frame's body it could compile the body and
+  switch the frame into machine code mid-body
+  (`an_evaluation_aborted_at_a_loop_head_counts_no_jump_of_the_stopped_frame`).
+  A condition's evaluation is aborted the same way, and its stop is what
+  the conditions' rules make of an aborted condition
+  (`an_abort_evaluation_command_aborts_an_endless_condition`). The
+  command is sequenced with the others, so that it never outlives the
+  evaluation it was meant for: where none runs -- at a stop, the
+  evaluation already answered, while the program runs, or after another
+  `AbortEvaluation` drained at the same safepoint took the abort -- it
+  is moot, refused with `"no evaluation runs"`, and leaves nothing armed
   (`an_abort_evaluation_command_with_none_running_is_refused`). A pause
   is a bit, unordered with the commands: one that comes after the
   evaluation ended is cleared by the safepoint that serves the kept
   stop, but one asked while that stop serves again is a pause asked
   while stopped, and stops the program at the next safepoint once it
-  goes on ("The stop"), which is why an agent aborts by the command. The remote's departure aborts it too: the last handle of a
+  goes on ("The stop"). The DAP agent therefore aborts an evaluation
+  past its bound by the command, never by a pause. The remote's
+  departure aborts it too: the last handle of a
   `DebugControl` closes the command channel and arms the commands bit as
   it drops, so that even an evaluation that never ends reaches a
   safepoint that finds the channel closed, detaches the debugger and

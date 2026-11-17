@@ -12792,6 +12792,70 @@ mod evaluation {
         }
     }
 
+    /// A method entered once that stops at its second statement, past its
+    /// first slot, so that its body neither loops nor exits at once at its
+    /// entry: a backward jump counted against it would compile it.
+    const STOPPED_PAST_ENTRY: &str = indoc! {"
+        class StoppedPastEntry = Object new () (
+          public run = (
+            ^self sink: 1
+          )
+          sink: value = (
+            | doubled |
+            doubled:: value + value.
+            ^doubled
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation aborted at its loop's head, where its machine
+        /// code's poll left for the safepoint, leaves the stopped frame at
+        /// its slot, never at a loop head: the safepoint its end asks for
+        /// counts no backward jump against the stopped body, which a
+        /// compile at the first jump would otherwise compile and enter
+        /// mid-body. The program runs on to its end, its answer right.
+        fn an_evaluation_aborted_at_a_loop_head_counts_no_jump_of_the_stopped_frame(lowering) {
+            let offset = line_start(STOPPED_PAST_ENTRY, "^doubled");
+            let (mut interpreter, instance, class) = compiled(STOPPED_PAST_ENTRY, lowering);
+            let ((aborted, reported), result) = debugged_in(
+                &mut interpreter,
+                &instance,
+                |remote| set_breakpoints(remote, "StoppedPastEntry", vec![offset]),
+                |remote| {
+                    let (id, _) = resolved(&expect_breakpoints(remote, "StoppedPastEntry"));
+                    assert_eq!(expect_breakpoint_stop(remote), [id]);
+                    remote.send(Command::Evaluate {
+                        frame: 0,
+                        expression: String::from("[true] whileTrue: []"),
+                    });
+                    thread::sleep(PAUSE_DELAY);
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    assert!(matches!(taken, Some(Event::AbortTaken)), "{taken:?}");
+                    let aborted = remote.next_event(EVENT_TIMEOUT);
+                    continue_stopped(remote);
+                    (aborted, events_until_the_run_ended(remote))
+                },
+            );
+            assert!(
+                matches!(aborted, Some(Event::Evaluated(Evaluation::Aborted))),
+                "the evaluation was aborted, not {aborted:?}"
+            );
+            assert!(
+                reported.is_empty(),
+                "the program ran to its end, but reported {reported:?}"
+            );
+            assert_eq!(answered(&mut interpreter, result), 2);
+            if runs_in_machine_code(lowering) {
+                assert!(
+                    interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern("sink:")).is_none(),
+                    "`sink:`, entered once and never looping, has no machine code"
+                );
+            }
+        }
+    }
+
     ns_runtime::for_each_lowering! {
         /// `AbortEvaluation` at a stop where no evaluation runs -- the one
         /// it was meant for answered -- is moot: refused, and it leaves
@@ -14003,6 +14067,47 @@ mod conditions {
                     continue_stopped(remote);
                     frame
                 },
+            );
+            expect_ok(result, "run");
+            assert!(frame.contains("run"), "{frame}");
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// `AbortEvaluation` aborts a condition that never ends, as a
+        /// pause does: the abort is taken, and the program stops at the
+        /// breakpoint's statement, where the condition was being decided,
+        /// as the pause's stop, no breakpoint having held there.
+        fn an_abort_evaluation_command_aborts_an_endless_condition(lowering) {
+            let offset = line_start(SINKING, "sink: index].");
+            let logpoint = LineBreakpoint {
+                log: Some(vec![LogPart::Text("before".to_owned())]),
+                ..LineBreakpoint::at_offset(offset)
+            };
+            let endless = conditional(offset, "[true] whileTrue: []. true");
+            let ((taken, frame), result) = debugged(
+                SINKING,
+                lowering,
+                move |remote| set_line_breakpoints(remote, "Sinking", vec![logpoint, endless]),
+                |remote| {
+                    expect_breakpoints(remote, "Sinking");
+                    match remote.next_event(EVENT_TIMEOUT) {
+                        Some(Event::Logged { text, .. }) => assert_eq!(text, "before"),
+                        other => panic!("the logpoint's message was expected, not {other:?}"),
+                    }
+                    remote.send(Command::AbortEvaluation);
+                    let taken = remote.next_event(EVENT_TIMEOUT);
+                    expect_paused(remote);
+                    let frame = stack_trace(remote)[0].name.clone();
+                    set_line_breakpoints(remote, "Sinking", Vec::new());
+                    expect_breakpoints(remote, "Sinking");
+                    continue_stopped(remote);
+                    (taken, frame)
+                },
+            );
+            assert!(
+                matches!(taken, Some(Event::AbortTaken)),
+                "the abort was taken, not {taken:?}"
             );
             expect_ok(result, "run");
             assert!(frame.contains("run"), "{frame}");
