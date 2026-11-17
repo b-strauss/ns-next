@@ -12305,10 +12305,13 @@ mod evaluation {
                 |remote| {
                     let before = variables(remote, Command::Variables { frame: 0 });
                     let items = value_of(&before, "items").id;
+                    // About 16 MiB, past eden twice, in few enough sends
+                    // that the collect stress mode's collections at
+                    // every safepoint end within the event timeout.
                     let label = value_label(
                         remote,
                         0,
-                        "1 to: 200000 do: [:index | Array new: 10]. items size",
+                        "1 to: 2000 do: [:index | Array new: 1000]. items size",
                     );
                     let after = variables(remote, Command::Variables { frame: 0 });
                     let children = variables(
@@ -14381,6 +14384,31 @@ mod conditions {
                         assert_eq!(ids, [id]);
                         assert!(error.contains("MessageNotUnderstood"), "{error}");
                     }
+                    other => panic!("a failed condition's stop was expected, not {other:?}"),
+                }
+            }
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// Beside the suspend stress mode, the pause stress mode
+        /// evaluates nothing while a stop's token waits for its frame's
+        /// fetch: an evaluation's suspension would leave the token naming
+        /// an offset another activation takes. Every stop is still the
+        /// attached debugger's.
+        #[cfg(debug_assertions)]
+        fn a_stress_pause_beside_suspensions_leaves_a_token_to_its_frame(lowering) {
+            let mut breakpoint = method_breakpoint("Leaving", &[], false, "fail:");
+            breakpoint.condition = Some("index foo".to_owned());
+            let mut interpreted = interpreted(LEAVING, lowering);
+            interpreted.0.set_stress_pause(true);
+            interpreted.0.set_stress_suspend(true);
+            let (id, stops, _) = leaving_in(&mut interpreted, breakpoint);
+            assert!(interpreted.0.stress_pauses() > 0, "the stress mode stopped");
+            assert_eq!(stops.len(), 6, "{stops:?}");
+            for reason in stops {
+                match reason {
+                    StopReason::ConditionFailed { ids, .. } => assert_eq!(ids, [id]),
                     other => panic!("a failed condition's stop was expected, not {other:?}"),
                 }
             }
@@ -16656,8 +16684,15 @@ mod memory_view {
         lowering: Lowering,
         agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
     ) -> T {
+        looking_in(interpreted(MEMORY, lowering), agent)
+    }
+
+    /// `looking` in `interpreted`, an interpreter `MEMORY` is loaded in.
+    fn looking_in<T: Send + 'static>(
+        (mut interpreter, class): (Interpreter, Root),
+        agent: impl FnOnce(&DebugRemote) -> T + Send + 'static,
+    ) -> T {
         let offset = line_start(MEMORY, "^1");
-        let (mut interpreter, class) = interpreted(MEMORY, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let (answer, result) = debugged_in(
             &mut interpreter,
@@ -16840,6 +16875,25 @@ mod memory_view {
         /// receiver as its `self`.
         fn a_local_and_a_receiver_refer_from_the_stack(lowering) {
             let (kept, receiver) = looking(lowering, |remote| {
+                let run = variables(remote, Command::Variables { frame: 1 });
+                let kept = summary(&referrers(remote, value_of(&run, "kept").id, 0, 100));
+                let receiver = summary(&referrers(remote, value_of(&run, "self").id, 0, 2));
+                (kept, receiver)
+            });
+            assert_eq!(kept, ["frame 1 kept"]);
+            assert_eq!(receiver, ["frame 0 self", "frame 1 self"]);
+        }
+    }
+
+    ns_runtime::for_each_lowering! {
+        /// A frame the suspend stress mode suspended into its frame object
+        /// is a frame of the stack all the same: what it holds is answered
+        /// as its variable, never as the frame object.
+        #[cfg(debug_assertions)]
+        fn a_suspended_frame_refers_from_the_stack(lowering) {
+            let mut interpreted = interpreted(MEMORY, lowering);
+            interpreted.0.set_stress_suspend(true);
+            let (kept, receiver) = looking_in(interpreted, |remote| {
                 let run = variables(remote, Command::Variables { frame: 1 });
                 let kept = summary(&referrers(remote, value_of(&run, "kept").id, 0, 100));
                 let receiver = summary(&referrers(remote, value_of(&run, "self").id, 0, 2));

@@ -1211,13 +1211,16 @@ impl Interpreter {
     /// an evaluation, which the answer says: the stop is kept for it
     /// (`Interpreter::stress_stop`) and the run loop reads the
     /// evaluation's frame, now on top. The reader evaluates only where no
-    /// evaluation runs or waits for its stop and no step is in progress.
+    /// evaluation runs or waits for its stop, no step is in progress and
+    /// no breakpoint's token waits for its frame
+    /// (`Breakpoints::waits_for_a_fetch`).
     #[cfg(debug_assertions)]
     pub(crate) fn stop_for_stress(&mut self, floor: usize) -> bool {
         let evaluates = self.enter(|mutator| {
             !mutator.breakpoints.evaluating()
                 && !evaluation::has_ended(mutator)
                 && mutator.stepping.is_none()
+                && !mutator.breakpoints.waits_for_a_fetch()
         });
         let served = self.stop(
             StopReason::Pause,

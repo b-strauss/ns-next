@@ -1444,9 +1444,13 @@ describes -- or be refused for a reason the stopped frame gives, a frame
 without metadata or a stack without room for the push; any other answer
 panics, naming the variable, the frame and both answers. The top frame is
 evaluated only when it is no shipped one, which refuses every evaluation,
-and only at a stop made while no evaluation runs or waits for its stop and
-no step is in progress, since evaluations do not nest and a step would
-take the evaluation's push for its own. The stop is kept for the
+and only at a stop made while no evaluation runs or waits for its stop,
+no step is in progress and no breakpoint's token waits for its frame's
+fetch, since evaluations do not nest, a step would take the
+evaluation's push for its own, and the suspend stress mode follows a
+token only to the top frame it resumes, which under an evaluation is not
+the token's (`Breakpoints::waits_for_a_fetch`;
+`a_stress_pause_beside_suspensions_leaves_a_token_to_its_frame`). The stop is kept for the
 evaluation as the attached debugger's is, in `Interpreter::stress_stop`
 instead of the `Debugger`, the safepoint answering
 `SafepointOutcome::Rebuilt` so that the run loop reads the evaluation's
@@ -4385,7 +4389,10 @@ the whole Rust boundary" in [core-library.md](core-library.md)).
 
 What refers to a value (`Command::Referrers`, answered by
 `Event::Referrers`, each a `Referrer`) is, first, every variable of a
-running frame of the stop's stack trace that holds it, its receiver as
+frame of the stop's stack trace that holds it -- a running one, or one
+suspended into its frame object, which is a frame of the stack all the
+same and never an object of its own
+(`a_suspended_frame_refers_from_the_stack`) -- its receiver as
 `self`, innermost frame first (`Referrer::Stack`, the frame's index and
 the variable's name), and then every object a word of which that keeps
 what it names alive names it (`Referrer::Object`), in the space's

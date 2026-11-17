@@ -707,6 +707,17 @@ impl Breakpoints {
         self.evaluation.is_some()
     }
 
+    /// Whether a token or a reach whose stop was not made waits for its
+    /// frame's fetch of the slot again. The pause stress mode evaluates
+    /// nothing then: the suspend stress mode follows the token only to the
+    /// top frame it resumes (`move_past_once`), and under an evaluation the
+    /// token's frame lies below it, so a suspension there would leave the
+    /// token naming an offset another activation takes.
+    #[cfg(debug_assertions)]
+    pub(crate) fn waits_for_a_fetch(&self) -> bool {
+        self.past_once.is_some() || self.counted_reach.is_some()
+    }
+
     /// Whether the unwinder tells the debugger of the frames it pops,
     /// beside a step in progress (`interpreter::breakpoint::follows_unwinds`):
     /// while a method breakpoint is set, and while an evaluation runs,
