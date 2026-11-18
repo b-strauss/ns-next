@@ -2425,26 +2425,26 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   and beside the source in the IDE, JITWatch's kind of view. It
   matters because a slow body is explained by what the tiers made of it,
   which today only a debugger on the process or a `dumpbin`/`objdump` of the
-  code zone shows, without names. `disasm` prints the instructions only, and
-  compiles without running, so it never sees the machine code, which exists
-  only for a body that ran: the machine-code half needs a running program --
-  a flag of `ns-next run`, or a request of the debugging API at a stop --
-  and the IDE's view is a client of the same request
-  ([compiler.md](design/compiler.md), "Reading the output";
-  [execution.md](design/execution.md), "The baseline JIT's foundation",
-  "Inlining").
-- **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15):
-  tracing flags that say why a body is compiled, optimized, deoptimized or
-  retired and how each inline cache goes from empty to monomorphic,
-  polymorphic and megamorphic; printing the code a run generates --
-  bytecode, baseline and optimized machine code, the inlining; and a REPL
-  that evaluates Newspeak expressions in a live image. It matters because a
-  question about the JIT -- why a loop stayed in the interpreter, why a copy
-  was retired -- is answered today only by a counter or a print added for
-  the occasion; `--cache-statistics`, `--collector-statistics` and
-  `disasm`/`inspect` are its first pieces
-  ([compiler.md](design/compiler.md), "Reading the output"); the tracing
-  and the printing are flags of `ns-next`, as `d8`'s are.
+  code zone shows, without names. The flags of `ns-next run` and the
+  request at a stop, with its MCP tool, are the developer tool's stage 2
+  ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
+  code"); what stays open here is the IDE's view beside the source, a
+  client of the same request ([execution.md](design/execution.md), "The
+  baseline JIT's foundation", "Inlining").
+- **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15;
+  designed with the user on 2026-11-18, not built): three stages, each
+  reaching the agent and the IDE as it is built -- tracing, typed events
+  with their reasons reported to a sink the host installs and written by
+  `ns-next run --trace=<categories>`; printing the code a run makes,
+  bytecode, baseline and optimized machine code at install and the
+  inlining plan, decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`; and
+  `ns-next shell`, evaluating against a workspace object as the Newspeak
+  IDE does. It matters because a question about the JIT -- why a loop
+  stayed in the interpreter, why a copy was retired -- is answered today
+  only by a counter or a print added for the occasion. Next is stage 1;
+  each stage's open questions are decided in its plan
+  ([developer-tool.md](design/developer-tool.md), "The decisions",
+  "Planned: the stages", "Open questions").
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,
