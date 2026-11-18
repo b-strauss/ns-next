@@ -15,6 +15,18 @@ when they were written.
 
 ## Next
 
+**Module identity, the string manifest and metadata** (asked for by the
+user on 2026-11-18, designed with the user on 2026-11-18 and 2026-11-19;
+decided on 2026-11-19 to come first, before the debugger's stage 6 and the
+developer tool, whose trace names bodies by it): several versions of one
+module in one running program, a module identified by its path relative to
+the project, declaring its id in metadata above its class
+(`(* :module: com.acme.json.Json@2.1.0 *)`), the manifest asked with `at:`
+and `at:version:`, `newspeak.json`'s `as`, metadata comments parsed
+generally, tools naming `id@version/Inner>>selector`, `newspeak.` reserved
+for the shipped modules, and the image recording each module's path, id and
+version ([modules.md](design/modules.md)). It needs a plan.
+
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
@@ -1807,17 +1819,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: images, liveness and reflection
 
-- **Module identity, the string manifest and metadata** (asked for by the
-  user on 2026-11-18, designed with the user on 2026-11-18 and 2026-11-19,
-  not built; to be built before the developer tool's stage 1, whose trace
-  names bodies by it): several versions of one module in one running
-  program, a module identified by its path relative to the project,
-  declaring its id in metadata above its class
-  (`(* :module: com.acme.json.Json@2.1.0 *)`), the manifest asked with
-  `at:` and `at:version:`, `newspeak.json`'s `as`, metadata comments
-  parsed generally, tools naming `id@version/Inner>>selector`, `newspeak.`
-  reserved for the shipped modules, and the image recording each module's
-  path, id and version ([modules.md](design/modules.md)).
 - **Metadata through the mirrors** (§4.3: metadata "are available at
   runtime via mirrors"): once `ns-syntax` parses metadata
   ([modules.md](design/modules.md), decision 6), a class, method and slot
@@ -3132,6 +3133,16 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
+- **Release binaries hold the building machine's paths** (found on
+  2026-11-19): `target/release/ns-next.exe` holds 29 absolute paths of the
+  build machine, the user's home directory among them -- the panic
+  locations of the dependencies under Cargo's registry and of the
+  toolchain's library -- and a debug build some 480; the workspace's own
+  paths are relative. Cargo's `trim-paths` profile setting would remove
+  them, but is unstable in Cargo 1.100 ("feature `trim-paths` is
+  required"); `rustc --remap-path-prefix` is stable but takes the
+  machine's own prefixes, so it belongs to whatever builds a release, not
+  to `.cargo/config.toml`. Nothing builds a release for distribution yet.
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
 program can reach and which end the process, and seven a program meets as
