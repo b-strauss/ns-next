@@ -1807,6 +1807,23 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: images, liveness and reflection
 
+- **Module identity, the string manifest and metadata** (asked for by the
+  user on 2026-11-18, designed with the user on 2026-11-18 and 2026-11-19,
+  not built; to be built before the developer tool's stage 1, whose trace
+  names bodies by it): several versions of one module in one running
+  program, a module identified by its path relative to the project,
+  declaring its id in metadata above its class
+  (`(* :module: com.acme.json.Json@2.1.0 *)`), the manifest asked with
+  `at:` and `at:version:`, `newspeak.json`'s `as`, metadata comments
+  parsed generally, tools naming `id@version/Inner>>selector`, `newspeak.`
+  reserved for the shipped modules, and the image recording each module's
+  path, id and version ([modules.md](design/modules.md)).
+- **Metadata through the mirrors** (§4.3: metadata "are available at
+  runtime via mirrors"): once `ns-syntax` parses metadata
+  ([modules.md](design/modules.md), decision 6), a class, method and slot
+  mirror answer theirs; open is what an image written without source
+  answers, since Primordial Soup parses metadata from the source on demand
+  (`prior-art/primordialsoup/newspeak/Mirrors.ns:758, 1216-1223`).
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
   suspended activations -- every `Continuation` variant (`NestedClass`,
