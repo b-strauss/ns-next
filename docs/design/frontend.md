@@ -360,6 +360,36 @@ comment stands on its line is layout (anchors stay compared), and reads an
 empty part as absent, so two parses that say the same compare equal however
 they are laid out.
 
+**Metadata.** §4.3's metadata comments, `(*:tag: payload*)`, are comments
+like any other to the lexer, the attachment and the printer, which keeps
+each where it stands. `metadata_of(module, source)` (`metadata.rs`)
+answers them beside the tree, a side table in source order: each a
+`Metadata` -- its `tag`, the text between the first two colons, which
+open the comment after `(*` and any whitespace, never empty and without
+whitespace (§4.3 calls it an identifier; its example writes
+`baz-metadata` and `x=meta`); its `payload`, the rest up to `*)`,
+trimmed; its `span` -- with the `MetadataTarget` §4.3 associates it
+with. A comment stands *immediately before* or *after* a construct when
+nothing but whitespace and comments lies between, and is associated with
+the expression, slot or parameter it immediately precedes (`Expression`,
+by the shape's span, the outermost one beginning at the next token -- a
+superclass or `<:` clause, the superclass factory's send, and a return
+statement count as expressions; `Slot` by the name, before the
+declaration's first token; `Parameter` by the name, before a block
+parameter's `:` too), with the method or factory whose pattern it
+immediately follows (`Method`, `Factory`, by the pattern's span, through
+the last parameter's type), with the class whose header it immediately
+follows (`Class`, by the declaration's span), and with the module when it
+immediately precedes the root class (`Module`). A tagged comment no rule
+associates -- after an expression, or with a `.` or an `=` between it and
+its candidate -- is left out, as is every comment without a tag, a `///`
+block among them. The targets are read by adjacency, not from the
+attachment, which places a comment by layout (the line it stands on, a
+closer after it), and the source is read for the gaps because the tree
+records neither a statement's `.` nor a declaration's `=`. The
+`:module:` metadata is one reader ([modules.md](modules.md), decision 6);
+exposing metadata through the mirrors, as §4.3 asks, is open.
+
 The attachment takes one of two paths, neither recursing over the tree:
 the *walk* for a source with an error, which `parse_for_editor` recovers,
 and the *clean path* for one without, which every `parse` and most of an
