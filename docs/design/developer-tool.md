@@ -122,10 +122,32 @@ expression, so it deviates from nothing.
 
 **7. Each stage reaches the agent and the IDE as it is built.**
 `debug_start` takes the trace categories and answers their lines with the
-program's output; a new MCP tool answers a stopped frame's bytecode and
-machine code through a request of the agent; the shell needs no tool of
-its own, since `debug_evaluate` evaluates at a stop
+program's output (decision 9); a new MCP tool answers a stopped frame's
+bytecode and machine code through a request of the agent; the shell needs
+no tool of its own, since `debug_evaluate` evaluates at a stop
 ([debugger.md](debugger.md), "The MCP server").
+
+**8. A trace event is one line: `[<category>] <body> <event>`, then
+`name=value` pairs.** For example
+`[compile] Demo>>factorial: compiled trigger=entry bytes=412` or
+`[caches] Demo>>main:args: monomorphic->polymorphic selector=#deposit: site=3 receiver=Account`;
+`-` stands for an event that names no body, every reason is spelled in
+kebab case, and no line carries a time, so that a test pins it. It is
+V8's `--trace-*` kind of line and HotSpot's unified logging's, a category
+first; HotSpot's `PrintCompilation` columns
+(`jdk/src/hotspot/share/compiler/compileTask.cpp:187-300`) fit one event
+kind, not seven, and JSON lines, V8's `--log-*` kind, are for a tool the
+typed event already serves (decided with the user on 2026-11-18).
+
+**9. The lines reach the agent and the IDE as the process's standard
+error.** `--trace` is a flag of `run`, as the statistics are; the MCP
+server collects a child's standard error with its output already, so
+`debug_start` passes the flag on, and the plugin's run configuration
+takes runtime options for the same reason. The DAP agent is not
+involved: it still writes nothing to the program's streams, and no trace
+line is dropped by its bounded connection. A channel of their own over
+DAP stays possible, since the events are typed (decided with the user on
+2026-11-18).
 
 ## Planned: the stages
 
@@ -158,11 +180,17 @@ its own, since `debug_evaluate` evaluates at a stop
 - **The switch.** One flag per category, read at the cold site; installing
   a sink sets them (`Interpreter::set_trace_sink`).
 - **`ns-next run`** takes `--trace=<categories>` (`compile`, `osr`,
-  `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`) and
-  `--trace-filter=<selection>`; each event is one line, `[category]`
-  first, its fields as `name=value`, the format pinned by tests.
-- **The agent** forwards the events as output of their own category, and
-  `debug_start` takes the categories.
+  `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`, or `all`)
+  and `--trace-filter=<selection>`; each event is one line on standard
+  error (decision 8), the format pinned by tests.
+- **`debug_start`** takes `trace` and `trace_filter` and passes them to
+  the child; the plugin's run configuration takes runtime options placed
+  before the program (decision 9).
+- **Pending events.** A site that holds only the JIT's state records the
+  event with the bodies it names as `Rc<CompiledCode>`; the bodies are
+  named and the filter applied at a flush -- at the end of every compile
+  trigger, at the run loop's safepoint and when a host run returns -- so
+  that no site needs the heap and the queue never grows with the run.
 
 ### Stage 2: printing code
 
@@ -193,9 +221,6 @@ its own, since `debug_evaluate` evaluates at a stop
 
 Each is decided in its stage's plan.
 
-- **Stage 1:** the exact line format and whether the agent carries events
-  as DAP output or an event of its own; how the tests pin events under the
-  stress modes, which change when bodies compile.
 - **Stage 2:** when a body's bytecode counts as made for
   `--print-bytecode` (its mixin's compile, or its first entry); how an
   optimized copy's inlined scopes are marked in its listing.
