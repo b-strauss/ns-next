@@ -32,6 +32,7 @@ pub mod image;
 pub mod interpreter;
 mod jit;
 pub mod mixin;
+pub mod modules;
 pub(crate) mod numeric;
 pub mod platform;
 pub mod resolver;
