@@ -383,7 +383,7 @@ pub(crate) fn list() -> Value {
                 "arguments": { "type": "array", "items": { "type": "string" }, "description": "The program's arguments." },
                 "runtime": { "type": "string", "description": "The ns-next binary to run the program with; this server's own executable by default." },
                 "trace": { "type": "string", "description": "What the program traces, as ns-next run's --trace: categories separated by commas (compile, osr, optimize, inlining, deoptimize, code-zone, caches) or all. The trace lines arrive on standard error, with the program's output in every answer." },
-                "trace_filter": { "type": "array", "items": { "type": "string" }, "description": "Patterns selecting the bodies whose events are traced, one --trace-filter each, in the method syntax of locations (Demo>>square:, Demo/Account>>deposit:); a pattern ending in ... is a prefix (Demo>>sq...). A comma is part of a selector, never a separator." },
+                "trace_filter": { "type": "array", "items": { "type": "string" }, "description": "Patterns selecting the bodies whose events are traced, one --trace-filter each, in the method syntax of locations (Demo>>square:, Demo/Account>>deposit:); a pattern ending in ... is a prefix (Demo>>sq...). A comma is part of a selector, never a separator. Only with trace: ns-next refuses a filter without it." },
                 "wait": wait_schema()
             }),
             &["program"],

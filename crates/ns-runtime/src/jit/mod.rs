@@ -6473,9 +6473,9 @@ fn defer_optimization(
 /// Records the inlining plan's decisions for the copy of `code` for
 /// `key`: each scope the copy lays out below its own, by its sender
 /// scope's body, the send's program counter and its own body, and each
-/// callee the plan sent rather than inline (`PlanDecisions`). Bodies are named by their code ids at this safepoint,
-/// where the tree that registered them was taken; an id the heap no
-/// longer names is left out.
+/// callee the plan sent rather than inline (`PlanDecisions`). Bodies are
+/// named by their code ids at this safepoint, where the tree that
+/// registered them was taken; an id the heap no longer names is left out.
 #[cfg(ns_jit)]
 #[cold]
 #[inline(never)]
