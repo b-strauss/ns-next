@@ -180,10 +180,12 @@ DAP stays possible, since the events are typed (decided with the user on
     id, a moved feedback base, a breakpoint's patch, the invalidate
     stress mode's round), each copy named by its key;
   - machine code freed, per body and tier, by a compaction, a full
-    collection (a dead body, a moved feedback base), an abandonment or a
+    collection (a dead body, a moved feedback base), an abandonment for
+    its exits, a refusal for good once its twin was refused, or a
     breakpoint's patch -- a retired or invalidated copy's free is its
-    `deoptimize` event alone -- and each compaction summed up, how it
-    freed and how many bodies, naming no body;
+    `deoptimize` event alone -- each compaction summed up, how it freed
+    and how many bodies, and a replacement of the zone with the number of
+    bodies it dropped, both naming no body;
   - an inline cache's transition, from its old to its new state
     (vacant, monomorphic, polymorphic, megamorphic), with the send site
     and the receiver's application.

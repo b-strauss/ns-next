@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
-    CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, InvalidationCause,
-    RecompileWalkEnd, RetireReason,
+    CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
+    InvalidationCause, RecompileWalkEnd, RetireReason,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
@@ -71,14 +71,16 @@ enum Factory {
 /// `source`'s class loaded, instantiated and sent `run`, after `prepare`
 /// was given the interpreter; answers the interpreter after the run.
 fn run_source(source: &str, prepare: impl FnOnce(&mut Interpreter)) -> Interpreter {
-    run_source_made_by(source, Factory::Plain, prepare)
+    run_source_made_by(source, Factory::Plain, prepare, |_| false)
 }
 
-/// `run_source`, the instance made by `factory`.
+/// `run_source`, the instance made by `factory`, and sent `run` once more
+/// when `again`, given the interpreter after the first run, says so.
 fn run_source_made_by(
     source: &str,
     factory: Factory,
     prepare: impl FnOnce(&mut Interpreter),
+    again: impl FnOnce(&mut Interpreter) -> bool,
 ) -> Interpreter {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
@@ -110,6 +112,12 @@ fn run_source_made_by(
         interpreter.send(&instance, Symbol::intern("run"), &[]),
         "run",
     );
+    if again(&mut interpreter) {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run again",
+        );
+    }
     interpreter
 }
 
@@ -178,6 +186,7 @@ fn traced_spending_using_platform(
         categories,
         TraceFilter::everything(),
         prepare,
+        |_| false,
     )
 }
 
@@ -190,16 +199,20 @@ fn traced_under(
     filter: TraceFilter,
     prepare: impl FnOnce(&mut Interpreter),
 ) -> Vec<TraceEvent> {
-    traced_made_by(source, Factory::Plain, categories, filter, prepare)
+    traced_made_by(source, Factory::Plain, categories, filter, prepare, |_| {
+        false
+    })
 }
 
-/// `traced_under`, the instance made by `factory`.
+/// `traced_under`, the instance made by `factory`, and sent `run` once
+/// more when `again` says so (`run_source_made_by`).
 fn traced_made_by(
     source: &str,
     factory: Factory,
     categories: &[TraceCategory],
     filter: TraceFilter,
     prepare: impl FnOnce(&mut Interpreter),
+    again: impl FnOnce(&mut Interpreter) -> bool,
 ) -> Vec<TraceEvent> {
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = Box::new(Collector(Rc::clone(&events)));
@@ -208,12 +221,17 @@ fn traced_made_by(
         .fold(TraceCategories::default(), |set, category| {
             set.with(*category)
         });
-    run_source_made_by(source, factory, |interpreter| {
-        interpreter.set_jit_stress(false);
-        interpreter.set_optimize_stress(false);
-        interpreter.set_trace(categories, filter, sink);
-        prepare(interpreter);
-    });
+    run_source_made_by(
+        source,
+        factory,
+        |interpreter| {
+            interpreter.set_jit_stress(false);
+            interpreter.set_optimize_stress(false);
+            interpreter.set_trace(categories, filter, sink);
+            prepare(interpreter);
+        },
+        again,
+    );
     events.take()
 }
 
@@ -677,48 +695,53 @@ fn the_optimize_stress_mode_s_requests_are_traced_not_walked() {
 /// `sum:` loops over a sum of its argument, optimized while every
 /// argument is a `SmallInteger`; then given a `Float`, its copy's sum
 /// traps, and traps again at the same site at the next call, which makes
-/// the copy not entrant: retired for its traps.
+/// the copy not entrant.
+const TRAPPING: &str = indoc! {"
+    class Test = Object new () (
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          total:: total + (self sum: 1).
+          index:: index + 1.
+        ].
+        index:: 0.
+        [index < 20] whileTrue: [
+          total:: total + (self sum: 0.5) asInteger.
+          index:: index + 1.
+        ].
+        ^total.
+      )
+
+      sum: value = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + value.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    )
+"};
+
+/// Off whatever the environment says, beside `hot_loop_stress_off`'s: the
+/// zone stress mode's compactions free `TRAPPING`'s copy between its
+/// traps, so that no copy traps twice.
+fn trapping_stress_off(interpreter: &mut Interpreter) {
+    hot_loop_stress_off(interpreter);
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_zone(false);
+}
+
+/// `TRAPPING`'s copy is retired for its traps.
 #[test]
 fn a_trapping_copy_is_traced_retired() {
-    let source = indoc! {"
-        class Test = Object new () (
-          public run = (
-            |
-              total ::= 0.
-              index ::= 0.
-            |
-            [index < 2000] whileTrue: [
-              total:: total + (self sum: 1).
-              index:: index + 1.
-            ].
-            index:: 0.
-            [index < 20] whileTrue: [
-              total:: total + (self sum: 0.5) asInteger.
-              index:: index + 1.
-            ].
-            ^total.
-          )
-
-          sum: value = (
-            |
-              sum ::= 0.
-              index ::= 0.
-            |
-            [index < 1000] whileTrue: [
-              sum:: sum + value.
-              index:: index + 1.
-            ].
-            ^sum.
-          )
-        )
-    "};
-    let events = traced_spending(source, &[TraceCategory::Deoptimize], |interpreter| {
-        hot_loop_stress_off(interpreter);
-        // The zone stress mode's compactions free the copy between its
-        // traps, so that no copy traps twice.
-        #[cfg(debug_assertions)]
-        interpreter.set_stress_zone(false);
-    });
+    let events = traced_spending(TRAPPING, &[TraceCategory::Deoptimize], trapping_stress_off);
     assert!(
         events
             .iter()
@@ -846,6 +869,255 @@ fn a_compaction_is_traced() {
                         ..
                     }
                 )),
+        "{events:?}"
+    );
+}
+
+/// A retired copy's free is its `Retired` event alone: with both
+/// categories on, no `Freed` event of optimized code stands beside it.
+/// Nothing else frees a copy of `TRAPPING`'s once the collect stress mode,
+/// whose collections free copies by their feedback bases, is off too.
+#[test]
+fn a_retired_copy_is_one_event() {
+    let events = traced_spending(
+        TRAPPING,
+        &[TraceCategory::Deoptimize, TraceCategory::CodeZone],
+        |interpreter| {
+            trapping_stress_off(interpreter);
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_collect(false);
+        },
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, TraceEventKind::Retired { .. })),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Freed {
+                tier: CodeTier::Optimized,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+/// `step:at:` sends `probe:` to a `Stranger`, which answers it in its own
+/// `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: its optimized code exits at every call, spends its exit
+/// budget and is retired for its exits, as in `tests/jit.rs`'s
+/// `a_copy_abandoned_past_its_last_version_stays_in_baseline_code`.
+#[test]
+fn an_exiting_copy_is_traced_retired_for_its_exits() {
+    let source = indoc! {"
+        class Test = Object new (
+          | stranger = Stranger new. |
+        ) (
+          class Stranger = () (
+            public doesNotUnderstand: message = (
+              ^1
+            )
+          )
+
+          step: target at: value = (
+            ^target probe: value
+          )
+
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 40000] whileTrue: [
+              sum:: sum + (self step: stranger at: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        ) : ()
+    "};
+    let events = traced_spending(source, &[TraceCategory::Deoptimize], |interpreter| {
+        hot_loop_stress_off(interpreter);
+        interpreter.set_optimization_budget(100);
+        interpreter.set_jit_revival_entries(64);
+        // The zone stress mode frees the copy and compiles it again, its
+        // exits counted from none, and the scavenge and collect stress
+        // modes halve its exits at every collection they force: under
+        // them the copy need not spend its budget; nor under the cache
+        // stress mode, which holds the safepoint request and vacates the
+        // caches at every poll, changing which copy runs when.
+        #[cfg(debug_assertions)]
+        {
+            interpreter.set_stress_zone(false);
+            interpreter.set_stress_scavenge(false);
+            interpreter.set_stress_collect(false);
+            interpreter.set_stress_caches(false);
+        }
+    });
+    assert!(
+        about(&events, "Test>>step:at:")
+            .iter()
+            .any(|event| matches!(
+                event.kind,
+                TraceEventKind::Retired {
+                    reason: RetireReason::Exits,
+                    ..
+                }
+            )),
+        "{events:?}"
+    );
+}
+
+/// A breakpoint set on a compiled body frees its machine code: `run`,
+/// compiled in the first run, is patched between the runs, on a statement
+/// no turn reaches, and its code is freed at the second run's first
+/// safepoint.
+#[test]
+fn a_breakpoint_on_a_compiled_body_is_traced_freeing_it() {
+    let mut remote: Option<DebugRemote> = None;
+    let events = traced_made_by(
+        HOT_LOOP,
+        Factory::Plain,
+        &[TraceCategory::CodeZone],
+        TraceFilter::everything(),
+        |interpreter| {
+            hot_loop_stress_off(interpreter);
+            interpreter.set_optimization_budget(i64::MAX);
+        },
+        |interpreter| {
+            let attached = interpreter.attach_debugger();
+            let offset = HOT_LOOP
+                .find("^0].")
+                .expect("the statement no turn reaches");
+            attached.send(Command::SetBreakpoints {
+                module: ModuleName::named("Test"),
+                breakpoints: vec![LineBreakpoint::at_offset(
+                    u32::try_from(offset).expect("a small source"),
+                )],
+            });
+            remote = Some(attached);
+            true
+        },
+    );
+    drop(remote);
+    assert!(
+        about(&events, "Test>>run").iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Freed {
+                tier: CodeTier::Baseline,
+                cause: FreeCause::Breakpoint,
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+/// `Counter>>step:`, compiled at its second entry, is replaced by an edit;
+/// nothing runs its old body any more, and the full collection after the
+/// edit frees its machine code.
+#[test]
+fn a_dead_body_is_traced_freed_by_a_full_collection() {
+    let source = indoc! {"
+        class Test usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+            kernel = platform kernel.
+          |
+        ) (
+          class Counter = Object new () (
+            public step: value = (
+              ^value + 1.
+            )
+          )
+
+          public run = (
+            |
+              sum ::= 0.
+              counter = Counter new.
+            |
+            sum:: sum + (counter step: 1).
+            sum:: sum + (counter step: 2).
+            sum:: sum + (counter step: 3).
+            self edit.
+            kernel garbageCollect.
+            ^sum.
+          )
+
+          edit = (
+            | builder |
+            builder:: (ClassMirror reflecting: Counter) mixin declaration asBuilder.
+            builder instanceSide methods addFromSource: 'public step: value = ( ^value + 2 )'.
+            builder install.
+          )
+        )
+    "};
+    let events = traced_made_by(
+        source,
+        Factory::UsingPlatform,
+        &[TraceCategory::CodeZone],
+        TraceFilter::everything(),
+        |interpreter| {
+            interpreter.set_optimization_budget(i64::MAX);
+            // The zone stress mode's compactions free the old body before
+            // the collection does.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_zone(false);
+            #[cfg(not(debug_assertions))]
+            let _ = interpreter;
+        },
+        |_| false,
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Freed {
+                cause: FreeCause::DeadBody,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+/// Setting the zone's size between two runs replaces it, dropping every
+/// body's machine code at once: one event, naming no body, counts them.
+#[test]
+fn a_zone_replaced_is_traced() {
+    let mut replaced = None;
+    let events = traced_made_by(
+        HOT,
+        Factory::Plain,
+        &[TraceCategory::CodeZone],
+        TraceFilter::everything(),
+        // The zone stress mode's compactions free every body no
+        // activation runs, so that none is left for the replacement.
+        |interpreter| {
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_zone(false);
+            #[cfg(not(debug_assertions))]
+            let _ = interpreter;
+        },
+        |interpreter| {
+            replaced = Some(interpreter.jit_statistics().compiled_bodies);
+            interpreter.set_jit_zone_bytes(1 << 20);
+            // Delivered when the next run returns.
+            true
+        },
+    );
+    assert!(
+        replaced.is_some_and(|compiled| compiled > 0),
+        "the run compiled"
+    );
+    assert!(
+        events.iter().any(|event| event.body.is_none()
+            && matches!(
+                event.kind,
+                TraceEventKind::ZoneReplaced { bodies_freed } if bodies_freed > 0
+            )),
         "{events:?}"
     );
 }

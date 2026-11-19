@@ -43,7 +43,8 @@ pub enum TraceCategory {
     Inlining,
     /// An optimized copy retired or invalidated.
     Deoptimize,
-    /// Machine code freed, and the code zone compacted.
+    /// Machine code freed, the code zone compacted, and the zone
+    /// replaced.
     CodeZone,
     /// An inline cache's transition.
     Caches,
@@ -231,8 +232,8 @@ pub enum TraceEventKind {
     /// freed, the body going on in its baseline code -- and its version
     /// raised to `version`, after whose longer wait it may be compiled
     /// again; `None` when it failed past the last version and is refused
-    /// for good (`retired`, its version `version=`, `none` for the
-    /// refusal).
+    /// for good (`retired`, then `version=` the raised version or `none`
+    /// when refused for good).
     Retired {
         key: Option<String>,
         entered: Option<String>,
@@ -258,6 +259,11 @@ pub enum TraceEventKind {
     /// reclaimed by the next compaction (`freed`); about no body when the
     /// body's code died, which no mixin holds any longer.
     Freed { tier: CodeTier, cause: FreeCause },
+    /// The code zone was replaced -- its size set afresh, or the JIT
+    /// switched on or off -- dropping the machine code of `bodies_freed`
+    /// bodies at once, none of them its own `Freed` event (`replaced`);
+    /// about no body.
+    ZoneReplaced { bodies_freed: usize },
 }
 
 impl TraceEventKind {
@@ -283,6 +289,7 @@ impl TraceEventKind {
             TraceEventKind::Invalidated { .. } => "invalidated",
             TraceEventKind::Compacted { .. } => "compacted",
             TraceEventKind::Freed { .. } => "freed",
+            TraceEventKind::ZoneReplaced { .. } => "replaced",
         }
     }
 }
@@ -585,9 +592,11 @@ pub enum FreeCause {
     MovedFeedbackBase,
     /// A breakpoint patched or restored its body.
     Breakpoint,
-    /// Its body kept exiting: abandoned for its exits, or refused for good
-    /// once its twin was refused.
+    /// Its body was abandoned for its exits.
     Abandoned,
+    /// Its body was refused for good once the compiler refused its twin,
+    /// since every frame that reifies would exit.
+    RefusedForItsTwin,
 }
 
 impl FreeCause {
@@ -599,6 +608,7 @@ impl FreeCause {
             FreeCause::MovedFeedbackBase => "moved-feedback-base",
             FreeCause::Breakpoint => "breakpoint",
             FreeCause::Abandoned => "abandoned",
+            FreeCause::RefusedForItsTwin => "refused-for-its-twin",
         }
     }
 }
@@ -724,6 +734,9 @@ pub(crate) enum PendingKind {
     Freed {
         tier: CodeTier,
         cause: FreeCause,
+    },
+    ZoneReplaced {
+        bodies_freed: usize,
     },
 }
 
@@ -1008,6 +1021,7 @@ fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -
             bodies_freed,
         },
         PendingKind::Freed { tier, cause } => TraceEventKind::Freed { tier, cause },
+        PendingKind::ZoneReplaced { bodies_freed } => TraceEventKind::ZoneReplaced { bodies_freed },
     }
 }
 

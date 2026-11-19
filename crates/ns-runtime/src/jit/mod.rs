@@ -2213,6 +2213,15 @@ impl JitState {
     /// them, as switching the JIT off does (`refuse_abandoned`), so that a
     /// JIT off never revives one.
     pub(crate) fn replace_zone(&mut self, bytes: usize) {
+        // One event for the lot: no body's code is freed one by one here.
+        if self.tracer.traces(TraceCategory::CodeZone) {
+            let bodies_freed = self.bodies.iter().filter(|body| !body.free).count();
+            self.tracer.record(Pending {
+                category: TraceCategory::CodeZone,
+                body: None,
+                kind: PendingKind::ZoneReplaced { bodies_freed },
+            });
+        }
         self.bodies.clear();
         // Every row's entry lies in the old zone.
         #[cfg(ns_jit)]
@@ -9081,7 +9090,9 @@ impl JitState {
 /// (`abandon`); between entries only.
 #[cfg(ns_jit)]
 fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let entries = mutator.jit.free_entered_code(code, FreeCause::Abandoned);
+    let entries = mutator
+        .jit
+        .free_entered_code(code, FreeCause::RefusedForItsTwin);
     if code.jit.state.get() != REFUSED {
         code.jit.refuse();
         mutator.jit.statistics.refused_bodies += 1;
