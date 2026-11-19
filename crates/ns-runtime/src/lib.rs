@@ -39,6 +39,7 @@ pub mod platform;
 pub mod resolver;
 pub mod shipped_code;
 pub mod symbol;
+pub mod tool_names;
 pub mod types;
 pub mod vm;
 

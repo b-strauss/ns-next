@@ -26,8 +26,8 @@ use ns_runtime::{ModuleName, ModuleTextAnswer};
 use ns_syntax::Span;
 use ns_tooling::lines::{LineColumn, LineIndex};
 
-use super::breakpoints::KnownModule;
 use super::protocol::{self, SourceArgument};
+use ns_runtime::tool_names::KnownModule;
 
 /// The file a directory of shipped sources holds its fingerprint in, as
 /// `ns-next shipped-sources` writes it.
@@ -353,8 +353,9 @@ impl Sources {
     /// The module the program or the binary has -- a program's module,
     /// the embedded manifest included, or a shipped one -- that `text`
     /// names, as a class name a client typed is read against
-    /// (`breakpoints::parse_class_name`), with the versions the program
-    /// has of its id: `text` itself where it is such an id, and otherwise,
+    /// (`ns_runtime::tool_names::parse_class_name`), with the versions
+    /// the program has of its id: `text` itself where it is such an id,
+    /// and otherwise,
     /// for an undotted `text`, the one such module whose class `text`
     /// names -- `newspeak.core.Kernel` for `Kernel` where the program has
     /// no `Kernel` -- so that a name in the form before ids,
