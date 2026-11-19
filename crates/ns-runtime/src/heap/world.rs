@@ -30,8 +30,8 @@ pub(crate) struct StepRoots<'state, 'gc> {
     depth_reserve: &'state mut Option<FrameReference<'gc>>,
 }
 
-impl crate::trace::Trace for StepRoots<'_, '_> {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+impl crate::edges::Trace for StepRoots<'_, '_> {
+    fn trace<T: crate::edges::Tracer>(&mut self, tracer: &mut T) {
         let StepRoots {
             builtin_classes,
             platform_singleton,
@@ -101,7 +101,7 @@ pub(crate) fn forward_identity<'gc>(
     old: &[ObjectReference<'gc>],
     new: &[ObjectReference<'gc>],
 ) -> Result<(), ForwardRefusal> {
-    use crate::trace::Trace;
+    use crate::edges::Trace;
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
@@ -302,7 +302,7 @@ impl World {
     /// weak objects it found (`Heap::finish_marking`). Answers the ids the
     /// marked objects name, for the reclamation.
     pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::reclaim::GatheredIds {
-        use crate::trace::Trace;
+        use crate::edges::Trace;
         let (heap, mut roots) = split(&mut self.mutator);
         let mut marker = heap.begin_marking();
         roots.trace(&mut marker);
@@ -318,7 +318,7 @@ impl World {
         let futures = crate::interpreter::future::resolved_futures(&self.mutator);
         let (heap, mut roots) = split(&mut self.mutator);
         heap.scavenge(tenure_all, futures, |scavenger| {
-            use crate::trace::Trace;
+            use crate::edges::Trace;
             roots.trace(scavenger);
         });
         self.mutator.rewrite_machine_classes();
@@ -536,7 +536,7 @@ impl World {
         &mut self,
         forwarder: &mut crate::heap::Forwarder<M>,
     ) {
-        use crate::trace::Trace;
+        use crate::edges::Trace;
         let (_, mut roots) = split(&mut self.mutator);
         roots.trace(forwarder);
         self.mutator.rewrite_machine_classes();

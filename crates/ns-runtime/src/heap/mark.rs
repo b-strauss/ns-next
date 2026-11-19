@@ -7,14 +7,14 @@
 //! handed, a root's included, without testing anything; a root reached
 //! twice costs one extra pop, which finds the object already marked.
 
+use crate::edges::Tracer;
 use crate::heap::reclaim::GatheredIds;
 use crate::heap::{FrameReference, ObjectReference, Word};
-use crate::trace::Tracer;
 use std::num::NonZeroU64;
 
 /// The work list of a marking: the offsets of objects reached but not
 /// yet visited. Its `Tracer` impl is how the roots enter it, through the
-/// same edge enumeration forwarding walks (`trace.rs`), so a root a later
+/// same edge enumeration forwarding walks (`edges.rs`), so a root a later
 /// change adds is named in exactly one place and cannot be missed by one
 /// of the two.
 pub(crate) struct Marker {

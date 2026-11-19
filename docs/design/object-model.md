@@ -2584,7 +2584,7 @@ Edit-and-continue adding locals will divorce the affected activation into a
 newly allocated, larger frame object -- allocated old and born remembered by
 the rule in [memory.md](memory.md), "Generations" -- the VM
 rewriting every reference to the old frame by a walk of every root the
-collector traces (`trace.rs`) and every heap object, the same walk as the
+collector traces (`edges.rs`) and every heap object, the same walk as the
 bulk forward ("`become:` is an eager bulk forward"
 below); execution continues from the new frame as from any suspended one
 ([execution.md](execution.md), "Suspending and resuming", "How this meets

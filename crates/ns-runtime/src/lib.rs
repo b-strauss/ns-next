@@ -26,6 +26,7 @@ pub mod code_points;
 pub mod compiler;
 pub mod debugger;
 pub mod dispatch;
+pub(crate) mod edges;
 pub mod hash;
 pub mod heap;
 pub mod image;
@@ -38,7 +39,6 @@ pub mod platform;
 pub mod resolver;
 pub mod shipped_code;
 pub mod symbol;
-pub(crate) mod trace;
 pub mod types;
 pub mod vm;
 

@@ -1169,7 +1169,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    `fetch` take `&self`, and it is swept at every move and whenever it has
    doubled, so it stays bounded in a release build too.
 5. **A release build keeps the root table, `Root`, `HostResult` and the
-   flag-clearing slow path**; the checking machinery — `trace.rs`, the move
+   flag-clearing slow path**; the checking machinery — `edges.rs`, the move
    epoch, the move, the stress schedule and its test hooks — is
    `#[cfg(debug_assertions)]`.
 
@@ -1184,7 +1184,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    `HostResult`; a Newspeak error reaches the host as a `HostError` with its
    receiver rooted, and `instantiate` refuses a root that holds no class. The
    CLI converted first, the tests under transitional names.
-3. **The epoch, the tracing and the move** (`277e606`). `trace.rs`, with
+3. **The epoch, the tracing and the move** (`277e606`). `edges.rs`, with
    every impl naming every field and matching every variant; a move epoch on
    every `ObjectReference` and `FrameReference` in a debug build; `Heap::move_everything`,
    rotating both arenas with no fixed point and forwarding through a
@@ -2157,7 +2157,7 @@ the last numbered step of M4.
 
 - Task 1 (`26669c6`) — `Forwarder`'s mapping becomes a parameter (a
   `Rotation` for the move stress mode, a forwarding table for the
-  collector), and `trace.rs` stops being debug-only, since the collector
+  collector), and `edges.rs` stops being debug-only, since the collector
   needs the same edge enumeration in every build.
 - Task 2 (`4a66f48`, `422b5d0`) — mark bits (`heap/mark.rs`, one `Vec<u64>`
   per arena, one bit per slot) and a marker: a second `Tracer` beside

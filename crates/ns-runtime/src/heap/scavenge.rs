@@ -21,6 +21,7 @@
 
 use std::num::NonZeroU64;
 
+use crate::edges::Tracer;
 use crate::heap::header::{Format, Header, MAX_AGE};
 use crate::heap::object::{self, CLASS, FIELDS, pointer_ranges_of, strong_pointer_ranges};
 use crate::heap::pending::PendingEphemerons;
@@ -28,7 +29,6 @@ use crate::heap::space::{RegionName, Space, allocation_range, block_range, is_yo
 use crate::heap::{
     FrameReference, ObjectReference, ResolvedFutures, Word, header_index, offset_of_header,
 };
-use crate::trace::Tracer;
 
 pub(crate) struct Scavenger<'space> {
     pub(in crate::heap) space: &'space mut Space,

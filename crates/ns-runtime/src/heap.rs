@@ -793,7 +793,7 @@ struct ActivationStack {
 /// stack, each a tagged value, so that no stack map is needed
 /// (`Heap::trace_stack`).
 #[inline(always)]
-fn trace_words<T: crate::trace::Tracer>(words: &mut [u64], tracer: &mut T) {
+fn trace_words<T: crate::edges::Tracer>(words: &mut [u64], tracer: &mut T) {
     for bits in words {
         let mut word = Word::from_bits(*bits);
         tracer.word(&mut word);
@@ -1437,7 +1437,7 @@ impl FrameWindow {
     /// frame writes these words, since a frame below writes only words its
     /// frames above do not claim.
     #[inline(always)]
-    fn trace<T: crate::trace::Tracer>(
+    fn trace<T: crate::edges::Tracer>(
         &self,
         words: &mut [u64],
         claimed: &[Range<usize>],
@@ -1889,8 +1889,8 @@ struct Suspensions<'gc> {
     free: ids::FreeIndices,
 }
 
-impl crate::trace::Trace for Suspension<'_> {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+impl crate::edges::Trace for Suspension<'_> {
+    fn trace<T: crate::edges::Tracer>(&mut self, tracer: &mut T) {
         let Suspension {
             frame,
             then,
@@ -1903,8 +1903,8 @@ impl crate::trace::Trace for Suspension<'_> {
     }
 }
 
-impl crate::trace::Trace for Suspensions<'_> {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+impl crate::edges::Trace for Suspensions<'_> {
+    fn trace<T: crate::edges::Tracer>(&mut self, tracer: &mut T) {
         let Suspensions { rows, free: _ } = self;
         for suspension in rows.iter_mut().flatten() {
             suspension.trace(tracer);
@@ -2058,8 +2058,8 @@ impl<'gc> Continuations<'gc> {
     }
 }
 
-impl crate::trace::Trace for Continuations<'_> {
-    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+impl crate::edges::Trace for Continuations<'_> {
+    fn trace<T: crate::edges::Tracer>(&mut self, tracer: &mut T) {
         let Continuations { rows, free: _ } = self;
         for continuation in rows.iter_mut().flatten() {
             continuation.trace(tracer);
@@ -2530,7 +2530,7 @@ pub(crate) struct Forwarder<M: Relocation> {
     objects: M,
 }
 
-impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
+impl<M: Relocation> crate::edges::Tracer for Forwarder<M> {
     fn object(&mut self, handle: &mut ObjectReference<'_>) {
         #[cfg(debug_assertions)]
         {
@@ -11588,7 +11588,7 @@ impl<'gc> Heap<'gc> {
     /// offsets, which measured `RichardsTon80` about 1.3% slower with
     /// nothing of the collector in its profile.
     #[inline(never)]
-    fn trace_stack<T: crate::trace::Tracer>(
+    fn trace_stack<T: crate::edges::Tracer>(
         stack: &mut ActivationStack,
         tables: &Tables,
         tracer: &mut T,
@@ -11739,7 +11739,7 @@ impl<'gc> Heap<'gc> {
         futures: Option<ResolvedFutures>,
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
-        use crate::trace::{Trace, Tracer};
+        use crate::edges::{Trace, Tracer};
         self.settle_machine_allocations();
         // Committed for the worst case first, so that a promotion never meets a
         // refused commit halfway through (`docs/design/memory.md`).
@@ -12368,7 +12368,7 @@ impl<'gc> Heap<'gc> {
     /// builds its own `Forwarder` first, over its own `Relocation`, and then
     /// walks the same roots through it -- so that a field any of them must
     /// reach is named here once, rather than in copies a later change can
-    /// update in one and miss in another (`trace.rs`'s reason for existing,
+    /// update in one and miss in another (`edges.rs`'s reason for existing,
     /// one level up).
     ///
     /// With `slide`, a full collection's, every closure's feedback base is
@@ -12381,7 +12381,7 @@ impl<'gc> Heap<'gc> {
         forwarder: &mut Forwarder<M>,
         slide: Option<&SiteSlide>,
     ) {
-        use crate::trace::{Trace, Tracer};
+        use crate::edges::{Trace, Tracer};
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
         // frame moves. Walks the objects where they lie now, after the move.
@@ -12614,7 +12614,7 @@ impl<'gc> Heap<'gc> {
     /// `prune_mixin_objects` rather than kept alive by it. The space
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
-        use crate::trace::{Trace, Tracer};
+        use crate::edges::{Trace, Tracer};
         // A mark left set would make this marking skip that object's edges
         // and so collect what only it reaches.
         #[cfg(debug_assertions)]
@@ -13065,7 +13065,7 @@ impl<'gc> Heap<'gc> {
     /// `World`.
     #[cfg(test)]
     fn collect_for_test(&mut self, roots: &mut [&mut Value<'gc>]) {
-        use crate::trace::Tracer;
+        use crate::edges::Tracer;
         let mut marker = self.begin_marking();
         for root in roots.iter_mut() {
             marker.value(root);
@@ -17860,7 +17860,7 @@ mod tests {
 
     /// Scavenges a bare heap with `roots` as the step state's roots.
     fn scavenge_bare<'gc>(heap: &mut Heap<'gc>, tenure_all: bool, roots: &mut [&mut Value<'gc>]) {
-        use crate::trace::Tracer;
+        use crate::edges::Tracer;
         heap.scavenge(tenure_all, None, |scavenger| {
             for root in roots.iter_mut() {
                 scavenger.value(root);
@@ -18178,7 +18178,7 @@ mod tests {
         assert!(heap.header(heap.frame_object(frame)).remembered());
 
         heap.scavenge(false, None, |scavenger| {
-            use crate::trace::Tracer;
+            use crate::edges::Tracer;
             scavenger.frame(&mut frame);
         });
 
@@ -19038,7 +19038,7 @@ mod tests {
         pending::work::take();
 
         heap.scavenge(false, Some(futures), |scavenger| {
-            use crate::trace::Tracer;
+            use crate::edges::Tracer;
             scavenger.value(&mut array_root);
         });
 
@@ -19105,7 +19105,7 @@ mod tests {
             );
 
             heap.scavenge(false, Some(futures), |scavenger| {
-                use crate::trace::Tracer;
+                use crate::edges::Tracer;
                 for root in [&mut ephemeron_root, &mut weak_root, &mut holder_root] {
                     scavenger.value(root);
                 }
@@ -19186,7 +19186,7 @@ mod tests {
                 heap.collect_for_test(&mut [&mut weak_root, &mut inner_root]);
             } else {
                 heap.scavenge(false, Some(futures), |scavenger| {
-                    use crate::trace::Tracer;
+                    use crate::edges::Tracer;
                     for root in [&mut weak_root, &mut inner_root] {
                         scavenger.value(root);
                     }
@@ -19610,7 +19610,7 @@ mod tests {
                         }
                         #[cfg(debug_assertions)]
                         ByteArrayMover::Move => {
-                            use crate::trace::Tracer;
+                            use crate::edges::Tracer;
                             // Every distance of the stress mode, up from
                             // each region's base and back down to it.
                             for _ in 0..62 {
@@ -21778,7 +21778,7 @@ mod tests {
                 write_word(&mut heap, claimed, held[1]);
                 let mut weak = weak_over(&mut heap, &held);
 
-                use crate::trace::Tracer;
+                use crate::edges::Tracer;
                 let mut marker = heap.begin_marking();
                 marker.value(&mut weak);
                 heap.drain_marking(&mut marker);

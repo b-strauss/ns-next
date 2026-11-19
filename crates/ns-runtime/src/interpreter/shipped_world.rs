@@ -13,12 +13,12 @@ use std::rc::Rc;
 use ns_syntax::ast::AccessModifier;
 
 use crate::Symbol;
+use crate::edges::{Trace, Tracer};
 use crate::heap::MixinId;
 use crate::heap::{Heap, Root};
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::KERNEL_MODULE;
 use crate::mixin::{MethodEntry, Mixin};
-use crate::trace::{Trace, Tracer};
 use crate::types::{BuiltinClass, ClassReference, ObjectReference, Value};
 
 /// What a shipped name names, given its module and its declaration.

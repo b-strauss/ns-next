@@ -4407,7 +4407,7 @@ did.
 
 The moving collector ([PROGRESS.md](../PROGRESS.md), "M4 — The moving
 collector"; [memory.md](memory.md), "The shape: mark, compact, forward"
-onward) marks from the roots through `trace.rs`'s one edge enumeration,
+onward) marks from the roots through `edges.rs`'s one edge enumeration,
 compacts by sliding each arena's live slots to the front, truncates and
 shrinks the arena with hysteresis, and rewrites every handle through a flat
 forwarding table; the canonical symbol table becomes weak; a trigger compares
@@ -10363,7 +10363,7 @@ first — reified and divorced while still running, the operation Cog's
 `divorceAllFrames` performs on every stack page before a snapshot. A frame
 object never grows; the activation will be divorced into a newly allocated,
 larger frame object and the VM will rewrite every reference to the old one by
-a walk of every root the collector traces (`trace.rs`) and every heap object,
+a walk of every root the collector traces (`edges.rs`) and every heap object,
 the new frame allocated old and born remembered
 ([object-model.md](object-model.md), "The object layout"). Continuing
 the activation from its new frame is a resume from a suspended frame
@@ -10563,7 +10563,7 @@ inlining observable.
 ### Converted representation
 
 **The vector** is an ordinary `Array`, of the indexable format, as Cog's
-indirection vector is. No new object kind: the heap, `trace.rs` and the image
+indirection vector is. No new object kind: the heap, `edges.rs` and the image
 already handle it, and Newspeak code never receives it as a value, since only
 the new instructions touch it. One vector per body that has vector variables,
 not a box per variable — the Smalltalk and Newspeak lineage's choice (Cog,
