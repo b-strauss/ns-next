@@ -1177,7 +1177,10 @@ const SIX_RECEIVERS: &str = indoc! {"
 /// The cache stress mode vacates every site at every safepoint, so that
 /// a site starts afresh where these pin how it moves on.
 fn caches_stress_off(interpreter: &mut Interpreter) {
+    #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    #[cfg(not(debug_assertions))]
+    let _ = interpreter;
 }
 
 /// A site is traced through its states as its receivers' classes grow:
@@ -1296,7 +1299,7 @@ fn a_transition_the_miss_leaf_makes_is_traced() {
         interpreter.set_jit_stress(false);
         interpreter.set_optimize_stress(false);
         interpreter.set_optimization_budget(i64::MAX);
-        interpreter.set_stress_caches(false);
+        caches_stress_off(interpreter);
         interpreter.set_trace(
             TraceCategories::default()
                 .with(TraceCategory::Compile)
@@ -1366,7 +1369,7 @@ fn the_queue_is_empty_after_a_run() {
         interpreter.set_jit_stress(false);
         interpreter.set_optimize_stress(false);
         interpreter.set_optimization_budget(i64::MAX);
-        interpreter.set_stress_caches(false);
+        caches_stress_off(interpreter);
         interpreter.set_trace(
             TraceCategories::default().with(TraceCategory::Caches),
             TraceFilter::everything(),
