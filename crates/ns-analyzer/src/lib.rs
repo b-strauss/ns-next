@@ -27,6 +27,7 @@ pub mod file_uri;
 pub mod folding;
 pub mod hints;
 pub mod hover;
+pub mod module_metadata;
 pub mod semantic_tokens;
 pub mod server;
 pub mod token_dump;

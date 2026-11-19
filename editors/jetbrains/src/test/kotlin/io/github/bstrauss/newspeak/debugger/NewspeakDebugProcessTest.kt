@@ -907,9 +907,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     /**
      * The memory view lists the stop's instance counts; a class chosen
-     * lists its instances, asked by its name -- a shipped module's by its
-     * module -- each a value tree; a value's referrers are its children's
-     * provider's.
+     * lists its instances, asked by its name alone -- a shipped module's
+     * names its module's id, which no program's module takes -- each a
+     * value tree; a value's referrers are its children's provider's.
      */
     fun testTheMemoryViewListsInstanceCounts() {
         val faked = fakeSession()
@@ -918,10 +918,10 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
                 "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
                 "nsNext/instanceCounts" -> JsonParser.parseString(
-                    """{"classes":[{"name":"Census.Point","count":2},{"name":"Kernel.Array","count":1,"nsNext/shipped":true}]}""",
+                    """{"classes":[{"name":"Census/Point","count":2},{"name":"newspeak.core.Kernel/Array","count":1,"nsNext/shipped":true}]}""",
                 ).asJsonObject
                 "nsNext/instances" -> JsonParser.parseString(
-                    if (arguments.has("shipped")) {
+                    if (arguments.get("name").asString == "newspeak.core.Kernel/Array") {
                         """{"variables":[{"name":"#1","value":"an Array","type":"Array","variablesReference":0}]}"""
                     } else {
                         """{"variables":[
@@ -942,13 +942,13 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
         val view = (faked.debugging.process as NewspeakDebugProcess).memoryView
         val counts = view.refresh().get(WAIT_SECONDS, TimeUnit.SECONDS)
-        assertEquals(listOf(DapInstanceCount("Census.Point", 2, false), DapInstanceCount("Kernel.Array", 1, true)), counts)
+        assertEquals(listOf(DapInstanceCount("Census/Point", 2, false), DapInstanceCount("newspeak.core.Kernel/Array", 1, true)), counts)
 
         val points = childrenOf(view.instancesOf(counts[0]))
         assertEquals(listOf("#1", "#2"), points.keys.toList())
         childrenOf(view.instancesOf(counts[1]))
         assertEquals(
-            listOf("""{"name":"Census.Point","start":0,"count":100}""", """{"name":"Kernel.Array","shipped":true,"start":0,"count":100}"""),
+            listOf("""{"name":"Census/Point","start":0,"count":100}""", """{"name":"newspeak.core.Kernel/Array","start":0,"count":100}"""),
             agent.requests("nsNext/instances").map(JsonObject::toString),
         )
 
@@ -1145,8 +1145,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val library = libraryDirectory()
         val manifest = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Manifest.ns")))
         val line = Files.readString(library.resolve("Manifest.ns")).lines()
-            .indexOfFirst { text -> text.contains("((names at: index) = message selector) ifTrue:") }
-        assertTrue("Manifest>>doesNotUnderstand:", line >= 0)
+            .indexOfFirst { text -> text.contains("^definitions at: match.") }
+        assertTrue("Manifest>>at:", line >= 0)
         program("App", SHARING)
         program("Shared", SHARED)
         Files.writeString(directory.resolve("newspeak.json"), """{"main": "App.ns", "modules": ["Shared.ns"]}""")
@@ -1813,7 +1813,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         /** A project's root that reaches `Shared` through its manifest. */
         val SHARING = """
             class App packageUsing: manifest = Object new (
-              | Shared = manifest Shared. |
+              | Shared = manifest at: 'Shared'. |
             ) (
               public main: platform args: arguments = (
                 platform transcript show: Shared new greeting; newLine.

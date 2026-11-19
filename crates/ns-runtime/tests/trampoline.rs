@@ -420,10 +420,10 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
             let Some(class) = mutator.fetch(&class).as_object() else {
                 panic!("{block}: load_module answers a class object")
             };
-            let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+            let identity = ns_runtime::modules::ModuleIdentity::undeclared("t.ns", "Crafted");
             let modules = [image::ModuleSource {
                 class,
-                origin: &origin,
+                identity: &identity,
                 with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))

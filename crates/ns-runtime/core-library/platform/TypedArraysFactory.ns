@@ -50,6 +50,7 @@
 /// `TypedArray`'s superclass, its `IndexedCollection` the mixin that gives
 /// it the sequence protocol, its `ArgumentError` what a typed array
 /// signals for a ByteArray it cannot view.
+(* :module: newspeak.core.TypedArraysFactory *)
 class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
   |
     /// The VM mirror the factory was given: the one object through which

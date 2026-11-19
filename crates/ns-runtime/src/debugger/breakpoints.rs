@@ -31,7 +31,7 @@ use crate::Root;
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::{ActivationReference, CodeId, FrameReference, Heap, MixinId};
 use crate::interpreter::Mutator;
-use crate::interpreter::core_library::{KERNEL_MODULE, SHIPPED_MODULES, shipped_module_text};
+use crate::interpreter::core_library::{shipped_module_named_by_id, shipped_module_text};
 use crate::mixin::{Mixin, MixinMethod};
 
 /// The size of the breakpoint stress mode's table of resolved bodies from
@@ -1342,7 +1342,9 @@ pub(crate) fn set_line_breakpoints(
 /// replaced by an install: its line and method breakpoints are resolved
 /// against its current bodies, and a change reported unasked. A slot of a
 /// body no longer current keeps its patch, so that a frame still running
-/// it stops there.
+/// it stops there. `name` is the built module's own; a module's line
+/// breakpoints are set under its exact name, as a frame's location names
+/// it, while a method breakpoint's name may cover every version.
 pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &ModuleName) {
     if let Some(position) = mutator
         .breakpoints
@@ -1356,7 +1358,7 @@ pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &ModuleName) {
         .breakpoints
         .methods
         .iter()
-        .any(|entry| entry.method.class.module == *name)
+        .any(|entry| entry.method.class.module.covers(name))
     {
         let before: Vec<bool> = mutator
             .breakpoints
@@ -1459,7 +1461,7 @@ pub(crate) fn run_to(
 fn resolve_methods(mutator: &mut Mutator<'_>, module: Option<&ModuleName>) {
     for position in 0..mutator.breakpoints.methods.len() {
         let entry = &mutator.breakpoints.methods[position];
-        if module.is_some_and(|module| entry.method.class.module != *module) {
+        if module.is_some_and(|module| !entry.method.class.module.covers(module)) {
             continue;
         }
         let request = entry.method.clone();
@@ -1709,8 +1711,9 @@ fn resolve_module(mutator: &mut Mutator<'_>, position: usize) {
     table.sweep();
 }
 
-/// The ids of the root mixins, instance sides, named `name`: the modules
-/// whose root class is, as `FrameLocation::module` names a module.
+/// The ids of the root mixins, instance sides, of the modules `name`
+/// names, as `FrameLocation::module` names a module: by their id, and by
+/// their version where `name` gives one.
 fn module_roots(mutator: &Mutator<'_>, name: &ModuleName) -> Vec<MixinId> {
     mutator
         .heap
@@ -1730,17 +1733,38 @@ fn module_roots(mutator: &Mutator<'_>, name: &ModuleName) -> Vec<MixinId> {
 /// module's, as the last install left it; a shipped module's shipped
 /// text, which needs no build, taken from the binary's tables and never
 /// from the heap. `None` for a module neither has, and for a program
-/// module without text (an image built with its source stripped).
+/// module without text (an image built with its source stripped). A
+/// built module is shipped as its root says (`Mixin::shipped`); one not
+/// built yet is a shipped one only by a shipped module's id, which no
+/// program's module may declare (`docs/design/modules.md`, decision 9).
+/// A text is one module's: a name without a version that covers built
+/// modules of several versions names none of them, and answers `None`
+/// rather than one picked by the order the heap registered them in.
 pub(crate) fn module_text(mutator: &Mutator<'_>, name: &ModuleName) -> Option<String> {
-    if name.shipped {
-        let shipped = name.name == KERNEL_MODULE
-            || SHIPPED_MODULES
-                .iter()
-                .any(|shipped| shipped.name == name.name);
-        return shipped.then(|| String::from(&*shipped_module_text(&name.name)));
+    let roots: Vec<(MixinId, Rc<Mixin>)> = module_roots(mutator, name)
+        .into_iter()
+        .filter_map(|id| Some((id, mutator.heap.mixin(id)?)))
+        .collect();
+    let mut modules = roots.iter().map(|(_, root)| ModuleName::of_root(root));
+    if let Some(first) = modules.next()
+        && modules.any(|other| other != first)
+    {
+        return None;
     }
-    let root = module_roots(mutator, name).into_iter().next()?;
-    mutator.heap.module_source(root)
+    match roots.into_iter().next() {
+        Some((_, root)) if root.shipped => {
+            Some(String::from(&*shipped_module_text(root.name.as_str())))
+        }
+        Some((id, _)) => mutator.heap.module_source(id),
+        None => {
+            let shipped = name
+                .version
+                .is_none()
+                .then(|| shipped_module_named_by_id(&name.id))
+                .flatten()?;
+            Some(String::from(&*shipped_module_text(shipped)))
+        }
+    }
 }
 
 /// Resolves `offsets` against every current body of the module whose

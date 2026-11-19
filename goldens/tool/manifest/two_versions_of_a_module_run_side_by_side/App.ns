@@ -1,0 +1,22 @@
+/// Two versions of one module live side by side in one program: the project
+/// lists both files, each declares the same id with its own version, and the
+/// application asks the manifest for each by the id and a range of its
+/// versions (docs/design/modules.md, decisions 3 and 4). A major range
+/// matches the one version of that major.
+class App packageUsing: manifest = Object new (
+  |
+    private First = manifest at: 'com.acme.util.Util' version: '1'.
+    private Second = manifest at: 'com.acme.util.Util' version: '2.0'.
+    private Exact = manifest at: 'com.acme.util.Util' version: '2.0.0'.
+  |
+) (
+  public main: platform args: arguments = (
+    platform transcript
+        show: First new answer;
+        newLine;
+        show: Second new answer;
+        newLine;
+        show: (Exact == Second) printString;
+        newLine.
+  )
+)

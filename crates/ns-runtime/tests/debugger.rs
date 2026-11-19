@@ -1161,34 +1161,48 @@ const SHELF: &str = indoc! {"
 /// `lowering`, its two levels applied from instances of the modules
 /// `first` and `second`.
 fn joined_fields(lowering: Lowering, first: &str, second: &str) -> (Vec<String>, Vec<String>) {
-    joined_fields_of(lowering, JOINED, &[first, second])
+    joined_fields_of(lowering, JOINED, &[(first, None), (second, None)])
 }
 
 /// The names and values of the fields of the `Both` of `joined`, a module
 /// whose factory takes an instance of each of `libraries`, under
-/// `lowering`.
+/// `lowering`. A library with a version is loaded as the module
+/// `com.acme.<Class>` of that version, one without as a host loads a
+/// module without an identity, named by its class's name.
 fn joined_fields_of(
     lowering: Lowering,
     joined: &'static str,
-    libraries: &[&str],
+    libraries: &[(&str, Option<&str>)],
 ) -> (Vec<String>, Vec<String>) {
     let source = joined;
     let (mut interpreter, joined) = interpreted(source, lowering);
-    let mut library = |source: &str| {
+    let mut library = |source: &str, version: Option<&str>| {
         let module = ns_syntax::parse(source).expect("parse");
-        let resolved = ns_runtime::resolve(
+        let mut resolved = ns_runtime::resolve(
             module,
             source.into(),
             ns_runtime::SourceOrigin::File("library.ns".into()),
         )
         .expect("resolve");
+        if let Some(version) = version {
+            let class = resolved.module.root_class.name.name.clone();
+            resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
+                path: format!("{version}/{class}.ns"),
+                id: ns_runtime::modules::ModuleId::parse(&format!("com.acme.{class}"), &class)
+                    .expect("an id"),
+                version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
+            }));
+        }
         let class = interpreter.load_module(&resolved);
         expect_ok(
             interpreter.instantiate(&class, &[]),
             "instantiate a library",
         )
     };
-    let instances: Vec<Root> = libraries.iter().map(|source| library(source)).collect();
+    let instances: Vec<Root> = libraries
+        .iter()
+        .map(|(source, version)| library(source, *version))
+        .collect();
     let instance = expect_ok(interpreter.instantiate(&joined, &instances), "instantiate");
     let offset = line_start(source, "^both");
     let (fields, result) = debugged_in(
@@ -1223,24 +1237,50 @@ fn joined_fields_of(
 
 /// Two shadowed levels whose mixins share their name and their path from
 /// their module roots, the roots of two modules of different names, are
-/// named by the path from the root's own name on.
+/// named by that path after their modules, as a tool writes a class.
 #[test]
-fn shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots() {
+fn shadowed_slots_of_modules_sharing_a_path_are_named_after_their_modules() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let kit = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 2");
         let (names, labels) = joined_fields(lowering, LIBRARY, &kit);
         assert_eq!(
             names,
-            ["x (Library.Outer.Base)", "x (Kit.Outer.Base)", "x"],
+            ["x (Library/Outer.Base)", "x (Kit/Outer.Base)", "x"],
             "{lowering:?}"
         );
         assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
     }
 }
 
-/// Two shadowed levels whose mixins share even the path from their roots'
-/// names, those of two modules of one name, are told apart by their
-/// places in the chain, numbered from the object's class upward.
+/// Two shadowed levels of two versions of one module, which share their
+/// id and their path, are told apart by their versions, as every tool
+/// names the two modules (`docs/design/modules.md`, decision 8).
+#[test]
+fn shadowed_slots_of_two_versions_of_a_module_are_named_by_their_versions() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let second = LIBRARY.replace("x = 1", "x = 2");
+        let (names, labels) = joined_fields_of(
+            lowering,
+            JOINED,
+            &[(LIBRARY, Some("1.0.0")), (&second, Some("2.0.0"))],
+        );
+        assert_eq!(
+            names,
+            [
+                "x (com.acme.Library@1.0.0/Outer.Base)",
+                "x (com.acme.Library@2.0.0/Outer.Base)",
+                "x"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// Two shadowed levels whose mixins share even their modules' names and
+/// their paths -- two modules a host loaded without an identity, of one
+/// class's name -- are told apart by their places in the chain, numbered
+/// from the object's class upward.
 #[test]
 fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -1249,8 +1289,8 @@ fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
         assert_eq!(
             names,
             [
-                "x (Library.Outer.Base #2)",
-                "x (Library.Outer.Base #1)",
+                "x (Library/Outer.Base #2)",
+                "x (Library/Outer.Base #1)",
                 "x"
             ],
             "{lowering:?}"
@@ -1260,20 +1300,25 @@ fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
 }
 
 /// A declarer named by its path from its module root and another named by
-/// the path from its root's own name may spell the same label: each is
-/// numbered then, as declarers alike in every tier are.
+/// that path after its module never spell the same label, since only the
+/// module's form holds a `/`: `Library.Outer.Base` inside `Shelf` and
+/// `Library/Outer.Base`, the module `Library`'s.
 #[test]
-fn shadowed_slots_alike_across_their_tiers_are_numbered() {
+fn shadowed_slots_across_their_tiers_are_never_alike() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let second = LIBRARY.replace("x = 1", "x = 2");
         let third = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 3");
-        let (names, labels) = joined_fields_of(lowering, JOINED_THREE, &[SHELF, &second, &third]);
+        let (names, labels) = joined_fields_of(
+            lowering,
+            JOINED_THREE,
+            &[(SHELF, None), (&second, None), (&third, None)],
+        );
         assert_eq!(
             names,
             [
-                "x (Library.Outer.Base #2)",
-                "x (Library.Outer.Base #1)",
-                "x (Kit.Outer.Base)",
+                "x (Library.Outer.Base)",
+                "x (Library/Outer.Base)",
+                "x (Kit/Outer.Base)",
                 "x"
             ],
             "{lowering:?}"
@@ -1577,7 +1622,7 @@ ns_runtime::for_each_lowering! {
                 .unwrap_or_else(|| panic!("{} is located", frames[index].name))
         };
         let looping = located(innermost);
-        assert_eq!(looping.module.name, "Stacked");
+        assert_eq!(looping.module.id, "Stacked");
         // The loop's statement, or its condition's, the statement of an
         // inlined block, which the loop's back edge jumps to.
         assert!(
@@ -1839,16 +1884,16 @@ ns_runtime::for_each_lowering! {
     /// header's factory pattern (decision 12).
     fn a_factory_frame_names_its_parameters(lowering) {
         let (frames, variables) = while_stopped_under(lowering, FACTORIES, |remote| {
-            frame_and_variables(remote, "Made class>>x:y:")
+            frame_and_variables(remote, "Factories/Made class>>x:y:")
         });
-        let factory = frame_named(&frames, "Made class>>x:y:");
-        assert_eq!(frames[factory - 1].name, "Made initializer");
+        let factory = frame_named(&frames, "Factories/Made class>>x:y:");
+        assert_eq!(frames[factory - 1].name, "Factories/Made initializer");
         assert_eq!(frames[factory + 1].name, "Factories>>run");
         let location = frames[factory]
             .location
             .clone()
             .expect("the factory is located");
-        assert_eq!(location.module.name, "Factories");
+        assert_eq!(location.module.id, "Factories");
         assert_eq!(location.statement.text(FACTORIES), "x: first y: second");
         assert_eq!(names(&variables), ["self", "first", "second"]);
         assert_eq!(value_of(&variables, "first").label, "3");
@@ -1889,7 +1934,9 @@ const CHANGING: &str = indoc! {"
 fn spinning_block(frames: &[FrameDescription]) -> usize {
     frames
         .iter()
-        .rposition(|frame| frame.name == "[] in Subject>>spin:")
+        .rposition(|frame| {
+            frame.name.starts_with("[] in ") && frame.name.ends_with("/Subject>>spin:")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "a frame of spin:'s block was expected in {:?}",
@@ -1898,11 +1945,13 @@ fn spinning_block(frames: &[FrameDescription]) -> usize {
         })
 }
 
-/// The stack and the variables of the frame named `Subject>>spin:` and of
-/// its block's (`spinning_block`) of `source`'s `run` under `lowering`,
-/// sent to the module's instance made `usingPlatform:`.
+/// The stack and the variables of the frame named `<module>/Subject>>spin:`
+/// and of its block's (`spinning_block`) of `source`'s `run` under
+/// `lowering`, sent to the instance of the module `module` made
+/// `usingPlatform:`.
 fn spinning_subject(
     source: &'static str,
+    module: &str,
     lowering: Lowering,
 ) -> (Vec<FrameDescription>, Vec<Variable>, Vec<Variable>) {
     let (mut interpreter, class) = load(source, lowering);
@@ -1911,9 +1960,10 @@ fn spinning_subject(
         interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
         "usingPlatform:",
     );
+    let spinning = format!("{module}/Subject>>spin:");
     let ((frames, method, block), _, _) =
-        while_stopped_in(interpreter, &instance, PAUSE_DELAY, |remote| {
-            let (frames, method) = frame_and_variables(remote, "Subject>>spin:");
+        while_stopped_in(interpreter, &instance, PAUSE_DELAY, move |remote| {
+            let (frames, method) = frame_and_variables(remote, &spinning);
             let block = variables(
                 remote,
                 Command::Variables {
@@ -1933,8 +1983,8 @@ ns_runtime::for_each_lowering! {
     /// creates it, and has no metadata either, since the family's root
     /// does not compile alike.
     fn a_changed_superseded_body_shows_unnamed_registers(lowering) {
-        let (frames, method, block) = spinning_subject(CHANGING, lowering);
-        let spinning = frame_named(&frames, "Subject>>spin:");
+        let (frames, method, block) = spinning_subject(CHANGING, "Changing", lowering);
+        let spinning = frame_named(&frames, "Changing/Subject>>spin:");
         assert_eq!(frames[spinning].location, None);
         assert_eq!(method[0].name, "self");
         assert_eq!(value_of(&method, "argument 1").label, "5");
@@ -1984,13 +2034,13 @@ ns_runtime::for_each_lowering! {
     /// text, and the frame and its block's keep their names, their
     /// location and their named variables (decision 11).
     fn an_unchanged_superseded_body_keeps_its_metadata(lowering) {
-        let (frames, method, block) = spinning_subject(ADDING, lowering);
-        let spinning = frame_named(&frames, "Subject>>spin:");
+        let (frames, method, block) = spinning_subject(ADDING, "Adding", lowering);
+        let spinning = frame_named(&frames, "Adding/Subject>>spin:");
         let location = frames[spinning]
             .location
             .clone()
             .expect("the superseded method is located");
-        assert_eq!(location.module.name, "Adding");
+        assert_eq!(location.module.id, "Adding");
         assert_eq!(location.statement.text(ADDING), "^block value: count");
         assert_eq!(names(&method), ["self", "count", "items", "block"]);
         assert_eq!(value_of(&method, "count").label, "5");
@@ -2016,13 +2066,13 @@ ns_runtime::for_each_lowering! {
 fn an_image_without_source_shows_unnamed_frames() {
     let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+    let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Stacked");
     let bytes = interpreter
         .enter(|mutator| {
             let class = mutator.fetch(&class).as_object().expect("the module class");
             let modules = [ns_runtime::image::ModuleSource {
                 class,
-                origin: &origin,
+                identity: &identity,
                 with_source: false,
             }];
             ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
@@ -2078,13 +2128,13 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&instance, Symbol::intern("prepare"), &[]),
             "prepare",
         );
-        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Kept");
         let bytes = interpreter
             .enter(|mutator| {
                 let class = mutator.fetch(&class).as_object().expect("the module class");
                 let modules = [ns_runtime::image::ModuleSource {
                     class,
-                    origin: &origin,
+                    identity: &identity,
                     with_source: true,
                 }];
                 ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
@@ -2297,9 +2347,9 @@ fn set_breakpoints(remote: &DebugRemote, module: &str, offsets: Vec<u32>) {
 /// program's otherwise.
 fn module_named(name: &str) -> ModuleName {
     if ns_runtime::shipped_module_source(name).is_some() {
-        ModuleName::shipped(name)
+        ModuleName::named(format!("newspeak.core.{name}"))
     } else {
-        ModuleName::program(name)
+        ModuleName::named(name)
     }
 }
 
@@ -2318,7 +2368,7 @@ fn expect_breakpoints(remote: &DebugRemote, module: &str) -> Vec<BreakpointState
         Some(Event::Breakpoints {
             module: reported,
             breakpoints,
-        }) if reported.name == module => breakpoints,
+        }) if reported == module_named(module) => breakpoints,
         other => panic!("the breakpoints of {module} were expected, not {other:?}"),
     }
 }
@@ -2395,7 +2445,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(THREE_STATEMENTS), "count:: count + 10");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module.name, "Lines");
+        assert_eq!(location.module.id, "Lines");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2429,7 +2479,7 @@ ns_runtime::for_each_lowering! {
         );
         let answered = events
             .iter()
-            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module.name == "Lines"))
+            .position(|event| matches!(event, Event::Breakpoints { module, .. } if module.id == "Lines"))
             .expect("the removal is answered");
         let stale: Vec<&Event> = events[answered..]
             .iter()
@@ -2758,7 +2808,7 @@ ns_runtime::for_each_lowering! {
         );
         assert_eq!(statement.text(TRANSCRIPT_FACTORY), "^Transcript new");
         let location = location.expect("the stopped frame is located");
-        assert_eq!(location.module.name, "TranscriptFactory");
+        assert_eq!(location.module.id, "newspeak.core.TranscriptFactory");
         assert_eq!(location.statement, statement);
         expect_ok(result, "run");
     }
@@ -2820,7 +2870,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(first.text(EDITING), "value:: 6 * 7");
         assert_ne!(moved, first);
         assert_eq!(stopped_at, Some(moved));
-        assert_eq!(name, "Subject>>answer");
+        assert_eq!(name, "Editing/Subject>>answer");
         assert_eq!(answered(&mut interpreter, result), 48);
     }
 }
@@ -2914,7 +2964,7 @@ fn reports_no_breakpoint(events: &[Event], module: &str) -> bool {
         matches!(
             event,
             Event::Breakpoints { module: reported, breakpoints }
-                if reported.name == module && breakpoints.is_empty()
+                if *reported == module_named(module) && breakpoints.is_empty()
         )
     })
 }
@@ -3969,9 +4019,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Header initializer", "public second ::= first + 1."),
-                ("Header initializer", "first:: first + 10"),
-                ("Header initializer", "second:: second + 10"),
+                ("Initializing/Header initializer", "public second ::= first + 1."),
+                ("Initializing/Header initializer", "first:: first + 10"),
+                ("Initializing/Header initializer", "second:: second + 10"),
                 ("Initializing>>header", "made:: Header new"),
                 ("Initializing>>header", "^made second"),
             ]
@@ -3995,8 +4045,8 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Derived initializer", "public b ::= 2."),
-                ("Derived initializer", "b:: b + 1"),
+                ("Initializing/Derived initializer", "public b ::= 2."),
+                ("Initializing/Derived initializer", "b:: b + 1"),
                 ("Initializing>>derived", "made:: Derived new"),
                 ("Initializing>>derived", "^made b"),
             ]
@@ -4022,7 +4072,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Derived initializer", "public b ::= 2."),
+                ("Initializing/Derived initializer", "public b ::= 2."),
                 ("Initializing>>derived", "made:: Derived new"),
             ]
         );
@@ -4051,17 +4101,17 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Mixed class>>new", "Mixed"),
-                ("Mixed initializer", "Extra new"),
-                ("Mixed initializer", "Base new"),
-                ("Base initializer", "Base"),
-                ("Base initializer", "a ::= 1."),
-                ("Base initializer", "a:: a + 1"),
-                ("Mixed initializer", "Extra new"),
-                ("Extra initializer", "Extra"),
-                ("Extra initializer", "public c ::= 3."),
-                ("Extra initializer", "c:: c + 1"),
-                ("Mixed initializer", "public d ::= 4."),
+                ("Initializing/Mixed class>>new", "Mixed"),
+                ("Initializing/Mixed initializer", "Extra new"),
+                ("Initializing/Mixed initializer", "Base new"),
+                ("Initializing/Base initializer", "Base"),
+                ("Initializing/Base initializer", "a ::= 1."),
+                ("Initializing/Base initializer", "a:: a + 1"),
+                ("Initializing/Mixed initializer", "Extra new"),
+                ("Initializing/Extra initializer", "Extra"),
+                ("Initializing/Extra initializer", "public c ::= 3."),
+                ("Initializing/Extra initializer", "c:: c + 1"),
+                ("Initializing/Mixed initializer", "public d ::= 4."),
                 ("Initializing>>mixed", "made:: Mixed new"),
                 ("Initializing>>mixed", "^made c + made d"),
             ]
@@ -4088,13 +4138,13 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Clause class>>new", "Clause"),
-                ("Clause initializer", "Setup withSetup: setupValue"),
+                ("Initializing/Clause class>>new", "Clause"),
+                ("Initializing/Clause initializer", "Setup withSetup: setupValue"),
                 ("Initializing>>setupValue", "^5"),
-                ("Clause initializer", "Setup withSetup: setupValue"),
-                ("Setup initializer", "withSetup: value"),
-                ("Setup initializer", "public e ::= value."),
-                ("Clause initializer", "public f ::= 6."),
+                ("Initializing/Clause initializer", "Setup withSetup: setupValue"),
+                ("Initializing/Setup initializer", "withSetup: value"),
+                ("Initializing/Setup initializer", "public e ::= value."),
+                ("Initializing/Clause initializer", "public f ::= 6."),
                 ("Initializing>>clause", "made:: Clause new"),
                 ("Initializing>>clause", "^made e + made f"),
             ]
@@ -4278,11 +4328,11 @@ ns_runtime::for_each_lowering! {
                 (frames, variables)
             },
         );
-        assert_eq!(frames[0].name, "Punkt class>>x:y:");
+        assert_eq!(frames[0].name, "Headers/Punkt class>>x:y:");
         assert_eq!(frames[0].kind, FrameKind::Factory);
         assert_eq!(frames[1].name, "Headers>>point");
         let location = frames[0].location.clone().expect("the factory is located");
-        assert_eq!(location.module.name, "Headers");
+        assert_eq!(location.module.id, "Headers");
         assert_eq!(location.statement.text(HEADERS), "x: ax y: ay");
         assert_eq!(names(&variables), ["self", "ax", "ay"]);
         assert_eq!(value_of(&variables, "ax").label, "1");
@@ -4334,7 +4384,7 @@ ns_runtime::for_each_lowering! {
             },
             || interpreter.send(&instance, Symbol::intern("point"), &[]),
         );
-        assert_eq!(top, "Punkt class>>x:y:");
+        assert_eq!(top, "Headers/Punkt class>>x:y:");
         assert_terminated(result);
         drop(remote);
         let result = interpreter.send(&instance, Symbol::intern("point"), &[]);
@@ -4365,7 +4415,7 @@ ns_runtime::for_each_lowering! {
             || interpreter.send(&instance, Symbol::intern("point"), &[]),
         );
         assert!(first, "the first stop is the sender's breakpoint");
-        assert_eq!(top, "Punkt class>>x:y:");
+        assert_eq!(top, "Headers/Punkt class>>x:y:");
         let stops: Vec<_> = events
             .into_iter()
             .filter_map(|event| match event {
@@ -4409,7 +4459,7 @@ fn hits_after_the_rewind(lowering: Lowering, condition: HitCondition) -> usize {
             headers_breakpoint_ids(remote);
             expect_breakpoint_stop(remote);
             step(remote, Command::StepInto);
-            assert_eq!(stack_trace(remote)[0].name, "Bare class>>x:");
+            assert_eq!(stack_trace(remote)[0].name, "Headers/Bare class>>x:");
             continue_stopped(remote);
             events_until_the_end(remote)
         },
@@ -4446,8 +4496,8 @@ ns_runtime::for_each_lowering! {
             assert_eq!(
                 as_pairs(&stops),
                 [
-                    ("Punkt class>>x:y:", "x: ax y: ay"),
-                    ("Punkt initializer", "Basis new: ax"),
+                    ("Headers/Punkt class>>x:y:", "x: ax y: ay"),
+                    ("Headers/Punkt initializer", "Basis new: ax"),
                 ],
                 "{name}"
             );
@@ -4470,8 +4520,8 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Bare class>>x:", "x: ax"),
-                ("Bare initializer", "public x ::= ax."),
+                ("Headers/Bare class>>x:", "x: ax"),
+                ("Headers/Bare initializer", "public x ::= ax."),
                 ("Headers>>bare", "made:: Bare x: 3"),
             ]
         );
@@ -4492,7 +4542,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Empty class>>new", "Empty"),
+                ("Headers/Empty class>>new", "Empty"),
                 ("Headers>>empty", "made:: Empty new"),
                 ("Headers>>empty", "^4"),
             ]
@@ -4514,7 +4564,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Punkt class>>x:y:", "x: ax y: ay"),
+                ("Headers/Punkt class>>x:y:", "x: ax y: ay"),
                 ("Headers>>point", "pt:: Punkt x: 1 y: 2"),
             ]
         );
@@ -4536,8 +4586,8 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Applied class>>new", "Applied"),
-                ("Applied initializer", "Marker new"),
+                ("Headers/Applied class>>new", "Applied"),
+                ("Headers/Applied initializer", "Marker new"),
             ]
         );
         assert_eq!(answer, 12);
@@ -4572,13 +4622,13 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Punkt class>>x:y:", "x: ax y: ay"),
-                ("Punkt initializer", "Basis new: ax"),
-                ("Basis initializer", "new: a"),
+                ("Headers/Punkt class>>x:y:", "x: ax y: ay"),
+                ("Headers/Punkt initializer", "Basis new: ax"),
+                ("Headers/Basis initializer", "new: a"),
             ]
         );
         assert_eq!(frames[0].kind, FrameKind::Initializer);
-        assert_eq!(frames[1].name, "Punkt initializer");
+        assert_eq!(frames[1].name, "Headers/Punkt initializer");
         assert_eq!(value_of(&variables, "a").label, "1");
         assert_eq!(answer, 3);
     }
@@ -4589,14 +4639,14 @@ ns_runtime::for_each_lowering! {
 /// to the lowest level, whose clause stands for `Object new`, then each
 /// level's slot on the way back, and the place after the `new`.
 const CHAIN_STOPS: [(&str, &str); 9] = [
-    ("Highest class>>new:", "new: c"),
-    ("Highest initializer", "Middle new: c + 1"),
-    ("Middle initializer", "new: b"),
-    ("Middle initializer", "Lowest new: b + 1"),
-    ("Lowest initializer", "new: a"),
-    ("Lowest initializer", "public low ::= a."),
-    ("Middle initializer", "public middle ::= b."),
-    ("Highest initializer", "public high ::= c."),
+    ("Headers/Highest class>>new:", "new: c"),
+    ("Headers/Highest initializer", "Middle new: c + 1"),
+    ("Headers/Middle initializer", "new: b"),
+    ("Headers/Middle initializer", "Lowest new: b + 1"),
+    ("Headers/Lowest initializer", "new: a"),
+    ("Headers/Lowest initializer", "public low ::= a."),
+    ("Headers/Middle initializer", "public middle ::= b."),
+    ("Headers/Highest initializer", "public high ::= c."),
     ("Headers>>chain", "made:: Highest new: 1"),
 ];
 
@@ -4660,9 +4710,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&over),
             [
-                ("Highest class>>new:", "new: c"),
-                ("Highest initializer", "Middle new: c + 1"),
-                ("Highest initializer", "public high ::= c."),
+                ("Headers/Highest class>>new:", "new: c"),
+                ("Headers/Highest initializer", "Middle new: c + 1"),
+                ("Headers/Highest initializer", "public high ::= c."),
             ]
         );
         assert_eq!(answer, 6);
@@ -4680,10 +4730,10 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&out),
             [
-                ("Highest class>>new:", "new: c"),
-                ("Highest initializer", "Middle new: c + 1"),
-                ("Middle initializer", "new: b"),
-                ("Highest initializer", "public high ::= c."),
+                ("Headers/Highest class>>new:", "new: c"),
+                ("Headers/Highest initializer", "Middle new: c + 1"),
+                ("Headers/Middle initializer", "new: b"),
+                ("Headers/Highest initializer", "public high ::= c."),
             ]
         );
         assert_eq!(answer, 6);
@@ -4730,9 +4780,9 @@ ns_runtime::for_each_lowering! {
             assert_eq!(
                 as_pairs(&stops),
                 [
-                    ("Explicit class>>new", "Explicit"),
-                    ("Explicit initializer", "Object new"),
-                    ("Explicit initializer", "public seven ::= 7."),
+                    ("Headers/Explicit class>>new", "Explicit"),
+                    ("Headers/Explicit initializer", "Object new"),
+                    ("Headers/Explicit initializer", "public seven ::= 7."),
                 ],
                 "shipped filter {shipped}"
             );
@@ -4757,9 +4807,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&filtered),
             [
-                ("Failure class>>new", "Failure"),
-                ("Failure initializer", "Error new"),
-                ("Failure initializer", "public code ::= 9."),
+                ("Headers/Failure class>>new", "Failure"),
+                ("Headers/Failure initializer", "Error new"),
+                ("Headers/Failure initializer", "public code ::= 9."),
             ]
         );
         assert_eq!(answer, 9);
@@ -4773,9 +4823,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&unfiltered),
             [
-                ("Failure class>>new", "Failure"),
-                ("Failure initializer", "Error new"),
-                ("Exception initializer", "Exception"),
+                ("Headers/Failure class>>new", "Failure"),
+                ("Headers/Failure initializer", "Error new"),
+                ("newspeak.core.Kernel/Exception initializer", "Exception"),
             ]
         );
         assert_eq!(answer, 9);
@@ -4816,7 +4866,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             stood,
             (
-                String::from("Exception initializer"),
+                String::from("newspeak.core.Kernel/Exception initializer"),
                 String::from("Object")
             )
         );
@@ -4858,7 +4908,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             stood,
             (
-                String::from("Middle initializer"),
+                String::from("Headers/Middle initializer"),
                 String::from("Lowest new: b + 1")
             )
         );
@@ -4906,10 +4956,10 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Filled class>>new", "Filled"),
-                ("Filled initializer", "Hollow new: 1"),
-                ("Hollow initializer", "new: h"),
-                ("Filled initializer", "public filled ::= seed."),
+                ("Headers/Filled class>>new", "Filled"),
+                ("Headers/Filled initializer", "Hollow new: 1"),
+                ("Headers/Hollow initializer", "new: h"),
+                ("Headers/Filled initializer", "public filled ::= seed."),
                 ("Headers>>filled", "made:: Filled new"),
             ]
         );
@@ -4959,10 +5009,10 @@ ns_runtime::for_each_lowering! {
             assert_eq!(
                 as_pairs(&stops),
                 [
-                    ("Highest class>>new:", "new: c"),
-                    ("Highest initializer", "Middle new: c + 1"),
-                    ("Middle initializer", "new: b"),
-                    ("Middle initializer", "Lowest new: b + 1"),
+                    ("Headers/Highest class>>new:", "new: c"),
+                    ("Headers/Highest initializer", "Middle new: c + 1"),
+                    ("Headers/Middle initializer", "new: b"),
+                    ("Headers/Middle initializer", "Lowest new: b + 1"),
                 ],
                 "{name}"
             );
@@ -4985,9 +5035,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Thin class>>new", "Thin"),
-                ("Marker initializer", "Marker"),
-                ("Marker initializer", "public mark ::= 7."),
+                ("Headers/Thin class>>new", "Thin"),
+                ("Headers/Marker initializer", "Marker"),
+                ("Headers/Marker initializer", "public mark ::= 7."),
             ]
         );
         assert_eq!(answer, 7);
@@ -5009,7 +5059,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Empty class>>new", "Empty"),
+                ("Headers/Empty class>>new", "Empty"),
                 ("Headers>>empty", "made:: Empty new"),
                 ("Headers>>empty", "^4"),
             ]
@@ -5098,9 +5148,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Punkt class>>x:y:", "x: ax y: ay"),
-                ("Punkt initializer", "Basis new: ax"),
-                ("Punkt initializer", "public x ::= ax."),
+                ("Headers/Punkt class>>x:y:", "x: ax y: ay"),
+                ("Headers/Punkt initializer", "Basis new: ax"),
+                ("Headers/Punkt initializer", "public x ::= ax."),
             ]
         );
         assert_eq!(answer, 3);
@@ -5115,10 +5165,10 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Punkt class>>x:y:", "x: ax y: ay"),
-                ("Punkt initializer", "Basis new: ax"),
-                ("Basis initializer", "new: a"),
-                ("Basis initializer", "public base ::= a."),
+                ("Headers/Punkt class>>x:y:", "x: ax y: ay"),
+                ("Headers/Punkt initializer", "Basis new: ax"),
+                ("Headers/Basis initializer", "new: a"),
+                ("Headers/Basis initializer", "public base ::= a."),
             ]
         );
         assert_eq!(answer, 3);
@@ -5163,8 +5213,8 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             as_pairs(&stops),
             [
-                ("Bare class>>x:", "x: ax"),
-                ("Bare initializer", "public x ::= ax."),
+                ("Headers/Bare class>>x:", "x: ax"),
+                ("Headers/Bare initializer", "public x ::= ax."),
             ]
         );
         assert_eq!(answer, 3);
@@ -5678,7 +5728,7 @@ ns_runtime::for_each_lowering! {
             (
                 called("superclass initializer", "an instance of Highest"),
                 (
-                    String::from("Middle initializer"),
+                    String::from("Headers/Middle initializer"),
                     String::from("public middle ::= b.")
                 )
             )
@@ -6843,7 +6893,7 @@ ns_runtime::for_each_lowering! {
             assert_eq!(stops.len(), 1, "the JIT on: {jit}");
             assert_eq!(
                 stops[0].0,
-                (String::from("Runner>>run:"), String::from("^kept value: value")),
+                (String::from("Leaving/Runner>>run:"), String::from("^kept value: value")),
                 "the JIT on: {jit}"
             );
             assert_eq!(answer, 13, "the JIT on: {jit}");
@@ -6869,7 +6919,7 @@ ns_runtime::for_each_lowering! {
                 assert_eq!(stops.len(), 1, "{selector}, the JIT on: {jit}");
                 assert_eq!(
                     stops[0].0,
-                    (String::from("Runner>>runWith:"), String::from("^kept value: 5")),
+                    (String::from("Leaving/Runner>>runWith:"), String::from("^kept value: 5")),
                     "{selector}, the JIT on: {jit}"
                 );
                 assert_eq!(answered, answer, "{selector}, the JIT on: {jit}");
@@ -7509,11 +7559,11 @@ ns_runtime::for_each_lowering! {
     /// forcing's own frames are shipped, so the step out of the future's
     /// block lands there at once.
     fn a_step_out_of_a_future_s_resolve_stops_in_its_caller(lowering) {
-        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, true);
-        assert_eq!(out.names, ["[] in Probe initializer", "Probe>>add:"]);
+        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Forcing/Probe>>add:", lowering, true);
+        assert_eq!(out.names, ["[] in Forcing/Probe initializer", "Forcing/Probe>>add:"]);
         assert_eq!(
             out.stood,
-            (String::from("Probe>>add:"), String::from("^sum * 10"))
+            (String::from("Forcing/Probe>>add:"), String::from("^sum * 10"))
         );
         assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
@@ -7526,19 +7576,19 @@ ns_runtime::for_each_lowering! {
     /// -- out of `resolve`'s block, the receiver of its `ifCurtailed:`,
     /// past the whole `ifCurtailed:` into `resolve` (decision 17).
     fn with_the_shipped_filter_off_a_step_out_of_a_future_s_resolve_stops_in_its_frames(lowering) {
-        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Probe>>add:", lowering, false);
+        let out = stepped_out_of_a_future(FORCING, "Forcing", "1 + 1.", "Forcing/Probe>>add:", lowering, false);
         assert_eq!(
             out.names,
             [
-                "[] in Probe initializer",
-                "[] in FutureImplementation>>resolve",
-                "FutureImplementation>>resolve",
-                "Probe>>add:",
+                "[] in Forcing/Probe initializer",
+                "[] in newspeak.core.Kernel/FutureImplementation>>resolve",
+                "newspeak.core.Kernel/FutureImplementation>>resolve",
+                "Forcing/Probe>>add:",
             ]
         );
         assert_eq!(
             out.stood,
-            (String::from("Probe>>add:"), String::from("^sum * 10"))
+            (String::from("Forcing/Probe>>add:"), String::from("^sum * 10"))
         );
         assert_eq!(out.returned.expect("the + run again").value.label, "3");
         assert_eq!(out.answer, 30);
@@ -7595,10 +7645,10 @@ ns_runtime::for_each_lowering! {
                 (clause, stood)
             },
         );
-        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(clause, "Claused/Outer.Inner superclass clause");
         assert_eq!(
             stood,
-            (String::from("Outer>>make"), String::from("made:: Inner new"))
+            (String::from("Claused/Outer>>make"), String::from("made:: Inner new"))
         );
         assert_eq!(answer, 7);
     }
@@ -7635,7 +7685,7 @@ fn standing_in_either(remote: &DebugRemote, source: &str) -> (String, String) {
         .location
         .clone()
         .unwrap_or_else(|| panic!("{} is located", top.name));
-    let text = if location.module.name == "Kernel" {
+    let text = if location.module.id == "newspeak.core.Kernel" {
         KERNEL
     } else {
         source
@@ -7686,10 +7736,10 @@ ns_runtime::for_each_lowering! {
     /// shipped machinery the filter passes.
     fn a_step_out_of_a_superclass_clause_whose_class_is_refused_does_not_stop_in_its_signal(lowering) {
         let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, true);
-        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(clause, "Refused/Outer.Inner superclass clause");
         assert_eq!(
             stood,
-            (String::from("[] in Outer>>make"), String::from("9"))
+            (String::from("[] in Refused/Outer>>make"), String::from("9"))
         );
         assert_eq!(answer, 9);
     }
@@ -7701,11 +7751,11 @@ ns_runtime::for_each_lowering! {
     /// `cull:` that runs it, and stops at its first statement.
     fn with_the_shipped_filter_off_a_step_out_of_a_refused_clause_stops_in_the_handler_s_cull(lowering) {
         let (clause, stood, answer) = stepped_out_of_a_refused_clause(lowering, false);
-        assert_eq!(clause, "Inner superclass clause");
+        assert_eq!(clause, "Refused/Outer.Inner superclass clause");
         assert_eq!(
             stood,
             (
-                String::from("Closure>>cull:"),
+                String::from("newspeak.core.Kernel/Closure>>cull:"),
                 String::from(
                     "^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument]"
                 )
@@ -7818,12 +7868,12 @@ ns_runtime::for_each_lowering! {
     /// initialized with the future -- stops in the frame that met it, at
     /// its next statement, once the instruction ran again.
     fn a_step_out_of_a_future_s_resolve_into_a_slot_initializer_stops_at_the_next_statement(lowering) {
-        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, true);
-        assert_eq!(out.names, ["[] in Probe initializer", "Pair initializer"]);
+        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Paired/Pair initializer", lowering, true);
+        assert_eq!(out.names, ["[] in Paired/Probe initializer", "Paired/Pair initializer"]);
         assert_eq!(
             out.stood,
             (
-                String::from("Pair initializer"),
+                String::from("Paired/Pair initializer"),
                 String::from("public second = secondValue.")
             )
         );
@@ -7836,20 +7886,20 @@ ns_runtime::for_each_lowering! {
     /// the forcing's frames first, out of `resolve`'s block past the
     /// whole `ifCurtailed:` that took it.
     fn with_the_shipped_filter_off_a_step_out_into_a_slot_initializer_stops_in_the_forcing_s_frames(lowering) {
-        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Pair initializer", lowering, false);
+        let out = stepped_out_of_a_future(PAIRED, "Paired", "3.", "Paired/Pair initializer", lowering, false);
         assert_eq!(
             out.names,
             [
-                "[] in Probe initializer",
-                "[] in FutureImplementation>>resolve",
-                "FutureImplementation>>resolve",
-                "Pair initializer",
+                "[] in Paired/Probe initializer",
+                "[] in newspeak.core.Kernel/FutureImplementation>>resolve",
+                "newspeak.core.Kernel/FutureImplementation>>resolve",
+                "Paired/Pair initializer",
             ]
         );
         assert_eq!(
             out.stood,
             (
-                String::from("Pair initializer"),
+                String::from("Paired/Pair initializer"),
                 String::from("public second = secondValue.")
             )
         );
@@ -8173,7 +8223,7 @@ ns_runtime::for_each_lowering! {
                 top.location.map(|location| location.module)
             },
         );
-        assert_eq!(module, Some(ModuleName::shipped("Kernel")));
+        assert_eq!(module, Some(ModuleName::named("newspeak.core.Kernel")));
         assert_eq!(answer, 18);
     }
 }
@@ -8259,7 +8309,7 @@ ns_runtime::for_each_lowering! {
             },
         );
         assert!(
-            names[0].starts_with("Helper"),
+            names[0].starts_with("Helping/Helper"),
             "the step stops in Helper's code, not in {names:?}"
         );
         assert_eq!(answer, 12);
@@ -8331,7 +8381,7 @@ ns_runtime::for_each_lowering! {
             (String::from("[] in HelpingTwice>>run"), String::from("self note: 4"))
         );
         assert!(
-            second.starts_with("Helper"),
+            second.starts_with("HelpingTwice/Helper"),
             "the step stops in Helper's code, not in {second}"
         );
         assert_eq!(answer, 27, "the warming runs added to the total");
@@ -8364,8 +8414,8 @@ ns_runtime::for_each_lowering! {
         );
         // The reference lowering runs the loop's body as a block.
         let frame = match lowering {
-            Lowering::Optimized => "Array>>do:",
-            Lowering::Reference => "[] in Array>>do:",
+            Lowering::Optimized => "newspeak.core.Kernel/Array>>do:",
+            Lowering::Reference => "[] in newspeak.core.Kernel/Array>>do:",
         };
         assert_eq!(
             first,
@@ -8421,7 +8471,7 @@ ns_runtime::for_each_lowering! {
                     let top = stack_trace(remote).remove(0);
                     let location = top.location.expect("the stop is located");
                     stops.push((
-                        location.module.name,
+                        location.module.id,
                         location.statement.text(BRANCHING).to_owned(),
                     ));
                     continue_stopped(remote);
@@ -8672,7 +8722,7 @@ ns_runtime::for_each_lowering! {
             },
             || run(&mut interpreter, &instance),
         );
-        assert_eq!(stopped_in, ["True>>ifTrue:", "Forwarding>>check:with:"]);
+        assert_eq!(stopped_in, ["newspeak.core.Kernel/True>>ifTrue:", "Forwarding>>check:with:"]);
         assert_terminated(result);
         assert_eq!(if_true_fast_path(&mut interpreter), quick);
     }
@@ -8760,6 +8810,260 @@ ns_runtime::for_each_lowering! {
             remote = Some(back);
         }
         assert_eq!(stops, [2, 2]);
+    }
+}
+
+/// A module of two versions: its root's `run` sends its nested class's,
+/// which sums in a block the kernel's `do:` runs.
+const VERSIONED: &str = indoc! {"
+    class Util = Object new () (
+      public run = (
+        ^Inner new run
+      )
+      public class Inner = Object new () (
+        public run = (
+          | sum ::= 0. |
+          {1. 2} do: [:each | sum:: sum + each].
+          ^sum
+        )
+      )
+    ) : ()
+"};
+
+/// The id both versions of `VERSIONED` declare.
+const VERSIONED_ID: &str = "com.acme.util.Util";
+
+/// An interpreter compiling with `lowering`, with `VERSIONED` loaded twice,
+/// as `com.acme.util.Util@1.0.0` and `@2.0.0`, and an instance of each.
+fn load_versions(lowering: Lowering) -> (Interpreter, [Root; 2]) {
+    let (mut interpreter, classes) = load_versioned(VERSIONED, VERSIONED_ID, "Util", lowering);
+    let instances =
+        classes.map(|class| expect_ok(interpreter.instantiate(&class, &[]), "instantiate"));
+    (interpreter, instances)
+}
+
+/// An interpreter compiling with `lowering`, with `source`, whose root
+/// class is `class_name`, loaded twice, as `id@1.0.0` and `id@2.0.0`, and
+/// the two module classes.
+fn load_versioned(
+    source: &str,
+    id: &str,
+    class_name: &str,
+    lowering: Lowering,
+) -> (Interpreter, [Root; 2]) {
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let classes = ["1.0.0", "2.0.0"].map(|version| {
+        let mut resolved = resolved_module(source);
+        resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
+            path: format!("{class_name}-{version}/{class_name}.ns"),
+            id: ns_runtime::modules::ModuleId::parse(id, class_name).expect("an id"),
+            version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
+        }));
+        interpreter.load_module(&resolved)
+    });
+    (interpreter, classes)
+}
+
+/// A method breakpoint on the root's `run` of the versions `version`
+/// names: one version, or every one for `None`.
+fn versioned_breakpoint(version: Option<&str>) -> MethodBreakpoint {
+    MethodBreakpoint {
+        class: ClassName {
+            module: ModuleName {
+                id: String::from(VERSIONED_ID),
+                version: version.map(String::from),
+            },
+            path: Vec::new(),
+        },
+        class_side: false,
+        selector: String::from("run"),
+        hit_condition: None,
+        condition: None,
+        log: None,
+    }
+}
+
+/// How many times each version's run stops under `breakpoint`, each stop
+/// continued.
+fn stops_per_version(lowering: Lowering, breakpoint: MethodBreakpoint) -> Vec<usize> {
+    let (mut interpreter, instances) = load_versions(lowering);
+    let remote = interpreter.attach_debugger();
+    set_method_breakpoints(&remote, vec![breakpoint]);
+    let mut stops = Vec::new();
+    let mut remote = Some(remote);
+    for (index, instance) in instances.iter().enumerate() {
+        let (count, result, back) = debugged_by(
+            remote.take().expect("the remote"),
+            move |remote| {
+                if index == 0 {
+                    only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                }
+                stops_until_the_end(remote)
+            },
+            || run(&mut interpreter, instance),
+        );
+        expect_ok(result, "run");
+        stops.push(count);
+        remote = Some(back);
+    }
+    stops
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint whose module names a version stands in that
+    /// version's method only: the other version's run never stops.
+    fn a_breakpoint_with_a_version_stands_in_that_version_only(lowering) {
+        let stops = stops_per_version(lowering, versioned_breakpoint(Some("1.0.0")));
+        assert_eq!(stops, [2, 0]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A method breakpoint whose module names no version stands in every
+    /// version of the id.
+    fn a_breakpoint_without_a_version_stands_in_every_version(lowering) {
+        let stops = stops_per_version(lowering, versioned_breakpoint(None));
+        assert_eq!(stops, [2, 2]);
+    }
+}
+
+/// The id both versions of `EDITING` are loaded as by
+/// `a_versioned_method_breakpoint_stands_across_an_install`.
+const EDITING_ID: &str = "com.acme.edit.Editing";
+
+ns_runtime::for_each_lowering! {
+    /// An install of one version's class replaces that version's method:
+    /// a method breakpoint naming the version is set again on the new
+    /// body and stops there, at its entry and its exit, while the other
+    /// version's run, which installs its own edit, never stops.
+    fn a_versioned_method_breakpoint_stands_across_an_install(lowering) {
+        let (mut interpreter, classes) =
+            load_versioned(EDITING, EDITING_ID, "Editing", lowering);
+        let platform = interpreter.platform();
+        let instances = classes.map(|class| {
+            expect_ok(
+                interpreter.send(&class, Symbol::intern("usingPlatform:"), std::slice::from_ref(&platform)),
+                "usingPlatform:",
+            )
+        });
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(
+            &remote,
+            vec![MethodBreakpoint {
+                class: ClassName {
+                    module: ModuleName {
+                        id: String::from(EDITING_ID),
+                        version: Some(String::from("1.0.0")),
+                    },
+                    path: vec![String::from("Subject")],
+                },
+                class_side: false,
+                selector: String::from("answer"),
+                hit_condition: None,
+                condition: None,
+                log: None,
+            }],
+        );
+        let mut runs = Vec::new();
+        let mut remote = Some(remote);
+        for (index, instance) in instances.iter().enumerate() {
+            let (stops, result, back) = debugged_by(
+                remote.take().expect("the remote"),
+                move |remote| {
+                    if index == 0 {
+                        only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                    }
+                    stops_until_the_end(remote)
+                },
+                || run(&mut interpreter, instance),
+            );
+            runs.push((stops, answered(&mut interpreter, result)));
+            remote = Some(back);
+        }
+        assert_eq!(runs, [(2, 48), (0, 48)]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A module's text is asked for by one module: a name without a
+    /// version that covers two built versions names neither, and answers
+    /// no text, while each version's name answers its own.
+    fn a_text_is_asked_for_by_one_version(lowering) {
+        let (mut interpreter, instances) = load_versions(lowering);
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, vec![versioned_breakpoint(Some("1.0.0"))]);
+        let (texts, result, _) = debugged_by(
+            remote,
+            |remote| {
+                only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                expect_stop(remote);
+                let version = |version: Option<&str>| ModuleName {
+                    id: String::from(VERSIONED_ID),
+                    version: version.map(String::from),
+                };
+                let texts = [None, Some("1.0.0"), Some("2.0.0")]
+                    .map(|named| module_text_of(remote, version(named), None).1);
+                remote.send(Command::Terminate);
+                texts
+            },
+            || run(&mut interpreter, &instances[0]),
+        );
+        assert_terminated(result);
+        let versioned = ModuleTextAnswer::Text(String::from(VERSIONED));
+        assert_eq!(
+            texts,
+            [ModuleTextAnswer::None, versioned.clone(), versioned]
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Every frame is named by its module's id and version, a `/` before
+    /// the class inside the module: the second version's block, its
+    /// nested class's method and its root's, and the kernel's `do:`
+    /// between them, named by the shipped module's id.
+    fn frames_are_named_with_id_and_version(lowering) {
+        let (mut interpreter, instances) = load_versions(lowering);
+        let remote = interpreter.attach_debugger();
+        let second = ModuleName {
+            id: String::from(VERSIONED_ID),
+            version: Some(String::from("2.0.0")),
+        };
+        remote.send(Command::SetBreakpoints {
+            module: second.clone(),
+            breakpoints: vec![LineBreakpoint::at_offset(
+                u32::try_from(VERSIONED.find("sum:: sum + each").expect("the block's statement"))
+                    .expect("a test's source is small"),
+            )],
+        });
+        let (names, result, _) = debugged_by(
+            remote,
+            move |remote| {
+                match remote.next_event(EVENT_TIMEOUT) {
+                    Some(Event::Breakpoints { module, .. }) => assert_eq!(module, second),
+                    other => panic!("the breakpoints were expected, not {other:?}"),
+                }
+                expect_breakpoint_stop(remote);
+                let names: Vec<String> = stack_trace(remote)
+                    .into_iter()
+                    .map(|frame| frame.name)
+                    .collect();
+                remote.send(Command::Terminate);
+                names
+            },
+            || run(&mut interpreter, &instances[1]),
+        );
+        assert_terminated(result);
+        let kernel_do = names
+            .iter()
+            .rposition(|name| name.ends_with(">>do:"))
+            .expect("the kernel's do: runs the block");
+        assert_eq!(names[0], "[] in com.acme.util.Util@2.0.0/Inner>>run");
+        assert_eq!(names[kernel_do], "newspeak.core.Kernel/Array>>do:");
+        assert_eq!(
+            names[kernel_do + 1..],
+            ["com.acme.util.Util@2.0.0/Inner>>run", "com.acme.util.Util@2.0.0>>run"]
+        );
     }
 }
 
@@ -9516,7 +9820,7 @@ ns_runtime::for_each_lowering! {
             },
         );
         assert_eq!(ends, ["entry", "exit"]);
-        assert_eq!(names, ["Subject>>answer", "Subject>>answer"]);
+        assert_eq!(names, ["Editing/Subject>>answer", "Editing/Subject>>answer"]);
         assert_eq!(again, 0);
         assert_eq!(answered(&mut interpreter, result), 48);
     }
@@ -9742,7 +10046,7 @@ ns_runtime::for_each_lowering! {
             },
         );
         assert_eq!(reason, exception("Error", "boom", false));
-        assert_eq!(top, "Exception>>defaultAction");
+        assert_eq!(top, "newspeak.core.Kernel/Exception>>defaultAction");
         assert_eq!(shown, "Raising>>boom");
         assert_eq!(result, Err(String::from("boom")));
     }
@@ -9878,7 +10182,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(shown_for_abstract(lowering, true), "Abstract>>area");
         assert_eq!(
             shown_for_abstract(lowering, false),
-            "Object>>subclassResponsibility"
+            "newspeak.core.Kernel/Object>>subclassResponsibility"
         );
     }
 }
@@ -10452,7 +10756,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(
             stood,
             (
-                String::from("Exception>>signal"),
+                String::from("newspeak.core.Kernel/Exception>>signal"),
                 (
                     String::from("[] in Resumed>>run"),
                     String::from("count:: count + 1")
@@ -10599,7 +10903,7 @@ ns_runtime::for_each_lowering! {
                 (frames[0].name.clone(), frames[0].program_counter)
             },
         );
-        assert_eq!(name, "Exception>>defaultAction");
+        assert_eq!(name, "newspeak.core.Kernel/Exception>>defaultAction");
         assert_eq!(program_counter, 0);
         assert_eq!(result, Err(String::from("boom")));
         let ((name, program_counter), result) = raised(
@@ -10794,10 +11098,10 @@ ns_runtime::for_each_lowering! {
                 (shown, stood)
             },
         );
-        assert_eq!(shown, "Answering>>cull:");
+        assert_eq!(shown, "MethodHandled/Answering>>cull:");
         assert_eq!(
             stood,
-            (String::from("Answering>>cull:"), String::from("^answer"))
+            (String::from("MethodHandled/Answering>>cull:"), String::from("^answer"))
         );
         assert_eq!(result, Ok(5));
     }
@@ -11516,8 +11820,8 @@ fn a_program_module_and_the_shipped_one_of_its_name_answer_their_own_texts() {
     let expected = String::from(source);
     let ((_, own), (_, shipped)) = while_stopped(source, |remote| {
         (
-            module_text_of(remote, ModuleName::program("TimeFactory"), None),
-            module_text_of(remote, ModuleName::shipped("TimeFactory"), None),
+            module_text_of(remote, ModuleName::named("TimeFactory"), None),
+            module_text_of(remote, ModuleName::named("newspeak.core.TimeFactory"), None),
         )
     });
     assert_eq!(own, ModuleTextAnswer::Text(expected));
@@ -11687,7 +11991,7 @@ fn array_do_body() -> u32 {
     let kernel = ns_runtime::shipped_module_source("Kernel").expect("the shipped kernel");
     let size = kernel
         .find("count = vmMirror collectionSize: self ifFail:")
-        .expect("Array>>do:");
+        .expect("newspeak.core.Kernel/Array>>do:");
     let body = size
         + kernel[size..]
             .find("action value: (self at: index).")
@@ -11702,8 +12006,8 @@ ns_runtime::for_each_lowering! {
     /// program's only in the program's, each frame's location names its own
     /// module, and each module's text is its own.
     fn a_program_root_named_kernel_is_another_module_than_the_shipped_kernel(lowering) {
-        let shipped = ModuleName::shipped("Kernel");
-        let own = ModuleName::program("Kernel");
+        let shipped = ModuleName::named("newspeak.core.Kernel");
+        let own = ModuleName::named("Kernel");
         let (stops, answer) = stepped(
             OWN_KERNEL,
             lowering,
@@ -11759,7 +12063,7 @@ ns_runtime::for_each_lowering! {
                 }
             },
         );
-        let in_shipped = (String::from("Array>>do:"), shipped, false);
+        let in_shipped = (String::from("newspeak.core.Kernel/Array>>do:"), shipped, false);
         let in_own = (String::from("Kernel>>run"), own, true);
         assert_eq!(
             stops,
@@ -15345,7 +15649,7 @@ mod restarting {
         fn a_forced_initializer_return_leaves_the_rest_nil(lowering) {
             let (reason, answer) =
                 stopped_at(HALF_INITIALIZED, lowering, "HalfInitialized", "^1", |remote| {
-                    let frame = frame_named(&stack_trace(remote), "Made>>one") + 1;
+                    let frame = frame_named(&stack_trace(remote), "HalfInitialized/Made>>one") + 1;
                     assert_eq!(stack_trace(remote)[frame].kind, FrameKind::Initializer);
                     let value = evaluated(remote, 0, "3");
                     let reason = refusal(
@@ -15459,7 +15763,7 @@ mod restarting {
                             value: None,
                         },
                     );
-                    assert_eq!(stack_trace(remote)[0].name, "True>>ifTrue:");
+                    assert_eq!(stack_trace(remote)[0].name, "newspeak.core.Kernel/True>>ifTrue:");
                     clear_and_continue(remote, "Kernel");
                     (restart, force)
                 },
@@ -15517,13 +15821,13 @@ mod restarting {
     fn a_restarted_body_without_metadata_stops_at_its_start() {
         let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Stacked");
         let bytes = interpreter
             .enter(|mutator| {
                 let class = mutator.fetch(&class).as_object().expect("the module class");
                 let modules = [ns_runtime::image::ModuleSource {
                     class,
-                    origin: &origin,
+                    identity: &identity,
                     with_source: false,
                 }];
                 ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
@@ -16907,7 +17211,7 @@ mod marking {
             assert_eq!(
                 shipped,
                 [
-                    (String::from("True>>ifTrue:"), true),
+                    (String::from("newspeak.core.Kernel/True>>ifTrue:"), true),
                     (String::from("Quick>>check:with:"), false),
                     (String::from("Quick>>run"), false),
                 ]
@@ -16996,7 +17300,7 @@ mod memory_view {
     /// The class declaration `path` of the program's module `Memory`.
     fn memory_class(path: &[&str]) -> ClassName {
         ClassName {
-            module: ModuleName::program("Memory"),
+            module: ModuleName::named("Memory"),
             path: path.iter().map(|name| (*name).to_owned()).collect(),
         }
     }
@@ -17236,7 +17540,7 @@ mod memory_view {
             let (strings, refused) = looking(lowering, |remote| {
                 let counts = instance_counts(remote);
                 let string = ClassName {
-                    module: ModuleName::shipped("Kernel"),
+                    module: ModuleName::named("newspeak.core.Kernel"),
                     path: vec![String::from("String")],
                 };
                 assert!(count_of(&counts, &string) > 0, "{counts:?}");

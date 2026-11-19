@@ -20,7 +20,7 @@ use std::sync::PoisonError;
 
 use ns_syntax::{Span, ast};
 
-use super::metadata::again::{declaration_chain, module_name};
+use super::metadata::again::{declaration_chain, module_is_shipped};
 use super::metadata::{BodyMetadata, VariablePlace};
 use super::stack::{self, OuterFrame, StackFrame};
 use super::values::{Mark, used_labels};
@@ -289,8 +289,7 @@ fn compile_with(
     // Decided before the metadata is asked for, which compiles the body
     // again: a shipped frame is refused whatever its body.
     let origin = stack::origin(&mutator.heap, stack_frame).ok_or(NO_SOURCE)?;
-    let module = module_name(mutator, &origin.mixin).ok_or(NO_SOURCE)?;
-    if module.shipped {
+    if module_is_shipped(mutator, &origin.mixin).ok_or(NO_SOURCE)? {
         return Err(String::from(SHIPPED_FRAME));
     }
     let (code, _, metadata) = stack::body(mutator, stack_frame);

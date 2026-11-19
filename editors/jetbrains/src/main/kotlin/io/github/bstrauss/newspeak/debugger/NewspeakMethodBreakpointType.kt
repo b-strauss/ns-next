@@ -18,10 +18,14 @@ import javax.swing.JComponent
 /**
  * A method breakpoint: every activation of the method stops at its entry
  * and at each of its exits (`docs/design/debugger.md`, "Method
- * breakpoints"). It names the method as the agent reads it,
- * `Module.Outer.Inner>>selector` or `Module.Inner class>>selector` for the
- * class side's; the agent refuses a name of another form with its reason,
- * and holds one whose module is not built yet until it is.
+ * breakpoints"). It names the method as the agent reads it: the module's
+ * id, `@` a version where one module of several is meant, `/` before a
+ * class inside it, ` class` for the class side, then `>>` and the
+ * selector -- `com.acme.Json@2.1.0/Parser.Token class>>on:`, `Demo>>main:args:`.
+ * Without a version it stands in every version. The agent refuses a name
+ * of another form with its reason -- the dotted form before modules had
+ * ids among them, kept as written and shown with that reason -- and holds
+ * one whose module is not built yet until it is.
  */
 class NewspeakMethodBreakpointType :
     XBreakpointType<XBreakpoint<NewspeakMethodBreakpointProperties>, NewspeakMethodBreakpointProperties>(

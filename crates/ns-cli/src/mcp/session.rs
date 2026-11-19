@@ -73,7 +73,9 @@ pub(crate) enum Location {
     /// `<absolute path>:<line>`; `path` is the file's path as the server
     /// names it, the same for every spelling of one file.
     Line { path: String, line: u32 },
-    /// `Module.Class>>selector`, or `Module.Class class>>selector`.
+    /// `<id>[@<version>][/<Class>(.<Class>)*]>>selector`, or with
+    /// ` class>>selector` for the class side, which the DAP agent reads
+    /// (`debug::breakpoints::parse_method_name`).
     Method { name: String },
 }
 
@@ -87,7 +89,10 @@ impl Location {
             });
         }
         let refused = || {
-            format!("{text:?} is no location: <absolute path>:<line>, or Module.Class>>selector")
+            format!(
+                "{text:?} is no location: <absolute path>:<line>, or \
+                 <id>[@<version>][/<Class>(.<Class>)*]>>selector"
+            )
         };
         let (path, line) = text.rsplit_once(':').ok_or_else(refused)?;
         let line: u32 = line.trim().parse().map_err(|_| refused())?;

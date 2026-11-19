@@ -8,7 +8,7 @@
 //! when the VM answered.
 
 use ns_runtime::debugger::{Evaluation, InstanceCount, Referrer};
-use ns_runtime::{ClassName, Command, Event, ModuleName, ValueId};
+use ns_runtime::{ClassName, Command, Event, ValueId};
 use serde_json::{Value, json};
 
 use super::agent::{Agent, Conversion, to_value};
@@ -243,10 +243,9 @@ impl Agent {
 
     /// `nsNext/instances`: a page of the instances of the class
     /// declaration its name names (`Command::Instances`), answered as
-    /// `variables` answers, each instance named `#<n>`. A name whose
-    /// module both the program and the binary have names the program's
-    /// unless `shipped` says otherwise, as `nsNext/instanceCounts` tells
-    /// the two apart.
+    /// `variables` answers, each instance named `#<n>`. The name says
+    /// the module by its id, so that a program's `Kernel` and the binary's
+    /// `newspeak.core.Kernel` are told apart.
     pub(super) fn instances(&mut self, connection: u64, request: &protocol::Request) {
         let Some(arguments) = self.arguments::<protocol::InstancesArguments>(connection, request)
         else {
@@ -255,27 +254,12 @@ impl Agent {
         if !self.at_stop(connection, request) {
             return;
         }
-        let parsed = match arguments.shipped {
-            Some(shipped) => parse_class_name(&arguments.name, &|name| {
-                vec![ModuleName {
-                    name: name.to_string(),
-                    shipped,
-                }]
-            }),
-            None => parse_class_name(&arguments.name, &|name| {
-                self.sources.modules_of_class_name(name)
-            }),
-        };
-        let class = match parsed {
-            Ok(classes) => classes.into_iter().next(),
+        let class = match parse_class_name(&arguments.name, &|id| self.sources.module_of(id)) {
+            Ok(class) => class,
             Err(reason) => {
                 self.respond_error(connection, request, &reason);
                 return;
             }
-        };
-        let Some(class) = class else {
-            self.respond(connection, request, Some(json!({ "variables": [] })));
-            return;
         };
         let command = Command::Instances {
             class,
@@ -371,12 +355,13 @@ fn page_count(count: Option<usize>) -> usize {
 }
 
 /// The name a class declaration is shown and asked for by,
-/// `Module.Path.To.Class`, as a function breakpoint names one.
+/// `<id>[@<version>][/<Class>(.<Class>)*]`, as a function breakpoint names
+/// one.
 fn class_text(class: &ClassName) -> String {
-    std::iter::once(class.module.name.as_str())
-        .chain(class.path.iter().map(String::as_str))
-        .collect::<Vec<&str>>()
-        .join(".")
+    if class.path.is_empty() {
+        return class.module.to_string();
+    }
+    format!("{}/{}", class.module, class.path.join("."))
 }
 
 /// `nsNext/instanceCounts`' body, in the VM's order: the largest count
@@ -387,7 +372,7 @@ pub(super) fn instance_counts_body(counts: &[InstanceCount]) -> Value {
         .map(|count| protocol::InstanceCount {
             name: class_text(&count.class),
             count: count.count,
-            shipped: count.class.module.shipped,
+            shipped: count.shipped,
         })
         .collect();
     json!({ "classes": classes })

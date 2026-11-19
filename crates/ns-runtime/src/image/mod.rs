@@ -5,7 +5,8 @@
 //! table, text table (only with `FLAG_HAS_SOURCE`: each declaration's own
 //! text, `texts`), mixin table (one tree per module, in module order, each
 //! row naming its text when the image carries source), module section
-//! (per module: `SourceOrigin`, the object id of its root class record),
+//! (per module: its path, id and version, the object id of its root class
+//! record),
 //! then the shipped names, object table (frames included), roots,
 //! tag-named hashes.
 //!
@@ -39,7 +40,8 @@ use std::rc::Rc;
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::{Heap, MixinId, Root};
 use crate::mixin::Mixin;
-use crate::types::{ClassReference, SourceOrigin, Value};
+use crate::modules::ModuleIdentity;
+use crate::types::{ClassReference, Value};
 use crate::{Interpreter, Mutator};
 
 /// The sections that describe code and structure, encoded into their own
@@ -67,9 +69,10 @@ struct Planned {
 }
 
 /// Plans the mixin table's rows, making every refusal of the describing
-/// sections: a root that can never be instantiated, source for some modules
-/// but not all, and whatever `mixins::plan` refuses. Made before the graph
-/// is walked, so that these refusals come before the graph's.
+/// sections: a root that can never be instantiated, an identity the loader
+/// would refuse, source for some modules but not all, and whatever
+/// `mixins::plan` refuses. Made before the graph is walked, so that these
+/// refusals come before the graph's.
 fn plan_describing<'gc>(
     heap: &Heap<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
@@ -92,6 +95,19 @@ fn plan_describing<'gc>(
             ));
         }
     }
+    // Each identity is held to the rules the loader holds a module record
+    // to (`modules::decode_modules`), so that no image is written that its
+    // loader refuses. A root that is no class object is the graph's to
+    // refuse.
+    for (index, module) in modules.iter().enumerate() {
+        let Some(root) = heap.class_declaration(module.class) else {
+            continue;
+        };
+        modules::identity_defect(module.identity, root.name.as_str())
+            .map_err(|reason| format!("image encoding cannot name module {index} so: {reason}"))?;
+    }
+    crate::modules::check_distinct(modules.iter().map(|module| module.identity))
+        .map_err(|reason| format!("image encoding cannot name its modules so: {reason}"))?;
     // The header has one flag for the source of every module, so a module
     // without text while another carries its own could only be written by
     // inventing an empty text for it.
@@ -406,9 +422,11 @@ pub struct LoadedModule {
     /// nested declarations are read through that heap
     /// (`Heap::nested_mixins`), while `LoadedImage::interpreter` lives.
     pub declaration: std::rc::Rc<crate::mixin::Mixin>,
-    /// Where the module came from. Provenance, not program text -- it is
-    /// in every artifact, source or not.
-    pub origin: SourceOrigin,
+    /// The module's path relative to its project, its id and its version,
+    /// as the program that wrote the artifact named it -- in every
+    /// artifact, source or not -- and as its root mixin carries it
+    /// (`Mixin::module_identity`).
+    pub identity: Rc<ModuleIdentity>,
     /// The module's source text, assembled once at load from the texts of
     /// its declarations (`Heap::module_source`) -- `None` for a
     /// source-free artifact. Never parsed, never resolved, never executed
@@ -526,7 +544,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             Ok(LoadedModule {
                 class,
                 declaration,
-                origin: decoded.origin,
+                identity: decoded.identity,
                 source,
             })
         })
@@ -561,9 +579,14 @@ fn decode_described(
     };
     let read = mixins::read(reader, &symbols, &table.codes, header.has_source)
         .map_err(|error| error.to_string())?;
-    let decoded_modules =
-        modules::decode_modules(reader, &read.module_rows).map_err(|error| error.to_string())?;
-    let mixins = mixins::build(read, &table.codes, &texts).map_err(|error| error.to_string())?;
+    let decoded_modules = modules::decode_modules(reader, &read.module_root_names())
+        .map_err(|error| error.to_string())?;
+    let identities: Vec<Rc<ModuleIdentity>> = decoded_modules
+        .iter()
+        .map(|module| Rc::clone(&module.identity))
+        .collect();
+    let mixins = mixins::build(read, &table.codes, &texts, &identities)
+        .map_err(|error| error.to_string())?;
     decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
     let names =
         shipped_names::decode_section(reader, &symbols).map_err(|error| error.to_string())?;

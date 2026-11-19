@@ -303,6 +303,13 @@ pub struct ResolvedModule {
     /// `resolver::resolve_kernel` answers, false for every user module. It
     /// is what confines fast paths (`mixin::MethodFastPath`) to the kernel.
     pub kernel: bool,
+    /// The module's path, id and version (`docs/design/modules.md`),
+    /// which `load_module` hands to its root mixin
+    /// (`Mixin::module_identity`). `resolve` answers `None`: the path is
+    /// the host's to know, and an `as` in the project may replace the id
+    /// the metadata declares, so a host sets it before it loads the
+    /// module. A shipped module's is set where it is resolved.
+    pub identity: Option<Rc<crate::modules::ModuleIdentity>>,
 }
 
 /// What the editor's language server needs from a resolution: every binding

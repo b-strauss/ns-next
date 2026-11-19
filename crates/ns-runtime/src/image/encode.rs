@@ -11,8 +11,7 @@ use crate::heap::{Heap, MixinId, ObjectShape};
 use crate::interpreter::future;
 use crate::interpreter::shipped_world::{ShippedEntry, ShippedWorld};
 use crate::types::{
-    BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference, SourceOrigin, Value,
-    ValueKind,
+    BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference, Value, ValueKind,
 };
 use crate::{ArbitraryInteger, Mutator};
 
@@ -133,22 +132,6 @@ pub fn write_header(writer: &mut Writer, flags: u8) {
     writer.write_u32(FORMAT_VERSION);
     writer.write_u8(flags);
     writer.write_u64(super::fingerprint::shipped_world_fingerprint());
-}
-
-/// A module's provenance. Kept for every module, source or not: it is what a
-/// loaded world reports as the module's origin, and it is a path or a name,
-/// not the program text.
-pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
-    match origin {
-        SourceOrigin::File(path) => {
-            writer.write_u8(ORIGIN_FILE);
-            writer.write_str(&path.to_string_lossy());
-        }
-        SourceOrigin::Embedded(name) => {
-            writer.write_u8(ORIGIN_EMBEDDED);
-            writer.write_str(name);
-        }
-    }
 }
 
 /// Encodes the four kinds of `Value` that are no object (tags 0-4); returns

@@ -1,0 +1,2 @@
+status = 1
+stderr = "Uncaught Newspeak error during instantiation: `com.acme.util.Util` names 2 modules; ask with at:version:\n"

@@ -1145,21 +1145,6 @@ impl Interpreter {
         })
     }
 
-    /// Whether an explicit send of `selector` to `receiver` finds a public
-    /// member (§5.5's `lookupPublic`), without sending it: the CLI asks this of
-    /// a manifest, whose own public members would answer a module's name before
-    /// its `doesNotUnderstand:` could.
-    pub fn responds_publicly(&mut self, receiver: &Root, selector: Symbol) -> bool {
-        self.enter(|mutator| {
-            let receiver = mutator.fetch(receiver);
-            let class = mutator.class_of(receiver);
-            !matches!(
-                crate::dispatch::lookup_public(mutator.heap(), class, selector),
-                crate::dispatch::Lookup::NotFound
-            )
-        })
-    }
-
     /// Vacates every inline cache -- every site, every polymorphic block and
     /// the global cache -- while keeping every code family's assigned range
     /// (`docs/design/dispatch.md`, "Invalidation"): a running activation's

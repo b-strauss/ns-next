@@ -42,6 +42,12 @@ view and folds the shipped frames, in the VM, the DAP agent and the
 plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
 
+The developer tool (the item "A developer tool like V8's `d8`" below),
+designed and planned on the branch `feature/developer-tool`, names a body
+in its traces by the tools' form `id@version/Inner>>selector`, which
+module identity made every tool's ([modules.md](design/modules.md),
+decision 8).
+
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
 along the receiver types the inline caches recorded, built to the
@@ -1807,6 +1813,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: images, liveness and reflection
 
+- **Metadata through the mirrors** (§4.3: metadata "are available at
+  runtime via mirrors"): `ns-syntax` collects every metadata comment by
+  its §4.3 target (`metadata.rs`'s `metadata_of`;
+  [modules.md](design/modules.md), decision 6), and only `:module:` is
+  read; a class, method and slot mirror are to answer theirs. Open is
+  what an image written without source answers, since Primordial Soup
+  parses metadata from the source on demand
+  (`prior-art/primordialsoup/newspeak/Mirrors.ns:758, 1216-1223`). Two
+  targets the collection does not tell yet, which a mirror answering
+  them must: a metadata comment after a pattern's return type or its
+  where-clause gets no target at all, and a return statement's metadata
+  is an `Expression` target, not told apart from its expression's.
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
   suspended activations -- every `Continuation` variant (`NestedClass`,
@@ -2299,6 +2317,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [image-format.md](design/image-format.md), "Packaging".
 
 ## Planned: editor support and the analyzer
+
+- **The editor misses a reserved id in a program's file that stands at a
+  shipped source's place** (noted 2026-11-19). The analyzer exempts a
+  document from the reserved-namespace finding when it is a copy of the
+  binary's own source: its text that source's byte for byte, or its path
+  ending in that source's place below a `core-library` directory, or a
+  fingerprint's directory within one
+  (`crates/ns-analyzer/src/module_metadata.rs`, `is_the_binary_s_own`),
+  since the copy of `Kernel.ns` being edited is no longer the binary's
+  text. So a program's own `…/core-library/Kernel.ns` declaring
+  `newspeak.core.Kernel` shows clean in the editor, while `ns-next run`
+  refuses it: a false negative of the editor only, never of the loader.
+  [editor-support.md](design/editor-support.md), "Module metadata".
 
 - **`disasm --initializer` leaves out the factory of a class that declares
   none** (noted 2026-10-22). It lists a factory entry's body only when the
@@ -3115,6 +3146,21 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
+- **`ns-next load` walks the whole heap for the manifests an image kept**
+  (noted 2026-11-19, unmeasured): to warn of an ambiguous `at:version:`
+  that `main:args:` makes, as `run` does ([modules.md](design/modules.md),
+  decision 4), `load` finds the instances of the manifest's class by one
+  walk of the occupied object space (`program::kept_manifests`,
+  `Heap::instances_of`), on every load of a project image, also where the
+  application kept no manifest. The decoder fills every graph record in its
+  graph pass already and could note the instances of the manifest's root
+  class there at no extra pass; measure the walk before choosing.
+- **The manifest quotes a range with a control or format character raw**
+  (noted 2026-11-19): `Manifest.ns`'s `rangeDefect:` follows
+  `VersionRange::parse`'s rules but for its first, `check_printable`, so a
+  range holding such a character is answered "major `…` is not a number"
+  with the character unescaped, where the loader says "holds a control
+  character". Only the program's own string reaches the message.
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
 program can reach and which end the process, and seven a program meets as
@@ -3171,7 +3217,7 @@ program's subclass of `String` as an argument, the error of a
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
   cannot tell where one module ends; a boundary line naming each module's
-  origin would fix it. [image-format.md](design/image-format.md), "Reading
+  id and path would fix it. [image-format.md](design/image-format.md), "Reading
   an artifact".
 - **`disasm` of an artifact reaches module 0 only**: `--class` is rooted at
   the application's root class, so a project's other modules, the
@@ -3547,6 +3593,30 @@ program's subclass of `String` as an argument, the error of a
   `NS_NEXT_STRESS_ZONE` for it, and the exemption's comment names this
   item, so that it is removed, and the tests hold under the zone stress
   mode again, with the fix.
+- **Release binaries hold the building machine's paths** (found on
+  2026-11-19): `target/release/ns-next.exe` holds 29 absolute paths of the
+  build machine, the user's home directory among them -- the panic
+  locations of the dependencies under Cargo's registry and of the
+  toolchain's library -- and a debug build some 480; the workspace's own
+  paths are relative. Cargo's `trim-paths` profile setting would remove
+  them, but is unstable in Cargo 1.100 ("feature `trim-paths` is
+  required"); `rustc --remap-path-prefix` is stable but takes the
+  machine's own prefixes, so it belongs to whatever builds a release, not
+  to `.cargo/config.toml`. Nothing builds a release for distribution yet.
+- **A module on another drive or share than its project is refused**
+  (found on 2026-11-19, while building module identity): a module's
+  identity is its path relative to the project
+  ([modules.md](design/modules.md), decision 1), and a file on another
+  Windows drive or UNC share has none, so `program::read_program` refuses
+  it before anything runs ([image-format.md](design/image-format.md),
+  "Packaging"; `crates/ns-cli/src/program.rs`,
+  `a_module_on_another_drive_has_no_path_in_the_project`). `run-corpus`
+  copies each corpus module into its scratch directory beside the
+  generated project for that reason. Open is whether such a module needs
+  a representation -- an absolute path, which an image would carry as the
+  building machine's directory decision 10 keeps out of it, or a name of
+  the drive relative to something else -- or whether the refusal is the
+  rule; that is decision 1's to settle with the user.
 
 ## Missing tests
 

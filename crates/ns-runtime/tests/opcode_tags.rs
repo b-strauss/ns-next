@@ -511,10 +511,19 @@ fn mixin_side_tags_are_fixed() {
     assert_ne!(MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS);
 }
 
+/// A module record's origin and version tags. The origins 0 and 1 named
+/// the building machine's file and an embedded source; they are retired,
+/// so that a stale image's module record meets an unknown tag.
 #[test]
-fn source_origin_tags_are_fixed() {
-    assert_eq!(ORIGIN_FILE, 0);
-    assert_eq!(ORIGIN_EMBEDDED, 1);
+fn module_record_tags_are_fixed() {
+    assert_eq!(RETIRED_ORIGIN_TAGS, [0, 1]);
+    assert_eq!(ORIGIN_PROJECT, 2);
+    assert_eq!(ORIGIN_CORE, 3);
+    assert!(!RETIRED_ORIGIN_TAGS.contains(&ORIGIN_PROJECT));
+    assert!(!RETIRED_ORIGIN_TAGS.contains(&ORIGIN_CORE));
+
+    assert_eq!(MODULE_UNVERSIONED, 0);
+    assert_eq!(MODULE_VERSIONED, 1);
 }
 
 #[test]

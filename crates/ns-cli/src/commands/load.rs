@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::debug::{self, DebugOptions, HostStart};
+use crate::program;
 
 /// `ns-next load`: decode an image `build` wrote and start it -- send its
 /// one root `main: platform args:` with this interpreter's platform, which
@@ -57,20 +58,27 @@ pub(crate) fn execute(
     }
     crate::entry::report_jit_unavailable(&loaded.interpreter);
     let application = loaded.roots[0].clone();
+    // The manifest's requests `main:args:` makes are warned of as `run`
+    // warns of them; those of the assembly `build` warned of.
+    let mut kept = program::kept_manifests(&mut loaded);
     let Some(options) = debug else {
-        return crate::entry::report_entry_send(crate::entry::send_main(
+        let result = crate::entry::send_main(
             &mut loaded.interpreter,
             &application,
             program_arguments,
             None,
-        ));
+        );
+        program::warn_of_kept_ambiguities(&mut loaded.interpreter, &mut kept);
+        return crate::entry::report_entry_send(result);
     };
     // An image's modules have no files: a stop shows each by a reference.
+    // Each is named by the id and version the image recorded, as `run`
+    // names the program's modules.
     let modules = loaded
         .modules
         .iter()
         .map(|module| debug::ProgramModule {
-            name: module.declaration.name.as_str().to_string(),
+            module: ns_runtime::ModuleName::of_identity(&module.identity),
             path: None,
             identity: None,
             text: module.source.as_deref().map(str::to_string),
@@ -90,12 +98,14 @@ pub(crate) fn execute(
     {
         debug::report_terminated()
     } else {
-        crate::entry::report_entry_send(crate::entry::send_main(
+        let result = crate::entry::send_main(
             &mut loaded.interpreter,
             &application,
             program_arguments,
             Some(&link),
-        ))
+        );
+        program::warn_of_kept_ambiguities(&mut loaded.interpreter, &mut kept);
+        crate::entry::report_entry_send(result)
     };
     link.exited(debug::status_of(code));
     code

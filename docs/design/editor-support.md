@@ -233,8 +233,12 @@ Modules:
   parse's tokens and the folds over its module and comments, and the hints
   of a source that parses without error ("Hints"). Its
   findings are every diagnostic together -- the lexer's, then the parser's,
-  then the resolver's -- so a lexer error does not hide a parser error after
-  it.
+  then the resolver's, then the doc-tag warnings and the module
+  metadata's findings -- so a lexer error does not hide a parser error
+  after it.
+- `module_metadata.rs` — the `:module:` metadata (§4.3;
+  [modules.md](modules.md), decisions 2, 7 and 9), "Module metadata"
+  below.
 - `semantic_tokens.rs` — classification and the LSP encoding.
 - `folding.rs` — the fold ranges and their LSP encoding ("Folding").
 - `hints/` — the hints and their fixes as byte-offset text edits, and
@@ -501,7 +505,15 @@ or more `///` lines, attached before the declaration (`Anchor::Before`,
 `Placement::OwnLine`) and ending on the line right above it. A single `///`
 line, a `(* *)` comment and one a blank line away are no doc comment; the
 user decided so, so that what shows green and renders in the editor is what
-a hover shows. Its text is `Comment::text`'s, read as a doc comment
+a hover shows. Metadata comments (§4.3) on the lines between are passed
+over, each on the line right above the next (`hover::doc_comment_above`):
+a module's `(* :module: … *)` stands below its class's doc comment
+([modules.md](modules.md), decision 2), which still documents the class,
+and the doc-tag warnings take the same rule, as does the plugin's
+`NewspeakDocComments` (`documentedStart`), for the rendered view's owner
+and the structure view's summary: a blank line or another comment between,
+or code after a metadata comment on its line, leaves the block documenting
+nothing. Its text is `Comment::text`'s, read as a doc comment
 (`ns_syntax::doc_comment`, "Doc comments" below): the description goes
 into the hover as Markdown, an inline `{@summary …}` replaced by its text,
 and the tags as the section table.
@@ -516,6 +528,41 @@ comment's `@param`s, and an "Answers:" row the server writes itself,
 one; its container is `` `Shapes`'s class side``. Over the class's name the
 hover shows the class comment whole: its description, then its sections,
 "Factory:" and "Params:" among them.
+
+**Module metadata** shows below the doc comment's text: over the module's
+class the id and version its `(* :module: … *)` declares, as tools name a
+module (``*Module* `com.acme.json.Json@2.1.0` ``), and over a parameter the
+module its `:module:` expects (``*Expects* `com.acme.json.Json@2` ``) --
+only a well-formed one, since a malformed one is a finding ("Module
+metadata" below). A module without metadata shows no line: its id is its
+class's name, which the signature shows already.
+
+### Module metadata
+
+`module_metadata.rs` checks every `(* :module: … *)` of a document
+([modules.md](modules.md), decisions 2, 7 and 9), each finding on the
+metadata comment. The one above the module's class is read by
+`ns_runtime::modules::declared_identity`, the loader's own reading, so
+the editor refuses, as an error, exactly what `ns-next run` refuses and
+in its words: an id that is no dotted identifiers or whose last segment
+is not the class's name, a version that is no semver version, and two
+such metadata, the finding on the second; and an id in the namespace
+`newspeak.`, unless the document is a copy of the binary's own source
+that declares it -- a shipped module's or the manifest's: its text is
+that source's byte for byte, or the file its URI names stands at that
+source's place in the core library's layout, below a directory named
+`core-library` (the repository's `crates/ns-runtime/core-library/`) or
+below a fingerprint's directory within one (the plugin's store of what
+`ns-next shipped-sources` wrote; "The core library"). The place counts
+because the `Kernel.ns` being edited is no longer the binary's text and
+a store may hold another binary's; a program's module declaring such an
+id anywhere else is reported, as the loader refuses it. The one before a
+parameter documents the module the parameter expects, `<id>` or
+`<id>@<range>`, and is checked by nothing at run time (decision 7), so a
+malformed one is a warning: the id's segments must be identifiers --
+there is no class to hold its last to -- and the range must be one
+`VersionRange::parse` reads; an id in the reserved namespace is no
+warning, since a library may expect a shipped module.
 
 ### Doc comments
 
@@ -1001,12 +1048,13 @@ its own under the hover in the table, the two escaped and joined as HTML
 tooltip and the icon's alike, so the view tells what a member does without
 opening it. The plugin reads it from the file's current text
 (`NewspeakDocComments.summaryAbove`: the doc comment ending on the line
-above the symbol's range), never from the server: a document symbol's
-`detail` carries words the plugin reads (the access, `class`, `value`),
-and the comment stands right above the symbol anyway. The summaries are
-computed once per change of the file, by the 0-based line each comment
-ends on, since the view asks for every row and a walk of the file per row
-would make a large module's tree quadratic.
+above the symbol's range, or above the metadata comments right above it),
+never from the server: a document symbol's `detail` carries words the
+plugin reads (the access, `class`, `value`), and the comment stands right
+above the symbol anyway. The summaries are computed once per change of
+the file, by the 0-based line what each comment documents starts on,
+since the view asks for every row and a walk of the file per row would
+make a large module's tree quadratic.
 
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
 the same base icon for the breadcrumbs and sticky lines as for the tree,

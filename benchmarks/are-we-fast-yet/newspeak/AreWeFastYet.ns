@@ -29,24 +29,24 @@
 class AreWeFastYet packageUsing: manifest = (
   |
     private benchmarks = {
-      manifest Bounce.
-      manifest CD.
-      manifest DeltaBlue.
-      manifest DeltaBlueTon80.
-      manifest Havlak.
-      manifest Json.
-      manifest List.
-      manifest Mandelbrot.
-      manifest NBody.
-      manifest Permute.
-      manifest Queens.
-      manifest Richards.
-      manifest RichardsTon80.
-      manifest Sieve.
-      manifest Storage.
-      manifest Towers.
+      manifest at: 'Bounce'.
+      manifest at: 'CD'.
+      manifest at: 'DeltaBlue'.
+      manifest at: 'DeltaBlueTon80'.
+      manifest at: 'Havlak'.
+      manifest at: 'Json'.
+      manifest at: 'List'.
+      manifest at: 'Mandelbrot'.
+      manifest at: 'NBody'.
+      manifest at: 'Permute'.
+      manifest at: 'Queens'.
+      manifest at: 'Richards'.
+      manifest at: 'RichardsTon80'.
+      manifest at: 'Sieve'.
+      manifest at: 'Storage'.
+      manifest at: 'Towers'.
     }.
-    private Som = manifest Som.
+    private Som = manifest at: 'Som'.
   |
 ) (
   class Benchmarking usingPlatform: platform = (

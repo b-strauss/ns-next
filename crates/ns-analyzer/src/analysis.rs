@@ -4,6 +4,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use ns_syntax::{Diagnostic, Severity, Span};
 
@@ -47,7 +48,14 @@ pub struct Analysis {
 /// so the colours survive while a file is typed. Never panics: see
 /// `guarded`.
 pub fn analyze(text: &str) -> Analysis {
-    guarded(text, analyze_unguarded)
+    analyze_at(text, None)
+}
+
+/// `analyze` for the document at `path`, the file its URI names if it
+/// names one: the module metadata's check tells the binary's own core
+/// library by its path (`module_metadata::check`).
+pub fn analyze_at(text: &str, path: Option<&Path>) -> Analysis {
+    guarded(text, |text| analyze_unguarded(text, path))
 }
 
 /// Runs `analyzer`, turning a panic into one finding at the start of the
@@ -88,7 +96,7 @@ pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "no message".to_string())
 }
 
-fn analyze_unguarded(text: &str) -> Analysis {
+fn analyze_unguarded(text: &str, path: Option<&Path>) -> Analysis {
     let ns_syntax::EditorParse {
         tokens,
         module,
@@ -103,8 +111,14 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let semantic_tokens::Classification {
         classified,
         references,
-        declarations,
-    } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+        mut declarations,
+    } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens, text);
+    let module_metadata = crate::module_metadata::check(&resolution.module, text, path);
+    for (declaration, metadata) in module_metadata.shown {
+        if let Some(declared) = declarations.get_mut(&declaration) {
+            declared.module_metadata = Some(metadata);
+        }
+    }
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     // Only a source that parses without error gets hints: their fixes are
@@ -121,6 +135,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
         &comments,
         text,
     ));
+    findings.extend(module_metadata.findings);
     Analysis {
         findings,
         classified,

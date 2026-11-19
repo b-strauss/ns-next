@@ -243,7 +243,15 @@ impl<'gc> Mutator<'gc> {
             ));
         };
         let fresh = if path.is_empty() {
-            self.build_root_mixin(declaration, &resolved.bindings, ModuleSource::User, &text)
+            // The same module in a new version: an edit changes members and
+            // the header, never the path or the metadata above the class.
+            self.build_root_mixin(
+                declaration,
+                &resolved.bindings,
+                ModuleSource::User,
+                &text,
+                current.module_identity.clone(),
+            )
         } else {
             self.build_mixin(
                 declaration,

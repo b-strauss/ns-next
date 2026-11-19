@@ -90,6 +90,10 @@ fn benchmark_entry(
     // paths the timed runs will, so the first timed sample does not carry
     // a one-time cost (e.g. a lazily-populated cache) the rest do not.
     timed_send(program, &mut loaded, &arguments)?;
+    // Every sample assembles the application afresh and asks the manifest
+    // what the warm-up asked: its warnings are printed once per process,
+    // by the warm-up, not once per sample.
+    loaded.warns = false;
 
     let mut timings = Vec::with_capacity(iterations as usize);
     for _ in 0..iterations {

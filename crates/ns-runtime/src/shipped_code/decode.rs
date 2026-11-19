@@ -26,8 +26,12 @@ use super::bytes::ByteReader;
 
 /// The root mixin of one module's section, every mixin of it sharing
 /// `module_text`, the module's text, as its declaration's
-/// (`DeclarationText::shared`).
-pub(crate) fn decode_section(section: &[u8], module_text: Rc<str>) -> Rc<Mixin> {
+/// (`DeclarationText::shared`), the root carrying `module_identity`.
+pub(crate) fn decode_section(
+    section: &[u8],
+    module_text: Rc<str>,
+    module_identity: Option<Rc<crate::modules::ModuleIdentity>>,
+) -> Rc<Mixin> {
     let mut reader = ByteReader::new(section);
     let symbols = (0..reader.length())
         .map(|_| Symbol::intern(reader.str()))
@@ -37,7 +41,8 @@ pub(crate) fn decode_section(section: &[u8], module_text: Rc<str>) -> Rc<Mixin> 
         symbols,
         module_text,
     };
-    let root = decoder.mixin_fields(Position::Root);
+    let mut root = decoder.mixin_fields(Position::Root);
+    root.module_identity = module_identity;
     let root = Rc::new(root);
     Mixin::set_enclosing_of_children(&root);
     root

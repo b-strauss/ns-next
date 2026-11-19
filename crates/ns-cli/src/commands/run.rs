@@ -93,6 +93,9 @@ fn run_loaded(
         return debug::report_terminated();
     }
     let result = entry::send_main(&mut loaded.interpreter, &application, arguments, link);
+    // The manifest's requests `main:args:` made; those of the assembly were
+    // warned of when it ended (`program::instantiate_application`).
+    program::warn_of_ambiguities(loaded);
     // To stderr, after the answer is decided: no fixture or golden reads
     // stdout any differently for it.
     if statistics.cache {

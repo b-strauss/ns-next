@@ -18,6 +18,13 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
  * lines that each start their line, with only whitespace and one line break
  * between two of them. A `///` after code is a remark on its line and
  * belongs to no block.
+ *
+ * What a block documents is what starts after it, past the metadata
+ * comments between -- a module's `(* :module: ... *)` stands between its
+ * class's doc comment and the class -- each on the line right above the
+ * next, as the server's hover reads it (`hover::doc_comment_above`): a
+ * blank line or any other comment between, or code after a metadata
+ * comment on its line, leaves the block documenting nothing.
  */
 object NewspeakDocComments {
     /** Whether `element` is a `///` line of a doc comment. */
@@ -47,29 +54,67 @@ object NewspeakDocComments {
         lines.joinToString("\n") { line -> line.text.removePrefix("///").removePrefix(" ").trimEnd() }
 
     /**
-     * The summary (`NewspeakDocTags`) of the doc comment of `file` whose last
-     * line is `line - 1`, the one right above what starts on the 0-based
-     * `line`; `null` without such a comment or without a summary.
+     * The summary (`NewspeakDocTags`) of the doc comment of `file` that
+     * documents what starts on the 0-based `line` ([documentedStart]);
+     * `null` without such a comment or without a summary.
      */
-    fun summaryAbove(file: PsiFile, line: Int): String? = summariesByLastLine(file)[line - 1]
+    fun summaryAbove(file: PsiFile, line: Int): String? = summariesByDocumentedLine(file)[line]
 
     /**
-     * Every summary of `file` by the 0-based line its doc comment ends on,
-     * computed once per change of the file, its comments included: the
-     * structure view asks for every row, and a walk of the file per row would
-     * make a large module's tree quadratic. Lines are counted in the PSI's own
-     * text, which its offsets index, so an edit not yet committed never
-     * misplaces a summary.
+     * The offset at which what the doc comment [lines] documents starts: the
+     * element on the line right after it, or after the metadata comments
+     * that follow it, each on the line right above the next; `null` where
+     * a blank line, another comment, or nothing stands there.
      */
-    private fun summariesByLastLine(file: PsiFile): Map<Int, String> =
+    fun documentedStart(lines: List<PsiElement>): Int? {
+        var last = lines.last()
+        while (true) {
+            val gap = last.nextSibling as? PsiWhiteSpace ?: return null
+            if (gap.text.count { it == '\n' } != 1) return null
+            val next = gap.nextSibling ?: return null
+            when {
+                isMetadata(next) -> last = next
+                next.node.elementType == Types.COMMENT || next.node.elementType == Types.LINE_COMMENT -> return null
+                else -> return next.textRange.startOffset
+            }
+        }
+    }
+
+    /**
+     * Whether `element` is a metadata comment, `(* :tag: payload *)`, as
+     * `ns-syntax`'s `Metadata::read` reads one: the text inside opens, past
+     * whitespace, with `:`, then a tag of no whitespace that is never
+     * empty, then a second `:`.
+     */
+    private fun isMetadata(element: PsiElement): Boolean {
+        if (element.node.elementType != Types.COMMENT) return false
+        val text = element.text
+        if (text.length < 4 || !text.startsWith("(*") || !text.endsWith("*)")) return false
+        val inside = text.substring(2, text.length - 2).trimStart()
+        if (!inside.startsWith(':')) return false
+        val tagEnd = inside.indexOf(':', startIndex = 1).takeIf { index -> index >= 0 } ?: return false
+        val tag = inside.substring(1, tagEnd)
+        return tag.isNotEmpty() && tag.none(Char::isWhitespace)
+    }
+
+    /**
+     * Every summary of `file` by the 0-based line what its doc comment
+     * documents starts on, computed once per change of the file, its
+     * comments included: the structure view asks for every row, and a walk
+     * of the file per row would make a large module's tree quadratic. Lines
+     * are counted in the PSI's own text, which its offsets index, so an edit
+     * not yet committed never misplaces a summary.
+     */
+    private fun summariesByDocumentedLine(file: PsiFile): Map<Int, String> =
         CachedValuesManager.getCachedValue(file) {
             val text = file.text
             val summaries = HashMap<Int, String>()
             var line = 0
             var counted = 0
             for (block in blocks(file)) {
-                val end = block.last().textRange.endOffset
-                while (counted < end) {
+                // The blocks come in order, and what one documents starts before the next block.
+                val start = documentedStart(block) ?: continue
+                while (counted < start) {
                     if (text[counted] == '\n') line++
                     counted++
                 }

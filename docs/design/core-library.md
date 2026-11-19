@@ -3482,11 +3482,21 @@ exists to prevent ("The embedded shipped code" above).
 ### The manifest
 
 `crates/ns-runtime/core-library/Manifest.ns` is what a project's root
-receives as `packageUsing:`'s argument: a class `Manifest names:
-definitions:` whose `doesNotUnderstand:` answers the module definition whose
-name is the message's selector, searching its two arrays linearly, and
-passes anything else to `super` -- the lookup Newspeak on Squeak's
-`Namespacing.ns` and Primordial Soup's `CompilerApp.ns` make over a map. It
+receives as `packageUsing:`'s argument: a class `Manifest ids: versions:
+ranks: definitions:` asked with strings ([modules.md](modules.md),
+decisions 3 and 4) -- `at: id`, the one module of that id, and `at: id
+version: range`, the highest version the range matches, each searching its
+arrays linearly and signalling an `Error` that names what there is when no
+module answers, and `ambiguities`, the requests that matched several
+versions. Nothing reaches it through `doesNotUnderstand:`, the lookup
+Newspeak on Squeak's `Namespacing.ns` and Primordial Soup's
+`CompilerApp.ns` make over a map, since an id is any string, a dotted one
+too, and a selector `Object` answers would have shadowed a module. A range
+is matched on the versions' canonical texts; the host hands each module's
+rank among those of its id by semver's precedence, so that the manifest
+compares integers rather than parsing versions. It declares
+`(* :module: newspeak.core.Manifest *)` and the host gives it that
+identity, at `core:Manifest.ns`. It
 lives beside the shipped modules and is embedded the same way, with
 `include_str!`, exported as `ns_runtime::MANIFEST_SOURCE`
 (`interpreter/core_library.rs`), but it is **not a shipped module**, and
@@ -3498,15 +3508,17 @@ three things follow from that:
   slots. A program that reaches its class, as `manifest class`, gains
   nothing the manifest's own code does not already have.
 - **An image carries it.** It is compiled into the program beside the
-  project's modules, as the last module in module order, from the origin
-  `ORIGIN_EMBEDDED` `Manifest.ns`, so an application that keeps its manifest
-  in a slot is written and loaded like any other object. A shipped module's
+  project's modules, as the last module in module order, named
+  `newspeak.core.Manifest` at `core:Manifest.ns` (`ORIGIN_CORE`), so an
+  application that keeps its manifest in a slot is written and loaded like
+  any other object. A shipped module's
   instance is never written ("Shipped names in the image" below); the
   manifest must be, and is.
 - **It is compiled as user code**, by the interpreter's own lowering, with
   its code on its mixin like any module's, and it is the host, not the
   bootstrap, that instantiates it, once per assembled application, with an
-  `Array` of the modules' names and an `Array` of their class objects.
+  `Array` of the modules' ids, one of their versions, one of their ranks
+  and one of their class objects.
 
 [image-format.md](image-format.md), "Packaging", has the project file, the
 module order and how `run`, `build` and `load` use it.
@@ -4258,6 +4270,26 @@ a module's instance once it is recorded. The design as decided:
   a lazy module's when an image names it; `PlatformFactory.ns` reaches every
   other module's instance through `moduleInstanceNamed:`, building it first
   through `shippedModuleClassNamed:` and `recordShippedModule:`.
+- **Each shipped module declares its id** in a `:module:` metadata comment
+  directly above its class, below the class's `///` comment
+  ([modules.md](modules.md), decisions 2 and 9): `Kernel.ns` declares
+  `(* :module: newspeak.core.Kernel *)`, and `PlatformFactory`,
+  `TranscriptFactory`, `TimeFactory`, `CollectionsFactory`,
+  `TypedArraysFactory`, `MirrorsFactory` and `Manifest.ns` likewise
+  `newspeak.core.<Name>`, without a version: they are the binary's. A
+  module's root mixin carries its identity (`Mixin::module_identity`):
+  the path `core:<Name>.ns`, the id and no version
+  (`core_library::shipped_module_identity`). The source path reads it from
+  the metadata as it resolves the module and panics on any other
+  (`checked_shipped_identity`), a defect in the binary; the embedded
+  shipped code holds no identity, and its decoder gives the root the same
+  value from the module's name, so that the boot parses nothing. The
+  build's own tests hold every file's metadata to it
+  (`every_shipped_module_declares_its_reserved_id`). `Manifest.ns` is
+  compiled as a program's module, so its identity is the host's to set,
+  as every program module's is (`ResolvedModule::identity`, which
+  `resolve` leaves `None`). The line each file gained changed the shipped
+  code's fingerprint, and `tests/fixtures/golden-image.bin` with it.
 
 #### Shipped names in the image
 
@@ -4934,12 +4966,12 @@ keeps the accessor's direct answer (`Kernel.ns`, `Proxy`'s comment;
 pins the outside send).
 
 **A project's module may be named like a class accessor.** The manifest
-answers no protected member to a send from outside, so a module named
-`Array` is reached through it, `manifest Array`, as any other module
+is asked with a string, so a module named `Array` is reached through it,
+`manifest at: 'Array'`, as any other module, and so is one named after a
+public member of every object, `printString` say
 (`crates/ns-cli/tests/run.rs`,
-`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`);
-only a module named after a public member of every object, `yourself`
-say, is refused ([image-format.md](image-format.md), "Packaging").
+`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`,
+`a_module_named_like_an_object_member_is_reachable`).
 
 **The image.** No program reaches the private `NonBooleanReceiver` as a
 value, so the shipped world has no clause for a class whose instances the

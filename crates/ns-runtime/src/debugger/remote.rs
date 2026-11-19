@@ -135,7 +135,9 @@ pub enum Command {
         classes: Vec<ClassName>,
     },
     /// The current text of the module `module` names -- a program's, as
-    /// `FrameLocation::module` names it, or a shipped one, built or not --
+    /// `FrameLocation::module` names it, or a shipped one, built or not;
+    /// one exact module, so that a name without a version that covers
+    /// built modules of several versions is answered `ModuleTextAnswer::None` --
     /// unless `known_revision` is the revision the answer
     /// would carry. `known_revision` is the revision of a
     /// `ModuleTextAnswer::Text` the agent holds for this very module; an
@@ -483,55 +485,73 @@ impl HitCondition {
     }
 }
 
-/// A module as the debugging API names it: the name of its root class,
-/// and whether it is one of the binary's shipped modules. A program may
-/// declare a module of a shipped module's name -- a `Kernel` of its own --
-/// which is another module: neither ever takes the other's breakpoints,
-/// text or classes (`docs/design/debugger.md`, "The agent's sources").
+/// A module as the debugging API names it: its id and, when given, its
+/// version (`docs/design/modules.md`, decision 8). Within one program an
+/// id and a version name one module, so a name with a version names that
+/// module, and one without names every version of its id -- a method
+/// breakpoint stands in each. A program's own `Kernel` is `Kernel`, the
+/// binary's `newspeak.core.Kernel`, so neither ever takes the other's
+/// breakpoints, text or classes (`docs/design/debugger.md`, "The agent's
+/// sources"). Whether a module is shipped is never read from its name but
+/// from its root (`Mixin::shipped`): what a shipped frame withholds and
+/// refuses is a capability, which no name may grant.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleName {
-    /// The name of the module's root class.
-    pub name: String,
-    /// Whether it is a shipped module rather than the program's.
-    pub shipped: bool,
+    /// The module's id: the one it declares, the one a project's `as`
+    /// gives it, or else its root class's name.
+    pub id: String,
+    /// The module's version; `None` names every version of the id.
+    pub version: Option<String>,
 }
 
 impl ModuleName {
-    /// The program's module whose root class is named `name`.
-    pub fn program(name: impl Into<String>) -> ModuleName {
+    /// Every version of the id `id`, or its one module without a version.
+    pub fn named(id: impl Into<String>) -> ModuleName {
         ModuleName {
-            name: name.into(),
-            shipped: false,
+            id: id.into(),
+            version: None,
         }
     }
 
-    /// The shipped module whose root class is named `name`.
-    pub fn shipped(name: impl Into<String>) -> ModuleName {
+    /// The module `identity` names: its id and its version.
+    pub fn of_identity(identity: &crate::modules::ModuleIdentity) -> ModuleName {
         ModuleName {
-            name: name.into(),
-            shipped: true,
+            id: identity.id.to_string(),
+            version: identity.version.as_ref().map(ToString::to_string),
         }
+    }
+
+    /// Whether this name names the module `module` names: the same id,
+    /// and the same version unless this name gives none.
+    pub fn covers(&self, module: &ModuleName) -> bool {
+        self.id == module.id && (self.version.is_none() || self.version == module.version)
     }
 }
 
 impl ModuleName {
-    /// The module whose root is `root`.
+    /// The module whose root is `root`: its identity's id and version,
+    /// or, for a root a host built without an identity, its class's name.
     pub(crate) fn of_root(root: &crate::mixin::Mixin) -> ModuleName {
-        ModuleName {
-            name: root.name.to_string(),
-            shipped: root.shipped,
+        match root.module_identity.as_deref() {
+            Some(identity) => ModuleName::of_identity(identity),
+            None => ModuleName::named(root.name.to_string()),
         }
     }
 
-    /// Whether `root` is this module's root.
+    /// Whether `root` is the root of a module this name names.
     pub(crate) fn names(&self, root: &crate::mixin::Mixin) -> bool {
-        root.shipped == self.shipped && root.name.as_str() == self.name
+        self.covers(&ModuleName::of_root(root))
     }
 }
 
+/// `<id>` or `<id>@<version>`, as every tool writes a module.
 impl std::fmt::Display for ModuleName {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.name)
+        formatter.write_str(&self.id)?;
+        if let Some(version) = &self.version {
+            write!(formatter, "@{version}")?;
+        }
+        Ok(())
     }
 }
 
@@ -692,6 +712,9 @@ pub struct InstanceCount {
     /// The declaration, as a step filter names it.
     pub class: ClassName,
     pub count: usize,
+    /// Whether a shipped module declares the class, as its mixin says
+    /// (`Mixin::shipped`), never its module's id.
+    pub shipped: bool,
 }
 
 /// What `Event::ModuleText` says of a module's text.
@@ -803,7 +826,9 @@ pub struct FrameDescription {
     /// What the frame runs, as a reader names it: `Foo>>bar`,
     /// `Foo class>>bar`, `[] in Foo>>bar`, `Foo initializer`,
     /// `Foo superclass clause`, `Foo class>>new:` for a factory and
-    /// `top level`.
+    /// `top level`, `Foo` the declaration as every tool writes a class:
+    /// its module's id, `@` its version where it has one, and `/` before
+    /// a class inside the module -- `com.acme.util.Util@1.0.0/Inner>>run`.
     pub name: String,
     pub program_counter: usize,
     pub source: ns_syntax::Span,

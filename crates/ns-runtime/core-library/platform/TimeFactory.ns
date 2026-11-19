@@ -30,6 +30,7 @@
 /// after an unwind interrupted one, which records nothing; the loader
 /// sends it instead when an image names the module.
 /// @param mirror the VM mirror, through which a stopwatch reads the clock.
+(* :module: newspeak.core.TimeFactory *)
 class TimeFactory usingVmMirror: mirror = Value (
   |
     /// The VM mirror the factory was given: the one object through which

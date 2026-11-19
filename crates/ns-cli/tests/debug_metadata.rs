@@ -176,7 +176,7 @@ fn breakable_statements_agree_with_the_breakpoints(
         .iter()
         .zip(&breakable)
         .map(|(resolved, statements)| Landings {
-            module: ModuleName::program(resolved.module.root_class.name.name.clone()),
+            module: ModuleName::named(resolved.module.root_class.name.name.clone()),
             source: &resolved.source,
             expected: expected_landings(statements, lowering),
         })
@@ -228,7 +228,7 @@ fn shipped_breakable_statements_agree_with_the_breakpoints(
         }
         let text = ns_runtime::shipped_module_source(name).unwrap_or_default();
         modules.push(Landings {
-            module: ModuleName::shipped(name),
+            module: ModuleName::named(ns_runtime::shipped_module_id(name)),
             source: text,
             expected: expected_landings(&statements, lowering),
         });

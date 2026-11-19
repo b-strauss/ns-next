@@ -3685,7 +3685,7 @@ Bounce, Storage and List -- are runnable programs in
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
 the root of the project in that directory, which reaches each
-benchmark as `manifest Sieve`. Without `--timed` the harness runs each
+benchmark as `manifest at: 'Sieve'`. Without `--timed` the harness runs each
 benchmark once and prints `<Name>: ok`, which `goldens/tool/awfy/` pins under
 both lowerings and `ns-next bench` times; with `--timed` it prints each
 benchmark's runs per second, measured with `platform time Stopwatch`.
@@ -8251,3 +8251,88 @@ The Docker groups `linux` and `aarch64` were not run.
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 6:
 hot swap, edit-and-continue and `ActivationMirror`) and "The debugger"
 (what stage 5's reviews left, and what the values view still lacks).
+
+## Module identity, the string manifest and metadata (2026-11-19)
+
+[modules.md](design/modules.md), decisions 1 to 10;
+[image-format.md](design/image-format.md), "Module section",
+"Verification", "Packaging"; [core-library.md](design/core-library.md),
+"The manifest"; [debugger.md](design/debugger.md), "The agent's sources";
+[editor-support.md](design/editor-support.md), "Module metadata";
+[frontend.md](design/frontend.md), "Comments".
+
+Asked for by the user on 2026-11-18 and designed with the user on
+2026-11-18 and 2026-11-19, so that several versions of one module live in
+one running program. A module is identified by its path relative to its
+project and named by the id and semver version its
+`(* :module: com.acme.json.Json@2.1.0 *)` declares above its class, or
+by its class's name and no version when it declares none; the id's last
+part must be the class's name, and the namespace `newspeak.` belongs to
+the modules the binary ships, each of which, and `Manifest.ns`, declares
+a `newspeak.core.` id. `ns-runtime`'s `modules.rs` holds ids, versions,
+ranges and identities and reads a declaration (`declared_identity`);
+`ns-syntax`'s `metadata.rs` collects every metadata comment by its §4.3
+target, the lexer, the attachment and the printer unchanged; the
+identity is held by the module's root mixin.
+
+The manifest is asked with strings: `at:` answers the one module of an
+id and `at:version:` the highest version a prefix range matches, a
+pre-release only when the range names it, and the host warns of every
+request that matched several. Every `manifest Name` of the repository's
+sources became `manifest at: 'Name'`; `corpus/` is unchanged.
+`newspeak.json` takes `{ "path", "as" }` to give a module another id,
+and a program is refused before it runs when two modules share an id and
+a version or an id where either has none, `main`'s included, and when a
+module declares or is given an id under `newspeak.`. An image's module
+record carries the module's relative path, id and version in place of
+the building machine's path (`ORIGIN_PROJECT` and `ORIGIN_CORE`;
+`ORIGIN_FILE` and `ORIGIN_EMBEDDED` retired), and the decoder holds them
+to the project's rules before any is used. The debugger, the DAP agent,
+the MCP server and the plugin name a method
+`id@version/Inner>>selector`, a name without a version covering every
+version and a frame's name always writing it; whether a frame is the
+core library's is decided by its root mixin, never by its id. The
+analyzer reports a malformed `:module:` as the loader would, and a
+malformed expectation before a factory parameter as a warning, and its
+hover shows both; the plugin's doc comments pass over metadata.
+
+The goldens changed only where their text did (`manifest at:`); four
+under `goldens/tool/manifest/`, one of them in place of
+`a_name_the_manifest_does_not_hold_is_not_understood`, pin the manifest's
+errors and two versions of a module side by side, and
+`crates/ns-cli/tests/run.rs` the warning and the project's refusals. `tests/fixtures/golden-image.bin` was
+regenerated for the shipped sources' new lines.
+
+The commit gates passed on every commit (`commit`, with `images` and
+`analyzer` where their files changed). The end-of-batch gates passed on
+the final tree:
+- `images` 2,192 tests;
+- `caches` 548;
+- `benchmarks` 177;
+- `release-checks` 7,480, with both lints;
+- `codegen`, every budget held;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,757 tests each (WIDE 5,558), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups `linux` and `aarch64` were not run.
+
+- `0449ff34`, `1bdf7c4e`, `ace71993` -- the design and the plan
+  (`docs/superpowers/plans/2026-11-19-0930-module-identity.md`).
+- `9c03a407` -- ids, versions, ranges and identities.
+- `775b066c` -- metadata comments collected by their §4.3 targets.
+- `a437f3a5`, `38b995ea` -- a module's identity on its root mixin, the
+  shipped modules' `newspeak.core.` ids.
+- `93b34c62`, `e7ef033d` -- the string manifest, `as` and the project's
+  refusals.
+- `c4c6a2c7`, `d925a251` -- the image's module record.
+- `5792a599`, `4d44d21b` -- the debugger and its clients name modules by
+  id and version.
+- `0a470a13` -- the plugin's breakpoint types, memory view and doc
+  comments.
+- `a3813f7b`, `e2f5d8ce` -- the analyzer's findings and hover.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): metadata through
+the mirrors, and a module on another drive or share than its project,
+which has no relative path and is refused.

@@ -130,8 +130,20 @@ pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: b
         panic!("{} does not parse", source.display())
     };
     let origin = ns_runtime::SourceOrigin::File(source.to_path_buf());
-    let Ok(resolved) = ns_runtime::resolve(module, Rc::from(text.as_str()), origin.clone()) else {
+    let Ok(resolved) = ns_runtime::resolve(module, Rc::from(text.as_str()), origin) else {
         panic!("{} does not resolve", source.display())
+    };
+    // Named as `build` names a source file's module: by its file's name,
+    // the path relative to its directory, and what it declares.
+    let (id, version) = ns_runtime::modules::declared_identity(&resolved.module, &text)
+        .unwrap_or_else(|error| panic!("{}: {error}", source.display()));
+    let identity = ns_runtime::modules::ModuleIdentity {
+        path: source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| panic!("{} has no file name", source.display())),
+        id,
+        version,
     };
     let mut interpreter = ns_runtime::Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
@@ -144,7 +156,7 @@ pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: b
         };
         let modules = [ns_runtime::image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&application))

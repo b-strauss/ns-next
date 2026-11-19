@@ -33,6 +33,7 @@ use crate::mixin::{
     ClauseMessage, DeclarationText, Factory, MethodEntry, Mixin, MixinApplicationClause,
     MixinMethod, MixinSlot, mixin_key, slot_accessors,
 };
+use crate::modules::ModuleIdentity;
 
 use super::decode::{DecodeError, Reader, check_argument_count, reserve_for};
 use super::encode::{CodeIds, Writer, arity_field, u32_field};
@@ -478,13 +479,14 @@ struct RawSlot {
 
 /// Reads the mixin table of an image without source and builds its
 /// mixins, none of them holding a text: `read`, then `build` with no
-/// texts. For the tests, which craft tables of rows that name no text.
+/// texts and no module identities. For the tests, which craft tables of
+/// rows that name no text.
 pub fn decode(
     reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
 ) -> Result<Decoded, DecodeError> {
-    build(read(reader, symbols, codes, false)?, codes, &[])
+    build(read(reader, symbols, codes, false)?, codes, &[], &[])
 }
 
 /// The mixin table as `read` leaves it: every row read and checked, the
@@ -494,6 +496,17 @@ pub struct ReadTable {
     /// Each tree's first row, in table order: the row of each module's root
     /// declaration, as `check_preorder` found the trees.
     pub module_rows: Vec<u32>,
+}
+
+impl ReadTable {
+    /// Each module's root declaration's name, in module order: what the
+    /// module section holds each module's id to before anything is built.
+    pub fn module_root_names(&self) -> Vec<Symbol> {
+        self.module_rows
+            .iter()
+            .map(|row| self.raw[*row as usize].name)
+            .collect()
+    }
 }
 
 /// Reads the mixin table, and checks it, without building it.
@@ -979,8 +992,15 @@ pub fn build(
     table: ReadTable,
     codes: &[Rc<CompiledCode>],
     texts: &[Rc<DeclarationText>],
+    module_identities: &[Rc<ModuleIdentity>],
 ) -> Result<Decoded, DecodeError> {
     let ReadTable { raw, module_rows } = table;
+    // Each module's root row carries its module's identity, as a loaded
+    // module's root mixin does (`Mixin::module_identity`).
+    let mut row_identities: Vec<Option<Rc<ModuleIdentity>>> = vec![None; raw.len()];
+    for (row, identity) in module_rows.iter().zip(module_identities) {
+        row_identities[*row as usize] = Some(Rc::clone(identity));
+    }
     let code_at = |id: u32| codes[id as usize].clone();
     let mut texts = row_texts(&raw, texts)?;
     let mut factory_entries = metaclass_factory_entries(&raw);
@@ -1095,6 +1115,7 @@ pub fn build(
             // (`modules::root_record_defect`), so no decoded mixin has one.
             root_clause_defect: None,
             root_shape: None,
+            module_identity: row_identities[index].take(),
             // An image carries only its own module, never shipped source.
             shipped: false,
             // Set by the parent's row, built after this one.

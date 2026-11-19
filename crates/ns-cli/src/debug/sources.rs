@@ -8,8 +8,9 @@
 //! is the binary's own and never changes, so it is never asked of the VM.
 //!
 //! A shipped module is a module of its own, whatever the program's names:
-//! a program may declare a `Kernel` of its own, which is another module
-//! (`ModuleName`). A client names a program module by its file's path, and
+//! a program may declare a `Kernel` of its own, which is another module,
+//! `Kernel` beside the binary's `newspeak.core.Kernel` (`ModuleName`). A
+//! client names a program module by its file's path, and
 //! a shipped one by the path of its file in the core library the client
 //! shows -- a directory of the binary's shipped sources it hands over at
 //! `attach` (`coreLibrary`), taken only when its fingerprint is the
@@ -25,11 +26,8 @@ use ns_runtime::{ModuleName, ModuleTextAnswer};
 use ns_syntax::Span;
 use ns_tooling::lines::{LineColumn, LineIndex};
 
+use super::breakpoints::KnownModule;
 use super::protocol::{self, SourceArgument};
-
-/// The name of the module the embedded `Manifest.ns` declares, a program
-/// module of every project.
-const MANIFEST: &str = "Manifest";
 
 /// The file a directory of shipped sources holds its fingerprint in, as
 /// `ns-next shipped-sources` writes it.
@@ -37,8 +35,8 @@ const FINGERPRINT_FILE: &str = "fingerprint";
 
 /// A module of the program as the host loaded it.
 pub(crate) struct ProgramModule {
-    /// Its root class's name, as `FrameLocation::module` names it.
-    pub(crate) name: String,
+    /// Its id and version, as `FrameLocation::module` names it.
+    pub(crate) module: ModuleName,
     /// The file it was read from, absolute; `None` for an image's module
     /// and the embedded manifest.
     pub(crate) path: Option<PathBuf>,
@@ -129,13 +127,8 @@ impl Sources {
                     .path
                     .split('/')
                     .fold(directory.to_path_buf(), |path, part| path.join(part));
-                let module = if file.name == MANIFEST {
-                    ModuleName::program(MANIFEST)
-                } else {
-                    ModuleName::shipped(file.name)
-                };
                 LibraryFile {
-                    module,
+                    module: ModuleName::named(ns_runtime::shipped_module_id(file.name)),
                     identity: file_identity(&path),
                     path,
                     text: file.text,
@@ -256,7 +249,7 @@ impl Sources {
     /// manifest -- and by a reference otherwise: a shipped module without
     /// a core library, an image's module, or one an install changed.
     pub(crate) fn source(&mut self, module: &ModuleName) -> protocol::Source {
-        let name = format!("{}.ns", module.name);
+        let name = file_name(module);
         let current = self.text(module);
         let file = self
             .program_module(module)
@@ -306,9 +299,11 @@ impl Sources {
     /// The module a client's source names: by its reference; by its path
     /// -- a program module's file, or a file of the core library taken,
     /// which names its shipped module and never a program module of the
-    /// same name; or by its name, `<Module>.ns`, only for a program module
+    /// same name; or by its name, `<Class>.ns`, only for a program module
     /// that has no file of its own -- an image's, the embedded manifest --
-    /// or one a stop showed by reference that is no shipped module.
+    /// or one a stop showed by reference that is no shipped module, and
+    /// only while that name is one such module's alone: two versions of a
+    /// module are told apart by their references.
     pub(crate) fn module_named_by(&self, source: &SourceArgument) -> Option<ModuleName> {
         if let Some(reference) = source.source_reference.filter(|reference| *reference > 0) {
             return self.module_of_reference(reference).cloned();
@@ -322,7 +317,7 @@ impl Sources {
                     .is_some_and(|identity| same_identity(identity, &named))
             });
             if let Some(program) = program {
-                return Some(ModuleName::program(program.name.clone()));
+                return Some(program.module.clone());
             }
             return self
                 .library
@@ -330,35 +325,70 @@ impl Sources {
                 .find(|file| same_identity(&file.identity, &named))
                 .map(|file| file.module.clone());
         }
-        let module = ModuleName::program(source.name.as_deref()?.strip_suffix(".ns")?);
-        let without_file = match self.program_module(&module) {
-            Some(program) => program.path.is_none(),
-            None => self.texts.contains_key(&module) || self.references.contains(&module),
-        };
-        without_file.then_some(module)
+        let name = source.name.as_deref()?;
+        let without_file = self
+            .program
+            .iter()
+            .filter(|program| program.path.is_none())
+            .map(|program| &program.module)
+            .chain(
+                self.texts
+                    .keys()
+                    .chain(&self.references)
+                    .filter(|module| self.program_module(module).is_none()),
+            )
+            .filter(|module| shipped(module).is_none() && file_name(module) == name);
+        let mut named: Vec<&ModuleName> = Vec::new();
+        for module in without_file {
+            if !named.contains(&module) {
+                named.push(module);
+            }
+        }
+        match named[..] {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
     }
 
-    /// The modules the `Module` segment of a class name a client typed
-    /// names -- a method or an exception breakpoint's:
-    /// the program's module of that name when the program has one and the
-    /// shipped module of that name when the binary has one -- both, for a
-    /// program module named like a shipped one, so that a name reaches the
-    /// classes of either -- and otherwise the program's, which is pending
-    /// until it is built.
-    pub(crate) fn modules_of_class_name(&self, name: &str) -> Vec<ModuleName> {
-        let program = ModuleName::program(name);
-        let shipped = ModuleName::shipped(name);
-        let mut modules = Vec::new();
-        if self.program_module(&program).is_some() {
-            modules.push(program.clone());
-        }
-        if self::shipped(&shipped).is_some() {
-            modules.push(shipped);
-        }
-        if modules.is_empty() {
-            modules.push(program);
-        }
-        modules
+    /// The module the program or the binary has -- a program's module,
+    /// the embedded manifest included, or a shipped one -- that `text`
+    /// names, as a class name a client typed is read against
+    /// (`breakpoints::parse_class_name`), with the versions the program
+    /// has of its id: `text` itself where it is such an id, and otherwise,
+    /// for an undotted `text`, the one such module whose class `text`
+    /// names -- `newspeak.core.Kernel` for `Kernel` where the program has
+    /// no `Kernel` -- so that a name in the form before ids,
+    /// `Kernel.Array`, is refused with the form it means.
+    pub(crate) fn module_of(&self, text: &str) -> Option<KnownModule> {
+        let ids: Vec<String> = self
+            .program
+            .iter()
+            .map(|program| program.module.id.clone())
+            .chain(
+                ns_runtime::shipped_source_files()
+                    .iter()
+                    .map(|file| ns_runtime::shipped_module_id(file.name)),
+            )
+            .collect();
+        let id = if ids.iter().any(|id| id == text) {
+            text.to_string()
+        } else if text.contains('.') {
+            return None;
+        } else {
+            let mut by_class = ids.iter().filter(|id| id.rsplit('.').next() == Some(text));
+            let first = by_class.next()?;
+            if !by_class.all(|other| other == first) {
+                return None;
+            }
+            first.clone()
+        };
+        let versions = self
+            .program
+            .iter()
+            .filter(|program| program.module.id == id)
+            .filter_map(|program| program.module.version.clone())
+            .collect();
+        Some(KnownModule { id, versions })
     }
 
     /// Whether `module`'s current text declares the class `path` names
@@ -396,12 +426,9 @@ impl Sources {
     }
 
     fn program_module(&self, module: &ModuleName) -> Option<&ProgramModule> {
-        if module.shipped {
-            return None;
-        }
         self.program
             .iter()
-            .find(|program| program.name == module.name)
+            .find(|program| program.module == *module)
     }
 
     fn library_file_of(&self, module: &ModuleName) -> Option<&LibraryFile> {
@@ -409,12 +436,22 @@ impl Sources {
     }
 }
 
-/// The text of the shipped module `module` names; `None` for a program's.
+/// The text of the shipped module `module` names, by its id, which no
+/// program's module may have (`docs/design/modules.md`, decision 9);
+/// `None` for a program's. The text the agent shows, never what decides
+/// whether a frame is shipped, which the VM says (`FrameDescription::shipped`).
 fn shipped(module: &ModuleName) -> Option<&'static str> {
-    if !module.shipped {
+    if module.version.is_some() {
         return None;
     }
-    ns_runtime::shipped_module_source(&module.name)
+    ns_runtime::shipped_module_source(ns_runtime::shipped_module_named_by_id(&module.id)?)
+}
+
+/// The name a client shows `module`'s source by: its class's file,
+/// `<Class>.ns`, the last segment of its id.
+fn file_name(module: &ModuleName) -> String {
+    let class = module.id.rsplit('.').next().unwrap_or(&module.id);
+    format!("{class}.ns")
 }
 
 /// What a path is compared by to tell whether it names a module's file:
@@ -487,7 +524,7 @@ mod tests {
 
     fn sources() -> Sources {
         Sources::new(vec![ProgramModule {
-            name: "Hello".to_string(),
+            module: ModuleName::named("Hello"),
             path: Some(PathBuf::from("/programs/Hello.ns")),
             identity: Some(file_identity(Path::new("/programs/Hello.ns"))),
             text: Some("class Hello = ()".to_string()),
@@ -495,11 +532,11 @@ mod tests {
     }
 
     fn hello() -> ModuleName {
-        ModuleName::program("Hello")
+        ModuleName::named("Hello")
     }
 
     fn kernel() -> ModuleName {
-        ModuleName::shipped("Kernel")
+        ModuleName::named("newspeak.core.Kernel")
     }
 
     #[cfg(windows)]
@@ -534,7 +571,7 @@ mod tests {
         let file = directory.join("Gone.ns");
         std::fs::write(&file, "class Gone = ()").expect("the file");
         let sources = Sources::new(vec![ProgramModule {
-            name: "Gone".to_string(),
+            module: ModuleName::named("Gone"),
             path: Some(file.clone()),
             identity: Some(file_identity(&file)),
             text: Some("class Gone = ()".to_string()),
@@ -544,7 +581,7 @@ mod tests {
             path: Some(file.display().to_string()),
             ..SourceArgument::default()
         });
-        assert_eq!(named, Some(ModuleName::program("Gone")));
+        assert_eq!(named, Some(ModuleName::named("Gone")));
     }
 
     /// A directory of this test's own under the repository's scratch
@@ -606,12 +643,12 @@ mod tests {
         let mut sources = sources();
         let kernel = sources.source(&kernel()).source_reference;
         let platform = sources
-            .source(&ModuleName::shipped("PlatformFactory"))
+            .source(&ModuleName::named("newspeak.core.PlatformFactory"))
             .source_reference;
         assert_ne!(kernel, platform);
         assert_eq!(
             sources
-                .source(&ModuleName::shipped("Kernel"))
+                .source(&ModuleName::named("newspeak.core.Kernel"))
                 .source_reference,
             kernel
         );
@@ -620,7 +657,7 @@ mod tests {
     #[test]
     fn a_text_asked_at_a_stop_is_current_for_that_stop_only() {
         let mut sources = sources();
-        let library = ModuleName::program("Library");
+        let library = ModuleName::named("Library");
         assert!(sources.needs_text(&library, 1));
         assert_eq!(sources.ask(&library, 1), Some(None));
         assert_eq!(sources.ask(&library, 1), None, "an ask is on its way");
@@ -640,13 +677,13 @@ mod tests {
     fn a_source_names_a_module_by_reference_path_or_a_file_less_name() {
         let mut sources = Sources::new(vec![
             ProgramModule {
-                name: "Hello".to_string(),
+                module: ModuleName::named("Hello"),
                 path: Some(PathBuf::from("/programs/Hello.ns")),
                 identity: Some(file_identity(Path::new("/programs/Hello.ns"))),
                 text: Some("class Hello = ()".to_string()),
             },
             ProgramModule {
-                name: "Manifest".to_string(),
+                module: ModuleName::named("newspeak.core.Manifest"),
                 path: None,
                 identity: None,
                 text: Some("class Manifest = ()".to_string()),
@@ -674,7 +711,7 @@ mod tests {
         );
         assert_eq!(
             named(by_name("Manifest.ns")),
-            Some(ModuleName::program("Manifest"))
+            Some(ModuleName::named("newspeak.core.Manifest"))
         );
         assert_eq!(named(by_name("Hello.ns")), None, "it has a file");
         assert_eq!(named(by_name("Kernel.ns")), None, "a shipped module");
@@ -691,24 +728,24 @@ mod tests {
         );
         assert!(
             sources
-                .text_for_positions(&ModuleName::shipped("PlatformFactory"))
+                .text_for_positions(&ModuleName::named("newspeak.core.PlatformFactory"))
                 .is_some()
         );
         assert_eq!(sources.text_answers(), 0);
     }
 
     /// A program module named like a shipped one is another module: its
-    /// text is its own, the shipped module's the binary's, and a class
-    /// name a client types names both.
+    /// text is its own, the shipped module's the binary's, and each is
+    /// known by its own id.
     #[test]
     fn a_program_module_named_like_a_shipped_one_is_another_module() {
         let mut sources = Sources::new(vec![ProgramModule {
-            name: "Kernel".to_string(),
+            module: ModuleName::named("Kernel"),
             path: Some(PathBuf::from("/programs/Kernel.ns")),
             identity: Some(file_identity(Path::new("/programs/Kernel.ns"))),
             text: Some("class Kernel = ()".to_string()),
         }]);
-        let own = ModuleName::program("Kernel");
+        let own = ModuleName::named("Kernel");
         assert!(sources.needs_text(&own, 1));
         assert_eq!(sources.text_for_positions(&own), Some("class Kernel = ()"));
         assert!(!sources.needs_text(&kernel(), 1));
@@ -716,15 +753,54 @@ mod tests {
             sources.text_for_positions(&kernel()),
             ns_runtime::shipped_module_source("Kernel")
         );
-        assert_eq!(sources.modules_of_class_name("Kernel"), [own, kernel()]);
+        let id_of = |text: &str| sources.module_of(text).map(|known| known.id);
+        assert_eq!(id_of("Kernel"), Some("Kernel".to_string()));
         assert_eq!(
-            sources.modules_of_class_name("CollectionsFactory"),
-            [ModuleName::shipped("CollectionsFactory")]
+            id_of("newspeak.core.Kernel"),
+            Some("newspeak.core.Kernel".to_string())
         );
         assert_eq!(
-            sources.modules_of_class_name("Elsewhere"),
-            [ModuleName::program("Elsewhere")]
+            id_of("CollectionsFactory"),
+            Some("newspeak.core.CollectionsFactory".to_string()),
+            "a shipped module by its class's name"
         );
+        assert_eq!(id_of("Kernel.Array"), None);
+        assert_eq!(id_of("Elsewhere"), None);
+    }
+
+    /// Two versions of a module without files of their own -- an
+    /// image's -- share their file's name, so a name names neither: each
+    /// is named by its reference.
+    #[test]
+    fn two_versions_of_a_file_less_module_are_not_named_by_their_name() {
+        let version = |version: &str| ModuleName {
+            id: "com.acme.util.Util".to_string(),
+            version: Some(version.to_string()),
+        };
+        let mut sources = Sources::new(
+            ["1.0.0", "2.0.0"]
+                .map(|number| ProgramModule {
+                    module: version(number),
+                    path: None,
+                    identity: None,
+                    text: Some("class Util = ()".to_string()),
+                })
+                .into(),
+        );
+        let first = sources.source(&version("1.0.0"));
+        let second = sources.source(&version("2.0.0"));
+        assert_eq!(first.name, "Util.ns");
+        assert_ne!(first.source_reference, second.source_reference);
+        let named = sources.module_named_by(&SourceArgument {
+            name: Some("Util.ns".to_string()),
+            ..SourceArgument::default()
+        });
+        assert_eq!(named, None);
+        let by_reference = sources.module_named_by(&SourceArgument {
+            source_reference: second.source_reference,
+            ..SourceArgument::default()
+        });
+        assert_eq!(by_reference, Some(version("2.0.0")));
     }
 
     /// A core library of the binary's fingerprint names its shipped
@@ -766,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             sources.module_named_by(&by_path(&directory.join("Manifest.ns"))),
-            Some(ModuleName::program("Manifest"))
+            Some(ModuleName::named("newspeak.core.Manifest"))
         );
         sources.needs_text(&kernel(), 1);
         let shown = sources.source(&kernel());

@@ -1633,10 +1633,11 @@ fn image_under(source: &str, lowering: Lowering) -> Vec<u8> {
     let (mut interpreter, class) = loaded_under(source, lowering);
     interpreter.enter(|mutator| {
         let class = mutator.fetch(&class).as_object().expect("a class object");
-        let origin = crate::SourceOrigin::File(PathBuf::from("t.ns"));
+        let name = mutator.heap.class_declaration(class).expect("a root").name;
+        let identity = crate::modules::ModuleIdentity::undeclared("t.ns", name.as_str());
         let modules = [crate::image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: true,
         }];
         crate::image::snapshot(mutator, &modules, &[]).expect("snapshot")

@@ -241,6 +241,41 @@ pub(crate) fn module_name(
     Some(crate::debugger::ModuleName::of_root(&root))
 }
 
+/// Whether the module `running` is declared in is one the binary ships:
+/// decided by its root (`Mixin::shipped`), never by its name, since what
+/// a shipped frame withholds and refuses is a capability. `None` for a
+/// mixin no heap registered.
+pub(crate) fn module_is_shipped(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<bool> {
+    let (root, _) = declaration_path(mutator, running)?;
+    Some(root.shipped)
+}
+
+/// The name of the declaration `running` is a version of, or of whose
+/// class side it is a version, as every tool writes it
+/// (`docs/design/modules.md`, decision 8): its module, `/` and the
+/// path from the module's root down to it, dot-separated, for a class
+/// inside the module, then ` class` for a class side --
+/// `com.acme.json.Json@2.1.0/Parser class`. `None` for a mixin no heap
+/// registered.
+pub(crate) fn qualified_name(mutator: &Mutator<'_>, running: &Rc<Mixin>) -> Option<String> {
+    let (root, path) = declaration_path(mutator, running)?;
+    let mut name = crate::debugger::ModuleName::of_root(&root).to_string();
+    if !path.is_empty() {
+        name.push('/');
+        name.push_str(
+            &path
+                .iter()
+                .map(|segment| segment.as_str())
+                .collect::<Vec<&str>>()
+                .join("."),
+        );
+    }
+    if running.is_class_side() {
+        name.push_str(" class");
+    }
+    Some(name)
+}
+
 /// The root class of the module `running` is declared in, and the names
 /// of the declarations from that root down to `running`'s, the root's
 /// own excluded -- empty for the root itself; a class side's is its

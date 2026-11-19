@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::metadata::again::{BodyOrigin, Member, module_name};
+use super::metadata::again::{BodyOrigin, Member, module_is_shipped, module_name, qualified_name};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
     FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
@@ -255,8 +255,8 @@ pub(crate) fn is_shipped(mutator: &Mutator<'_>, frame: &StackFrame) -> bool {
 /// module; `None`, a top-level frame's, belongs to none.
 pub(crate) fn origin_is_shipped(mutator: &Mutator<'_>, origin: Option<&BodyOrigin>) -> bool {
     origin
-        .and_then(|origin| module_name(mutator, &origin.mixin))
-        .is_some_and(|module| module.shipped)
+        .and_then(|origin| module_is_shipped(mutator, &origin.mixin))
+        .unwrap_or(false)
 }
 
 /// Whether `frame` is a block's activation.
@@ -387,7 +387,16 @@ pub(crate) fn stack_trace(
         let frame = stack_frame.read(heap);
         let kind = frame.kind(heap);
         let program_counter = frame.program_counter(heap);
-        let name = frame_name(heap, kind, origin.as_ref(), frame.current_class(heap));
+        let owner = origin
+            .as_ref()
+            .and_then(|origin| qualified_name(mutator, &origin.mixin));
+        let name = frame_name(
+            heap,
+            kind,
+            origin.as_ref(),
+            owner,
+            frame.current_class(heap),
+        );
         let location = origin
             .as_ref()
             .zip(metadata.as_deref())
@@ -622,17 +631,23 @@ fn family_holds(root: &Rc<CompiledCode>, code: &Rc<CompiledCode>) -> bool {
 
 /// What a frame runs, as a reader names it: `Foo>>bar`, `Foo class>>bar`,
 /// `[] in Foo>>bar`, `Foo initializer`, `Foo superclass clause`,
-/// `Foo class>>new:` for a factory and `top level`. Named after its
-/// declaration when it has an origin, after its current class otherwise.
+/// `Foo class>>new:` for a factory and `top level`, `Foo` its
+/// declaration's `qualified` name -- its module's id and version, and
+/// `/` before a class inside the module, `com.acme.util.Util@1.0.0/Inner`
+/// -- so that each frame names one module (`docs/design/modules.md`,
+/// decision 8). Named after its current class where it has no origin, or
+/// its origin's mixin where no heap registered it, which name no module.
 fn frame_name<'gc>(
     heap: &Heap<'gc>,
     kind: ActivationKind<'gc>,
     origin: Option<&BodyOrigin>,
+    qualified: Option<String>,
     class: Option<ClassReference<'gc>>,
 ) -> String {
-    let owner = match origin {
-        Some(origin) => origin.mixin.reflected_name(),
-        None => class.map_or_else(String::new, |class| heap.class_display_name(class)),
+    let owner = match (qualified, origin) {
+        (Some(qualified), _) => qualified,
+        (None, Some(origin)) => origin.mixin.reflected_name(),
+        (None, None) => class.map_or_else(String::new, |class| heap.class_display_name(class)),
     };
     match kind {
         ActivationKind::Method(selector) => format!("{owner}>>{selector}"),
@@ -935,7 +950,7 @@ pub(crate) fn code_is_shipped(mutator: &Mutator<'_>, code: &Rc<CompiledCode>) ->
         .into_iter()
         .filter_map(|id| heap.mixin(id))
         .find(|mixin| member_holding(mixin, code).is_some())?;
-    Some(module_name(mutator, &holder).is_none_or(|module| module.shipped))
+    Some(module_is_shipped(mutator, &holder).unwrap_or(true))
 }
 
 /// Answers what `read` answers with the reader of `stack_frame`, which

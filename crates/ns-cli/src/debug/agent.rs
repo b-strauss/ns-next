@@ -2457,10 +2457,10 @@ mod tests {
     #[test]
     fn a_breakpoint_stop_names_only_the_breakpoints_the_agent_knows() {
         let mut known = Breakpoints::default();
-        let ids = known.request_lines(&ModuleName::program("Loop"), vec![10, 20]);
-        known.answered_lines(&ModuleName::program("Loop"), &[(1, ids[0]), (2, ids[1])]);
+        let ids = known.request_lines(&ModuleName::named("Loop"), vec![10, 20]);
+        known.answered_lines(&ModuleName::named("Loop"), &[(1, ids[0]), (2, ids[1])]);
         // The client removes the breakpoint at 10.
-        known.request_lines(&ModuleName::program("Loop"), vec![20]);
+        known.request_lines(&ModuleName::named("Loop"), vec![20]);
         let replaced = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
@@ -2478,17 +2478,17 @@ mod tests {
     #[test]
     fn a_pending_replacement_hides_the_ids_it_replaces() {
         let mut known = Breakpoints::default();
-        let ids = known.request_lines(&ModuleName::program("Loop"), vec![10]);
-        known.answered_lines(&ModuleName::program("Loop"), &[(1, ids[0])]);
+        let ids = known.request_lines(&ModuleName::named("Loop"), vec![10]);
+        known.answered_lines(&ModuleName::named("Loop"), &[(1, ids[0])]);
         let stop = StopReason::Breakpoint {
             ids: vec![BreakpointId(1)],
         };
         // Sent again, unanswered: the client still holds the breakpoint.
-        known.request_lines(&ModuleName::program("Loop"), vec![10]);
+        known.request_lines(&ModuleName::named("Loop"), vec![10]);
         let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["hitBreakpointIds"], json!([ids[0]]));
         // Replaced by another line, unanswered: the stop names nothing.
-        known.request_lines(&ModuleName::program("Loop"), vec![30]);
+        known.request_lines(&ModuleName::named("Loop"), vec![30]);
         let body = to_value(stopped_body(&stop, false, false, &known));
         assert_eq!(body["reason"], "breakpoint");
         assert!(body.get("hitBreakpointIds").is_none(), "{body}");

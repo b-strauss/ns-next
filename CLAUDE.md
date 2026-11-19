@@ -11,7 +11,11 @@ Rust 1.100.0, edition 2024, seven crates:
   `docs/design/frontend.md`, "AST", "Comments"); a doc comment's tags and
   summary are `doc_comment.rs`'s, the grammar the JetBrains plugin's
   `NewspeakDocTags` repeats (`docs/design/editor-support.md`, "Doc
-  comments"); `parse` refuses a source
+  comments"); a metadata comment, `(* :tag: payload *)` (§4.3), is read
+  by `Metadata::read` and collected with its target -- the expression,
+  slot, parameter, method, class or module declaration it belongs to --
+  by `metadata.rs`'s `metadata_of`, the lexer, the attachment and the
+  printer unchanged (`docs/design/modules.md`, decision 6); `parse` refuses a source
   with errors, `parse_for_editor` answers a recovered module for the editor,
   its recovery bounded by a work budget (`docs/design/frontend.md`,
   "Recovery"), and `parse_code_body` parses a code body that is the whole
@@ -122,8 +126,11 @@ Rust 1.100.0, edition 2024, seven crates:
   `DebugControl` that is `Clone`, `Send` and `Sync` and a
   `DebugEvents`, let an agent command the VM from several threads and
   hear it on another -- and a module's current text by revision
-  (`Command::ModuleText`), each frame named, placed and its variables
-  named by its body's metadata, which `debugger/metadata/` compiles
+  (`Command::ModuleText`), every module named by its id and version
+  (`ModuleName`, `debugger/remote.rs`; a name without a version covers
+  every version), each frame named `id@version/Inner>>selector`
+  (`modules.md`, decision 8), placed and its variables named by its
+  body's metadata, which `debugger/metadata/` compiles
   again from the module's current text through either lowerer's
   collector, keeps per body only when the body compiled again is alike
   (`bytecode::compiles_alike`), caches weakly and clears at every
@@ -173,7 +180,20 @@ Rust 1.100.0, edition 2024, seven crates:
   `PlatformFactory` booted by `interpreter/kernel.rs` and
   `interpreter/core_library.rs`, the other five built on first demand by
   `PlatformFactory.ns`'s lazy slots through two mirror leaves, or by the
-  loader when an image names them),
+  loader when an image names them; every shipped root and `Manifest.ns`
+  declares a `newspeak.core.` id in a `(* :module: … *)` above its
+  class, the namespace `newspeak.` the binary's alone), module identity
+  (`modules.rs`: `ModuleId`, the dotted identifiers ending in the class's
+  name, `Version`, semver without build metadata, `VersionRange`, a
+  prefix matching no pre-release it does not name, and `ModuleIdentity`,
+  a module's path relative to its project, id and version, read from its
+  `:module:` by `declared_identity`, held by its root mixin
+  (`Mixin::module_identity`), and decided shipped by `Mixin::shipped`,
+  never by the id; `modules.md`), the embedded manifest
+  (`core-library/Manifest.ns`), asked with strings -- `at: 'com.acme.Json'`
+  for an id of one module, `at:version:` the highest version a range
+  matches, the host warning of every request that matched several --
+  never by a unary send,
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
   of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
@@ -207,7 +227,9 @@ Rust 1.100.0, edition 2024, seven crates:
   stores; the step state `Mutator` in `interpreter/mod.rs`, held at rest
   by `World` in `heap/world.rs` and reached only through
   `Interpreter::enter`) and the image
-  format (`image/`). `shipped_code/` encodes and decodes the shipped modules'
+  format (`image/`; its module section records each module's path
+  relative to the project, id and version, never the building machine's
+  directories). `shipped_code/` encodes and decodes the shipped modules'
   compiled mixins; `build.rs` embeds the artifact `cargo xtask shipped-code`
   writes (`core-library/shipped-code.bin`, gitignored) with a fingerprint of
   the sources that compile to it, and an optimized boot decodes it -- every
@@ -221,7 +243,10 @@ Rust 1.100.0, edition 2024, seven crates:
   (`commands/shipped_sources.rs`; `core-library.md`, "The shipped
   sources as files"). A program is one `.ns` file or a project of several
   modules: a directory whose `newspeak.json` names them, the current directory
-  when no program is given (`project.rs`, `program.rs`). The file is described
+  when no program is given (`project.rs`, `program.rs`), a `modules`
+  entry a path or `{ "path", "as" }`, whose `as` gives the module another
+  id, and two modules no request could pick between, or an id under
+  `newspeak.`, refused before anything runs. The file is described
   by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
   holds the reader to and the JetBrains plugin bundles. `run` and `load`
   take `--debug`, which listens on 127.0.0.1 behind a token from the
@@ -236,7 +261,11 @@ Rust 1.100.0, edition 2024, seven crates:
   the program as `terminate` does when its connection is lost before a
   `disconnect`
   (`debugger.md`, "Launching, the start and the end"; tests
-  `tests/debug_adapter.rs`). `mcp` is a Model Context Protocol server on
+  `tests/debug_adapter.rs`); it names a method
+  `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>` and a class
+  `<id>[@<version>][/<Inner>(.<Inner>)*]`, as the MCP server's locations
+  and the plugin's breakpoint types do, and refuses the dotted form
+  `Module.Inner` (`debug/breakpoints.rs`, `debug/sources.rs`). `mcp` is a Model Context Protocol server on
   standard input and output (`mcp/`), registered by `.mcp.json` from
   the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools
   an agent debugs a program: each `debug_start` runs it in a child
@@ -248,8 +277,12 @@ Rust 1.100.0, edition 2024, seven crates:
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
-  hints and their quick fixes, and a hover with a declaration's signature
-  and doc comment);
+  hints and their quick fixes, a module's metadata checked as the loader
+  reads it -- an id not ending in the class's name, a malformed version,
+  an id under `newspeak.` outside the core library's own sources, and as
+  a warning a malformed expectation before a parameter
+  (`module_metadata.rs`) -- and a hover with a declaration's signature,
+  doc comment and `:module:`);
   `dump-tokens`, which the JetBrains plugin's lexer is checked against;
   `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
   that writes, which rewrites `.ns` files in the formatter's layout
@@ -904,7 +937,9 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
 - Newspeak sources (`.ns`) outside `corpus/` and `prior-art/` are formatted
   by `ns-next-analyzer fmt` (two spaces, `docs/design/formatting.md`) and
   commented with `///` lines, never `(* … *)` (but in
-  `goldens/language/syntax/line_comment.ns`, which pins both forms).
+  `goldens/language/syntax/line_comment.ns`, which pins both forms, and
+  for a §4.3 metadata comment, `(* :module: com.acme.Json@1.0.0 *)` and
+  every other `(* :tag: … *)`, which has no other form).
   `crates/ns-analyzer/tests/formatting_gate.rs` holds the layout of every
   `.ns` under `goldens/`, `benchmarks/` and `crates/ns-runtime/core-library/`
   (the directories it walks), and `crates/ns-cli/tests/source_formatting.rs`

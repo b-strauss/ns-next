@@ -264,8 +264,9 @@ pub(crate) struct SetFunctionBreakpointsArguments {
     pub(crate) breakpoints: Vec<FunctionBreakpoint>,
 }
 
-/// A method breakpoint, its method named `Module.Path.To.Class>>selector`
-/// or `Module.Path.To.Class class>>selector`.
+/// A method breakpoint, its method named
+/// `<id>[@<version>][/<Class>(.<Class>)*]>>selector` or, for the class
+/// side, `... class>>selector` (`breakpoints::parse_method_name`).
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct FunctionBreakpoint {
@@ -283,7 +284,8 @@ pub(crate) struct SetExceptionBreakpointsArguments {
 }
 
 /// A filter turned on with a condition: the classes, each
-/// `Module.Path.To.Class`, separated by commas, whose exceptions it stops.
+/// `<id>[@<version>][/<Class>(.<Class>)*]`, separated by commas, whose
+/// exceptions it stops.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ExceptionFilterOptions {
@@ -346,16 +348,13 @@ pub(crate) struct ForceReturnArguments {
 }
 
 /// `nsNext/instances`, a request of ns-next's own: `count` of the
-/// instances of the class declaration `name` names, `Module.Path.To.Class`
-/// as `nsNext/instanceCounts` names it, from the `start`th. `shipped`
-/// picks the shipped module, or the program's, of a name both have,
-/// which `nsNext/instanceCounts` says of each class; without it, the
-/// program's module is taken where it has one.
+/// instances of the class declaration `name` names,
+/// `<id>[@<version>][/<Class>(.<Class>)*]` as `nsNext/instanceCounts` names it,
+/// from the `start`th.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct InstancesArguments {
     pub(crate) name: String,
-    pub(crate) shipped: Option<bool>,
     pub(crate) start: Option<usize>,
     /// `None` or 0: at most 1,000 from `start`.
     pub(crate) count: Option<usize>,
@@ -375,11 +374,12 @@ pub(crate) struct ReferrersArguments {
 /// One class of an `nsNext/instanceCounts` response.
 #[derive(Serialize)]
 pub(crate) struct InstanceCount {
-    /// `Module.Path.To.Class`, as `nsNext/instances` takes it.
+    /// `<id>[@<version>][/<Class>(.<Class>)*]`, as `nsNext/instances`
+    /// takes it.
     pub(crate) name: String,
     pub(crate) count: usize,
-    /// ns-next's own: the class is a shipped module's, which a program
-    /// module of the same name does not declare.
+    /// ns-next's own: the class is a shipped module's, as the VM says
+    /// (`InstanceCount::shipped`).
     #[serde(rename = "nsNext/shipped", skip_serializing_if = "std::ops::Not::not")]
     pub(crate) shipped: bool,
 }

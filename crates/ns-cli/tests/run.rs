@@ -1,7 +1,7 @@
 mod common;
 
 use common::{ScratchDirectory, repository_root};
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -17,7 +17,7 @@ fn run(file: &Path) -> Output {
 /// `Greeter` through it.
 const APP: &str = indoc! {"
     class App packageUsing: manifest = Object new (
-        | Greeter = manifest Greeter. |
+        | Greeter = manifest at: 'Greeter'. |
     ) (
         public main: platform args: arguments = (
             platform transcript show: Greeter new greeting; newLine
@@ -343,31 +343,6 @@ fn a_projects_root_must_take_the_manifest() {
 }
 
 #[test]
-fn two_modules_of_one_name_are_refused() {
-    let directory = ScratchDirectory::new("project-twins");
-    let twin = indoc! {"
-        class Twin = Object new () () : ()
-    "};
-    std::fs::write(directory.join("App.ns"), APP).unwrap();
-    std::fs::write(directory.join("A.ns"), twin).unwrap();
-    std::fs::write(directory.join("B.ns"), twin).unwrap();
-    let project = directory.join("newspeak.json");
-    std::fs::write(
-        &project,
-        r#"{ "main": "App.ns", "modules": ["A.ns", "B.ns"] }"#,
-    )
-    .unwrap();
-
-    let out = run(&project);
-    assert!(!out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("`Twin`"), "stderr: {stderr}");
-    assert!(stderr.contains("A.ns"), "stderr: {stderr}");
-    assert!(stderr.contains("B.ns"), "stderr: {stderr}");
-}
-
-#[test]
 fn a_missing_module_file_is_refused() {
     let directory = ScratchDirectory::new("project-missing");
     std::fs::write(directory.join("App.ns"), APP).unwrap();
@@ -385,45 +360,8 @@ fn a_missing_module_file_is_refused() {
     assert!(stderr.contains("Nowhere.ns"), "stderr: {stderr}");
 }
 
-/// A module named after a public member of `Object` -- `yourself` --
-/// could never be reached: the manifest answers the member itself before
-/// its `doesNotUnderstand:` looks the module up. The project is refused.
-#[test]
-fn a_module_shadowed_by_an_object_member_is_refused() {
-    let directory = ScratchDirectory::new("project-shadowed");
-    std::fs::write(
-        directory.join("App.ns"),
-        indoc! {"
-            class App packageUsing: manifest = Object new () (
-                public main: platform args: arguments = ( platform transcript show: 'ran' )
-            ) : ()
-        "},
-    )
-    .unwrap();
-    std::fs::write(
-        directory.join("yourself.ns"),
-        indoc! {"
-            class yourself = Object new () () : ()
-        "},
-    )
-    .unwrap();
-    let project = directory.join("newspeak.json");
-    std::fs::write(
-        &project,
-        r#"{ "main": "App.ns", "modules": ["yourself.ns"] }"#,
-    )
-    .unwrap();
-
-    let out = run(&project);
-    assert!(!out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("`yourself`"), "stderr: {stderr}");
-    assert!(stderr.contains("public member"), "stderr: {stderr}");
-}
-
-/// `Object`'s class accessors are protected, so the manifest does not
-/// answer `Array` itself: a module named `Array` is reached through it.
+/// A module named like a class accessor of `Object` is asked for by its
+/// id, as any other.
 #[test]
 fn a_module_named_like_a_class_accessor_is_reached_through_the_manifest() {
     let directory = ScratchDirectory::new("project-named-like-an-accessor");
@@ -431,7 +369,7 @@ fn a_module_named_like_a_class_accessor_is_reached_through_the_manifest() {
         directory.join("App.ns"),
         indoc! {"
             class App packageUsing: manifest = Object new (
-                | module = manifest Array. |
+                | module = manifest at: 'Array'. |
             ) (
                 public main: platform args: arguments = (
                     platform transcript show: module greeting; newLine
@@ -544,4 +482,411 @@ fn bench_times_one_benchmark_of_the_project() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Sieve: ok"), "{stdout}");
     assert!(stdout.contains("median"), "{stdout}");
+}
+
+/// Writes `files`, each a path relative to the project and its text, and
+/// the project file `project` into `directory`, creating the directories
+/// the paths name.
+fn write_project(directory: &ScratchDirectory, files: &[(&str, &str)], project: &str) {
+    for (path, text) in files {
+        let file = directory.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(file, text).unwrap();
+    }
+    std::fs::write(directory.join("newspeak.json"), project).unwrap();
+}
+
+/// A module `Util` of the version `version` (none for `None`) whose
+/// instances answer `answer` to `answer`.
+fn util(version: Option<&str>, answer: &str) -> String {
+    let metadata = match version {
+        Some(version) => format!("(* :module: com.acme.util.Util@{version} *)\n"),
+        None => String::new(),
+    };
+    formatdoc! {"
+        {metadata}class Util = Object new () (
+          public answer = ( ^'{answer}' )
+        ) : ()
+    "}
+}
+
+/// A root that asks its manifest with each of `requests`, a Newspeak
+/// expression over `manifest` each, while it is assembled, and prints what
+/// each answer's instance answers to `answer`, a line each.
+fn asking_app(requests: &[&str]) -> String {
+    let slots: String = requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| format!("    private module{index} = {request}.\n"))
+        .collect();
+    let prints: String = (0..requests.len())
+        .map(|index| format!("    platform transcript show: module{index} new answer; newLine.\n"))
+        .collect();
+    formatdoc! {"
+        class App packageUsing: manifest = Object new (
+          |
+        {slots}  |
+        ) (
+          public main: platform args: arguments = (
+        {prints}  )
+        ) : ()
+    "}
+}
+
+/// The stdout of a run that succeeded.
+fn succeeded(out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "stderr: {stderr}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The stderr of a program refused before anything ran: exit status 1 and
+/// nothing on stdout.
+fn refused(out: &Output) -> String {
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "nothing runs");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn two_versions_run_side_by_side() {
+    let directory = ScratchDirectory::new("project-two-versions");
+    let app = asking_app(&[
+        "manifest at: 'com.acme.util.Util' version: '1'",
+        "manifest at: 'com.acme.util.Util' version: '2'",
+    ]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            ("libs/v1/Util.ns", &util(Some("1.0.0"), "one")),
+            ("libs/v2/Util.ns", &util(Some("2.0.0"), "two")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/v2/Util.ns", "libs/v1/Util.ns"] }"#,
+    );
+    let out = run(directory.path());
+    assert_eq!(succeeded(&out), "one\ntwo\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// Two modules no request could pick between are refused before
+/// anything runs, naming both by their paths in the project.
+#[test]
+fn two_unannotated_modules_of_one_name_are_refused() {
+    let directory = ScratchDirectory::new("project-twins");
+    let app = asking_app(&["manifest at: 'Util'"]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            ("libs/a/Util.ns", &util(None, "a")),
+            ("libs/b/Util.ns", &util(None, "b")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", "libs\\b\\Util.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert_eq!(
+        stderr,
+        "error: two modules are `Util` and one of them has no version: libs/a/Util.ns and \
+         libs/b/Util.ns\n"
+    );
+}
+
+#[test]
+fn two_modules_of_one_id_and_version_are_refused() {
+    let directory = ScratchDirectory::new("project-same-version");
+    let app = asking_app(&["manifest at: 'com.acme.util.Util' version: '1'"]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            ("libs/a/Util.ns", &util(Some("1.0.0"), "a")),
+            ("libs/b/Util.ns", &util(Some("1.0.0"), "b")),
+            (
+                "libs/c/Util.ns",
+                indoc! {"
+                    (* :module: com.acme.util.Util *)
+                    class Util = Object new () () : ()
+                "},
+            ),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", "libs/b/Util.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert_eq!(
+        stderr,
+        "error: two modules are `com.acme.util.Util@1.0.0`: libs/a/Util.ns and libs/b/Util.ns\n"
+    );
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", "libs/c/Util.ns"] }"#,
+    )
+    .unwrap();
+    let stderr = refused(&run(directory.path()));
+    assert_eq!(
+        stderr,
+        "error: two modules are `com.acme.util.Util` and one of them has no version: \
+         libs/a/Util.ns and libs/c/Util.ns\n"
+    );
+}
+
+/// `main`'s module is in no manifest, but tools name it by its id as any
+/// module, so it shares none with a module of the project.
+#[test]
+fn main_shares_no_id_with_a_module() {
+    let directory = ScratchDirectory::new("project-main-twin");
+    write_project(
+        &directory,
+        &[("App.ns", APP), ("libs/App.ns", APP)],
+        r#"{ "main": "App.ns", "modules": ["libs/App.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert_eq!(
+        stderr,
+        "error: two modules are `App` and one of them has no version: App.ns and libs/App.ns\n"
+    );
+}
+
+/// `as` gives a module an id other than its class's name, so two modules
+/// of one name both stay reachable.
+#[test]
+fn as_renames_an_unannotated_module() {
+    let directory = ScratchDirectory::new("project-as");
+    let app = asking_app(&["manifest at: 'Util'", "manifest at: 'legacy.Util'"]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            ("libs/a/Util.ns", &util(None, "a")),
+            ("libs/b/Util.ns", &util(None, "b")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", { "path": "libs/b/Util.ns", "as": "legacy.Util" }] }"#,
+    );
+    assert_eq!(succeeded(&run(directory.path())), "a\nb\n");
+}
+
+/// An `as` is an id like any: its last part is the class's name.
+#[test]
+fn an_as_not_ending_in_the_class_is_refused() {
+    let directory = ScratchDirectory::new("project-as-mismatch");
+    let app = asking_app(&["manifest at: 'legacy.Other'"]);
+    write_project(
+        &directory,
+        &[("App.ns", &app), ("libs/Util.ns", &util(None, "a"))],
+        r#"{ "main": "App.ns", "modules": [{ "path": "libs/Util.ns", "as": "legacy.Other" }] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains("`legacy.Other` does not end in the class's name `Util`"),
+        "stderr: {stderr}"
+    );
+}
+
+/// A module's path names a file, as an image's module record must: a file
+/// named only `.ns` is refused before anything runs, as `build` could not
+/// write it.
+#[test]
+fn a_module_file_named_only_the_extension_is_refused() {
+    let directory = ScratchDirectory::new("project-bare-extension");
+    let app = asking_app(&["manifest at: 'Util'"]);
+    write_project(
+        &directory,
+        &[("App.ns", &app), ("libs/.ns", &util(None, "a"))],
+        r#"{ "main": "App.ns", "modules": ["libs/.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains("`libs/.ns` names no file: its name is only `.ns`"),
+        "stderr: {stderr}"
+    );
+}
+
+/// `newspeak.` belongs to the modules the binary ships: a program's module
+/// may neither declare an id there nor be given one by `as`, nor may a
+/// program that is one source file.
+#[test]
+fn an_id_in_newspeak_is_refused() {
+    let refusal = "lies in the namespace `newspeak.`, which belongs to the modules ns-next ships";
+    let directory = ScratchDirectory::new("project-reserved");
+    let app = asking_app(&["manifest at: 'newspeak.json.Json'"]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            (
+                "Json.ns",
+                indoc! {"
+                    (* :module: newspeak.json.Json *)
+                    class Json = Object new () () : ()
+                "},
+            ),
+            ("Util.ns", &util(None, "a")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["Json.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains(&format!("`newspeak.json.Json` {refusal}")),
+        "stderr: {stderr}"
+    );
+    // An `as` outside the namespace does not excuse a declaration inside it.
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": [{ "path": "Json.ns", "as": "legacy.Json" }] }"#,
+    )
+    .unwrap();
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains(&format!("`newspeak.json.Json` {refusal}")),
+        "stderr: {stderr}"
+    );
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": [{ "path": "Util.ns", "as": "newspeak.Util" }] }"#,
+    )
+    .unwrap();
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains(&format!("`newspeak.Util` {refusal}")),
+        "stderr: {stderr}"
+    );
+    std::fs::write(
+        directory.join("Hello.ns"),
+        format!("(* :module: newspeak.Hello *)\n{HELLO}"),
+    )
+    .unwrap();
+    let stderr = refused(&run(&directory.join("Hello.ns")));
+    assert!(
+        stderr.contains(&format!("`newspeak.Hello` {refusal}")),
+        "stderr: {stderr}"
+    );
+}
+
+/// Several versions match: the highest is taken, and a warning on stderr
+/// names the ones matched and the one taken -- after the application's
+/// assembly for the requests it made, and after `main:args:` for those
+/// made since, never twice for one request.
+#[test]
+fn the_highest_matching_version_is_taken_and_warned() {
+    let directory = ScratchDirectory::new("project-highest");
+    let app = indoc! {"
+        class App packageUsing: manifest = Object new (
+          |
+            private modules = manifest.
+            private Util = manifest at: 'com.acme.util.Util' version: '2'.
+          |
+        ) (
+          public main: platform args: arguments = (
+            platform transcript
+                show: Util new answer;
+                newLine;
+                show: (modules at: 'com.acme.util.Util' version: '2.1') new answer;
+                newLine;
+                show: (modules at: 'com.acme.util.Util' version: '2') new answer;
+                newLine.
+          )
+        ) : ()
+    "};
+    write_project(
+        &directory,
+        &[
+            ("App.ns", app),
+            ("libs/a/Util.ns", &util(Some("2.3.1"), "two three one")),
+            ("libs/b/Util.ns", &util(Some("2.1.0"), "two one zero")),
+            ("libs/c/Util.ns", &util(Some("3.0.0"), "three")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", "libs/b/Util.ns", "libs/c/Util.ns"] }"#,
+    );
+    let out = run(directory.path());
+    assert_eq!(
+        succeeded(&out),
+        "two three one\ntwo one zero\ntwo three one\n"
+    );
+    let warning = "warning: `com.acme.util.Util` version 2 matched 2.1.0, 2.3.1; took 2.3.1\n";
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("{warning}{warning}")
+    );
+    // `build` runs the assembly and warns of its request; `load` warns of
+    // the one `main:args:` makes, and not again of the assembly's, which
+    // the kept manifest still records.
+    let image = directory.join("app.img");
+    let built = ns_next()
+        .arg("build")
+        .arg(directory.path())
+        .arg(&image)
+        .output()
+        .unwrap();
+    succeeded(&built);
+    assert_eq!(String::from_utf8_lossy(&built.stderr), warning);
+    let loaded = ns_next().arg("load").arg(&image).output().unwrap();
+    assert_eq!(
+        succeeded(&loaded),
+        "two three one\ntwo one zero\ntwo three one\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&loaded.stderr), warning);
+}
+
+/// A program that is one source file is named by its file, which ends in
+/// `.ns` as every module's does, so that `build` can write its path; any
+/// other is refused before anything runs.
+#[test]
+fn a_source_file_not_ending_in_the_extension_is_refused() {
+    let directory = ScratchDirectory::new("source-file-extension");
+    let file = directory.join("Solo.txt");
+    std::fs::write(&file, HELLO).unwrap();
+    let stderr = refused(&run(&file));
+    assert!(
+        stderr.contains("`Solo.txt` does not end in `.ns`"),
+        "stderr: {stderr}"
+    );
+}
+
+/// A range that names no pre-release matches none, so `2` takes `2.0.0`
+/// beside `2.1.0-beta.1`, and only the beta's own version takes the beta.
+#[test]
+fn the_manifest_takes_no_beta_for_a_major_range() {
+    let directory = ScratchDirectory::new("project-beta");
+    let app = asking_app(&[
+        "manifest at: 'com.acme.util.Util' version: '2'",
+        "manifest at: 'com.acme.util.Util' version: '2.1.0-beta.1'",
+    ]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            ("libs/beta/Util.ns", &util(Some("2.1.0-beta.1"), "beta")),
+            ("libs/release/Util.ns", &util(Some("2.0.0"), "release")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/beta/Util.ns", "libs/release/Util.ns"] }"#,
+    );
+    let out = run(directory.path());
+    assert_eq!(succeeded(&out), "release\nbeta\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// The manifest is asked with a string, so a module named like a public
+/// member of every object is no different from any other.
+#[test]
+fn a_module_named_like_an_object_member_is_reachable() {
+    let directory = ScratchDirectory::new("project-named-like-a-member");
+    let app = asking_app(&["manifest at: 'printString'"]);
+    write_project(
+        &directory,
+        &[
+            ("App.ns", &app),
+            (
+                "printString.ns",
+                indoc! {"
+                    class printString = Object new () (
+                      public answer = ( ^'from the module' )
+                    ) : ()
+                "},
+            ),
+        ],
+        r#"{ "main": "App.ns", "modules": ["printString.ns"] }"#,
+    );
+    assert_eq!(succeeded(&run(directory.path())), "from the module\n");
 }

@@ -3,7 +3,10 @@
 //! "Verification"). Five images -- a snapshot holding a closure and a
 //! `ByteArray`, its packaged application, a second packaged application,
 //! a snapshot holding a weak array and an ephemeron, and one holding
-//! reified mixins -- each cut at every length short of its own.
+//! reified mixins -- each cut at every length short of its own. Their
+//! modules are named every way a module record can name one: a path in
+//! the project and a `core:` path, an id with and without a namespace, a
+//! version with and without a pre-release, and none.
 //!
 //! One trial per image and per part of its lengths (`libtest-mimic`, so
 //! `harness = false`): as one test, the loads of every length ran alone at
@@ -21,6 +24,7 @@ use std::rc::Rc;
 use indoc::indoc;
 use libtest_mimic::{Arguments, Trial};
 use ns_runtime::image;
+use ns_runtime::modules::{ModuleId, ModuleIdentity, Version};
 use ns_runtime::{
     ClassReference, HostResult, HostSignal, Interpreter, Mutator, Root, SourceOrigin, Value,
     ValueKind,
@@ -91,14 +95,14 @@ const SOURCE: &str = indoc! {"
 fn snapshot() -> Vec<u8> {
     let (mut interpreter, class) = load(SOURCE);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let identity = identity("libs/x-1/X.ns", "com.acme.X", Some("1.2.0-beta.1"));
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
         let byte_array = mutator.new_byte_array(&byte_array_contents(13));
         let modules = [image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance, Value::object(byte_array)])
@@ -106,17 +110,23 @@ fn snapshot() -> Vec<u8> {
     })
 }
 
-/// The same instance packaged as an application.
+/// The same instance packaged as an application, its module named as the
+/// one module of the binary's an image carries, the manifest.
 fn packaged() -> Vec<u8> {
-    let (mut interpreter, class) = load(SOURCE);
+    let (mut interpreter, class) = load(&SOURCE.replace("class X", "class Manifest"));
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let identity = ModuleIdentity {
+        path: "core:Manifest.ns".to_string(),
+        id: ModuleId::parse("newspeak.core.Manifest", "Manifest")
+            .unwrap_or_else(|error| panic!("{error}")),
+        version: None,
+    };
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
         let modules = [image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: true,
         }];
         image::package(mutator, &modules, instance).expect("package")
@@ -130,12 +140,12 @@ fn packaged_application() -> Vec<u8> {
         ) : ()
     "});
     let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
-    let origin = SourceOrigin::File("App.ns".into());
+    let identity = ModuleIdentity::undeclared("App.ns", "App");
     interpreter
         .enter(|mutator| {
             let modules = [image::ModuleSource {
                 class: class_reference(mutator, &class),
-                origin: &origin,
+                identity: &identity,
                 with_source: false,
             }];
             image::package(mutator, &modules, mutator.fetch(&application))
@@ -177,13 +187,13 @@ fn weak() -> Vec<u8> {
         ),
         "fill:",
     );
-    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let identity = identity("../shared/X.ns", "X", Some("3.0.0"));
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
         let modules = [image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
@@ -219,7 +229,7 @@ fn reified_mixin() -> Vec<u8> {
         ),
         "listClass:",
     );
-    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let identity = ModuleIdentity::undeclared("X.ns", "X");
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let list = class_reference(mutator, &list);
@@ -251,11 +261,21 @@ fn reified_mixin() -> Vec<u8> {
         );
         let modules = [image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: true,
         }];
         image::snapshot(mutator, &modules, &[instance]).expect("snapshot")
     })
+}
+
+/// The identity of a module whose class is `X`, every one of this file's
+/// but the application's.
+fn identity(path: &str, id: &str, version: Option<&str>) -> ModuleIdentity {
+    ModuleIdentity {
+        path: path.to_string(),
+        id: ModuleId::parse(id, "X").unwrap_or_else(|error| panic!("{error}")),
+        version: version.map(|text| Version::parse(text).unwrap_or_else(|error| panic!("{error}"))),
+    }
 }
 
 fn load(source: &str) -> (Interpreter, Root) {

@@ -1,0 +1,14 @@
+/// A manifest answers only the modules the project file lists. Asking it for
+/// any other id signals an Error naming the id, raised while the root is
+/// instantiated, so main:args: never runs.
+class App packageUsing: manifest = Object new (
+  |
+    private Missing = manifest at: 'Missing'.
+  |
+) (
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

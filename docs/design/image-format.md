@@ -127,7 +127,8 @@ header:        magic "NSNX", FORMAT_VERSION (u32), flags (u8), fingerprint (u64)
 texts:         only with FLAG_HAS_SOURCE: count (u32), then per text
                [range (2 x u32)][hole count (u32)][holes (2 x u32 each)][cut text]
 mixins:        per row as "Mixin table" below, with FLAG_HAS_SOURCE a text index (u32)
-modules:       count (u32), then per module [origin][root object id (u32)]
+modules:       count (u32), then per module [origin (u8)][path][id][version tag (u8)]
+               [version, when tagged][root object id (u32)]
 shipped names: count (u32), then per name [module][declaration][kind (u8)][clause (u32)?]
 graph:         object table, roots
 ```
@@ -731,18 +732,33 @@ record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
-per module, in module order, its origin and the `u32` object id of its root
-class's record in the graph; a module's text is no field of it, since it is
-assembled from its declarations' texts ("Source" below). **Module order** is the
-application module (a project file's `main`) first, then a project file's
-modules in the order written, then the embedded `Manifest.ns` ("Packaging"
-below); a source file's program is its one module. The count is bounded by the bytes left before anything is
-reserved for it.
+per module, in module order, its identity -- its path, id and version
+([modules.md](modules.md), decision 10) -- and the `u32` object id of its
+root class's record in the graph; a module's text is no field of it,
+since it is assembled from its declarations' texts ("Source" below).
+**Module order** is the application module (a project file's `main`)
+first, then a project file's modules in the order written, then the
+embedded `Manifest.ns` ("Packaging" below); a source file's program is
+its one module. The count is bounded by the bytes left before anything
+is reserved for it.
 
-The **origin** is a tag from `opcodes.rs`, `ORIGIN_FILE` (0) followed by the
-path the module was read from, or `ORIGIN_EMBEDDED` (1) followed by the name
-of a source compiled into the binary -- `Manifest.ns`'s. It is provenance, in
-every artifact, source or not; `inspect` shows it. Source travels for every
+The **identity** names the module as the program did, in every artifact,
+source or not, and `inspect` shows it (`com.acme.util.Util@1.0.0 at
+libs/util-1/Util.ns`). Its path is the module's path relative to its
+project, never a directory of the machine that built the image: an origin
+tag from `opcodes.rs`, `ORIGIN_PROJECT` (2) followed by that path, or
+`ORIGIN_CORE` (3) followed by the file name of a module the binary holds,
+whose path is `core:` and that name -- only ever `Manifest.ns`, the one
+module of the binary's an image carries, `core:Manifest.ns`.
+Then the id as resolved, after an `as`, and `MODULE_UNVERSIONED` (0), or
+`MODULE_VERSIONED` (1) followed by the version's text; every string is a
+`u32` length and UTF-8. The origins 0 (`ORIGIN_FILE`, the path the module
+was read from) and 1 (`ORIGIN_EMBEDDED`, an embedded source's name) are
+retired (`opcodes::RETIRED_ORIGIN_TAGS`), so a stale image's record meets
+an unknown tag. The loader hands each identity to its module's root mixin
+(`Mixin::module_identity`) and to `LoadedModule::identity`, so that a tool
+names an image's module as `run` names it ("Verification" below holds them
+to the project's rules). Source travels for every
 module or for none, as the header's one flag says, so the encoder refuses a
 set of modules of which only some ask for theirs rather than invent an empty
 text, and refuses a module asked for its source one of whose declarations
@@ -1150,7 +1166,7 @@ edited (`<name> has no source text to edit`) and every `source` answers
 
 **The host asks for the source; the encoder reads it from the heap.** A
 host hands the writer each module as an `image::ModuleSource` -- its root
-class, its origin and `with_source: bool` -- and no text: the encoder
+class, its identity and `with_source: bool` -- and no text: the encoder
 reads every declaration's text from the heap (`Mixin::text`), because
 after an edit the host's file is no longer the program's text. Source
 travels for every module or for none, as the header's one flag says, so
@@ -1232,11 +1248,35 @@ the mixins (`mixins::build`, which first holds the texts to the rows, then
 attaches the bodies without checking) and only then reconciles them
 (`verify_mixins`); so a defect of a text is reported before one of the
 rows, and a defect of the module section before one of the mixins' bodies.
-`inspect` reads the same sections and builds through `mixins::build` too,
-so it refuses texts that do not hold to the rows, but runs no
-`verify_mixins`, so it can still display an artifact whose halves
-disagree; only `load` refuses it. A corrupt but version-matching image is an
-error there, never a panic in the VM later.
+**The module section is held to the project's rules** before any of its
+identities is used (`modules::decode_modules`; [modules.md](modules.md),
+decision 10), each refusal a `DecodeError` naming the module or, for two
+modules, their paths: each record's path relative to the project
+(`modules::check_project_path`: no control character, no root, drive,
+`\`, `core:`, empty or `.` segment, a `..` only leading, ending in `.ns`
+and naming more than `.ns`) or a `core:` file name; its id identifiers
+separated by dots, ending in the root class's name, which the mixin
+table's root row gives (`ModuleId::parse`); the namespace `newspeak.`
+with `ORIGIN_CORE` and only there (`modules::check_namespace`), and
+`ORIGIN_CORE` for the manifest alone, `newspeak.core.Manifest` at
+`core:Manifest.ns` without a version, since every module an image
+carries is program code and one named as another of the binary's modules
+would be a program's module in the reserved namespace; a version
+semver's (`Version::parse`); no path, id or version holding a control
+character, which every message quotes escaped, so that a crafted image
+puts no escape sequence on a terminal; and over all records, no two
+modules of one id and one version, nor of one id where either has none
+(`modules::check_distinct`). The encoder holds every identity it is
+handed to the same rules (`modules::identity_defect`, which both sides
+share), so it never writes a record the loader refuses
+(`a_module_record_is_held_to_the_project_rules`,
+`a_module_record_s_unknown_tags_are_refused`,
+`the_building_machine_s_paths_are_not_written`,
+`crates/ns-runtime/tests/image.rs`). `inspect` reads the same sections
+and builds through `mixins::build` too, so it refuses texts that do not
+hold to the rows, but runs no `verify_mixins`, so it can still display
+an artifact whose halves disagree; only `load` refuses it. A corrupt but
+version-matching image is an error there, never a panic in the VM later.
 
 **Every compiler limit is a decoder refusal.** No compiled body passes a
 limit of [compiler.md](compiler.md), "Limits": past one it compiles to a
@@ -1813,7 +1853,7 @@ contents — header flags, whether the image carries source (`source:
 yes`) and the shipped world's fingerprint, section offsets, the symbol
 table, **the code table with every body named**, the text table, one line
 a text (`text 0: 0..143, 1 hole, 95 bytes`), the mixin table, each row
-with its text's index, the module section, each module's origin and its
+with its text's index, the module section, each module's identity and its
 root's object id, and the count of shipped names — and
 `--full` prints everything, the shipped names among it, each as
 `ShippedName::describe` spells it (`Kernel Array`, `Kernel Integer class`,
@@ -1904,7 +1944,11 @@ side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
   before anything runs, naming the factory found
   (`a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs`,
   `crates/ns-cli/tests/run.rs`). The root is sent `new`, then `main:
-  platform args:`.
+  platform args:`. The file's name ends in `.ns`, as every module's path
+  does, since `build` writes it as the module's path; a file of any other
+  name, `Solo.txt`, is refused before anything runs, "`` `Solo.txt` does
+  not end in `.ns` ``" (`modules::check_project_path`;
+  `a_source_file_not_ending_in_the_extension_is_refused`).
 - **A project**: `ns-next run [app] [-- args]`, where `app` is a directory
   holding a `newspeak.json`, or that file itself; with no program, the
   current directory. A project file is recognized by its name alone, as a
@@ -1928,7 +1972,11 @@ existence.
 {
   "$schema": "../../schemas/newspeak.schema.json",
   "main": "Harness.ns",
-  "modules": ["Sieve.ns", "../shared/RedBlackTree.ns"],
+  "modules": [
+    "Sieve.ns",
+    "../shared/RedBlackTree.ns",
+    { "path": "vendor/soup/Collections.ns", "as": "org.newspeak.soup.Collections" }
+  ],
   "scripts": {
     "sieve": "Sieve 10",
     "timed": "--timed 'Delta Blue'"
@@ -1937,8 +1985,11 @@ existence.
 ```
 
 - `main` is the application module's source file, whose root class is sent
-  `packageUsing:`; `modules` the other modules the manifest holds.
-  `modules` may be absent or empty. `main`'s module is not in the manifest.
+  `packageUsing:`; `modules` the other modules the manifest holds, each a
+  path, or an object of `path` and, optionally, `as`, the id the module is
+  asked for by in place of the one it declares, and nothing else
+  ([modules.md](modules.md), decision 5). `modules` may be absent or empty.
+  `main`'s module is not in the manifest.
 - `scripts` is optional: named command lines for `--script` ("Scripts"
   below).
 - Every other key is ignored, so a file may carry what an editor or another
@@ -1946,9 +1997,18 @@ existence.
   an editor without the plugin where the schema is, and the reader never
   follows it. The reader does check that it is a string when present, as the
   schema describes it, so that no file the schema refuses is run.
-- A module's name in the manifest is the name its source file declares for
-  its class, as in both upstream systems (Primordial Soup's
-  `namespace at: klass name put: klass`; Squeak's `Root` namespace).
+- Every module has an identity ([modules.md](modules.md), decisions 1 and
+  2): its path relative to the project file's directory, `/`-separated, a
+  `..` for each directory it lies outside -- for a program of one source
+  file, relative to that file's directory -- and the id and version its
+  `(* :module: <id>@<version> *)` declares above its class, or its class's
+  name and no version when it declares none; an `as` replaces the id and
+  keeps the version. `program::read_program` sets it on each module's
+  `ResolvedModule::identity` before anything is compiled, `main`'s
+  included, and the embedded manifest's is `newspeak.core.Manifest` at
+  `core:Manifest.ns`. Both paths are made absolute against the working
+  directory and their `.` and `..` resolved by their text, so a module on
+  another drive or share than the project has no such path and is refused.
 - The project's own path, given to a command, is absolute or relative
   to the working directory. A path inside it is absolute or relative to the
   project file. Either separator, `/` or `\`, is accepted in every path,
@@ -1956,10 +2016,8 @@ existence.
   rewritten to the host's and the platform's own path parsing does the rest,
   which keeps drive letters, UNC and verbatim prefixes intact
   (`resolve_written_path`).
-- A module may declare the name of `main`'s root class, or be named
-  `Manifest`: `main`'s module is not in the manifest, and an image names a
-  module by its index, never by its name, so neither collides with
-  anything.
+- A module may be named `Manifest`: the manifest's id is
+  `newspeak.core.Manifest`, which no program's module can have.
 
 **The rules** (`project::read_project`). Each is refused before anything
 runs, with `error: <project file>: ` and a message of its own:
@@ -1980,39 +2038,57 @@ runs, with `error: <project file>: ` and a message of its own:
 | an empty path in `main` or `modules` | `` `main` holds an empty path `` |
 | a path not ending in `.ns`, matched case-sensitively | `` `modules` names `B`, which is no `.ns` file `` |
 | a module path equal to `main`'s | `` `modules` names `main`'s module `./App.ns` again `` |
-| a module path written twice | `` `modules` names `lib\A.ns` twice `` |
+| a module path written twice, as a string or an entry's `path` | `` `modules` names `lib\A.ns` twice `` |
+| a module entry that is neither a string nor an object | serde's `` invalid type: …, expected a module of `modules`: a path or an object of `path` and, optionally, `as` `` |
+| a module entry without `path` | `` a module of `modules` without `path` `` |
+| a module entry with a key other than `path` and `as` | `` a module of `modules` takes `path` and `as`, not `x` `` |
+| a key of a module entry written twice | `` a module of `modules` names `as` twice `` |
+| a `path` or `as` that is no string | serde's `` invalid type: …, expected `as` of a module of `modules`, a string `` |
+| an `as` that is no id: identifiers separated by dots | `` `as` of `A.ns`: `legacy..A` is no module id: it must be identifiers separated by dots `` |
 
 Two paths are the same when their components are: either separator, a
 doubled one and a `./` all name one path. The file system is not asked, so
 a `..` that comes back, a symbolic link and a difference of letter case on a
 case-insensitive file system are not seen through; two such modules declare
-one name, and are refused by the next check. A key the reader ignores is
-not checked for duplicates.
+one id, and are refused by the checks below unless they declare two
+versions. A key the reader ignores is not checked for duplicates.
 
-After the file, `program::read_program` refuses, also before anything runs:
-a missing or unreadable module file, a module that does not parse or
-resolve, two modules declaring the same name, and a root whose factory is
-not `packageUsing:`. A module whose name is a public member of every
-object -- `yourself`, `printString` -- is refused too, once the manifest
-exists and before the root is sent `packageUsing:`: the member would answer
-the send before the manifest's `doesNotUnderstand:` could
-(`Interpreter::responds_publicly`,
-`a_module_shadowed_by_an_object_member_is_refused`). `Object`'s class
-accessors are protected, so a module named `Array` or `String` is reached
-through the manifest as any other
-(`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`).
+After the file, `program::read_program` refuses, also before anything runs,
+with `error: ` and the file the refusal concerns: a missing or unreadable
+module file, a module that does not parse or resolve, a malformed
+`:module:` (`modules::declared_identity`), an `as` whose last part is not
+the class's name (`` `legacy.Other` does not end in the class's name `Util` ``),
+an id under `newspeak.`, declared or given (`` `newspeak.json.Json` lies in
+the namespace `newspeak.`, which belongs to the modules ns-next ships ``,
+`modules::check_unreserved`), and two modules no request could pick
+between, `main`'s among them since tools name it by its id too
+(`modules::check_distinct`): `` two modules are `com.acme.util.Util@1.0.0`:
+libs/a/Util.ns and libs/b/Util.ns ``, and `` two modules are `Util` and one
+of them has no version: libs/a/Util.ns and libs/b/Util.ns ``
+(`crates/ns-cli/tests/run.rs`,
+`two_unannotated_modules_of_one_name_are_refused`,
+`two_modules_of_one_id_and_version_are_refused`,
+`an_id_in_newspeak_is_refused`).
+`instantiate_application` refuses a root whose factory is not
+`packageUsing:`. The manifest is asked with strings, so a module named
+like a member of every object -- `printString` -- or like a class accessor
+-- `Array` -- is asked for as any other
+(`a_module_named_like_an_object_member_is_reachable`,
+`a_module_named_like_a_class_accessor_is_reached_through_the_manifest`).
 
 **The schema** is `schemas/newspeak.schema.json` (JSON Schema 2020-12), the
 one copy. It describes `$schema`, `main`, `modules` and `scripts` and states
 these rules: the file is an object (`type`) with a `main` (`required`);
-`$schema` is a string; `main` and every entry of `modules` a string of at
-least one character (`minLength`) ending in `.ns` (`pattern: "\\.ns$"`);
-`modules` an array whose entries are not written twice as the same string
-(`uniqueItems`); `scripts` an object whose every name is non-empty and
-neither begins nor ends with whitespace (`propertyNames`, `pattern:
-"^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s` matches) and
-whose every value (`additionalProperties`) is a string. Every
-other key is allowed. An editor's validator may read the pattern's `\s` as
+`$schema` is a string; `main` a string of at least one character
+(`minLength`) ending in `.ns` (`pattern: "\\.ns$"`); `modules` an array
+whose entries are not written twice alike (`uniqueItems`), each such a
+string or (`anyOf`) an object of such a `path` (`required`) and an `as`
+that is identifiers separated by dots (`pattern`), and nothing else
+(`additionalProperties: false`); `scripts` an object whose every name is
+non-empty and neither begins nor ends with whitespace (`propertyNames`,
+`pattern: "^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s`
+matches) and whose every value (`additionalProperties`) is a string.
+Every other key is allowed. An editor's validator may read the pattern's `\s` as
 ASCII whitespace only, as Java's regular expressions do, and so let a name
 with other whitespace at an end pass; the reader decides. No validator crate
 reads the schema, so the project file brings no dependency beyond
@@ -2024,9 +2100,10 @@ reader against -- and runs `ns-next run` on a table of files, each of which
 the schema and the reader must both accept or both refuse. The rules the
 reader alone holds cannot be stated in JSON Schema: one of its four keys
 written twice and a script name written twice (a schema sees only the last
-value of a key), one module path in two spellings (`uniqueItems` compares
-strings as written), a `modules` entry naming `main`'s module (no keyword
-compares one property with another), and a script that does not split as a
+value of a key), one module path in two spellings or once as a string and
+once as an entry's `path` (`uniqueItems` compares entries as written), a
+`modules` entry naming `main`'s module (no keyword compares one property
+with another), and a script that does not split as a
 command line, such as `"'unterminated"` (the schema states only that a
 script is a string). They stay out of the table, and `project.rs`'s own
 tests pin them. The JetBrains plugin bundles the same file and gives it to
@@ -2104,21 +2181,54 @@ and `load`.
 `ns_runtime::MANIFEST_SOURCE` ([core-library.md](core-library.md), "The
 manifest"). It is neither privileged nor shipped: it has no VM mirror, is
 resolved with `resolve` like a user module and compiled into the program
-beside the modules (`SourceOrigin::Embedded("Manifest.ns")`), so an
+beside the modules (`SourceOrigin::Embedded("Manifest.ns")`, its identity
+`newspeak.core.Manifest` at `core:Manifest.ns`), so an
 application that keeps its manifest in a slot serializes it like any other
-object (`goldens/tool/manifest/an_application_may_keep_its_manifest`). The host
-instantiates it with `names: definitions:`, an `Array` of names (`Symbol`s)
-and an `Array` of module definitions (§6.4: the class objects, not
-instances). Its `doesNotUnderstand:` answers the module definition whose
-name is the message's selector, searching linearly, and passes anything else
-to `super`, so `manifest Missing` is an ordinary `doesNotUnderstand:` at run
-time (`goldens/tool/manifest/a_name_the_manifest_does_not_hold_is_not_understood`)
--- the lookup both upstream `Manifest` classes make over a map
-(`Namespacing.ns`, `CompilerApp.ns`).
+object (`goldens/tool/manifest/an_application_may_keep_its_manifest`). The
+host instantiates it with `ids: versions: ranks: definitions:`: an `Array`
+of the modules' ids (`String`s), one of their versions' canonical texts or
+`nil`, one of their ranks -- each module's place, from 0, among those of
+its id by semver's precedence, which the host computes so that the manifest
+compares integers -- and one of the module definitions (§6.4: the class
+objects, not instances) ([modules.md](modules.md), decisions 3 and 4).
+`manifest at: 'Util'` answers the one module of an id, and signals an
+`Error` for none (`` no module `Missing` ``,
+`goldens/tool/manifest/an_id_the_manifest_does_not_hold_is_an_error`) or
+several (`` `com.acme.util.Util` names 2 modules; ask with at:version: ``,
+`goldens/tool/manifest/an_id_of_several_versions_is_asked_with_a_version`).
+`manifest at: 'com.acme.util.Util' version: '2'` answers the highest version
+the range matches, by the versions' texts: equal to the range, or beginning
+with the range and a `.` and holding no `-`, so that `2` matches `2.3.1` but
+neither `20.0.0` nor a pre-release; none matching signals `` no module
+`com.acme.util.Util` of version 3; there are 1.0.0, 2.0.0 ``
+(`goldens/tool/manifest/a_range_no_version_matches_is_an_error_naming_the_versions`,
+`two_versions_of_a_module_run_side_by_side`); a range of no range's
+form signals what the loader says of it, `` `02` is no version: major
+`02` has a leading zero `` ([modules.md](modules.md), decision 3). A
+request that matched several
+versions is recorded, and the manifest's `ambiguities` answers the records;
+the host reads them out of the manifest's slot and prints each once, as
+`` warning: `com.acme.util.Util` version 2 matched 2.1.0, 2.3.1; took 2.3.1 ``,
+after the application's assembly and again after `main:args:` for those
+added since (`program::warn_of_ambiguities`; `run.rs`,
+`the_highest_matching_version_is_taken_and_warned`). It reads the slot
+rather than sending `ambiguities`, so that no host run starts for it, in
+which a debugger's carried step or a pause asked between runs would stop.
+`build` prints the assembly's warnings. `load` prints those `main:args:`
+adds: the loaded image's application holds its manifest only if it kept
+it, so right after the load `load` finds every instance of the class of
+the manifest's module record (`core:Manifest.ns`, which the decoder holds
+to `newspeak.core.Manifest`; `Heap::instances_of`), counts the records
+each holds already -- the assembly's, which `build` warned of -- and after
+`main:args:` warns of the rest, as `run` does (`program::kept_manifests`,
+`warn_of_kept_ambiguities`;
+`goldens/tool/manifest/a_request_main_makes_that_matches_several_versions_is_warned_of`,
+which the `images` gate holds `load` to).
 
-**What `build` writes.** `image::package` takes the modules in module order
-and the application, and writes an image whose graph has the application as
-its one root and whose header sets `FLAG_START`. No platform exists for the
+**What `build` writes.** `image::package` takes the modules in module
+order, each with its identity (`program::module_sources`), and the
+application, and writes an image whose graph has the application as its
+one root and whose header sets `FLAG_START`. No platform exists for the
 application yet, and before `main:args:` a program reaches nothing of the
 shipped world but the kernel, so a graph naming anything of
 `PlatformFactory` or `CollectionsFactory` is refused ("image encoding
@@ -2652,14 +2762,13 @@ shipped world.
   it was written, not in their sections, so there is one decoder to hold the
   untrusted-input guarantee, and a header flag, `FLAG_START`, says which to
   expect. The entry needs no field, because it is always `main:args:`.
-- **Modules reach the application through a manifest answering
-  `doesNotUnderstand:`**, not through a namespace builtin, a factory
-  convention or a lookup on the VM mirror: it is what both upstream
-  `Manifest` classes do, it needs nothing privileged, so the manifest is
-  ordinary user code an image may carry, and a missing module is an
-  ordinary `doesNotUnderstand:` at run time. A module shadowed by a public
-  member of every object is refused before anything runs, since the
-  manifest could never answer it.
+- **Modules reach the application through a manifest asked with
+  strings**, `at:` and `at:version:` ([modules.md](modules.md), decision
+  3), not through a namespace builtin, a factory convention or a lookup on
+  the VM mirror: it needs nothing privileged, so the manifest is ordinary
+  user code an image may carry. A missing id, an `at:` of an id several
+  versions share, and a range no version matches each signal an `Error`
+  at run time with its fixed text ("The manifest" above).
 - **The project file is JSON** (the user's choice), read with `serde_json`,
   which `ns-analyzer` already depended on, so no new crate entered the lock file.
 - **A project is the directory its `newspeak.json` describes** (decided with
@@ -2729,12 +2838,15 @@ shipped world.
   reused, and `CLASS_MODULE` (6), `CLASS_MODULE_LEVEL` (7),
   `HASHED_MODULE_CLASS` (5), `HASHED_MODULE_LEVEL` (6), `FLAG_START` (4) and
   the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
-  free numbers, so a stale artifact meets an unknown tag instead of decoding
-  into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
-  `HASHED_MODULE_CLASS` and `HASHED_MODULE_LEVEL` are retired in turn, since
-  a module's root class and its levels became records of the graph, which
-  the module section names by object id (2026-10-13, "An image names the
-  shipped world by declaration" below).
+  free numbers (both retired on 2026-11-19 for `ORIGIN_PROJECT` (2) and
+  `ORIGIN_CORE` (3), when a module record came to carry the module's
+  identity rather than the building machine's path), so a stale artifact
+  meets an unknown tag instead of decoding into a different program.
+  `CLASS_MODULE`, `CLASS_MODULE_LEVEL`, `HASHED_MODULE_CLASS` and
+  `HASHED_MODULE_LEVEL` are retired in turn, since a module's root class
+  and its levels became records of the graph, which the module section
+  names by object id (2026-10-13, "An image names the shipped world by
+  declaration" below).
 - **Applications are rebuilt, not serialized**, so a stored layout can never
   disagree with its mixins.
 - **Inline-cache state is never serialized** (2026-09-16), and neither is a

@@ -31,8 +31,10 @@ fn tracked_sources_outside_the_corpus(root: &Path) -> Vec<String> {
 }
 
 /// The house style is the `///` line comment, whose text an editor reads;
-/// `(* … *)` stays valid Newspeak and is pinned by one golden. The check
-/// lexes rather than searches, so a `(*` in a string is no offence.
+/// `(* … *)` stays valid Newspeak and is pinned by one golden. A metadata
+/// comment (§4.3), such as a module's `(* :module: … *)`, is no offence:
+/// metadata has no other form. The check lexes rather than searches, so a
+/// `(*` in a string is no offence.
 #[test]
 fn newspeak_sources_outside_the_corpus_comment_with_line_comments() {
     let root = repository_root();
@@ -46,7 +48,9 @@ fn newspeak_sources_outside_the_corpus_comment_with_line_comments() {
             .run_keeping_comments()
             .comments
         {
-            if comment.kind == ns_syntax::CommentKind::Block {
+            if comment.kind == ns_syntax::CommentKind::Block
+                && ns_syntax::Metadata::read(comment.span, &text).is_none()
+            {
                 let line = text[..comment.span.start as usize].matches('\n').count() + 1;
                 offences.push(format!("{name}:{line}"));
             }

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use common::ScratchDirectory;
 use dap::DapClient;
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use serde_json::{Value, json};
 
 /// The line a terminated program's host send reports.
@@ -743,7 +743,7 @@ fn a_client_that_never_disconnects_cannot_keep_the_ended_program_s_process() {
 /// A project's root that reaches `Shared` through its manifest.
 const SHARING: &str = indoc! {"
     class App packageUsing: manifest = Object new (
-      | Shared = manifest Shared. |
+      | Shared = manifest at: 'Shared'. |
     ) (
       public main: platform args: arguments = (
         platform transcript show: Shared new greeting; newLine.
@@ -998,7 +998,10 @@ fn a_shipped_frame_is_shown_through_a_source_reference() {
     client.stopped("step");
     let frames = client.stack_frames(0, 1);
     assert_eq!(frames.len(), 1, "{frames:?}");
-    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(
+        frames[0]["name"], "newspeak.core.Kernel/Array>>do:",
+        "{frames:?}"
+    );
     let source = frames[0]["source"].clone();
     assert_eq!(source["name"], "Kernel.ns", "{source}");
     assert!(source.get("path").is_none(), "{source}");
@@ -1017,7 +1020,10 @@ fn a_shipped_frame_is_shown_through_a_source_reference() {
     client.succeed("stepIn", json!({ "threadId": 1 }));
     client.stopped("step");
     let frames = client.stack_frames(0, 0);
-    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(
+        frames[0]["name"], "newspeak.core.Kernel/Array>>do:",
+        "{frames:?}"
+    );
     assert_eq!(frames[0]["source"]["sourceReference"], reference);
     let statistics = client.succeed("nsNext/statistics", json!({}));
     assert_eq!(statistics, json!({ "moduleTexts": 1 }));
@@ -1204,7 +1210,10 @@ fn a_breakpoint_in_a_shipped_module_set_before_the_start_stops() {
     client.configuration_done();
     client.stopped("breakpoint");
     let frames = client.stack_frames(0, 1);
-    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(
+        frames[0]["name"], "newspeak.core.Kernel/Array>>do:",
+        "{frames:?}"
+    );
     assert_eq!(frames[0]["line"], line, "{frames:?}");
     assert_eq!(frames[0]["source"]["name"], "Kernel.ns", "{frames:?}");
     assert_eq!(frames[0]["source"]["path"], kernel["path"], "{frames:?}");
@@ -1265,7 +1274,10 @@ fn a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints() 
     for element in 1..=3 {
         client.stopped("breakpoint");
         let (name, line, source) = top_placed(&mut client);
-        assert_eq!(name, "Array>>do:", "the stop at element {element}");
+        assert_eq!(
+            name, "newspeak.core.Kernel/Array>>do:",
+            "the stop at element {element}"
+        );
         assert_eq!(line, body, "the stop at element {element}");
         assert_eq!(source["path"], shipped["path"], "{source}");
         assert!(source.get("sourceReference").is_none(), "{source}");
@@ -1293,12 +1305,13 @@ const OWN_KERNEL_FAILING: &str = indoc! {"
     ) : ()
 "};
 
-/// A function breakpoint whose class name's module both the program and
-/// the binary declare -- a program module `Kernel` -- is set in both: in
-/// the program's `Kernel` where it declares the method, and in the shipped
-/// `Kernel`'s classes, each behind the one DAP id.
+/// A program's own module `Kernel` and the binary's `newspeak.core.Kernel`
+/// are named apart: a function breakpoint names each by its id, and one
+/// in the form before ids, `Kernel.Array`, is refused with the form that
+/// names the class inside the program's `Kernel`, never read as a module
+/// of its own.
 #[test]
-fn a_function_breakpoint_reaches_both_modules_of_its_module_name() {
+fn a_function_breakpoint_names_the_program_s_kernel_and_the_shipped_one_apart() {
     let (_directory, path) = program("Kernel", OWN_KERNEL);
     let mut client = DapClient::connect_mode(&path);
     client.initialize();
@@ -1306,12 +1319,22 @@ fn a_function_breakpoint_reaches_both_modules_of_its_module_name() {
     let body = client.succeed(
         "setFunctionBreakpoints",
         json!({
-            "breakpoints": [{ "name": "Kernel>>main:args:" }, { "name": "Kernel.Array>>do:" }],
+            "breakpoints": [
+                { "name": "Kernel>>main:args:" },
+                { "name": "newspeak.core.Kernel/Array>>do:" },
+                { "name": "Kernel.Array>>do:" },
+            ],
         }),
     );
     let breakpoints = dap::array(&body["breakpoints"]);
     assert_eq!(breakpoints[0]["verified"], true, "{body}");
     assert_eq!(breakpoints[1]["verified"], true, "{body}");
+    assert_eq!(breakpoints[2]["verified"], false, "{body}");
+    assert_eq!(
+        breakpoints[2]["message"],
+        "no module `Kernel.Array`; a class inside a module is written `Kernel/Array`",
+        "{body}"
+    );
     client.configuration_done();
     let stopped = client.stopped("function breakpoint");
     assert_eq!(
@@ -1327,15 +1350,127 @@ fn a_function_breakpoint_reaches_both_modules_of_its_module_name() {
         json!([breakpoints[1]["id"]]),
         "{stopped}"
     );
-    assert_eq!(top_frame(&mut client).0, json!("Array>>do:"));
+    assert_eq!(
+        top_frame(&mut client).0,
+        json!("newspeak.core.Kernel/Array>>do:")
+    );
     client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
     client.succeed("continue", json!({ "threadId": 1 }));
     assert_eq!(exit_code_reported(&mut client), 0);
     assert_eq!(client.finish().stdout, "6\n");
 }
 
-/// An exception filter's class name whose module the program declares too
-/// names the shipped module's class as well: `Kernel.Error` with a program
+/// A version `version` of the module `com.acme.util.Util`, whose
+/// `answer` its nested class answers with `answer`.
+fn versioned_util(version: &str, answer: &str) -> String {
+    formatdoc! {"
+        (* :module: com.acme.util.Util@{version} *)
+        class Util = Object new () (
+          public answer = (
+            ^Inner new answer
+          )
+          public class Inner = Object new () (
+            public answer = (
+              ^'{answer}'
+            )
+          )
+        ) : ()
+    "}
+}
+
+/// A project of two versions of `com.acme.util.Util` and a root that asks
+/// for both and prints their answers.
+fn two_versions() -> ScratchDirectory {
+    let directory = ScratchDirectory::new("two-versions");
+    let files = [
+        (
+            "App.ns",
+            indoc! {"
+                class App packageUsing: manifest = Object new (
+                  |
+                  private first = manifest at: 'com.acme.util.Util' version: '1'.
+                  private second = manifest at: 'com.acme.util.Util' version: '2'.
+                  |
+                ) (
+                  public main: platform args: arguments = (
+                    platform transcript show: first new answer; newLine.
+                    platform transcript show: second new answer; newLine.
+                  )
+                ) : ()
+            "}
+            .to_string(),
+        ),
+        ("libs/one/Util.ns", versioned_util("1.0.0", "one")),
+        ("libs/two/Util.ns", versioned_util("2.0.0", "two")),
+    ];
+    for (file, text) in files {
+        let path = directory.join(file);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
+        std::fs::write(path, text).expect("a module");
+    }
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": ["libs/one/Util.ns", "libs/two/Util.ns"] }"#,
+    )
+    .expect("the project file");
+    directory
+}
+
+/// Each frame of a program of two versions of one module names its
+/// module's id and version, a `/` before the class inside it: a function
+/// breakpoint without a version stops in each version, and the stack
+/// trace tells the two apart.
+#[test]
+fn the_stack_trace_names_each_version_of_a_module() {
+    let directory = two_versions();
+    let mut client = DapClient::connect_mode(directory.path());
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({ "breakpoints": [{ "name": "com.acme.util.Util/Inner>>answer" }] }),
+    );
+    assert_eq!(body["breakpoints"][0]["verified"], true, "{body}");
+    client.configuration_done();
+    let mut stacks = Vec::new();
+    for _ in 0..2 {
+        client.stopped("function breakpoint");
+        let names: Vec<Value> = client
+            .stack_frames(0, 0)
+            .iter()
+            .map(|frame| frame["name"].clone())
+            .collect();
+        stacks.push(names);
+        client.succeed("setFunctionBreakpoints", json!({ "breakpoints": [] }));
+        if stacks.len() == 1 {
+            client.succeed(
+                "setFunctionBreakpoints",
+                json!({ "breakpoints": [{ "name": "com.acme.util.Util@2.0.0/Inner>>answer" }] }),
+            );
+        }
+        client.succeed("continue", json!({ "threadId": 1 }));
+    }
+    assert_eq!(
+        stacks,
+        [
+            [
+                "com.acme.util.Util@1.0.0/Inner>>answer",
+                "com.acme.util.Util@1.0.0>>answer",
+                "App>>main:args:",
+            ],
+            [
+                "com.acme.util.Util@2.0.0/Inner>>answer",
+                "com.acme.util.Util@2.0.0>>answer",
+                "App>>main:args:",
+            ],
+        ]
+    );
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "one\ntwo\n");
+}
+
+/// An exception filter's class names the shipped module by its id, which
+/// no program module shares: `newspeak.core.Kernel/Error` with a program
 /// module `Kernel` stops the shipped `Error` signalled.
 #[test]
 fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
@@ -1347,7 +1482,10 @@ fn an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name() {
         "setExceptionBreakpoints",
         json!({
             "filters": [],
-            "filterOptions": [{ "filterId": "uncaught", "condition": "Kernel.Error" }],
+            "filterOptions": [{
+                "filterId": "uncaught",
+                "condition": "newspeak.core.Kernel/Error",
+            }],
         }),
     );
     client.configuration_done();
@@ -1446,7 +1584,7 @@ fn a_step_filter_by_the_program_file_filters_only_the_program_module() {
     client.succeed("stepIn", by_statement());
     client.stopped("step");
     let (name, _, source) = top_placed(client);
-    assert_eq!(name, "Array>>do:");
+    assert_eq!(name, "newspeak.core.Kernel/Array>>do:");
     assert_eq!(source["path"], kernel["path"], "{source}");
     for _ in 0..3 {
         client.succeed("stepIn", by_statement());
@@ -1603,7 +1741,7 @@ fn a_core_library_of_another_fingerprint_is_ignored() {
     client.succeed("stepIn", json!({ "threadId": 1 }));
     client.stopped("step");
     let (name, _, source) = top_placed(&mut client);
-    assert_eq!(name, "Array>>do:");
+    assert_eq!(name, "newspeak.core.Kernel/Array>>do:");
     assert!(source.get("path").is_none(), "{source}");
     assert!(
         source["sourceReference"].as_i64().is_some_and(|id| id > 0),
@@ -2416,7 +2554,7 @@ fn a_stripped_image_names_a_super_send_and_a_superclass_initializer() {
     client.attach(false);
     client.succeed(
         "setFunctionBreakpoints",
-        json!({ "breakpoints": [{ "name": "Supers.Base>>seed" }] }),
+        json!({ "breakpoints": [{ "name": "Supers/Base>>seed" }] }),
     );
     client.configuration_done();
     client.stopped("function breakpoint");
@@ -2424,7 +2562,7 @@ fn a_stripped_image_names_a_super_send_and_a_superclass_initializer() {
     // replaced before the step out that leaves its method.
     client.succeed(
         "setFunctionBreakpoints",
-        json!({ "breakpoints": [{ "name": "Supers.Base>>value" }] }),
+        json!({ "breakpoints": [{ "name": "Supers/Base>>value" }] }),
     );
     let mut stops = Vec::new();
     for _ in 0..2 {
@@ -2443,13 +2581,13 @@ fn a_stripped_image_names_a_super_send_and_a_superclass_initializer() {
     assert_eq!(
         stops,
         [
-            named("Base initializer", "seed", "20"),
+            named("Supers/Base initializer", "seed", "20"),
             named(
-                "Derived initializer",
+                "Supers/Derived initializer",
                 "superclass initializer",
                 "an instance of Derived"
             ),
-            named("Derived>>value", "super value", "41"),
+            named("Supers/Derived>>value", "super value", "41"),
         ]
     );
     client.succeed("continue", json!({ "threadId": 1 }));
@@ -2548,7 +2686,7 @@ fn a_step_into_stops_in_a_stripped_image_s_factory() {
         factory_lines.extend(
             frames
                 .iter()
-                .filter(|frame| frame["name"] == "Part class>>new")
+                .filter(|frame| frame["name"] == "Parts/Part class>>new")
                 .map(|frame| frame["line"].clone()),
         );
         stops.push(names);
@@ -2557,8 +2695,12 @@ fn a_step_into_stops_in_a_stripped_image_s_factory() {
         stops,
         [
             vec!["Parts>>main:args:"],
-            vec!["Part class>>new", "Parts>>main:args:"],
-            vec!["Part initializer", "Part class>>new", "Parts>>main:args:"],
+            vec!["Parts/Part class>>new", "Parts>>main:args:"],
+            vec![
+                "Parts/Part initializer",
+                "Parts/Part class>>new",
+                "Parts>>main:args:"
+            ],
         ]
     );
     assert_eq!(factory_lines, [json!(0), json!(0)]);
@@ -2624,7 +2766,7 @@ fn a_step_into_stops_at_a_stripped_image_s_superclass_header() {
             frames
                 .iter()
                 .take(1)
-                .filter(|frame| frame["name"] == "Base initializer")
+                .filter(|frame| frame["name"] == "DerivedParts/Base initializer")
                 .map(|frame| frame["line"].clone()),
         );
         stops.push(names);
@@ -2633,27 +2775,30 @@ fn a_step_into_stops_at_a_stripped_image_s_superclass_header() {
         stops,
         [
             vec![
-                "Base superclass clause",
-                "Part superclass clause",
+                "DerivedParts/Base superclass clause",
+                "DerivedParts/Part superclass clause",
                 "DerivedParts>>main:args:"
             ],
-            vec!["Part superclass clause", "DerivedParts>>main:args:"],
+            vec![
+                "DerivedParts/Part superclass clause",
+                "DerivedParts>>main:args:"
+            ],
             vec!["DerivedParts>>main:args:"],
-            vec!["Part class>>new", "DerivedParts>>main:args:"],
+            vec!["DerivedParts/Part class>>new", "DerivedParts>>main:args:"],
             vec![
-                "Part initializer",
-                "Part class>>new",
+                "DerivedParts/Part initializer",
+                "DerivedParts/Part class>>new",
                 "DerivedParts>>main:args:"
             ],
             vec![
-                "Base initializer",
-                "Part initializer",
-                "Part class>>new",
+                "DerivedParts/Base initializer",
+                "DerivedParts/Part initializer",
+                "DerivedParts/Part class>>new",
                 "DerivedParts>>main:args:"
             ],
             vec![
-                "Part initializer",
-                "Part class>>new",
+                "DerivedParts/Part initializer",
+                "DerivedParts/Part class>>new",
                 "DerivedParts>>main:args:"
             ],
         ]
@@ -2731,7 +2876,7 @@ fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
     assert_eq!(
         frames.iter().map(placed).collect::<Vec<_>>(),
         [
-            ("Punkt class>>x:y:".to_owned(), 5, 15, 5, 26),
+            ("Points/Punkt class>>x:y:".to_owned(), 5, 15, 5, 26),
             ("Points>>main:args:".to_owned(), 10, 18, 10, 25),
         ]
     );
@@ -2744,14 +2889,14 @@ fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
     let frames = step_to_top(&mut client, "next");
     assert_eq!(
         placed(&frames[0]),
-        ("Punkt initializer".into(), 5, 29, 5, 42)
+        ("Points/Punkt initializer".into(), 5, 29, 5, 42)
     );
     assert_eq!(frames.len(), 3, "{frames:?}");
 
     let frames = step_to_top(&mut client, "stepIn");
     assert_eq!(
         placed(&frames[0]),
-        ("Basis initializer".into(), 2, 15, 2, 21)
+        ("Points/Basis initializer".into(), 2, 15, 2, 21)
     );
     assert_eq!(frames.len(), 4, "{frames:?}");
     let locals = locals_of(&mut client, &frames[0]);
@@ -2761,7 +2906,7 @@ fn the_header_stops_reach_a_client_as_frames_at_the_header_pattern() {
     let frames = step_to_top(&mut client, "stepOut");
     assert_eq!(
         placed(&frames[0]),
-        ("Punkt initializer".into(), 6, 7, 6, 23)
+        ("Points/Punkt initializer".into(), 6, 7, 6, 23)
     );
     assert_eq!(frames.len(), 3, "{frames:?}");
     client.succeed("continue", json!({ "threadId": 1 }));
@@ -2782,7 +2927,7 @@ fn at_the_factory_stop(path: &Path) -> DapClient {
     step_to_top(&mut client, "stepIn");
     step_to_top(&mut client, "stepIn");
     let frames = step_to_top(&mut client, "stepIn");
-    assert_eq!(frames[0]["name"], "Punkt class>>x:y:", "{frames:?}");
+    assert_eq!(frames[0]["name"], "Points/Punkt class>>x:y:", "{frames:?}");
     client
 }
 
@@ -2915,6 +3060,34 @@ fn run_to_cursor_stops_at_the_line() {
     assert_eq!(client.finish().stdout, "15\n");
 }
 
+/// A method of a shipped module the binary has but builds only on first
+/// demand -- `newspeak.core.CollectionsFactory`, which `CALLS` never
+/// demands -- is accepted and stays pending, unverified, never refused as
+/// a module that never comes.
+#[test]
+fn a_function_breakpoint_in_a_module_not_built_yet_stays_pending() {
+    let (_directory, path) = program("Calls", CALLS);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({
+            "breakpoints": [{ "name": "newspeak.core.CollectionsFactory/List>>add:" }],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], false, "{body}");
+    assert_eq!(
+        breakpoints[0]["message"],
+        "pending: the module is not built yet, or its class declares no such method",
+        "{body}"
+    );
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
 #[test]
 fn a_function_breakpoint_stops_at_the_method_s_entry() {
     let (_directory, path) = program("Calls", CALLS);
@@ -2965,7 +3138,7 @@ fn an_uncaught_exception_stops_with_its_description() {
         json!({
             "filters": [],
             "filterOptions": [
-                { "filterId": "uncaught", "condition": "Kernel.Error, Kernel.Exception" },
+                { "filterId": "uncaught", "condition": "newspeak.core.Kernel/Error, newspeak.core.Kernel/Exception" },
             ],
         }),
     );
@@ -3699,7 +3872,10 @@ fn a_withheld_value_is_read_only() {
     client.configuration_done();
     client.stopped("breakpoint");
     let frames = client.stack_frames(0, 0);
-    assert_eq!(frames[0]["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(
+        frames[0]["name"], "newspeak.core.Kernel/Array>>do:",
+        "{frames:?}"
+    );
     let shipped = locals_of(&mut client, &frames[0]);
     let variables = client.variables(&shipped, None, None);
     let receiver = variable(&variables, "self");
@@ -3951,12 +4127,12 @@ fn a_page_without_a_count_is_at_most_a_thousand() {
     let mut client = DapClient::connect_mode(&path);
     breakpoints_before_the_start(&mut client, &path, &[6]);
     client.stopped("breakpoint");
-    let instances = client.succeed("nsNext/instances", json!({ "name": "Crowd.Point" }));
+    let instances = client.succeed("nsNext/instances", json!({ "name": "Crowd/Point" }));
     let instances = dap::array(&instances["variables"]);
     assert_eq!(instances.len(), 1_000);
     let rest = client.succeed(
         "nsNext/instances",
-        json!({ "name": "Crowd.Point", "start": 1_000 }),
+        json!({ "name": "Crowd/Point", "start": 1_000 }),
     );
     assert_eq!(dap::array(&rest["variables"]).len(), 500);
     client.set_breakpoints(file_source(&path), &[]);
@@ -3975,20 +4151,21 @@ fn instance_counts_name_the_program_s_classes() {
     let classes = dap::array(&counts["classes"]);
     let point = classes
         .iter()
-        .find(|class| class["name"] == "Census.Point")
-        .unwrap_or_else(|| panic!("no `Census.Point`: {counts}"));
+        .find(|class| class["name"] == "Census/Point")
+        .unwrap_or_else(|| panic!("no `Census/Point`: {counts}"));
     assert_eq!(point["count"], 3, "{point}");
     assert!(point.get("nsNext/shipped").is_none(), "{point}");
     assert!(
         classes
             .iter()
-            .any(|class| class["name"] == "Kernel.Array" && class["nsNext/shipped"] == true),
+            .any(|class| class["name"] == "newspeak.core.Kernel/Array"
+                && class["nsNext/shipped"] == true),
         "{counts}"
     );
 
     let instances = client.succeed(
         "nsNext/instances",
-        json!({ "name": "Census.Point", "start": 1, "count": 5 }),
+        json!({ "name": "Census/Point", "start": 1, "count": 5 }),
     );
     let instances = dap::array(&instances["variables"]);
     let names: Vec<&Value> = instances.iter().map(|instance| &instance["name"]).collect();
@@ -4048,7 +4225,10 @@ fn a_shipped_frame_is_deemphasized() {
     client.stopped("step");
     let frames = client.stack_frames(0, 0);
     let shipped = &frames[0];
-    assert_eq!(shipped["name"], "Array>>do:", "{frames:?}");
+    assert_eq!(
+        shipped["name"], "newspeak.core.Kernel/Array>>do:",
+        "{frames:?}"
+    );
     assert_eq!(shipped["presentationHint"], "subtle", "{shipped}");
     assert_eq!(
         shipped["source"]["presentationHint"], "deemphasize",
@@ -4166,12 +4346,12 @@ fn instances_of_a_shipped_class_are_asked_for_by_its_module() {
     // The program's `Kernel` declares no `Array`; the shipped one does.
     let own = client.succeed(
         "nsNext/instances",
-        json!({ "name": "Kernel.Array", "start": 0, "count": 0 }),
+        json!({ "name": "Kernel/Array", "start": 0, "count": 0 }),
     );
     assert_eq!(own["variables"], json!([]), "{own}");
     let shipped = client.succeed(
         "nsNext/instances",
-        json!({ "name": "Kernel.Array", "shipped": true, "start": 0, "count": 0 }),
+        json!({ "name": "newspeak.core.Kernel/Array", "start": 0, "count": 0 }),
     );
     let shipped = dap::array(&shipped["variables"]);
     assert!(!shipped.is_empty(), "{shipped:?}");

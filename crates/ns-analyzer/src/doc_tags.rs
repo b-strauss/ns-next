@@ -2,8 +2,8 @@
 //! tag without the argument it needs, a `@factory` in a comment that is no
 //! class's, and a `@param` naming no parameter of what the comment
 //! documents. The rule for which declaration a comment documents is the
-//! hover's (`hover::doc_comment`, `hover::directly_above`), so a comment
-//! warns about exactly the declaration it renders over.
+//! hover's (`hover::doc_comment_above`), so a comment warns about exactly
+//! the declaration it renders over.
 
 use std::collections::HashMap;
 
@@ -135,9 +135,7 @@ fn check(tag: &DocTag, owner: Option<&Owner>, findings: &mut Vec<Finding>) {
 fn owners(module: &ast::Module, text: &str) -> HashMap<Span, Owner> {
     let mut owners = HashMap::new();
     let mut add = |comments: &[ast::AttachedComment], start: u32, owner: Owner| {
-        if let Some(span) = hover::doc_comment(comments)
-            .filter(|comment| hover::directly_above(text, *comment, start))
-        {
+        if let Some(span) = hover::doc_comment_above(comments, text, start) {
             owners.insert(span, owner);
         }
     };
@@ -322,6 +320,29 @@ mod tests {
                         .to_string()
                 ),
             ]
+        );
+    }
+
+    /// A module's `:module:` metadata stands between its class's doc
+    /// comment and the class (`docs/design/modules.md`, decision 2), and
+    /// the comment still documents the class.
+    #[test]
+    fn a_doc_comment_above_the_module_metadata_documents_the_class() {
+        let text = indoc! {"
+            /// A module.
+            /// @factory makes one.
+            /// @param platform fine.
+            /// @param platfrom misspelt.
+            (* :module: com.example.Module@1.0.0 *)
+            class Module usingPlatform: platform = Object new () (
+            ) : ()
+        "};
+        assert_eq!(
+            warnings(text),
+            [(
+                "platfrom".to_string(),
+                "`platfrom` is no parameter of `usingPlatform:`".to_string()
+            )]
         );
     }
 

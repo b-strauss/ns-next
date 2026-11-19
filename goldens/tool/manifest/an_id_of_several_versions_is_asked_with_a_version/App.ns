@@ -1,0 +1,14 @@
+/// `at:` answers the one module of an id, and cannot pick among several
+/// versions of it: it signals an Error that asks for `at:version:`, raised
+/// while the root is instantiated, so main:args: never runs.
+class App packageUsing: manifest = Object new (
+  |
+    private Util = manifest at: 'com.acme.util.Util'.
+  |
+) (
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

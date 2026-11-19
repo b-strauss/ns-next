@@ -1,6 +1,8 @@
 //! The project file: a program of several modules, named in JSON. `main` is
 //! the application module's source; `modules` are the other modules its
-//! manifest holds (`docs/design/image-format.md`, "Packaging"). Every
+//! manifest holds, each a path or a path with the id `as` gives it
+//! (`docs/design/image-format.md`, "Packaging";
+//! `docs/design/modules.md`, decision 5). Every
 //! project file is named `newspeak.json`, so a project is its directory. Its
 //! schema is `schemas/newspeak.schema.json`, and `read_project` enforces the
 //! same rules with messages of its own.
@@ -71,7 +73,7 @@ struct ProjectFile {
     /// The application module's source.
     main: String,
     #[serde(default)]
-    modules: Vec<String>,
+    modules: Vec<ModuleEntry>,
     /// Named command lines, each already split into its arguments.
     #[serde(default, deserialize_with = "scripts_without_repeats")]
     scripts: BTreeMap<String, Vec<String>>,
@@ -181,9 +183,127 @@ fn a_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<
     <String as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
+/// One module of `modules`: its source, resolved against the project's
+/// directory, and the id `as` gives it in place of the one it declares.
+pub(crate) struct ProjectModule {
+    pub(crate) path: PathBuf,
+    pub(crate) id: Option<String>,
+}
+
+/// One entry of `modules` as written: a path, or an object of `path` and,
+/// optionally, `as` -- nothing else, so that a misspelt `as` refuses the
+/// file rather than leaving the module its declared id.
+struct ModuleEntry {
+    path: String,
+    id: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for ModuleEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ModuleEntryVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ModuleEntryVisitor {
+            type Value = ModuleEntry;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a module of `modules`: a path or an object of `path` and, optionally, `as`",
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<ModuleEntry, E> {
+                Ok(ModuleEntry {
+                    path: text.to_string(),
+                    id: None,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<ModuleEntry, A::Error> {
+                let mut path: Option<String> = None;
+                let mut id: Option<String> = None;
+                while let Some(key) = access.next_key::<String>()? {
+                    let field = match key.as_str() {
+                        "path" => &mut path,
+                        "as" => &mut id,
+                        other => {
+                            return Err(serde::de::Error::custom(format!(
+                                "a module of `modules` takes `path` and `as`, not `{other}`"
+                            )));
+                        }
+                    };
+                    if field.is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "a module of `modules` names `{key}` twice"
+                        )));
+                    }
+                    let EntryText(text) = access.next_value_seed(EntryKey(key))?;
+                    *field = Some(text);
+                }
+                let Some(path) = path else {
+                    return Err(serde::de::Error::custom(
+                        "a module of `modules` without `path`",
+                    ));
+                };
+                if let Some(id) = &id {
+                    check_id_syntax(id).map_err(|error| {
+                        serde::de::Error::custom(format!("`as` of `{path}`: {error}"))
+                    })?;
+                }
+                Ok(ModuleEntry { path, id })
+            }
+        }
+
+        deserializer.deserialize_any(ModuleEntryVisitor)
+    }
+}
+
+/// The string under a key of a module entry.
+struct EntryText(String);
+
+/// Reads the value under the module entry's key it holds as a string, so
+/// that a refusal of anything else names the key.
+struct EntryKey(String);
+
+impl<'de> serde::de::DeserializeSeed<'de> for EntryKey {
+    type Value = EntryText;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<EntryText, D::Error> {
+        struct EntryTextVisitor(String);
+
+        impl serde::de::Visitor<'_> for EntryTextVisitor {
+            type Value = EntryText;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "`{}` of a module of `modules`, a string", self.0)
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<EntryText, E> {
+                Ok(EntryText(text.to_string()))
+            }
+        }
+
+        deserializer.deserialize_string(EntryTextVisitor(self.0))
+    }
+}
+
+/// Refuses an `as` that is no id by its grammar alone -- identifiers
+/// separated by dots -- as the schema's pattern does; whether its last
+/// part is the module's class's name waits for the module's source
+/// (`program.rs`).
+fn check_id_syntax(id: &str) -> Result<(), String> {
+    let last = id.rsplit('.').next().unwrap_or(id);
+    ns_runtime::modules::ModuleId::parse(id, last).map(|_| ())
+}
+
 pub(crate) struct Project {
     pub(crate) main: PathBuf,
-    pub(crate) modules: Vec<PathBuf>,
+    pub(crate) modules: Vec<ProjectModule>,
     /// Sorted by name, for the message that lists them.
     pub(crate) scripts: BTreeMap<String, Vec<String>>,
 }
@@ -206,23 +326,30 @@ pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
     let file: ProjectFile =
         serde_json::from_str(&text).map_err(|error| in_file(error.to_string()))?;
     check_module_path("main", &file.main).map_err(in_file)?;
-    for written in &file.modules {
-        check_module_path("modules", written).map_err(in_file)?;
+    for entry in &file.modules {
+        check_module_path("modules", &entry.path).map_err(in_file)?;
     }
     let directory = path.parent().unwrap_or(Path::new(""));
     let main = resolve_written_path(directory, &file.main);
-    let mut modules: Vec<PathBuf> = Vec::with_capacity(file.modules.len());
-    for written in &file.modules {
+    let mut modules: Vec<ProjectModule> = Vec::with_capacity(file.modules.len());
+    for entry in file.modules {
+        let written = &entry.path;
         let module = resolve_written_path(directory, written);
         if same_path(&module, &main) {
             return Err(in_file(format!(
                 "`modules` names `main`'s module `{written}` again"
             )));
         }
-        if modules.iter().any(|earlier| same_path(earlier, &module)) {
+        if modules
+            .iter()
+            .any(|earlier| same_path(&earlier.path, &module))
+        {
             return Err(in_file(format!("`modules` names `{written}` twice")));
         }
-        modules.push(module);
+        modules.push(ProjectModule {
+            path: module,
+            id: entry.id,
+        });
     }
     Ok(Project {
         main,
@@ -248,8 +375,8 @@ fn check_module_path(key: &str, written: &str) -> Result<(), String> {
 /// the components keep a leading one. The file system is not asked, so a
 /// symbolic link, a `..` that returns, and a difference of letter case on a
 /// case-insensitive file system are not seen through; two such modules are
-/// refused later, by `program.rs`'s check that no two modules declare the
-/// same name.
+/// refused later, by `program.rs`'s check that no two modules share an id
+/// and a version.
 fn same_path(first: &Path, second: &Path) -> bool {
     ns_runtime::reach::record(ns_runtime::reach::Reach::Platform);
     fn significant(path: &Path) -> impl Iterator<Item = std::path::Component<'_>> {
@@ -409,6 +536,67 @@ mod tests {
             resolve_written_path(directory, "//server/share/A.ns"),
             expected
         );
+    }
+
+    #[test]
+    fn a_module_is_a_path_or_an_entry_of_path_and_as() {
+        let directory = scratch("module-entries");
+        let path = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{ "main": "App.ns", "modules": ["a/Util.ns", { "path": "b/Util.ns", "as": "legacy.Util" }, { "path": "C.ns" }] }"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
+        let read: Vec<(PathBuf, Option<&str>)> = project
+            .modules
+            .iter()
+            .map(|module| (module.path.clone(), module.id.as_deref()))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (resolve_written_path(&directory, "a/Util.ns"), None),
+                (
+                    resolve_written_path(&directory, "b/Util.ns"),
+                    Some("legacy.Util")
+                ),
+                (resolve_written_path(&directory, "C.ns"), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_module_entry_is_refused_naming_what_it_lacks_or_holds_besides() {
+        for (index, (entry, problem)) in [
+            (r#"{ "as": "legacy.A" }"#, "without `path`"),
+            (r#"{ "path": "A.ns", "x": 1 }"#, "`x`"),
+            (r#"{ "path": "A.ns", "path": "B.ns" }"#, "`path` twice"),
+            (r#"{ "path": "A.ns", "as": 1 }"#, "`as`"),
+            (r#"{ "path": "A.ns", "as": "legacy..A" }"#, "no module id"),
+            (r#"{ "path": "A.txt" }"#, "no `.ns` file"),
+            (r#"["A.ns"]"#, "a path or an object"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let error = refusal_of(
+                &format!("module-entry-{index}"),
+                &format!(r#"{{ "main": "App.ns", "modules": [{entry}] }}"#),
+            );
+            assert!(error.contains(problem), "{entry}: {error}");
+        }
+    }
+
+    /// An entry's `path` is a module's path as a plain string is, so one
+    /// module named both ways is named twice.
+    #[test]
+    fn a_path_named_plainly_and_in_an_entry_is_named_twice() {
+        let error = refusal_of(
+            "module-entry-twice",
+            r#"{ "main": "App.ns", "modules": ["A.ns", { "path": "A.ns", "as": "legacy.A" }] }"#,
+        );
+        assert!(error.contains("`modules` names `A.ns` twice"), "{error}");
     }
 
     #[test]

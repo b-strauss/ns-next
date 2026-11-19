@@ -7582,6 +7582,22 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Every object of the space whose class is `class`, in the space's
+    /// order (`each_object`), one nothing reaches any more included. A host
+    /// asks it where no collection can have left garbage of the class:
+    /// `ns-next load` finds the manifest an image's application kept right
+    /// after the load, whose graph is all the image's objects.
+    pub fn instances_of(&self, class: ClassReference<'gc>) -> Vec<ObjectReference<'gc>> {
+        self.check_object_origin(class);
+        let mut instances = Vec::new();
+        self.each_object(|object| {
+            if self.object_class(object).same(class) {
+                instances.push(object);
+            }
+        });
+        instances
+    }
+
     /// Whether a word of `holder` that keeps what it names alive names
     /// `target`: a word of the strong pointer ranges the collectors trace
     /// (`object::strong_pointer_ranges`), but for the class word -- every

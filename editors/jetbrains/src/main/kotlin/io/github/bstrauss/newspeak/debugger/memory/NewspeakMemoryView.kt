@@ -134,7 +134,6 @@ class NewspeakMemoryView(private val session: XDebugSession, private val client:
             val client = client() ?: return node.setErrorMessage(NewspeakBundle.message("debugger.memory.no.stop"))
             addPage(client, "nsNext/instances", 0, counted.count, node) {
                 addProperty("name", counted.name)
-                if (counted.shipped) addProperty("shipped", true)
             }
         }
     }

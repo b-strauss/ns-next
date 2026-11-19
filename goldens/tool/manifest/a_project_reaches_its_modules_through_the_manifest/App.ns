@@ -1,12 +1,13 @@
 /// A project's root is instantiated with `packageUsing:` and a manifest of
-/// the project's other modules, each answered by the name its source
-/// declares (docs/design/image-format.md). Each module definition is a
+/// the project's other modules, each answered by its id, which is the name
+/// its source declares for a module without :module: metadata
+/// (docs/design/modules.md). Each module definition is a
 /// class (§6.4), instantiated here with whatever its own factory takes; the
 /// platform reaches the program only through main:args: (§8.4).
 class App packageUsing: manifest = Object new (
   |
-    private Greeting = manifest Greeting.
-    private Counter = manifest Counter.
+    private Greeting = manifest at: 'Greeting'.
+    private Counter = manifest at: 'Counter'.
   |
 ) (
   public main: platform args: arguments = (

@@ -746,10 +746,10 @@ mod tests {
                 panic!("the root is a class object");
             };
             let holder = mutator.fetch(&instance);
-            let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+            let identity = crate::modules::ModuleIdentity::undeclared("t.ns", "Holder");
             let modules = [crate::image::ModuleSource {
                 class,
-                origin: &origin,
+                identity: &identity,
                 with_source: false,
             }];
             crate::image::snapshot(mutator, &modules, &[holder])
