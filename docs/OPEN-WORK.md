@@ -3146,6 +3146,21 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
+- **`ns-next load` walks the whole heap for the manifests an image kept**
+  (noted 2026-11-19, unmeasured): to warn of an ambiguous `at:version:`
+  that `main:args:` makes, as `run` does ([modules.md](design/modules.md),
+  decision 4), `load` finds the instances of the manifest's class by one
+  walk of the occupied object space (`program::kept_manifests`,
+  `Heap::instances_of`), on every load of a project image, also where the
+  application kept no manifest. The decoder fills every graph record in its
+  graph pass already and could note the instances of the manifest's root
+  class there at no extra pass; measure the walk before choosing.
+- **The manifest quotes a range with a control or format character raw**
+  (noted 2026-11-19): `Manifest.ns`'s `rangeDefect:` follows
+  `VersionRange::parse`'s rules but for its first, `check_printable`, so a
+  range holding such a character is answered "major `…` is not a number"
+  with the character unescaped, where the loader says "holds a control
+  character". Only the program's own string reaches the message.
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
 program can reach and which end the process, and seven a program meets as
