@@ -1386,19 +1386,24 @@ mixin's id from the nearest shadowed level upward: `x (M)`, then `x (M 2)`
 (`a_mixin_applied_more_than_once_numbers_its_shadowed_slots`). Two
 different mixins that share a name, each shadowing the same name, are not
 numbered: each is named by its declaration's path from its module root
-instead, `x (Outer.Base)` and `x (Other.Base)`, and by that path from the
-root's own name on where even the paths are alike, `x (Library.Outer.Base)`
-and `x (Kit.Outer.Base)`, while a mixin whose name no other shares there
-keeps the short form
+instead, `x (Outer.Base)` and `x (Other.Base)`, and by that path after
+its module, as every tool writes a class ([modules.md](modules.md),
+decision 8), where even the paths are alike: `x (Library/Outer.Base)` and
+`x (Kit/Outer.Base)`, and for two versions of one module, which share
+their id, `x (com.acme.Library@1.0.0/Outer.Base)` and
+`x (com.acme.Library@2.0.0/Outer.Base)`, while a mixin whose name no other
+shares there keeps the short form
 (`two_shadowed_slots_of_mixins_sharing_a_name_are_named_by_their_paths`,
-`shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots`).
-Where two labels still read alike -- two modules of one name, or one
-mixin's path from its root that another's path from its root's own name
-spells -- those mixins are told apart by their places in the chain,
-numbered from the nearest upward, `x (Library.Outer.Base #1)` and
-`x (Library.Outer.Base #2)`, so that no two labels are ever alike
-(`shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered`,
-`shadowed_slots_alike_across_their_tiers_are_numbered`).
+`shadowed_slots_of_modules_sharing_a_path_are_named_after_their_modules`,
+`shadowed_slots_of_two_versions_of_a_module_are_named_by_their_versions`).
+Only that form holds a `/`, so it never spells another mixin's path from
+its root (`shadowed_slots_across_their_tiers_are_never_alike`). Where two
+labels still read alike -- the roots of two modules a host loaded without
+an identity, each named by its class's name -- those mixins are told apart
+by their places in the chain, numbered from the nearest upward,
+`x (Library/Outer.Base #1)` and `x (Library/Outer.Base #2)`, so that no
+two labels are ever alike
+(`shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered`).
 A field no declaration names is `field <index>`, which only an instance
 whose class holds no application, one with more fields than its
 application lays out, or one whose layout names a mixin the heap holds no
@@ -5206,7 +5211,13 @@ one module, or every version of one id, so a filter sends the VM one
 DAP id. Every module of the program and of the binary is known before
 the program starts, so an id none of them has is refused, ``no module
 `org.example.Tool` ``, rather than left to wait, unverified, for a module
-that never comes. The refusal says the form meant where it can
+that never comes, and so is a version no module of the id has, naming
+the versions there are, ``no module `com.acme.json.Json@9.9.9`; its
+versions are 2.1.0, 2.1.0-beta.1 `` (`a_version_no_module_of_the_id_has_is_refused`).
+A module the binary has but builds only on first demand is no such
+module: a breakpoint in it stays pending until the build
+(`a_function_breakpoint_in_a_module_not_built_yet_stays_pending`).
+The refusal says the form meant where it can
 (`Sources::module_of`): a dotted module a prefix of which names one --
 by its id, or, undotted, by the class's name of the one module it ends
 in -- ``no module `Demo.Account`; a class inside a module is written

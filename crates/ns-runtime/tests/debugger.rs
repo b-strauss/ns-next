@@ -1161,34 +1161,48 @@ const SHELF: &str = indoc! {"
 /// `lowering`, its two levels applied from instances of the modules
 /// `first` and `second`.
 fn joined_fields(lowering: Lowering, first: &str, second: &str) -> (Vec<String>, Vec<String>) {
-    joined_fields_of(lowering, JOINED, &[first, second])
+    joined_fields_of(lowering, JOINED, &[(first, None), (second, None)])
 }
 
 /// The names and values of the fields of the `Both` of `joined`, a module
 /// whose factory takes an instance of each of `libraries`, under
-/// `lowering`.
+/// `lowering`. A library with a version is loaded as the module
+/// `com.acme.<Class>` of that version, one without as a host loads a
+/// module without an identity, named by its class's name.
 fn joined_fields_of(
     lowering: Lowering,
     joined: &'static str,
-    libraries: &[&str],
+    libraries: &[(&str, Option<&str>)],
 ) -> (Vec<String>, Vec<String>) {
     let source = joined;
     let (mut interpreter, joined) = interpreted(source, lowering);
-    let mut library = |source: &str| {
+    let mut library = |source: &str, version: Option<&str>| {
         let module = ns_syntax::parse(source).expect("parse");
-        let resolved = ns_runtime::resolve(
+        let mut resolved = ns_runtime::resolve(
             module,
             source.into(),
             ns_runtime::SourceOrigin::File("library.ns".into()),
         )
         .expect("resolve");
+        if let Some(version) = version {
+            let class = resolved.module.root_class.name.name.clone();
+            resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
+                path: format!("{version}/{class}.ns"),
+                id: ns_runtime::modules::ModuleId::parse(&format!("com.acme.{class}"), &class)
+                    .expect("an id"),
+                version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
+            }));
+        }
         let class = interpreter.load_module(&resolved);
         expect_ok(
             interpreter.instantiate(&class, &[]),
             "instantiate a library",
         )
     };
-    let instances: Vec<Root> = libraries.iter().map(|source| library(source)).collect();
+    let instances: Vec<Root> = libraries
+        .iter()
+        .map(|(source, version)| library(source, *version))
+        .collect();
     let instance = expect_ok(interpreter.instantiate(&joined, &instances), "instantiate");
     let offset = line_start(source, "^both");
     let (fields, result) = debugged_in(
@@ -1223,24 +1237,50 @@ fn joined_fields_of(
 
 /// Two shadowed levels whose mixins share their name and their path from
 /// their module roots, the roots of two modules of different names, are
-/// named by the path from the root's own name on.
+/// named by that path after their modules, as a tool writes a class.
 #[test]
-fn shadowed_slots_of_modules_sharing_a_path_are_named_from_their_roots() {
+fn shadowed_slots_of_modules_sharing_a_path_are_named_after_their_modules() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let kit = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 2");
         let (names, labels) = joined_fields(lowering, LIBRARY, &kit);
         assert_eq!(
             names,
-            ["x (Library.Outer.Base)", "x (Kit.Outer.Base)", "x"],
+            ["x (Library/Outer.Base)", "x (Kit/Outer.Base)", "x"],
             "{lowering:?}"
         );
         assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
     }
 }
 
-/// Two shadowed levels whose mixins share even the path from their roots'
-/// names, those of two modules of one name, are told apart by their
-/// places in the chain, numbered from the object's class upward.
+/// Two shadowed levels of two versions of one module, which share their
+/// id and their path, are told apart by their versions, as every tool
+/// names the two modules (`docs/design/modules.md`, decision 8).
+#[test]
+fn shadowed_slots_of_two_versions_of_a_module_are_named_by_their_versions() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let second = LIBRARY.replace("x = 1", "x = 2");
+        let (names, labels) = joined_fields_of(
+            lowering,
+            JOINED,
+            &[(LIBRARY, Some("1.0.0")), (&second, Some("2.0.0"))],
+        );
+        assert_eq!(
+            names,
+            [
+                "x (com.acme.Library@1.0.0/Outer.Base)",
+                "x (com.acme.Library@2.0.0/Outer.Base)",
+                "x"
+            ],
+            "{lowering:?}"
+        );
+        assert_eq!(labels, ["1", "2", "3"], "{lowering:?}");
+    }
+}
+
+/// Two shadowed levels whose mixins share even their modules' names and
+/// their paths -- two modules a host loaded without an identity, of one
+/// class's name -- are told apart by their places in the chain, numbered
+/// from the object's class upward.
 #[test]
 fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -1249,8 +1289,8 @@ fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
         assert_eq!(
             names,
             [
-                "x (Library.Outer.Base #2)",
-                "x (Library.Outer.Base #1)",
+                "x (Library/Outer.Base #2)",
+                "x (Library/Outer.Base #1)",
                 "x"
             ],
             "{lowering:?}"
@@ -1260,20 +1300,25 @@ fn shadowed_slots_of_modules_sharing_a_name_and_a_path_are_numbered() {
 }
 
 /// A declarer named by its path from its module root and another named by
-/// the path from its root's own name may spell the same label: each is
-/// numbered then, as declarers alike in every tier are.
+/// that path after its module never spell the same label, since only the
+/// module's form holds a `/`: `Library.Outer.Base` inside `Shelf` and
+/// `Library/Outer.Base`, the module `Library`'s.
 #[test]
-fn shadowed_slots_alike_across_their_tiers_are_numbered() {
+fn shadowed_slots_across_their_tiers_are_never_alike() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let second = LIBRARY.replace("x = 1", "x = 2");
         let third = LIBRARY.replace("Library", "Kit").replace("x = 1", "x = 3");
-        let (names, labels) = joined_fields_of(lowering, JOINED_THREE, &[SHELF, &second, &third]);
+        let (names, labels) = joined_fields_of(
+            lowering,
+            JOINED_THREE,
+            &[(SHELF, None), (&second, None), (&third, None)],
+        );
         assert_eq!(
             names,
             [
-                "x (Library.Outer.Base #2)",
-                "x (Library.Outer.Base #1)",
-                "x (Kit.Outer.Base)",
+                "x (Library.Outer.Base)",
+                "x (Library/Outer.Base)",
+                "x (Kit/Outer.Base)",
                 "x"
             ],
             "{lowering:?}"

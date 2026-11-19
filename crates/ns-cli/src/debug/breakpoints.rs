@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use ns_runtime::modules;
 use ns_runtime::{
     BreakpointState, ClassName, Command, HitCondition, LineBreakpoint, LogPart, MethodBreakpoint,
     MethodBreakpointState, ModuleName,
@@ -78,6 +79,15 @@ pub(crate) fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
 /// (`docs/design/modules.md`, decision 8).
 const CLASS_FORM: &str = "`<id>[@<version>][/<Class>(.<Class>)*]`";
 
+/// A module of the program's or the binary's that a class name a client
+/// typed names (`Sources::module_of`): its id, and the versions the
+/// program has of it -- none for an id whose module has no version, every
+/// shipped module's among them.
+pub(crate) struct KnownModule {
+    pub(crate) id: String,
+    pub(crate) versions: Vec<String>,
+}
+
 /// Why a class name is refused, as `parse_class` says it.
 enum ClassRefusal {
     /// The text is not of the form at all.
@@ -86,30 +96,20 @@ enum ClassRefusal {
     Explained(String),
 }
 
-/// Whether `segment` is a Newspeak identifier, as each segment of an id
-/// and of a class's path is.
-fn is_identifier(segment: &str) -> bool {
-    let mut characters = segment.chars();
-    characters
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
-}
-
 /// The class declaration `text` names, `<id>[@<version>][/<Class>(.<Class>)*]`:
 /// a module's class when no `/` follows the module, a class inside it
 /// otherwise. A name without a version names the class in every version
-/// of the id. `module_of` answers the id of the module the program or
-/// the binary has that a text names (`Sources::module_of`): an id no
-/// module has is refused, since it would wait, unverified, for a module
-/// that never comes; a dotted one a prefix of which names a module with
+/// of the id. `module_of` answers the module the program or the binary
+/// has that a text names (`Sources::module_of`): an id no module has is
+/// refused, since it would wait, unverified, for a module that never
+/// comes, and so is a version no module of the id has; a dotted one a prefix of which names a module with
 /// the form that names the class inside that one -- it is the form a
 /// nested class was written in before, `Demo.Account` for
 /// `Demo/Account` -- and one that is the class's name of one module with
 /// that module's id, `newspeak.core.Kernel/Array` for `Kernel/Array`.
 fn parse_class(
     text: &str,
-    module_of: &dyn Fn(&str) -> Option<String>,
+    module_of: &dyn Fn(&str) -> Option<KnownModule>,
 ) -> Result<ClassName, ClassRefusal> {
     let text = text.trim();
     let (module, path) = match text.split_once('/') {
@@ -124,7 +124,9 @@ fn parse_class(
         Some(path) => path.split('.').map(str::to_string).collect(),
         None => Vec::new(),
     };
-    if !id.split('.').all(is_identifier) || !path.iter().all(|segment| is_identifier(segment)) {
+    if !id.split('.').all(modules::is_identifier)
+        || !path.iter().all(|segment| modules::is_identifier(segment))
+    {
         return Err(ClassRefusal::Malformed);
     }
     let version = match version {
@@ -136,7 +138,21 @@ fn parse_class(
         None => None,
     };
     let named = module_of(id);
-    if named.as_deref() == Some(id) {
+    if let Some(known) = named.as_ref().filter(|known| known.id == id) {
+        // A version the program has no module of names a module that
+        // never comes, as an unknown id does.
+        if let Some(version) = &version
+            && !known.versions.contains(version)
+        {
+            let versions = if known.versions.is_empty() {
+                format!("`{id}` has no version")
+            } else {
+                format!("its versions are {}", known.versions.join(", "))
+            };
+            return Err(ClassRefusal::Explained(format!(
+                "no module `{id}@{version}`; {versions}"
+            )));
+        }
         return Ok(ClassName {
             module: ModuleName {
                 id: id.to_string(),
@@ -153,7 +169,7 @@ fn parse_class(
         let segments: Vec<&str> = id.split('.').collect();
         let prefix = (1..segments.len())
             .rev()
-            .find_map(|length| Some((length, module_of(&segments[..length].join("."))?)));
+            .find_map(|length| Some((length, module_of(&segments[..length].join("."))?.id)));
         if let Some((length, prefix)) = prefix {
             let inside = segments[length..]
                 .iter()
@@ -172,7 +188,7 @@ fn parse_class(
     // comes: the breakpoint would wait unverified for good. Where the id is
     // the class's name of one module -- `Kernel` for the binary's
     // `newspeak.core.Kernel` -- the refusal says how that one is written.
-    Err(ClassRefusal::Explained(match named {
+    Err(ClassRefusal::Explained(match named.map(|known| known.id) {
         Some(module) if path.is_empty() => {
             format!(
                 "no module `{id}`; the module is written `{}`",
@@ -193,7 +209,7 @@ fn parse_class(
 /// view name one (`parse_class`).
 pub(crate) fn parse_class_name(
     text: &str,
-    module_of: &dyn Fn(&str) -> Option<String>,
+    module_of: &dyn Fn(&str) -> Option<KnownModule>,
 ) -> Result<ClassName, String> {
     parse_class(text, module_of).map_err(|refusal| match refusal {
         ClassRefusal::Malformed => format!("`{text}` names no class: write {CLASS_FORM}"),
@@ -205,7 +221,7 @@ pub(crate) fn parse_class_name(
 /// lists them; an empty entry is passed over.
 pub(crate) fn parse_class_names(
     text: &str,
-    module_of: &dyn Fn(&str) -> Option<String>,
+    module_of: &dyn Fn(&str) -> Option<KnownModule>,
 ) -> Result<Vec<ClassName>, String> {
     text.split(',')
         .filter(|name| !name.trim().is_empty())
@@ -219,7 +235,7 @@ pub(crate) fn parse_class_names(
 /// the caller.
 pub(crate) fn parse_method_name(
     text: &str,
-    module_of: &dyn Fn(&str) -> Option<String>,
+    module_of: &dyn Fn(&str) -> Option<KnownModule>,
 ) -> Result<MethodBreakpoint, String> {
     let refused = || {
         format!(
@@ -911,17 +927,29 @@ mod tests {
         "newspeak.core.PlatformFactory",
     ];
 
+    /// The versions the tests' program has of `com.acme.json.Json`; its
+    /// other modules have none.
+    const JSON_VERSIONS: [&str; 2] = ["2.1.0", "2.1.0-beta.1"];
+
     /// The module of `MODULES` `text` names, as `Sources::module_of`
     /// answers it.
-    fn module_of(text: &str) -> Option<String> {
+    fn module_of(text: &str) -> Option<KnownModule> {
+        let known = |id: &str| KnownModule {
+            id: id.to_string(),
+            versions: if id == "com.acme.json.Json" {
+                JSON_VERSIONS.map(str::to_string).to_vec()
+            } else {
+                Vec::new()
+            },
+        };
         if MODULES.contains(&text) {
-            return Some(text.to_string());
+            return Some(known(text));
         }
         let mut by_class = MODULES
             .iter()
             .filter(|id| !text.contains('.') && id.rsplit('.').next() == Some(text));
         match (by_class.next(), by_class.next()) {
-            (Some(only), None) => Some(only.to_string()),
+            (Some(only), None) => Some(known(only)),
             _ => None,
         }
     }
@@ -1144,7 +1172,10 @@ mod tests {
         // Without a program module `Kernel`, `Kernel` is the class's name
         // of the binary's `newspeak.core.Kernel` alone.
         let without_kernel = |text: &str| match text {
-            "Kernel" | "newspeak.core.Kernel" => Some("newspeak.core.Kernel".to_string()),
+            "Kernel" | "newspeak.core.Kernel" => Some(KnownModule {
+                id: "newspeak.core.Kernel".to_string(),
+                versions: Vec::new(),
+            }),
             _ => None,
         };
         assert_eq!(
@@ -1198,6 +1229,32 @@ mod tests {
             parse_method_name("Calls@1.0>>run", &module_of),
             Err("`1.0` is no version: it needs MAJOR.MINOR.PATCH".to_string())
         );
+    }
+
+    /// A version no module of the id has names a module that never comes,
+    /// as an unknown id does: refused, naming the versions there are,
+    /// rather than left to wait unverified for good.
+    #[test]
+    fn a_version_no_module_of_the_id_has_is_refused() {
+        assert_eq!(
+            parse_method_name("com.acme.json.Json@9.9.9>>parse:", &module_of),
+            Err(
+                "no module `com.acme.json.Json@9.9.9`; its versions are 2.1.0, 2.1.0-beta.1"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parse_class_name("Calls@1.0.0/Inner", &module_of).map(|_| ()),
+            Err("no module `Calls@1.0.0`; `Calls` has no version".to_string())
+        );
+        assert_eq!(
+            parse_class_name("newspeak.core.Kernel@1.0.0/Array", &module_of).map(|_| ()),
+            Err(
+                "no module `newspeak.core.Kernel@1.0.0`; `newspeak.core.Kernel` has no version"
+                    .to_string()
+            )
+        );
+        assert!(parse_method_name("com.acme.json.Json@2.1.0>>parse:", &module_of).is_ok());
     }
 
     #[test]

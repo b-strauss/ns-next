@@ -3060,6 +3060,34 @@ fn run_to_cursor_stops_at_the_line() {
     assert_eq!(client.finish().stdout, "15\n");
 }
 
+/// A method of a shipped module the binary has but builds only on first
+/// demand -- `newspeak.core.CollectionsFactory`, which `CALLS` never
+/// demands -- is accepted and stays pending, unverified, never refused as
+/// a module that never comes.
+#[test]
+fn a_function_breakpoint_in_a_module_not_built_yet_stays_pending() {
+    let (_directory, path) = program("Calls", CALLS);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    let body = client.succeed(
+        "setFunctionBreakpoints",
+        json!({
+            "breakpoints": [{ "name": "newspeak.core.CollectionsFactory/List>>add:" }],
+        }),
+    );
+    let breakpoints = dap::array(&body["breakpoints"]);
+    assert_eq!(breakpoints[0]["verified"], false, "{body}");
+    assert_eq!(
+        breakpoints[0]["message"],
+        "pending: the module is not built yet, or its class declares no such method",
+        "{body}"
+    );
+    client.configuration_done();
+    assert_eq!(exit_code_reported(&mut client), 0);
+    assert_eq!(client.finish().stdout, "42\n");
+}
+
 #[test]
 fn a_function_breakpoint_stops_at_the_method_s_entry() {
     let (_directory, path) = program("Calls", CALLS);

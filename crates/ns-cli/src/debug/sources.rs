@@ -26,6 +26,7 @@ use ns_runtime::{ModuleName, ModuleTextAnswer};
 use ns_syntax::Span;
 use ns_tooling::lines::{LineColumn, LineIndex};
 
+use super::breakpoints::KnownModule;
 use super::protocol::{self, SourceArgument};
 
 /// The file a directory of shipped sources holds its fingerprint in, as
@@ -349,15 +350,16 @@ impl Sources {
         }
     }
 
-    /// The id of the module the program or the binary has -- a program's
-    /// module, the embedded manifest included, or a shipped one -- that
-    /// `text` names, as a class name a client typed is read against
-    /// (`breakpoints::parse_class_name`): `text` itself where it is such
-    /// an id, and otherwise, for an undotted `text`, the id of the one
-    /// such module whose class `text` names -- `newspeak.core.Kernel` for
-    /// `Kernel` where the program has no `Kernel` -- so that a name in the
-    /// form before ids, `Kernel.Array`, is refused with the form it means.
-    pub(crate) fn module_of(&self, text: &str) -> Option<String> {
+    /// The module the program or the binary has -- a program's module,
+    /// the embedded manifest included, or a shipped one -- that `text`
+    /// names, as a class name a client typed is read against
+    /// (`breakpoints::parse_class_name`), with the versions the program
+    /// has of its id: `text` itself where it is such an id, and otherwise,
+    /// for an undotted `text`, the one such module whose class `text`
+    /// names -- `newspeak.core.Kernel` for `Kernel` where the program has
+    /// no `Kernel` -- so that a name in the form before ids,
+    /// `Kernel.Array`, is refused with the form it means.
+    pub(crate) fn module_of(&self, text: &str) -> Option<KnownModule> {
         let ids: Vec<String> = self
             .program
             .iter()
@@ -368,15 +370,25 @@ impl Sources {
                     .map(|file| ns_runtime::shipped_module_id(file.name)),
             )
             .collect();
-        if ids.iter().any(|id| id == text) {
-            return Some(text.to_string());
-        }
-        if text.contains('.') {
+        let id = if ids.iter().any(|id| id == text) {
+            text.to_string()
+        } else if text.contains('.') {
             return None;
-        }
-        let mut by_class = ids.iter().filter(|id| id.rsplit('.').next() == Some(text));
-        let first = by_class.next()?;
-        by_class.all(|other| other == first).then(|| first.clone())
+        } else {
+            let mut by_class = ids.iter().filter(|id| id.rsplit('.').next() == Some(text));
+            let first = by_class.next()?;
+            if !by_class.all(|other| other == first) {
+                return None;
+            }
+            first.clone()
+        };
+        let versions = self
+            .program
+            .iter()
+            .filter(|program| program.module.id == id)
+            .filter_map(|program| program.module.version.clone())
+            .collect();
+        Some(KnownModule { id, versions })
     }
 
     /// Whether `module`'s current text declares the class `path` names
@@ -741,18 +753,19 @@ mod tests {
             sources.text_for_positions(&kernel()),
             ns_runtime::shipped_module_source("Kernel")
         );
-        assert_eq!(sources.module_of("Kernel"), Some("Kernel".to_string()));
+        let id_of = |text: &str| sources.module_of(text).map(|known| known.id);
+        assert_eq!(id_of("Kernel"), Some("Kernel".to_string()));
         assert_eq!(
-            sources.module_of("newspeak.core.Kernel"),
+            id_of("newspeak.core.Kernel"),
             Some("newspeak.core.Kernel".to_string())
         );
         assert_eq!(
-            sources.module_of("CollectionsFactory"),
+            id_of("CollectionsFactory"),
             Some("newspeak.core.CollectionsFactory".to_string()),
             "a shipped module by its class's name"
         );
-        assert_eq!(sources.module_of("Kernel.Array"), None);
-        assert_eq!(sources.module_of("Elsewhere"), None);
+        assert_eq!(id_of("Kernel.Array"), None);
+        assert_eq!(id_of("Elsewhere"), None);
     }
 
     /// Two versions of a module without files of their own -- an

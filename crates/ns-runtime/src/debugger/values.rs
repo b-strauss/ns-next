@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use super::remote::{ValueDescription, ValueId, Variable, VariableValue};
+use super::remote::{ModuleName, ValueDescription, ValueId, Variable, VariableValue};
 use super::{NO_SUCH_VALUE, WITHHELD};
 use crate::builtins::object_class::identical;
 use crate::heap::{MixinId, ObjectReference, ObjectShape};
@@ -392,14 +392,15 @@ fn field_labels<'gc>(
 /// field's name and the declarer's id: its mixin's name, unless another
 /// declarer of a field shadowed under the same name shares that name --
 /// then its declaration's path from its module root, `Outer.Super`, and
-/// where that is shared too, as by the roots of two modules of one name,
-/// that path from the root's own name on, `Module.Outer.Super`. Where two
-/// declarers still read alike -- two modules of one source, or one
-/// declarer's path from its root that another's path from its own root's
-/// name spells -- each of them takes its place among them in the chain,
-/// counted from the nearest, as an ordinal, `Module.Outer.Super #2`, so
-/// that no two labels are alike. A field of the nearest level shadows
-/// nothing and has none.
+/// where that is shared too, as by the roots of two versions of one
+/// module, that path after its module as every tool writes a class
+/// (`docs/design/modules.md`, decision 8), `com.acme.Util@2.0.0/Outer.Super`,
+/// the versions telling two modules of one id apart. Where two declarers
+/// still read alike -- the roots of two modules a host loaded without an
+/// identity, each named by its class's name alone -- each of them takes
+/// its place among them in the chain, counted from the nearest, as an
+/// ordinal, `Library/Outer.Super #2`, so that no two labels are alike. A
+/// field of the nearest level shadows nothing and has none.
 fn qualifiers(
     mutator: &Mutator<'_>,
     declared: &[Option<Declared>],
@@ -415,16 +416,20 @@ fn qualifiers(
             ids.push((field.declarer, field.declarer_name));
         }
     }
-    // A module root's own path is empty: it is named by its name.
-    let path = |id: MixinId, from_root: bool| {
+    // A module root's own path is empty: it is named by its name, or,
+    // qualified, by its module alone.
+    let path = |id: MixinId, qualified: bool| {
         let (root, path) = mutator.path_from_module_root(id);
-        let mut names: Vec<String> = path.iter().map(ToString::to_string).collect();
-        if (from_root || names.is_empty())
-            && let Some(root) = mutator.heap.mixin(root)
-        {
-            names.insert(0, root.name.to_string());
+        let names: Vec<String> = path.iter().map(ToString::to_string).collect();
+        let Some(root) = mutator.heap.mixin(root) else {
+            return names.join(".");
+        };
+        match (qualified, names.is_empty()) {
+            (true, true) => ModuleName::of_root(&root).to_string(),
+            (true, false) => format!("{}/{}", ModuleName::of_root(&root), names.join(".")),
+            (false, true) => root.name.to_string(),
+            (false, false) => names.join("."),
         }
-        names.join(".")
     };
     let mut qualifiers = HashMap::new();
     for (name, ids) in &declarers {
