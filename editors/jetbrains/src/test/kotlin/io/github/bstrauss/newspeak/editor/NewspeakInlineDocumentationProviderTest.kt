@@ -118,6 +118,86 @@ class NewspeakInlineDocumentationProviderTest : BasePlatformTestCase() {
         assertEquals(listOf("class Module = () ()"), items(file).map { it.documentationOwnerRange?.substring(text) })
     }
 
+    /** A symbol over `text` from the first non-blank character of `line` to that line's end. */
+    private fun symbolOn(text: String, name: String, kind: SymbolKind, line: Int, children: List<DocumentSymbol> = emptyList()): DocumentSymbol {
+        val lines = text.lines()
+        val range = Range(Position(line, lines[line].indexOfFirst { !it.isWhitespace() }), Position(line, lines[line].length))
+        return DocumentSymbol(name, kind, range, range, null, children)
+    }
+
+    /** The owners of `text`'s doc comments, in order, as `symbols` place them. */
+    private fun ownersOf(text: String, symbols: List<DocumentSymbol>): List<String?> {
+        val file = myFixture.configureByText("Module.ns", text)
+        cache.fetch(file.virtualFile) { symbols }
+        return items(file).map { it.documentationOwnerRange?.substring(text) }
+    }
+
+    /**
+     * A blank line between a doc comment and the metadata after it ends the
+     * comment's reach, as it does between the comment and a declaration:
+     * the comment documents nothing, though a symbol starts after the
+     * metadata.
+     */
+    fun testABlankLineBeforeTheMetadataDetachesTheComment() {
+        val text = """
+            /// The module.
+            /// Holds nothing.
+
+            (* :module: com.acme.Module@1.0.0 *)
+            class Module = () ()
+        """.trimIndent()
+        assertEquals(listOf(null), ownersOf(text, listOf(symbolOn(text, "Module", SymbolKind.Class, 4))))
+    }
+
+    /** A metadata comment above a slot or a method is stepped over as one above a class is. */
+    fun testTheOwnerStepsOverMetadataAboveASlotAndAMethod() {
+        val text = """
+            class Module = (
+              |
+                /// The count.
+                /// Starts at 0.
+                (* :since: 2 *)
+                public count ::= 0.
+              |
+            ) (
+              /// Answers two.
+              /// Always.
+              (* :deprecated: use three *)
+              public two = ( ^2 )
+            )
+        """.trimIndent()
+        val count = symbolOn(text, "count", SymbolKind.Property, 5)
+        val two = symbolOn(text, "two", SymbolKind.Method, 11)
+        val module = Range(Position(0, 0), Position(12, 1))
+        val root = DocumentSymbol("Module", SymbolKind.Class, module, module, null, listOf(count, two))
+        assertEquals(listOf("public count ::= 0.", "public two = ( ^2 )"), ownersOf(text, listOf(root)))
+    }
+
+    /**
+     * With the server's symbols at hand, a comment whose documented line
+     * starts no symbol has no owner: past its metadata stands a plain
+     * remark, or what follows starts no declaration the server names.
+     */
+    fun testACommentWithoutADocumentedSymbolHasNoOwner() {
+        val text = """
+            class Module = () (
+              /// Answers two.
+              /// Always.
+              (* :since: 2 *)
+              (* a remark *)
+              public two = ( ^2 )
+              /// Answers three.
+              /// Always.
+              (* :since: 3 *)
+              public three = ( ^3 )
+            )
+        """.trimIndent()
+        val two = symbolOn(text, "two", SymbolKind.Method, 5)
+        val module = Range(Position(0, 0), Position(10, 1))
+        val root = DocumentSymbol("Module", SymbolKind.Class, module, module, null, listOf(two))
+        assertEquals(listOf(null, null), ownersOf(text, listOf(root)))
+    }
+
     fun testWithoutTheServersSymbolsThereIsNoOwner() {
         val file = myFixture.configureByText("Module.ns", source)
         assertEquals(listOf(null, null), items(file).map { it.documentationOwnerRange })

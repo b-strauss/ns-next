@@ -738,6 +738,7 @@ fn a_reference_expands_and_a_mark_names_a_value() {
 
 /// The variable through which a debug build's server takes the wait of an
 /// evaluation, in milliseconds.
+#[cfg(debug_assertions)]
 const EVALUATION_WAIT: &str = "NS_NEXT_MCP_EVALUATION_WAIT_MILLISECONDS";
 
 /// Only a debug build reads the variable; a release build waits its 30 s.
