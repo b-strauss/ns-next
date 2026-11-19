@@ -42,11 +42,12 @@ view and folds the shipped frames, in the VM, the DAP agent and the
 plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
 
-The developer tool (the item "A developer tool like V8's `d8`" below),
-designed and planned on the branch `feature/developer-tool`, names a body
-in its traces by the tools' form `id@version/Inner>>selector`, which
-module identity made every tool's ([modules.md](design/modules.md),
-decision 8).
+The developer tool (the item "A developer tool like V8's `d8`" below)
+is designed and its stage 1 planned
+(`docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`);
+its traces name a body by the tools' form `id@version/Inner>>selector`
+([developer-tool.md](design/developer-tool.md), decision 5;
+[modules.md](design/modules.md), decision 8).
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled

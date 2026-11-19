@@ -94,9 +94,11 @@ Strongtalk ship none in the VM.
 compile is printed once, as it is made -- a recompilation and a
 replacement copy included, which a dump at the end would miss -- as V8's
 `--print-opt-code` and HotSpot's `PrintAssembly` do. The filter names
-bodies in the syntax the MCP server's breakpoints use
-(`Module.Class>>selector`, the class side `Module.Class class>>selector`),
-with `*` ending a prefix, as V8's filters
+bodies in the syntax every tool names a method by
+(`id[@version][/Inner…][ class]>>selector`: `Demo/Account>>deposit:`,
+`com.acme.json.Json@2.1.0/Parser class>>on:`; a name without a version
+covers every version; [modules.md](modules.md), decision 8), with `*`
+ending a prefix, as V8's filters
 (`v8/src/utils/utils.cc:225-265`) and HotSpot's `CompileCommand=print`
 (`jdk/src/hotspot/share/compiler/compilerOracle.hpp:52-68`) select one
 method. Beside it, the debugging API answers the code of a stopped frame.
@@ -172,8 +174,10 @@ DAP stays possible, since the events are typed (decided with the user on
   - an inline cache's transition, from its old to its new state
     (vacant, monomorphic, polymorphic, megamorphic), with the send site
     and the receiver's application.
-- **No handle leaves the call.** An event names a body by its
-  declaration and a receiver application by its class's name, computed
+- **No handle leaves the call.** An event names a body as the debugger
+  names a frame -- its owner by `qualified_name`
+  (`debugger/metadata/again.rs`), `id@version/Inner>>selector` -- and a
+  receiver application by its class's name, computed
   only when a sink is installed; the sink is called synchronously and
   keeps no reference ("A handle means nothing against a `Heap` that did
   not mint it", `CLAUDE.md`).
