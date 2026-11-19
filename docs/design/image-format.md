@@ -734,12 +734,13 @@ record at all and allocates nothing.
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
 per module, in module order, its identity -- its path, id and version
 ([modules.md](modules.md), decision 10) -- and the `u32` object id of its
-root class's record in the graph; a module's text is no field of it, since it is
-assembled from its declarations' texts ("Source" below). **Module order** is the
-application module (a project file's `main`) first, then a project file's
-modules in the order written, then the embedded `Manifest.ns` ("Packaging"
-below); a source file's program is its one module. The count is bounded by the bytes left before anything is
-reserved for it.
+root class's record in the graph; a module's text is no field of it,
+since it is assembled from its declarations' texts ("Source" below).
+**Module order** is the application module (a project file's `main`)
+first, then a project file's modules in the order written, then the
+embedded `Manifest.ns` ("Packaging" below); a source file's program is
+its one module. The count is bounded by the bytes left before anything
+is reserved for it.
 
 The **identity** names the module as the program did, in every artifact,
 source or not, and `inspect` shows it (`com.acme.util.Util@1.0.0 at
@@ -1253,29 +1254,29 @@ decision 10), each refusal a `DecodeError` naming the module or, for two
 modules, their paths: each record's path relative to the project
 (`modules::check_project_path`: no control character, no root, drive,
 `\`, `core:`, empty or `.` segment, a `..` only leading, ending in `.ns`
-and naming more than `.ns`) or a `core:` file name; its
-id identifiers separated by dots, ending in the root class's name, which
-the mixin table's root row gives (`ModuleId::parse`); the namespace
-`newspeak.` with `ORIGIN_CORE` and only there (`modules::check_namespace`),
-and `ORIGIN_CORE` for the manifest alone, `newspeak.core.Manifest` at
-`core:Manifest.ns` without a version, since every module an image carries
-is program code and one named as another of the binary's modules would be
-a program's module in the reserved namespace;
-a version semver's (`Version::parse`); no path, id or version holding a
-control character, which every message quotes escaped, so that a crafted
-image puts no escape sequence on a terminal; and over all records, no two modules
-of one id and one version, nor of one id where either has none
-(`modules::check_distinct`). The encoder holds every identity it is handed
-to the same rules (`modules::identity_defect`, which both sides share), so
-it never writes a record the loader refuses
+and naming more than `.ns`) or a `core:` file name; its id identifiers
+separated by dots, ending in the root class's name, which the mixin
+table's root row gives (`ModuleId::parse`); the namespace `newspeak.`
+with `ORIGIN_CORE` and only there (`modules::check_namespace`), and
+`ORIGIN_CORE` for the manifest alone, `newspeak.core.Manifest` at
+`core:Manifest.ns` without a version, since every module an image
+carries is program code and one named as another of the binary's modules
+would be a program's module in the reserved namespace; a version
+semver's (`Version::parse`); no path, id or version holding a control
+character, which every message quotes escaped, so that a crafted image
+puts no escape sequence on a terminal; and over all records, no two
+modules of one id and one version, nor of one id where either has none
+(`modules::check_distinct`). The encoder holds every identity it is
+handed to the same rules (`modules::identity_defect`, which both sides
+share), so it never writes a record the loader refuses
 (`a_module_record_is_held_to_the_project_rules`,
 `a_module_record_s_unknown_tags_are_refused`,
 `the_building_machine_s_paths_are_not_written`,
-`crates/ns-runtime/tests/image.rs`). `inspect` reads the same sections and builds through `mixins::build` too,
-so it refuses texts that do not hold to the rows, but runs no
-`verify_mixins`, so it can still display an artifact whose halves
-disagree; only `load` refuses it. A corrupt but version-matching image is an
-error there, never a panic in the VM later.
+`crates/ns-runtime/tests/image.rs`). `inspect` reads the same sections
+and builds through `mixins::build` too, so it refuses texts that do not
+hold to the rows, but runs no `verify_mixins`, so it can still display
+an artifact whose halves disagree; only `load` refuses it. A corrupt but
+version-matching image is an error there, never a panic in the VM later.
 
 **Every compiler limit is a decoder refusal.** No compiled body passes a
 limit of [compiler.md](compiler.md), "Limits": past one it compiles to a
@@ -2060,8 +2061,10 @@ between, `main`'s among them since tools name it by its id too
 (`modules::check_distinct`): `` two modules are `com.acme.util.Util@1.0.0`:
 libs/a/Util.ns and libs/b/Util.ns ``, and `` two modules are `Util` and one
 of them has no version: libs/a/Util.ns and libs/b/Util.ns ``
-(`crates/ns-cli/tests/run.rs`, `two_unannotated_modules_of_one_name_are_refused`,
-`two_modules_of_one_id_and_version_are_refused`, `an_id_in_newspeak_is_refused`).
+(`crates/ns-cli/tests/run.rs`,
+`two_unannotated_modules_of_one_name_are_refused`,
+`two_modules_of_one_id_and_version_are_refused`,
+`an_id_in_newspeak_is_refused`).
 `instantiate_application` refuses a root whose factory is not
 `packageUsing:`. The manifest is asked with strings, so a module named
 like a member of every object -- `printString` -- or like a class accessor
@@ -2077,11 +2080,11 @@ these rules: the file is an object (`type`) with a `main` (`required`);
 whose entries are not written twice alike (`uniqueItems`), each such a
 string or (`anyOf`) an object of such a `path` (`required`) and an `as`
 that is identifiers separated by dots (`pattern`), and nothing else
-(`additionalProperties: false`); `scripts` an object whose every name is non-empty and
-neither begins nor ends with whitespace (`propertyNames`, `pattern:
-"^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s` matches) and
-whose every value (`additionalProperties`) is a string. Every
-other key is allowed. An editor's validator may read the pattern's `\s` as
+(`additionalProperties: false`); `scripts` an object whose every name is
+non-empty and neither begins nor ends with whitespace (`propertyNames`,
+`pattern: "^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s`
+matches) and whose every value (`additionalProperties`) is a string.
+Every other key is allowed. An editor's validator may read the pattern's `\s` as
 ASCII whitespace only, as Java's regular expressions do, and so let a name
 with other whitespace at an end pass; the reader decides. No validator crate
 reads the schema, so the project file brings no dependency beyond
@@ -2094,8 +2097,9 @@ the schema and the reader must both accept or both refuse. The rules the
 reader alone holds cannot be stated in JSON Schema: one of its four keys
 written twice and a script name written twice (a schema sees only the last
 value of a key), one module path in two spellings or once as a string and
-once as an entry's `path` (`uniqueItems` compares entries as written), a `modules` entry naming `main`'s module (no keyword
-compares one property with another), and a script that does not split as a
+once as an entry's `path` (`uniqueItems` compares entries as written), a
+`modules` entry naming `main`'s module (no keyword compares one property
+with another), and a script that does not split as a
 command line, such as `"'unterminated"` (the schema states only that a
 script is a string). They stay out of the table, and `project.rs`'s own
 tests pin them. The JetBrains plugin bundles the same file and gives it to
@@ -2206,9 +2210,10 @@ which a debugger's carried step or a pause asked between runs would stop.
 `build` prints the assembly's warnings; `load` prints none, since the
 loaded image's application holds its manifest only if it kept it.
 
-**What `build` writes.** `image::package` takes the modules in module order,
-each with its identity (`program::module_sources`), and the application, and writes an image whose graph has the application as
-its one root and whose header sets `FLAG_START`. No platform exists for the
+**What `build` writes.** `image::package` takes the modules in module
+order, each with its identity (`program::module_sources`), and the
+application, and writes an image whose graph has the application as its
+one root and whose header sets `FLAG_START`. No platform exists for the
 application yet, and before `main:args:` a program reaches nothing of the
 shipped world but the kernel, so a graph naming anything of
 `PlatformFactory` or `CollectionsFactory` is refused ("image encoding
@@ -2820,8 +2825,8 @@ shipped world.
   the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
   free numbers (both retired on 2026-11-19 for `ORIGIN_PROJECT` (2) and
   `ORIGIN_CORE` (3), when a module record came to carry the module's
-  identity rather than the building machine's path), so a stale artifact meets an unknown tag instead of decoding
-  into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
+  identity rather than the building machine's path), so a stale artifact
+  meets an unknown tag instead of decoding into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
   `HASHED_MODULE_CLASS` and `HASHED_MODULE_LEVEL` are retired in turn, since
   a module's root class and its levels became records of the graph, which
   the module section names by object id (2026-10-13, "An image names the

@@ -9,17 +9,25 @@ PDF p. 48). Everything here is outside the language: which files a program
 has, which of them the application asks for, and how tools and images name
 them.
 
-Status: partly built. Ids, versions and ranges (`ns-runtime`'s
-`modules.rs`), the metadata (`ns-syntax`'s `metadata.rs`), each module's
-identity on its root mixin, the string manifest, `newspeak.json`'s `as` and
-the project's refusals (decisions 1-5 and 9), and an image's module record
-of each module's path, id and version, held to the project's rules by the
-decoder (decision 10), are built ([core-library.md](core-library.md), "The
-manifest"; [image-format.md](image-format.md), "Packaging", "Module
-section", "Verification"). Not yet: the debugger's `ModuleName` is a name
-and a shipped flag ([debugger.md](debugger.md)), so tools name modules by
-their class's name (decision 8). The design below lets several versions of one
-module live in one running program.
+Status: built. Ids, versions, ranges and a module's declared identity
+are `ns-runtime`'s `modules.rs` (`ModuleId`, `Version`, `VersionRange`,
+`ModuleIdentity`, `declared_identity`); metadata comments are collected by
+their §4.3 targets in `ns-syntax`'s `metadata.rs` (`metadata_of`); each
+module's identity is held by its root mixin (`Mixin::module_identity`);
+the manifest is asked with strings, `newspeak.json` takes an `as`, and the
+project's refusals stand before anything runs (decisions 1-5 and 9;
+[core-library.md](core-library.md), "The manifest";
+[image-format.md](image-format.md), "Packaging"); an image records each
+module's path, id and version, held to the project's rules by the decoder
+(decision 10; [image-format.md](image-format.md), "Module section",
+"Verification"); the debugger, the DAP agent, the MCP server and the
+JetBrains plugin name a module by its id and version and a class inside
+it after a `/` (decision 8; [debugger.md](debugger.md), "The agent's
+sources"); and the analyzer reports a malformed `:module:` and shows a
+module's and a parameter's in its hover
+([editor-support.md](editor-support.md), "Module metadata"). Several
+versions of one module live in one running program side by side
+(`goldens/tool/manifest/two_versions_of_a_module_run_side_by_side`).
 
 ## The three roles
 
@@ -45,7 +53,9 @@ directory of `newspeak.json`, against which its paths are resolved
 already, or, for a program that is one `.ns` file, relative to that file's
 directory: `libs/util-1/Util.ns` and `libs/util-2/Util.ns` are two modules
 whatever they declare; `..` reaches a library beside the project. It is
-the one name every module has and two versions do not share. SOMns
+the one name every module has and two versions do not share. A module on
+another drive or share than the project has no path relative to it and is
+refused ([OPEN-WORK.md](../OPEN-WORK.md)). SOMns
 identifies a module the same way, by its path relative to a base directory
 and its class's name (`prior-art/somns`, `MixinDefinition.java:865-889`),
 and loads two files declaring one class name side by side; canonical
@@ -90,9 +100,10 @@ whose `Error` for a range none of the id's versions matches names the
 versions there are (`` no module `<id>` of version <range>; there are
 1.0.0, 2.0.0 ``), and nothing through `doesNotUnderstand:`: an id is any
 string, so a dotted one, and no key collides with a selector `Object`
-answers, which removed the rule that refused a module named like one. Canonical Newspeak's unary
-`manifest Browsing` is not kept (decided with the user: the string is the
-form, and the version is a second argument beside it).
+answers, so no module is refused for being named like one. Canonical
+Newspeak's unary `manifest Browsing` is not kept (decided with the user:
+the string is the form, and the version is a second argument beside
+it).
 
 **4. A range is a prefix, and the highest version that matches is taken.**
 `version: '2'` matches 2.x.x, `'2.1'` 2.1.x, `'2.1.0'` exactly; a
@@ -160,9 +171,11 @@ each stack frame and trace line names one module. The `/` ends the id
 where the eye looks for it, and no lookup against the known ids is needed
 to read a name: with dots throughout, a module `a.B` with a nested `C`
 and a module `a.B.C` would read alike, and a class's name need not be
-capitalized. It replaces today's `Module.Inner>>selector` in the
-debugger's method and exception breakpoints, the MCP server's locations
-and the plugin's breakpoint types. Within a program an id and a version
+capitalized. It is the form of the debugger's frame names, its method and
+exception breakpoints, the memory view's classes, the MCP server's
+locations and the plugin's breakpoint types; the dotted form of before,
+`Demo.Account>>deposit:`, is refused with the hint that a class inside a
+module is written `Demo/Account`. Within a program an id and a version
 name one module (decision 5's refusals), so no tool name holds a path; the
 path maps a module to its source file.
 
@@ -188,16 +201,25 @@ directories -- and the id and version as resolved, after an `as`, so that
 an image written with `--strip-source` names its modules as the program
 did and `ns-next load`'s tools name them as `run`'s do. The decoder holds
 them to everything decision 2, 5 and 9 hold a project to, before any of
-them is used ("An image is untrusted input", `CLAUDE.md`). New wire tags
-take the next free numbers; the plan settles the encoding.
+them is used ("An image is untrusted input", `CLAUDE.md`). The origin tags
+`ORIGIN_PROJECT` and `ORIGIN_CORE` took the next free numbers, and
+`ORIGIN_FILE` and `ORIGIN_EMBEDDED` are retired
+([image-format.md](image-format.md), "Module section").
 
 ## What follows from it
 
-- The main module has an id like any module and is still not in the
-  manifest.
+- The main module has an id like any module, takes part in decision 5's
+  refusals, and is not in the manifest.
 - `ns-next run-corpus`'s generated application asks `manifest at:` for the
-  module it runs.
-- The debugger's `ModuleName` becomes the module's identity; a breakpoint
-  set on one version stands in that version only.
+  module it runs, which it copies into its scratch directory beside the
+  generated project, so that the module has a path relative to it.
+- The debugger's `ModuleName` is the module's id and version
+  (`debugger/remote.rs`); a breakpoint set on one version stands in that
+  version only, one set without a version in every version, and whether a
+  frame is the core library's is decided by its root mixin's `shipped`,
+  never by the id's `newspeak.core.` prefix.
 - The analyzer reports, in the editor: an id whose last part is not the
-  class's name, a malformed version, an id in the reserved namespace.
+  class's name, a malformed version, an id in the reserved namespace
+  outside the core library's own sources, and, as a warning, a malformed
+  expectation before a parameter; its hover shows a module's `:module:`
+  and a parameter's expectation.

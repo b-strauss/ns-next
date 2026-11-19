@@ -556,13 +556,13 @@ below a fingerprint's directory within one (the plugin's store of what
 `ns-next shipped-sources` wrote; "The core library"). The place counts
 because the `Kernel.ns` being edited is no longer the binary's text and
 a store may hold another binary's; a program's module declaring such an
-id anywhere else is reported, as the loader refuses it. The one before a parameter documents the module
-the parameter expects, `<id>` or `<id>@<range>`, and is checked by
-nothing at run time (decision 7), so a malformed one is a warning: the
-id's segments must be identifiers -- there is no class to hold its last
-to -- and the range must be one `VersionRange::parse` reads; an id in
-the reserved namespace is no warning, since a library may expect a
-shipped module.
+id anywhere else is reported, as the loader refuses it. The one before a
+parameter documents the module the parameter expects, `<id>` or
+`<id>@<range>`, and is checked by nothing at run time (decision 7), so a
+malformed one is a warning: the id's segments must be identifiers --
+there is no class to hold its last to -- and the range must be one
+`VersionRange::parse` reads; an id in the reserved namespace is no
+warning, since a library may expect a shipped module.
 
 ### Doc comments
 
@@ -1049,12 +1049,12 @@ tooltip and the icon's alike, so the view tells what a member does without
 opening it. The plugin reads it from the file's current text
 (`NewspeakDocComments.summaryAbove`: the doc comment ending on the line
 above the symbol's range, or above the metadata comments right above it),
-never from the server: a document symbol's
-`detail` carries words the plugin reads (the access, `class`, `value`),
-and the comment stands right above the symbol anyway. The summaries are
-computed once per change of the file, by the 0-based line what each
-comment documents starts on, since the view asks for every row and a walk of the file per row
-would make a large module's tree quadratic.
+never from the server: a document symbol's `detail` carries words the
+plugin reads (the access, `class`, `value`), and the comment stands right
+above the symbol anyway. The summaries are computed once per change of
+the file, by the 0-based line what each comment documents starts on,
+since the view asks for every row and a walk of the file per row would
+make a large module's tree quadratic.
 
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
 the same base icon for the breadcrumbs and sticky lines as for the tree,

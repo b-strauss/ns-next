@@ -15,18 +15,6 @@ when they were written.
 
 ## Next
 
-**Module identity, the string manifest and metadata** (asked for by the
-user on 2026-11-18, designed with the user on 2026-11-18 and 2026-11-19;
-decided on 2026-11-19 to come first, before the debugger's stage 6 and the
-developer tool, whose trace names bodies by it): several versions of one
-module in one running program, a module identified by its path relative to
-the project, declaring its id in metadata above its class
-(`(* :module: com.acme.json.Json@2.1.0 *)`), the manifest asked with `at:`
-and `at:version:`, `newspeak.json`'s `as`, metadata comments parsed
-generally, tools naming `id@version/Inner>>selector`, `newspeak.` reserved
-for the shipped modules, and the image recording each module's path, id and
-version ([modules.md](design/modules.md)). It needs a plan.
-
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
@@ -53,6 +41,12 @@ returns, smart-steps into a chosen send, marks objects, shows the memory
 view and folds the shipped frames, in the VM, the DAP agent and the
 plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
+
+The developer tool (the item "A developer tool like V8's `d8`" below),
+designed and planned on the branch `feature/developer-tool`, names a body
+in its traces by the tools' form `id@version/Inner>>selector`, which
+module identity made every tool's ([modules.md](design/modules.md),
+decision 8).
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -1820,9 +1814,10 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Planned: images, liveness and reflection
 
 - **Metadata through the mirrors** (§4.3: metadata "are available at
-  runtime via mirrors"): once `ns-syntax` parses metadata
-  ([modules.md](design/modules.md), decision 6), a class, method and slot
-  mirror answer theirs; open is what an image written without source
+  runtime via mirrors"): `ns-syntax` collects every metadata comment by
+  its §4.3 target (`metadata.rs`'s `metadata_of`;
+  [modules.md](design/modules.md), decision 6), and only `:module:` is
+  read; a class, method and slot mirror are to answer theirs. Open is what an image written without source
   answers, since Primordial Soup parses metadata from the source on demand
   (`prior-art/primordialsoup/newspeak/Mirrors.ns:758, 1216-1223`).
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
@@ -3133,16 +3128,6 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
-- **Release binaries hold the building machine's paths** (found on
-  2026-11-19): `target/release/ns-next.exe` holds 29 absolute paths of the
-  build machine, the user's home directory among them -- the panic
-  locations of the dependencies under Cargo's registry and of the
-  toolchain's library -- and a debug build some 480; the workspace's own
-  paths are relative. Cargo's `trim-paths` profile setting would remove
-  them, but is unstable in Cargo 1.100 ("feature `trim-paths` is
-  required"); `rustc --remap-path-prefix` is stable but takes the
-  machine's own prefixes, so it belongs to whatever builds a release, not
-  to `.cargo/config.toml`. Nothing builds a release for distribution yet.
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
 program can reach and which end the process, and seven a program meets as
@@ -3199,7 +3184,7 @@ program's subclass of `String` as an argument, the error of a
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
   cannot tell where one module ends; a boundary line naming each module's
-  origin would fix it. [image-format.md](design/image-format.md), "Reading
+  id and path would fix it. [image-format.md](design/image-format.md), "Reading
   an artifact".
 - **`disasm` of an artifact reaches module 0 only**: `--class` is rooted at
   the application's root class, so a project's other modules, the
@@ -3575,6 +3560,30 @@ program's subclass of `String` as an argument, the error of a
   `NS_NEXT_STRESS_ZONE` for it, and the exemption's comment names this
   item, so that it is removed, and the tests hold under the zone stress
   mode again, with the fix.
+- **Release binaries hold the building machine's paths** (found on
+  2026-11-19): `target/release/ns-next.exe` holds 29 absolute paths of the
+  build machine, the user's home directory among them -- the panic
+  locations of the dependencies under Cargo's registry and of the
+  toolchain's library -- and a debug build some 480; the workspace's own
+  paths are relative. Cargo's `trim-paths` profile setting would remove
+  them, but is unstable in Cargo 1.100 ("feature `trim-paths` is
+  required"); `rustc --remap-path-prefix` is stable but takes the
+  machine's own prefixes, so it belongs to whatever builds a release, not
+  to `.cargo/config.toml`. Nothing builds a release for distribution yet.
+- **A module on another drive or share than its project is refused**
+  (found on 2026-11-19, while building module identity): a module's
+  identity is its path relative to the project
+  ([modules.md](design/modules.md), decision 1), and a file on another
+  Windows drive or UNC share has none, so `program::read_program` refuses
+  it before anything runs ([image-format.md](design/image-format.md),
+  "Packaging"; `crates/ns-cli/src/program.rs`,
+  `a_module_on_another_drive_has_no_path_in_the_project`). `run-corpus`
+  copies each corpus module into its scratch directory beside the
+  generated project for that reason. Open is whether such a module needs
+  a representation -- an absolute path, which an image would carry as the
+  building machine's directory decision 10 keeps out of it, or a name of
+  the drive relative to something else -- or whether the refusal is the
+  rule; that is decision 1's to settle with the user.
 
 ## Missing tests
 

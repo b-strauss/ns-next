@@ -5252,14 +5252,15 @@ file deleted after the
 program read it is still named by its path. A breakpoint is verified once
 the VM resolved it to a statement, whose line and column the response
 gives, so that one on a comment line shows on the next statement.
-`setFunctionBreakpoints` names a method `<id>[@<version>][/<Class>(.<Class>)*]>>selector`,
-or `... class>>selector` for the class side's ("The agent's sources"); a line or
-function breakpoint takes a hit condition ("Hit counts and temporary
+`setFunctionBreakpoints` names a method
+`<id>[@<version>][/<Class>(.<Class>)*]>>selector`, or `... class>>selector`
+for the class side's ("The agent's sources"); a line or function
+breakpoint takes a hit condition ("Hit counts and temporary
 breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
 `halt` on by its `filters` or `filterOptions`, and the conditions of its
 filter options, each a comma-separated list of classes
-`<id>[@<version>][/<Class>(.<Class>)*]`, each parsed as a function breakpoint's class is
-(`parse_class_name`), together name the
+`<id>[@<version>][/<Class>(.<Class>)*]`, each parsed as a function
+breakpoint's class is (`parse_class_name`), together name the
 classes both exception filters stop for, since the VM keeps one list
 ("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as long
 as the client sends the breakpoint again -- a line breakpoint by its
@@ -5398,11 +5399,12 @@ breakpoint names a class, and `nsNext/shipped: true` for a shipped
 module's class, as the VM says (`InstanceCount::shipped`).
 `nsNext/instances { name, start, count }` answers a page of the
 instances of the class `name` names, as `variables` answers, each named
-`#<n>`: `Kernel/Array` a program module `Kernel`'s, `newspeak.core.Kernel/Array`
-the binary's (`instances_of_a_shipped_class_are_asked_for_by_its_module`). `nsNext/referrers {
-valueReference, start, count }` answers a page of what refers to the
-value, as `variables` answers too: an object as a variable shows a
-value, and a frame's variable that holds the value as a variable named
+`#<n>`: `Kernel/Array` a program module `Kernel`'s,
+`newspeak.core.Kernel/Array` the binary's
+(`instances_of_a_shipped_class_are_asked_for_by_its_module`).
+`nsNext/referrers { valueReference, start, count }` answers a page of
+what refers to the value, as `variables` answers too: an object as a
+variable shows a value, and a frame's variable that holds the value as a variable named
 `frame <id> <name>`, the frame's DAP id, its text the frame's name,
 with `presentationHint.kind` `virtual` and neither children nor a value
 reference, since what it holds is the value asked of. A missing or 0
@@ -5901,8 +5903,8 @@ time:
   `uncaught`, `caught` and `halt`, each class breakpoint's filters as
   `filterOptions` whose condition names its class as written, a name the
   agent refuses reported as the request's error
-  (`testAnExceptionBreakpointByIdStops`). The agent keeps one list of classes for
-  both filters (`Command::SetExceptionBreakpoints`), so a class taken for
+  (`testAnExceptionBreakpointByIdStops`). The agent keeps one list of
+  classes for both filters (`Command::SetExceptionBreakpoints`), so a class taken for
   caught exceptions is taken for uncaught ones too when another class
   breakpoint takes those, and "Any exception" taking uncaught or caught
   exceptions makes the class breakpoints' filters take every class.
@@ -6063,8 +6065,9 @@ a walk of the whole object space, never asked while the panel is hidden;
 a class chosen lists its instances below as a value tree, the
 platform's `XDebuggerTree` under one node whose children are
 `nsNext/instances`' pages, by the class's name alone, which names one
-module's class, a shipped module's by its `newspeak.core.` id; and leaving the stop empties both, since the
-next stop knows none of the references. Every value the agent hands a
+module's class, a shipped module's by its `newspeak.core.` id; and
+leaving the stop empties both, since the next stop knows none of the
+references. Every value the agent hands a
 value reference for, in the memory view and in every other tree, answers
 the platform's Show Referring Objects through its `XReferrersProvider`,
 whose value's children are `nsNext/referrers`' pages: an object, or a
