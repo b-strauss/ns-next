@@ -8,10 +8,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use indoc::indoc;
-use ns_runtime::trace_events::{CompileRefusal, CompileTrigger};
+use ns_runtime::trace_events::{CompileRefusal, CompileTrigger, Deferral};
 use ns_runtime::{
-    HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, TraceCategories,
-    TraceCategory, TraceEvent, TraceEventKind, TraceFilter, TraceSink,
+    Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
+    SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
+    TraceSink,
 };
 
 /// A sink that keeps every event it receives where the test reads it.
@@ -118,6 +119,32 @@ fn traced(
     filter: TraceFilter,
     prepare: impl FnOnce(&mut Interpreter),
 ) -> Vec<TraceEvent> {
+    traced_under(source, categories, filter, |interpreter| {
+        interpreter.set_optimization_budget(i64::MAX);
+        prepare(interpreter);
+    })
+}
+
+/// `traced`, every body's optimization budget the JIT's own, as
+/// `tests/jit.rs`'s `load_spending_with` leaves it: what the optimizing
+/// tier's events need.
+fn traced_spending(
+    source: &str,
+    categories: &[TraceCategory],
+    prepare: impl FnOnce(&mut Interpreter),
+) -> Vec<TraceEvent> {
+    traced_under(source, categories, TraceFilter::everything(), prepare)
+}
+
+/// The events of `categories` that `source`'s `run` delivers through
+/// `filter`, the JIT and optimize stress modes off, after `prepare` was
+/// given the interpreter.
+fn traced_under(
+    source: &str,
+    categories: &[TraceCategory],
+    filter: TraceFilter,
+    prepare: impl FnOnce(&mut Interpreter),
+) -> Vec<TraceEvent> {
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = Box::new(Collector(Rc::clone(&events)));
     let categories = categories
@@ -128,7 +155,6 @@ fn traced(
     run_source(source, |interpreter| {
         interpreter.set_jit_stress(false);
         interpreter.set_optimize_stress(false);
-        interpreter.set_optimization_budget(i64::MAX);
         interpreter.set_trace(categories, filter, sink);
         prepare(interpreter);
     });
@@ -454,5 +480,111 @@ fn a_body_first_compiled_at_a_compiled_call_is_traced_call() {
             }
         )),
         "never at an interpreted entry: {events:?}"
+    );
+}
+
+/// A loop whose method is hot: `run` sends `step:` a million times, from
+/// its compiled loop, and its optimized copy inlines `step:`. A statement
+/// no turn reaches stands before the loop, for a breakpoint that patches
+/// the body without stopping.
+const HOT_LOOP: &str = indoc! {"
+    class Test = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        sum < 0 ifTrue: [
+          ^0].
+        [index < 1000000] whileTrue: [
+          sum:: sum + (self step: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      step: value = (
+        ^value + 1.
+      )
+    )
+"};
+
+/// Off whatever the environment says: the suspend stress mode serves a
+/// safepoint at the loop's backward jumps, rebuilding the stack, so that
+/// the loop is never compiled and its method spends no budget. The deopt
+/// and invalidate stress modes went off with the optimize stress mode
+/// (`traced_under`).
+fn hot_loop_stress_off(interpreter: &mut Interpreter) {
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_suspend(false);
+    #[cfg(not(debug_assertions))]
+    let _ = interpreter;
+}
+
+/// A hot loop's method is requested once its budget runs out -- the walk
+/// up the stack saying where it stopped -- and installed, and its plan
+/// inlines the callee its loop sends.
+#[test]
+fn a_hot_loop_is_traced_requested_and_optimized() {
+    let events = traced_spending(
+        HOT_LOOP,
+        &[TraceCategory::Optimize, TraceCategory::Inlining],
+        hot_loop_stress_off,
+    );
+    let run = about(&events, "Test>>run");
+    assert!(
+        run.iter()
+            .any(|event| event.category == TraceCategory::Optimize
+                && matches!(event.kind, TraceEventKind::OptimizationRequested { .. })),
+        "{events:?}"
+    );
+    assert!(
+        run.iter()
+            .any(|event| event.category == TraceCategory::Optimize
+                && matches!(event.kind, TraceEventKind::Optimized { bytes, .. } if bytes > 0)),
+        "{events:?}"
+    );
+    assert!(
+        run.iter()
+            .any(|event| event.category == TraceCategory::Inlining
+                && matches!(
+                    &event.kind,
+                    TraceEventKind::Inlined { in_body, callee, .. }
+                        if in_body == "Test>>run" && callee == "Test>>step:"
+                )),
+        "{events:?}"
+    );
+}
+
+/// A body a breakpoint patched stays in its baseline code: its request is
+/// put off, and the event says why. The breakpoint stands on a statement
+/// no turn reaches, so that the run never stops.
+#[test]
+fn a_patched_body_is_traced_deferred() {
+    let mut remote: Option<DebugRemote> = None;
+    let events = traced_spending(HOT_LOOP, &[TraceCategory::Optimize], |interpreter| {
+        hot_loop_stress_off(interpreter);
+        let attached = interpreter.attach_debugger();
+        let offset = HOT_LOOP
+            .find("^0].")
+            .expect("the statement no turn reaches");
+        attached.send(Command::SetBreakpoints {
+            module: ModuleName::named("Test"),
+            breakpoints: vec![LineBreakpoint::at_offset(
+                u32::try_from(offset).expect("a small source"),
+            )],
+        });
+        remote = Some(attached);
+    });
+    drop(remote);
+    assert!(
+        about(&events, "Test>>run").iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::OptimizationDeferred {
+                reason: Deferral::Patched,
+                ..
+            }
+        )),
+        "{events:?}"
     );
 }

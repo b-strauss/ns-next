@@ -59,6 +59,8 @@ use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 use crate::trace_events::{
     CompileRefusal, CompileTrigger, Pending, PendingKind, Revival, TraceCategory,
 };
+#[cfg(ns_jit)]
+use crate::trace_events::{Deferral, RecompileWalkEnd};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -5445,7 +5447,7 @@ pub(crate) fn budget_spent(
     };
     let due = optimization_due(mutator, &code, frame);
     if due && mutator.jit.optimize_stress() {
-        request_optimization(mutator, &code, frame);
+        request_optimization(mutator, &code, frame, None);
         return false;
     }
     due
@@ -5522,19 +5524,52 @@ fn rearm_for_other_pairs(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 }
 
 /// Records `request` unless one for its body and key is pending, and
-/// requests the safepoint that takes it up.
+/// requests the safepoint that takes it up; traced as requested when it
+/// is recorded and the walk up the stack led to it (`cause`).
 #[cfg(ns_jit)]
-fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest) {
+fn request(
+    mutator: &mut Mutator<'_>,
+    request: OptimizationRequest,
+    cause: Option<RequestCause<'_>>,
+) {
     let requests = &mut mutator.jit.optimization_requests;
     requests.retain(|pending| pending.code.strong_count() > 0);
     let pending = requests.iter().any(|pending| {
         std::ptr::eq(pending.code.as_ptr(), request.code.as_ptr()) && pending.key == request.key
     });
-    if !pending {
-        requests.push(request);
-        mutator.jit.statistics.optimization_requests += 1;
-        mutator.heap.request_safepoint();
+    if pending {
+        return;
     }
+    if mutator.jit.tracer.traces(TraceCategory::Optimize)
+        && let Some(cause) = cause
+        && let Some(code) = request.code.upgrade()
+    {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Optimize,
+            &code,
+            PendingKind::OptimizationRequested {
+                spent_by: Rc::clone(cause.spent_by),
+                walk_end: cause.walk_end,
+                key: request.key,
+            },
+        ));
+    }
+    let requests = &mut mutator.jit.optimization_requests;
+    requests.push(request);
+    mutator.jit.statistics.optimization_requests += 1;
+    mutator.heap.request_safepoint();
+}
+
+/// What led to an optimization request, for the trace: the body whose
+/// budget ran out, and why the walk up the stack from its frame stopped
+/// at the recompilee (`find_recompilee`). A request the walk did not
+/// decide -- the optimize stress mode's, a test's -- has none, and is not
+/// traced as requested.
+#[cfg(ns_jit)]
+#[derive(Clone, Copy)]
+struct RequestCause<'code> {
+    spent_by: &'code Rc<CompiledCode>,
+    walk_end: RecompileWalkEnd,
 }
 
 /// How many frames up the stack the walk for the recompilee goes at most
@@ -5555,7 +5590,8 @@ pub(crate) const RECOMPILEE_SEARCH_LENGTH: usize = 10;
 /// (`inlines`), up to `RECOMPILEE_SEARCH_LENGTH` frames: a compile of that
 /// frame takes in the hot body, and the loop around it, which a compile
 /// of the hot body alone would leave to a send. Answers `triggering`
-/// itself when it goes nowhere.
+/// itself when it goes nowhere, and with the frame why the walk stopped
+/// there, which only the trace reads.
 ///
 /// Run by the run loop after the exit a run-out takes, where every frame
 /// the exit left is an activation the interpreter reads, and holding none
@@ -5564,16 +5600,16 @@ pub(crate) const RECOMPILEE_SEARCH_LENGTH: usize = 10;
 pub(crate) fn find_recompilee(
     mutator: &mut Mutator<'_>,
     triggering: ActivationReference,
-) -> ActivationReference {
+) -> (ActivationReference, RecompileWalkEnd) {
     let mut current = triggering;
     let mut distance = 0;
     while let Some((next, step)) = sender_or_parent_of(mutator, current) {
         let Some(frames) = frames_between(&mutator.heap, current, next) else {
-            break;
+            return (current, RecompileWalkEnd::NoFramesBetween);
         };
         distance += frames;
         if distance > RECOMPILEE_SEARCH_LENGTH {
-            break;
+            return (current, RecompileWalkEnd::SearchLength);
         }
         // A frame whose body a copy below it inlined -- a scope an exit
         // rebuilt, now or at any earlier exit, or a frame its caller's
@@ -5581,10 +5617,10 @@ pub(crate) fn find_recompilee(
         // have a copy of its own that the copy below never enters: the
         // walk stops, as Strongtalk stops at a compiled frame.
         if inlined_into_a_copy_below(mutator, next) {
-            break;
+            return (current, RecompileWalkEnd::InlinedIntoACopyBelow);
         }
         let Some(candidate) = recompilable(mutator, next, step) else {
-            break;
+            return (current, RecompileWalkEnd::NotRecompilable);
         };
         // A sender inlines the body at its send; a home anywhere in its
         // plan, at a send of a body it inlines.
@@ -5593,11 +5629,11 @@ pub(crate) fn find_recompilee(
             Step::Home => None,
         };
         if !inlines(mutator, &candidate, current, send) {
-            break;
+            return (current, RecompileWalkEnd::NotInlined);
         }
         current = next;
     }
-    current
+    (current, RecompileWalkEnd::BottomOfStack)
 }
 
 /// Whether `activation`'s body is inlined into the copy of a frame below
@@ -5935,24 +5971,26 @@ fn inlines(
 /// and the triggering body's left parked until the safepoint has
 /// compiled the request, where it is armed afresh at the wait its key's
 /// copy earned (`JitState::parked_for_recompilees`), since its run-out
-/// requested nothing of its own.
+/// requested nothing of its own. `walk_end` is why the walk stopped at
+/// the recompilee, which only the trace reads.
 #[cfg(ns_jit)]
 fn request_recompilee(
     mutator: &mut Mutator<'_>,
     triggering: ActivationReference,
     recompilee: ActivationReference,
+    walk_end: RecompileWalkEnd,
 ) {
+    let spent_by = mutator.heap.activation_code(triggering);
     if Heap::activation_offset(recompilee) != Heap::activation_offset(triggering) {
         mutator.jit.statistics.recompilees_above += 1;
-        let code = mutator.heap.activation_code(triggering);
-        let key = frame_of(mutator, &code, triggering).and_then(|(receiver, current_class)| {
+        let key = frame_of(mutator, &spent_by, triggering).and_then(|(receiver, current_class)| {
             CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
         });
-        let version = code.jit.optimized_version(key);
+        let version = spent_by.jit.optimized_version(key);
         mutator
             .jit
             .parked_for_recompilees
-            .push((Rc::downgrade(&code), version));
+            .push((Rc::downgrade(&spent_by), version));
         let code = mutator.heap.activation_code(recompilee);
         let budget = mutator.heap.optimization_budget_of(&code);
         if budget.armed && !budget.sink {
@@ -5962,13 +6000,20 @@ fn request_recompilee(
         // Due, as `recompilable` found it, unless its decision settled the
         // pair after all.
         if optimization_due(mutator, &code, frame) {
-            request_optimization(mutator, &code, frame);
+            let cause = RequestCause {
+                spent_by: &spent_by,
+                walk_end,
+            };
+            request_optimization(mutator, &code, frame, Some(cause));
         }
         return;
     }
-    let code = mutator.heap.activation_code(triggering);
-    let frame = frame_of(mutator, &code, triggering);
-    request_optimization(mutator, &code, frame);
+    let frame = frame_of(mutator, &spent_by, triggering);
+    let cause = RequestCause {
+        spent_by: &spent_by,
+        walk_end,
+    };
+    request_optimization(mutator, &spent_by, frame, Some(cause));
 }
 
 /// The receiver and current class of `activation`, which runs `code`,
@@ -5995,19 +6040,21 @@ fn frame_of<'gc>(
 
 /// The request `optimization_due` found due for `code`, run by a frame
 /// of the receiver and current class `frame` names: the copy for the
-/// frame's key (`request_copy`), or the body's one uncustomized copy.
+/// frame's key (`request_copy`), or the body's one uncustomized copy;
+/// `cause` what led to it, for the trace (`request`).
 #[cfg(ns_jit)]
 fn request_optimization<'gc>(
     mutator: &mut Mutator<'gc>,
     code: &Rc<CompiledCode>,
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
+    cause: Option<RequestCause<'_>>,
 ) {
     if let Some((receiver, current_class)) = frame
-        && request_copy(mutator, code, receiver, current_class)
+        && request_copy(mutator, code, receiver, current_class, cause)
     {
         return;
     }
-    request(mutator, OptimizationRequest::uncustomized(code));
+    request(mutator, OptimizationRequest::uncustomized(code), cause);
 }
 
 /// The request of `code`'s copy for the key of a frame of `receiver` and
@@ -6024,6 +6071,7 @@ fn request_copy<'gc>(
     code: &Rc<CompiledCode>,
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
+    cause: Option<RequestCause<'_>>,
 ) -> bool {
     let Some(key) = CustomizationKey::of_activation(&mutator.heap, receiver, current_class) else {
         return false;
@@ -6058,6 +6106,7 @@ fn request_copy<'gc>(
             key: Some(key),
             entered,
         },
+        cause,
     );
     true
 }
@@ -6182,7 +6231,7 @@ fn optimize(
     // run past it. Put off rather than refused, so that the body is
     // optimized once the breakpoint is gone.
     if code.has_patches() {
-        defer_optimization(mutator, code, key);
+        defer_optimization(mutator, code, key, Deferral::Patched);
         return;
     }
     debug_assert!(
@@ -6207,7 +6256,7 @@ fn optimize(
     // budget: the request is held, as a baseline compile's is.
     if !mutator.jit.may_compile_needing(needed) {
         mutator.jit.hold_compile();
-        defer_optimization(mutator, code, key);
+        defer_optimization(mutator, code, key, Deferral::ZoneFull);
         return;
     }
     let method = match &body.method {
@@ -6249,6 +6298,9 @@ fn optimize(
     // What the copy inlined -- its scopes, type-case arms, eliminated
     // blocks and sites -- counted once it is installed.
     let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
+    // The plan's decisions, kept for the trace whether or not the copy is
+    // installed.
+    let mut decisions = None;
     let installation = optimizing::compile_tree(
         &tree,
         macro_assembler,
@@ -6263,6 +6315,12 @@ fn optimize(
             optimized.eliminated.len() as u64,
             u64::from(optimized.inlined_sites),
         );
+        if mutator.jit.tracer.traces(TraceCategory::Inlining) {
+            decisions = Some((
+                std::mem::take(&mut optimized.inlined),
+                std::mem::take(&mut optimized.declined),
+            ));
+        }
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
         let dependencies = CopyDependencies::of_relied_on(&mutator.heap, &optimized.relied_on);
         install_optimized(
@@ -6277,6 +6335,9 @@ fn optimize(
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
+    if let Some((inlined_scopes, declined)) = decisions {
+        trace_inlining(mutator, code, key, &inlined_scopes, &declined);
+    }
     let index = match installation {
         Ok(index) => index,
         // No room is no reason to give the body up: as for a baseline
@@ -6290,13 +6351,23 @@ fn optimize(
                 mutator.jit.compaction_requested = true;
                 mutator.jit.zone_exhausted = true;
             }
-            defer_optimization(mutator, code, key);
+            defer_optimization(mutator, code, key, Deferral::ZoneFull);
             return;
         }
-        Err(_) => {
+        Err(refusal) => {
             match key {
                 None => code.jit.optimized_refused.set(true),
                 Some(key) => code.jit.refuse_copy(key),
+            }
+            if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+                mutator.jit.tracer.record(Pending::about(
+                    TraceCategory::Optimize,
+                    code,
+                    PendingKind::OptimizationRefused {
+                        key,
+                        reason: CompileRefusal::from_refusal(refusal),
+                    },
+                ));
             }
             return;
         }
@@ -6321,6 +6392,22 @@ fn optimize(
     statistics.type_case_arms += inlined.1;
     statistics.eliminated_blocks += inlined.2;
     statistics.inlined_sites += inlined.3;
+    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+        let installed = &mutator.jit.bodies[index as usize];
+        let bytes = (installed.end - installed.start) as usize;
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Optimize,
+            code,
+            PendingKind::Optimized {
+                key,
+                bytes,
+                inlined_scopes: inlined.0,
+                inlined_sites: inlined.3,
+                type_case_arms: inlined.1,
+                eliminated_blocks: inlined.2,
+            },
+        ));
+    }
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its
@@ -6343,20 +6430,81 @@ fn optimize(
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would
-/// not: a compaction asked for is passed on to the heap, and the body's
-/// budget armed afresh, so that it is requested again once it has run as
-/// long -- as long as the version of the copy for `key` says
+/// not, or which a breakpoint's patch holds back (`reason`): a compaction
+/// asked for is passed on to the heap, and the body's budget armed
+/// afresh, so that it is requested again once it has run as long -- as
+/// long as the version of the copy for `key` says
 /// (`optimization_budget_after`), which a full zone does not reset.
 #[cfg(ns_jit)]
 fn defer_optimization(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
+    reason: Deferral,
 ) {
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
     rearm_optimization_budget(mutator, code, code.jit.optimized_version(key));
+    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Optimize,
+            code,
+            PendingKind::OptimizationDeferred { key, reason },
+        ));
+    }
+}
+
+/// Records the inlining plan's decisions for the copy of `code` for
+/// `key`: each scope the copy lays out below its own, by its sender
+/// scope's body, the send's program counter and its own body
+/// (`inlined_scopes`), and each callee the plan sent rather than inline
+/// (`declined`). Bodies are named by their code ids at this safepoint,
+/// where the tree that registered them was taken; an id the heap no
+/// longer names is left out.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+fn trace_inlining(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    inlined_scopes: &[(CodeId, u32, CodeId)],
+    declined: &[optimizing::plan::Declined],
+) {
+    for &(in_body, program_counter, callee) in inlined_scopes {
+        let (Some(in_body), Some(callee)) = (mutator.heap.code(in_body), mutator.heap.code(callee))
+        else {
+            continue;
+        };
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Inlining,
+            code,
+            PendingKind::Inlined {
+                key,
+                in_body,
+                program_counter,
+                callee,
+            },
+        ));
+    }
+    for declined in declined {
+        let Some(in_body) = mutator.heap.code(declined.scope_code) else {
+            continue;
+        };
+        let callee = declined.callee.and_then(|callee| mutator.heap.code(callee));
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Inlining,
+            code,
+            PendingKind::InlineDeclined {
+                key,
+                in_body,
+                program_counter: declined.program_counter,
+                callee,
+                reason: declined.reason,
+            },
+        ));
+    }
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
@@ -7911,8 +8059,8 @@ fn resumption_after_exit(
         // again. Counted against no exit budget, above.
         MachineExit::BudgetSpent { program_counter } => {
             mutator.jit.statistics.budget_exits += 1;
-            let recompilee = find_recompilee(mutator, innermost);
-            request_recompilee(mutator, innermost, recompilee);
+            let (recompilee, walk_end) = find_recompilee(mutator, innermost);
+            request_recompilee(mutator, innermost, recompilee, walk_end);
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,

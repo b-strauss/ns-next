@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use crate::bytecode::CompiledCode;
 use crate::interpreter::Mutator;
+use crate::jit::CustomizationKey;
 use crate::tool_names::KnownModule;
 
 pub use filter::TraceFilter;
@@ -155,6 +156,66 @@ pub enum TraceEventKind {
     /// backward jump to `loop_head`, the bytecode index of the loop's
     /// head (`osr-entered`, its value `at=`).
     OsrEntered { loop_head: u32 },
+    /// The body -- the recompilee -- was requested an optimization, which
+    /// the next safepoint compiles (`requested`): `spent_by`'s budget ran
+    /// out, and the walk up the stack from its frame stopped at the body
+    /// for `walk_end`. `key` names the copy's customization key by its
+    /// receiver's class and `entered` the class the body was entered at,
+    /// only where it is another; both `None` for a body optimized as one
+    /// copy.
+    OptimizationRequested {
+        spent_by: String,
+        walk_end: RecompileWalkEnd,
+        key: Option<String>,
+        entered: Option<String>,
+    },
+    /// The body's optimization was put off, its budget armed afresh
+    /// (`deferred`).
+    OptimizationDeferred {
+        key: Option<String>,
+        entered: Option<String>,
+        reason: Deferral,
+    },
+    /// The body's optimized copy was installed, taking `bytes` of the
+    /// code zone, with how much it inlined (`optimized`).
+    Optimized {
+        key: Option<String>,
+        entered: Option<String>,
+        bytes: usize,
+        inlined_scopes: u64,
+        inlined_sites: u64,
+        type_case_arms: u64,
+        eliminated_blocks: u64,
+    },
+    /// The optimizing compiler refused the body's copy for good
+    /// (`refused`).
+    OptimizationRefused {
+        key: Option<String>,
+        entered: Option<String>,
+        reason: CompileRefusal,
+    },
+    /// The plan of the body's copy inlined `callee` at the send at
+    /// `program_counter` (the line's `at=`) in the scope running `in_body`
+    /// (`inlined`).
+    Inlined {
+        key: Option<String>,
+        entered: Option<String>,
+        in_body: String,
+        program_counter: u32,
+        callee: String,
+    },
+    /// The plan of the body's copy sent the callee at the send at
+    /// `program_counter` (the line's `at=`) in the scope running `in_body`
+    /// rather than inline it, for `reason`
+    /// (`declined`); `callee` is `None` for a callee that is no body.
+    InlineDeclined {
+        key: Option<String>,
+        entered: Option<String>,
+        in_body: String,
+        program_counter: u32,
+        callee: Option<String>,
+        reason: InlineDecline,
+    },
 }
 
 impl TraceEventKind {
@@ -169,6 +230,12 @@ impl TraceEventKind {
             TraceEventKind::RefusedForItsTwin => "refused-for-its-twin",
             TraceEventKind::OsrCompiled { .. } => "osr-compiled",
             TraceEventKind::OsrEntered { .. } => "osr-entered",
+            TraceEventKind::OptimizationRequested { .. } => "requested",
+            TraceEventKind::OptimizationDeferred { .. } => "deferred",
+            TraceEventKind::Optimized { .. } => "optimized",
+            TraceEventKind::OptimizationRefused { .. } => "refused",
+            TraceEventKind::Inlined { .. } => "inlined",
+            TraceEventKind::InlineDeclined { .. } => "declined",
         }
     }
 }
@@ -264,6 +331,99 @@ impl Revival {
     }
 }
 
+/// Why the walk up the stack for the frame to optimize
+/// (`jit::find_recompilee`) stopped where it did: the frame it stopped at
+/// is the recompilee.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecompileWalkEnd {
+    /// No frame lies further up: the bottom of the stack.
+    BottomOfStack,
+    /// The frame the walk would go to lies further down the senders than
+    /// the walk looks.
+    NoFramesBetween,
+    /// The walk went as many frames as it goes at most.
+    SearchLength,
+    /// The next frame's body is inlined into a copy of a frame below it,
+    /// whose own copy that one would never enter.
+    InlinedIntoACopyBelow,
+    /// The next frame could not be optimized: no baseline code, a copy
+    /// already, refused, or run too rarely.
+    NotRecompilable,
+    /// The next frame's plan would not inline the frame the walk came from.
+    NotInlined,
+}
+
+impl RecompileWalkEnd {
+    /// The end's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            RecompileWalkEnd::BottomOfStack => "bottom-of-stack",
+            RecompileWalkEnd::NoFramesBetween => "no-frames-between",
+            RecompileWalkEnd::SearchLength => "search-length",
+            RecompileWalkEnd::InlinedIntoACopyBelow => "inlined-into-a-copy-below",
+            RecompileWalkEnd::NotRecompilable => "not-recompilable",
+            RecompileWalkEnd::NotInlined => "not-inlined",
+        }
+    }
+}
+
+/// Why an optimization was put off rather than compiled or refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Deferral {
+    /// A breakpoint patched the body: its baseline code exits at the
+    /// patch, which optimized code would run past.
+    Patched,
+    /// The code zone has no room for the copy, now or as far as it knows.
+    ZoneFull,
+}
+
+impl Deferral {
+    /// The deferral's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            Deferral::Patched => "patched",
+            Deferral::ZoneFull => "zone-full",
+        }
+    }
+}
+
+/// Why the inlining plan sent a callee rather than inline it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineDecline {
+    /// The callee is no method body the plan inlines: a leaf or primitive
+    /// the graph does not express, a body that leaves otherwise than by
+    /// returning, or a lazy slot's getter whose field is not known.
+    NotAMethod,
+    /// The callee is observed: an unwind marker or a leaf that reads an
+    /// activation keeps it a frame of its own.
+    Observed,
+    /// The block reaches a frame the compile does not lay out.
+    ReachesPastTheCompile,
+    /// The callee weighs more than its limit.
+    OverWeight,
+    /// The compile would weigh more than its limit with the callee.
+    OverCompileLimit,
+    /// The callee already runs in the chain as often as the limit allows.
+    OverRecursionLimit,
+    /// The callee's frame would lie past the register ceiling.
+    OutOfRegisters,
+}
+
+impl InlineDecline {
+    /// The reason's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            InlineDecline::NotAMethod => "not-a-method",
+            InlineDecline::Observed => "observed",
+            InlineDecline::ReachesPastTheCompile => "reaches-past-the-compile",
+            InlineDecline::OverWeight => "over-weight",
+            InlineDecline::OverCompileLimit => "over-compile-limit",
+            InlineDecline::OverRecursionLimit => "over-recursion-limit",
+            InlineDecline::OutOfRegisters => "out-of-registers",
+        }
+    }
+}
+
 /// What a host installs to receive the events (`Interpreter::set_trace`).
 pub trait TraceSink {
     /// Receives `event`, in the order the events happened. Called outside
@@ -309,6 +469,40 @@ pub(crate) enum PendingKind {
     },
     OsrEntered {
         loop_head: u32,
+    },
+    OptimizationRequested {
+        spent_by: Rc<CompiledCode>,
+        walk_end: RecompileWalkEnd,
+        key: Option<CustomizationKey>,
+    },
+    OptimizationDeferred {
+        key: Option<CustomizationKey>,
+        reason: Deferral,
+    },
+    Optimized {
+        key: Option<CustomizationKey>,
+        bytes: usize,
+        inlined_scopes: u64,
+        inlined_sites: u64,
+        type_case_arms: u64,
+        eliminated_blocks: u64,
+    },
+    OptimizationRefused {
+        key: Option<CustomizationKey>,
+        reason: CompileRefusal,
+    },
+    Inlined {
+        key: Option<CustomizationKey>,
+        in_body: Rc<CompiledCode>,
+        program_counter: u32,
+        callee: Rc<CompiledCode>,
+    },
+    InlineDeclined {
+        key: Option<CustomizationKey>,
+        in_body: Rc<CompiledCode>,
+        program_counter: u32,
+        callee: Option<Rc<CompiledCode>>,
+        reason: InlineDecline,
     },
 }
 
@@ -434,7 +628,7 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
             _ => true,
         };
         if passes {
-            let kind = event_kind(kind);
+            let kind = event_kind(mutator, &mut names, kind);
             events.push(TraceEvent {
                 category,
                 body,
@@ -451,7 +645,15 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
 }
 
 /// The event a pending event's kind delivers, its bodies and keys named.
-fn event_kind(kind: PendingKind) -> TraceEventKind {
+fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -> TraceEventKind {
+    let mut name = |code: &Rc<CompiledCode>| names.name(mutator, code);
+    let key_fields = |key: Option<CustomizationKey>| match key {
+        Some(key) => {
+            let (receiver, entered) = key_names(mutator, key);
+            (Some(receiver), entered)
+        }
+        None => (None, None),
+    };
     match kind {
         PendingKind::Compiled { trigger, bytes } => TraceEventKind::Compiled { trigger, bytes },
         PendingKind::CompiledTwin { bytes } => TraceEventKind::CompiledTwin { bytes },
@@ -463,6 +665,86 @@ fn event_kind(kind: PendingKind) -> TraceEventKind {
         PendingKind::RefusedForItsTwin => TraceEventKind::RefusedForItsTwin,
         PendingKind::OsrCompiled { loop_head } => TraceEventKind::OsrCompiled { loop_head },
         PendingKind::OsrEntered { loop_head } => TraceEventKind::OsrEntered { loop_head },
+        PendingKind::OptimizationRequested {
+            spent_by,
+            walk_end,
+            key,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::OptimizationRequested {
+                spent_by: name(&spent_by),
+                walk_end,
+                key,
+                entered,
+            }
+        }
+        PendingKind::OptimizationDeferred { key, reason } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::OptimizationDeferred {
+                key,
+                entered,
+                reason,
+            }
+        }
+        PendingKind::Optimized {
+            key,
+            bytes,
+            inlined_scopes,
+            inlined_sites,
+            type_case_arms,
+            eliminated_blocks,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::Optimized {
+                key,
+                entered,
+                bytes,
+                inlined_scopes,
+                inlined_sites,
+                type_case_arms,
+                eliminated_blocks,
+            }
+        }
+        PendingKind::OptimizationRefused { key, reason } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::OptimizationRefused {
+                key,
+                entered,
+                reason,
+            }
+        }
+        PendingKind::Inlined {
+            key,
+            in_body,
+            program_counter,
+            callee,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::Inlined {
+                key,
+                entered,
+                in_body: name(&in_body),
+                program_counter,
+                callee: name(&callee),
+            }
+        }
+        PendingKind::InlineDeclined {
+            key,
+            in_body,
+            program_counter,
+            callee,
+            reason,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::InlineDeclined {
+                key,
+                entered,
+                in_body: name(&in_body),
+                program_counter,
+                callee: callee.map(|callee| name(&callee)),
+                reason,
+            }
+        }
     }
 }
 
@@ -471,14 +753,7 @@ fn event_kind(kind: PendingKind) -> TraceEventKind {
 /// each qualified as every class is (`qualified_name`); an id no
 /// application holds any longer is `#<id>`. Never joined by `@`, which
 /// names a version.
-#[expect(
-    dead_code,
-    reason = "the events that name a key are added with their variants"
-)]
-pub(crate) fn key_names(
-    mutator: &Mutator<'_>,
-    key: crate::jit::CustomizationKey,
-) -> (String, Option<String>) {
+pub(crate) fn key_names(mutator: &Mutator<'_>, key: CustomizationKey) -> (String, Option<String>) {
     let name = |id: crate::mixin::DispatchId| {
         mutator
             .heap

@@ -2240,7 +2240,7 @@ mod polls {
         let code = mutator.heap.activation_code(physical);
         let frame = mutator.heap.activation_receiver_and_current_class(physical);
         crate::jit::invalidate_all_optimized(mutator);
-        crate::jit::request_optimization(mutator, &code, Some(frame));
+        crate::jit::request_optimization(mutator, &code, Some(frame), None);
         crate::jit::optimize_requested(mutator);
         let key = crate::jit::activation_key(&mutator.heap, &code, physical);
         let installed = match key {

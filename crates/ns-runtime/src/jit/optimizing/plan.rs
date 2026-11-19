@@ -38,6 +38,7 @@ use crate::bytecode::{CodeKind, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
 use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
+use crate::trace_events::InlineDecline;
 use crate::types::BuiltinClass;
 
 use super::Speculation;
@@ -426,6 +427,21 @@ pub(crate) struct InliningPlan {
     pub(crate) deepest_chain: u16,
     /// One past the highest physical register any scope's frame reaches.
     pub(crate) deepest_extent: u32,
+    /// Every callee a live scope's send that ran could have inlined and
+    /// the plan sent instead, with why, in the order the plan decided
+    /// them: what the trace's `inlining` category reports.
+    pub(crate) declined: Vec<Declined>,
+}
+
+/// A callee the plan sent rather than inline: at the send at
+/// `program_counter` of the scope running `scope_code`, the body
+/// `callee`, `None` for one that is no body, declined for `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Declined {
+    pub(crate) scope_code: CodeId,
+    pub(crate) program_counter: u32,
+    pub(crate) callee: Option<CodeId>,
+    pub(crate) reason: InlineDecline,
 }
 
 /// An eliminated block of one compile, numbered in the order of its
@@ -946,14 +962,22 @@ fn value_arity(selector: Symbol) -> Option<u16> {
     }
 }
 
-/// What a callee is to the plan.
+/// What a callee is to the plan: never inlined, for its reason.
 enum Callee<'tree> {
     Always(AlwaysInlined),
     Method {
         snapshot: &'tree Snapshot,
         level: u16,
     },
-    Not,
+    Not(InlineDecline),
+}
+
+/// The body `callee` runs, when it is a method's the tree snapshotted.
+fn callee_code(callee: &CalleeFacts) -> Option<CodeId> {
+    match callee {
+        CalleeFacts::Method { snapshot, .. } => Some(snapshot.code_id),
+        _ => None,
+    }
 }
 
 /// `callee`, reached for a receiver of `receiver`.
@@ -967,12 +991,14 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                     .own_slot_bases
                     .get(usize::from(*level))
                     .and_then(|base| base.checked_add(*own_index))
-                    .map_or(Callee::Not, |field| {
+                    .map_or(Callee::Not(InlineDecline::NotAMethod), |field| {
                         Callee::Always(AlwaysInlined::LazyGetter { field })
                     });
             }
-            if is_observed(snapshot) || returns_otherwise(snapshot) {
-                Callee::Not
+            if is_observed(snapshot) {
+                Callee::Not(InlineDecline::Observed)
+            } else if returns_otherwise(snapshot) {
+                Callee::Not(InlineDecline::NotAMethod)
             } else {
                 Callee::Method {
                     snapshot,
@@ -1005,13 +1031,13 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                 Some(row) if expressed(row.primitive, receiver) => {
                     Callee::Always(AlwaysInlined::Primitive(row.primitive))
                 }
-                _ => Callee::Not,
+                _ => Callee::Not(InlineDecline::NotAMethod),
             },
         },
         CalleeFacts::Primitive(primitive) if expressed(*primitive, receiver) => {
             Callee::Always(AlwaysInlined::Primitive(*primitive))
         }
-        CalleeFacts::Primitive(_) | CalleeFacts::Other => Callee::Not,
+        CalleeFacts::Primitive(_) | CalleeFacts::Other => Callee::Not(InlineDecline::NotAMethod),
     }
 }
 
@@ -1026,6 +1052,9 @@ struct Planner<'tree> {
     queue: BinaryHeap<Candidate>,
     found: u64,
     decisions: HashMap<(ScopeId, u32), SiteDecision>,
+    /// Every callee declined, by the scope whose send declined it: only
+    /// those of scopes still live at the end are the plan's.
+    declined: Vec<(ScopeId, Declined)>,
 }
 
 impl<'tree> Planner<'tree> {
@@ -1041,6 +1070,7 @@ impl<'tree> Planner<'tree> {
             queue: BinaryHeap::new(),
             found: 0,
             decisions: HashMap::new(),
+            declined: Vec::new(),
         };
         planner.add_scope(
             ScopePlan {
@@ -1107,6 +1137,27 @@ impl<'tree> Planner<'tree> {
         });
         self.gather(id);
         id
+    }
+
+    /// Records that `scope`'s send at `program_counter` sends `callee`
+    /// rather than inline it, for `reason`.
+    fn decline(
+        &mut self,
+        scope: ScopeId,
+        program_counter: u32,
+        callee: Option<CodeId>,
+        reason: InlineDecline,
+    ) {
+        let scope_code = self.scopes[scope.index()].plan.code_id;
+        self.declined.push((
+            scope,
+            Declined {
+                scope_code,
+                program_counter,
+                callee,
+                reason,
+            },
+        ));
     }
 
     fn push(&mut self, scope: ScopeId, program_counter: u32, callee: CodeId, kind: CandidateKind) {
@@ -1283,7 +1334,10 @@ impl<'tree> Planner<'tree> {
                     );
                     None
                 }
-                Callee::Not => None,
+                Callee::Not(reason) => {
+                    self.decline(scope, program_counter, callee_code(callee), reason);
+                    None
+                }
             });
         }
         SiteDecision::TypeCase {
@@ -1333,13 +1387,18 @@ impl<'tree> Planner<'tree> {
                 );
                 SiteDecision::Unguarded(None)
             }
-            Callee::Not => SiteDecision::Unguarded(None),
+            Callee::Not(reason) => {
+                self.decline(scope, program_counter, callee_code(callee), reason);
+                SiteDecision::Unguarded(None)
+            }
         }
     }
 
     /// Takes `candidate` if its callee is under its limit, the compile
     /// under its own, its recursion under the limit and its frame under
-    /// the register ceiling.
+    /// the register ceiling, and records why it does not otherwise
+    /// (`decline`); a candidate whose arm or block the tree does not hold
+    /// decides nothing.
     fn take(&mut self, candidate: &Candidate) {
         let tree = self.tree;
         let sender = &self.scopes[candidate.scope.index()];
@@ -1407,7 +1466,20 @@ impl<'tree> Planner<'tree> {
                 let Some(snapshot) = tree.blocks.get(&block_code) else {
                     return;
                 };
-                if is_observed(snapshot) || self.reaches_past_the_compile(block, snapshot) {
+                let reason = if is_observed(snapshot) {
+                    Some(InlineDecline::Observed)
+                } else if self.reaches_past_the_compile(block, snapshot) {
+                    Some(InlineDecline::ReachesPastTheCompile)
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    self.decline(
+                        candidate.scope,
+                        candidate.program_counter,
+                        Some(block_code),
+                        reason,
+                    );
                     return;
                 }
                 let home = &self.scopes[block.0.index()];
@@ -1427,18 +1499,35 @@ impl<'tree> Planner<'tree> {
             }
         };
         let callee_weight = weight_in(tree, snapshot);
-        if callee_weight > limit || self.total.saturating_add(callee_weight) > self.limits.compile {
-            return;
-        }
-        if self.recursion(candidate.scope, snapshot.code_id) > self.limits.recursion {
-            return;
-        }
-        let Some(offset) = sender_offset.checked_add(send.argument_base) else {
-            return;
+        let offset = sender_offset
+            .checked_add(send.argument_base)
+            .filter(|offset| {
+                usize::from(*offset) + snapshot.register_count() <= usize::from(u16::MAX)
+            });
+        let declined = if callee_weight > limit {
+            Some(InlineDecline::OverWeight)
+        } else if self.total.saturating_add(callee_weight) > self.limits.compile {
+            Some(InlineDecline::OverCompileLimit)
+        } else if self.recursion(candidate.scope, snapshot.code_id) > self.limits.recursion {
+            Some(InlineDecline::OverRecursionLimit)
+        } else if offset.is_none() {
+            Some(InlineDecline::OutOfRegisters)
+        } else {
+            None
         };
-        if usize::from(offset) + snapshot.register_count() > usize::from(u16::MAX) {
-            return;
-        }
+        let offset = match (offset, declined) {
+            (Some(offset), None) => offset,
+            (_, Some(reason)) => {
+                self.decline(
+                    candidate.scope,
+                    candidate.program_counter,
+                    Some(snapshot.code_id),
+                    reason,
+                );
+                return;
+            }
+            (None, None) => unreachable!("internal: a frame past the ceiling is declined"),
+        };
         let entry = self.entry_of(candidate.scope, index, &send, snapshot, scope_facts.block);
         let frequency = candidate.frequency;
         self.total += callee_weight;
@@ -1931,6 +2020,12 @@ impl<'tree> Planner<'tree> {
     /// The plan: the live scopes renumbered in order, their sites and
     /// blocks.
     fn finish(self, eliminated: &BTreeSet<BlockKey>) -> InliningPlan {
+        let declined = self
+            .declined
+            .iter()
+            .filter(|(scope, _)| self.scopes[scope.index()].alive)
+            .map(|(_, declined)| *declined)
+            .collect();
         let mut renumbered: Vec<Option<ScopeId>> = vec![None; self.scopes.len()];
         let mut next = 0_usize;
         for (index, scope) in self.scopes.iter().enumerate() {
@@ -2046,6 +2141,7 @@ impl<'tree> Planner<'tree> {
             blocks,
             deepest_chain,
             deepest_extent,
+            declined,
         }
     }
 }
@@ -2124,8 +2220,8 @@ mod tests {
     use indoc::indoc;
 
     use super::{
-        ArmPlan, BLOCK_ARGUMENT_BONUS, BlockPlan, EliminatedId, FallThrough, InliningPlan, Limits,
-        METHOD_LIMIT, ScopeId, weight, weight_in,
+        ArmPlan, BLOCK_ARGUMENT_BONUS, BlockPlan, Declined, EliminatedId, FallThrough,
+        InlineDecline, InliningPlan, Limits, METHOD_LIMIT, ScopeId, weight, weight_in,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::MethodSide;
@@ -2406,6 +2502,51 @@ mod tests {
         assert!(site.arms.is_empty(), "{site:?}");
         assert_eq!(site.fall_through, FallThrough::Send);
         assert_eq!(plan.scopes.len(), 1);
+    }
+
+    /// The plan says why it sent a callee it could have inlined: under a
+    /// method limit `helper:` is over, its one send is declined for its
+    /// weight, the callee named.
+    #[test]
+    fn an_overweight_callee_is_declined_with_its_reason() {
+        let (mut interpreter, class) = run(MONOMORPHIC);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let light = Limits {
+            method: 1,
+            ..Limits::STANDARD
+        };
+        let plan = plan_with(&tree, &light, Speculation::Traps);
+        let send = send_of(&tree.root, "helper:");
+        assert_eq!(plan.scopes.len(), 1);
+        assert_eq!(
+            plan.declined,
+            [Declined {
+                scope_code: tree.root.code_id,
+                program_counter: send,
+                callee: Some(code_id_of(&mut interpreter, &class, "helper:")),
+                reason: InlineDecline::OverWeight,
+            }]
+        );
+    }
+
+    /// The send `count:` makes of itself is inlined once, and declined in
+    /// the scope inlined there for the recursion limit.
+    #[test]
+    fn a_recursion_past_the_limit_is_declined() {
+        let (mut interpreter, class) = run(RECURSION);
+        let tree = tree_of(&mut interpreter, &class, "count:", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        let send = send_of(&tree.root, "count:");
+        assert!(
+            plan.declined.contains(&Declined {
+                scope_code: tree.root.code_id,
+                program_counter: send,
+                callee: Some(tree.root.code_id),
+                reason: InlineDecline::OverRecursionLimit,
+            }),
+            "{:?}",
+            plan.declined
+        );
     }
 
     /// `remember:` hands a block to `keep:`, which stores it: the block

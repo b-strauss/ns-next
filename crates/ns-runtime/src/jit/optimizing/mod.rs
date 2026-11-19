@@ -143,6 +143,16 @@ pub(crate) fn compile_tree(
     // them, what it names in a collection and what it depends on are all
     // read off it, so that none of them can name a scope the others miss.
     let laid_out = laid_out_scopes(&graph);
+    let inlined = graph
+        .scopes
+        .iter()
+        .zip(&laid_out)
+        .filter(|(_, laid_out)| **laid_out)
+        .filter_map(|(scope, _)| {
+            let (sender, program_counter) = scope.parent?;
+            Some((graph.scope(sender).code_id, program_counter, scope.code_id))
+        })
+        .collect();
     let eliminated = eliminated_blocks(&plan, tree);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
@@ -211,6 +221,8 @@ pub(crate) fn compile_tree(
         polls,
         type_case_arms: type_case_arms(&graph),
         inlined_sites: graph.inlined_sites,
+        inlined,
+        declined: plan.declined,
         #[cfg(test)]
         small_integer_tag_tests,
     })
