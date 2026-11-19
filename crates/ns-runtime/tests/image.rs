@@ -7018,8 +7018,8 @@ const UTIL_TWO: &str = indoc! {"
     ) : ()
 "};
 
-const REGISTRY: &str = indoc! {"
-    class Registry = Object new () () : ()
+const MANIFEST_MODULE: &str = indoc! {"
+    class Manifest = Object new () () : ()
 "};
 
 /// An identity as a host gives it, its id and version parsed against
@@ -7032,17 +7032,17 @@ fn identity(path: &str, id: &str, class_name: &str, version: Option<&str>) -> Mo
     }
 }
 
-/// Two versions of `Util` and a module of the binary's own, `Registry`,
+/// Two versions of `Util` and a module of the binary's own, `Manifest`,
 /// written with `with_source` under the identities `identities`, in that
 /// order, the first module's instance the one root.
 fn util_image(identities: &[ModuleIdentity; 3], with_source: bool) -> Vec<u8> {
     let (mut interpreter, one) = load(UTIL_ONE);
     let two = load_another(&mut interpreter, UTIL_TWO, "Util.ns");
-    let registry = load_another(&mut interpreter, REGISTRY, "Registry.ns");
+    let manifest = load_another(&mut interpreter, MANIFEST_MODULE, "Manifest.ns");
     let instance = expect_ok(interpreter.instantiate(&one, &[]), "Util new");
     interpreter
         .enter(|mutator| {
-            let modules: Vec<image::ModuleSource> = [&one, &two, &registry]
+            let modules: Vec<image::ModuleSource> = [&one, &two, &manifest]
                 .into_iter()
                 .zip(identities)
                 .map(|(class, identity)| image::ModuleSource {
@@ -7072,9 +7072,9 @@ fn util_identities() -> [ModuleIdentity; 3] {
             Some("2.0.0-beta.1"),
         ),
         identity(
-            "core:Registry.ns",
-            "newspeak.core.Registry",
-            "Registry",
+            "core:Manifest.ns",
+            "newspeak.core.Manifest",
+            "Manifest",
             None,
         ),
     ]
@@ -7105,7 +7105,7 @@ fn an_image_names_its_modules_as_the_program_did() {
         );
         assert_eq!(
             report.modules[2].identity,
-            "newspeak.core.Registry at core:Registry.ns"
+            "newspeak.core.Manifest at core:Manifest.ns"
         );
     }
 }
@@ -7153,7 +7153,7 @@ fn the_building_machine_s_paths_are_not_written() {
 /// refused before anything is written.
 #[test]
 fn the_encoder_refuses_an_identity_the_loader_refuses() {
-    let [one, two, registry] = util_identities();
+    let [one, two, manifest] = util_identities();
     let refused = [
         (
             identity("/home/builder/Util.ns", "Util", "Util", None),
@@ -7174,10 +7174,10 @@ fn the_encoder_refuses_an_identity_the_loader_refuses() {
     for (first, expected) in refused {
         let (mut interpreter, one_class) = load(UTIL_ONE);
         let two_class = load_another(&mut interpreter, UTIL_TWO, "Util.ns");
-        let registry_class = load_another(&mut interpreter, REGISTRY, "Registry.ns");
-        let identities = [&first, &two, &registry];
+        let manifest_class = load_another(&mut interpreter, MANIFEST_MODULE, "Manifest.ns");
+        let identities = [&first, &two, &manifest];
         let written = interpreter.enter(|mutator| {
-            let modules: Vec<image::ModuleSource> = [&one_class, &two_class, &registry_class]
+            let modules: Vec<image::ModuleSource> = [&one_class, &two_class, &manifest_class]
                 .into_iter()
                 .zip(identities)
                 .map(|(class, identity)| image::ModuleSource {
@@ -7190,7 +7190,7 @@ fn the_encoder_refuses_an_identity_the_loader_refuses() {
         });
         assert_eq!(written.err().as_deref(), Some(expected));
     }
-    assert!(image::load(&util_image(&[one, two, registry], false)).is_ok());
+    assert!(image::load(&util_image(&[one, two, manifest], false)).is_ok());
 }
 
 /// One module record as `image::modules` writes it, its parts given
@@ -7244,11 +7244,11 @@ fn project<'a>(path: &'a str, id: &'a str, version: Option<&'a str>) -> Record<'
     }
 }
 
-/// The record of `util_image`'s third module, the binary's own `Registry`.
-const REGISTRY_RECORD: Record<'static> = Record {
+/// The record of `util_image`'s third module, the binary's own `Manifest`.
+const MANIFEST_RECORD: Record<'static> = Record {
     origin: ORIGIN_CORE,
-    path: "Registry.ns",
-    id: "newspeak.core.Registry",
+    path: "Manifest.ns",
+    id: "newspeak.core.Manifest",
     version: None,
 };
 
@@ -7276,12 +7276,12 @@ fn a_module_record_is_held_to_the_project_rules() {
         &[
             project("a/Util.ns", "Util", Some("1.0.0")),
             project("b/Util.ns", "Util", Some("1.0.1")),
-            REGISTRY_RECORD,
+            MANIFEST_RECORD,
         ],
     );
     let loaded = image::load(&valid).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(loaded.modules[1].identity.display_name(), "Util@1.0.1");
-    assert_eq!(loaded.modules[2].identity.path, "core:Registry.ns");
+    assert_eq!(loaded.modules[2].identity.path, "core:Manifest.ns");
 
     let refused = [
         (
@@ -7291,6 +7291,30 @@ fn a_module_record_is_held_to_the_project_rules() {
                 project("b/Util.ns", "Util", Some("2.0.0")),
             ],
             module_error(0, "`../../etc/passwd` does not end in `.ns`"),
+        ),
+        (
+            "a path holding a terminal's escape sequence",
+            [
+                project("a/\u{1b}[2J.ns", "Util", Some("1.0.0")),
+                project("b/Util.ns", "Util", Some("2.0.0")),
+            ],
+            module_error(0, "`a/\\u{1b}[2J.ns` holds a control character"),
+        ),
+        (
+            "an id holding a control character",
+            [
+                project("a/Util.ns", "Util\u{7}", Some("1.0.0")),
+                project("b/Util.ns", "Util", Some("2.0.0")),
+            ],
+            module_error(0, "`Util\\u{7}` holds a control character"),
+        ),
+        (
+            "a file named only `.ns`",
+            [
+                project("../.ns", "Util", Some("1.0.0")),
+                project("b/Util.ns", "Util", Some("2.0.0")),
+            ],
+            module_error(0, "`../.ns` names no file: its name is only `.ns`"),
         ),
         (
             "an absolute path",
@@ -7378,33 +7402,56 @@ fn a_module_record_is_held_to_the_project_rules() {
         ),
     ];
     for (what, [first, second], expected) in refused {
-        let crafted = with_module_records(&bytes, &[first, second, REGISTRY_RECORD]);
+        let crafted = with_module_records(&bytes, &[first, second, MANIFEST_RECORD]);
         assert_eq!(load_error(&crafted), expected, "{what}");
     }
 
-    // The binary's modules: a `core:` file name and the reserved namespace,
-    // each only with the other.
+    // The one module of the binary's an image carries is the manifest, at
+    // its `core:` path, of its reserved id, without a version.
     let core_refused = [
         (
             Record {
-                id: "Registry",
-                ..REGISTRY_RECORD
+                id: "Manifest",
+                ..MANIFEST_RECORD
             },
             module_error(
                 2,
-                "`Registry` at `core:Registry.ns` lies outside the namespace `newspeak.`, which \
-                 every module ns-next ships declares",
+                "`Manifest` at `core:Manifest.ns` is no module an image carries from the \
+                 binary: only `newspeak.core.Manifest` at `core:Manifest.ns`, without a version",
             ),
         ),
         (
             Record {
-                path: "lib/Registry.ns",
-                ..REGISTRY_RECORD
+                version: Some("1.0.0"),
+                ..MANIFEST_RECORD
             },
             module_error(
                 2,
-                "`core:lib/Registry.ns` is no shipped module's path: `core:` takes a file name \
+                "`newspeak.core.Manifest@1.0.0` at `core:Manifest.ns` is no module an image \
+                 carries from the binary: only `newspeak.core.Manifest` at `core:Manifest.ns`, \
+                 without a version",
+            ),
+        ),
+        (
+            Record {
+                path: "lib/Manifest.ns",
+                ..MANIFEST_RECORD
+            },
+            module_error(
+                2,
+                "`core:lib/Manifest.ns` is no shipped module's path: `core:` takes a file name \
                  ending in `.ns`",
+            ),
+        ),
+        (
+            Record {
+                path: ".ns",
+                ..MANIFEST_RECORD
+            },
+            module_error(
+                2,
+                "`core:.ns` is no shipped module's path: `core:` takes a file name ending in \
+                 `.ns`",
             ),
         ),
     ];
@@ -7419,6 +7466,37 @@ fn a_module_record_is_held_to_the_project_rules() {
         );
         assert_eq!(load_error(&crafted), expected);
     }
+
+    // A program's module named as another of the binary's modules: its id
+    // ends in its own class's name, and still it is no manifest.
+    let (mut interpreter, kernel) = load(indoc! {"
+        class Kernel = Object new () () : ()
+    "});
+    let kernel_image = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &kernel);
+        snapshot_one(mutator, false, "Kernel.ns", class, &[]).expect("snapshot")
+    });
+    assert!(
+        image::load(&kernel_image).is_ok(),
+        "the fixture itself loads"
+    );
+    let crafted = with_module_records(
+        &kernel_image,
+        &[Record {
+            origin: ORIGIN_CORE,
+            path: "Kernel.ns",
+            id: "newspeak.core.Kernel",
+            version: None,
+        }],
+    );
+    assert_eq!(
+        load_error(&crafted),
+        module_error(
+            0,
+            "`newspeak.core.Kernel` at `core:Kernel.ns` is no module an image carries from the \
+             binary: only `newspeak.core.Manifest` at `core:Manifest.ns`, without a version",
+        )
+    );
 }
 
 /// A module record's tags are read before anything else of it: the retired
@@ -7437,7 +7515,7 @@ fn a_module_record_s_unknown_tags_are_refused() {
                     ..project("a/Util.ns", "Util", Some("1.0.0"))
                 },
                 project("b/Util.ns", "Util", Some("2.0.0")),
-                REGISTRY_RECORD,
+                MANIFEST_RECORD,
             ],
         );
         let expected = decode::DecodeError::InvalidTag {
@@ -7456,7 +7534,7 @@ fn a_module_record_s_unknown_tags_are_refused() {
         &[
             project("a/Util.ns", "Util", Some("1.0.0")),
             project("b/Util.ns", "Util", Some("2.0.0")),
-            REGISTRY_RECORD,
+            MANIFEST_RECORD,
         ],
     );
     // The first module's version tag: past the count, the origin tag, the

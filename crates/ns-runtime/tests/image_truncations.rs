@@ -110,11 +110,17 @@ fn snapshot() -> Vec<u8> {
     })
 }
 
-/// The same instance packaged as an application.
+/// The same instance packaged as an application, its module named as the
+/// one module of the binary's an image carries, the manifest.
 fn packaged() -> Vec<u8> {
-    let (mut interpreter, class) = load(SOURCE);
+    let (mut interpreter, class) = load(&SOURCE.replace("class X", "class Manifest"));
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let identity = identity("core:X.ns", "newspeak.core.X", None);
+    let identity = ModuleIdentity {
+        path: "core:Manifest.ns".to_string(),
+        id: ModuleId::parse("newspeak.core.Manifest", "Manifest")
+            .unwrap_or_else(|error| panic!("{error}")),
+        version: None,
+    };
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);

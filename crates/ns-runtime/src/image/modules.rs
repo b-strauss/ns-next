@@ -33,15 +33,39 @@ pub struct ModuleSource<'a, 'gc> {
     pub with_source: bool,
 }
 
+/// The one module of the binary's an image carries: the manifest, which is
+/// compiled into the program beside its modules. Every other module of the
+/// binary's is named by the shipped names, never by a module record.
+const MANIFEST_PATH: &str = "core:Manifest.ns";
+const MANIFEST_ID: &str = "newspeak.core.Manifest";
+
+/// Message of a `core:` record that is not the manifest's; `{name}` and
+/// `{path}` are replaced.
+const NOT_THE_MANIFEST: &str = "`{name}` at `{path}` is no module an image carries from the binary: only `newspeak.core.Manifest` at `core:Manifest.ns`, without a version";
+
 /// Why `identity` cannot name the module whose root class is named
 /// `root_name`, if it cannot: the one check of a single module the encoder
 /// and the decoder share, so that the encoder never writes a record the
 /// loader refuses. Its path is relative to the project or a `core:` file
 /// name, its id ends in the root's name, and the namespace `newspeak.` is
-/// the binary's modules' and theirs alone (decisions 1, 2 and 9).
+/// the binary's modules' and theirs alone (decisions 1, 2 and 9). A
+/// `core:` path is the manifest's, `newspeak.core.Manifest` without a
+/// version, and nothing else: every module an image carries is program
+/// code, so one named as another of the binary's modules would put a
+/// program's module in the reserved namespace, where a tool's name would
+/// meet the shipped module's.
 pub fn identity_defect(identity: &ModuleIdentity, root_name: &str) -> Result<(), String> {
     identities::check_relative_path(&identity.path)?;
     ModuleId::parse(identity.id.as_str(), root_name)?;
+    let is_core = identities::core_file(&identity.path).is_some();
+    let is_the_manifest = identity.path == MANIFEST_PATH
+        && identity.id.as_str() == MANIFEST_ID
+        && identity.version.is_none();
+    if is_core && !is_the_manifest {
+        return Err(NOT_THE_MANIFEST
+            .replace("{name}", &identity.display_name())
+            .replace("{path}", &identity.path));
+    }
     identities::check_namespace(identity)
 }
 

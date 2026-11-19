@@ -222,11 +222,12 @@ fn program_identity(
         }
         None => declared,
     };
-    Ok(ModuleIdentity {
-        path: path_in_project(directory, file)?,
-        id,
-        version,
-    })
+    // Held to the rule an image's module record is held to, so that `run`
+    // refuses what `build` could not write: no control character, a file
+    // that is more than `.ns`, and the rest of a project's path.
+    let path = path_in_project(directory, file)?;
+    modules::check_project_path(&path).map_err(in_file)?;
+    Ok(ModuleIdentity { path, id, version })
 }
 
 /// The manifest's identity: the id its `:module:` declares, in the

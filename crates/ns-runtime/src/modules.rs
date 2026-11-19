@@ -39,6 +39,20 @@ fn is_identifier(segment: &str) -> bool {
     }
 }
 
+/// Refuses a text holding a control character -- a path, an id, a
+/// version or a range -- quoting it escaped: every message here quotes
+/// the text it refuses, and an image's or a project file's text must not
+/// reach a terminal as an escape sequence.
+fn check_printable(text: &str) -> Result<(), String> {
+    if text.chars().any(char::is_control) {
+        return Err(format!(
+            "`{}` holds a control character",
+            text.escape_debug()
+        ));
+    }
+    Ok(())
+}
+
 /// A module's id: identifiers separated by dots, the last the name of the
 /// module's class.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -47,6 +61,7 @@ pub struct ModuleId(String);
 impl ModuleId {
     /// Parses `text` as an id whose last segment must be `class_name`.
     pub fn parse(text: &str, class_name: &str) -> Result<ModuleId, String> {
+        check_printable(text)?;
         if text.is_empty() || !text.split('.').all(is_identifier) {
             return Err(format!(
                 "`{text}` is no module id: it must be identifiers separated by dots"
@@ -144,6 +159,7 @@ fn parse_pre_release(text: &str) -> Result<Vec<PreReleasePart>, String> {
 impl Version {
     /// Parses `MAJOR.MINOR.PATCH` with an optional `-pre.release`.
     pub fn parse(text: &str) -> Result<Version, String> {
+        check_printable(text)?;
         let refuse = |reason: &str| not_a_version(text, reason);
         if text.contains('+') {
             return Err(refuse("build metadata orders nothing and is refused"));
@@ -223,6 +239,7 @@ pub struct VersionRange {
 impl VersionRange {
     /// Parses a range's text.
     pub fn parse(text: &str) -> Result<VersionRange, String> {
+        check_printable(text)?;
         let refuse = |reason: &str| not_a_version(text, reason);
         if text.contains('.') && text.split('.').count() >= 3 {
             let version = Version::parse(text)?;
@@ -396,8 +413,9 @@ pub fn check_distinct<'identity>(
 /// `\`, without an empty or `.` segment, `..` only leading, ending in `.ns`;
 /// or `core:` and a file name.
 pub fn check_relative_path(path: &str) -> Result<(), String> {
+    check_printable(path)?;
     if let Some(file) = core_file(path) {
-        let is_file_name = !file.is_empty()
+        let is_file_name = file.len() > SOURCE_EXTENSION.len()
             && file.ends_with(SOURCE_EXTENSION)
             && !file.contains(['/', '\\', ':']);
         return if is_file_name {
@@ -446,6 +464,7 @@ pub fn check_namespace(identity: &ModuleIdentity) -> Result<(), String> {
 /// `check_relative_path` holds such a path to. A `core:` path is refused
 /// here as one with a drive, since it names no file of the project.
 pub fn check_project_path(path: &str) -> Result<(), String> {
+    check_printable(path)?;
     if path.is_empty() {
         return Err("a module's path is empty".to_string());
     }
@@ -473,6 +492,9 @@ pub fn check_project_path(path: &str) -> Result<(), String> {
     }
     if !path.ends_with(SOURCE_EXTENSION) {
         return Err(format!("`{path}` does not end in `.ns`"));
+    }
+    if path.rsplit('/').next() == Some(SOURCE_EXTENSION) {
+        return Err(format!("`{path}` names no file: its name is only `.ns`"));
     }
     Ok(())
 }
@@ -615,6 +637,33 @@ mod tests {
         ] {
             assert!(check_relative_path(refused).is_err(), "{refused}");
         }
+    }
+
+    /// No path, id or version holds a control character, and the message
+    /// quotes it escaped; a path names a file, never one named only `.ns`.
+    #[test]
+    fn control_characters_and_bare_extensions_are_refused() {
+        let escaped = "`a/\\u{1b}[2J.ns` holds a control character".to_string();
+        assert_eq!(check_relative_path("a/\u{1b}[2J.ns"), Err(escaped.clone()));
+        assert_eq!(check_project_path("a/\u{1b}[2J.ns"), Err(escaped));
+        assert_eq!(
+            check_relative_path("core:\n.ns"),
+            Err("`core:\\n.ns` holds a control character".to_string())
+        );
+        assert!(ModuleId::parse("Util\u{7}", "Util").is_err());
+        assert_eq!(
+            Version::parse("1.0.0\r"),
+            Err("`1.0.0\\r` holds a control character".to_string())
+        );
+        assert!(VersionRange::parse("1\t").is_err());
+        for bare in [".ns", "../.ns", "libs/.ns", "core:.ns"] {
+            assert!(check_relative_path(bare).is_err(), "{bare}");
+        }
+        assert_eq!(
+            check_project_path("../.ns"),
+            Err("`../.ns` names no file: its name is only `.ns`".to_string())
+        );
+        assert_eq!(check_project_path("libs/a.ns"), Ok(()));
     }
 
     /// A project's path is never a `core:` one, so that no module of a

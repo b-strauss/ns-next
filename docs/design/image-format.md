@@ -747,7 +747,8 @@ libs/util-1/Util.ns`). Its path is the module's path relative to its
 project, never a directory of the machine that built the image: an origin
 tag from `opcodes.rs`, `ORIGIN_PROJECT` (2) followed by that path, or
 `ORIGIN_CORE` (3) followed by the file name of a module the binary holds,
-whose path is `core:` and that name -- `Manifest.ns`'s, `core:Manifest.ns`.
+whose path is `core:` and that name -- only ever `Manifest.ns`, the one
+module of the binary's an image carries, `core:Manifest.ns`.
 Then the id as resolved, after an `as`, and `MODULE_UNVERSIONED` (0), or
 `MODULE_VERSIONED` (1) followed by the version's text; every string is a
 `u32` length and UTF-8. The origins 0 (`ORIGIN_FILE`, the path the module
@@ -1250,12 +1251,19 @@ rows, and a defect of the module section before one of the mixins' bodies.
 identities is used (`modules::decode_modules`; [modules.md](modules.md),
 decision 10), each refusal a `DecodeError` naming the module or, for two
 modules, their paths: each record's path relative to the project
-(`modules::check_project_path`: no root, drive, `\`, `core:`, empty or `.`
-segment, a `..` only leading, ending in `.ns`) or a `core:` file name; its
+(`modules::check_project_path`: no control character, no root, drive,
+`\`, `core:`, empty or `.` segment, a `..` only leading, ending in `.ns`
+and naming more than `.ns`) or a `core:` file name; its
 id identifiers separated by dots, ending in the root class's name, which
 the mixin table's root row gives (`ModuleId::parse`); the namespace
-`newspeak.` with `ORIGIN_CORE` and only there (`modules::check_namespace`);
-a version semver's (`Version::parse`); and over all records, no two modules
+`newspeak.` with `ORIGIN_CORE` and only there (`modules::check_namespace`),
+and `ORIGIN_CORE` for the manifest alone, `newspeak.core.Manifest` at
+`core:Manifest.ns` without a version, since every module an image carries
+is program code and one named as another of the binary's modules would be
+a program's module in the reserved namespace;
+a version semver's (`Version::parse`); no path, id or version holding a
+control character, which every message quotes escaped, so that a crafted
+image puts no escape sequence on a terminal; and over all records, no two modules
 of one id and one version, nor of one id where either has none
 (`modules::check_distinct`). The encoder holds every identity it is handed
 to the same rules (`modules::identity_defect`, which both sides share), so

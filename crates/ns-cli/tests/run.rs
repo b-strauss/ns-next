@@ -684,6 +684,25 @@ fn an_as_not_ending_in_the_class_is_refused() {
     );
 }
 
+/// A module's path names a file, as an image's module record must: a file
+/// named only `.ns` is refused before anything runs, as `build` could not
+/// write it.
+#[test]
+fn a_module_file_named_only_the_extension_is_refused() {
+    let directory = ScratchDirectory::new("project-bare-extension");
+    let app = asking_app(&["manifest at: 'Util'"]);
+    write_project(
+        &directory,
+        &[("App.ns", &app), ("libs/.ns", &util(None, "a"))],
+        r#"{ "main": "App.ns", "modules": ["libs/.ns"] }"#,
+    );
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains("`libs/.ns` names no file: its name is only `.ns`"),
+        "stderr: {stderr}"
+    );
+}
+
 /// `newspeak.` belongs to the modules the binary ships: a program's module
 /// may neither declare an id there nor be given one by `as`, nor may a
 /// program that is one source file.
