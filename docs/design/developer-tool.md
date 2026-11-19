@@ -162,8 +162,9 @@ DAP stays possible, since the events are typed (decided with the user on
 
 ### Stage 1: tracing
 
-- **The events.** `ns_runtime::trace` declares `TraceEvent` and the reason
-  enums the decisions above turn into values:
+- **The events.** `ns_runtime::trace_events` declares `TraceEvent` and
+  the reason enums the decisions above turn into values (`trace_events`,
+  since `trace` is the collector's edge enumeration):
   - a baseline compile, its trigger (entry, call, back jump) and its
     `Refusal`;
   - on-stack replacement compiled and switched into;

@@ -1798,7 +1798,7 @@ pub(crate) struct JitState {
     /// (`docs/design/developer-tool.md`, "Stage 1: tracing"). Here since
     /// nearly every site that records an event holds the JIT's state
     /// alone.
-    pub(crate) tracer: crate::trace::Tracer,
+    pub(crate) tracer: crate::trace_events::EventTracer,
     /// The dispatching rows of the method bodies' optimized copies, by
     /// code id (`heap/optimized_copies.rs`), reserved at the first install
     /// of a method body: what the bodies' dispatching entries compare a
@@ -2086,7 +2086,7 @@ impl JitState {
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
-            tracer: crate::trace::Tracer::default(),
+            tracer: crate::trace_events::EventTracer::default(),
             #[cfg(ns_jit)]
             optimized_copies: None,
         }
@@ -3163,7 +3163,7 @@ impl JitState {
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
-            tracer: crate::trace::Tracer::default(),
+            tracer: crate::trace_events::EventTracer::default(),
             #[cfg(ns_jit)]
             optimized_copies: None,
         }
@@ -4733,13 +4733,16 @@ fn compile_into_slot(
 ///   row, armed with `OPTIMIZATION_BUDGET` unless it is armed already
 ///   (`point_budget_words`), before its code first runs.
 /// - The trace events the trigger recorded are delivered
-///   (`trace::flush`); a flush runs no Newspeak code and never collects,
+///   (`trace_events::flush`); a flush runs no Newspeak code and never collects,
 ///   so a leaf may make it.
 ///
 /// Every initializer invocation a leaf decides passes through here,
-/// nearly always with nothing installed: only the test for an installed
-/// body stays inline, so that the trigger inlines into its callers and
-/// writes nothing into the JIT's state when nothing was installed.
+/// nearly always with nothing installed and nothing recorded: only the
+/// tests -- for a body installed, a compaction asked for, a revival and
+/// a trace event pending -- stay inline, every part they guard out of
+/// line (`trace_events::flush` is cold), so that the trigger inlines into
+/// its callers and writes nothing into the JIT's state when nothing
+/// happened.
 pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
     #[cfg(ns_jit)]
     if !mutator.jit.budget_words_to_point.is_empty() {
@@ -4754,7 +4757,7 @@ pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
     // What the trigger recorded is delivered before the code it compiled
     // runs, so that the sink hears of a body before it hears of its exits.
     if mutator.jit.tracer.has_pending() {
-        crate::trace::flush(mutator);
+        crate::trace_events::flush(mutator);
     }
 }
 

@@ -57,9 +57,15 @@ impl BodyNames {
     }
 
     /// The index built afresh: every body of every mixin the heap holds,
-    /// current versions and those an edit superseded, both sides.
+    /// current versions and those an edit superseded, both sides -- a
+    /// synthesized class side among the mixins by its own id, and its
+    /// superseded versions among the superseded ones. A body found
+    /// `(unnamed)` stays so while it lives: no mixin comes to hold a body
+    /// that exists already, so looking for it again would only walk every
+    /// mixin once more.
     fn rebuild(&mut self, mutator: &Mutator<'_>) {
-        self.names.clear();
+        self.names
+            .retain(|_, (body, name)| name == UNNAMED && body.strong_count() > 0);
         let heap = &mutator.heap;
         let mut sides: Vec<Rc<Mixin>> = Vec::new();
         let mut add_level = |mixin: Rc<Mixin>, synthesized: Option<Rc<Mixin>>| {
@@ -177,6 +183,12 @@ mod tests {
             )
           )
 
+          public class Plain = Object new (
+            |
+              public count ::= 1.
+            |
+          ) ()
+
           public main: platform args: arguments = (
             ^[ arguments ].
           )
@@ -208,6 +220,16 @@ mod tests {
     /// `source` loaded, with the identity `identity` gives it, and its
     /// nested `Inner` class reached once, so that its mixin is registered.
     fn load(source: &str, identity: Option<(&str, &str)>, inner: &str) -> (Interpreter, Root) {
+        load_reaching(source, identity, &[inner])
+    }
+
+    /// `source` loaded, with the identity `identity` gives it, and each
+    /// of its nested classes `inner` names reached once.
+    fn load_reaching(
+        source: &str,
+        identity: Option<(&str, &str)>,
+        inner: &[&str],
+    ) -> (Interpreter, Root) {
         let module = ns_syntax::parse(source).expect("parse");
         let mut resolved = crate::resolve(
             module,
@@ -226,10 +248,12 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "an instance");
-        expect_ok(
-            interpreter.send(&instance, Symbol::intern(inner), &[]),
-            inner,
-        );
+        for inner in inner {
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern(inner), &[]),
+                inner,
+            );
+        }
         (interpreter, class)
     }
 
@@ -387,6 +411,65 @@ mod tests {
             let mut names = BodyNames::default();
             assert_eq!(names.name(mutator, &new), "Demo/Account>>deposit:");
             assert_eq!(names.name(mutator, &old), "Demo/Account>>deposit:");
+        });
+    }
+
+    /// A class that declares no class side has one synthesized, which an
+    /// edit of its header replaces: the factory body of the version it
+    /// replaced still runs in the frames that hold it, and keeps its name.
+    #[test]
+    fn a_superseded_synthesized_factory_keeps_its_name() {
+        let (mut interpreter, class) = load_reaching(DEMO, None, &["Account", "Plain"]);
+        let (old, id): (Rc<CompiledCode>, MixinId) = interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let plain = nested(mutator, &demo, "Plain");
+            assert!(plain.class_side.is_none(), "Plain declares no class side");
+            let id = mutator.heap.known_mixin_id(&plain).expect("registered");
+            (factory(&class_side(mutator, &plain)), id)
+        });
+        let edit = Edit {
+            header: Some("public class Plain = Object new (| public count ::= 2. |)".to_string()),
+            instance_side: Vec::new(),
+            class_side: Vec::new(),
+        };
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, &edit)) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        interpreter.enter(|mutator| {
+            let current = mutator.heap.mixin(id).expect("the current version");
+            let new = factory(&class_side(mutator, &current));
+            assert!(
+                !Rc::ptr_eq(&old, &new),
+                "the edit synthesized a new class side"
+            );
+            let mut names = BodyNames::default();
+            assert_eq!(names.name(mutator, &new), "Demo/Plain class>>new");
+            assert_eq!(names.name(mutator, &old), "Demo/Plain class>>new");
+        });
+    }
+
+    /// A body found unnamed is not looked for again when another body's
+    /// miss builds the index afresh.
+    #[test]
+    fn an_unnamed_body_survives_a_rebuild() {
+        let (mut interpreter, class) = load(DEMO, None, "Account");
+        interpreter.enter(|mutator| {
+            let loose = Rc::new(crate::compiler::factory_body(3));
+            let mut names = BodyNames::default();
+            assert_eq!(names.name(mutator, &loose), "(unnamed)");
+            names.rebuild(mutator);
+            assert_eq!(
+                names
+                    .names
+                    .get(&address(&loose))
+                    .map(|(_, name)| name.as_str()),
+                Some("(unnamed)")
+            );
+            let demo = root_mixin(mutator, &class);
+            assert_eq!(
+                names.name(mutator, &method(&demo, "main:args:")),
+                "Demo>>main:args:"
+            );
         });
     }
 

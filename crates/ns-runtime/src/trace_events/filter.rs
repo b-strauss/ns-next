@@ -55,6 +55,11 @@ enum Selection {
     Ids { prefix: String },
 }
 
+/// The refusal of an empty pattern: an empty filter, or one with a comma
+/// at either end or two in a row.
+const EMPTY_PATTERN: &str = "an empty pattern selects nothing: a trace filter needs a pattern \
+     before its first comma, between every two and after its last";
+
 /// A body's name read into its parts.
 struct BodyParts {
     class: ClassName,
@@ -80,6 +85,9 @@ impl TraceFilter {
             .split(',')
             .map(|pattern| {
                 let pattern = pattern.trim();
+                if pattern.is_empty() {
+                    return Err(EMPTY_PATTERN.to_string());
+                }
                 selection(pattern).map_err(|reason| {
                     // The grammar's own refusal names the text where it says
                     // it is not of the form; a version's names only the
@@ -412,8 +420,14 @@ mod tests {
 
     #[test]
     fn a_malformed_pattern_is_refused() {
+        for text in ["", "Demo>>x,", ",Demo>>x", "Demo>>x,,Demo>>y"] {
+            assert_eq!(
+                TraceFilter::parse(text).err().as_deref(),
+                Some(EMPTY_PATTERN),
+                "{text}"
+            );
+        }
         for text in [
-            "",
             ">>",
             "Demo>>",
             "*>>x",
@@ -421,14 +435,10 @@ mod tests {
             "Demo/Account>>de*p",
             "Demo/Acc ount*",
             "Demo..Account>>x",
-            "Demo>>x,",
         ] {
             match TraceFilter::parse(text) {
                 Ok(_) => panic!("`{text}` was taken"),
-                Err(refusal) => {
-                    let pattern = text.rsplit(',').next().unwrap_or(text).trim();
-                    assert!(refusal.contains(&format!("`{pattern}`")), "{refusal}");
-                }
+                Err(refusal) => assert!(refusal.contains(&format!("`{text}`")), "{refusal}"),
             }
         }
         let version = TraceFilter::parse("Demo@1.0>>x").err().expect("refused");

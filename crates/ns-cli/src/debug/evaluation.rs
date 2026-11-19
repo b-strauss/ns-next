@@ -8,6 +8,7 @@
 //! when the VM answered.
 
 use ns_runtime::debugger::{Evaluation, InstanceCount, Referrer};
+use ns_runtime::tool_names::parse_class_name;
 use ns_runtime::{ClassName, Command, Event, ValueId};
 use serde_json::{Value, json};
 
@@ -15,7 +16,6 @@ use super::agent::{Agent, Conversion, to_value};
 use super::protocol;
 use super::stepping::NO_SUCH_FRAME;
 use super::stopped::Target;
-use ns_runtime::tool_names::parse_class_name;
 
 /// The message of an evaluation the VM stopped before it answered: a
 /// hover's past its bound, or one a pause aborted.

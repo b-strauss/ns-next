@@ -3060,7 +3060,7 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `BuiltinClass`, each over a placeholder mixin with an empty method table,
    because the runtime must be able to answer what class an integer literal
    has at any moment. `BuiltinClass::ALL` and `Mutator::builtin_class` are
-   that table, and `edges.rs` reaches it. A new builtin is appended to
+   that table, and `trace.rs` reaches it. A new builtin is appended to
    `BuiltinClass::ALL`, never inserted, as `types.rs` asks; no image
    carries its position, since an image names a builtin by its declaration
    ([image-format.md](image-format.md), "Shipped names"). `VmMirror`'s class, whose mixin

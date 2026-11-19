@@ -23,8 +23,54 @@ pub const CLASS_FORM: &str = "`<id>[@<version>][/<Class>(.<Class>)*]`";
 /// its id, and the versions the program has of it -- none for an id
 /// whose module has no version, every shipped module's among them.
 pub struct KnownModule {
+    /// The module's id, as its root declares it or a project's `as`
+    /// gives it.
     pub id: String,
+    /// The versions the program has of the id, in semver order, lowest
+    /// first, each once; empty for a module without a version.
     pub versions: Vec<String>,
+}
+
+impl KnownModule {
+    /// The module of `modules` -- every module of the program and the
+    /// binary, each by its id and version -- that `text` names, as a
+    /// tool's name is read against them: `text` itself where it is such
+    /// an id, and otherwise, for an undotted `text`, the one id whose
+    /// class `text` names -- `newspeak.core.Kernel` for `Kernel` where
+    /// the program has no `Kernel` -- so that a name in the form before
+    /// ids, `Kernel.Array`, is refused with the form it means. `None`
+    /// where no id, or more than one, is named.
+    ///
+    /// The versions are in semver order whatever order `modules` lists
+    /// them in, so that a refusal naming them reads alike in every tool.
+    pub fn resolve(text: &str, modules: &[ModuleName]) -> Option<KnownModule> {
+        let id = if modules.iter().any(|module| module.id == text) {
+            text.to_string()
+        } else if text.contains('.') {
+            return None;
+        } else {
+            let mut by_class = modules
+                .iter()
+                .filter(|module| module.id.rsplit('.').next() == Some(text));
+            let first = by_class.next()?;
+            if !by_class.all(|other| other.id == first.id) {
+                return None;
+            }
+            first.id.clone()
+        };
+        let mut versions: Vec<crate::modules::Version> = modules
+            .iter()
+            .filter(|module| module.id == id)
+            .filter_map(|module| module.version.as_deref())
+            .filter_map(|version| crate::modules::Version::parse(version).ok())
+            .collect();
+        versions.sort();
+        versions.dedup();
+        Some(KnownModule {
+            id,
+            versions: versions.iter().map(ToString::to_string).collect(),
+        })
+    }
 }
 
 /// Why a class name is refused.
@@ -38,9 +84,11 @@ pub enum ClassRefusal {
 /// A method as a tool names it: its class, its side and its selector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodName {
+    /// The class whose side declares the method.
     pub class: ClassName,
     /// Whether the method is the class side's (` class>>`).
     pub class_side: bool,
+    /// The method's selector, `at:put:`.
     pub selector: String,
 }
 
@@ -273,27 +321,15 @@ mod tests {
     /// other modules have none.
     const JSON_VERSIONS: [&str; 2] = ["2.1.0", "2.1.0-beta.1"];
 
-    /// The module of `MODULES` `text` names, as the DAP agent's sources
-    /// answer it.
+    /// The module of `MODULES` `text` names, as every tool resolves it.
     fn module_of(text: &str) -> Option<KnownModule> {
-        let known = |id: &str| KnownModule {
-            id: id.to_string(),
-            versions: if id == "com.acme.json.Json" {
-                JSON_VERSIONS.map(str::to_string).to_vec()
-            } else {
-                Vec::new()
-            },
-        };
-        if MODULES.contains(&text) {
-            return Some(known(text));
-        }
-        let mut by_class = MODULES
-            .iter()
-            .filter(|id| !text.contains('.') && id.rsplit('.').next() == Some(text));
-        match (by_class.next(), by_class.next()) {
-            (Some(only), None) => Some(known(only)),
-            _ => None,
-        }
+        let mut modules: Vec<ModuleName> = MODULES.iter().copied().map(ModuleName::named).collect();
+        modules.retain(|module| module.id != "com.acme.json.Json");
+        modules.extend(JSON_VERSIONS.iter().map(|version| ModuleName {
+            id: "com.acme.json.Json".to_string(),
+            version: Some(version.to_string()),
+        }));
+        KnownModule::resolve(text, &modules)
     }
 
     /// The method a name names.
@@ -502,7 +538,7 @@ mod tests {
         assert_eq!(
             parse_method_name("com.acme.json.Json@9.9.9>>parse:", &module_of),
             Err(
-                "no module `com.acme.json.Json@9.9.9`; its versions are 2.1.0, 2.1.0-beta.1"
+                "no module `com.acme.json.Json@9.9.9`; its versions are 2.1.0-beta.1, 2.1.0"
                     .to_string()
             )
         );
@@ -518,6 +554,55 @@ mod tests {
             )
         );
         assert!(parse_method_name("com.acme.json.Json@2.1.0>>parse:", &module_of).is_ok());
+    }
+
+    /// One resolution of a name against the modules, for every tool: an
+    /// id, or the class's name of one id, with the id's versions in
+    /// semver order whatever order the modules come in.
+    #[test]
+    fn a_module_is_resolved_with_its_versions_in_semver_order() {
+        let modules = [
+            ModuleName {
+                id: "com.acme.json.Json".to_string(),
+                version: Some("2.1.0".to_string()),
+            },
+            ModuleName::named("Demo"),
+            ModuleName {
+                id: "com.acme.json.Json".to_string(),
+                version: Some("2.1.0-beta.1".to_string()),
+            },
+            ModuleName {
+                id: "com.acme.json.Json".to_string(),
+                version: Some("1.10.0".to_string()),
+            },
+            ModuleName::named("newspeak.core.Kernel"),
+            ModuleName::named("Kernel"),
+        ];
+        let json = KnownModule::resolve("com.acme.json.Json", &modules).expect("the id");
+        assert_eq!(json.versions, ["1.10.0", "2.1.0-beta.1", "2.1.0"]);
+        let by_class = KnownModule::resolve("Json", &modules).expect("the class's name");
+        assert_eq!(by_class.id, "com.acme.json.Json");
+        assert_eq!(
+            KnownModule::resolve("Kernel", &modules).map(|known| known.id),
+            Some("Kernel".to_string()),
+            "an id before the class's name of another"
+        );
+        assert!(
+            KnownModule::resolve("Demo", &modules)
+                .expect("Demo")
+                .versions
+                .is_empty()
+        );
+        assert!(KnownModule::resolve("acme.json.Json", &modules).is_none());
+        assert!(KnownModule::resolve("Other", &modules).is_none());
+        let resolved = |text: &str| KnownModule::resolve(text, &modules);
+        assert_eq!(
+            parse_method_name("com.acme.json.Json@9.9.9>>parse:", &resolved),
+            Err(
+                "no module `com.acme.json.Json@9.9.9`; its versions are 1.10.0, 2.1.0-beta.1, 2.1.0"
+                    .to_string()
+            )
+        );
     }
 
     #[test]

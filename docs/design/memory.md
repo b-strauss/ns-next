@@ -14,7 +14,7 @@
 > by a copying scavenger with age-based tenuring, whose roots include a
 > remembered set that the write barrier in `heap.rs`'s store accessors
 > keeps. A full collection reclaims an object of either generation once
-> nothing reaches it: marking walks the roots through `edges.rs`'s one edge
+> nothing reaches it: marking walks the roots through `trace.rs`'s one edge
 > enumeration and sets each reached object's mark bit in its header,
 > compaction slides the survivors of both generations into the old space
 > from its first offset and gives committed memory back with hysteresis,
@@ -89,7 +89,7 @@
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
-> doctests that pin the brand), `edges.rs` (every root the collector
+> doctests that pin the brand), `trace.rs` (every root the collector
 > traces, marking, forwarding and scavenging alike, in every build),
 > `interpreter/safepoint.rs`
 > (the safepoint, which serves an attached debugger first
@@ -770,7 +770,7 @@ mode checks.
 
 ### What the collector traces
 
-`edges.rs` enumerates the roots, type by type: a `Trace` impl hands every
+`trace.rs` enumerates the roots, type by type: a `Trace` impl hands every
 field that holds an `ObjectReference`, a `ClassReference`, a `FrameReference`
 or a `Word` to a `Tracer`, one `&mut` at a time. An object is no Rust type
 with an impl: `heap/object.rs`'s `pointer_ranges` names the indices of its
@@ -954,9 +954,9 @@ decides whether it holds a handle; `pointer_ranges` likewise matches every
 `Format`, so a new format does not compile until its pointer words are
 named. That is what keeps the enumeration complete
 as the types grow; the stress mode checks that the places it is applied to are
-complete. Enumerating is `edges.rs`'s and rewriting is the heap module's
+complete. Enumerating is `trace.rs`'s and rewriting is the heap module's
 (`Forwarder` in `heap.rs`, `Scavenger` in `heap/scavenge.rs`), since only
-the heap module can mint a handle. `edges.rs` exists in
+the heap module can mint a handle. `trace.rs` exists in
 every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
@@ -1137,7 +1137,7 @@ the `finishing-a-batch` skill lists them. A release build contains none of it:
 the epoch, the move, the schedule and the test hooks
 (`Interpreter::move_now`, `moves`, `stress_safepoints`, `set_stress_moves`)
 are `#[cfg(debug_assertions)]`, and only the poll is left, whose price is
-measured in "Where a collection can happen" above; `edges.rs` stays, since
+measured in "Where a collection can happen" above; `trace.rs` stays, since
 the collector and the scavenger trace through it in every build.
 
 ### Considered and rejected: Nova's scopes
@@ -1198,7 +1198,7 @@ root set is the list in "What the collector traces" above. Most of it is two
 things: the bootstrap, standing in for upstream's object store, and the
 activation stack ([execution.md](execution.md), "Activations") — a
 contiguous, precisely typed pair of arrays rather than a pointer-chased chain
-of individually allocated frames. The safepoint, the tracing (`edges.rs`)
+of individually allocated frames. The safepoint, the tracing (`trace.rs`)
 and the forwarding (`Forwarder`) exist in every build; the move
 (`Heap::move_everything`) exists in a debug build, where the stress mode
 checks the roots with it. The scavenger traces the same roots, plus the
@@ -1565,7 +1565,7 @@ Mark-compact was chosen for four reasons:
   allocation, the dead included, reading one word to step over a dead one,
   and copy only the survivors. A free list's sweep walks the same space and
   keeps all of it.
-- **It uses the machinery that exists and is under test.** `edges.rs`,
+- **It uses the machinery that exists and is under test.** `trace.rs`,
   `Forwarder`, the epoch check and the move stress mode were built for exactly
   this shape; under a free list they would stay a debug-only appendage with no
   production role.
@@ -1594,7 +1594,7 @@ start of every marking. A bit in the header needs no side table and is read
 in the cache line of the object's own header; Spur and Primordial Soup keep
 theirs there too.
 
-The marker (`heap/mark.rs`) is a `Tracer` (`edges.rs`) beside `Forwarder`,
+The marker (`heap/mark.rs`) is a `Tracer` (`trace.rs`) beside `Forwarder`,
 through which the roots enter its explicit work list; `Heap::drain_marking`
 then pops each offset, skips an object already marked, sets the bit and
 pushes every unmarked object its strong pointer words name, read through
@@ -2584,7 +2584,7 @@ new object: for instances, road step 5b2a's atomic install forwards the old
 ones to their replacements in one bulk forward
 ([liveness-and-reflection.md](liveness-and-reflection.md), "A
 MirrorBuilder and an atomic install"): a walk of every
-root the collector traces (`edges.rs`) and every heap object that rewrites
+root the collector traces (`trace.rs`) and every heap object that rewrites
 every reference ([object-model.md](object-model.md), "`become:` is an eager
 bulk forward"); for a frame, the activation will be divorced into the
 larger frame object and the VM will rewrite the references to the old one by

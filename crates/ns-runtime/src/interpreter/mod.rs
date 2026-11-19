@@ -1047,7 +1047,7 @@ impl Interpreter {
                     // before the host reads its result, so that no event
                     // waits for a run that may never come.
                     if mutator.jit.tracer.has_pending() {
-                        crate::trace::flush(mutator);
+                        crate::trace_events::flush(mutator);
                     }
                 });
                 result
@@ -1182,11 +1182,19 @@ impl Interpreter {
     /// the safepoint or the host's run it happened in, in order.
     pub fn set_trace(
         &mut self,
-        categories: crate::trace::TraceCategories,
-        filter: crate::trace::TraceFilter,
-        sink: Box<dyn crate::trace::TraceSink>,
+        categories: crate::trace_events::TraceCategories,
+        filter: crate::trace_events::TraceFilter,
+        sink: Box<dyn crate::trace_events::TraceSink>,
     ) {
         self.enter(|mutator| mutator.jit.tracer.install(categories, filter, sink));
+    }
+
+    /// How many trace events were recorded since the sink was installed,
+    /// delivered or not: a test hook, by which a run without a sink, or
+    /// with one for no category, is seen to record nothing.
+    #[doc(hidden)]
+    pub fn trace_events_recorded(&mut self) -> u64 {
+        self.enter(|mutator| mutator.jit.tracer.recorded())
     }
 
     /// Why the trace filter names a module the program does not have --

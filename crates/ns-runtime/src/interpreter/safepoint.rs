@@ -122,7 +122,7 @@ impl Interpreter {
         // they happened and the pending queue never outlives a safepoint.
         self.enter(|mutator| {
             if mutator.jit.tracer.has_pending() {
-                crate::trace::flush(mutator);
+                crate::trace_events::flush(mutator);
             }
         });
         // Whether the pause stress mode's stop is kept for an evaluation
