@@ -23,6 +23,7 @@ use std::rc::Rc;
 use crate::bytecode::CompiledCode;
 use crate::interpreter::Mutator;
 use crate::jit::CustomizationKey;
+use crate::symbol::Symbol;
 use crate::tool_names::KnownModule;
 
 pub use filter::TraceFilter;
@@ -264,6 +265,19 @@ pub enum TraceEventKind {
     /// bodies at once, none of them its own `Freed` event (`replaced`);
     /// about no body.
     ZoneReplaced { bodies_freed: usize },
+    /// The inline cache at send site `site` of the body -- the root of
+    /// the family the site is in, its number within the family's range --
+    /// moved from `before` to `after` at a miss of a send of `selector`, whose
+    /// receiver's class, qualified as every class is, is `receiver`
+    /// (the line's event is `<before>-><after>`); about no body for a site of
+    /// no family's, a closure's an image decoded.
+    CacheTransition {
+        before: SiteState,
+        after: SiteState,
+        selector: String,
+        site: u32,
+        receiver: String,
+    },
 }
 
 impl TraceEventKind {
@@ -290,6 +304,8 @@ impl TraceEventKind {
             TraceEventKind::Compacted { .. } => "compacted",
             TraceEventKind::Freed { .. } => "freed",
             TraceEventKind::ZoneReplaced { .. } => "replaced",
+            // The line spells the states instead, `<before>-><after>`.
+            TraceEventKind::CacheTransition { .. } => "transition",
         }
     }
 }
@@ -633,6 +649,33 @@ impl CompactionFreeing {
     }
 }
 
+/// An inline cache site's state (`docs/design/dispatch.md`, "A site's
+/// states").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteState {
+    /// No entry: the next send misses.
+    Vacant,
+    /// One receiver application's entry.
+    Monomorphic,
+    /// A block of up to four entries, in the order first seen.
+    Polymorphic,
+    /// More applications than a block holds: every send goes to the
+    /// global cache, and the site stays so.
+    Megamorphic,
+}
+
+impl SiteState {
+    /// The state's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            SiteState::Vacant => "vacant",
+            SiteState::Monomorphic => "monomorphic",
+            SiteState::Polymorphic => "polymorphic",
+            SiteState::Megamorphic => "megamorphic",
+        }
+    }
+}
+
 /// What a host installs to receive the events (`Interpreter::set_trace`).
 pub trait TraceSink {
     /// Receives `event`, in the order the events happened. Called outside
@@ -738,6 +781,13 @@ pub(crate) enum PendingKind {
     ZoneReplaced {
         bodies_freed: usize,
     },
+    CacheTransition {
+        before: SiteState,
+        after: SiteState,
+        selector: Symbol,
+        site: u32,
+        receiver: String,
+    },
 }
 
 impl Pending {
@@ -799,6 +849,11 @@ impl EventTracer {
     /// How many events were recorded since the sink was installed.
     pub(crate) fn recorded(&self) -> u64 {
         self.recorded
+    }
+
+    /// How many events wait for a flush (`Interpreter::trace_queue_length`).
+    pub(crate) fn queue_length(&self) -> usize {
+        self.pending.len()
     }
 
     /// Whether an event waits for a flush: the test each flush point
@@ -1022,6 +1077,19 @@ fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -
         },
         PendingKind::Freed { tier, cause } => TraceEventKind::Freed { tier, cause },
         PendingKind::ZoneReplaced { bodies_freed } => TraceEventKind::ZoneReplaced { bodies_freed },
+        PendingKind::CacheTransition {
+            before,
+            after,
+            selector,
+            site,
+            receiver,
+        } => TraceEventKind::CacheTransition {
+            before,
+            after,
+            selector: selector.as_str().to_string(),
+            site,
+            receiver,
+        },
     }
 }
 

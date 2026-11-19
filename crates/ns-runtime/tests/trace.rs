@@ -10,7 +10,7 @@ use std::rc::Rc;
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
     CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
-    InvalidationCause, RecompileWalkEnd, RetireReason,
+    InvalidationCause, RecompileWalkEnd, RetireReason, SiteState,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
@@ -1104,8 +1104,8 @@ fn a_zone_replaced_is_traced() {
         |interpreter| {
             replaced = Some(interpreter.jit_statistics().compiled_bodies);
             interpreter.set_jit_zone_bytes(1 << 20);
-            // Delivered when the next run returns.
-            true
+            // Delivered before the hook returns, with no run after it.
+            false
         },
     );
     assert!(
@@ -1120,4 +1120,174 @@ fn a_zone_replaced_is_traced() {
             )),
         "{events:?}"
     );
+}
+
+/// Six receivers of six classes sent `value` at one site, `send:`'s
+/// only one.
+const SIX_RECEIVERS: &str = indoc! {"
+    class Test = Object new () (
+      class First = Object new () (
+        public value = (
+          ^1.
+        )
+      )
+
+      class Second = Object new () (
+        public value = (
+          ^2.
+        )
+      )
+
+      class Third = Object new () (
+        public value = (
+          ^3.
+        )
+      )
+
+      class Fourth = Object new () (
+        public value = (
+          ^4.
+        )
+      )
+
+      class Fifth = Object new () (
+        public value = (
+          ^5.
+        )
+      )
+
+      public run = (
+        | sum ::= 0. |
+        sum:: sum + (self send: [0]).
+        sum:: sum + (self send: First new).
+        sum:: sum + (self send: Second new).
+        sum:: sum + (self send: Third new).
+        sum:: sum + (self send: Fourth new).
+        sum:: sum + (self send: Fifth new).
+        ^sum.
+      )
+
+      send: object = (
+        ^object value.
+      )
+    )
+"};
+
+/// The cache stress mode vacates every site at every safepoint, so that
+/// a site starts afresh where these pin how it moves on.
+fn caches_stress_off(interpreter: &mut Interpreter) {
+    interpreter.set_stress_caches(false);
+}
+
+/// A site is traced through its states as its receivers' classes grow:
+/// monomorphic at the first, polymorphic at the second, megamorphic at
+/// the fifth, each transition naming the send's body, selector, site and
+/// receiver, its class qualified as every class is.
+#[test]
+fn a_site_is_traced_through_its_states() {
+    let events = traced(
+        SIX_RECEIVERS,
+        &[TraceCategory::Caches],
+        TraceFilter::everything(),
+        caches_stress_off,
+    );
+    let transitions: Vec<(SiteState, SiteState, String, String, u32)> =
+        about(&events, "Test>>send:")
+            .into_iter()
+            .filter_map(|event| match &event.kind {
+                TraceEventKind::CacheTransition {
+                    before,
+                    after,
+                    selector,
+                    site,
+                    receiver,
+                } => {
+                    assert_eq!(event.category, TraceCategory::Caches);
+                    Some((*before, *after, selector.clone(), receiver.clone(), *site))
+                }
+                _ => None,
+            })
+            .collect();
+    let expected = [
+        (
+            SiteState::Vacant,
+            SiteState::Monomorphic,
+            "newspeak.core.Kernel/Closure",
+        ),
+        (SiteState::Monomorphic, SiteState::Polymorphic, "Test/First"),
+        (
+            SiteState::Polymorphic,
+            SiteState::Megamorphic,
+            "Test/Fourth",
+        ),
+    ];
+    let mut remaining = transitions.iter();
+    for (before, after, receiver) in expected {
+        assert!(
+            remaining.any(|transition| transition.0 == before
+                && transition.1 == after
+                && transition.2 == "value"
+                && transition.3 == receiver
+                && transition.4 == 0),
+            "no {}->{} for {receiver} in order: {transitions:?}",
+            before.name(),
+            after.name()
+        );
+    }
+}
+
+/// Polymorphic sends record nothing once their site settled, and what
+/// was recorded is delivered when the run returns: the queue is empty.
+#[test]
+fn the_queue_is_empty_after_a_run() {
+    let source = indoc! {"
+        class Test = Object new () (
+          class Other = Object new () (
+            public value = (
+              ^2.
+            )
+          )
+
+          public run = (
+            |
+              sum ::= 0.
+              block = [1].
+              other = Other new.
+            |
+            1 to: 50000 do: [:index |
+              sum:: sum + (self send: block) + (self send: other).
+            ].
+            ^sum.
+          )
+
+          send: object = (
+            ^object value.
+          )
+        )
+    "};
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::new(Collector(Rc::clone(&events)));
+    let mut interpreter = run_source(source, |interpreter| {
+        interpreter.set_jit_stress(false);
+        interpreter.set_optimize_stress(false);
+        interpreter.set_optimization_budget(i64::MAX);
+        interpreter.set_stress_caches(false);
+        interpreter.set_trace(
+            TraceCategories::default().with(TraceCategory::Caches),
+            TraceFilter::everything(),
+            sink,
+        );
+    });
+    assert!(
+        events.borrow().iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::CacheTransition {
+                after: SiteState::Polymorphic,
+                ..
+            }
+        )),
+        "{:?}",
+        events.borrow()
+    );
+    assert_eq!(interpreter.trace_queue_length(), 0);
 }

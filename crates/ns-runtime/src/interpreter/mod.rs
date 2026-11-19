@@ -1199,6 +1199,13 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.tracer.recorded())
     }
 
+    /// How many trace events wait for their delivery: a test hook, by
+    /// which a run is seen to leave none behind.
+    #[doc(hidden)]
+    pub fn trace_queue_length(&mut self) -> usize {
+        self.enter(|mutator| mutator.jit.tracer.queue_length())
+    }
+
     /// Why the trace filter names a module the program does not have --
     /// an id or version no module has, or the dotted form a nested class
     /// was written in before -- as the first delivery of events checked it
@@ -1240,6 +1247,11 @@ impl Interpreter {
                 mutator.caches.invalidate();
                 mutator.heap.forget_machine_entries();
             }
+            // A replaced zone's event, recorded between runs, is
+            // delivered now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
         });
     }
 
@@ -1254,6 +1266,11 @@ impl Interpreter {
             mutator.caches.invalidate();
             // Every machine entry the table records lies in the old zone.
             mutator.heap.forget_machine_entries();
+            // The replacement's event, recorded between runs, is delivered
+            // now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
         });
     }
 
@@ -1264,7 +1281,14 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn compact_jit_zone(&mut self) {
         assert!(!self.running, "compact_jit_zone is for between runs");
-        self.enter(|mutator| mutator.compact_code_zone());
+        self.enter(|mutator| {
+            mutator.compact_code_zone();
+            // The compaction's events, recorded between runs, are
+            // delivered now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
+        });
     }
 
     /// The zone offset at which `method`'s body has machine code in this
