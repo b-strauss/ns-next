@@ -80,16 +80,20 @@ class Manifest
   ///
   /// @param id a String, a module's id, compared with each id by `=`.
   /// @param range a String: a major version, a major and a minor version,
-  /// or a whole version.
+  /// or a whole version, each number without a leading zero and below
+  /// 2^64, a pre-release only in a whole version, and no build metadata.
   /// @answers the module definition, a class object.
-  /// @signals Error 'no module `<id>`' when no module has the id, and 'no
-  /// module `<id>` of version <range>; there are <candidates>' when none
-  /// of its versions matches, the versions in ascending order, then 'and a
-  /// module without a version' for one, or 'no versions' when there is
-  /// only such a module.
+  /// @signals Error '`<range>` is no version: <reason>' for a `range` of
+  /// no such form, whatever the manifest holds, the reason the loader's
+  /// own check of a range gives; 'no module `<id>`' when no module has the
+  /// id, and 'no module `<id>` of version <range>; there are <candidates>'
+  /// when none of its versions matches, the versions in ascending order,
+  /// then 'and a module without a version' for one, or 'no versions' when
+  /// there is only such a module.
   /// @see `at:` and `ambiguities`.
   public at: id version: range = (
     |
+      defect = self rangeDefect: range.
       rank ::= 0.
       index ::= self indexOf: id rank: 0.
       candidates ::= ''.
@@ -98,6 +102,7 @@ class Manifest
       matchCount ::= 0.
       taken ::= 0.
     |
+    defect isNil ifFalse: [^Error signal: '`' , range , '` is no version: ' , defect].
     index = 0 ifTrue: [^Error signal: 'no module `' , id , '`'].
     [index > 0] whileTrue: [
       (versions at: index) isNil ifTrue: [
@@ -169,6 +174,128 @@ class Manifest
     version = range ifTrue: [^true].
     (version startsWith: range , '.') ifFalse: [^false].
     ^(version indexOf: '-') = 0.
+  )
+
+  /// Tells why `range` is no range: a major version, a major and a minor
+  /// version, or a whole version (`versionDefect:`), a pre-release or
+  /// build metadata only in a whole version. The rules and reasons are
+  /// those the loader holds a range to, so that a request reads alike
+  /// wherever it is refused.
+  ///
+  /// @param range a String, the range asked for.
+  /// @answers a String, the reason, or nil for a range.
+  private rangeDefect: range = (
+    |
+      parts = self split: range at: '.'.
+      majorDefect ::= nil.
+    |
+    parts size >= 3 ifTrue: [^self versionDefect: range].
+    ((range indexOf: '-') > 0 or: [(range indexOf: '+') > 0]) ifTrue: [
+      ^'a range with a pre-release names all three numbers'.
+    ].
+    majorDefect:: self number: (parts at: 1) defect: 'major'.
+    (majorDefect isNil and: [parts size = 2]) ifTrue: [^self number: (parts at: 2) defect: 'minor'].
+    ^majorDefect.
+  )
+
+  /// Tells why `text` is no version: `MAJOR.MINOR.PATCH`, then optionally
+  /// `-` and a pre-release of dot-separated parts, and no build metadata,
+  /// which orders nothing.
+  ///
+  /// @param text a String, a range of three numbers or more.
+  /// @answers a String, the reason, or nil for a version.
+  private versionDefect: text = (
+    |
+      dash = text indexOf: '-'.
+      core = dash = 0 ifTrue: [text] ifFalse: [text copyFrom: 1 to: dash - 1].
+      parts = self split: core at: '.'.
+      defect ::= nil.
+    |
+    (text indexOf: '+') > 0 ifTrue: [^'build metadata orders nothing and is refused'].
+    parts size = 3 ifFalse: [^'it needs MAJOR.MINOR.PATCH'].
+    defect:: self number: (parts at: 1) defect: 'major'.
+    defect isNil ifTrue: [defect:: self number: (parts at: 2) defect: 'minor'].
+    defect isNil ifTrue: [defect:: self number: (parts at: 3) defect: 'patch'].
+    (defect isNil and: [dash > 0]) ifTrue: [
+      (self split: (text copyFrom: dash + 1 to: text size) at: '.') do: [:part |
+        defect isNil ifTrue: [defect:: self preReleasePartDefect: part].
+      ].
+    ].
+    ^defect.
+  )
+
+  /// Tells why `part` is no part of a pre-release: letters, digits and
+  /// `-`, at least one, and a number when all digits.
+  ///
+  /// @param part a String, one dot-separated part of a pre-release.
+  /// @answers a String, the reason, or nil for a part.
+  private preReleasePartDefect: part = (
+    |
+      digits ::= true.
+    |
+    part isEmpty ifTrue: [^'a pre-release part is empty'].
+    1 to: part size do: [:index |
+      |
+        code = part at: index.
+      |
+      (self isDigit: code) ifFalse: [
+        digits:: false.
+        ((code between: 65 and: 90) or: [(code between: 97 and: 122) or: [code = 45]]) ifFalse: [
+          ^'pre-release part `' , part , '` holds a character other than letters, digits and `-`'.
+        ].
+      ].
+    ].
+    digits ifTrue: [^self number: part defect: 'pre-release part'].
+    ^nil.
+  )
+
+  /// Tells why `text` is no number of a version: ASCII digits, at least
+  /// one, no leading zero, and below 2^64, the widest a version holds.
+  ///
+  /// @param text a String, the number's text.
+  /// @param what a String, the number's name in the reason: 'major',
+  /// 'minor', 'patch' or 'pre-release part'.
+  /// @answers a String, the reason, or nil for a number.
+  private number: text defect: what = (
+    |
+      value ::= 0.
+    |
+    text isEmpty ifTrue: [^what , ' `' , text , '` is not a number'].
+    1 to: text size do: [:index |
+      (self isDigit: (text at: index)) ifFalse: [^what , ' `' , text , '` is not a number'].
+      value:: value * 10 + ((text at: index) - 48).
+    ].
+    (text size > 1 and: [(text at: 1) = 48]) ifTrue: [^what , ' `' , text , '` has a leading zero'].
+    value > 18446744073709551615 ifTrue: [^what , ' `' , text , '` is too large'].
+    ^nil.
+  )
+
+  /// Tells whether `code` is an ASCII digit's code point.
+  ///
+  /// @param code an Integer, a code point.
+  /// @answers whether it lies from 48, `0`, to 57, `9`.
+  private isDigit: code = (
+    ^code between: 48 and: 57.
+  )
+
+  /// Splits `text` at every occurrence of `separator`, so that `n`
+  /// separators give `n + 1` parts, empty ones included.
+  ///
+  /// @param text a String.
+  /// @param separator a String of one character.
+  /// @answers a new Array of the parts, Strings, in order.
+  private split: text at: separator = (
+    |
+      parts ::= {}.
+      start ::= 1.
+      found ::= text indexOf: separator.
+    |
+    [found > 0] whileTrue: [
+      parts:: parts copyWith: (text copyFrom: start to: found - 1).
+      start:: found + 1.
+      found:: text indexOf: separator startingAt: start.
+    ].
+    ^parts copyWith: (text copyFrom: start to: text size).
   )
 
   /// Describes the modules of an id for the message that follows 'there

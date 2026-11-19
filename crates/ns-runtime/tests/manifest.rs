@@ -354,3 +354,80 @@ fn a_module_without_a_version_matches_no_range() {
         "no module `Util` of version 2; there are 1.0.0 and a module without a version"
     );
 }
+
+/// A range that is no range is refused with the text the loader's own
+/// `VersionRange::parse` refuses it with, `` `<text>` is no version:
+/// <reason> ``, before any module is looked at: the request is malformed
+/// whatever the manifest holds, and "no module of version x" would read
+/// as if a module were missing.
+#[test]
+fn a_malformed_range_is_no_version() {
+    let mut interpreter = Interpreter::bootstrap();
+    let util = module(&mut interpreter, "Util.ns");
+    let manifest = manifest_over(
+        &mut interpreter,
+        &[Held {
+            id: "Util",
+            version: Some("2.0.0"),
+            rank: 0,
+            definition: &util,
+        }],
+    );
+    for range in [
+        "",
+        "2.",
+        ".2",
+        "02",
+        "2.01",
+        "x",
+        "2.x",
+        "1..2",
+        "2-beta",
+        "2+build",
+        "2.1-beta",
+        "1.2.3.4",
+        "1.2.",
+        "1.0.0+build",
+        "1.0.0-",
+        "1.0.0-alpha..1",
+        "1.0.0-alpha_1",
+        "1.0.0-01",
+        "01.0.0",
+        "18446744073709551616",
+        "1.18446744073709551616",
+        "1.0.18446744073709551616",
+        "1.0.0-18446744073709551616",
+    ] {
+        let expected = match ns_runtime::modules::VersionRange::parse(range) {
+            Ok(_) => panic!("`{range}` is a range"),
+            Err(error) => error,
+        };
+        assert!(
+            expected.starts_with(&format!("`{range}` is no version: ")),
+            "{expected}"
+        );
+        for id in ["Util", "Missing"] {
+            let message = expect_error(
+                ask_at_version(&mut interpreter, &manifest, id, range),
+                range,
+            );
+            assert_eq!(message, expected, "`{range}` of `{id}`");
+        }
+    }
+    // The widest number a version holds is a range still.
+    for range in ["18446744073709551615", "1.0.0-beta-", "1.0.0-0"] {
+        assert!(
+            ns_runtime::modules::VersionRange::parse(range).is_ok(),
+            "{range}"
+        );
+        let message = expect_error(
+            ask_at_version(&mut interpreter, &manifest, "Util", range),
+            range,
+        );
+        assert_eq!(
+            message,
+            format!("no module `Util` of version {range}; there are 2.0.0")
+        );
+    }
+    assert!(ambiguities(&mut interpreter, &manifest).is_empty());
+}

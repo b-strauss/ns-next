@@ -101,12 +101,16 @@ when there is none and `` `<id>` names <count> modules; ask with
 at:version: `` when there are several -- and `at: id version: range`,
 whose `Error` for a range none of the id's versions matches names the
 versions there are (`` no module `<id>` of version <range>; there are
-1.0.0, 2.0.0 ``), and nothing through `doesNotUnderstand:`: an id is any
-string, so a dotted one, and no key collides with a selector `Object`
-answers, so no module is refused for being named like one. Canonical
-Newspeak's unary `manifest Browsing` is not kept (decided with the user:
-the string is the form, and the version is a second argument beside
-it).
+1.0.0, 2.0.0 ``) and whose `Error` for a range of no range's form, `'2.'`
+or `'02'`, is the loader's own, `` `<range>` is no version: <reason> ``,
+the reason `VersionRange::parse` gives
+(`crates/ns-runtime/tests/manifest.rs`,
+`a_malformed_range_is_no_version`), and nothing through
+`doesNotUnderstand:`: an id is any string, so a dotted one, and no key
+collides with a selector `Object` answers, so no module is refused for
+being named like one. Canonical Newspeak's unary `manifest Browsing` is
+not kept (decided with the user: the string is the form, and the version
+is a second argument beside it).
 
 **4. A range is a prefix, and the highest version that matches is taken.**
 `version: '2'` matches 2.x.x, `'2.1'` 2.1.x, `'2.1.0'` exactly; a

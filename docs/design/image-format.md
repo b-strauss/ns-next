@@ -2202,7 +2202,10 @@ with the range and a `.` and holding no `-`, so that `2` matches `2.3.1` but
 neither `20.0.0` nor a pre-release; none matching signals `` no module
 `com.acme.util.Util` of version 3; there are 1.0.0, 2.0.0 ``
 (`goldens/tool/manifest/a_range_no_version_matches_is_an_error_naming_the_versions`,
-`two_versions_of_a_module_run_side_by_side`). A request that matched several
+`two_versions_of_a_module_run_side_by_side`); a range of no range's
+form signals what the loader says of it, `` `02` is no version: major
+`02` has a leading zero `` ([modules.md](modules.md), decision 3). A
+request that matched several
 versions is recorded, and the manifest's `ambiguities` answers the records;
 the host reads them out of the manifest's slot and prints each once, as
 `` warning: `com.acme.util.Util` version 2 matched 2.1.0, 2.3.1; took 2.3.1 ``,
