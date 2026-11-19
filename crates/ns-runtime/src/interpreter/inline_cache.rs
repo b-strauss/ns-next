@@ -2853,9 +2853,9 @@ pub(crate) fn decide_at<'gc>(
             code,
             base,
             None,
-            crate::trace_events::CompileTrigger::Entry,
+            crate::trace_events::CompileTrigger::Call,
         );
-        jit::after_compile_trigger(mutator);
+        jit::after_compile_trigger_in_leaf(mutator);
         let address = jit::machine_entry_address(&mutator.jit, code, base, None);
         mutator
             .caches
@@ -2922,7 +2922,7 @@ pub(crate) fn decide_at<'gc>(
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
-    jit::after_compile_trigger(mutator);
+    jit::after_compile_trigger_in_leaf(mutator);
     // The callee entered at its copy for its key, which a cell names only
     // behind a guard that is the receiver's own id.
     let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));

@@ -135,13 +135,6 @@ fn traced(
     events.take()
 }
 
-/// Whether the environment turns `mode`'s stress mode on, under which a
-/// threshold the JIT keeps may not be reached in a test's run.
-fn the_stress_mode_is_on(mode: &str) -> bool {
-    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-        .is_some_and(|value| !value.is_empty() && value != "0")
-}
-
 /// The events about the body named `body`.
 fn about<'events>(events: &'events [TraceEvent], body: &str) -> Vec<&'events TraceEvent> {
     events
@@ -212,14 +205,16 @@ fn a_loop_is_traced_entering_by_osr() {
         source,
         &[TraceCategory::Compile, TraceCategory::Osr],
         TraceFilter::everything(),
-        |_| {},
+        // The suspend stress mode serves a safepoint at the loop's
+        // backward jumps, rebuilding the stack, and no jump reaches the
+        // count that compiles.
+        |interpreter| {
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_suspend(false);
+            #[cfg(not(debug_assertions))]
+            let _ = interpreter;
+        },
     );
-    // The suspend stress mode serves a safepoint at the loop's backward
-    // jumps, rebuilding the stack, and no jump reaches the count that
-    // compiles.
-    if the_stress_mode_is_on("SUSPEND") {
-        return;
-    }
     let run = about(&events, "Test>>run");
     let compiled = run.iter().find_map(|event| match event.kind {
         TraceEventKind::OsrCompiled { loop_head } => Some((event.category, loop_head)),
@@ -315,18 +310,21 @@ fn an_exiting_body_is_traced_abandoned() {
         source,
         &[TraceCategory::Compile],
         TraceFilter::everything(),
-        |_| {},
+        // The zone stress mode frees `step:`'s code and compiles it
+        // again, its exits counted from none, and the scavenge and
+        // collect stress modes halve its exits at every collection they
+        // force: under them a thousand calls need not spend its budget.
+        |interpreter| {
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_zone(false);
+                interpreter.set_stress_scavenge(false);
+                interpreter.set_stress_collect(false);
+            }
+            #[cfg(not(debug_assertions))]
+            let _ = interpreter;
+        },
     );
-    // The zone stress mode frees `step:`'s code and compiles it again,
-    // its exits counted from none, and the scavenge and collect stress
-    // modes halve its exits at every collection they force: in a thousand
-    // calls it need not spend its budget under them.
-    if ["ZONE", "SCAVENGE", "COLLECT"]
-        .into_iter()
-        .any(the_stress_mode_is_on)
-    {
-        return;
-    }
     let abandoned = about(&events, "Test>>step:")
         .into_iter()
         .find_map(|event| match event.kind {
@@ -388,5 +386,73 @@ fn the_filter_keeps_one_body() {
             .iter()
             .all(|event| event.body.as_deref() == Some("Test>>a")),
         "{events:?}"
+    );
+}
+
+/// A callee reached only from machine code -- its sends start once the
+/// loop runs in its compiled code -- is compiled at a compiled call's
+/// miss: the event says so, recorded in the miss leaf and delivered after
+/// it, at the next safepoint or the run's end.
+#[test]
+fn a_body_first_compiled_at_a_compiled_call_is_traced_call() {
+    let source = indoc! {"
+        class Test = Object new () (
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 1000] whileTrue: [
+              index > 500 ifTrue: [sum:: sum + self callee].
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+
+          callee = (
+            | value ::= 1. |
+            value:: value + 1.
+            ^value.
+          )
+        )
+    "};
+    let events = traced(
+        source,
+        &[TraceCategory::Compile],
+        TraceFilter::everything(),
+        // The suspend stress mode keeps the loop from being compiled, and
+        // the pause stress mode's stops send the loop's frame back to the
+        // interpreter, so that under either the callee's second entry
+        // may be an interpreted push.
+        |interpreter| {
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_suspend(false);
+                interpreter.set_stress_pause(false);
+            }
+            #[cfg(not(debug_assertions))]
+            let _ = interpreter;
+        },
+    );
+    let callee = about(&events, "Test>>callee");
+    assert!(
+        callee.iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Compiled {
+                trigger: CompileTrigger::Call,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    assert!(
+        !callee.iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Compiled {
+                trigger: CompileTrigger::Entry,
+                ..
+            }
+        )),
+        "never at an interpreted entry: {events:?}"
     );
 }

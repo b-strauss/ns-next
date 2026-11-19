@@ -10,8 +10,10 @@
 //! the record and the delivery moves what it names and it keeps no object
 //! of the program alive. A flush (`flush`) names them from the heap,
 //! applies the filter and delivers each event in order -- at the end of
-//! every compile trigger, at the run loop's safepoint and when a host's
-//! run returns -- so that the queue never grows with the run.
+//! every compile trigger the interpreter makes, at the run loop's
+//! safepoint and when a host's run returns, never in a leaf machine code
+//! calls, whose trigger requests the safepoint instead -- so that the
+//! queue never grows with the run.
 
 mod filter;
 mod names;
@@ -174,11 +176,13 @@ impl TraceEventKind {
 /// What made the JIT compile a body to baseline code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompileTrigger {
-    /// An interpreted entry: a push, an initializer's invocation, a
-    /// future forced.
+    /// An entry the interpreter makes: a push, an initializer's
+    /// invocation, a future the interpreter forced.
     Entry,
-    /// A compiled call that found no machine code for its callee (the
-    /// miss leaf).
+    /// An entry machine code makes, which found no machine code for its
+    /// callee: a compiled send's (the miss leaf), an initializer's
+    /// invocation (the initializer leaf), a future forced (the forcing
+    /// leaf).
     Call,
     /// An interpreted backward jump, compiled for on-stack replacement.
     BackJump,
@@ -262,7 +266,11 @@ impl Revival {
 
 /// What a host installs to receive the events (`Interpreter::set_trace`).
 pub trait TraceSink {
-    /// Receives `event`, in the order the events happened.
+    /// Receives `event`, in the order the events happened. Called outside
+    /// machine code only: at the end of a compile trigger the interpreter
+    /// makes, at the run loop's safepoint, or when a host's run returns --
+    /// never from a leaf machine code calls, whose events wait for the
+    /// next of those.
     fn event(&mut self, event: &TraceEvent);
 }
 

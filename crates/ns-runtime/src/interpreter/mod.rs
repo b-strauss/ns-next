@@ -1178,8 +1178,10 @@ impl Interpreter {
     /// bodies `filter` selects (`docs/design/developer-tool.md`, "Stage
     /// 1: tracing"), replacing any sink installed before and dropping
     /// what it had not received; with no category it is the same as no
-    /// tracing. Every event is delivered at the end of the compile trigger,
-    /// the safepoint or the host's run it happened in, in order.
+    /// tracing. Every event is delivered, in order, at the end of the
+    /// interpreter's compile trigger, the safepoint or the host's run it
+    /// happened in -- one a leaf of machine code recorded at the next
+    /// safepoint, which the leaf requests.
     pub fn set_trace(
         &mut self,
         categories: crate::trace_events::TraceCategories,

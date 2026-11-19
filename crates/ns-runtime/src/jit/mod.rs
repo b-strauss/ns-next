@@ -4724,8 +4724,8 @@ fn compile_into_slot(
     // the trace says why it was not compiled at the entry it came due.
     if state.tracer.traces(TraceCategory::Compile) {
         let kind = match &outcome {
-            Ok((_, map)) => {
-                let body = &state.bodies[*map as usize];
+            Ok((_, index)) => {
+                let body = &state.bodies[*index as usize];
                 PendingKind::Compiled {
                     trigger,
                     bytes: (body.end - body.start) as usize,
@@ -4791,17 +4791,37 @@ fn compile_into_slot(
 ///   row, armed with `OPTIMIZATION_BUDGET` unless it is armed already
 ///   (`point_budget_words`), before its code first runs.
 /// - The trace events the trigger recorded are delivered
-///   (`trace_events::flush`); a flush runs no Newspeak code and never collects,
-///   so a leaf may make it.
+///   (`trace_events::flush`), but by a leaf's trigger
+///   (`after_compile_trigger_in_leaf`).
+///
+/// Only the tests -- for a body installed, a compaction asked for, a
+/// revival and a trace event pending -- stay inline, every part they
+/// guard out of line (`trace_events::flush` is cold), so that the trigger
+/// inlines into its callers and writes nothing into the JIT's state when
+/// nothing happened.
+pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
+    after_compile_trigger_in_leaf(mutator);
+    // What the trigger recorded is delivered before the code it compiled
+    // runs, so that the sink hears of a body before it hears of its exits.
+    if mutator.jit.tracer.has_pending() {
+        crate::trace_events::flush(mutator);
+    }
+}
+
+/// `after_compile_trigger` for a trigger a leaf makes -- the miss, the
+/// initializer, the forcing and the twin leaf -- which records the trace
+/// events and delivers none: a flush names bodies by walking the heap's
+/// tables and runs the host's sink, which must not run with machine
+/// code's frames on the native stack, where a sink's panic would unwind
+/// across the leaf's shim. A safepoint is requested instead, so that the
+/// next poll of the machine code reaches the run loop's safepoint, which
+/// delivers them (`Interpreter::safepoint`), and the queue does not grow
+/// over a stretch spent in machine code.
 ///
 /// Every initializer invocation a leaf decides passes through here,
-/// nearly always with nothing installed and nothing recorded: only the
-/// tests -- for a body installed, a compaction asked for, a revival and
-/// a trace event pending -- stay inline, every part they guard out of
-/// line (`trace_events::flush` is cold), so that the trigger inlines into
-/// its callers and writes nothing into the JIT's state when nothing
-/// happened.
-pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
+/// nearly always with nothing installed and nothing recorded.
+#[inline]
+pub(crate) fn after_compile_trigger_in_leaf(mutator: &mut Mutator<'_>) {
     #[cfg(ns_jit)]
     if !mutator.jit.budget_words_to_point.is_empty() {
         point_budget_words(mutator);
@@ -4812,10 +4832,8 @@ pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
     if mutator.jit.take_revival() {
         mutator.caches.refresh_all_cells(&mutator.jit);
     }
-    // What the trigger recorded is delivered before the code it compiled
-    // runs, so that the sink hears of a body before it hears of its exits.
     if mutator.jit.tracer.has_pending() {
-        crate::trace_events::flush(mutator);
+        mutator.heap.request_safepoint();
     }
 }
 

@@ -206,8 +206,11 @@ DAP stays possible, since the events are typed (decided with the user on
 - **Pending events.** A site that holds only the JIT's state records the
   event with the bodies it names as `Rc<CompiledCode>`; the bodies are
   named and the filter applied at a flush -- at the end of every compile
-  trigger, at the run loop's safepoint and when a host run returns -- so
-  that no site needs the heap and the queue never grows with the run.
+  trigger the interpreter makes, at the run loop's safepoint and when a
+  host run returns, never in a leaf of machine code, which requests the
+  safepoint instead, so that no host code runs with machine code's frames
+  on the native stack -- so that no site needs the heap and the queue
+  never grows with the run.
 
 ### Stage 2: printing code
 
