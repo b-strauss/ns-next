@@ -829,6 +829,21 @@ fn the_highest_matching_version_is_taken_and_warned() {
     assert_eq!(String::from_utf8_lossy(&loaded.stderr), warning);
 }
 
+/// A program that is one source file is named by its file, which ends in
+/// `.ns` as every module's does, so that `build` can write its path; any
+/// other is refused before anything runs.
+#[test]
+fn a_source_file_not_ending_in_the_extension_is_refused() {
+    let directory = ScratchDirectory::new("source-file-extension");
+    let file = directory.join("Solo.txt");
+    std::fs::write(&file, HELLO).unwrap();
+    let stderr = refused(&run(&file));
+    assert!(
+        stderr.contains("`Solo.txt` does not end in `.ns`"),
+        "stderr: {stderr}"
+    );
+}
+
 /// A range that names no pre-release matches none, so `2` takes `2.0.0`
 /// beside `2.1.0-beta.1`, and only the beta's own version takes the beta.
 #[test]

@@ -53,9 +53,12 @@ directory of `newspeak.json`, against which its paths are resolved
 already, or, for a program that is one `.ns` file, relative to that file's
 directory: `libs/util-1/Util.ns` and `libs/util-2/Util.ns` are two modules
 whatever they declare; `..` reaches a library beside the project. It is
-the one name every module has and two versions do not share. A module on
+the one name every module has and two versions do not share. Every such
+path ends in `.ns`, a one-file program's too, so `ns-next run Solo.txt` is
+refused ([image-format.md](image-format.md), "Packaging"). A module on
 another drive or share than the project has no path relative to it and is
-refused ([OPEN-WORK.md](../OPEN-WORK.md)). SOMns
+refused ([OPEN-WORK.md](../OPEN-WORK.md)); a verbatim path, `\\?\C:\…`,
+lies on the drive its plain form names. SOMns
 identifies a module the same way, by its path relative to a base directory
 and its class's name (`prior-art/somns`, `MixinDefinition.java:865-889`),
 and loads two files declaring one class name side by side; canonical

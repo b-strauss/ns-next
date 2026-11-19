@@ -7301,6 +7301,14 @@ fn a_module_record_is_held_to_the_project_rules() {
             module_error(0, "`a/\\u{1b}[2J.ns` holds a control character"),
         ),
         (
+            "a path holding a bidirectional override, which `inspect` would print",
+            [
+                project("a/\u{202E}sn.txt.ns", "Util", Some("1.0.0")),
+                project("b/Util.ns", "Util", Some("2.0.0")),
+            ],
+            module_error(0, "`a/\\u{202e}sn.txt.ns` holds a format character"),
+        ),
+        (
             "an id holding a control character",
             [
                 project("a/Util.ns", "Util\u{7}", Some("1.0.0")),

@@ -1944,7 +1944,11 @@ side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
   before anything runs, naming the factory found
   (`a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs`,
   `crates/ns-cli/tests/run.rs`). The root is sent `new`, then `main:
-  platform args:`.
+  platform args:`. The file's name ends in `.ns`, as every module's path
+  does, since `build` writes it as the module's path; a file of any other
+  name, `Solo.txt`, is refused before anything runs, "`` `Solo.txt` does
+  not end in `.ns` ``" (`modules::check_project_path`;
+  `a_source_file_not_ending_in_the_extension_is_refused`).
 - **A project**: `ns-next run [app] [-- args]`, where `app` is a directory
   holding a `newspeak.json`, or that file itself; with no program, the
   current directory. A project file is recognized by its name alone, as a

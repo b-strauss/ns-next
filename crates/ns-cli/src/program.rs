@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::process::ExitCode;
 use std::rc::Rc;
 
@@ -310,10 +310,30 @@ fn normalized_components(path: &Path) -> Vec<OsString> {
             other => components.push(other),
         }
     }
-    components
-        .iter()
-        .map(|component| component.as_os_str().to_os_string())
-        .collect()
+    components.iter().map(component_text).collect()
+}
+
+/// A component's text, a prefix's in its plain form: a verbatim prefix
+/// names the drive or the share its plain form names (`\\?\C:` is `C:`,
+/// `\\?\UNC\server\share` is `\\server\share`), so that a file named one
+/// way lies in a directory named the other.
+fn component_text(component: &Component<'_>) -> OsString {
+    let Component::Prefix(prefix) = component else {
+        return component.as_os_str().to_os_string();
+    };
+    match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+            OsString::from(format!("{}:", char::from(drive)))
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            let mut text = OsString::from(r"\\");
+            text.push(server);
+            text.push(r"\");
+            text.push(share);
+            text
+        }
+        Prefix::Verbatim(_) | Prefix::DeviceNS(_) => component.as_os_str().to_os_string(),
+    }
 }
 
 /// Whether two components name one directory: on Windows, whose file
@@ -658,5 +678,35 @@ mod tests {
             path_in_project(Path::new(r"C:\project"), Path::new(r"c:\project\libs\A.ns")),
             Ok("libs/A.ns".to_string())
         );
+    }
+
+    /// A verbatim path names the drive or share its plain form names, so
+    /// that a file named one way lies in a directory named the other.
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_path_lies_on_the_drive_its_plain_form_names() {
+        for (directory, file) in [
+            (r"\\?\C:\project", r"C:\project\libs\A.ns"),
+            (r"C:\project", r"\\?\c:\project\libs\A.ns"),
+            (
+                r"\\?\UNC\server\share\project",
+                r"\\server\share\project\libs\A.ns",
+            ),
+            (
+                r"\\server\share\project",
+                r"\\?\UNC\server\share\project\libs\A.ns",
+            ),
+        ] {
+            assert_eq!(
+                path_in_project(Path::new(directory), Path::new(file)),
+                Ok("libs/A.ns".to_string()),
+                "{directory} and {file}"
+            );
+        }
+        let error = match path_in_project(Path::new(r"\\?\C:\project"), Path::new(r"D:\A.ns")) {
+            Ok(path) => panic!(r"D:\A.ns answered {path}"),
+            Err(error) => error,
+        };
+        assert!(error.contains("another drive or share"), "{error}");
     }
 }

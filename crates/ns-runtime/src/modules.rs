@@ -5,6 +5,7 @@
 //! them from a module's `:module:` metadata.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 
 /// The namespace only the modules the binary ships may declare.
@@ -29,7 +30,10 @@ fn not_a_version(text: &str, reason: &str) -> String {
         .replace("{reason}", reason)
 }
 
-fn is_identifier(segment: &str) -> bool {
+/// Whether `segment` is a Newspeak identifier (`[A-Za-z_][A-Za-z0-9_]*`),
+/// as each segment of an id is, and each segment of the path to a class
+/// inside a module that a tool's name writes after the id.
+pub fn is_identifier(segment: &str) -> bool {
     let mut characters = segment.chars();
     match characters.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {
@@ -39,14 +43,57 @@ fn is_identifier(segment: &str) -> bool {
     }
 }
 
-/// Refuses a text holding a control character -- a path, an id, a
-/// version or a range -- quoting it escaped: every message here quotes
-/// the text it refuses, and an image's or a project file's text must not
-/// reach a terminal as an escape sequence.
+/// The characters of Unicode's general category Cf (format), as of
+/// Unicode 16.0, as ranges: invisible, and some of them -- the
+/// bidirectional embeddings, overrides and isolates -- reorder the text a
+/// terminal shows after them, so that one path would display as another.
+const FORMAT_CHARACTERS: [(char, char); 21] = [
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{06DD}', '\u{06DD}'),
+    ('\u{070F}', '\u{070F}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08E2}', '\u{08E2}'),
+    ('\u{180E}', '\u{180E}'),
+    ('\u{200B}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFF9}', '\u{FFFB}'),
+    ('\u{110BD}', '\u{110BD}'),
+    ('\u{110CD}', '\u{110CD}'),
+    ('\u{13430}', '\u{1343F}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0001}', '\u{E0001}'),
+    ('\u{E0020}', '\u{E007F}'),
+];
+
+/// Whether `character` is a format character (`FORMAT_CHARACTERS`).
+fn is_format(character: char) -> bool {
+    FORMAT_CHARACTERS
+        .iter()
+        .any(|(first, last)| (*first..=*last).contains(&character))
+}
+
+/// Refuses a text holding a control character or a format character -- a
+/// path, an id, a version or a range -- quoting it escaped, as
+/// `escape_debug` escapes both: every message here quotes the text it
+/// refuses, and an image's or a project file's text must not reach a
+/// terminal as an escape sequence, nor reorder or hide what the terminal
+/// shows of it.
 fn check_printable(text: &str) -> Result<(), String> {
     if text.chars().any(char::is_control) {
         return Err(format!(
             "`{}` holds a control character",
+            text.escape_debug()
+        ));
+    }
+    if text.chars().any(is_format) {
+        return Err(format!(
+            "`{}` holds a format character",
             text.escape_debug()
         ));
     }
@@ -384,24 +431,54 @@ pub fn check_unreserved(id: &ModuleId) -> Result<(), String> {
 /// Refuses two modules no request could pick between (decision 5): two of
 /// one id and one version, and two of one id where either has no version.
 /// Names the first such pair in the order given, the earlier module first,
-/// by their paths.
+/// by their paths. Linear in the count, each id's modules grouped as they
+/// come, since an image's module section is input of any size.
 pub fn check_distinct<'identity>(
     identities: impl IntoIterator<Item = &'identity ModuleIdentity>,
 ) -> Result<(), String> {
-    let identities: Vec<&ModuleIdentity> = identities.into_iter().collect();
-    for (index, later) in identities.iter().enumerate() {
-        for earlier in &identities[..index] {
-            if earlier.id != later.id {
-                continue;
-            }
-            let message = match (&earlier.version, &later.version) {
-                (Some(first), Some(second)) if first == second => TWO_OF_ONE_VERSION
-                    .replace("{id}", later.id.as_str())
-                    .replace("{version}", &first.to_string()),
-                (Some(_), Some(_)) => continue,
-                _ => TWO_ONE_WITHOUT_VERSION.replace("{id}", later.id.as_str()),
-            };
+    /// The modules of one id met so far, none of which could be told from
+    /// another: the first of them, and the first of each version. A module
+    /// without a version is alone in its group, since any other of its id
+    /// is refused.
+    struct Group<'identity> {
+        first: &'identity ModuleIdentity,
+        versions: HashMap<&'identity Version, &'identity ModuleIdentity>,
+    }
+    let mut groups: HashMap<&ModuleId, Group<'identity>> = HashMap::new();
+    for later in identities {
+        let Some(group) = groups.get_mut(&later.id) else {
+            let versions = later
+                .version
+                .iter()
+                .map(|version| (version, later))
+                .collect();
+            groups.insert(
+                &later.id,
+                Group {
+                    first: later,
+                    versions,
+                },
+            );
+            continue;
+        };
+        // The earliest module `later` cannot be told from: the group's one
+        // when either has no version, else the first of its version.
+        let message = match (&group.first.version, &later.version) {
+            (Some(_), Some(version)) => match group.versions.get(version) {
+                Some(earlier) => Some((
+                    *earlier,
+                    TWO_OF_ONE_VERSION.replace("{version}", &version.to_string()),
+                )),
+                None => {
+                    group.versions.insert(version, later);
+                    None
+                }
+            },
+            _ => Some((group.first, TWO_ONE_WITHOUT_VERSION.to_string())),
+        };
+        if let Some((earlier, message)) = message {
             return Err(message
+                .replace("{id}", later.id.as_str())
                 .replace("{first}", &earlier.path)
                 .replace("{second}", &later.path));
         }
@@ -666,6 +743,69 @@ mod tests {
         assert_eq!(check_project_path("libs/a.ns"), Ok(()));
     }
 
+    /// No path holds a format character, the bidirectional controls among
+    /// them, which would make a terminal show it as another path; the
+    /// message quotes it escaped.
+    #[test]
+    fn format_characters_are_refused() {
+        assert_eq!(
+            check_relative_path("libs/\u{202E}sn.txt.ns"),
+            Err("`libs/\\u{202e}sn.txt.ns` holds a format character".to_string())
+        );
+        for format in [
+            '\u{00AD}',
+            '\u{061C}',
+            '\u{200B}',
+            '\u{200E}',
+            '\u{202A}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{FEFF}',
+            '\u{E0041}',
+        ] {
+            let path = format!("libs/A{format}.ns");
+            let error = check_project_path(&path).unwrap_err();
+            assert!(error.ends_with("holds a format character"), "{error}");
+            assert!(!error.contains(format), "{error}");
+            assert!(check_relative_path(&format!("core:A{format}.ns")).is_err());
+        }
+        assert_eq!(check_project_path("libs/Ünïcode/Façade.ns"), Ok(()));
+    }
+
+    /// Two modules of one id and one version are found among many in
+    /// linear time, by their id's group: the image's module section is
+    /// input of any size.
+    #[test]
+    fn distinct_modules_are_checked_in_linear_time() {
+        const MODULES: usize = 200_000;
+        let distinct: Vec<ModuleIdentity> = (0..MODULES)
+            .map(|index| {
+                identity(
+                    &format!("m{index}/Util.ns"),
+                    &format!("m{index}.Util"),
+                    None,
+                )
+            })
+            .collect();
+        assert_eq!(check_distinct(&distinct), Ok(()));
+        let mut versions: Vec<ModuleIdentity> = (0..MODULES)
+            .map(|index| {
+                identity(
+                    &format!("v{index}/Util.ns"),
+                    "com.acme.Util",
+                    Some(&format!("1.0.{index}")),
+                )
+            })
+            .collect();
+        assert_eq!(check_distinct(&versions), Ok(()));
+        versions.push(identity("last/Util.ns", "com.acme.Util", Some("1.0.7")));
+        assert_eq!(
+            check_distinct(&versions),
+            Err("two modules are `com.acme.Util@1.0.7`: v7/Util.ns and last/Util.ns".to_string())
+        );
+    }
+
     /// A project's path is never a `core:` one, so that no module of a
     /// project is named as one of the binary's.
     #[test]
@@ -873,6 +1013,18 @@ mod tests {
                  b/Util.ns"
                     .to_string()
             )
+        );
+        assert_eq!(
+            check_distinct([&first, &second, &unversioned]),
+            Err(
+                "two modules are `com.acme.Util` and one of them has no version: a/Util.ns and \
+                 d/Util.ns"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            check_distinct([&first, &other, &second, &same, &unversioned]),
+            Err("two modules are `com.acme.Util@1.0.0`: a/Util.ns and c/Util.ns".to_string())
         );
         assert_eq!(
             check_distinct([&other, &identity("f/Util.ns", "Util", None)]),
