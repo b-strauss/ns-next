@@ -169,6 +169,17 @@ pub enum TraceEventKind {
         key: Option<String>,
         entered: Option<String>,
     },
+    /// The walk from `spent_by`'s frame, whose budget ran out, stopped at
+    /// the body for `walk_end`, but the body's copy for `key` was settled
+    /// meanwhile -- installed or refused -- so that nothing was requested
+    /// (`not-due`): `spent_by`'s budget stays parked until the next
+    /// safepoint arms it afresh.
+    OptimizationNotDue {
+        spent_by: String,
+        walk_end: RecompileWalkEnd,
+        key: Option<String>,
+        entered: Option<String>,
+    },
     /// The body's optimization was put off, its budget armed afresh
     /// (`deferred`).
     OptimizationDeferred {
@@ -231,6 +242,7 @@ impl TraceEventKind {
             TraceEventKind::OsrCompiled { .. } => "osr-compiled",
             TraceEventKind::OsrEntered { .. } => "osr-entered",
             TraceEventKind::OptimizationRequested { .. } => "requested",
+            TraceEventKind::OptimizationNotDue { .. } => "not-due",
             TraceEventKind::OptimizationDeferred { .. } => "deferred",
             TraceEventKind::Optimized { .. } => "optimized",
             TraceEventKind::OptimizationRefused { .. } => "refused",
@@ -351,6 +363,9 @@ pub enum RecompileWalkEnd {
     NotRecompilable,
     /// The next frame's plan would not inline the frame the walk came from.
     NotInlined,
+    /// No walk was made: the optimize stress mode requests the spending
+    /// frame's own copy, and so does a test's request.
+    NotWalked,
 }
 
 impl RecompileWalkEnd {
@@ -363,6 +378,7 @@ impl RecompileWalkEnd {
             RecompileWalkEnd::InlinedIntoACopyBelow => "inlined-into-a-copy-below",
             RecompileWalkEnd::NotRecompilable => "not-recompilable",
             RecompileWalkEnd::NotInlined => "not-inlined",
+            RecompileWalkEnd::NotWalked => "not-walked",
         }
     }
 }
@@ -390,15 +406,30 @@ impl Deferral {
 /// Why the inlining plan sent a callee rather than inline it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InlineDecline {
-    /// The callee is no method body the plan inlines: a leaf or primitive
-    /// the graph does not express, a body that leaves otherwise than by
-    /// returning, or a lazy slot's getter whose field is not known.
-    NotAMethod,
+    /// The tree holds no body of the callee to inline: a method past
+    /// what the limits allow where it is sent, a nested class's accessor,
+    /// a factory, or a target a `doesNotUnderstand:` lookup found.
+    NotSnapshotted,
+    /// The callee is a leaf or primitive the graph does not express
+    /// inline for the receiver.
+    NotExpressed,
+    /// The callee's body leaves its activation otherwise than by a
+    /// return, which an inlined scope's jump back cannot stand for.
+    ReturnsOtherwise,
+    /// The callee is a lazy slot's getter whose field the receiver's
+    /// level does not locate.
+    UnknownLazyField,
     /// The callee is observed: an unwind marker or a leaf that reads an
     /// activation keeps it a frame of its own.
     Observed,
     /// The block reaches a frame the compile does not lay out.
     ReachesPastTheCompile,
+    /// The callee, a block taken at a `value` send, escapes after all:
+    /// the block is created and the send sent.
+    BlockEscapes,
+    /// The callee was taken, but its scope would create a block, which
+    /// would leave optimized code at its `MakeClosure` every time.
+    CreatesABlock,
     /// The callee weighs more than its limit.
     OverWeight,
     /// The compile would weigh more than its limit with the callee.
@@ -413,9 +444,14 @@ impl InlineDecline {
     /// The reason's name, as a line spells it: kebab case.
     pub fn name(self) -> &'static str {
         match self {
-            InlineDecline::NotAMethod => "not-a-method",
+            InlineDecline::NotSnapshotted => "not-snapshotted",
+            InlineDecline::NotExpressed => "not-expressed",
+            InlineDecline::ReturnsOtherwise => "returns-otherwise",
+            InlineDecline::UnknownLazyField => "unknown-lazy-field",
             InlineDecline::Observed => "observed",
             InlineDecline::ReachesPastTheCompile => "reaches-past-the-compile",
+            InlineDecline::BlockEscapes => "block-escapes",
+            InlineDecline::CreatesABlock => "creates-a-block",
             InlineDecline::OverWeight => "over-weight",
             InlineDecline::OverCompileLimit => "over-compile-limit",
             InlineDecline::OverRecursionLimit => "over-recursion-limit",
@@ -471,6 +507,11 @@ pub(crate) enum PendingKind {
         loop_head: u32,
     },
     OptimizationRequested {
+        spent_by: Rc<CompiledCode>,
+        walk_end: RecompileWalkEnd,
+        key: Option<CustomizationKey>,
+    },
+    OptimizationNotDue {
         spent_by: Rc<CompiledCode>,
         walk_end: RecompileWalkEnd,
         key: Option<CustomizationKey>,
@@ -672,6 +713,19 @@ fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -
         } => {
             let (key, entered) = key_fields(key);
             TraceEventKind::OptimizationRequested {
+                spent_by: name(&spent_by),
+                walk_end,
+                key,
+                entered,
+            }
+        }
+        PendingKind::OptimizationNotDue {
+            spent_by,
+            walk_end,
+            key,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::OptimizationNotDue {
                 spent_by: name(&spent_by),
                 walk_end,
                 key,

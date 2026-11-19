@@ -5447,7 +5447,11 @@ pub(crate) fn budget_spent(
     };
     let due = optimization_due(mutator, &code, frame);
     if due && mutator.jit.optimize_stress() {
-        request_optimization(mutator, &code, frame, None);
+        let cause = RequestCause {
+            spent_by: &code,
+            walk_end: RecompileWalkEnd::NotWalked,
+        };
+        request_optimization(mutator, &code, frame, cause);
         return false;
     }
     due
@@ -5525,13 +5529,9 @@ fn rearm_for_other_pairs(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 
 /// Records `request` unless one for its body and key is pending, and
 /// requests the safepoint that takes it up; traced as requested when it
-/// is recorded and the walk up the stack led to it (`cause`).
+/// is recorded, with what led to it (`cause`).
 #[cfg(ns_jit)]
-fn request(
-    mutator: &mut Mutator<'_>,
-    request: OptimizationRequest,
-    cause: Option<RequestCause<'_>>,
-) {
+fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest, cause: RequestCause<'_>) {
     let requests = &mut mutator.jit.optimization_requests;
     requests.retain(|pending| pending.code.strong_count() > 0);
     let pending = requests.iter().any(|pending| {
@@ -5541,7 +5541,6 @@ fn request(
         return;
     }
     if mutator.jit.tracer.traces(TraceCategory::Optimize)
-        && let Some(cause) = cause
         && let Some(code) = request.code.upgrade()
     {
         mutator.jit.tracer.record(Pending::about(
@@ -5562,9 +5561,8 @@ fn request(
 
 /// What led to an optimization request, for the trace: the body whose
 /// budget ran out, and why the walk up the stack from its frame stopped
-/// at the recompilee (`find_recompilee`). A request the walk did not
-/// decide -- the optimize stress mode's, a test's -- has none, and is not
-/// traced as requested.
+/// at the recompilee (`find_recompilee`), `NotWalked` for a request no
+/// walk decided -- the optimize stress mode's, a test's.
 #[cfg(ns_jit)]
 #[derive(Clone, Copy)]
 struct RequestCause<'code> {
@@ -6004,7 +6002,20 @@ fn request_recompilee(
                 spent_by: &spent_by,
                 walk_end,
             };
-            request_optimization(mutator, &code, frame, Some(cause));
+            request_optimization(mutator, &code, frame, cause);
+        } else if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+            let key = frame.and_then(|(receiver, current_class)| {
+                CustomizationKey::of_activation(&mutator.heap, receiver, current_class)
+            });
+            mutator.jit.tracer.record(Pending::about(
+                TraceCategory::Optimize,
+                &code,
+                PendingKind::OptimizationNotDue {
+                    spent_by: Rc::clone(&spent_by),
+                    walk_end,
+                    key,
+                },
+            ));
         }
         return;
     }
@@ -6013,7 +6024,7 @@ fn request_recompilee(
         spent_by: &spent_by,
         walk_end,
     };
-    request_optimization(mutator, &spent_by, frame, Some(cause));
+    request_optimization(mutator, &spent_by, frame, cause);
 }
 
 /// The receiver and current class of `activation`, which runs `code`,
@@ -6047,7 +6058,7 @@ fn request_optimization<'gc>(
     mutator: &mut Mutator<'gc>,
     code: &Rc<CompiledCode>,
     frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
-    cause: Option<RequestCause<'_>>,
+    cause: RequestCause<'_>,
 ) {
     if let Some((receiver, current_class)) = frame
         && request_copy(mutator, code, receiver, current_class, cause)
@@ -6071,7 +6082,7 @@ fn request_copy<'gc>(
     code: &Rc<CompiledCode>,
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
-    cause: Option<RequestCause<'_>>,
+    cause: RequestCause<'_>,
 ) -> bool {
     let Some(key) = CustomizationKey::of_activation(&mutator.heap, receiver, current_class) else {
         return false;
@@ -6298,29 +6309,22 @@ fn optimize(
     // What the copy inlined -- its scopes, type-case arms, eliminated
     // blocks and sites -- counted once it is installed.
     let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
-    // The plan's decisions, kept for the trace whether or not the copy is
-    // installed.
-    let mut decisions = None;
-    let installation = optimizing::compile_tree(
+    // The plan's decisions, traced whether the copy is installed or
+    // refused, so that a refusal after the plan says what it planned.
+    let (compiled, decisions) = optimizing::compile_tree_explained(
         &tree,
         macro_assembler,
         role,
         settings.futures_exit,
         optimizing::Speculation::at_version(code.jit.optimized_version(key)),
-    )
-    .and_then(|mut optimized| {
+    );
+    let installation = compiled.and_then(|mut optimized| {
         inlined = (
             optimized.scopes.iter().skip(1).flatten().count() as u64,
             u64::from(optimized.type_case_arms),
             optimized.eliminated.len() as u64,
             u64::from(optimized.inlined_sites),
         );
-        if mutator.jit.tracer.traces(TraceCategory::Inlining) {
-            decisions = Some((
-                std::mem::take(&mut optimized.inlined),
-                std::mem::take(&mut optimized.declined),
-            ));
-        }
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
         let dependencies = CopyDependencies::of_relied_on(&mutator.heap, &optimized.relied_on);
         install_optimized(
@@ -6335,8 +6339,10 @@ fn optimize(
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
-    if let Some((inlined_scopes, declined)) = decisions {
-        trace_inlining(mutator, code, key, &inlined_scopes, &declined);
+    if mutator.jit.tracer.traces(TraceCategory::Inlining)
+        && let Some(decisions) = decisions
+    {
+        trace_inlining(mutator, code, key, &decisions);
     }
     let index = match installation {
         Ok(index) => index,
@@ -6457,9 +6463,8 @@ fn defer_optimization(
 
 /// Records the inlining plan's decisions for the copy of `code` for
 /// `key`: each scope the copy lays out below its own, by its sender
-/// scope's body, the send's program counter and its own body
-/// (`inlined_scopes`), and each callee the plan sent rather than inline
-/// (`declined`). Bodies are named by their code ids at this safepoint,
+/// scope's body, the send's program counter and its own body, and each
+/// callee the plan sent rather than inline (`PlanDecisions`). Bodies are named by their code ids at this safepoint,
 /// where the tree that registered them was taken; an id the heap no
 /// longer names is left out.
 #[cfg(ns_jit)]
@@ -6469,10 +6474,9 @@ fn trace_inlining(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
-    inlined_scopes: &[(CodeId, u32, CodeId)],
-    declined: &[optimizing::plan::Declined],
+    decisions: &optimizing::PlanDecisions,
 ) {
-    for &(in_body, program_counter, callee) in inlined_scopes {
+    for &(in_body, program_counter, callee) in &decisions.inlined {
         let (Some(in_body), Some(callee)) = (mutator.heap.code(in_body), mutator.heap.code(callee))
         else {
             continue;
@@ -6488,7 +6492,7 @@ fn trace_inlining(
             },
         ));
     }
-    for declined in declined {
+    for declined in &decisions.declined {
         let Some(in_body) = mutator.heap.code(declined.scope_code) else {
             continue;
         };

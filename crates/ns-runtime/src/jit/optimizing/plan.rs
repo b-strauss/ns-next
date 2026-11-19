@@ -991,14 +991,14 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                     .own_slot_bases
                     .get(usize::from(*level))
                     .and_then(|base| base.checked_add(*own_index))
-                    .map_or(Callee::Not(InlineDecline::NotAMethod), |field| {
+                    .map_or(Callee::Not(InlineDecline::UnknownLazyField), |field| {
                         Callee::Always(AlwaysInlined::LazyGetter { field })
                     });
             }
             if is_observed(snapshot) {
                 Callee::Not(InlineDecline::Observed)
             } else if returns_otherwise(snapshot) {
-                Callee::Not(InlineDecline::NotAMethod)
+                Callee::Not(InlineDecline::ReturnsOtherwise)
             } else {
                 Callee::Method {
                     snapshot,
@@ -1031,13 +1031,14 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                 Some(row) if expressed(row.primitive, receiver) => {
                     Callee::Always(AlwaysInlined::Primitive(row.primitive))
                 }
-                _ => Callee::Not(InlineDecline::NotAMethod),
+                _ => Callee::Not(InlineDecline::NotExpressed),
             },
         },
         CalleeFacts::Primitive(primitive) if expressed(*primitive, receiver) => {
             Callee::Always(AlwaysInlined::Primitive(*primitive))
         }
-        CalleeFacts::Primitive(_) | CalleeFacts::Other => Callee::Not(InlineDecline::NotAMethod),
+        CalleeFacts::Primitive(_) => Callee::Not(InlineDecline::NotExpressed),
+        CalleeFacts::Other => Callee::Not(InlineDecline::NotSnapshotted),
     }
 }
 
@@ -1719,7 +1720,9 @@ impl<'tree> Planner<'tree> {
                 return eliminated;
             }
             for index in creating {
-                self.drop_scopes_where(|candidate, _| candidate == index);
+                self.drop_scopes_where(InlineDecline::CreatesABlock, |candidate, _| {
+                    candidate == index
+                });
             }
         }
     }
@@ -1760,19 +1763,34 @@ impl<'tree> Planner<'tree> {
     /// Drops every live scope inlined for a `value` send of `block`, and
     /// every scope below it; each such send is sent instead.
     fn drop_scopes_of(&mut self, block: BlockKey) {
-        self.drop_scopes_where(|_, scope| scope.block == Some(block));
+        self.drop_scopes_where(InlineDecline::BlockEscapes, |_, scope| {
+            scope.block == Some(block)
+        });
     }
 
     /// Drops every live scope `dropped` names, by its index, and every
-    /// scope below it; each such send is sent instead.
-    fn drop_scopes_where(&mut self, dropped: impl Fn(usize, &Scope<'_>) -> bool) {
+    /// scope below it; each such send is sent instead. A scope `dropped`
+    /// names is declined at its send for `reason`, so that the trace says
+    /// why a callee taken is sent after all; one dropped only because its
+    /// sender was lies in no scope of the copy.
+    fn drop_scopes_where(
+        &mut self,
+        reason: InlineDecline,
+        dropped: impl Fn(usize, &Scope<'_>) -> bool,
+    ) {
         for index in 0..self.scopes.len() {
             let scope = &self.scopes[index];
             let parent_dead = scope
                 .plan
                 .parent
                 .is_some_and(|(parent, _)| !self.scopes[parent.index()].alive);
-            if scope.alive && (dropped(index, scope) || parent_dead) {
+            let named = scope.alive && dropped(index, scope);
+            if named && let Some((parent, program_counter)) = scope.plan.parent {
+                let callee = scope.plan.code_id;
+                self.decline(parent, program_counter, Some(callee), reason);
+            }
+            let scope = &self.scopes[index];
+            if scope.alive && (named || parent_dead) {
                 if let Some(parent) = scope.plan.parent
                     && let Some(SiteDecision::Unguarded(slot)) = self.decisions.get_mut(&parent)
                     && matches!(slot, Some((_, _, ArmPlan::Inline { callee })) if callee.index() == index)
@@ -3446,5 +3464,154 @@ mod tests {
             plan_scope.block_of == Some(ScopeId::ROOT)
                 && plan_scope.parent.map(|(parent, _)| parent.0 as usize) == Some(copying_scope)
         }));
+    }
+
+    /// Whether `plan` declined, at `scope_code`'s send at
+    /// `program_counter`, the callee `callee` for `reason`.
+    fn declines(
+        plan: &InliningPlan,
+        (scope_code, program_counter): (CodeId, u32),
+        callee: CodeId,
+        reason: InlineDecline,
+    ) -> bool {
+        plan.declined.contains(&Declined {
+            scope_code,
+            program_counter,
+            callee: Some(callee),
+            reason,
+        })
+    }
+
+    /// An observed callee is declined as such, however light.
+    #[test]
+    fn an_observed_callee_is_declined_as_observed() {
+        let (mut interpreter, class) = run(OBSERVED);
+        let generous = Limits {
+            method: 10_000,
+            block: 10_000,
+            ..Limits::STANDARD
+        };
+        let tree = tree_of(&mut interpreter, &class, "run", &generous);
+        let send = send_of(&tree.root, "ensure:");
+        let site = tree.root.sites[send as usize].expect("a site").site;
+        let [(_, CalleeFacts::Method { snapshot, .. })] =
+            &tree.sites[&(tree.root.code_id, site)].arms[..]
+        else {
+            panic!("`ensure:` is a method");
+        };
+        let plan = plan_with(&tree, &generous, Speculation::Traps);
+        assert!(
+            declines(
+                &plan,
+                (tree.root.code_id, send),
+                snapshot.code_id,
+                InlineDecline::Observed
+            ),
+            "{:?}",
+            plan.declined
+        );
+    }
+
+    /// A callee the compile has no room left for is declined for the
+    /// compile limit, not its own weight.
+    #[test]
+    fn a_callee_past_the_compile_limit_is_declined_for_it() {
+        let (mut interpreter, class) = run(FREQUENCY);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let [outside, _] = sends_of(&tree.root, "helper:")[..] else {
+            panic!("two sends of helper:");
+        };
+        let helper_code = code_id_of(&mut interpreter, &class, "helper:");
+        let helper = tree.snapshot_of(helper_code).expect("helper:'s snapshot");
+        let room_for_one = Limits {
+            compile: weight_in(&tree, &tree.root) + weight_in(&tree, helper),
+            ..Limits::STANDARD
+        };
+        let plan = plan_with(&tree, &room_for_one, Speculation::Traps);
+        assert!(
+            declines(
+                &plan,
+                (tree.root.code_id, outside),
+                helper_code,
+                InlineDecline::OverCompileLimit
+            ),
+            "{:?}",
+            plan.declined
+        );
+    }
+
+    /// `remember:` is taken, then dropped since its scope would create
+    /// the block it hands `keep:`: the plan says so at its send.
+    #[test]
+    fn a_callee_dropped_for_creating_a_block_is_declined_for_it() {
+        let (mut interpreter, class) = run(CREATING);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        let send = send_of(&tree.root, "remember:");
+        assert!(
+            declines(
+                &plan,
+                (tree.root.code_id, send),
+                code_id_of(&mut interpreter, &class, "remember:"),
+                InlineDecline::CreatesABlock
+            ),
+            "{:?}",
+            plan.declined
+        );
+        // `keep:`, inlined into `remember:` and dropped with it, lies in
+        // no scope of the copy: nothing is said of it.
+        let keep = code_id_of(&mut interpreter, &class, "keep:");
+        assert!(
+            plan.declined
+                .iter()
+                .all(|declined| declined.callee != Some(keep)),
+            "{:?}",
+            plan.declined
+        );
+    }
+
+    /// `twice:` values its block and stores it: the block's `value`
+    /// sends, taken, are sent once the block escapes, and declined as
+    /// such.
+    const ESCAPING_VALUE: &str = indoc! {"
+        class EscapingValue = (
+          | stored |
+        ) (
+          public twice: aBlock = (
+            stored:: aBlock.
+            ^aBlock value + aBlock value
+          )
+          public run = (
+            ^self twice: [3]
+          )
+        )
+    "};
+
+    #[test]
+    fn a_block_taken_and_then_escaping_is_declined_as_escaping() {
+        let (mut interpreter, class) = run(ESCAPING_VALUE);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "twice:"));
+        let twice_code = code_id_of(&mut interpreter, &class, "twice:");
+        let twice = tree.snapshot_of(twice_code).expect("twice:'s snapshot");
+        let SnapshotInstruction::MakeClosure { block, .. } =
+            tree.root.instructions[closure_of(&tree.root) as usize]
+        else {
+            panic!("a closure");
+        };
+        for send in sends_of(twice, "value") {
+            assert!(
+                declines(
+                    &plan,
+                    (twice_code, send),
+                    block,
+                    InlineDecline::BlockEscapes
+                ),
+                "{:?}",
+                plan.declined
+            );
+        }
+        assert_eq!(sends_of(twice, "value").len(), 2);
     }
 }

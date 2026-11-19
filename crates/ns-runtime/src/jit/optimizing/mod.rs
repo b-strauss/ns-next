@@ -75,14 +75,71 @@ pub(crate) fn compile(
 /// code the assembler cannot lay out. `futures_exit` is the setting its
 /// baseline code was compiled under (`JitState::set_futures_exit`), so
 /// that both tiers are the same lowering. `speculation` says which sites
-/// the feedback says never ran become guards.
-#[cfg(ns_jit)]
+/// the feedback says never ran become guards. The JIT itself compiles
+/// through `compile_tree_explained`, which answers the plan's decisions
+/// too; the passes' tests compile through this.
+#[cfg(all(test, ns_jit))]
 pub(crate) fn compile_tree(
     tree: &tree::SnapshotTree,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,
     role: crate::jit::baseline::BodyRole,
     futures_exit: bool,
     speculation: Speculation,
+) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    let mut decisions = None;
+    compile_planned(
+        tree,
+        macro_assembler,
+        (role, futures_exit, speculation),
+        &mut decisions,
+    )
+}
+
+/// `compile_tree`, answering beside its outcome the inlining plan's
+/// decisions (`PlanDecisions`), which the trace reports whether the copy
+/// was emitted or refused; `None` only for a body refused before its plan
+/// was made -- one with more instructions than a program counter of the
+/// map holds -- of which the plan says nothing.
+#[cfg(ns_jit)]
+pub(crate) fn compile_tree_explained(
+    tree: &tree::SnapshotTree,
+    macro_assembler: crate::jit::macro_assembler::MacroAssembler,
+    role: crate::jit::baseline::BodyRole,
+    futures_exit: bool,
+    speculation: Speculation,
+) -> (
+    Result<emit::OptimizedBody, crate::jit::Refusal>,
+    Option<PlanDecisions>,
+) {
+    let mut decisions = None;
+    let compiled = compile_planned(
+        tree,
+        macro_assembler,
+        (role, futures_exit, speculation),
+        &mut decisions,
+    );
+    (compiled, decisions)
+}
+
+/// What the inlining plan of a compile decided, for the trace's
+/// `inlining` category: each scope the code lays out below the body's
+/// own -- its sender scope's body, the program counter of the send there
+/// and its own body -- and every callee the plan sent rather than inline,
+/// with why (`plan::InliningPlan::declined`).
+#[cfg(ns_jit)]
+pub(crate) struct PlanDecisions {
+    pub(crate) inlined: Vec<(crate::heap::CodeId, u32, crate::heap::CodeId)>,
+    pub(crate) declined: Vec<plan::Declined>,
+}
+
+/// `compile_tree`'s work, `decisions` filled once the plan is made and
+/// its graph built.
+#[cfg(ns_jit)]
+fn compile_planned(
+    tree: &tree::SnapshotTree,
+    macro_assembler: crate::jit::macro_assembler::MacroAssembler,
+    (role, futures_exit, speculation): (crate::jit::baseline::BodyRole, bool, Speculation),
+    decisions: &mut Option<PlanDecisions>,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
     use crate::jit::Refusal;
     use crate::jit::baseline::{BodyRole, ScopeFacts};
@@ -96,10 +153,28 @@ pub(crate) fn compile_tree(
         role,
         futures_exit,
     )?;
-    let plan = plan::plan(tree, speculation);
+    let mut plan = plan::plan(tree, speculation);
     body.deepest_chain = plan.deepest_chain;
     body.deepest_extent = plan.deepest_extent;
     let graph = build::build_inlined(tree, &plan, speculation);
+    // The one answer to which scopes the copy inlined: what it keeps of
+    // them, what it names in a collection, what it depends on and what
+    // the trace reports are all read off it, so that none of them can
+    // name a scope the others miss.
+    let laid_out = laid_out_scopes(&graph);
+    *decisions = Some(PlanDecisions {
+        inlined: graph
+            .scopes
+            .iter()
+            .zip(&laid_out)
+            .filter(|(_, laid_out)| **laid_out)
+            .filter_map(|(scope, _)| {
+                let (sender, program_counter) = scope.parent?;
+                Some((graph.scope(sender).code_id, program_counter, scope.code_id))
+            })
+            .collect(),
+        declined: std::mem::take(&mut plan.declined),
+    });
     let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
     // Each scope's facts, as its own baseline code would read them: an
     // inlined scope is a method's, as many scopes deep as its chain.
@@ -139,20 +214,6 @@ pub(crate) fn compile_tree(
         })
         .collect();
     let (push_entry, polls) = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
-    // The one answer to which scopes the copy inlined: what it keeps of
-    // them, what it names in a collection and what it depends on are all
-    // read off it, so that none of them can name a scope the others miss.
-    let laid_out = laid_out_scopes(&graph);
-    let inlined = graph
-        .scopes
-        .iter()
-        .zip(&laid_out)
-        .filter(|(_, laid_out)| **laid_out)
-        .filter_map(|(scope, _)| {
-            let (sender, program_counter) = scope.parent?;
-            Some((graph.scope(sender).code_id, program_counter, scope.code_id))
-        })
-        .collect();
     let eliminated = eliminated_blocks(&plan, tree);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
@@ -221,8 +282,6 @@ pub(crate) fn compile_tree(
         polls,
         type_case_arms: type_case_arms(&graph),
         inlined_sites: graph.inlined_sites,
-        inlined,
-        declined: plan.declined,
         #[cfg(test)]
         small_integer_tag_tests,
     })

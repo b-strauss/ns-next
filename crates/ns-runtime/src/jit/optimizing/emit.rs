@@ -109,13 +109,6 @@ pub(crate) struct OptimizedBody {
     pub(crate) type_case_arms: u32,
     /// The sites the code lays out as their arms (`graph::Graph::inlined_sites`).
     pub(crate) inlined_sites: u32,
-    /// Each scope the code lays out below the body's own: its sender
-    /// scope's body, the program counter of the send there and its own
-    /// body, which the trace's `inlining` category reports.
-    pub(crate) inlined: Vec<(CodeId, u32, CodeId)>,
-    /// Every callee the plan sent rather than inline, with why
-    /// (`plan::InliningPlan::declined`).
-    pub(crate) declined: Vec<super::plan::Declined>,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,

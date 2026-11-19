@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use indoc::indoc;
-use ns_runtime::trace_events::{CompileRefusal, CompileTrigger, Deferral};
+use ns_runtime::trace_events::{CompileRefusal, CompileTrigger, Deferral, RecompileWalkEnd};
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
     SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
@@ -587,4 +587,33 @@ fn a_patched_body_is_traced_deferred() {
         )),
         "{events:?}"
     );
+}
+
+/// Under the optimize stress mode a body's first spend requests its own
+/// copy, with no walk up the stack: the request is traced as not walked,
+/// so that every body optimized has its request.
+#[test]
+fn the_optimize_stress_mode_s_requests_are_traced_not_walked() {
+    let events = traced_spending(HOT_LOOP, &[TraceCategory::Optimize], |interpreter| {
+        hot_loop_stress_off(interpreter);
+        interpreter.set_optimize_stress(true);
+    });
+    let optimized: Vec<&TraceEvent> = events
+        .iter()
+        .filter(|event| matches!(event.kind, TraceEventKind::Optimized { .. }))
+        .collect();
+    assert!(!optimized.is_empty(), "{events:?}");
+    for event in optimized {
+        assert!(
+            events.iter().any(|request| request.body == event.body
+                && matches!(
+                    request.kind,
+                    TraceEventKind::OptimizationRequested {
+                        walk_end: RecompileWalkEnd::NotWalked,
+                        ..
+                    }
+                )),
+            "{events:?}"
+        );
+    }
 }
