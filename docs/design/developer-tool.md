@@ -132,7 +132,7 @@ no tool of its own, since `debug_evaluate` evaluates at a stop
 **8. A trace event is one line: `[<category>] {<body>} <event>`, then
 `name=value` pairs, every name in braces.** For example
 `[compile] {Demo>>factorial:} compiled trigger=entry bytes=412`,
-`[inlining] {Demo>>main:args:} declined callee={[] in Demo>>run} reason=over-weight at=31` or
+`[inlining] {Demo>>main:args:} declined in-body={Demo>>main:args:} callee={[] in Demo>>run} reason=over-weight at=31` or
 `[caches] {Demo>>main:args:} monomorphic->polymorphic selector=#deposit: site=3 receiver={Demo/Account}`;
 `{}` stands for an event that names no body, every reason is spelled in
 kebab case, and no line carries a time, so that a test pins it. A name
@@ -205,8 +205,13 @@ DAP stays possible, since the events are typed (decided with the user on
   `osr`, `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`, or
   `all`), as HotSpot's `-Xlog` takes its tags, rather than V8's flag per
   kind (decided with the user on 2026-11-19), and
-  `--trace-filter=<selection>`; each event is one line on standard
-  error (decision 8), the format pinned by tests.
+  `--trace-filter=<pattern>`, given once for each pattern -- never a
+  list split at commas, since `,` is a binary selector and
+  `newspeak.core.Kernel/String>>,` a method a pattern must be able to
+  name -- an unknown category, a malformed pattern and one naming a
+  module the program does not have refused with exit status 2 before
+  the program runs; each event is one line on standard error
+  (decision 8), the format pinned by tests.
 - **`debug_start`** takes `trace` and `trace_filter` and passes them to
   the child; the plugin's run configuration takes runtime options placed
   before the program (decision 9).

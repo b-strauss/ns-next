@@ -8,10 +8,11 @@ use ns_runtime::TraceFilter;
 use crate::debug::{self, DebugOptions, HostLink, HostStart};
 use crate::{entry, program, trace};
 
-/// `--trace` and `--trace-filter` as given.
+/// `--trace` and `--trace-filter` as given: the categories, and one
+/// pattern for each `--trace-filter`.
 pub(crate) struct TraceOptions<'text> {
     pub(crate) categories: Option<&'text str>,
-    pub(crate) filter: Option<&'text str>,
+    pub(crate) filter: Vec<&'text str>,
 }
 
 /// The status a refused option exits with, as the command line's own
@@ -52,10 +53,9 @@ pub(crate) fn execute(
         Some(Err(refusal)) => return refuse_trace(&refusal),
         None => None,
     };
-    let trace_filter = match trace_options.filter.map(TraceFilter::parse) {
-        Some(Ok(filter)) => filter,
-        Some(Err(refusal)) => return refuse_trace(&format!("--trace-filter: {refusal}")),
-        None => TraceFilter::everything(),
+    let trace_filter = match TraceFilter::parse(&trace_options.filter) {
+        Ok(filter) => filter,
+        Err(refusal) => return refuse_trace(&format!("--trace-filter: {refusal}")),
     };
     let program = match program::read_program(file) {
         Ok(program) => program,
@@ -71,9 +71,7 @@ pub(crate) fn execute(
     if let Some(categories) = trace_categories {
         // Whether a pattern names a module of the program is known only
         // once it is read, and is decided before anything of it runs.
-        if let Some(text) = trace_options.filter
-            && let Err(refusal) = trace::check_filter(text, &program::module_names(&program))
-        {
+        if let Err(refusal) = trace::check_filter(&trace_filter, program::module_names(&program)) {
             return refuse_trace(&refusal);
         }
         loaded

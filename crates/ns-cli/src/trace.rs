@@ -9,6 +9,8 @@ use ns_runtime::tool_names::KnownModule;
 use ns_runtime::{ModuleName, TraceCategories, TraceCategory, TraceEvent, TraceEventKind};
 use ns_runtime::{TraceFilter, TraceSink};
 
+use crate::program;
+
 /// The word `--trace` takes for every category.
 const ALL: &str = "all";
 
@@ -39,29 +41,19 @@ pub(crate) fn categories(text: &str) -> Result<TraceCategories, String> {
     Ok(categories)
 }
 
-/// Refuses a pattern of `text`, a filter `TraceFilter::parse` took, that
-/// names a module `modules` -- the program's -- and the binary's do not
-/// have, naming the pattern; checked once the program is loaded and
-/// before it runs, so that a filter that would select nothing for good is
-/// refused rather than leave the trace silent.
-pub(crate) fn check_filter(text: &str, modules: &[ModuleName]) -> Result<(), String> {
-    let modules: Vec<ModuleName> = modules
-        .iter()
-        .cloned()
-        .chain(
-            ns_runtime::shipped_source_files()
-                .iter()
-                .map(|file| ModuleName::named(ns_runtime::shipped_module_id(file.name))),
-        )
-        .collect();
-    let module_of = |text: &str| KnownModule::resolve(text, &modules);
-    for pattern in text.split(',').map(str::trim) {
-        let checked = TraceFilter::parse(pattern).and_then(|filter| filter.check(&module_of));
-        if let Err(reason) = checked {
-            return Err(format!("--trace-filter: `{pattern}`: {reason}"));
-        }
-    }
-    Ok(())
+/// Refuses a pattern of `filter` that names a module neither the
+/// program, whose modules are `modules`, nor the binary has, naming the
+/// pattern; checked once the program is loaded and before it runs, so
+/// that a filter that would select nothing for good is refused rather
+/// than leave the trace silent.
+pub(crate) fn check_filter(
+    filter: &TraceFilter,
+    modules: impl IntoIterator<Item = ModuleName>,
+) -> Result<(), String> {
+    let modules = program::known_modules(modules);
+    filter
+        .check(&|text: &str| KnownModule::resolve(text, &modules))
+        .map_err(|reason| format!("--trace-filter: {reason}"))
 }
 
 /// The line `event` is written as (`docs/design/developer-tool.md`,
@@ -638,12 +630,16 @@ mod tests {
         }
     }
 
+    /// How many kinds of event there are: one past the last index the
+    /// match in `every_kind_is_listed` gives, raised with every arm added.
+    const EVENT_KINDS: usize = 21;
+
     /// Every kind of event appears in `every_event`: the match fails to
-    /// compile for a kind added without its arm, and the test for one
-    /// added without its line.
+    /// compile for a kind added without its arm, and the test fails for
+    /// one added without its line or without `EVENT_KINDS` raised.
     #[test]
     fn every_kind_is_listed() {
-        let mut seen = [false; 21];
+        let mut seen = std::collections::BTreeSet::new();
         for (event, _) in every_event() {
             let index = match event.kind {
                 TraceEventKind::Compiled { .. } => 0,
@@ -668,9 +664,13 @@ mod tests {
                 TraceEventKind::ZoneReplaced { .. } => 19,
                 TraceEventKind::CacheTransition { .. } => 20,
             };
-            seen[index] = true;
+            seen.insert(index);
         }
-        assert!(seen.iter().all(|listed| *listed), "{seen:?}");
+        assert_eq!(
+            seen,
+            (0..EVENT_KINDS).collect(),
+            "every kind listed once, `EVENT_KINDS` counting them"
+        );
     }
 
     /// `text` split at every space outside braces.

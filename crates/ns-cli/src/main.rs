@@ -89,11 +89,13 @@ enum Command {
         /// `inlining`, `deoptimize`, `code-zone`, `caches`, or `all`.
         #[arg(long, value_name = "CATEGORIES")]
         trace: Option<String>,
-        /// Trace only the bodies the patterns select, separated by commas:
+        /// Trace only the bodies a pattern selects, one pattern each time
+        /// the option is given (`,` is a selector, so nothing splits a
+        /// pattern):
         /// `<id>[@<version>][/<Class>(.<Class>)*][ class]>><selector>`, a
         /// trailing `*` making a prefix.
-        #[arg(long, value_name = "SELECTION", requires = "trace")]
-        trace_filter: Option<String>,
+        #[arg(long, value_name = "PATTERN", requires = "trace")]
+        trace_filter: Vec<String>,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -285,7 +287,7 @@ fn execute(command: Command) -> ExitCode {
             jit_statistics,
             commands::run::TraceOptions {
                 categories: trace.as_deref(),
-                filter: trace_filter.as_deref(),
+                filter: trace_filter.iter().map(String::as_str).collect(),
             },
             script.as_deref(),
             debug::DebugOptions::from_arguments(debug, debug_connect),

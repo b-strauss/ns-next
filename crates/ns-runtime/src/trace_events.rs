@@ -24,7 +24,6 @@ use crate::bytecode::CompiledCode;
 use crate::interpreter::Mutator;
 use crate::jit::CustomizationKey;
 use crate::symbol::Symbol;
-use crate::tool_names::KnownModule;
 
 pub use filter::TraceFilter;
 use names::BodyNames;
@@ -270,7 +269,9 @@ pub enum TraceEventKind {
     /// moved from `before` to `after` at a miss of a send of `selector`, whose
     /// receiver's class, qualified as every class is, is `receiver`
     /// (the line's event is `<before>-><after>`); about no body for a site of
-    /// no family's, a closure's an image decoded.
+    /// no family's, a closure's an image decoded. A receiver whose class
+    /// has no declaration, and so no module -- the VM mirror's -- is named
+    /// by its class's display name, unqualified.
     CacheTransition {
         before: SiteState,
         after: SiteState,
@@ -820,12 +821,6 @@ pub(crate) struct EventTracer {
     /// for (`Interpreter::trace_events_recorded`).
     recorded: u64,
     names: BodyNames,
-    /// Whether the filter was checked against the program's modules,
-    /// which only a flush can reach.
-    filter_checked: bool,
-    /// Why the filter names a module the program does not have, as the
-    /// first flush found it.
-    filter_refusal: Option<String>,
 }
 
 impl EventTracer {
@@ -879,31 +874,16 @@ impl EventTracer {
         self.filter = Some(filter);
         self.sink = Some(sink);
     }
-
-    /// Why the installed filter names a module the program does not have,
-    /// once a flush checked it; `None` before and when it names none.
-    pub(crate) fn filter_refusal(&self) -> Option<String> {
-        self.filter_refusal.clone()
-    }
 }
 
 /// Delivers every pending event: names each body it holds, drops what the
 /// filter refuses, hands the rest to the sink in order and empties the
-/// queue. The first flush checks the filter against the program's
-/// modules (`TraceFilter::check`), which only the heap knows.
+/// queue.
 #[cold]
 #[inline(never)]
 pub(crate) fn flush(mutator: &mut Mutator<'_>) {
     let pending = std::mem::take(&mut mutator.jit.tracer.pending);
     let mut names = std::mem::take(&mut mutator.jit.tracer.names);
-    if !mutator.jit.tracer.filter_checked {
-        mutator.jit.tracer.filter_checked = true;
-        if let Some(filter) = &mutator.jit.tracer.filter {
-            let roots = module_roots(mutator);
-            let module_of = |text: &str| KnownModule::resolve(text, &roots);
-            mutator.jit.tracer.filter_refusal = filter.check(&module_of).err();
-        }
-    }
     let mut events = Vec::with_capacity(pending.len());
     for Pending {
         category,
@@ -1111,30 +1091,4 @@ pub(crate) fn key_names(mutator: &Mutator<'_>, key: CustomizationKey) -> (String
     };
     let entered = (key.entered != key.receiver).then(|| name(key.entered));
     (name(key.receiver), entered)
-}
-
-/// The module every root mixin of the heap and every shipped module is,
-/// with its version: what a filter's pattern may name.
-fn module_roots(mutator: &Mutator<'_>) -> Vec<crate::debugger::ModuleName> {
-    let heap = &mutator.heap;
-    let mut roots: Vec<crate::debugger::ModuleName> = heap
-        .mixin_ids()
-        .into_iter()
-        .filter(|id| heap.enclosing_mixin_id(*id).is_none())
-        .filter_map(|id| heap.mixin(id))
-        .filter(|mixin| {
-            !mixin.is_class_side() && (mixin.module_identity.is_some() || mixin.text.is_some())
-        })
-        .map(|root| crate::debugger::ModuleName::of_root(&root))
-        .collect();
-    roots.extend(
-        crate::interpreter::core_library::shipped_source_files()
-            .iter()
-            .map(|file| {
-                crate::debugger::ModuleName::named(
-                    crate::interpreter::core_library::shipped_module_id(file.name),
-                )
-            }),
-    );
-    roots
 }

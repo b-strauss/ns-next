@@ -1206,15 +1206,6 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.tracer.queue_length())
     }
 
-    /// Why the trace filter names a module the program does not have --
-    /// an id or version no module has, or the dotted form a nested class
-    /// was written in before -- as the first delivery of events checked it
-    /// (`TraceFilter::check`); `None` before and when it names none. Such
-    /// a pattern selects nothing.
-    pub fn trace_filter_refusal(&mut self) -> Option<String> {
-        self.enter(|mutator| mutator.jit.tracer.filter_refusal())
-    }
-
     /// Why the JIT is off though it was wanted, `None` while it runs or
     /// when nothing asked for it (`NS_NEXT_NO_JIT=1`, or a build without a
     /// JIT): its code zone could not be reserved -- on a Windows before

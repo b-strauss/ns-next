@@ -355,16 +355,9 @@ impl Sources {
     /// names, as a class name a client typed is read against, resolved
     /// as every tool resolves it (`KnownModule::resolve`).
     pub(crate) fn module_of(&self, text: &str) -> Option<KnownModule> {
-        let modules: Vec<ModuleName> = self
-            .program
-            .iter()
-            .map(|program| program.module.clone())
-            .chain(
-                ns_runtime::shipped_source_files()
-                    .iter()
-                    .map(|file| ModuleName::named(ns_runtime::shipped_module_id(file.name))),
-            )
-            .collect();
+        let modules = crate::program::known_modules(
+            self.program.iter().map(|program| program.module.clone()),
+        );
         KnownModule::resolve(text, &modules)
     }
 

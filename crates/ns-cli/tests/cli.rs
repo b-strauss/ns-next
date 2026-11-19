@@ -880,7 +880,11 @@ fn an_unknown_category_is_refused() {
 fn a_malformed_filter_is_refused() {
     let stderr = refused_stderr(
         "trace-malformed-filter",
-        &["--trace=compile", "--trace-filter=Demo>>square:,Demo>>"],
+        &[
+            "--trace=compile",
+            "--trace-filter=Demo>>square:",
+            "--trace-filter=Demo>>",
+        ],
     );
     assert!(stderr.contains("`Demo>>`"), "stderr: {stderr}");
 }
@@ -891,7 +895,11 @@ fn a_malformed_filter_is_refused() {
 fn a_filter_naming_no_module_is_refused() {
     let stderr = refused_stderr(
         "trace-unknown-module",
-        &["--trace=compile", "--trace-filter=Demo>>square:,Other>>run"],
+        &[
+            "--trace=compile",
+            "--trace-filter=Demo>>square:",
+            "--trace-filter=Other>>run",
+        ],
     );
     assert!(stderr.contains("`Other>>run`"), "stderr: {stderr}");
     assert!(stderr.contains("no module `Other`"), "stderr: {stderr}");

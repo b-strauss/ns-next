@@ -468,7 +468,7 @@ fn the_filter_keeps_one_body() {
           )
         )
     "};
-    let filter = TraceFilter::parse("Test>>a").expect("a valid filter");
+    let filter = TraceFilter::parse(&["Test>>a"]).expect("a valid filter");
     let events = traced(
         source,
         &[TraceCategory::Compile, TraceCategory::Osr],

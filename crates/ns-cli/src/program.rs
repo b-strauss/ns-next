@@ -163,6 +163,22 @@ pub(crate) fn module_names(program: &Program) -> Vec<ns_runtime::ModuleName> {
         .collect()
 }
 
+/// The program's `modules` and every shipped module: what a tool's name
+/// -- a breakpoint's, a trace filter's -- may name a module of
+/// (`KnownModule::resolve`).
+pub(crate) fn known_modules(
+    modules: impl IntoIterator<Item = ns_runtime::ModuleName>,
+) -> Vec<ns_runtime::ModuleName> {
+    modules
+        .into_iter()
+        .chain(
+            ns_runtime::shipped_source_files().iter().map(|file| {
+                ns_runtime::ModuleName::named(ns_runtime::shipped_module_id(file.name))
+            }),
+        )
+        .collect()
+}
+
 /// The program's modules as a debugger shows them: each by its id and
 /// version, with the file it was read from and its text as read.
 /// A file is shown by its absolute path as the program named it, and

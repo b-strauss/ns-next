@@ -1,5 +1,5 @@
 //! The trace filter (`--trace-filter`; `docs/design/developer-tool.md`,
-//! decision 5): comma-separated patterns in the tools' method syntax,
+//! decision 5): patterns in the tools' method syntax, one each,
 //! `<id>[@<version>][/<Class>(.<Class>)*][ class]>><selector>`, read by
 //! the tools' one grammar (`tool_names`), a trailing `*` making a prefix.
 //! A pattern is matched against a body's name by parts -- its module's id
@@ -24,8 +24,15 @@ const SUPERCLASS_CLAUSE_SUFFIX: &str = " superclass clause";
 /// Which bodies' events a trace delivers: every body's, or those whose
 /// name one of the patterns matches.
 pub struct TraceFilter {
-    /// What each pattern selects; empty for every body.
-    patterns: Vec<Selection>,
+    /// Each pattern; empty for every body.
+    patterns: Vec<Pattern>,
+}
+
+/// A pattern as written and what it selects.
+struct Pattern {
+    /// The pattern's text, which a refusal names.
+    text: String,
+    selection: Selection,
 }
 
 /// What a pattern selects.
@@ -55,10 +62,9 @@ enum Selection {
     Ids { prefix: String },
 }
 
-/// The refusal of an empty pattern: an empty filter, or one with a comma
-/// at either end or two in a row.
-const EMPTY_PATTERN: &str = "an empty pattern selects nothing: a trace filter needs a pattern \
-     before its first comma, between every two and after its last";
+/// The refusal of an empty pattern.
+const EMPTY_PATTERN: &str = "an empty pattern selects nothing: a trace filter pattern names a \
+     method, a class or a module";
 
 /// A body's name read into its parts.
 struct BodyParts {
@@ -76,19 +82,21 @@ impl TraceFilter {
         }
     }
 
-    /// The filter `text` writes, its patterns separated by commas; a
-    /// pattern not of the form is refused, the refusal naming it. Whether
-    /// a module has the id and version a pattern names is `check`'s
-    /// question, which needs the program's modules.
-    pub fn parse(text: &str) -> Result<TraceFilter, String> {
-        let patterns = text
-            .split(',')
+    /// The filter of `patterns`, one pattern each -- never split at a
+    /// comma, since `,` is a binary selector (`String>>,`) -- that
+    /// delivers every body's events with none; a pattern not of the form
+    /// is refused, the refusal naming it. Whether a module has the id and
+    /// version a pattern names is `check`'s question, which needs the
+    /// program's modules.
+    pub fn parse(patterns: &[&str]) -> Result<TraceFilter, String> {
+        let patterns = patterns
+            .iter()
             .map(|pattern| {
                 let pattern = pattern.trim();
                 if pattern.is_empty() {
                     return Err(EMPTY_PATTERN.to_string());
                 }
-                selection(pattern).map_err(|reason| {
+                let selection = selection(pattern).map_err(|reason| {
                     // The grammar's own refusal names the text where it says
                     // it is not of the form; a version's names only the
                     // version.
@@ -97,9 +105,13 @@ impl TraceFilter {
                     } else {
                         format!("`{pattern}`: {reason}")
                     }
+                })?;
+                Ok(Pattern {
+                    text: pattern.to_string(),
+                    selection,
                 })
             })
-            .collect::<Result<Vec<Selection>, String>>()?;
+            .collect::<Result<Vec<Pattern>, String>>()?;
         Ok(TraceFilter { patterns })
     }
 
@@ -108,10 +120,10 @@ impl TraceFilter {
     /// (`tool_names::known_class`): an id or version none has, and the
     /// dotted form a nested class was written in before. A pattern that
     /// gives only a prefix of an id names no one module and is never
-    /// refused.
+    /// refused. The refusal names the pattern.
     pub fn check(&self, module_of: &dyn Fn(&str) -> Option<KnownModule>) -> Result<(), String> {
-        for pattern in &self.patterns {
-            let class = match pattern {
+        for Pattern { text, selection } in &self.patterns {
+            let class = match selection {
                 Selection::Method(method) => method.class.clone(),
                 Selection::Selectors { class, .. } => class.clone(),
                 Selection::Classes { module, path, .. } => ClassName {
@@ -124,7 +136,8 @@ impl TraceFilter {
                 },
                 Selection::Ids { .. } => continue,
             };
-            tool_names::known_class(class, module_of)?;
+            tool_names::known_class(class, module_of)
+                .map_err(|reason| format!("`{text}`: {reason}"))?;
         }
         Ok(())
     }
@@ -140,7 +153,9 @@ impl TraceFilter {
         let Some(parts) = body_parts(body) else {
             return false;
         };
-        self.patterns.iter().any(|pattern| pattern.matches(&parts))
+        self.patterns
+            .iter()
+            .any(|pattern| pattern.selection.matches(&parts))
     }
 }
 
@@ -320,7 +335,7 @@ mod tests {
     use super::*;
 
     fn filter(text: &str) -> TraceFilter {
-        match TraceFilter::parse(text) {
+        match TraceFilter::parse(&[text]) {
             Ok(filter) => filter,
             Err(refusal) => panic!("{text}: {refusal}"),
         }
@@ -386,14 +401,15 @@ mod tests {
         assert_eq!(
             dotted.check(&module_of),
             Err(
-                "no module `Demo.Account`; a class inside a module is written `Demo/Account`"
+                "`Demo.Account>>deposit:`: no module `Demo.Account`; a class inside a module \
+                 is written `Demo/Account`"
                     .to_string()
             )
         );
         assert_eq!(filter("Demo/Account>>deposit:").check(&module_of), Ok(()));
         assert_eq!(
             filter("Other/Account>>*").check(&module_of),
-            Err("no module `Other`".to_string())
+            Err("`Other/Account>>*`: no module `Other`".to_string())
         );
         assert_eq!(filter("Oth*").check(&module_of), Ok(()), "a prefix of ids");
     }
@@ -409,20 +425,37 @@ mod tests {
 
     #[test]
     fn several_patterns_are_alternatives() {
-        let both = filter("Demo/Account>>deposit:, Demo>>main:args:");
+        let both = TraceFilter::parse(&["Demo/Account>>deposit:", " Demo>>main:args:"])
+            .expect("two patterns");
         assert!(both.matches("Demo/Account>>deposit:"));
         assert!(both.matches("Demo>>main:args:"));
         assert!(!both.matches("Demo/Account>>withdraw:"));
         assert!(TraceFilter::everything().matches("Demo/Account>>withdraw:"));
         assert!(TraceFilter::everything().matches("(unnamed)"));
         assert!(!both.matches("(unnamed)"));
+        assert!(
+            TraceFilter::parse(&[])
+                .expect("no pattern")
+                .matches("Demo>>run")
+        );
+    }
+
+    /// A pattern is never split at a comma, which is a binary selector.
+    #[test]
+    fn a_comma_is_a_selector() {
+        let comma = filter("Demo>>,");
+        assert!(comma.matches("Demo>>,"));
+        assert!(comma.matches("[] in Demo>>,"));
+        assert!(!comma.matches("Demo>>run"));
+        let prefix = filter("newspeak.core.Kernel/String>>,*");
+        assert!(prefix.matches("newspeak.core.Kernel/String>>,"));
     }
 
     #[test]
     fn a_malformed_pattern_is_refused() {
-        for text in ["", "Demo>>x,", ",Demo>>x", "Demo>>x,,Demo>>y"] {
+        for text in ["", " "] {
             assert_eq!(
-                TraceFilter::parse(text).err().as_deref(),
+                TraceFilter::parse(&[text]).err().as_deref(),
                 Some(EMPTY_PATTERN),
                 "{text}"
             );
@@ -436,12 +469,12 @@ mod tests {
             "Demo/Acc ount*",
             "Demo..Account>>x",
         ] {
-            match TraceFilter::parse(text) {
+            match TraceFilter::parse(&[text]) {
                 Ok(_) => panic!("`{text}` was taken"),
                 Err(refusal) => assert!(refusal.contains(&format!("`{text}`")), "{refusal}"),
             }
         }
-        let version = TraceFilter::parse("Demo@1.0>>x").err().expect("refused");
+        let version = TraceFilter::parse(&["Demo@1.0>>x"]).err().expect("refused");
         assert!(version.starts_with("`Demo@1.0>>x`: "), "{version}");
     }
 }
