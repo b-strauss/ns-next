@@ -184,15 +184,20 @@ DAP stays possible, since the events are typed (decided with the user on
 - **No handle leaves the call.** An event names a body as the debugger
   names a frame -- its owner by `qualified_name`
   (`debugger/metadata/again.rs`), `id@version/Inner>>selector` -- and a
-  receiver application by its class's name, computed
-  only when a sink is installed; the sink is called synchronously and
-  keeps no reference ("A handle means nothing against a `Heap` that did
-  not mint it", `CLAUDE.md`).
+  receiver application by its class's qualified name, computed when it
+  is recorded; a pending event holds the code it names as
+  `Rc<CompiledCode>` and plain values, so no collection between its
+  record and its delivery can move what it names, and it keeps no
+  object of the program alive ("A handle means nothing against a `Heap`
+  that did not mint it", `CLAUDE.md`; decided with the user on
+  2026-11-19).
 - **The switch.** One flag per category, read at the cold site; installing
-  a sink sets them (`Interpreter::set_trace_sink`).
-- **`ns-next run`** takes `--trace=<categories>` (`compile`, `osr`,
-  `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`, or `all`)
-  and `--trace-filter=<selection>`; each event is one line on standard
+  a sink sets them (`Interpreter::set_trace`).
+- **`ns-next run`** takes one flag, `--trace=<categories>` (`compile`,
+  `osr`, `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`, or
+  `all`), as HotSpot's `-Xlog` takes its tags, rather than V8's flag per
+  kind (decided with the user on 2026-11-19), and
+  `--trace-filter=<selection>`; each event is one line on standard
   error (decision 8), the format pinned by tests.
 - **`debug_start`** takes `trace` and `trace_filter` and passes them to
   the child; the plugin's run configuration takes runtime options placed
