@@ -135,7 +135,9 @@ pub enum Command {
         classes: Vec<ClassName>,
     },
     /// The current text of the module `module` names -- a program's, as
-    /// `FrameLocation::module` names it, or a shipped one, built or not --
+    /// `FrameLocation::module` names it, or a shipped one, built or not;
+    /// one exact module, so that a name without a version that covers
+    /// built modules of several versions is answered `ModuleTextAnswer::None` --
     /// unless `known_revision` is the revision the answer
     /// would carry. `known_revision` is the revision of a
     /// `ModuleTextAnswer::Text` the agent holds for this very module; an

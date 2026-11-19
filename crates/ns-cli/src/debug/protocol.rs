@@ -264,8 +264,9 @@ pub(crate) struct SetFunctionBreakpointsArguments {
     pub(crate) breakpoints: Vec<FunctionBreakpoint>,
 }
 
-/// A method breakpoint, its method named `<id>[@<version>][/<Class>(.<Class>)*]>>selector`
-/// or, for the class side, `... class>>selector` (`breakpoints::parse_method_name`).
+/// A method breakpoint, its method named
+/// `<id>[@<version>][/<Class>(.<Class>)*]>>selector` or, for the class
+/// side, `... class>>selector` (`breakpoints::parse_method_name`).
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct FunctionBreakpoint {
@@ -283,7 +284,8 @@ pub(crate) struct SetExceptionBreakpointsArguments {
 }
 
 /// A filter turned on with a condition: the classes, each
-/// `<id>[@<version>][/<Class>(.<Class>)*]`, separated by commas, whose exceptions it stops.
+/// `<id>[@<version>][/<Class>(.<Class>)*]`, separated by commas, whose
+/// exceptions it stops.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ExceptionFilterOptions {
@@ -346,8 +348,9 @@ pub(crate) struct ForceReturnArguments {
 }
 
 /// `nsNext/instances`, a request of ns-next's own: `count` of the
-/// instances of the class declaration `name` names, `<id>[@<version>][/<Class>(.<Class>)*]`
-/// as `nsNext/instanceCounts` names it, from the `start`th.
+/// instances of the class declaration `name` names,
+/// `<id>[@<version>][/<Class>(.<Class>)*]` as `nsNext/instanceCounts` names it,
+/// from the `start`th.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct InstancesArguments {

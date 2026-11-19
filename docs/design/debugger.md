@@ -5147,12 +5147,17 @@ and, where only one version is meant, its version (`ModuleName`:
 (`Mixin::module_identity`), or its class's name for a root a host built
 without one. Within a program an id and a version name one module, so a
 name with a version names that module and one without names every
-version of its id, the VM resolving a breakpoint, a module's text, a
-method breakpoint, an exception filter and a step filter in the roots
-the name covers only (`ModuleName::names`, `ModuleName::covers`,
-`breakpoints::module_roots`;
+version of its id, the VM resolving a method breakpoint, an exception
+filter and a step filter in the roots the name covers only
+(`ModuleName::names`, `ModuleName::covers`, `breakpoints::module_roots`;
 `a_breakpoint_with_a_version_stands_in_that_version_only`,
-`a_breakpoint_without_a_version_stands_in_every_version`). A shipped
+`a_breakpoint_without_a_version_stands_in_every_version`,
+`a_versioned_method_breakpoint_stands_across_an_install`). A line
+breakpoint and a module's text are one module's, named exactly as a
+frame's location names it: a module's line breakpoints are held and
+resolved again at its build under its exact name, and `ModuleText`
+answers no text for a name without a version that covers built
+modules of several versions (`a_text_is_asked_for_by_one_version`). A shipped
 module is a module of its own, whatever the program's names: a program
 may declare a `Kernel` of its own, which is `Kernel`, while the binary's
 is `newspeak.core.Kernel`, an id no program module may have (decision
@@ -5198,14 +5203,19 @@ filter's condition, the memory view's -- is written
 `Calls>>>>` (selector `>>`), `newspeak.core.Kernel/Error`. Each names
 one module, or every version of one id, so a filter sends the VM one
 `ClassName` and a function breakpoint one method breakpoint behind its
-DAP id. A dotted module no module of the program or the binary has, a
-prefix of which names one -- by its id, or, undotted, by the class's
-name of the one module it ends in (`Sources::module_of`) -- is refused
-with the form it means, ``no module `Demo.Account`; a class inside a
-module is written `Demo/Account` ``, since it is how a nested class was
-written before ids and would otherwise wait, unverified, for a module
-that never comes
+DAP id. Every module of the program and of the binary is known before
+the program starts, so an id none of them has is refused, ``no module
+`org.example.Tool` ``, rather than left to wait, unverified, for a module
+that never comes. The refusal says the form meant where it can
+(`Sources::module_of`): a dotted module a prefix of which names one --
+by its id, or, undotted, by the class's name of the one module it ends
+in -- ``no module `Demo.Account`; a class inside a module is written
+`Demo/Account` ``, since it is how a nested class was written before
+ids; and an id that is the class's name of one module, ``no module
+`Kernel`; a class inside a module is written `newspeak.core.Kernel/Array` ``
+in a program without a module `Kernel`
 (`a_dotted_nested_class_is_refused_with_the_new_form`,
+`an_id_no_module_has_is_refused`,
 `a_function_breakpoint_names_the_program_s_kernel_and_the_shipped_one_apart`,
 `an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
 `the_stack_trace_names_each_version_of_a_module`).

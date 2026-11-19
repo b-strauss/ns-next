@@ -8791,18 +8791,32 @@ const VERSIONED_ID: &str = "com.acme.util.Util";
 /// An interpreter compiling with `lowering`, with `VERSIONED` loaded twice,
 /// as `com.acme.util.Util@1.0.0` and `@2.0.0`, and an instance of each.
 fn load_versions(lowering: Lowering) -> (Interpreter, [Root; 2]) {
+    let (mut interpreter, classes) = load_versioned(VERSIONED, VERSIONED_ID, "Util", lowering);
+    let instances =
+        classes.map(|class| expect_ok(interpreter.instantiate(&class, &[]), "instantiate"));
+    (interpreter, instances)
+}
+
+/// An interpreter compiling with `lowering`, with `source`, whose root
+/// class is `class_name`, loaded twice, as `id@1.0.0` and `id@2.0.0`, and
+/// the two module classes.
+fn load_versioned(
+    source: &str,
+    id: &str,
+    class_name: &str,
+    lowering: Lowering,
+) -> (Interpreter, [Root; 2]) {
     let mut interpreter = Interpreter::bootstrap_with(lowering);
-    let instances = ["1.0.0", "2.0.0"].map(|version| {
-        let mut resolved = resolved_module(VERSIONED);
+    let classes = ["1.0.0", "2.0.0"].map(|version| {
+        let mut resolved = resolved_module(source);
         resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
-            path: format!("util-{version}/Util.ns"),
-            id: ns_runtime::modules::ModuleId::parse(VERSIONED_ID, "Util").expect("an id"),
+            path: format!("{class_name}-{version}/{class_name}.ns"),
+            id: ns_runtime::modules::ModuleId::parse(id, class_name).expect("an id"),
             version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
         }));
-        let class = interpreter.load_module(&resolved);
-        expect_ok(interpreter.instantiate(&class, &[]), "instantiate")
+        interpreter.load_module(&resolved)
     });
-    (interpreter, instances)
+    (interpreter, classes)
 }
 
 /// A method breakpoint on the root's `run` of the versions `version`
@@ -8865,6 +8879,96 @@ ns_runtime::for_each_lowering! {
     fn a_breakpoint_without_a_version_stands_in_every_version(lowering) {
         let stops = stops_per_version(lowering, versioned_breakpoint(None));
         assert_eq!(stops, [2, 2]);
+    }
+}
+
+/// The id both versions of `EDITING` are loaded as by
+/// `a_versioned_method_breakpoint_stands_across_an_install`.
+const EDITING_ID: &str = "com.acme.edit.Editing";
+
+ns_runtime::for_each_lowering! {
+    /// An install of one version's class replaces that version's method:
+    /// a method breakpoint naming the version is set again on the new
+    /// body and stops there, at its entry and its exit, while the other
+    /// version's run, which installs its own edit, never stops.
+    fn a_versioned_method_breakpoint_stands_across_an_install(lowering) {
+        let (mut interpreter, classes) =
+            load_versioned(EDITING, EDITING_ID, "Editing", lowering);
+        let platform = interpreter.platform();
+        let instances = classes.map(|class| {
+            expect_ok(
+                interpreter.send(&class, Symbol::intern("usingPlatform:"), std::slice::from_ref(&platform)),
+                "usingPlatform:",
+            )
+        });
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(
+            &remote,
+            vec![MethodBreakpoint {
+                class: ClassName {
+                    module: ModuleName {
+                        id: String::from(EDITING_ID),
+                        version: Some(String::from("1.0.0")),
+                    },
+                    path: vec![String::from("Subject")],
+                },
+                class_side: false,
+                selector: String::from("answer"),
+                hit_condition: None,
+                condition: None,
+                log: None,
+            }],
+        );
+        let mut runs = Vec::new();
+        let mut remote = Some(remote);
+        for (index, instance) in instances.iter().enumerate() {
+            let (stops, result, back) = debugged_by(
+                remote.take().expect("the remote"),
+                move |remote| {
+                    if index == 0 {
+                        only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                    }
+                    stops_until_the_end(remote)
+                },
+                || run(&mut interpreter, instance),
+            );
+            runs.push((stops, answered(&mut interpreter, result)));
+            remote = Some(back);
+        }
+        assert_eq!(runs, [(2, 48), (0, 48)]);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A module's text is asked for by one module: a name without a
+    /// version that covers two built versions names neither, and answers
+    /// no text, while each version's name answers its own.
+    fn a_text_is_asked_for_by_one_version(lowering) {
+        let (mut interpreter, instances) = load_versions(lowering);
+        let remote = interpreter.attach_debugger();
+        set_method_breakpoints(&remote, vec![versioned_breakpoint(Some("1.0.0"))]);
+        let (texts, result, _) = debugged_by(
+            remote,
+            |remote| {
+                only_method_breakpoint(&expect_method_breakpoints(remote), true);
+                expect_stop(remote);
+                let version = |version: Option<&str>| ModuleName {
+                    id: String::from(VERSIONED_ID),
+                    version: version.map(String::from),
+                };
+                let texts = [None, Some("1.0.0"), Some("2.0.0")]
+                    .map(|named| module_text_of(remote, version(named), None).1);
+                remote.send(Command::Terminate);
+                texts
+            },
+            || run(&mut interpreter, &instances[0]),
+        );
+        assert_terminated(result);
+        let versioned = ModuleTextAnswer::Text(String::from(VERSIONED));
+        assert_eq!(
+            texts,
+            [ModuleTextAnswer::None, versioned.clone(), versioned]
+        );
     }
 }
 

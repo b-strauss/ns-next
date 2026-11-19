@@ -1342,13 +1342,15 @@ pub(crate) fn set_line_breakpoints(
 /// replaced by an install: its line and method breakpoints are resolved
 /// against its current bodies, and a change reported unasked. A slot of a
 /// body no longer current keeps its patch, so that a frame still running
-/// it stops there.
+/// it stops there. `name` is the built module's own; a module's line
+/// breakpoints are set under its exact name, as a frame's location names
+/// it, while a method breakpoint's name may cover every version.
 pub(crate) fn module_built(mutator: &mut Mutator<'_>, name: &ModuleName) {
     if let Some(position) = mutator
         .breakpoints
         .modules
         .iter()
-        .position(|held| held.name.covers(name))
+        .position(|held| held.name == *name)
     {
         resolve_and_report(mutator, position);
     }
@@ -1735,12 +1737,21 @@ fn module_roots(mutator: &Mutator<'_>, name: &ModuleName) -> Vec<MixinId> {
 /// built module is shipped as its root says (`Mixin::shipped`); one not
 /// built yet is a shipped one only by a shipped module's id, which no
 /// program's module may declare (`docs/design/modules.md`, decision 9).
+/// A text is one module's: a name without a version that covers built
+/// modules of several versions names none of them, and answers `None`
+/// rather than one picked by the order the heap registered them in.
 pub(crate) fn module_text(mutator: &Mutator<'_>, name: &ModuleName) -> Option<String> {
-    let root = module_roots(mutator, name)
+    let roots: Vec<(MixinId, Rc<Mixin>)> = module_roots(mutator, name)
         .into_iter()
-        .next()
-        .and_then(|id| Some((id, mutator.heap.mixin(id)?)));
-    match root {
+        .filter_map(|id| Some((id, mutator.heap.mixin(id)?)))
+        .collect();
+    let mut modules = roots.iter().map(|(_, root)| ModuleName::of_root(root));
+    if let Some(first) = modules.next()
+        && modules.any(|other| other != first)
+    {
+        return None;
+    }
+    match roots.into_iter().next() {
         Some((_, root)) if root.shipped => {
             Some(String::from(&*shipped_module_text(root.name.as_str())))
         }

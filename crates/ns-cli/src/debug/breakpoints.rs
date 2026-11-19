@@ -100,12 +100,13 @@ fn is_identifier(segment: &str) -> bool {
 /// a module's class when no `/` follows the module, a class inside it
 /// otherwise. A name without a version names the class in every version
 /// of the id. `module_of` answers the id of the module the program or
-/// the binary has that a text names (`Sources::module_of`): a dotted
-/// module no module has, a prefix of which names one, is refused with the
-/// form that names the class inside that one -- it is the form a nested
-/// class was written in before, `Demo.Account` for `Demo/Account`, which
-/// must not be read as a module of its own and wait, unverified, for a
-/// module that never comes.
+/// the binary has that a text names (`Sources::module_of`): an id no
+/// module has is refused, since it would wait, unverified, for a module
+/// that never comes; a dotted one a prefix of which names a module with
+/// the form that names the class inside that one -- it is the form a
+/// nested class was written in before, `Demo.Account` for
+/// `Demo/Account` -- and one that is the class's name of one module with
+/// that module's id, `newspeak.core.Kernel/Array` for `Kernel/Array`.
 fn parse_class(
     text: &str,
     module_of: &dyn Fn(&str) -> Option<String>,
@@ -134,7 +135,21 @@ fn parse_class(
         ),
         None => None,
     };
-    if id.contains('.') && module_of(id).is_none() {
+    let named = module_of(id);
+    if named.as_deref() == Some(id) {
+        return Ok(ClassName {
+            module: ModuleName {
+                id: id.to_string(),
+                version,
+            },
+            path,
+        });
+    }
+    let written = |module: &str| match &version {
+        Some(version) => format!("{module}@{version}"),
+        None => module.to_string(),
+    };
+    if id.contains('.') {
         let segments: Vec<&str> = id.split('.').collect();
         let prefix = (1..segments.len())
             .rev()
@@ -146,22 +161,31 @@ fn parse_class(
                 .chain(path.iter().map(String::as_str))
                 .collect::<Vec<&str>>()
                 .join(".");
-            let module = match &version {
-                Some(version) => format!("{prefix}@{version}"),
-                None => prefix,
-            };
+            let module = written(&prefix);
             return Err(ClassRefusal::Explained(format!(
                 "no module `{id}`; a class inside a module is written `{module}/{inside}`"
             )));
         }
     }
-    Ok(ClassName {
-        module: ModuleName {
-            id: id.to_string(),
-            version,
-        },
-        path,
-    })
+    // Every module of the program and of the binary is known before the
+    // program starts, so an id none of them has names a module that never
+    // comes: the breakpoint would wait unverified for good. Where the id is
+    // the class's name of one module -- `Kernel` for the binary's
+    // `newspeak.core.Kernel` -- the refusal says how that one is written.
+    Err(ClassRefusal::Explained(match named {
+        Some(module) if path.is_empty() => {
+            format!(
+                "no module `{id}`; the module is written `{}`",
+                written(&module)
+            )
+        }
+        Some(module) => format!(
+            "no module `{id}`; a class inside a module is written `{}/{}`",
+            written(&module),
+            path.join(".")
+        ),
+        None => format!("no module `{id}`"),
+    }))
 }
 
 /// The class declaration named `<id>[@<version>][/<Class>(.<Class>)*]`, as
@@ -1102,10 +1126,42 @@ mod tests {
                     .to_string()
             )
         );
-        // A dotted id no prefix of which the program knows names a module
-        // not built yet.
-        let pending = method("org.example.Tool>>run");
-        assert_eq!(pending.class.module, ModuleName::named("org.example.Tool"));
+    }
+
+    /// Every module is known before the program starts, so an id no
+    /// module has is refused rather than left waiting for good; one that
+    /// is the class's name of one module says how that module is written.
+    #[test]
+    fn an_id_no_module_has_is_refused() {
+        assert_eq!(
+            parse_method_name("org.example.Tool>>run", &module_of),
+            Err("no module `org.example.Tool`".to_string())
+        );
+        assert_eq!(
+            parse_class_name("Elsewhere/Inner", &module_of),
+            Err("no module `Elsewhere`".to_string())
+        );
+        // Without a program module `Kernel`, `Kernel` is the class's name
+        // of the binary's `newspeak.core.Kernel` alone.
+        let without_kernel = |text: &str| match text {
+            "Kernel" | "newspeak.core.Kernel" => Some("newspeak.core.Kernel".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            parse_method_name("Kernel/Array>>do:", &without_kernel),
+            Err("no module `Kernel`; a class inside a module is written \
+                 `newspeak.core.Kernel/Array`"
+                .to_string())
+        );
+        assert_eq!(
+            parse_method_name("Kernel class>>new", &without_kernel),
+            Err("no module `Kernel`; the module is written `newspeak.core.Kernel`".to_string())
+        );
+        assert_eq!(
+            parse_method_name("newspeak.core.Kernel/Array>>do:", &without_kernel)
+                .map(|method| method.class.module),
+            Ok(ModuleName::named("newspeak.core.Kernel"))
+        );
     }
 
     /// The program's own `Kernel` and the binary's are written apart, by
