@@ -266,6 +266,9 @@ enum LocalKind {
 
 struct Classifier<'a> {
     bindings: &'a HashMap<Span, Binding>,
+    /// The module's text, which a doc comment's lookup past the metadata
+    /// below it reads (`hover::doc_comment_above`).
+    text: &'a str,
     tokens: &'a [Token],
     /// The local scopes entered, innermost last, each a list of names in
     /// declaration order with the node that declares each.
@@ -283,14 +286,17 @@ pub struct Classification {
     pub declarations: HashMap<Span, Declared>,
 }
 
-/// Every name in `module` the resolver can place; see this task's mapping.
+/// Every name in `module`, parsed from `text`, the resolver can place;
+/// see this task's mapping.
 pub fn classify(
     module: &ast::Module,
     bindings: &HashMap<Span, Binding>,
     tokens: &[Token],
+    text: &str,
 ) -> Classification {
     let mut classifier = Classifier {
         bindings,
+        text,
         tokens,
         scopes: Vec::new(),
         output: Vec::new(),
@@ -359,7 +365,11 @@ impl Classifier<'_> {
                 kind: DeclaredKind::Class,
                 signature: Span::new(declaration.span.start, header_end),
                 initializer: None,
-                documentation: hover::doc_comment(&declaration.comments),
+                documentation: hover::doc_comment_above(
+                    &declaration.comments,
+                    self.text,
+                    declaration.span.start,
+                ),
                 container,
                 class: None,
             },
@@ -539,7 +549,7 @@ impl Classifier<'_> {
                     .initializer
                     .as_ref()
                     .map(|initializer| initializer.span),
-                documentation: hover::doc_comment(&slot.comments),
+                documentation: hover::doc_comment_above(&slot.comments, self.text, slot.span.start),
                 container,
                 class: None,
             },
@@ -568,7 +578,11 @@ impl Classifier<'_> {
                 kind: DeclaredKind::Method,
                 signature: Span::new(method.span.start, pattern_end),
                 initializer: None,
-                documentation: hover::doc_comment(&method.comments),
+                documentation: hover::doc_comment_above(
+                    &method.comments,
+                    self.text,
+                    method.span.start,
+                ),
                 container,
                 class: None,
             },

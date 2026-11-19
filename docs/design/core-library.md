@@ -4258,6 +4258,26 @@ a module's instance once it is recorded. The design as decided:
   a lazy module's when an image names it; `PlatformFactory.ns` reaches every
   other module's instance through `moduleInstanceNamed:`, building it first
   through `shippedModuleClassNamed:` and `recordShippedModule:`.
+- **Each shipped module declares its id** in a `:module:` metadata comment
+  directly above its class, below the class's `///` comment
+  ([modules.md](modules.md), decisions 2 and 9): `Kernel.ns` declares
+  `(* :module: newspeak.core.Kernel *)`, and `PlatformFactory`,
+  `TranscriptFactory`, `TimeFactory`, `CollectionsFactory`,
+  `TypedArraysFactory`, `MirrorsFactory` and `Manifest.ns` likewise
+  `newspeak.core.<Name>`, without a version: they are the binary's. A
+  module's root mixin carries its identity (`Mixin::module_identity`):
+  the path `core:<Name>.ns`, the id and no version
+  (`core_library::shipped_module_identity`). The source path reads it from
+  the metadata as it resolves the module and panics on any other
+  (`checked_shipped_identity`), a defect in the binary; the embedded
+  shipped code holds no identity, and its decoder gives the root the same
+  value from the module's name, so that the boot parses nothing. The
+  build's own tests hold every file's metadata to it
+  (`every_shipped_module_declares_its_reserved_id`). `Manifest.ns` is
+  compiled as a program's module, so its identity is the host's to set,
+  as every program module's is (`ResolvedModule::identity`, which
+  `resolve` leaves `None`). The line each file gained changed the shipped
+  code's fingerprint, and `tests/fixtures/golden-image.bin` with it.
 
 #### Shipped names in the image
 

@@ -154,8 +154,15 @@ const GENERATING_WITHOUT_PRIMITIVE_METHODS: &str = "NS_NEXT_NO_PRIMITIVE_METHODS
      methods, so it is not generated under it; unset the variable and run again";
 
 /// The root mixin of the module `name` in the artifact `bytes`, every
-/// mixin of it sharing `module_text`, the module's text.
-pub(crate) fn decode_module(bytes: &[u8], name: &str, module_text: Rc<str>) -> Rc<Mixin> {
+/// mixin of it sharing `module_text`, the module's text, the root carrying
+/// `module_identity` (`Mixin::module_identity`), which the artifact does
+/// not hold: the boot knows it from the module's name.
+pub(crate) fn decode_module(
+    bytes: &[u8],
+    name: &str,
+    module_text: Rc<str>,
+    module_identity: Option<Rc<crate::modules::ModuleIdentity>>,
+) -> Rc<Mixin> {
     let mut reader = ByteReader::new(bytes);
     assert!(
         reader.raw(MAGIC.len()) == MAGIC,
@@ -173,7 +180,7 @@ pub(crate) fn decode_module(bytes: &[u8], name: &str, module_text: Rc<str>) -> R
         let length = reader.length();
         let section = reader.raw(length);
         if module == name {
-            return decode::decode_section(section, module_text);
+            return decode::decode_section(section, module_text, module_identity);
         }
     }
     panic!("internal: the embedded shipped code holds no module {name}")
@@ -188,7 +195,7 @@ mod tests {
         module_names()
             .map(|name| {
                 let module_text = crate::interpreter::core_library::shipped_module_text(name);
-                (name, decode_module(bytes, name, module_text))
+                (name, decode_module(bytes, name, module_text, None))
             })
             .collect()
     }
@@ -404,6 +411,7 @@ mod tests {
             bytes,
             "Kernel",
             crate::interpreter::core_library::shipped_module_text("Kernel"),
+            None,
         );
         let object = kernel
             .declared_nested()

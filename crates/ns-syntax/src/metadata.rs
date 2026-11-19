@@ -99,7 +99,7 @@ pub fn metadata_of(module: &Module, source: &str) -> Vec<(MetadataTarget, Metada
         if *kind != CommentKind::Block {
             continue;
         }
-        let Some(metadata) = read(*span, source) else {
+        let Some(metadata) = Metadata::read(*span, source) else {
             continue;
         };
         let target = targets
@@ -199,6 +199,17 @@ impl<'source> Gaps<'source> {
             preceding.push(answer);
         }
         preceding
+    }
+}
+
+impl Metadata {
+    /// The comment `span` of `source` read as metadata, whatever its
+    /// target: `None` for a comment that is no metadata. A reader of
+    /// comments that must tell metadata from an ordinary comment -- a
+    /// house rule on comments, a doc comment's lookup past the metadata
+    /// below it -- asks here rather than reading the text itself.
+    pub fn read(span: Span, source: &str) -> Option<Metadata> {
+        read(span, source)
     }
 }
 
@@ -813,6 +824,24 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// `Metadata::read` reads a comment by its span alone, so that a
+    /// comment no target takes in is metadata to it too.
+    #[test]
+    fn a_comment_reads_as_metadata_whatever_its_target() {
+        let source = "1 (* :after: x *) (* plain *)";
+        let tagged = span_of(source, "(* :after: x *)", 0);
+        let Some(metadata) = super::Metadata::read(tagged, source) else {
+            panic!("the tagged comment is metadata");
+        };
+        assert_eq!(
+            (metadata.tag.as_str(), metadata.payload.as_str()),
+            ("after", "x")
+        );
+        assert_eq!(metadata.span, tagged);
+        let plain = span_of(source, "(* plain *)", 0);
+        assert_eq!(super::Metadata::read(plain, source), None);
     }
 
     #[test]

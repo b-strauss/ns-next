@@ -104,7 +104,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
         classified,
         references,
         declarations,
-    } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+    } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens, text);
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     // Only a source that parses without error gets hints: their fixes are

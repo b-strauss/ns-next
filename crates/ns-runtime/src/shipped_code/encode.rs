@@ -115,6 +115,9 @@ fn write_mixin(out: &mut Out, mixin: &Mixin) {
         superclass_clause_code,
         root_clause_defect,
         root_shape,
+        // Set by the decoder from the module's name
+        // (`core_library::shipped_module_identity`).
+        module_identity: _,
         shipped,
         // Set by the decoder: the tree gives the link, and the binary's
         // own text, with the spans, each declaration's.

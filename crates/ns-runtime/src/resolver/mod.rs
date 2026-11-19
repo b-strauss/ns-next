@@ -162,6 +162,7 @@ fn resolve_with(
             origin,
             bindings: Rc::new(bindings),
             kernel,
+            identity: None,
         })
     } else {
         Err(errors)

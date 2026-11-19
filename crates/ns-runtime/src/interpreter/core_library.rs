@@ -11,6 +11,7 @@ use std::rc::Rc;
 use crate::Symbol;
 use crate::interpreter::{HostResult, HostSignal, Mutator, Root};
 use crate::mixin::Mixin;
+use crate::modules::{ModuleId, ModuleIdentity};
 use crate::shipped_code::ShippedCodePath;
 use crate::types::{ClassReference, ObjectReference, ResolvedModule, SourceOrigin, Value};
 
@@ -279,6 +280,45 @@ pub(crate) fn resolved_shipped_module(name: &str) -> Rc<ResolvedModule> {
     })
 }
 
+/// The identity of `Kernel` or of the `SHIPPED_MODULES` entry `name`: the
+/// path `core:<Name>.ns` and the id `newspeak.core.<Name>`, without a
+/// version, since a shipped module is the binary's and an image is held
+/// to the binary by its fingerprint (`docs/design/modules.md`, decision
+/// 9). It is what the module's `:module:` metadata declares: the source
+/// path checks it as it resolves the module
+/// (`checked_shipped_identity`), and the build's own tests check it for
+/// every module, so that a boot that decodes the embedded shipped code,
+/// which parses no source, needs no parse to know it.
+pub(crate) fn shipped_module_identity(name: &str) -> Rc<ModuleIdentity> {
+    let id = ModuleId::parse(&format!("newspeak.core.{name}"), name)
+        .unwrap_or_else(|error| panic!("internal: {name} is no shipped module's name: {error}"));
+    Rc::new(ModuleIdentity {
+        path: format!("core:{name}.ns"),
+        id,
+        version: None,
+    })
+}
+
+/// The shipped module `name`'s identity (`shipped_module_identity`), once
+/// its `:module:` metadata, read from `resolved`, is found to declare it.
+/// Metadata that declare anything else are a defect in the binary, as a
+/// module that does not resolve is, so it panics.
+pub(crate) fn checked_shipped_identity(
+    resolved: &ResolvedModule,
+    name: &str,
+) -> Rc<ModuleIdentity> {
+    let identity = shipped_module_identity(name);
+    match crate::modules::declared_identity(&resolved.module, &resolved.source) {
+        Ok((id, None)) if id == identity.id => identity,
+        Ok((id, version)) => panic!(
+            "internal: {name}.ns declares `{id}`{}, not `{}`",
+            version.map_or_else(String::new, |version| format!(" version {version}")),
+            identity.id
+        ),
+        Err(error) => panic!("internal: {name}.ns's module metadata is refused: {error}"),
+    }
+}
+
 /// A shipped module that does not parse or resolve is a defect in the
 /// binary, not in a program, so it panics, as the kernel's does
 /// (`interpreter::kernel::resolve_kernel_source`); so does one whose mirror
@@ -302,8 +342,9 @@ fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
         Rc::from(shipped.source),
         SourceOrigin::File(std::path::PathBuf::from(format!("{name}.ns"))),
     ) {
-        Ok(resolved) => {
+        Ok(mut resolved) => {
             super::kernel::check_mirror_send_arguments(&resolved, name);
+            resolved.identity = Some(checked_shipped_identity(&resolved, name));
             resolved
         }
         Err(errors) => panic!(
@@ -510,6 +551,7 @@ impl<'gc> Mutator<'gc> {
                 crate::shipped_code::embedded(),
                 name,
                 shipped_module_text(name),
+                Some(shipped_module_identity(name)),
             ),
             ShippedCodePath::Source => self.shipped_root_mixin_from_source(name),
         }
@@ -527,6 +569,7 @@ impl<'gc> Mutator<'gc> {
                 &resolved.bindings,
                 super::instantiate::ModuleSource::Kernel,
                 &resolved.source,
+                resolved.identity.clone(),
             );
             super::kernel::check_kernel_shape(&self.heap, &root_mixin, &resolved);
             root_mixin
@@ -957,6 +1000,56 @@ mod tests {
             .filter(|name| !LAZY_SHIPPED_MODULES.contains(name))
             .collect();
         assert_eq!(others, ["PlatformFactory"]);
+    }
+
+    /// Every `.ns` the binary embeds -- `Kernel`, `Manifest` and every
+    /// `SHIPPED_MODULES` entry -- declares `newspeak.core.<Name>` above its
+    /// class, without a version: a shipped module whose metadata fails here
+    /// fails the build's own tests, never a program.
+    #[test]
+    fn every_shipped_module_declares_its_reserved_id() {
+        let mut names = Vec::new();
+        for file in shipped_source_files() {
+            let module = ns_syntax::parse(file.text)
+                .unwrap_or_else(|_| panic!("internal: {} does not parse", file.path));
+            let (id, version) = crate::modules::declared_identity(&module, file.text)
+                .unwrap_or_else(|error| {
+                    panic!("{}'s module metadata is refused: {error}", file.path)
+                });
+            assert_eq!(id.as_str(), format!("newspeak.core.{}", file.name));
+            assert!(id.is_reserved());
+            assert_eq!(version, None, "{} declares no version", file.path);
+            names.push(file.name);
+        }
+        let mut expected = vec![KERNEL_MODULE, "Manifest"];
+        expected.extend(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+        assert_eq!(names, expected);
+    }
+
+    /// A shipped module's root mixin carries its identity, `core:<Name>.ns`
+    /// and its reserved id, whether the boot decodes the embedded shipped
+    /// code or compiles the source.
+    #[test]
+    fn a_shipped_root_mixin_carries_its_identity() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let names = std::iter::once(KERNEL_MODULE)
+                .chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name));
+            for name in names {
+                for mixin in [
+                    mutator.shipped_root_mixin(name),
+                    mutator.shipped_root_mixin_from_source(name),
+                ] {
+                    let identity = mixin
+                        .module_identity
+                        .clone()
+                        .unwrap_or_else(|| panic!("{name}'s root mixin has no identity"));
+                    assert_eq!(identity.path, format!("core:{name}.ns"));
+                    assert_eq!(identity.id.as_str(), format!("newspeak.core.{name}"));
+                    assert_eq!(identity.version, None);
+                }
+            }
+        });
     }
 
     /// Every table entry parses and resolves to something, panicking on the

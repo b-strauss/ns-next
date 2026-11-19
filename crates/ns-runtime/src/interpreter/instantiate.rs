@@ -431,11 +431,13 @@ impl<'gc> Mutator<'gc> {
             &resolved.bindings,
             source,
             &resolved.source,
+            resolved.identity.clone(),
         )
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
-    /// recorded on it for `apply_mixin` and the encoder to read.
+    /// recorded on it for `apply_mixin` and the encoder to read, and the
+    /// module's identity, `module_identity`, for whoever names the module.
     /// `module_text` is the module's text, `ResolvedModule::source`.
     pub(crate) fn build_root_mixin(
         &mut self,
@@ -443,11 +445,13 @@ impl<'gc> Mutator<'gc> {
         bindings: &Rc<HashMap<Span, Binding>>,
         source: ModuleSource,
         module_text: &Rc<str>,
+        module_identity: Option<Rc<crate::modules::ModuleIdentity>>,
     ) -> Rc<Mixin> {
         let mut mixin = self.mixin_of(declaration, declaration, bindings, source, module_text);
         mixin.root_clause_defect =
             crate::resolver::root_clause_defect(declaration).map(|(defect, _)| defect);
         mixin.root_shape = crate::resolver::root_shape(declaration);
+        mixin.module_identity = module_identity;
         let mixin = Rc::new(mixin);
         Mixin::set_enclosing_of_children(&mixin);
         mixin
@@ -596,6 +600,8 @@ impl<'gc> Mutator<'gc> {
             superclass_clause_code: None,
             root_clause_defect: None,
             root_shape: None,
+            // A root's is set by `build_root_mixin`.
+            module_identity: None,
             shipped: kernel,
             // Set by the caller once the mixin is shared.
             enclosing: std::cell::OnceCell::new(),

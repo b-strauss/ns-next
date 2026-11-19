@@ -1,7 +1,8 @@
 //! Module identity: ids, semver versions, version ranges and the relative
 //! paths that name a module's source (`docs/design/modules.md`, decisions 1,
-//! 2, 4 and 9). Pure values with no dependency on the syntax crate, so the
-//! image decoder and the tools hold a module to the same rules the loader does.
+//! 2, 4 and 9). Pure values, so the image decoder and the tools hold a module
+//! to the same rules the loader does, and `declared_identity`, which reads
+//! them from a module's `:module:` metadata.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -280,6 +281,50 @@ impl ModuleIdentity {
     }
 }
 
+/// The tag of the metadata that declares a module's id and version.
+const MODULE_TAG: &str = "module";
+
+/// Message of a module above whose class two `:module:` metadata stand;
+/// `{first}` and `{second}` are replaced by their payloads.
+const TWO_MODULE_METADATA: &str =
+    "two `:module:` metadata declare the module: `{first}` and `{second}`";
+
+/// The id and version `module`, parsed from `source`, declares: the
+/// payload of the one `:module:` metadata above its class (§4.3's module
+/// target), `<id>` or `<id>@<version>`, the id's last segment its class's
+/// name. A module that declares none is its class's name, without a
+/// version. Two such metadata are refused, naming both, since neither
+/// could be preferred silently; so is a payload that is no id or no
+/// version. Whether the id lies in the reserved namespace is the caller's
+/// question: a shipped module's must, a program's may not.
+pub fn declared_identity(
+    module: &ns_syntax::ast::Module,
+    source: &str,
+) -> Result<(ModuleId, Option<Version>), String> {
+    let class_name = module.root_class.name.name.as_str();
+    let mut declared = ns_syntax::metadata_of(module, source)
+        .into_iter()
+        .filter(|(target, metadata)| {
+            *target == ns_syntax::MetadataTarget::Module && metadata.tag == MODULE_TAG
+        })
+        .map(|(_, metadata)| metadata.payload);
+    let Some(payload) = declared.next() else {
+        return Ok((ModuleId::of_class(class_name), None));
+    };
+    if let Some(second) = declared.next() {
+        return Err(TWO_MODULE_METADATA
+            .replace("{first}", &payload)
+            .replace("{second}", &second));
+    }
+    match payload.split_once('@') {
+        Some((id, version)) => Ok((
+            ModuleId::parse(id, class_name)?,
+            Some(Version::parse(version)?),
+        )),
+        None => Ok((ModuleId::parse(&payload, class_name)?, None)),
+    }
+}
+
 /// Checks a module's path: relative, `/`-separated, without root, drive or
 /// `\`, without an empty or `.` segment, `..` only leading, ending in `.ns`;
 /// or `core:` and a file name.
@@ -330,6 +375,7 @@ pub fn check_relative_path(path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
 
     fn version(text: &str) -> Version {
         Version::parse(text).unwrap_or_else(|error| panic!("{error}"))
@@ -464,6 +510,106 @@ mod tests {
         ] {
             assert!(check_relative_path(refused).is_err(), "{refused}");
         }
+    }
+
+    fn identity_of(source: &str) -> Result<(ModuleId, Option<Version>), String> {
+        let module = ns_syntax::parse(source).unwrap_or_else(|_| panic!("the module parses"));
+        declared_identity(&module, source)
+    }
+
+    #[test]
+    fn an_unannotated_module_is_its_class() {
+        let source = indoc! {"
+            /// A helper.
+            /// Nothing more.
+            class Util = (
+            ) (
+            )
+        "};
+        assert_eq!(identity_of(source), Ok((ModuleId::of_class("Util"), None)));
+    }
+
+    #[test]
+    fn a_declared_id_and_version() {
+        let source = indoc! {"
+            /// Reads and writes JSON.
+            /// It knows nothing else.
+            (* :module: com.acme.json.Json@2.1.0-beta.1 *)
+            class Json usingPlatform: platform = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(source),
+            Ok((
+                ModuleId::parse("com.acme.json.Json", "Json").unwrap(),
+                Some(version("2.1.0-beta.1"))
+            ))
+        );
+        let unversioned = indoc! {"
+            (* :module:   com.acme.json.Json   *)
+            class Json = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(unversioned),
+            Ok((ModuleId::parse("com.acme.json.Json", "Json").unwrap(), None))
+        );
+        // Another tag above the class, or a `:module:` elsewhere, declares
+        // nothing.
+        let elsewhere = indoc! {"
+            (* :exemplar: Json new *)
+            class Json reading: (* :module: com.acme.text.Text@1 *) text = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(elsewhere),
+            Ok((ModuleId::of_class("Json"), None))
+        );
+    }
+
+    #[test]
+    fn a_mismatched_id_is_refused() {
+        let source = indoc! {"
+            (* :module: com.acme.json.Json@2.1.0 *)
+            class Parser = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(source),
+            Err("`com.acme.json.Json` does not end in the class's name `Parser`".to_string())
+        );
+        let malformed = indoc! {"
+            (* :module: com.acme.json.Json@2.1 *)
+            class Json = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(malformed),
+            Err("`2.1` is no version: it needs MAJOR.MINOR.PATCH".to_string())
+        );
+    }
+
+    #[test]
+    fn two_module_metadata_are_refused() {
+        let source = indoc! {"
+            (* :module: com.acme.json.Json@2.1.0 *)
+            (* :module: org.other.Json *)
+            class Json = (
+            ) (
+            )
+        "};
+        assert_eq!(
+            identity_of(source),
+            Err(
+                "two `:module:` metadata declare the module: `com.acme.json.Json@2.1.0` and `org.other.Json`"
+                    .to_string()
+            )
+        );
     }
 
     #[test]

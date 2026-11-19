@@ -774,6 +774,14 @@ pub struct Mixin {
     /// declaration. `None` for every other mixin, for a root with a defect,
     /// and for a mixin decoded from an image.
     pub root_shape: Option<crate::resolver::RootShape>,
+    /// The module this mixin is the root of: its path, id and version
+    /// (`docs/design/modules.md`), from `ResolvedModule::identity` when the
+    /// module is loaded, and for a shipped module `core:<Name>.ns` and its
+    /// `newspeak.core` id. Every version an edit installs keeps its
+    /// predecessor's, since an edit changes members, never the module.
+    /// `None` for every mixin that is no module's root, for a root a host
+    /// loaded without one, and for a mixin decoded from an image.
+    pub module_identity: Option<Rc<crate::modules::ModuleIdentity>>,
     /// Compiled from shipped core-library source (`ResolvedModule.kernel`):
     /// set on the declaration's mixin, on every nested mixin and on its class
     /// side. The image encoder refuses a class object of a shipped mixin
@@ -1165,6 +1173,7 @@ impl Mixin {
             superclass_clause_code: None,
             root_clause_defect: None,
             root_shape: None,
+            module_identity: None,
             shipped: false,
             enclosing: OnceCell::new(),
             text: None,

@@ -58,6 +58,7 @@ fn load_past_the_resolver(source: &str) -> (Interpreter, Root) {
         origin: ns_runtime::SourceOrigin::File("test.ns".into()),
         bindings: std::rc::Rc::new(resolution.bindings),
         kernel: false,
+        identity: None,
     };
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);

@@ -33,7 +33,8 @@ pub struct Declared {
     pub signature: Span,
     /// A slot's initializer, which a signature too long to read leaves out.
     pub initializer: Option<Span>,
-    /// The doc comment above the declaration (`doc_comment`).
+    /// The doc comment on the lines right above the declaration
+    /// (`doc_comment_above`).
     pub documentation: Option<Span>,
     /// The class whose member it is.
     pub container: Option<Container>,
@@ -67,9 +68,9 @@ const SIGNATURE_CHARACTERS: usize = 80;
 /// The doc comment of a declaration whose node carries `comments`: the
 /// block of two or more `///` lines on the lines right above it, as the
 /// JetBrains plugin colours and renders one (`NewspeakDocComments`). Only
-/// its candidate here; `hover` checks it ends on the line before the
-/// declaration, which the attachment does not promise (`Before` takes in
-/// a comment a blank line away too).
+/// its candidate here; `doc_comment_above` checks it ends on the line
+/// before the declaration, which the attachment does not promise (`Before`
+/// takes in a comment a blank line away too).
 pub fn doc_comment(comments: &[ast::AttachedComment]) -> Option<Span> {
     comments
         .iter()
@@ -146,18 +147,15 @@ fn markdown(declared: &Declared, declarations: &HashMap<Span, Declared>, text: &
 
 /// The doc comment on the lines right above `declared`, read.
 fn documentation(declared: &Declared, text: &str) -> Option<DocComment> {
-    declared
-        .documentation
-        .filter(|comment| directly_above(text, *comment, declared.signature.start))
-        .map(|span| {
-            DocComment::parse(
-                Comment {
-                    kind: CommentKind::Line,
-                    span,
-                },
-                text,
-            )
-        })
+    declared.documentation.map(|span| {
+        DocComment::parse(
+            Comment {
+                kind: CommentKind::Line,
+                span,
+            },
+            text,
+        )
+    })
 }
 
 /// One row of the section table: its label and its items.
@@ -271,6 +269,35 @@ fn signature(declared: &Declared, text: &str) -> String {
     }
 }
 
+/// The doc comment of a declaration starting at `start` whose node carries
+/// `comments` (`doc_comment`) on the lines right above it, past the
+/// metadata comments (§4.3) that stand between them each on the lines
+/// right above the next: a module's `:module:` stands below its class's
+/// doc comment (`docs/design/modules.md`, decision 2), and the comment
+/// still documents the class.
+pub(crate) fn doc_comment_above(
+    comments: &[ast::AttachedComment],
+    text: &str,
+    start: u32,
+) -> Option<Span> {
+    let mut start = start;
+    for comment in comments
+        .iter()
+        .rev()
+        .filter(|comment| comment.anchor == Anchor::Before)
+    {
+        let is_metadata = comment.kind == CommentKind::Block
+            && ns_syntax::Metadata::read(comment.span, text).is_some();
+        if is_metadata && directly_above(text, comment.span, start) {
+            start = comment.span.start;
+            continue;
+        }
+        return doc_comment(std::slice::from_ref(comment))
+            .filter(|span| directly_above(text, *span, start));
+    }
+    None
+}
+
 /// Whether only whitespace with one line break stands between the comment
 /// and the declaration: the comment is on the lines right above it.
 pub(crate) fn directly_above(text: &str, comment: Span, declaration: u32) -> bool {
@@ -349,19 +376,24 @@ mod tests {
 
     /// The hover's Markdown over the `occurrence`-th (0-based) `name` in `MODULE`.
     fn hover_at(name: &str, occurrence: usize) -> Option<String> {
-        let start = MODULE
+        hover_in(MODULE, name, occurrence)
+    }
+
+    /// The hover over the `occurrence`-th `name` of `module`, a clean one.
+    fn hover_in(module: &str, name: &str, occurrence: usize) -> Option<String> {
+        let start = module
             .match_indices(name)
             .nth(occurrence)
             .unwrap_or_else(|| panic!("`{name}` #{occurrence} is not in the module"))
             .0 as u32;
-        let analysis = crate::analysis::analyze(MODULE);
+        let analysis = crate::analysis::analyze(module);
         assert!(analysis.findings.is_empty(), "the module is clean");
-        let line_index = LineIndex::new(MODULE);
+        let line_index = LineIndex::new(module);
         hover(
             &analysis.references,
             &analysis.declarations,
             start + 1,
-            MODULE,
+            module,
             &line_index,
         )
         .map(|hover| match hover.contents {
@@ -459,6 +491,40 @@ mod tests {
             table(&[row("Answers:", &["a new instance of `Point`."])])
         );
         assert_eq!(hover_at("^new", 0).as_deref(), Some(expected.as_str()));
+    }
+
+    /// A module's `:module:` metadata stands between its class's doc
+    /// comment and the class (`docs/design/modules.md`, decision 2); the
+    /// comment still renders over the class. An ordinary comment there
+    /// still detaches it.
+    #[test]
+    fn a_doc_comment_above_the_module_metadata_renders_over_the_class() {
+        let module = indoc! {"
+            /// A module of shapes.
+            /// It grows.
+            (* :module: com.example.Shapes@1.0.0 *)
+            class Shapes = Object new () ()
+        "};
+        assert_eq!(
+            hover_in(module, "Shapes", 1).as_deref(),
+            Some(
+                "```newspeak
+class Shapes = Object new
+```
+
+A module of shapes.
+It grows."
+            )
+        );
+        let detached = module.replace(":module: com.example.Shapes@1.0.0 ", "a remark ");
+        assert_eq!(
+            hover_in(&detached, "Shapes", 0).as_deref(),
+            Some(
+                "```newspeak
+class Shapes = Object new
+```"
+            )
+        );
     }
 
     #[test]

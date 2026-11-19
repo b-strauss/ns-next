@@ -60,6 +60,7 @@
 /// @param mirror the VM mirror, which the host alone holds.
 /// @param kernel the kernel module's instance, whose classes
 /// `KernelNamespace` hands out.
+(* :module: newspeak.core.PlatformFactory *)
 class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   |
     /// The VM mirror the factory was given: the one object through which

@@ -16041,6 +16041,7 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
         origin: SourceOrigin::File(PathBuf::from("t.ns")),
         bindings: Rc::new(resolution.bindings),
         kernel: false,
+        identity: None,
     };
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);

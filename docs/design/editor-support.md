@@ -501,7 +501,13 @@ or more `///` lines, attached before the declaration (`Anchor::Before`,
 `Placement::OwnLine`) and ending on the line right above it. A single `///`
 line, a `(* *)` comment and one a blank line away are no doc comment; the
 user decided so, so that what shows green and renders in the editor is what
-a hover shows. Its text is `Comment::text`'s, read as a doc comment
+a hover shows. Metadata comments (§4.3) on the lines between are passed
+over, each on the line right above the next (`hover::doc_comment_above`):
+a module's `(* :module: … *)` stands below its class's doc comment
+([modules.md](modules.md), decision 2), which still documents the class,
+and the doc-tag warnings take the same rule. The plugin's
+`NewspeakDocComments` does not pass over them yet
+([OPEN-WORK.md](../OPEN-WORK.md)). Its text is `Comment::text`'s, read as a doc comment
 (`ns_syntax::doc_comment`, "Doc comments" below): the description goes
 into the hover as Markdown, an inline `{@summary …}` replaced by its text,
 and the tags as the section table.

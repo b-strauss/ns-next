@@ -571,6 +571,53 @@ mod tests {
 
     /// An edited nested class is written and loads edited: its added
     /// method answers on an instance made before the edit.
+    /// An edit replaces the module's root mixin with a version compiled
+    /// from the edited text, which is the same module: its identity, which
+    /// the host set when it loaded the module, goes over to the new
+    /// version, since an edit changes members and never the metadata above
+    /// the class.
+    #[test]
+    fn an_installed_edit_keeps_the_identity() {
+        let mut interpreter = Interpreter::bootstrap();
+        let source = indoc! {"
+            (* :module: com.acme.Outer@1.2.0 *)
+            class Outer = Object new () (
+              public a = ( ^1 )
+            )
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let mut resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let identity = Rc::new(crate::modules::ModuleIdentity {
+            path: "libs/Outer.ns".to_string(),
+            id: crate::modules::ModuleId::parse("com.acme.Outer", "Outer").expect("an id"),
+            version: Some(crate::modules::Version::parse("1.2.0").expect("a version")),
+        });
+        resolved.identity = Some(Rc::clone(&identity));
+        let outer = interpreter.load_module(&resolved);
+        let (root_id, before) = interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &outer);
+            (mutator.heap.mixin_id(&mixin), mixin)
+        });
+        let loaded_identity = before.module_identity.clone().expect("the root has one");
+        assert!(Rc::ptr_eq(&loaded_identity, &identity));
+        install(&mut interpreter, root_id, &add_method("public b = ( ^2 )"));
+        let after = interpreter.enter(|mutator| mixin_of(mutator, &outer));
+        assert!(
+            !Rc::ptr_eq(&before, &after),
+            "the edit replaced the root mixin"
+        );
+        let kept = after
+            .module_identity
+            .clone()
+            .expect("the new version has one");
+        assert!(Rc::ptr_eq(&kept, &identity));
+    }
+
     #[test]
     fn an_edited_program_loads_edited() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);

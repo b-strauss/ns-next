@@ -1095,6 +1095,7 @@ pub fn build(
             // (`modules::root_record_defect`), so no decoded mixin has one.
             root_clause_defect: None,
             root_shape: None,
+            module_identity: None,
             // An image carries only its own module, never shipped source.
             shipped: false,
             // Set by the parent's row, built after this one.

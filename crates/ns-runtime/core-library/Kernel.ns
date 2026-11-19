@@ -34,6 +34,7 @@
 /// classes.
 /// @param mirror the VM mirror, which the host alone holds; every native
 /// operation of these classes is a send to it.
+(* :module: newspeak.core.Kernel *)
 class Kernel vmMirror: mirror = Value (
   |
     /// The VM mirror the factory was given: the one object through which

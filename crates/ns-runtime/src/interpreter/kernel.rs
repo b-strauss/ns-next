@@ -53,7 +53,13 @@ fn resolve_kernel_source() -> ResolvedModule {
         Rc::from(KERNEL_SOURCE),
         SourceOrigin::File(std::path::PathBuf::from("Kernel.ns")),
     ) {
-        Ok(resolved) => resolved,
+        Ok(mut resolved) => {
+            resolved.identity = Some(super::core_library::checked_shipped_identity(
+                &resolved,
+                KERNEL_MODULE,
+            ));
+            resolved
+        }
         Err(errors) => panic!(
             "internal: Kernel.ns does not resolve: {}",
             errors
@@ -1037,6 +1043,7 @@ mod tests {
                 &resolved.bindings,
                 crate::interpreter::instantiate::ModuleSource::Kernel,
                 &resolved.source,
+                resolved.identity.clone(),
             );
             check(&root, &resolved);
         });

@@ -40,6 +40,7 @@
 /// superclass of `List`, `Map` and `Set`, its `ArgumentError` what they
 /// signal for an index or a capacity out of range, and its `WeakArray` and
 /// `WeakMap` what the facet hands out beside them.
+(* :module: newspeak.core.CollectionsFactory *)
 class CollectionsFactory usingKernel: kernel = Value (
   |
     /// The kernel's `ArgumentError`, which the classes here signal for an

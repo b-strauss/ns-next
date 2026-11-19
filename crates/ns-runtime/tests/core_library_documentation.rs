@@ -43,7 +43,7 @@ fn every_member_of_a_documented_module_has_a_comment() {
     for name in DOCUMENTED_MODULES {
         let (source, module) = read_module(name);
         let comments = comments_of(&source);
-        for member in members_of(&module) {
+        for member in members_of(&module, &source) {
             if comment_above(&source, &comments, member.start).is_none() {
                 undocumented.push(format!("{name}: {}", member.name));
             }
@@ -80,6 +80,7 @@ fn the_tag_check_finds_each_fault() {
         /// @factory makes a sample.
         /// @param first the first.
         /// @param second the second.
+        (* :module: com.example.Sample *)
         class Sample first: first second: second = Value (
           |
             /// A slot.
@@ -158,7 +159,7 @@ fn the_tag_check_finds_each_fault() {
         ]
     );
     let comments = comments_of(source);
-    let undocumented: Vec<String> = members_of(&module)
+    let undocumented: Vec<String> = members_of(&module, source)
         .into_iter()
         .filter(|member| comment_above(source, &comments, member.start).is_none())
         .map(|member| member.name)
@@ -190,7 +191,7 @@ fn the_tag_check_finds_each_fault() {
 fn tag_faults(name: &str, source: &str, module: &Module) -> Vec<String> {
     let comments = comments_of(source);
     let mut faults = Vec::new();
-    for member in members_of(module) {
+    for member in members_of(module, source) {
         let Some(comment) = comment_above(source, &comments, member.start) else {
             continue;
         };
@@ -322,12 +323,24 @@ fn comments_of(source: &str) -> Vec<Comment> {
         .collect()
 }
 
-/// Each class, slot and method of `module`, the module's own class
-/// included.
-fn members_of(module: &Module) -> Vec<Member> {
+/// Each class, slot and method of `module`, which `source` holds, the
+/// module's own class included.
+fn members_of(module: &Module, source: &str) -> Vec<Member> {
     let mut members = Vec::new();
     let root = &module.root_class;
-    members.push(class_member(format!("{} (class)", root.name.name), root));
+    let mut module_class = class_member(format!("{} (class)", root.name.name), root);
+    // The module's metadata stand between its class's doc comment and the
+    // class (`docs/design/modules.md`, decision 2), so the comment is
+    // looked for above the first of them.
+    if let Some(first) = ns_syntax::metadata_of(module, source)
+        .iter()
+        .filter(|(target, _)| *target == ns_syntax::MetadataTarget::Module)
+        .map(|(_, metadata)| metadata.span.start as usize)
+        .min()
+    {
+        module_class.start = module_class.start.min(first);
+    }
+    members.push(module_class);
     let mut pending = vec![(root.name.name.clone(), root)];
     while let Some((path, class)) = pending.pop() {
         let mut sides = vec![(path.clone(), &class.instance_side)];
