@@ -728,18 +728,21 @@ ns-cli::bin/ns-next debug::agent::tests::a_breakpoint_stop_names_only_the_breakp
 ns-cli::bin/ns-next debug::agent::tests::a_pending_replacement_hides_the_ids_it_replaces
 ns-cli::bin/ns-next debug::agent::tests::an_exception_stop_carries_its_text_and_class
 ns-cli::bin/ns-next debug::breakpoints::tests::a_breakpoint_keeps_its_id_while_the_client_sends_it
+ns-cli::bin/ns-next debug::breakpoints::tests::a_dotted_nested_class_is_refused_with_the_new_form
 ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_hit_condition_is_refused
 ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_log_message_is_refused
 ns-cli::bin/ns-next debug::breakpoints::tests::a_malformed_method_name_is_refused
-ns-cli::bin/ns-next debug::breakpoints::tests::a_name_of_two_modules_names_one_class_in_each
 ns-cli::bin/ns-next debug::breakpoints::tests::a_position_is_an_offset_of_its_line
+ns-cli::bin/ns-next debug::breakpoints::tests::a_program_kernel_and_the_shipped_kernel_are_named_apart
 ns-cli::bin/ns-next debug::breakpoints::tests::a_response_matches_the_vm_s_states_by_offset
+ns-cli::bin/ns-next debug::breakpoints::tests::a_root_method_has_no_slash
 ns-cli::bin/ns-next debug::breakpoints::tests::an_empty_event_nothing_asked_for_is_a_broken_assumption
 ns-cli::bin/ns-next debug::breakpoints::tests::an_unasked_event_names_only_ids_an_answer_named
 ns-cli::bin/ns-next debug::breakpoints::tests::class_names_parse_from_a_list
 ns-cli::bin/ns-next debug::breakpoints::tests::hit_conditions_parse_in_every_form
 ns-cli::bin/ns-next debug::breakpoints::tests::log_messages_parse_into_text_and_expressions
 ns-cli::bin/ns-next debug::breakpoints::tests::method_names_parse_with_and_without_class_side
+ns-cli::bin/ns-next debug::breakpoints::tests::method_names_parse_with_id_version_and_inner_path
 ns-cli::bin/ns-next debug::connection::tests::a_message_s_whole_write_is_bounded_however_the_peer_reads
 ns-cli::bin/ns-next debug::connection::tests::a_queue_near_full_refuses_only_droppable_messages
 ns-cli::bin/ns-next debug::connection::tests::a_token_is_32_lowercase_hex_digits_and_only_itself_matches
@@ -754,6 +757,7 @@ ns-cli::bin/ns-next debug::sources::tests::a_reference_is_stable_per_module
 ns-cli::bin/ns-next debug::sources::tests::a_shipped_module_s_text_is_the_binary_s_and_never_asked
 ns-cli::bin/ns-next debug::sources::tests::a_source_names_a_module_by_reference_path_or_a_file_less_name
 ns-cli::bin/ns-next debug::sources::tests::a_text_asked_at_a_stop_is_current_for_that_stop_only
+ns-cli::bin/ns-next debug::sources::tests::two_versions_of_a_file_less_module_are_not_named_by_their_name
 ns-cli::bin/ns-next debug::stepping::tests::a_step_by_line_goes_on_only_in_its_activation_on_its_line
 ns-cli::bin/ns-next debug::stepping::tests::a_step_goes_by_line_unless_asked_otherwise
 ns-cli::bin/ns-next debug::stopped::tests::a_value_keeps_one_value_reference_per_stop
@@ -1134,6 +1138,7 @@ ns-runtime modules::tests::an_id_ends_in_its_class
 ns-runtime modules::tests::an_id_names_its_class_last
 ns-runtime modules::tests::an_identity_displays_its_id_and_version
 ns-runtime modules::tests::an_unannotated_module_is_its_class
+ns-runtime modules::tests::control_characters_and_bare_extensions_are_refused
 ns-runtime modules::tests::ranges_are_prefixes
 ns-runtime modules::tests::relative_paths_are_checked
 ns-runtime modules::tests::the_namespace_goes_with_the_core_path
@@ -2232,6 +2237,7 @@ ns-cli::mcp a_starting_server_removes_stale_shipped_sources_but_its_own
 ns-cli::mcp the_server_lists_its_tools
 ns-cli::project_schema the_schema_and_the_reader_agree_on_every_file
 ns-cli::run a_missing_module_file_is_refused
+ns-cli::run a_module_file_named_only_the_extension_is_refused
 ns-cli::run a_never_used_module_breaking_the_root_rule_is_refused_by_run_and_build_alike
 ns-cli::run a_project_file_of_another_name_or_a_directory_without_one_is_refused
 ns-cli::run a_script_with_a_source_file_is_refused

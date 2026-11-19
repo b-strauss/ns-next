@@ -461,7 +461,7 @@ fn a_shipped_frame_names_a_file_with_the_binary_s_text() {
         "debug_start",
         json!({
             "program": path,
-            "breakpoints": [{ "location": "Kernel.Array>>do:" }],
+            "breakpoints": [{ "location": "newspeak.core.Kernel/Array>>do:" }],
         }),
     );
     let first = answer.lines().next().expect("a first line");
@@ -488,6 +488,67 @@ fn a_shipped_frame_names_a_file_with_the_binary_s_text() {
     assert!(
         line_starting(&stack, "#0 ").contains(&kernel.display().to_string()),
         "{stack}"
+    );
+}
+
+/// A root whose nested class `Account` takes a deposit.
+const DEMO: &str = indoc! {"
+    class Demo = Object new () (
+      public main: platform args: arguments = (
+        | account = Account new. |
+        account deposit: 5.
+        platform transcript show: account balance printString; newLine.
+      )
+      public class Account = Object new (
+        | public balance ::= 0. |
+      ) (
+        public deposit: amount = (
+          balance:: balance + amount
+        )
+      )
+    ) : ()
+"};
+
+/// A method location names a class inside a module after a `/`, and the
+/// stop's summary names the frame so; the form before, a dot, is refused
+/// with the form it means.
+#[test]
+fn a_method_location_names_a_nested_class_with_a_slash() {
+    let (_directory, path) = program("Demo", DEMO);
+    let mut server = McpServer::start();
+    let answer = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": "Demo/Account>>deposit:" }],
+        }),
+    );
+    let first = answer.lines().next().expect("a first line");
+    assert!(
+        first.starts_with(&format!(
+            "stopped: function breakpoint at {}:",
+            path.display()
+        )),
+        "{answer}"
+    );
+    assert!(
+        first.ends_with("in Demo/Account>>deposit: (frame 0)"),
+        "{answer}"
+    );
+    line_starting(&answer, "stack: #0 Demo/Account>>deposit: Demo.ns:");
+    server.succeed("debug_stop", json!({}));
+    let refused = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": "Demo.Account>>deposit:" }],
+        }),
+    );
+    assert!(
+        refused.contains(
+            "no module `Demo.Account`; a class inside a module is written `Demo/Account`"
+        ),
+        "{refused}"
     );
 }
 

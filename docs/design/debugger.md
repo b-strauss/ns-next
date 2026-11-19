@@ -558,8 +558,9 @@ The commands (`debugger::Command`):
   of that id; answered by `Continued`, then the step's stop, or refused,
   the program still stopped, with "no such target".
 - `SetBreakpoints { module, breakpoints }` -- replaces every line
-  breakpoint of the module `module` names, its root class's name as
-  `FrameLocation::module` names it, by `breakpoints`, each a
+  breakpoint of the module `module` names, its id and version as
+  `FrameLocation::module` names it ("The agent's sources"), by
+  `breakpoints`, each a
   `LineBreakpoint { offset, hit_condition, condition, log }`: a byte
   offset into the module's current text ("A breakpoint names a source
   position"), which of its hits stop, every one for `None`, the
@@ -572,7 +573,8 @@ The commands (`debugger::Command`):
   (decision 16): `shipped` filters the shipped modules' bodies, and each
   `ClassName { module, path }` of `classes` the bodies of the class
   declaration it names and of every declaration nested in it, `module`
-  the module's root class's name and `path` the names of the
+  the module's id, and its version where only that version is meant
+  (`ModuleName`), and `path` the names of the
   declarations from that root down, the root's own excluded, so that
   an empty path names the whole module. Until the first, the shipped
   modules are filtered and no class is, and every attachment begins
@@ -1067,8 +1069,14 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
 - `name` -- what it runs as a reader names it, after the declaration its
   body belongs to: `Foo>>bar`, `Foo class>>bar`, `[] in Foo>>bar`,
   `Foo initializer`, `Foo superclass clause`, `Foo class>>new:` for a
-  factory, `top level`; after its current class where no declaration
-  holds the body;
+  factory, `top level`, `Foo` the declaration written as every tool
+  writes a class (`docs/design/modules.md`, decision 8): its module's
+  id, `@` its version whenever it has one, and `/` before the path to a
+  class inside the module -- `com.acme.util.Util@1.0.0/Inner>>run`,
+  `[] in Demo>>main:args:`, `newspeak.core.Kernel/Array>>do:` -- so that
+  each frame names one module (`metadata::again::qualified_name`,
+  `frames_are_named_with_id_and_version`); after its current class where
+  no declaration holds the body;
 - `program_counter` -- the program counter its frame stores: for a frame
   below the top the index of the send, or other instruction, it called
   from, which its callee's return reads again; for the top frame where the
@@ -5131,15 +5139,29 @@ the path of its file in the core library the client handed over at
 an image's, one an install changed -- by a `sourceReference`, stable per
 module for the session, whose `source` request answers the text.
 
-**The agent's sources.** A shipped module is a module of its own,
-whatever the program's names: a program may declare a module of a
-shipped module's name -- a `Kernel` of its own -- which is another
-module, and the debugging API names every module by its root's name and
-whether it is shipped (`ModuleName`: `FrameLocation::module`,
-`SetBreakpoints`, `RunToPosition`, `ModuleText`, `Event::Breakpoints`,
-`ClassName`), the VM resolving a breakpoint, a module's text, a method
-breakpoint, an exception filter and a step filter in that module's roots
-only (`ModuleName::names`, `breakpoints::module_roots`). The agent names
+**The agent's sources.** The debugging API names every module by its id
+and, where only one version is meant, its version (`ModuleName`:
+`FrameLocation::module`, `SetBreakpoints`, `RunToPosition`,
+`ModuleText`, `Event::Breakpoints`, `ClassName`;
+`docs/design/modules.md`, decision 8): a root's identity
+(`Mixin::module_identity`), or its class's name for a root a host built
+without one. Within a program an id and a version name one module, so a
+name with a version names that module and one without names every
+version of its id, the VM resolving a breakpoint, a module's text, a
+method breakpoint, an exception filter and a step filter in the roots
+the name covers only (`ModuleName::names`, `ModuleName::covers`,
+`breakpoints::module_roots`;
+`a_breakpoint_with_a_version_stands_in_that_version_only`,
+`a_breakpoint_without_a_version_stands_in_every_version`). A shipped
+module is a module of its own, whatever the program's names: a program
+may declare a `Kernel` of its own, which is `Kernel`, while the binary's
+is `newspeak.core.Kernel`, an id no program module may have (decision
+9). Whether a module is shipped -- a frame folded, its values withheld,
+an evaluation, a restart or a forced return refused in it, the shipped
+step filter -- is never read from its id: the VM decides it by the
+module's root (`Mixin::shipped`, `metadata::again::module_is_shipped`),
+since it is a capability, and tells the agent (`FrameDescription::shipped`,
+`InstanceCount::shipped`). The agent names
 a shipped module by its file's absolute path, never by a name or a marker
 (decided with the user on 2026-11-15): a client hands over the directory
 of shipped sources it shows as `attach`'s `coreLibrary`, absolute, which
@@ -5150,27 +5172,43 @@ and shows its shipped modules by reference -- and then maps
 shipped module, both ways, paths compared as a program file's are: a
 `setBreakpoints` source of that path names the shipped module only, and a
 shipped frame's `source` carries that path and no `sourceReference`. The
-library's `Manifest.ns` names the program's embedded manifest, a program
-module. A program module is named by its own file's path; a name,
-`<Module>.ns`, names only a program module that has no file -- an
-image's, the embedded manifest -- or one a stop showed by reference that
-is not shipped, never a shipped module, so that a program module named
-`Kernel` never takes the library's breakpoints and a shipped frame never
-shows the program's text
+library's `Manifest.ns` names the program's embedded manifest,
+`newspeak.core.Manifest`, a program module. A program module is named by
+its own file's path; a name, `<Class>.ns`, names only a program module
+that has no file -- an image's, the embedded manifest -- or one a stop
+showed by reference that is not shipped, and only while no other such
+module has that name, since two versions of a module share it and are
+told apart by their references; never a shipped module, so that a
+program module named `Kernel` never takes the library's breakpoints and a
+shipped frame never shows the program's text
 (`a_program_module_named_kernel_never_takes_the_shipped_kernel_s_breakpoints`,
 `a_shipped_module_is_never_named_by_its_name`,
 `a_core_library_of_another_fingerprint_is_ignored`,
-`a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`).
+`a_program_root_named_kernel_is_another_module_than_the_shipped_kernel`,
+`two_versions_of_a_file_less_module_are_not_named_by_their_name`). A
+shipped module's text the agent takes from the binary by its id
+(`shipped_module_named_by_id`).
+
 A class name a client types -- a function breakpoint's, an exception
-filter's condition -- names every module of its `Module` segment's name,
-the program's and the shipped one where both exist
-(`Sources::modules_of_class_name`), so that `Kernel.Error` reaches the
-shipped `Error` beside a program module `Kernel`, with no syntax of its
-own: a filter sends the VM a `ClassName` for each, and a function
-breakpoint one method breakpoint for each behind its one DAP id, verified
-while any of them is
-(`a_function_breakpoint_reaches_both_modules_of_its_module_name`,
-`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`).
+filter's condition, the memory view's -- is written
+`<id>[@<version>][/<Class>(.<Class>)*]`, a method
+`<class>>><selector>` or `<class> class>><selector>`
+(`breakpoints::parse_class_name`, `parse_method_name`):
+`com.acme.json.Json@2.1.0/Parser>>parse:`, `Demo/Account>>deposit:`,
+`Calls>>>>` (selector `>>`), `newspeak.core.Kernel/Error`. Each names
+one module, or every version of one id, so a filter sends the VM one
+`ClassName` and a function breakpoint one method breakpoint behind its
+DAP id. A dotted module no module of the program or the binary has, a
+prefix of which names one -- by its id, or, undotted, by the class's
+name of the one module it ends in (`Sources::module_of`) -- is refused
+with the form it means, ``no module `Demo.Account`; a class inside a
+module is written `Demo/Account` ``, since it is how a nested class was
+written before ids and would otherwise wait, unverified, for a module
+that never comes
+(`a_dotted_nested_class_is_refused_with_the_new_form`,
+`a_function_breakpoint_names_the_program_s_kernel_and_the_shipped_one_apart`,
+`an_exception_filter_reaches_the_shipped_class_of_a_shadowed_module_name`,
+`the_stack_trace_names_each_version_of_a_module`).
 A step filter types no name: it names its module by a file, as a
 breakpoint does (`nsNext/setStepFilters`, under "The steps" below).
 `scopes` gives a frame's `Locals` and, at a
@@ -5189,7 +5227,7 @@ variant, in UTF-16 columns of the module's text as the agent knows it -- a
 program module's file as loaded until a stop read a newer current text, a
 shipped module's own, before any stop showed it too -- the module named by
 a source's path, its reference, or, for a program module without a file,
-its name `<Module>.ns` ("The agent's sources"), and a source naming none
+its name `<Class>.ns` ("The agent's sources"), and a source naming none
 answered unverified, "not a module of this program". A path
 names a module's file when both resolve to one canonical path, every `..`
 and symbolic link resolved, since the two are spelled independently: a
@@ -5204,13 +5242,13 @@ file deleted after the
 program read it is still named by its path. A breakpoint is verified once
 the VM resolved it to a statement, whose line and column the response
 gives, so that one on a comment line shows on the next statement.
-`setFunctionBreakpoints` names a method `Module.Path.To.Class>>selector`,
-or `Module.Path.To.Class class>>selector` for the class side's; a line or
+`setFunctionBreakpoints` names a method `<id>[@<version>][/<Class>(.<Class>)*]>>selector`,
+or `... class>>selector` for the class side's ("The agent's sources"); a line or
 function breakpoint takes a hit condition ("Hit counts and temporary
 breakpoints"). `setExceptionBreakpoints` turns `uncaught`, `caught` and
 `halt` on by its `filters` or `filterOptions`, and the conditions of its
 filter options, each a comma-separated list of classes
-`Module.Path.To.Class`, each parsed as a function breakpoint's class is
+`<id>[@<version>][/<Class>(.<Class>)*]`, each parsed as a function breakpoint's class is
 (`parse_class_name`), together name the
 classes both exception filters stop for, since the VM keeps one list
 ("Exceptions"). A breakpoint's DAP id is the agent's own, kept for as long
@@ -5345,14 +5383,13 @@ library's" the request's error (`a_shipped_frame_is_deemphasized`).
 
 The memory view (`evaluation.rs`): `nsNext/instanceCounts {}` answers
 `classes`, each `{ name, count }` in the VM's order, the largest count
-first, its `name` `Module.Path.To.Class`, as a function breakpoint names
-a class, and `nsNext/shipped: true` for a shipped module's class, since
-a program may declare a module of a shipped module's name.
-`nsNext/instances { name, shipped?, start, count }` answers a page of the
+first, its `name` `<id>[@<version>][/<Class>(.<Class>)*]`, as a function
+breakpoint names a class, and `nsNext/shipped: true` for a shipped
+module's class, as the VM says (`InstanceCount::shipped`).
+`nsNext/instances { name, start, count }` answers a page of the
 instances of the class `name` names, as `variables` answers, each named
-`#<n>`: the program's module of that name when it has one, the shipped
-module's otherwise, unless `shipped` picks one
-(`instances_of_a_shipped_class_are_asked_for_by_its_module`). `nsNext/referrers {
+`#<n>`: `Kernel/Array` a program module `Kernel`'s, `newspeak.core.Kernel/Array`
+the binary's (`instances_of_a_shipped_class_are_asked_for_by_its_module`). `nsNext/referrers {
 valueReference, start, count }` answers a page of what refers to the
 value, as `variables` answers too: an object as a variable shows a
 value, and a frame's variable that holds the value as a variable named
@@ -5573,7 +5610,7 @@ the way not taken: every question would run the program from its start.
   `debug_memory(class? | referrers_of?)`, `debug_mark(reference?,
   label)` -- without a reference it takes the label off -- and
   `debug_stop`. A breakpoint is a location, `<absolute path>:<line>`, or
-  a method, `Module.Class>>selector` (`Module.Class class>>selector` for
+  a method, `<id>[@<version>][/<Class>(.<Class>)*]>>selector` (` class>>selector` for
   the class side) as a function breakpoint names it, each with an
   optional `condition`, `log` message or `hit_condition`. The server
   holds a session's breakpoints and sends a file's whole set, or the

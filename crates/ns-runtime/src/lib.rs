@@ -101,8 +101,9 @@ pub use heap::{
     NewClosure, ObjectReference, ObjectShape, RegisterBase, Root, StackExhausted,
 };
 pub use interpreter::core_library::{
-    MANIFEST_SOURCE, ShippedSourceFile, shipped_module_named_by_text, shipped_module_source,
-    shipped_source_files, shipped_sources_fingerprint,
+    MANIFEST_SOURCE, ShippedSourceFile, shipped_module_id, shipped_module_named_by_id,
+    shipped_module_named_by_text, shipped_module_source, shipped_source_files,
+    shipped_sources_fingerprint,
 };
 pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,

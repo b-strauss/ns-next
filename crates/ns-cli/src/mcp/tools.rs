@@ -339,9 +339,12 @@ fn breakpoint_schema() -> Value {
         "properties": {
             "location": {
                 "type": "string",
-                "description": "<absolute path>:<line>, or Module.Class>>selector \
-                                (Module.Class class>>selector for the class side), the \
-                                class named from its module down."
+                "description": "<absolute path>:<line>, or a method: the module's id, \
+                                @ its version for one version only, then / and the \
+                                path to a class inside the module, dot-separated, \
+                                then >>selector (or ' class>>selector' for the class \
+                                side): com.acme.json.Json@2.1.0/Parser>>parse:, \
+                                Demo/Account>>deposit:, Demo>>main:args:."
             },
             "condition": {
                 "type": "string",
@@ -476,7 +479,7 @@ pub(crate) fn list() -> Value {
             "debug_memory",
             "Answers how many instances each class has, the instances of one class, or what refers to a value.",
             json!({
-                "class": { "type": "string", "description": "Module.Class: list its instances." },
+                "class": { "type": "string", "description": "A class, named as the counts name it: the module's id, @ its version for one version only, then / and the path to a class inside the module (Demo/Account): list its instances." },
                 "referrers_of": reference()
             }),
             &[],

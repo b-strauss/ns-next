@@ -106,7 +106,7 @@ pub(crate) fn instance_counts(mutator: &Mutator<'_>) -> Vec<InstanceCount> {
     // Each count's index in `counts`, by its name's parts.
     let mut indices: HashMap<(ModuleName, Vec<String>), usize> = HashMap::new();
     mutator.heap.each_object(|object| {
-        let Some((name, _)) = declared(mutator, &mut declarations, object) else {
+        let Some((name, shipped)) = declared(mutator, &mut declarations, object) else {
             return;
         };
         let key = (name.module.clone(), name.path.clone());
@@ -114,6 +114,7 @@ pub(crate) fn instance_counts(mutator: &Mutator<'_>) -> Vec<InstanceCount> {
             counts.push(InstanceCount {
                 class: name,
                 count: 0,
+                shipped,
             });
             counts.len() - 1
         });

@@ -152,8 +152,8 @@ pub(crate) fn entry_arguments(
     Ok(script_arguments.iter().chain(arguments).cloned().collect())
 }
 
-/// The program's modules as a debugger shows them: each by its root
-/// class's name, with the file it was read from and its text as read.
+/// The program's modules as a debugger shows them: each by its id and
+/// version, with the file it was read from and its text as read.
 /// A file is shown by its absolute path as the program named it, and
 /// known by its canonical one, which a client's path is compared with
 /// (`debug::file_identity`).
@@ -169,7 +169,12 @@ pub(crate) fn debug_modules(program: &Program) -> Vec<debug::ProgramModule> {
                 ns_runtime::SourceOrigin::Embedded(_) => None,
             };
             debug::ProgramModule {
-                name: declared_name(loaded).to_string(),
+                module: match loaded.resolved.identity.as_deref() {
+                    Some(identity) => ns_runtime::ModuleName::of_identity(identity),
+                    None => {
+                        unreachable!("internal: `read_program` gives every module its identity")
+                    }
+                },
                 identity: path.as_deref().map(debug::file_identity),
                 path,
                 text: Some(loaded.source.clone()),

@@ -261,7 +261,7 @@ mod tests {
             more_locals: 0,
             stack: vec![
                 frame("Counter>>main:args:", "/work/Counter.ns", 4),
-                frame("Kernel>>run", "/core/Kernel.ns", 120),
+                frame("newspeak.core.Kernel>>run", "/core/Kernel.ns", 120),
             ],
             total_frames: 2,
         };
@@ -279,7 +279,7 @@ mod tests {
              \x20 5 | five\n\
              \x20 6 | six\n\
              locals: count = 41, elements = an Array [ref 7]\n\
-             stack: #0 Counter>>main:args: Counter.ns:4 · #1 Kernel>>run Kernel.ns:120\n\
+             stack: #0 Counter>>main:args: Counter.ns:4 · #1 newspeak.core.Kernel>>run Kernel.ns:120\n\
              output: \"start\\n\"\n\
              runtime: /bin/ns-next 0123"
         );
@@ -291,7 +291,11 @@ mod tests {
             reason: "exception".to_string(),
             exception: Some("Error: boom".to_string()),
             condition_error: None,
-            top: Some(frame("Error>>signal", "/core/Kernel.ns", 1)),
+            top: Some(frame(
+                "newspeak.core.Kernel/Error>>signal",
+                "/core/Kernel.ns",
+                1,
+            )),
             text: None,
             locals: vec![Shown {
                 name: "text".to_string(),

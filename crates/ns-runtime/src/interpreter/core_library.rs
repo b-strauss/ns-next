@@ -163,9 +163,28 @@ thread_local! {
             .collect();
 }
 
-/// The text of the shipped module `name` -- its root class's name, as
-/// `FrameLocation::module` names it -- `None` for a name no shipped module
-/// has. The text is the binary's own and never changes: an agent counts a
+/// The id of the embedded module `name` -- `Kernel`, `Manifest` or a
+/// `SHIPPED_MODULES` entry, a `ShippedSourceFile::name` --
+/// `newspeak.core.<name>`, as a tool names the module.
+pub fn shipped_module_id(name: &str) -> String {
+    shipped_module_identity(name).id.to_string()
+}
+
+/// The name of the shipped module -- `Kernel` or a `SHIPPED_MODULES`
+/// entry -- whose id is `id` (`shipped_module_identity`), as
+/// `FrameLocation::module` names it; `None` for every other id,
+/// `newspeak.core.Manifest`'s included, which a program compiles as its
+/// own. A tool finds a shipped module's text by it; whether a running
+/// module is shipped is its root's to say (`Mixin::shipped`), never its
+/// id's.
+pub fn shipped_module_named_by_id(id: &str) -> Option<&'static str> {
+    std::iter::once(KERNEL_MODULE)
+        .chain(SHIPPED_MODULES.iter().map(|shipped| shipped.name))
+        .find(|name| shipped_module_identity(name).id.as_str() == id)
+}
+
+/// The text of the shipped module `name` -- its root class's name, the
+/// last segment of its id -- `None` for a name no shipped module has. The text is the binary's own and never changes: an agent counts a
 /// shipped module's lines in it before any stop shows the module, and the
 /// `MirrorBuilder` refuses every edit of a shipped module.
 pub fn shipped_module_source(name: &str) -> Option<&'static str> {
@@ -497,7 +516,7 @@ fn module_class<'gc>(
     // A breakpoint in the module, pending until it was built, resolves
     // now, before its factory and its initializer run.
     if !mutator.has_no_breakpoints() {
-        let module = crate::debugger::ModuleName::shipped(shipped.name);
+        let module = crate::debugger::ModuleName::of_root(&mixin);
         crate::debugger::breakpoints::module_built(mutator, &module);
     }
     Some(class)

@@ -73,56 +73,134 @@ pub(crate) fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
         })
 }
 
-/// The class declarations named `Module.Path.To.Class`, as a function
-/// breakpoint and the exception filters' conditions name one: one for each
-/// module `named` takes `Module` for (`Sources::modules_of_class_name`) --
-/// the program's and the shipped module of a name both declare.
+/// How a class is written: its module by its id and, for one version
+/// only, `@` its version, then `/` and the path to a class inside it
+/// (`docs/design/modules.md`, decision 8).
+const CLASS_FORM: &str = "`<id>[@<version>][/<Class>(.<Class>)*]`";
+
+/// Why a class name is refused, as `parse_class` says it.
+enum ClassRefusal {
+    /// The text is not of the form at all.
+    Malformed,
+    /// The text is of the form, and the reason says what is wrong.
+    Explained(String),
+}
+
+/// Whether `segment` is a Newspeak identifier, as each segment of an id
+/// and of a class's path is.
+fn is_identifier(segment: &str) -> bool {
+    let mut characters = segment.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// The class declaration `text` names, `<id>[@<version>][/<Class>(.<Class>)*]`:
+/// a module's class when no `/` follows the module, a class inside it
+/// otherwise. A name without a version names the class in every version
+/// of the id. `module_of` answers the id of the module the program or
+/// the binary has that a text names (`Sources::module_of`): a dotted
+/// module no module has, a prefix of which names one, is refused with the
+/// form that names the class inside that one -- it is the form a nested
+/// class was written in before, `Demo.Account` for `Demo/Account`, which
+/// must not be read as a module of its own and wait, unverified, for a
+/// module that never comes.
+fn parse_class(
+    text: &str,
+    module_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<ClassName, ClassRefusal> {
+    let text = text.trim();
+    let (module, path) = match text.split_once('/') {
+        Some((module, path)) => (module, Some(path)),
+        None => (text, None),
+    };
+    let (id, version) = match module.split_once('@') {
+        Some((id, version)) => (id, Some(version)),
+        None => (module, None),
+    };
+    let path: Vec<String> = match path {
+        Some(path) => path.split('.').map(str::to_string).collect(),
+        None => Vec::new(),
+    };
+    if !id.split('.').all(is_identifier) || !path.iter().all(|segment| is_identifier(segment)) {
+        return Err(ClassRefusal::Malformed);
+    }
+    let version = match version {
+        Some(version) => Some(
+            ns_runtime::modules::Version::parse(version)
+                .map_err(ClassRefusal::Explained)?
+                .to_string(),
+        ),
+        None => None,
+    };
+    if id.contains('.') && module_of(id).is_none() {
+        let segments: Vec<&str> = id.split('.').collect();
+        let prefix = (1..segments.len())
+            .rev()
+            .find_map(|length| Some((length, module_of(&segments[..length].join("."))?)));
+        if let Some((length, prefix)) = prefix {
+            let inside = segments[length..]
+                .iter()
+                .copied()
+                .chain(path.iter().map(String::as_str))
+                .collect::<Vec<&str>>()
+                .join(".");
+            let module = match &version {
+                Some(version) => format!("{prefix}@{version}"),
+                None => prefix,
+            };
+            return Err(ClassRefusal::Explained(format!(
+                "no module `{id}`; a class inside a module is written `{module}/{inside}`"
+            )));
+        }
+    }
+    Ok(ClassName {
+        module: ModuleName {
+            id: id.to_string(),
+            version,
+        },
+        path,
+    })
+}
+
+/// The class declaration named `<id>[@<version>][/<Class>(.<Class>)*]`, as
+/// a function breakpoint, an exception filter's condition and the memory
+/// view name one (`parse_class`).
 pub(crate) fn parse_class_name(
     text: &str,
-    named: &dyn Fn(&str) -> Vec<ModuleName>,
-) -> Result<Vec<ClassName>, String> {
-    let refused = || format!("`{text}` names no class: write `Module.Path.To.Class`");
-    let mut segments = text.trim().split('.').map(str::to_string);
-    let module = segments.next().unwrap_or_default();
-    let path: Vec<String> = segments.collect();
-    let malformed = |segment: &String| segment.is_empty() || segment.contains(char::is_whitespace);
-    if malformed(&module) || path.iter().any(malformed) {
-        return Err(refused());
-    }
-    Ok(named(&module)
-        .into_iter()
-        .map(|module| ClassName {
-            module,
-            path: path.clone(),
-        })
-        .collect())
+    module_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<ClassName, String> {
+    parse_class(text, module_of).map_err(|refusal| match refusal {
+        ClassRefusal::Malformed => format!("`{text}` names no class: write {CLASS_FORM}"),
+        ClassRefusal::Explained(reason) => reason,
+    })
 }
 
 /// Class names separated by commas, as an exception filter's condition
 /// lists them; an empty entry is passed over.
 pub(crate) fn parse_class_names(
     text: &str,
-    named: &dyn Fn(&str) -> Vec<ModuleName>,
+    module_of: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Vec<ClassName>, String> {
-    let mut classes = Vec::new();
-    for name in text.split(',').filter(|name| !name.trim().is_empty()) {
-        classes.extend(parse_class_name(name, named)?);
-    }
-    Ok(classes)
+    text.split(',')
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| parse_class_name(name, module_of))
+        .collect()
 }
 
-/// The methods named `Module.Path.To.Class>>selector`, or
-/// `Module.Path.To.Class class>>selector` for the class side's, their hit
-/// condition left to the caller: one for each module `named` takes
-/// `Module` for.
+/// The method named `<class>>><selector>`, or `<class> class>><selector>`
+/// for the class side's, the class written as `parse_class` reads it --
+/// `com.acme.json.Json@2.1.0/Parser>>parse:` -- its hit condition left to
+/// the caller.
 pub(crate) fn parse_method_name(
     text: &str,
-    named: &dyn Fn(&str) -> Vec<ModuleName>,
-) -> Result<Vec<MethodBreakpoint>, String> {
+    module_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<MethodBreakpoint, String> {
     let refused = || {
         format!(
-            "`{text}` names no method: write `Module.Path.To.Class>>selector` or \
-             `Module.Path.To.Class class>>selector`"
+            "`{text}` names no method: write {CLASS_FORM} followed by `>>selector`, or by \
+             ` class>>selector` for the class side"
         )
     };
     let (class, selector) = text.split_once(">>").ok_or_else(refused)?;
@@ -135,18 +213,18 @@ pub(crate) fn parse_method_name(
         Some(rest) if rest.ends_with(char::is_whitespace) => (rest.trim_end(), true),
         _ => (class, false),
     };
-    let classes = parse_class_name(class, named).map_err(|_| refused())?;
-    Ok(classes
-        .into_iter()
-        .map(|class| MethodBreakpoint {
-            class,
-            class_side,
-            selector: selector.to_string(),
-            hit_condition: None,
-            condition: None,
-            log: None,
-        })
-        .collect())
+    let class = parse_class(class, module_of).map_err(|refusal| match refusal {
+        ClassRefusal::Malformed => refused(),
+        ClassRefusal::Explained(reason) => reason,
+    })?;
+    Ok(MethodBreakpoint {
+        class,
+        class_side,
+        selector: selector.to_string(),
+        hit_condition: None,
+        condition: None,
+        log: None,
+    })
 }
 
 /// The byte offset of the 1-based `line` and, for a block variant, the
@@ -351,11 +429,9 @@ pub(crate) enum LineEntry {
 /// A function breakpoint of a `setFunctionBreakpoints` request.
 pub(crate) enum FunctionEntry {
     Refused(String),
-    /// Sent under the DAP id, as `count` method breakpoints of the VM's,
-    /// one for each module its class name names.
+    /// Sent under the DAP id, as one method breakpoint of the VM's.
     Sent {
         id: u32,
-        count: usize,
     },
 }
 
@@ -416,21 +492,20 @@ pub(crate) fn function_response(
         .iter()
         .map(|entry| match entry {
             FunctionEntry::Refused(message) => protocol::Breakpoint::unverified(message),
-            FunctionEntry::Sent { id, count } => {
-                let set: Vec<&MethodBreakpointState> = states.by_ref().take(*count).collect();
-                if set.len() < *count || set.is_empty() {
+            FunctionEntry::Sent { id } => {
+                let Some(state) = states.next() else {
                     return protocol::Breakpoint::unverified("the VM did not set it");
-                }
-                pairs.extend(set.iter().map(|state| (state.id.0, *id)));
-                function_breakpoint(*id, set.iter().any(|state| state.verified))
+                };
+                pairs.push((state.id.0, *id));
+                function_breakpoint(*id, state.verified)
             }
         })
         .collect();
     (breakpoints, pairs)
 }
 
-/// A function breakpoint as the client shows it: verified when any of the
-/// VM's method breakpoints behind its id is.
+/// A function breakpoint as the client shows it: verified when the VM's
+/// method breakpoint behind its id is.
 fn function_breakpoint(id: u32, verified: bool) -> protocol::Breakpoint {
     protocol::Breakpoint {
         id: Some(id),
@@ -531,20 +606,15 @@ impl Agent {
         else {
             return;
         };
-        let wanted: Vec<Result<Vec<MethodBreakpoint>, String>> = arguments
+        let wanted: Vec<Result<MethodBreakpoint, String>> = arguments
             .breakpoints
             .iter()
             .map(|breakpoint| {
-                let mut methods = parse_method_name(&breakpoint.name, &|name| {
-                    self.sources.modules_of_class_name(name)
-                })?;
-                let counted = hit_condition(breakpoint.hit_condition.as_deref())?;
-                let holds = condition(breakpoint.condition.as_deref());
-                for method in &mut methods {
-                    method.hit_condition = counted;
-                    method.condition.clone_from(&holds);
-                }
-                Ok(methods)
+                let mut method =
+                    parse_method_name(&breakpoint.name, &|id| self.sources.module_of(id))?;
+                method.hit_condition = hit_condition(breakpoint.hit_condition.as_deref())?;
+                method.condition = condition(breakpoint.condition.as_deref());
+                Ok(method)
             })
             .collect();
         let names = arguments
@@ -560,12 +630,10 @@ impl Agent {
         let entries = wanted
             .into_iter()
             .map(|wanted| match wanted {
-                Ok(methods) => {
-                    let count = methods.len();
-                    sent.extend(methods);
+                Ok(method) => {
+                    sent.push(method);
                     FunctionEntry::Sent {
                         id: ids.next().unwrap_or_default(),
-                        count,
                     }
                 }
                 Err(message) => FunctionEntry::Refused(message),
@@ -617,7 +685,7 @@ impl Agent {
             .iter()
             .filter_map(|options| options.condition.as_deref())
         {
-            match parse_class_names(condition, &|name| self.sources.modules_of_class_name(name)) {
+            match parse_class_names(condition, &|id| self.sources.module_of(id)) {
                 Ok(names) => {
                     for name in names {
                         if !classes.contains(&name) {
@@ -671,9 +739,8 @@ impl Agent {
         if self.replacing("SetMethodBreakpoints", None) {
             return;
         }
-        // A DAP id stands for every VM breakpoint its name set, one per
-        // module, and is verified while any of them is: the whole set is in
-        // the event.
+        // A DAP id stands for the VM breakpoint its name set; the whole set
+        // is in the event.
         let mut changed: Vec<(u32, bool)> = Vec::new();
         for state in states {
             if let Some(id) = self.breakpoints.dap_id(state.id.0) {
@@ -808,16 +875,36 @@ mod tests {
     use super::*;
     use ns_runtime::BreakpointId;
 
-    /// A class name's module taken for the program's alone.
-    fn program(name: &str) -> Vec<ModuleName> {
-        vec![ModuleName::program(name)]
+    /// The ids of the modules the tests' program and binary have.
+    const MODULES: [&str; 8] = [
+        "Module",
+        "Calls",
+        "Demo",
+        "Program",
+        "Kernel",
+        "com.acme.json.Json",
+        "newspeak.core.Kernel",
+        "newspeak.core.PlatformFactory",
+    ];
+
+    /// The module of `MODULES` `text` names, as `Sources::module_of`
+    /// answers it.
+    fn module_of(text: &str) -> Option<String> {
+        if MODULES.contains(&text) {
+            return Some(text.to_string());
+        }
+        let mut by_class = MODULES
+            .iter()
+            .filter(|id| !text.contains('.') && id.rsplit('.').next() == Some(text));
+        match (by_class.next(), by_class.next()) {
+            (Some(only), None) => Some(only.to_string()),
+            _ => None,
+        }
     }
 
-    /// The one method a name names when its module is the program's alone.
+    /// The method a name names.
     fn method(text: &str) -> MethodBreakpoint {
-        let mut methods = parse_method_name(text, &program).expect("a method");
-        assert_eq!(methods.len(), 1, "{text}");
-        methods.remove(0)
+        parse_method_name(text, &module_of).expect("a method")
     }
 
     #[test]
@@ -915,12 +1002,12 @@ mod tests {
 
     #[test]
     fn method_names_parse_with_and_without_class_side() {
-        let instance = method("Module.Outer.Inner>>at:put:");
+        let instance = method("Module/Outer.Inner>>at:put:");
         assert_eq!(
             instance,
             MethodBreakpoint {
                 class: ClassName {
-                    module: ModuleName::program("Module"),
+                    module: ModuleName::named("Module"),
                     path: vec!["Outer".to_string(), "Inner".to_string()],
                 },
                 class_side: false,
@@ -930,33 +1017,109 @@ mod tests {
                 log: None,
             }
         );
-        let class_side = method(" Module.Inner class >> new ");
+        let class_side = method(" Module/Inner class >> new ");
         assert!(class_side.class_side);
         assert_eq!(class_side.class.path, ["Inner"]);
         assert_eq!(class_side.selector, "new");
-        let root = method("Calls>>>>");
-        assert!(root.class.path.is_empty());
-        assert_eq!(root.selector, ">>");
-        let named_class = method("Module.Subclass>>run");
+        let named_class = method("Module/Subclass>>run");
         assert!(!named_class.class_side, "`Subclass` is a name, not a side");
     }
 
-    /// A name whose module both the program and the binary declare names
-    /// a method, and a class, in each.
     #[test]
-    fn a_name_of_two_modules_names_one_class_in_each() {
-        let both = |name: &str| vec![ModuleName::program(name), ModuleName::shipped(name)];
-        let methods = parse_method_name("Kernel.Array>>do:", &both).expect("methods");
+    fn method_names_parse_with_id_version_and_inner_path() {
+        let parsed = method("com.acme.json.Json@2.1.0/Parser.Token class>>at:put:");
         assert_eq!(
-            methods
-                .iter()
-                .map(|method| method.class.module.clone())
-                .collect::<Vec<_>>(),
-            [ModuleName::program("Kernel"), ModuleName::shipped("Kernel")]
+            parsed.class.module,
+            ModuleName {
+                id: "com.acme.json.Json".to_string(),
+                version: Some("2.1.0".to_string()),
+            }
         );
-        let classes = parse_class_names("Kernel.Error, Program.Inner", &both).expect("classes");
-        assert_eq!(classes.len(), 4);
-        assert!(classes.iter().all(|class| !class.path.is_empty()));
+        assert_eq!(parsed.class.path, ["Parser", "Token"]);
+        assert!(parsed.class_side);
+        assert_eq!(parsed.selector, "at:put:");
+        let every_version = method("com.acme.json.Json/Parser>>parse:");
+        assert_eq!(
+            every_version.class.module,
+            ModuleName::named("com.acme.json.Json")
+        );
+        let pre_release = method("com.acme.json.Json@2.1.0-beta.1>>parse:");
+        assert_eq!(
+            pre_release.class.module.version.as_deref(),
+            Some("2.1.0-beta.1")
+        );
+    }
+
+    #[test]
+    fn a_root_method_has_no_slash() {
+        let root = method("Calls>>>>");
+        assert_eq!(root.class.module, ModuleName::named("Calls"));
+        assert!(root.class.path.is_empty());
+        assert_eq!(root.selector, ">>");
+        let dotted = method("com.acme.json.Json>>parse:");
+        assert_eq!(dotted.class.module, ModuleName::named("com.acme.json.Json"));
+        assert!(dotted.class.path.is_empty());
+        let class_side = method("Calls class>>new");
+        assert!(class_side.class_side);
+        assert!(class_side.class.path.is_empty());
+    }
+
+    /// A name in the old form, its nested class after a dot, names no
+    /// module of the program but its prefix does: it is refused with the
+    /// form that names the class, never read as a module of its own.
+    #[test]
+    fn a_dotted_nested_class_is_refused_with_the_new_form() {
+        assert_eq!(
+            parse_method_name("Demo.Account>>deposit:", &module_of),
+            Err(
+                "no module `Demo.Account`; a class inside a module is written `Demo/Account`"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parse_class_name("Demo.Account.Entry", &module_of),
+            Err(
+                "no module `Demo.Account.Entry`; a class inside a module is written \
+                 `Demo/Account.Entry`"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parse_method_name("com.acme.json.Json.Parser>>parse:", &module_of),
+            Err(
+                "no module `com.acme.json.Json.Parser`; a class inside a module is written \
+                 `com.acme.json.Json/Parser`"
+                    .to_string()
+            )
+        );
+        // A prefix that is the class's name of one module names that
+        // module: the shipped modules were written by their class's name.
+        assert_eq!(
+            parse_class_name("PlatformFactory.Inner", &module_of),
+            Err(
+                "no module `PlatformFactory.Inner`; a class inside a module is written \
+                 `newspeak.core.PlatformFactory/Inner`"
+                    .to_string()
+            )
+        );
+        // A dotted id no prefix of which the program knows names a module
+        // not built yet.
+        let pending = method("org.example.Tool>>run");
+        assert_eq!(pending.class.module, ModuleName::named("org.example.Tool"));
+    }
+
+    /// The program's own `Kernel` and the binary's are written apart, by
+    /// their ids.
+    #[test]
+    fn a_program_kernel_and_the_shipped_kernel_are_named_apart() {
+        let own = method("Kernel/Array>>do:");
+        let shipped = method("newspeak.core.Kernel/Array>>do:");
+        assert_eq!(own.class.module, ModuleName::named("Kernel"));
+        assert_eq!(
+            shipped.class.module,
+            ModuleName::named("newspeak.core.Kernel")
+        );
+        assert_eq!(own.class.path, shipped.class.path);
     }
 
     #[test]
@@ -965,24 +1128,36 @@ mod tests {
             "Calls double:",
             "Calls>>",
             ">>double:",
+            "Calls/Inner..Deeper>>run",
+            "Calls/>>run",
+            "Calls//Inner>>run",
             "Calls..Inner>>run",
+            "Calls@>>run",
+            "@1.0.0>>run",
             "Calls>>at: put:",
         ] {
-            assert!(parse_method_name(text, &program).is_err(), "{text}");
+            assert!(parse_method_name(text, &module_of).is_err(), "{text}");
         }
+        assert_eq!(
+            parse_method_name("Calls@1.0>>run", &module_of),
+            Err("`1.0` is no version: it needs MAJOR.MINOR.PATCH".to_string())
+        );
     }
 
     #[test]
     fn class_names_parse_from_a_list() {
-        let names = parse_class_names("Kernel.Error, Program.Outer.Inner,", &|name| {
-            vec![ModuleName::shipped(name)]
-        })
+        let names = parse_class_names(
+            "newspeak.core.Kernel/Error, Program/Outer.Inner,",
+            &module_of,
+        )
         .expect("names");
         assert_eq!(names.len(), 2);
-        assert_eq!(names[0].module, ModuleName::shipped("Kernel"));
+        assert_eq!(names[0].module, ModuleName::named("newspeak.core.Kernel"));
+        assert_eq!(names[0].path, ["Error"]);
+        assert_eq!(names[1].module, ModuleName::named("Program"));
         assert_eq!(names[1].path, ["Outer", "Inner"]);
-        assert!(parse_class_names("Kernel.Error, Kernel Exception", &program).is_err());
-        assert_eq!(parse_class_names(" ", &program), Ok(Vec::new()));
+        assert!(parse_class_names("Kernel/Error, Kernel Exception", &module_of).is_err());
+        assert_eq!(parse_class_names(" ", &module_of), Ok(Vec::new()));
     }
 
     #[test]
@@ -997,17 +1172,17 @@ mod tests {
     #[test]
     fn a_breakpoint_keeps_its_id_while_the_client_sends_it() {
         let mut table = Breakpoints::default();
-        let first = table.request_lines(&ModuleName::program("Loop"), vec![10, 20]);
+        let first = table.request_lines(&ModuleName::named("Loop"), vec![10, 20]);
         assert_eq!(first, [1, 2]);
-        table.answered_lines(&ModuleName::program("Loop"), &[(0, 1), (1, 2)]);
+        table.answered_lines(&ModuleName::named("Loop"), &[(0, 1), (1, 2)]);
         assert_eq!(table.dap_id(1), Some(2));
-        let second = table.request_lines(&ModuleName::program("Loop"), vec![20, 30]);
+        let second = table.request_lines(&ModuleName::named("Loop"), vec![20, 30]);
         assert_eq!(second, [2, 3]);
         // The VM's ids of the earlier answer map until the next answer,
         // but a breakpoint the client removed is named no more.
         assert_eq!(table.dap_id(0), None);
         assert_eq!(table.dap_id(1), Some(2));
-        table.answered_lines(&ModuleName::program("Loop"), &[(2, 2), (3, 3)]);
+        table.answered_lines(&ModuleName::named("Loop"), &[(2, 2), (3, 3)]);
         assert_eq!(table.dap_id(1), None);
         assert_eq!(table.dap_id(3), Some(3));
         assert_eq!(table.request_functions(vec!["Loop>>run".to_string()]), [4]);
