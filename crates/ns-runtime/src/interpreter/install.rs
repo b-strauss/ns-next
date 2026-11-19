@@ -569,8 +569,6 @@ mod tests {
         )
     "};
 
-    /// An edited nested class is written and loads edited: its added
-    /// method answers on an instance made before the edit.
     /// An edit replaces the module's root mixin with a version compiled
     /// from the edited text, which is the same module: its identity, which
     /// the host set when it loaded the module, goes over to the new
@@ -618,6 +616,8 @@ mod tests {
         assert!(Rc::ptr_eq(&kept, &identity));
     }
 
+    /// An edited nested class is written and loads edited: its added
+    /// method answers on an instance made before the edit.
     #[test]
     fn an_edited_program_loads_edited() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
