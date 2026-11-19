@@ -168,6 +168,10 @@ pub(crate) struct StartOptions {
     pub(crate) runtime: PathBuf,
     pub(crate) arguments: Vec<String>,
     pub(crate) stop_on_entry: bool,
+    /// `--trace`'s value, when the program is to trace.
+    pub(crate) trace: Option<String>,
+    /// One `--trace-filter` pattern each.
+    pub(crate) trace_filter: Vec<String>,
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) wait: Duration,
 }
@@ -217,10 +221,16 @@ impl Session {
             .map_err(|error| format!("making the session's secret: {error}"))?
             .hex();
         let mut command = target_runner::target_command(&options.runtime);
-        command
-            .arg("run")
-            .arg(format!("--debug-connect={address}"))
-            .arg(&options.program);
+        command.arg("run").arg(format!("--debug-connect={address}"));
+        // Before the program, as `run` reads its options there; the lines
+        // arrive on the child's standard error with its other output.
+        if let Some(trace) = &options.trace {
+            command.arg(format!("--trace={trace}"));
+        }
+        for pattern in &options.trace_filter {
+            command.arg(format!("--trace-filter={pattern}"));
+        }
+        command.arg(&options.program);
         if !options.arguments.is_empty() {
             command.arg("--").args(&options.arguments);
         }

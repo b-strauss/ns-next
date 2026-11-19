@@ -158,6 +158,8 @@ impl Debugger {
             runtime,
             arguments: arguments.arguments,
             stop_on_entry: arguments.stop_on_entry,
+            trace: arguments.trace,
+            trace_filter: arguments.trace_filter,
             breakpoints: arguments.breakpoints,
             wait,
         })?;
@@ -233,6 +235,10 @@ struct StartArguments {
     arguments: Vec<String>,
     #[serde(default)]
     runtime: Option<String>,
+    #[serde(default)]
+    trace: Option<String>,
+    #[serde(default)]
+    trace_filter: Vec<String>,
     #[serde(default)]
     wait: Option<f64>,
 }
@@ -376,6 +382,8 @@ pub(crate) fn list() -> Value {
                 "stop_on_entry": { "type": "boolean", "description": "Stop at the first statement of main:args:." },
                 "arguments": { "type": "array", "items": { "type": "string" }, "description": "The program's arguments." },
                 "runtime": { "type": "string", "description": "The ns-next binary to run the program with; this server's own executable by default." },
+                "trace": { "type": "string", "description": "What the program traces, as ns-next run's --trace: categories separated by commas (compile, osr, optimize, inlining, deoptimize, code-zone, caches) or all. The trace lines arrive on standard error, with the program's output in every answer." },
+                "trace_filter": { "type": "array", "items": { "type": "string" }, "description": "Patterns selecting the bodies whose events are traced, one --trace-filter each, in the method syntax of locations (Demo>>square:, Demo/Account>>deposit:); a pattern ending in ... is a prefix (Demo>>sq...). A comma is part of a selector, never a separator." },
                 "wait": wait_schema()
             }),
             &["program"],

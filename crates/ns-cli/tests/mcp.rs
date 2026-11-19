@@ -20,6 +20,25 @@ use serde_json::{Value, json};
 /// The longest any single answer takes before the test fails.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The stress modes a plain server strips from its programs' environment.
+const STRESS_MODES: [&str; 15] = [
+    "MOVES",
+    "COLLECT",
+    "SCAVENGE",
+    "SUSPEND",
+    "ZONE",
+    "JIT",
+    "EXIT",
+    "OPTIMIZE",
+    "DEOPT",
+    "CACHES",
+    "INVALIDATE",
+    "WIDE",
+    "PAUSE",
+    "BREAKPOINTS",
+    "STEP",
+];
+
 /// The tools and their parameters, the required ones first.
 const TOOLS: [(&str, &[&str], &[&str]); 16] = [
     (
@@ -30,6 +49,8 @@ const TOOLS: [(&str, &[&str], &[&str]); 16] = [
             "stop_on_entry",
             "arguments",
             "runtime",
+            "trace",
+            "trace_filter",
             "wait",
         ],
     ),
@@ -80,6 +101,17 @@ impl McpServer {
 
     /// `<executable> mcp` with the environment `variables`, initialized.
     fn start_with(executable: &Path, variables: &[(&str, &str)]) -> McpServer {
+        McpServer::launch(executable, variables, false)
+    }
+
+    /// As `start`, with neither a stress mode nor `NS_NEXT_NO_JIT` in the
+    /// environment its programs inherit, whatever the test run says, so
+    /// that machine code compiles what a plain run's thresholds decide.
+    fn start_plain() -> McpServer {
+        McpServer::launch(Path::new(binary()), &[], true)
+    }
+
+    fn launch(executable: &Path, variables: &[(&str, &str)], plain: bool) -> McpServer {
         let mut command = common::target_command(executable);
         command
             .arg("mcp")
@@ -87,6 +119,12 @@ impl McpServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if plain {
+            command.env_remove("NS_NEXT_NO_JIT");
+            for mode in STRESS_MODES {
+                command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
+            }
+        }
         let mut child = command.spawn().expect("start ns-next mcp");
         let stdout = child.stdout.take().expect("a piped stdout");
         let (sender, lines) = mpsc::channel();
@@ -765,4 +803,77 @@ fn an_evaluation_that_does_not_end_is_aborted() {
     );
     let ended = server.succeed("debug_continue", json!({}));
     assert_eq!(ended, "ended: exit status 0\noutput: \"count is\\n41\\n\"");
+}
+
+/// `square:` is sent a hundred times, so that the baseline JIT compiles it
+/// at its second entry in a plain run.
+const A_HOT_METHOD: &str = indoc! {"
+    class Demo = Object new () (
+      square: number = (
+        ^number * number.
+      )
+
+      public main: platform args: arguments = (
+        |
+          total ::= 0.
+        |
+        1 to: 100 do: [:index | total:: total + (square: index)].
+        platform transcript show: total printString; newLine.
+      )
+    )
+"};
+
+/// `trace` and `trace_filter` reach the program as `--trace` and one
+/// `--trace-filter` each, and their lines arrive with its output. Without
+/// a JIT nothing compiles and nothing is said, so the test answers nothing
+/// there.
+#[test]
+fn a_trace_arrives_with_the_output() {
+    let mut server = McpServer::start_plain();
+    let (_directory, path) = program("Demo", A_HOT_METHOD);
+    // A target without a JIT compiles no body and traces nothing: a plain
+    // run says whether this one does.
+    let mut direct = common::target_command(binary());
+    direct.arg("run").arg(&path).arg("--trace=compile");
+    direct.env_remove("NS_NEXT_NO_JIT");
+    for mode in STRESS_MODES {
+        direct.env_remove(format!("NS_NEXT_STRESS_{mode}"));
+    }
+    let direct = direct.output().expect("run the program");
+    if !String::from_utf8_lossy(&direct.stderr).contains("[compile] ") {
+        return;
+    }
+    let traced = server.succeed(
+        "debug_start",
+        json!({ "program": path, "trace": "compile" }),
+    );
+    assert!(traced.starts_with("ended: exit status 0"), "{traced}");
+    assert!(traced.contains("[compile] "), "{traced}");
+    assert!(
+        traced.contains("[compile] {Demo>>square:} compiled"),
+        "{traced}"
+    );
+    let filtered = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "compile",
+            "trace_filter": ["Demo>>nothing:", "Demo>>sq..."],
+        }),
+    );
+    assert!(
+        filtered.contains("[compile] {Demo>>square:} compiled"),
+        "{filtered}"
+    );
+    let excluded = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "compile",
+            "trace_filter": ["Demo>>nothing:"],
+        }),
+    );
+    assert!(!excluded.contains("{Demo>>square:}"), "{excluded}");
+    let untraced = server.succeed("debug_start", json!({ "program": path }));
+    assert!(!untraced.contains("[compile] "), "{untraced}");
 }
