@@ -325,6 +325,58 @@ pub fn declared_identity(
     }
 }
 
+/// Message of a program's module whose id lies in the reserved namespace;
+/// `{id}` is replaced.
+const IN_RESERVED_NAMESPACE: &str =
+    "`{id}` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships";
+
+/// Message of two modules of one id and one version; `{id}`, `{version}`,
+/// `{first}` and `{second}` are replaced, the last two by their paths.
+const TWO_OF_ONE_VERSION: &str = "two modules are `{id}@{version}`: {first} and {second}";
+
+/// Message of two modules of one id, one of them without a version; `{id}`,
+/// `{first}` and `{second}` are replaced, the last two by their paths.
+const TWO_ONE_WITHOUT_VERSION: &str =
+    "two modules are `{id}` and one of them has no version: {first} and {second}";
+
+/// Refuses a program's module whose id lies in the namespace reserved for
+/// the modules the binary ships (decision 9): a program's own `Kernel` is
+/// `Kernel`, and no tool name meets a shipped module's.
+pub fn check_unreserved(id: &ModuleId) -> Result<(), String> {
+    if id.is_reserved() {
+        return Err(IN_RESERVED_NAMESPACE.replace("{id}", id.as_str()));
+    }
+    Ok(())
+}
+
+/// Refuses two modules no request could pick between (decision 5): two of
+/// one id and one version, and two of one id where either has no version.
+/// Names the first such pair in the order given, the earlier module first,
+/// by their paths.
+pub fn check_distinct<'identity>(
+    identities: impl IntoIterator<Item = &'identity ModuleIdentity>,
+) -> Result<(), String> {
+    let identities: Vec<&ModuleIdentity> = identities.into_iter().collect();
+    for (index, later) in identities.iter().enumerate() {
+        for earlier in &identities[..index] {
+            if earlier.id != later.id {
+                continue;
+            }
+            let message = match (&earlier.version, &later.version) {
+                (Some(first), Some(second)) if first == second => TWO_OF_ONE_VERSION
+                    .replace("{id}", later.id.as_str())
+                    .replace("{version}", &first.to_string()),
+                (Some(_), Some(_)) => continue,
+                _ => TWO_ONE_WITHOUT_VERSION.replace("{id}", later.id.as_str()),
+            };
+            return Err(message
+                .replace("{first}", &earlier.path)
+                .replace("{second}", &later.path));
+        }
+    }
+    Ok(())
+}
+
 /// Checks a module's path: relative, `/`-separated, without root, drive or
 /// `\`, without an empty or `.` segment, `..` only leading, ending in `.ns`;
 /// or `core:` and a file name.
@@ -607,6 +659,60 @@ mod tests {
             identity_of(source),
             Err(
                 "two `:module:` metadata declare the module: `com.acme.json.Json@2.1.0` and `org.other.Json`"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_program_s_id_may_not_lie_in_the_reserved_namespace() {
+        assert_eq!(
+            check_unreserved(&ModuleId::parse("newspeak.json.Json", "Json").unwrap()),
+            Err(
+                "`newspeak.json.Json` lies in the namespace `newspeak.`, which belongs to the \
+                 modules ns-next ships"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            check_unreserved(&ModuleId::parse("org.newspeak.Json", "Json").unwrap()),
+            Ok(())
+        );
+    }
+
+    fn identity(path: &str, id: &str, version_text: Option<&str>) -> ModuleIdentity {
+        let class_name = id.rsplit('.').next().unwrap_or(id);
+        ModuleIdentity {
+            path: path.to_string(),
+            id: ModuleId::parse(id, class_name).unwrap(),
+            version: version_text.map(version),
+        }
+    }
+
+    #[test]
+    fn two_modules_no_request_could_pick_between_are_refused() {
+        let first = identity("a/Util.ns", "com.acme.Util", Some("1.0.0"));
+        let second = identity("b/Util.ns", "com.acme.Util", Some("2.0.0"));
+        let same = identity("c/Util.ns", "com.acme.Util", Some("1.0.0"));
+        let unversioned = identity("d/Util.ns", "com.acme.Util", None);
+        let other = identity("e/Util.ns", "Util", None);
+        assert_eq!(check_distinct([&first, &second, &other]), Ok(()));
+        assert_eq!(
+            check_distinct([&first, &second, &same]),
+            Err("two modules are `com.acme.Util@1.0.0`: a/Util.ns and c/Util.ns".to_string())
+        );
+        assert_eq!(
+            check_distinct([&unversioned, &second]),
+            Err(
+                "two modules are `com.acme.Util` and one of them has no version: d/Util.ns and \
+                 b/Util.ns"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            check_distinct([&other, &identity("f/Util.ns", "Util", None)]),
+            Err(
+                "two modules are `Util` and one of them has no version: e/Util.ns and f/Util.ns"
                     .to_string()
             )
         );

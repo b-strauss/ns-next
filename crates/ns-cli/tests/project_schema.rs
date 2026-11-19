@@ -14,7 +14,10 @@
 //! script that does not split as a command line -- an unterminated `'` or
 //! `"`, or a backslash at its end, such as `"'unterminated"` -- is refused
 //! by the reader alone too, because the schema states only that a script is
-//! a string. None is in the table; `project.rs`'s own tests pin them.
+//! a string. A module named once as a path and once as an entry's `path`
+//! is refused by the reader alone too: `uniqueItems` compares the two
+//! entries, which differ. None is in the table; `project.rs`'s own tests
+//! pin them.
 
 mod common;
 
@@ -98,6 +101,18 @@ fn valid(schema: &Value, instance: &Value) -> bool {
                                 .last()
                                 .is_some_and(|character| !is_pattern_whitespace(character))
                     }
+                    // A module id: identifiers separated by dots.
+                    Some(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$") => {
+                        text.split('.').all(|segment| {
+                            let mut characters = segment.chars();
+                            characters
+                                .next()
+                                .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                                && characters.all(|character| {
+                                    character.is_ascii_alphanumeric() || character == '_'
+                                })
+                        })
+                    }
                     other => panic!("the interpreter knows no pattern {other:?}"),
                 }),
             "propertyNames" => instance.as_object().is_none_or(|members| {
@@ -106,16 +121,24 @@ fn valid(schema: &Value, instance: &Value) -> bool {
                     .all(|name| valid(argument, &Value::String(name.clone())))
             }),
             "additionalProperties" => {
-                assert!(argument.is_object(), "only a schema is interpreted");
                 let Some(members) = instance.as_object() else {
                     return true;
                 };
                 let named = keywords.get("properties").and_then(Value::as_object);
-                members
+                let mut others = members
                     .iter()
-                    .filter(|(name, _)| named.is_none_or(|named| !named.contains_key(*name)))
-                    .all(|(_, member)| valid(argument, member))
+                    .filter(|(name, _)| named.is_none_or(|named| !named.contains_key(*name)));
+                match argument {
+                    Value::Bool(false) => others.next().is_none(),
+                    Value::Object(_) => others.all(|(_, member)| valid(argument, member)),
+                    other => panic!("the interpreter knows no additionalProperties {other}"),
+                }
             }
+            "anyOf" => argument
+                .as_array()
+                .expect("`anyOf` is an array")
+                .iter()
+                .any(|alternative| valid(alternative, instance)),
             other => panic!("the schema uses `{other}`, which this interpreter does not know"),
         })
 }
@@ -148,6 +171,43 @@ const FILES: &[(&str, bool)] = &[
         r#"{ "main": "App.ns", "modules": ["A.ns", "A.ns"] }"#,
         false,
     ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "lib/A.ns", "as": "legacy.A" }] }"#,
+        true,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": ["B.ns", { "path": "lib/A.ns" }] }"#,
+        true,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "as": "legacy.A" }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "A.ns", "as": "legacy.A", "x": 1 }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "A.ns", "as": 1 }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "A.ns", "as": "legacy..A" }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "A.ns", "as": "" }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "A.txt" }] }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "modules": [{ "path": "" }] }"#,
+        false,
+    ),
+    (r#"{ "main": "App.ns", "modules": [["A.ns"]] }"#, false),
     (r#"{ "$schema": 1, "main": "App.ns" }"#, false),
     (r#"{ "$schema": null, "main": "App.ns" }"#, false),
     (r#"[]"#, false),

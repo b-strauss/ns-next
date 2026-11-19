@@ -15,12 +15,36 @@
       "pattern": "\\.ns$"
     },
     "modules": {
-      "description": "The other modules the manifest holds, each reached as `manifest <Name>` by the name its source declares.",
+      "description": "The other modules the manifest holds, each asked for as `manifest at: '<id>'`, or `manifest at: '<id>' version: '<range>'`, by the id its source declares in `(* :module: <id>@<version> *)` above its class, or its class's name when it declares none. Two modules of one id must have two versions.",
       "type": "array",
       "items": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "\\.ns$"
+        "anyOf": [
+          {
+            "description": "The module's source file.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\.ns$"
+          },
+          {
+            "description": "The module's source file, and the id it is asked for by in place of the one it declares.",
+            "type": "object",
+            "properties": {
+              "path": {
+                "description": "The module's source file.",
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\.ns$"
+              },
+              "as": {
+                "description": "The module's id: identifiers separated by dots, the last its class's name, not beginning with `newspeak.`, which belongs to the modules ns-next ships. Its version stays the one the module declares.",
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+              }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+          }
+        ]
       },
       "uniqueItems": true
     },

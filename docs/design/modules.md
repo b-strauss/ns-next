@@ -9,12 +9,16 @@ PDF p. 48). Everything here is outside the language: which files a program
 has, which of them the application asks for, and how tools and images name
 them.
 
-Status: designed, not built. Today a module is known by its root class's
-name: the manifest answers `manifest Util` through `doesNotUnderstand:`
-([core-library.md](core-library.md), "The manifest"), two modules of a
-project may not declare one name ([image-format.md](image-format.md),
-"Packaging"), and the debugger's `ModuleName` is a name and a shipped flag
-([debugger.md](debugger.md)). The design below lets several versions of one
+Status: partly built. Ids, versions and ranges (`ns-runtime`'s
+`modules.rs`), the metadata (`ns-syntax`'s `metadata.rs`), each module's
+identity on its root mixin, the string manifest, `newspeak.json`'s `as` and
+the project's refusals (decisions 1-5 and 9) are built
+([core-library.md](core-library.md), "The manifest";
+[image-format.md](image-format.md), "Packaging"). Not yet: an image's
+module record still holds the building machine's origin rather than the
+identity (decision 10), and the debugger's `ModuleName` is a name and a
+shipped flag ([debugger.md](debugger.md)), so tools name modules by their
+class's name (decision 8). The design below lets several versions of one
 module live in one running program.
 
 ## The three roles

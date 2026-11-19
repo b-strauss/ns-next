@@ -1,9 +1,9 @@
-/// A manifest answers only the modules the project file lists. Asking it for
-/// any other name is an ordinary unknown message, raised while the root is
+/// A range none of an id's versions lies in signals an Error naming the
+/// versions there are, in ascending order, raised while the root is
 /// instantiated, so main:args: never runs.
 class App packageUsing: manifest = Object new (
   |
-    private Missing = manifest Missing.
+    private Util = manifest at: 'com.acme.util.Util' version: '3'.
   |
 ) (
   public main: platform args: arguments = (

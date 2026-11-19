@@ -6,8 +6,8 @@
 /// initializer.
 class App packageUsing: manifest = Object new (
   |
-    private Base = manifest Base.
-    private Derived = manifest Derived.
+    private Base = manifest at: 'Base'.
+    private Derived = manifest at: 'Derived'.
   |
 ) (
   outcome: action = (

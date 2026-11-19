@@ -1145,8 +1145,8 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         val library = libraryDirectory()
         val manifest = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(library.resolve("Manifest.ns")))
         val line = Files.readString(library.resolve("Manifest.ns")).lines()
-            .indexOfFirst { text -> text.contains("((names at: index) = message selector) ifTrue:") }
-        assertTrue("Manifest>>doesNotUnderstand:", line >= 0)
+            .indexOfFirst { text -> text.contains("^definitions at: match.") }
+        assertTrue("Manifest>>at:", line >= 0)
         program("App", SHARING)
         program("Shared", SHARED)
         Files.writeString(directory.resolve("newspeak.json"), """{"main": "App.ns", "modules": ["Shared.ns"]}""")
@@ -1813,7 +1813,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         /** A project's root that reaches `Shared` through its manifest. */
         val SHARING = """
             class App packageUsing: manifest = Object new (
-              | Shared = manifest Shared. |
+              | Shared = manifest at: 'Shared'. |
             ) (
               public main: platform args: arguments = (
                 platform transcript show: Shared new greeting; newLine.

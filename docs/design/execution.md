@@ -1163,11 +1163,11 @@ NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
 Primordial Soup's own Richards and DeltaBlue, `RichardsTon80`, derived from
 the Dart Ton80 version, and `DeltaBlueTon80`, beside them, and the
 harness that runs them, `AreWeFastYet.ns`, the root of the project
-whose `newspeak.json` lies beside it, which reaches each benchmark as `manifest Sieve`
+whose `newspeak.json` lies beside it, which reaches each benchmark as `manifest at: 'Sieve'`
 ([image-format.md](image-format.md), "Packaging"). Every benchmark is one
 module: SOMns's CD loads a second module, `RedBlackTree.ns`, which here is
 folded into `CD.ns` as nested classes of `CD`, so CD too is reached as
-`manifest CD` (decided with the user on 2026-10-01). The benchmarks are
+`manifest at: 'CD'` (decided with the user on 2026-10-01). The benchmarks are
 adapted from SOMns's Newspeak versions
 (`prior-art/somns/core-lib/Benchmarks/`, MIT) into Primordial Soup's
 module shape and protocol: each is a module `usingPlatform:som:` whose one

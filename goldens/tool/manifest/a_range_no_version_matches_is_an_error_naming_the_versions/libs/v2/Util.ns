@@ -1,0 +1,8 @@
+/// The second version of a module that declares its id and version above
+/// its class: the same id and class name as the first.
+(* :module: com.acme.util.Util@2.0.0 *)
+class Util = Object new () (
+  public answer = (
+    ^'two'.
+  )
+)

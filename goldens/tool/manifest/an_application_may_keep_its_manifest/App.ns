@@ -7,7 +7,7 @@ class App packageUsing: manifest = Object new (
 ) (
   public main: platform args: arguments = (
     platform transcript
-        show: modules Counter new count printString;
+        show: (modules at: 'Counter') new count printString;
         newLine.
   )
 )

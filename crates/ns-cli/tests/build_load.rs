@@ -358,7 +358,7 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
         directory.join("App.ns"),
         indoc! {"
             class App packageUsing: manifest = Object new (
-                | private Stamper = manifest Stamper.
+                | private Stamper = manifest at: 'Stamper'.
                   stamp = Object new hash.
                   stamper = Stamper new. |
             ) (

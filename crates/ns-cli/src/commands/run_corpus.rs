@@ -171,7 +171,10 @@ fn check_row(
 /// module's alone.
 ///
 /// Only a unary selector is sent: a keyword or binary one would need
-/// arguments the wrapper would have to invent.
+/// arguments the wrapper would have to invent. The module is copied beside
+/// the wrapper, so that its path relative to the project is its file's
+/// name wherever the scratch directory lies, and the wrapper asks the
+/// manifest for it by the id it declares.
 fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, String> {
     let is_unary = send
         .chars()
@@ -187,7 +190,8 @@ fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, S
         .map_err(|error| format!("could not read {}: {error}", module.display()))?;
     let parsed =
         ns_syntax::parse(&source).map_err(|_| format!("{} does not parse", module.display()))?;
-    let class_name = &parsed.root_class.name.name;
+    let (id, _) = ns_runtime::modules::declared_identity(&parsed, &source)
+        .map_err(|error| format!("{}: {error}", module.display()))?;
     let factory = parsed.root_class.factory.as_ref().map(selector_of);
     let instance = match factory.as_deref() {
         None | Some("new") => "Module new".to_string(),
@@ -200,17 +204,20 @@ fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, S
     };
     let wrapper = format!(
         "class RunCorpusEntry packageUsing: manifest = Object new (\n    \
-         | private Module = manifest {class_name}. |\n) (\n    \
+         | private Module = manifest at: '{id}'. |\n) (\n    \
          public main: platform args: arguments = (\n        ({instance}) {send}\n    )\n) : ()\n"
     );
     std::fs::write(scratch.join("RunCorpusEntry.ns"), wrapper)
         .map_err(|error| format!("could not write the wrapper: {error}"))?;
-    let absolute = std::path::absolute(module)
-        .map_err(|error| format!("could not resolve {}: {error}", module.display()))?;
+    let file_name = module
+        .file_name()
+        .ok_or_else(|| format!("{} names no file", module.display()))?;
+    std::fs::write(scratch.join(file_name), &source)
+        .map_err(|error| format!("could not copy {}: {error}", module.display()))?;
     let project = scratch.join(crate::project::PROJECT_FILE_NAME);
     let contents = serde_json::json!({
         "main": "RunCorpusEntry.ns",
-        "modules": [absolute.to_string_lossy()],
+        "modules": [file_name.to_string_lossy()],
     });
     std::fs::write(&project, contents.to_string())
         .map_err(|error| format!("could not write the project file: {error}"))?;

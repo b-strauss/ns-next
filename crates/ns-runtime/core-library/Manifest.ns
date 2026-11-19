@@ -1,55 +1,180 @@
 /// What a project's root receives as `packageUsing:`'s argument: every
-/// module the project file names, answered by the name its source declares
-/// (docs/design/image-format.md, "Packaging"). A unary send of a module's
-/// name answers that module's definition, found by `doesNotUnderstand:`
-/// in the two arrays the factory was given. Not privileged: it holds no
-/// mirror and is compiled into the program like any module, so an
+/// module the project file names, asked for by its id, and by a range of
+/// its versions where several modules share the id
+/// (docs/design/modules.md, decisions 3 and 4). Not privileged: it holds
+/// no mirror and is compiled into the program like any module, so an
 /// application may keep it.
 ///
-/// @factory makes the manifest over `moduleNames` and `moduleDefinitions`,
-/// keeping both arrays as they are, neither copied nor checked; the host
-/// makes one per assembled application.
-/// @param moduleNames an Array of Symbols, each module's name as its source
-/// declares it, in module order.
-/// @param moduleDefinitions an Array of the modules' definitions, the class
-/// objects (§6.4), not instances; the one at an index is the definition
-/// of the name at the same index of `moduleNames`, and it is as long.
+/// @factory makes the manifest over the four arrays, keeping them as they
+/// are, neither copied nor checked; the host makes one per assembled
+/// application. The arrays are of one length, and their elements at one
+/// index describe one module.
+/// @param moduleIds an Array of Strings, each module's id, in module order.
+/// @param moduleVersions an Array of each module's version, a String in
+/// semver's canonical text, or nil for a module without one.
+/// @param moduleRanks an Array of Integers, each module's place, counted
+/// from 0, among the modules of its id ordered by semver's precedence; a
+/// module alone with its id has 0.
+/// @param moduleDefinitions an Array of the modules' definitions, the
+/// class objects (§6.4), not instances.
 (* :module: newspeak.core.Manifest *)
-class Manifest names: moduleNames definitions: moduleDefinitions = (
+class Manifest
+    ids: moduleIds
+    versions: moduleVersions
+    ranks: moduleRanks
+    definitions: moduleDefinitions
+    = (
   |
-    /// The modules' names, the Array the factory was given: searched from
+    /// The modules' ids, the Array the factory was given: searched from
     /// the first to the last, never written.
-    private names = moduleNames.
+    private ids = moduleIds.
+    /// The modules' versions, the Array the factory was given, never
+    /// written.
+    private versions = moduleVersions.
+    /// The modules' ranks among those of their ids, the Array the factory
+    /// was given, never written.
+    private ranks = moduleRanks.
     /// The modules' definitions, the Array the factory was given: the one
-    /// at an index belongs to the name at the same index, never written.
+    /// at an index belongs to the id at the same index, never written.
     private definitions = moduleDefinitions.
+    /// One text for each `at:version:` that matched several versions, in
+    /// the order asked. Each new one replaces the Array with a longer
+    /// copy, so an Array once answered never changes; the host reads it
+    /// to warn.
+    private ambiguitiesFound ::= {}.
   |
 ) (
-  /// Answers the definition of the module whose name is `message`'s
-  /// selector, the first such name in module order; a message naming no
-  /// module is passed to the superclass's `doesNotUnderstand:`. Only a send
-  /// the manifest does not understand reaches it, so a module named like a
-  /// message `Object` understands is answered by that message, never by
-  /// this lookup.
+  /// Answers the definition of the one module whose id is `id`.
   ///
-  /// @param message the `Message` nothing understood; its selector is
-  /// compared with each name by `=`, its arguments are ignored.
-  /// @answers the module definition, a class object, when a name matches;
-  /// otherwise what the superclass's `doesNotUnderstand:` answers, which
-  /// is false for a unary selector that begins with `isKindOf`.
-  /// @signals MessageNotUnderstood through the superclass's
-  /// `doesNotUnderstand:`, carrying `message` and the receiver, for a
-  /// selector that names no module, unless it is a unary selector that
-  /// begins with `isKindOf`.
-  /// @see `Object`'s `doesNotUnderstand:`.
-  protected doesNotUnderstand: message = (
+  /// @param id a String, a module's id, compared with each id by `=`.
+  /// @answers the module definition, a class object.
+  /// @signals Error 'no module `<id>`' when no module has the id, and
+  /// '`<id>` names <count> modules; ask with at:version:' when several
+  /// have it, versions of one module.
+  /// @see `at:version:`.
+  public at: id = (
     |
-      index ::= 1.
+      count ::= 0.
+      match ::= 0.
     |
-    [index <= names size] whileTrue: [
-      ((names at: index) = message selector) ifTrue: [^definitions at: index].
-      index:: index + 1.
+    1 to: ids size do: [:index |
+      (ids at: index) = id ifTrue: [
+        count:: count + 1.
+        match:: index.
+      ].
     ].
-    ^super doesNotUnderstand: message.
+    count = 0 ifTrue: [^Error signal: 'no module `' , id , '`'].
+    count > 1 ifTrue: [
+      ^Error signal: '`' , id , '` names ' , count printString , ' modules; ask with at:version:'.
+    ].
+    ^definitions at: match.
+  )
+
+  /// Answers the definition of the module whose id is `id` of the highest
+  /// version `range` matches. A version matches when it equals `range`, or
+  /// begins with `range` followed by `.` and has no pre-release, so that
+  /// `'2'` matches 2.3.1 but neither 20.0.0 nor 2.1.0-beta.1, and only a
+  /// range that names a pre-release whole matches it. When several
+  /// versions match, the one taken and those matched are recorded in
+  /// `ambiguities`.
+  ///
+  /// @param id a String, a module's id, compared with each id by `=`.
+  /// @param range a String: a major version, a major and a minor version,
+  /// or a whole version.
+  /// @answers the module definition, a class object.
+  /// @signals Error 'no module `<id>`' when no module has the id, and 'no
+  /// module `<id>` of version <range>; there are <versions>' when none of
+  /// its versions matches, the versions in ascending order.
+  /// @see `at:` and `ambiguities`.
+  public at: id version: range = (
+    |
+      rank ::= 0.
+      index ::= self indexOf: id rank: 0.
+      candidates ::= ''.
+      matches ::= ''.
+      matchCount ::= 0.
+      taken ::= 0.
+    |
+    index = 0 ifTrue: [^Error signal: 'no module `' , id , '`'].
+    [index > 0] whileTrue: [
+      candidates:: self join: candidates and: (self describeVersionAt: index).
+      (self version: (versions at: index) matches: range) ifTrue: [
+        matches:: self join: matches and: (versions at: index).
+        matchCount:: matchCount + 1.
+        taken:: index.
+      ].
+      rank:: rank + 1.
+      index:: self indexOf: id rank: rank.
+    ].
+    taken = 0 ifTrue: [
+      ^Error signal: 'no module `' , id , '` of version ' , range , '; there are ' , candidates.
+    ].
+    matchCount > 1 ifTrue: [
+      ambiguitiesFound:: ambiguitiesFound copyWith: '`'
+          , id
+          , '` version '
+          , range
+          , ' matched '
+          , matches
+          , '; took '
+          , (versions at: taken).
+    ].
+    ^definitions at: taken.
+  )
+
+  /// Answers what `at:version:` met that matched several versions: one
+  /// String for each such request, in the order asked, naming the id, the
+  /// range, the versions matched and the version taken.
+  ///
+  /// @answers an Array of Strings, which the manifest never changes; a
+  /// later request answers a new Array.
+  /// @see `at:version:`.
+  public ambiguities = (
+    ^ambiguitiesFound.
+  )
+
+  /// Finds the module of the id `id` and the rank `rank`.
+  ///
+  /// @param id a String, a module's id.
+  /// @param rank an Integer, a place among the modules of `id`.
+  /// @answers the module's index, or 0 when there is none.
+  private indexOf: id rank: rank = (
+    1 to: ids size do: [:index |
+      ((ids at: index) = id and: [(ranks at: index) = rank]) ifTrue: [^index].
+    ].
+    ^0.
+  )
+
+  /// Tells whether `version` lies in `range`, by their texts: equal, or
+  /// `version` beginning with `range` and a `.` and having no `-`, which
+  /// begins a pre-release.
+  ///
+  /// @param version a String, a version's canonical text, or nil.
+  /// @param range a String, the range asked for.
+  /// @answers whether the version matches, false for nil.
+  private version: version matches: range = (
+    version isNil ifTrue: [^false].
+    version = range ifTrue: [^true].
+    (version startsWith: range , '.') ifFalse: [^false].
+    ^(version indexOf: '-') = 0.
+  )
+
+  /// Describes the version of the module at `index` for a message.
+  ///
+  /// @param index an Integer, a module's index.
+  /// @answers the version's text, or 'one without a version'.
+  private describeVersionAt: index = (
+    (versions at: index) isNil ifTrue: [^'one without a version'].
+    ^versions at: index.
+  )
+
+  /// Joins two parts of a list for a message.
+  ///
+  /// @param text a String, the list so far, empty for none.
+  /// @param addition a String, the next part.
+  /// @answers `addition` after `text` and a comma, or `addition` alone.
+  private join: text and: addition = (
+    text isEmpty ifTrue: [^addition].
+    ^text , ', ' , addition.
   )
 )

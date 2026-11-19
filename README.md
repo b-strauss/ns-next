@@ -188,7 +188,7 @@ program:
 ```
 
 `App.ns` declares `class App packageUsing: manifest = (...)` and reaches each
-module by the name its source declares, `manifest Greeting`
+module by its id, the name its source declares, `manifest at: 'Greeting'`
 (`goldens/tool/manifest/` has three such projects). A script is a command
 line for `main:args:`, split into arguments as a POSIX shell splits one, on
 every platform and with nothing expanded: `ns-next run --script loud` hands

@@ -3685,7 +3685,7 @@ Bounce, Storage and List -- are runnable programs in
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
 the root of the project in that directory, which reaches each
-benchmark as `manifest Sieve`. Without `--timed` the harness runs each
+benchmark as `manifest at: 'Sieve'`. Without `--timed` the harness runs each
 benchmark once and prints `<Name>: ok`, which `goldens/tool/awfy/` pins under
 both lowerings and `ns-next bench` times; with `--timed` it prints each
 benchmark's runs per second, measured with `platform time Stopwatch`.

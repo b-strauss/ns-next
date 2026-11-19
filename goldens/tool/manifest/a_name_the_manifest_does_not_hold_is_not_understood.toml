@@ -1,2 +1,0 @@
-status = 1
-stderr = "Uncaught Newspeak error during instantiation: an object does not understand #Missing\n"

@@ -743,7 +743,7 @@ fn a_client_that_never_disconnects_cannot_keep_the_ended_program_s_process() {
 /// A project's root that reaches `Shared` through its manifest.
 const SHARING: &str = indoc! {"
     class App packageUsing: manifest = Object new (
-      | Shared = manifest Shared. |
+      | Shared = manifest at: 'Shared'. |
     ) (
       public main: platform args: arguments = (
         platform transcript show: Shared new greeting; newLine.
