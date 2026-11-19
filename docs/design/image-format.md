@@ -2841,11 +2841,12 @@ shipped world.
   free numbers (both retired on 2026-11-19 for `ORIGIN_PROJECT` (2) and
   `ORIGIN_CORE` (3), when a module record came to carry the module's
   identity rather than the building machine's path), so a stale artifact
-  meets an unknown tag instead of decoding into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
-  `HASHED_MODULE_CLASS` and `HASHED_MODULE_LEVEL` are retired in turn, since
-  a module's root class and its levels became records of the graph, which
-  the module section names by object id (2026-10-13, "An image names the
-  shipped world by declaration" below).
+  meets an unknown tag instead of decoding into a different program.
+  `CLASS_MODULE`, `CLASS_MODULE_LEVEL`, `HASHED_MODULE_CLASS` and
+  `HASHED_MODULE_LEVEL` are retired in turn, since a module's root class
+  and its levels became records of the graph, which the module section
+  names by object id (2026-10-13, "An image names the shipped world by
+  declaration" below).
 - **Applications are rebuilt, not serialized**, so a stored layout can never
   disagree with its mixins.
 - **Inline-cache state is never serialized** (2026-09-16), and neither is a

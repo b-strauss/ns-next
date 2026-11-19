@@ -1817,9 +1817,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   runtime via mirrors"): `ns-syntax` collects every metadata comment by
   its §4.3 target (`metadata.rs`'s `metadata_of`;
   [modules.md](design/modules.md), decision 6), and only `:module:` is
-  read; a class, method and slot mirror are to answer theirs. Open is what an image written without source
-  answers, since Primordial Soup parses metadata from the source on demand
-  (`prior-art/primordialsoup/newspeak/Mirrors.ns:758, 1216-1223`).
+  read; a class, method and slot mirror are to answer theirs. Open is
+  what an image written without source answers, since Primordial Soup
+  parses metadata from the source on demand
+  (`prior-art/primordialsoup/newspeak/Mirrors.ns:758, 1216-1223`). Two
+  targets the collection does not tell yet, which a mirror answering
+  them must: a metadata comment after a pattern's return type or its
+  where-clause gets no target at all, and a return statement's metadata
+  is an `Expression` target, not told apart from its expression's.
 - **Suspend and resume.** Needs a yield path out of `vm::run`, a re-entry
   that continues a decoded frame, and an encoding for the side table of
   suspended activations -- every `Continuation` variant (`NestedClass`,
@@ -2312,6 +2317,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [image-format.md](design/image-format.md), "Packaging".
 
 ## Planned: editor support and the analyzer
+
+- **The editor misses a reserved id in a program's file that stands at a
+  shipped source's place** (noted 2026-11-19). The analyzer exempts a
+  document from the reserved-namespace finding when it is a copy of the
+  binary's own source: its text that source's byte for byte, or its path
+  ending in that source's place below a `core-library` directory, or a
+  fingerprint's directory within one
+  (`crates/ns-analyzer/src/module_metadata.rs`, `is_the_binary_s_own`),
+  since the copy of `Kernel.ns` being edited is no longer the binary's
+  text. So a program's own `…/core-library/Kernel.ns` declaring
+  `newspeak.core.Kernel` shows clean in the editor, while `ns-next run`
+  refuses it: a false negative of the editor only, never of the loader.
+  [editor-support.md](design/editor-support.md), "Module metadata".
 
 - **`disasm --initializer` leaves out the factory of a class that declares
   none** (noted 2026-10-22). It lists a factory entry's body only when the

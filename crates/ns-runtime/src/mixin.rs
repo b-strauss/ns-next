@@ -776,11 +776,12 @@ pub struct Mixin {
     pub root_shape: Option<crate::resolver::RootShape>,
     /// The module this mixin is the root of: its path, id and version
     /// (`docs/design/modules.md`), from `ResolvedModule::identity` when the
-    /// module is loaded, and for a shipped module `core:<Name>.ns` and its
-    /// `newspeak.core` id. Every version an edit installs keeps its
-    /// predecessor's, since an edit changes members, never the module.
-    /// `None` for every mixin that is no module's root, for a root a host
-    /// loaded without one, and for a mixin decoded from an image.
+    /// module is loaded, for a shipped module `core:<Name>.ns` and its
+    /// `newspeak.core` id, and for a mixin decoded from an image the
+    /// identity its module record names, set on the module's root row.
+    /// Every version an edit installs keeps its predecessor's, since an
+    /// edit changes members, never the module. `None` for every mixin that
+    /// is no module's root and for a root a host loaded without one.
     pub module_identity: Option<Rc<crate::modules::ModuleIdentity>>,
     /// Compiled from shipped core-library source (`ResolvedModule.kernel`):
     /// set on the declaration's mixin, on every nested mixin and on its class
