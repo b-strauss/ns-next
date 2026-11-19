@@ -4813,10 +4813,14 @@ pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
 /// events and delivers none: a flush names bodies by walking the heap's
 /// tables and runs the host's sink, which must not run with machine
 /// code's frames on the native stack, where a sink's panic would unwind
-/// across the leaf's shim. A safepoint is requested instead, so that the
-/// next poll of the machine code reaches the run loop's safepoint, which
-/// delivers them (`Interpreter::safepoint`), and the queue does not grow
-/// over a stretch spent in machine code.
+/// across the leaf's shim. They wait for the next safepoint the run
+/// reaches on its own (`Interpreter::safepoint`) or the host's run's
+/// return, whichever comes first: no safepoint is requested for them,
+/// since a forced one would make machine code exit at its next poll, and
+/// the trace would show exits only tracing caused. The queue stays
+/// bounded without one: what the leaves record is bounded by the program
+/// -- a compile per body and per twin, at most three cache transitions
+/// per send site -- however long the stretch in machine code.
 ///
 /// Every initializer invocation a leaf decides passes through here,
 /// nearly always with nothing installed and nothing recorded.
@@ -4831,9 +4835,6 @@ pub(crate) fn after_compile_trigger_in_leaf(mutator: &mut Mutator<'_>) {
     }
     if mutator.jit.take_revival() {
         mutator.caches.refresh_all_cells(&mutator.jit);
-    }
-    if mutator.jit.tracer.has_pending() {
-        mutator.heap.request_safepoint();
     }
 }
 

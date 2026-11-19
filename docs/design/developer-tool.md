@@ -207,10 +207,13 @@ DAP stays possible, since the events are typed (decided with the user on
   event with the bodies it names as `Rc<CompiledCode>`; the bodies are
   named and the filter applied at a flush -- at the end of every compile
   trigger the interpreter makes, at the run loop's safepoint and when a
-  host run returns, never in a leaf of machine code, which requests the
-  safepoint instead, so that no host code runs with machine code's frames
-  on the native stack -- so that no site needs the heap and the queue
-  never grows with the run.
+  host run returns, never in a leaf of machine code, so that no host code
+  runs with machine code's frames on the native stack; a leaf's events,
+  bounded by the program (a compile per body and twin, a few cache
+  transitions per site), wait for the next safepoint the run reaches on
+  its own, since a requested one would make machine code exit only when
+  tracing -- so that no site needs the heap and the queue never grows
+  with the run.
 
 ### Stage 2: printing code
 

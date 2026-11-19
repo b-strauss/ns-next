@@ -12,8 +12,8 @@
 //! applies the filter and delivers each event in order -- at the end of
 //! every compile trigger the interpreter makes, at the run loop's
 //! safepoint and when a host's run returns, never in a leaf machine code
-//! calls, whose trigger requests the safepoint instead -- so that the
-//! queue never grows with the run.
+//! calls, whose events, bounded by the program, wait for the next of
+//! those -- so that the queue never grows with the run.
 
 mod filter;
 mod names;

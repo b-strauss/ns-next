@@ -1181,7 +1181,7 @@ impl Interpreter {
     /// tracing. Every event is delivered, in order, at the end of the
     /// interpreter's compile trigger, the safepoint or the host's run it
     /// happened in -- one a leaf of machine code recorded at the next
-    /// safepoint, which the leaf requests.
+    /// safepoint or host's return.
     pub fn set_trace(
         &mut self,
         categories: crate::trace_events::TraceCategories,
