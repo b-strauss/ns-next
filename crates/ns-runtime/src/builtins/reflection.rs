@@ -202,7 +202,10 @@ fn forward_identity<'gc>(
     // Any forwarded object may be what an optimized copy was verified for
     // or reached, so every copy goes; an install's own migration frees
     // only those of the classes it rebuilt (`Mutator::install_edit`).
-    crate::jit::invalidate_all_optimized(mutator);
+    crate::jit::invalidate_all_optimized(
+        mutator,
+        crate::trace_events::InvalidationCause::BulkForward,
+    );
     Some(Value::nil())
 }
 

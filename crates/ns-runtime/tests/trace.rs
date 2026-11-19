@@ -7,8 +7,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use indoc::indoc;
-use ns_runtime::trace_events::{CompileRefusal, CompileTrigger, Deferral, RecompileWalkEnd};
+use indoc::{formatdoc, indoc};
+use ns_runtime::trace_events::{
+    CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, InvalidationCause,
+    RecompileWalkEnd, RetireReason,
+};
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
     SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
@@ -56,9 +59,27 @@ fn run_hot(prepare: impl FnOnce(&mut Interpreter)) -> Interpreter {
     run_source(HOT, prepare)
 }
 
+/// How a test's class makes its instance: its plain factory, or
+/// `usingPlatform:` with the interpreter's platform, for a program that
+/// reaches the mirrors.
+#[derive(Clone, Copy)]
+enum Factory {
+    Plain,
+    UsingPlatform,
+}
+
 /// `source`'s class loaded, instantiated and sent `run`, after `prepare`
 /// was given the interpreter; answers the interpreter after the run.
 fn run_source(source: &str, prepare: impl FnOnce(&mut Interpreter)) -> Interpreter {
+    run_source_made_by(source, Factory::Plain, prepare)
+}
+
+/// `run_source`, the instance made by `factory`.
+fn run_source_made_by(
+    source: &str,
+    factory: Factory,
+    prepare: impl FnOnce(&mut Interpreter),
+) -> Interpreter {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .expect("resolve");
@@ -75,7 +96,16 @@ fn run_source(source: &str, prepare: impl FnOnce(&mut Interpreter)) -> Interpret
     interpreter.set_stress_step(false);
     prepare(&mut interpreter);
     let class = interpreter.load_module(&resolved);
-    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let instance = match factory {
+        Factory::Plain => expect_ok(interpreter.instantiate(&class, &[]), "instantiate"),
+        Factory::UsingPlatform => {
+            let platform = interpreter.platform();
+            expect_ok(
+                interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+                "usingPlatform:",
+            )
+        }
+    };
     expect_ok(
         interpreter.send(&instance, Symbol::intern("run"), &[]),
         "run",
@@ -136,11 +166,37 @@ fn traced_spending(
     traced_under(source, categories, TraceFilter::everything(), prepare)
 }
 
+/// `traced_spending`, the instance made by `usingPlatform:`.
+fn traced_spending_using_platform(
+    source: &str,
+    categories: &[TraceCategory],
+    prepare: impl FnOnce(&mut Interpreter),
+) -> Vec<TraceEvent> {
+    traced_made_by(
+        source,
+        Factory::UsingPlatform,
+        categories,
+        TraceFilter::everything(),
+        prepare,
+    )
+}
+
 /// The events of `categories` that `source`'s `run` delivers through
 /// `filter`, the JIT and optimize stress modes off, after `prepare` was
 /// given the interpreter.
 fn traced_under(
     source: &str,
+    categories: &[TraceCategory],
+    filter: TraceFilter,
+    prepare: impl FnOnce(&mut Interpreter),
+) -> Vec<TraceEvent> {
+    traced_made_by(source, Factory::Plain, categories, filter, prepare)
+}
+
+/// `traced_under`, the instance made by `factory`.
+fn traced_made_by(
+    source: &str,
+    factory: Factory,
     categories: &[TraceCategory],
     filter: TraceFilter,
     prepare: impl FnOnce(&mut Interpreter),
@@ -152,7 +208,7 @@ fn traced_under(
         .fold(TraceCategories::default(), |set, category| {
             set.with(*category)
         });
-    run_source(source, |interpreter| {
+    run_source_made_by(source, factory, |interpreter| {
         interpreter.set_jit_stress(false);
         interpreter.set_optimize_stress(false);
         interpreter.set_trace(categories, filter, sink);
@@ -616,4 +672,180 @@ fn the_optimize_stress_mode_s_requests_are_traced_not_walked() {
             "{events:?}"
         );
     }
+}
+
+/// `sum:` loops over a sum of its argument, optimized while every
+/// argument is a `SmallInteger`; then given a `Float`, its copy's sum
+/// traps, and traps again at the same site at the next call, which makes
+/// the copy not entrant: retired for its traps.
+#[test]
+fn a_trapping_copy_is_traced_retired() {
+    let source = indoc! {"
+        class Test = Object new () (
+          public run = (
+            |
+              total ::= 0.
+              index ::= 0.
+            |
+            [index < 2000] whileTrue: [
+              total:: total + (self sum: 1).
+              index:: index + 1.
+            ].
+            index:: 0.
+            [index < 20] whileTrue: [
+              total:: total + (self sum: 0.5) asInteger.
+              index:: index + 1.
+            ].
+            ^total.
+          )
+
+          sum: value = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 1000] whileTrue: [
+              sum:: sum + value.
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+        )
+    "};
+    let events = traced_spending(source, &[TraceCategory::Deoptimize], |interpreter| {
+        hot_loop_stress_off(interpreter);
+        // The zone stress mode's compactions free the copy between its
+        // traps, so that no copy traps twice.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_zone(false);
+    });
+    assert!(
+        events
+            .iter()
+            .any(|event| event.category == TraceCategory::Deoptimize
+                && matches!(
+                    event.kind,
+                    TraceEventKind::Retired {
+                        reason: RetireReason::Traps,
+                        ..
+                    }
+                )),
+        "{events:?}"
+    );
+}
+
+/// `run`'s copy inlines `Counter>>step:`, its type-case guarded on
+/// `Counter`'s application; the edit that replaces `step:` rebuilds that
+/// application, and frees the copy for it.
+#[test]
+fn an_edit_is_traced_invalidating_the_copy() {
+    let source = indoc! {"
+        class Test usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+          |
+        ) (
+          class Counter = Object new () (
+            public step: value = (
+              ^value + 1.
+            )
+          )
+
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+              counter = Counter new.
+            |
+            [index < 1000000] whileTrue: [
+              sum:: sum + (counter step: index).
+              index:: index + 1.
+            ].
+            self edit.
+            ^sum.
+          )
+
+          edit = (
+            | builder |
+            builder:: (ClassMirror reflecting: Counter) mixin declaration asBuilder.
+            builder instanceSide methods addFromSource: 'public step: value = ( ^value + 2 )'.
+            builder install.
+          )
+        )
+    "};
+    let events =
+        traced_spending_using_platform(source, &[TraceCategory::Deoptimize], hot_loop_stress_off);
+    assert!(
+        about(&events, "Test>>run").iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::Invalidated {
+                cause: InvalidationCause::Edit,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+/// The program of `tests/jit.rs`'s
+/// `a_zone_with_room_for_a_few_bodies_leaves_the_output_right`: more
+/// bodies than a zone with room for a few holds, each compiled at its
+/// first entry, so that the zone is compacted, freeing bodies.
+#[test]
+fn a_compaction_is_traced() {
+    let count: i64 = 300;
+    let methods: String = (0..count)
+        .map(|index| format!("  m{index} = (\n    ^{index}\n  )\n"))
+        .collect();
+    let sends: String = (0..count)
+        .map(|index| format!("    sum:: sum + self m{index} + self m{index}.\n"))
+        .collect();
+    let source = formatdoc! {"
+        class Test = Object new () (
+        {methods}  public run = (
+            | sum |
+            sum:: 0.
+        {sends}    ^sum
+          )
+        ) : ()
+    "};
+    let events = traced(
+        &source,
+        &[TraceCategory::CodeZone],
+        TraceFilter::everything(),
+        |interpreter| {
+            // The room past the stubs, not the zone's size, is what the
+            // test fixes, since the stubs' size is the architecture's.
+            interpreter.set_jit_zone_bytes(1 << 20);
+            let stubs = interpreter.table_sizes().zone_used_bytes;
+            interpreter.set_jit_zone_bytes(stubs + 1_344);
+            interpreter.set_jit_stress(true);
+        },
+    );
+    assert!(
+        events.iter().any(|event| event.category == TraceCategory::CodeZone
+            && event.body.is_none()
+            && matches!(
+                event.kind,
+                TraceEventKind::Compacted {
+                    freeing: CompactionFreeing::ToAQuarter | CompactionFreeing::EveryInactiveBody,
+                    bodies_freed,
+                } if bodies_freed > 0
+            )),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.category == TraceCategory::CodeZone
+                && event.body.is_some()
+                && matches!(
+                    event.kind,
+                    TraceEventKind::Freed {
+                        cause: FreeCause::Compaction,
+                        ..
+                    }
+                )),
+        "{events:?}"
+    );
 }

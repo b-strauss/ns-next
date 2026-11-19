@@ -41,9 +41,9 @@ pub enum TraceCategory {
     Optimize,
     /// The inlining plan's decisions.
     Inlining,
-    /// An optimized copy retired, invalidated or freed.
+    /// An optimized copy retired or invalidated.
     Deoptimize,
-    /// Machine code freed by a compaction or a full collection.
+    /// Machine code freed, and the code zone compacted.
     CodeZone,
     /// An inline cache's transition.
     Caches,
@@ -227,6 +227,37 @@ pub enum TraceEventKind {
         callee: Option<String>,
         reason: InlineDecline,
     },
+    /// The body's optimized copy for `key` was retired for `reason` --
+    /// freed, the body going on in its baseline code -- and its version
+    /// raised to `version`, after whose longer wait it may be compiled
+    /// again; `None` when it failed past the last version and is refused
+    /// for good (`retired`, its version `version=`, `none` for the
+    /// refusal).
+    Retired {
+        key: Option<String>,
+        entered: Option<String>,
+        reason: RetireReason,
+        version: Option<u8>,
+    },
+    /// The body's optimized copy for `key` was freed since what it was
+    /// compiled against changed, for `cause`; no version is raised
+    /// (`invalidated`).
+    Invalidated {
+        key: Option<String>,
+        entered: Option<String>,
+        cause: InvalidationCause,
+    },
+    /// The code zone was compacted, freeing as `freeing` says and
+    /// `bodies_freed` bodies in all -- each also its own `Freed` event --
+    /// and the survivors slid together (`compacted`); about no body.
+    Compacted {
+        freeing: CompactionFreeing,
+        bodies_freed: usize,
+    },
+    /// The body's machine code of `tier` was freed for `cause`, its bytes
+    /// reclaimed by the next compaction (`freed`); about no body when the
+    /// body's code died, which no mixin holds any longer.
+    Freed { tier: CodeTier, cause: FreeCause },
 }
 
 impl TraceEventKind {
@@ -248,6 +279,10 @@ impl TraceEventKind {
             TraceEventKind::OptimizationRefused { .. } => "refused",
             TraceEventKind::Inlined { .. } => "inlined",
             TraceEventKind::InlineDeclined { .. } => "declined",
+            TraceEventKind::Retired { .. } => "retired",
+            TraceEventKind::Invalidated { .. } => "invalidated",
+            TraceEventKind::Compacted { .. } => "compacted",
+            TraceEventKind::Freed { .. } => "freed",
         }
     }
 }
@@ -460,6 +495,134 @@ impl InlineDecline {
     }
 }
 
+/// Why an optimized copy was retired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetireReason {
+    /// A speculation failed again at a site that had trapped before, or
+    /// the copy's traps reached their limit: made not entrant.
+    Traps,
+    /// The copy spent its exit budget: abandoned.
+    Exits,
+}
+
+impl RetireReason {
+    /// The reason's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            RetireReason::Traps => "traps",
+            RetireReason::Exits => "exits",
+        }
+    }
+}
+
+/// What changed under an optimized copy, so that it was invalidated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvalidationCause {
+    /// An install rebuilt an application the copy is keyed on or relied
+    /// on.
+    Edit,
+    /// A bulk forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`),
+    /// which may have replaced any object a copy was verified for.
+    BulkForward,
+    /// A full collection reclaimed an application id the copy is keyed on
+    /// or tests, which is minted again for another application.
+    ReclaimedId,
+    /// A full collection moved the feedback base of a body the copy
+    /// inlined.
+    MovedFeedbackBase,
+    /// A breakpoint patched or restored a body the copy inlined, or
+    /// switched a method's fast path.
+    Breakpoint,
+    /// The invalidate stress mode's round.
+    Stress,
+}
+
+impl InvalidationCause {
+    /// The cause's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            InvalidationCause::Edit => "edit",
+            InvalidationCause::BulkForward => "bulk-forward",
+            InvalidationCause::ReclaimedId => "reclaimed-id",
+            InvalidationCause::MovedFeedbackBase => "moved-feedback-base",
+            InvalidationCause::Breakpoint => "breakpoint",
+            InvalidationCause::Stress => "stress",
+        }
+    }
+}
+
+/// The tier whose machine code was freed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeTier {
+    /// A body's baseline code, or its twin's.
+    Baseline,
+    /// An optimized copy.
+    Optimized,
+}
+
+impl CodeTier {
+    /// The tier's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            CodeTier::Baseline => "baseline",
+            CodeTier::Optimized => "optimized",
+        }
+    }
+}
+
+/// Why machine code was freed. A copy freed by its retirement or its
+/// invalidation is the `deoptimize` category's `Retired` or `Invalidated`
+/// event, and no `Freed` one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreeCause {
+    /// A compaction freed it: little used, or no longer what its body's
+    /// slot names.
+    Compaction,
+    /// A full collection found its body dead, or its slot no longer
+    /// naming it.
+    DeadBody,
+    /// A full collection moved the feedback base it was compiled against.
+    MovedFeedbackBase,
+    /// A breakpoint patched or restored its body.
+    Breakpoint,
+    /// Its body kept exiting: abandoned for its exits, or refused for good
+    /// once its twin was refused.
+    Abandoned,
+}
+
+impl FreeCause {
+    /// The cause's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            FreeCause::Compaction => "compaction",
+            FreeCause::DeadBody => "dead-body",
+            FreeCause::MovedFeedbackBase => "moved-feedback-base",
+            FreeCause::Breakpoint => "breakpoint",
+            FreeCause::Abandoned => "abandoned",
+        }
+    }
+}
+
+/// Which bodies a compaction freed beyond those always freed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactionFreeing {
+    /// The least used first, until a quarter of the bodies' room is free,
+    /// and at least what the compile that found no room needed.
+    ToAQuarter,
+    /// Every body no activation runs: the zone stress mode's.
+    EveryInactiveBody,
+}
+
+impl CompactionFreeing {
+    /// The freeing's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            CompactionFreeing::ToAQuarter => "to-a-quarter",
+            CompactionFreeing::EveryInactiveBody => "every-inactive-body",
+        }
+    }
+}
+
 /// What a host installs to receive the events (`Interpreter::set_trace`).
 pub trait TraceSink {
     /// Receives `event`, in the order the events happened. Called outside
@@ -544,6 +707,23 @@ pub(crate) enum PendingKind {
         program_counter: u32,
         callee: Option<Rc<CompiledCode>>,
         reason: InlineDecline,
+    },
+    Retired {
+        key: Option<CustomizationKey>,
+        reason: RetireReason,
+        version: Option<u8>,
+    },
+    Invalidated {
+        key: Option<CustomizationKey>,
+        cause: InvalidationCause,
+    },
+    Compacted {
+        freeing: CompactionFreeing,
+        bodies_freed: usize,
+    },
+    Freed {
+        tier: CodeTier,
+        cause: FreeCause,
     },
 }
 
@@ -799,6 +979,35 @@ fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -
                 reason,
             }
         }
+        PendingKind::Retired {
+            key,
+            reason,
+            version,
+        } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::Retired {
+                key,
+                entered,
+                reason,
+                version,
+            }
+        }
+        PendingKind::Invalidated { key, cause } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::Invalidated {
+                key,
+                entered,
+                cause,
+            }
+        }
+        PendingKind::Compacted {
+            freeing,
+            bodies_freed,
+        } => TraceEventKind::Compacted {
+            freeing,
+            bodies_freed,
+        },
+        PendingKind::Freed { tier, cause } => TraceEventKind::Freed { tier, cause },
     }
 }
 

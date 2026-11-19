@@ -176,9 +176,14 @@ DAP stays possible, since the events are typed (decided with the user on
     (observed, reaching past the compile, over the weight, the compile
     limit or the recursion limit, out of registers);
   - an optimized copy retired (traps, exits; its version raised or
-    refused for good), invalidated (an edit, a bulk forward, a reclaimed
-    id, a moved feedback base, a breakpoint's patch) or freed;
-  - machine code freed by a compaction or a full collection;
+    refused for good) or invalidated (an edit, a bulk forward, a reclaimed
+    id, a moved feedback base, a breakpoint's patch, the invalidate
+    stress mode's round), each copy named by its key;
+  - machine code freed, per body and tier, by a compaction, a full
+    collection (a dead body, a moved feedback base), an abandonment or a
+    breakpoint's patch -- a retired or invalidated copy's free is its
+    `deoptimize` event alone -- and each compaction summed up, how it
+    freed and how many bodies, naming no body;
   - an inline cache's transition, from its old to its new state
     (vacant, monomorphic, polymorphic, megamorphic), with the send site
     and the receiver's application.

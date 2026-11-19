@@ -43,7 +43,10 @@ use crate::hash::IdentityMap;
 use crate::interpreter::Mutator;
 use crate::interpreter::inline_cache::SiteSlide;
 
-use super::{BODY_ALIGNMENT, COMPILED, CopyDependencies, InstalledBody, JitState};
+use super::{BODY_ALIGNMENT, COMPILED, CopyDependencies, InstalledBody, JitState, Tier};
+use crate::trace_events::{
+    CodeTier, CompactionFreeing, FreeCause, Pending, PendingKind, TraceCategory,
+};
 
 /// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
 /// code, while it lives, whose machine entry row names it, and its entry's
@@ -116,6 +119,16 @@ pub(crate) enum Freeing {
     /// body no activation runs is freed and compiled again, and every
     /// other moves whenever something below it was freed.
     EveryInactiveBody,
+}
+
+impl Freeing {
+    /// The freeing as a trace event names it.
+    fn traced(self) -> CompactionFreeing {
+        match self {
+            Freeing::ToAQuarter => CompactionFreeing::ToAQuarter,
+            Freeing::EveryInactiveBody => CompactionFreeing::EveryInactiveBody,
+        }
+    }
 }
 
 /// Where a compaction puts each surviving body: the survivors in
@@ -318,26 +331,27 @@ impl JitState {
             .collect()
     }
 
-    /// Marks the body at `index` freed: no lookup finds it from now on,
-    /// its returns are removed, and the next compaction reclaims its
-    /// bytes, which count towards the quarter a full collection asks for a
-    /// compaction at. Only between entries, where no return address into
-    /// it exists.
-    pub(super) fn free_body(&mut self, index: u32) {
+    /// Marks the body at `index` freed for `cause`: no lookup finds it from
+    /// now on, its returns are removed, and the next compaction reclaims
+    /// its bytes, which count towards the quarter a full collection asks
+    /// for a compaction at. Only between entries, where no return address
+    /// into it exists.
+    pub(super) fn free_body(&mut self, index: u32, cause: FreeCause) {
         let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
         // Optimized code goes with its baseline body, as the twin does.
         let optimized = self.optimized_copies_of(index);
         for copy in std::iter::once(index).chain(twin).chain(optimized) {
-            self.free_one(copy);
+            self.free_one(copy, Some(cause));
         }
     }
 
     /// Marks the body at `index` alone freed and removes its returns, as
-    /// `free_body` does each copy: optimized code abandoned while its
-    /// baseline code stays (`jit::abandon_optimized`). Only between
-    /// entries.
-    pub(super) fn free_one(&mut self, index: u32) {
-        if self.mark_free(index, FreedBy::BetweenCompactions) {
+    /// `free_body` does each copy: optimized code retired or invalidated
+    /// while its baseline code stays (`jit::retire_optimized`,
+    /// `jit::invalidate_copy`), whose free has no `cause` of its own,
+    /// since the `deoptimize` event says why. Only between entries.
+    pub(super) fn free_one(&mut self, index: u32, cause: Option<FreeCause>) {
+        if self.mark_free(index, FreedBy::BetweenCompactions, cause) {
             self.returns.retain(|_, site| site.body != index);
         }
     }
@@ -345,8 +359,10 @@ impl JitState {
     /// Marks the body at `index` freed, counting it, and its bytes as
     /// `freed_by` says, and answers whether it was not already; its returns
     /// are the caller's. The one way a body is marked freed, so that every
-    /// caller asserts it runs between entries.
-    fn mark_free(&mut self, index: u32, freed_by: FreedBy) -> bool {
+    /// caller asserts it runs between entries, and every free is traced
+    /// with its `cause` -- but a retired or invalidated copy's, which has
+    /// none, since its `deoptimize` event says why.
+    fn mark_free(&mut self, index: u32, freed_by: FreedBy, cause: Option<FreeCause>) -> bool {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.entries_in_progress, 0,
@@ -359,6 +375,20 @@ impl JitState {
             return false;
         }
         body.free = true;
+        if let Some(cause) = cause
+            && self.tracer.traces(TraceCategory::CodeZone)
+        {
+            let tier = match body.tier {
+                Tier::Baseline => CodeTier::Baseline,
+                Tier::Optimized => CodeTier::Optimized,
+            };
+            // A body whose code died is named by none: no mixin holds it.
+            self.tracer.record(Pending {
+                category: TraceCategory::CodeZone,
+                body: body.code.upgrade(),
+                kind: PendingKind::Freed { tier, cause },
+            });
+        }
         // What a freed copy inlined is no one's any more: its scopes hold
         // the inlined bodies' code, which would keep every version an edit
         // replaced -- and its family's sites -- alive until a compaction
@@ -472,7 +502,11 @@ impl JitState {
             let Ok(number) = u32::try_from(index) else {
                 unreachable!("internal: a body's index fits its slot's map");
             };
-            if self.mark_free(number, FreedBy::BetweenCompactions) {
+            if self.mark_free(
+                number,
+                FreedBy::BetweenCompactions,
+                Some(FreeCause::DeadBody),
+            ) {
                 freed.push(number);
             }
         }
@@ -508,7 +542,11 @@ impl JitState {
             // A twin, compiled against its lean body's base, is freed with
             // it; no cell and no machine entry row names it.
             if body.lean.is_some() {
-                if self.mark_free(number, FreedBy::BetweenCompactions) {
+                if self.mark_free(
+                    number,
+                    FreedBy::BetweenCompactions,
+                    Some(FreeCause::MovedFeedbackBase),
+                ) {
                     indices.push(number);
                 }
                 continue;
@@ -523,7 +561,11 @@ impl JitState {
             {
                 code.jit.forget();
             }
-            if self.mark_free(number, FreedBy::BetweenCompactions) {
+            if self.mark_free(
+                number,
+                FreedBy::BetweenCompactions,
+                Some(FreeCause::MovedFeedbackBase),
+            ) {
                 indices.push(number);
                 freed.push(FreedBody {
                     code,
@@ -939,6 +981,12 @@ impl JitState {
         }
     }
 
+    /// How many installed bodies are marked freed and not yet reclaimed by
+    /// a compaction: what a compaction's trace event counts by.
+    fn freed_body_count(&self) -> usize {
+        self.bodies.iter().filter(|body| body.free).count()
+    }
+
     /// Step 1, Cog's `markActiveMethodsAndReferents` (`cointerp.c:17709-17725`):
     /// every body an activation runs, on the activation stack or suspended
     /// into its frame, is set to `MAXIMUM_USAGE`, so that freeing by usage
@@ -977,7 +1025,7 @@ impl JitState {
                 unreachable!("internal: a body's index fits its slot's map");
             };
             // The slide drops the returns of every freed body.
-            self.mark_free(number, FreedBy::TheCompaction);
+            self.mark_free(number, FreedBy::TheCompaction, Some(FreeCause::Compaction));
         }
     }
 
@@ -1031,7 +1079,7 @@ impl JitState {
                     continue;
                 }
                 let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
-                self.mark_free(number, FreedBy::TheCompaction);
+                self.mark_free(number, FreedBy::TheCompaction, Some(FreeCause::Compaction));
                 freed_any = true;
                 free_bytes += size;
                 // Alive: a body whose code died was freed in step 2.
@@ -1040,7 +1088,7 @@ impl JitState {
                 }
                 for copy in twin.into_iter().chain(optimized) {
                     let copy_size = self.bodies[copy as usize].size();
-                    if self.mark_free(copy, FreedBy::TheCompaction) {
+                    if self.mark_free(copy, FreedBy::TheCompaction, Some(FreeCause::Compaction)) {
                         free_bytes += copy_size;
                     }
                 }
@@ -1349,6 +1397,13 @@ impl Mutator<'_> {
         // body compiled again since an older copy of it was freed.
         #[cfg(ns_jit)]
         let named_before = self.jit.named_bodies();
+        // The bodies already freed, which the compaction reclaims but did
+        // not free: what its event counts is the rest.
+        let freed_before = self
+            .jit
+            .tracer
+            .traces(TraceCategory::CodeZone)
+            .then(|| self.jit.freed_body_count());
         let mut active = self.heap.active_codes();
         active.extend(spared);
         self.jit.mark_active(&active);
@@ -1357,6 +1412,17 @@ impl Mutator<'_> {
         let Some(plan) = self.jit.plan_freeing(freeing, wanted) else {
             return;
         };
+        if let Some(before) = freed_before {
+            let bodies_freed = self.jit.freed_body_count() - before;
+            self.jit.tracer.record(Pending {
+                category: TraceCategory::CodeZone,
+                body: None,
+                kind: PendingKind::Compacted {
+                    freeing: freeing.traced(),
+                    bodies_freed,
+                },
+            });
+        }
         self.caches.remap_cell_entries(&plan);
         #[cfg(ns_jit)]
         self.heap.remap_machine_entries(&plan);

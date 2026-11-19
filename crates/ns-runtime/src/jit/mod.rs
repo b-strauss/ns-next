@@ -60,7 +60,7 @@ use crate::trace_events::{
     CompileRefusal, CompileTrigger, Pending, PendingKind, Revival, TraceCategory,
 };
 #[cfg(ns_jit)]
-use crate::trace_events::{Deferral, RecompileWalkEnd};
+use crate::trace_events::{Deferral, FreeCause, InvalidationCause, RecompileWalkEnd, RetireReason};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -8226,7 +8226,7 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
             PendingKind::Abandoned { exits },
         ));
     }
-    let entries = mutator.jit.free_entered_code(code);
+    let entries = mutator.jit.free_entered_code(code, FreeCause::Abandoned);
     code.jit.abandon(mutator.jit.revival_base);
     mutator.jit.abandoned.push(Rc::downgrade(code));
     mutator.jit.statistics.abandoned_bodies += 1;
@@ -8283,7 +8283,7 @@ fn abandon_optimized(
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
 ) {
-    if retire_optimized(mutator, code, key) {
+    if retire_optimized(mutator, code, key, RetireReason::Exits) {
         mutator.jit.statistics.abandoned_optimized_bodies += 1;
     }
 }
@@ -8327,14 +8327,16 @@ fn count_trap(
     // family's: it reads as trapped before, as the snapshot reads it.
     let trapped_before = site >= family_size || mutator.caches.note_trap(feedback_base, site);
     let traps = code.jit.count_trap(copy);
-    if (trapped_before || traps >= TRAP_LIMIT) && retire_optimized(mutator, &code, copy) {
+    if (trapped_before || traps >= TRAP_LIMIT)
+        && retire_optimized(mutator, &code, copy, RetireReason::Traps)
+    {
         mutator.jit.statistics.made_not_entrant += 1;
     }
 }
 
 /// Retires `code`'s optimized code for `key` (`JitState::optimized_for`),
-/// made not entrant for its traps or abandoned for its exits, answering
-/// whether it had some: it alone is freed (`JitState::free_optimized`) --
+/// made not entrant for its traps or abandoned for its exits, as `reason`
+/// says, answering whether it had some: it alone is freed (`JitState::free_optimized`) --
 /// the body's other copies staying -- and the body goes on in its baseline
 /// code, which every cell, dispatching row and machine entry row that
 /// entered the copy is written afresh to enter, as the copy's install
@@ -8355,15 +8357,28 @@ fn retire_optimized(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
+    reason: RetireReason,
 ) -> bool {
     let mut entries = Vec::new();
     let Some(copy) = unlink_optimized(mutator, code, key, &mut entries) else {
         return false;
     };
     refresh_cells_entering(mutator, entries);
-    match code.jit.raise_version(copy) {
+    let version = code.jit.raise_version(copy);
+    match version {
         Some(version) => rearm_optimization_budget(mutator, code, version),
         None => mutator.jit.statistics.refused_for_good += 1,
+    }
+    if mutator.jit.tracer.traces(TraceCategory::Deoptimize) {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Deoptimize,
+            code,
+            PendingKind::Retired {
+                key: copy,
+                reason,
+                version,
+            },
+        ));
     }
     true
 }
@@ -8413,8 +8428,8 @@ fn refresh_cells_entering(mutator: &mut Mutator<'_>, mut entries: Vec<u64>) {
 /// Frees exactly `code`'s optimized code for `key` -- the key's copy, or
 /// for `None` the body's one uncustomized copy, never the one an
 /// activation of the key would run in its place -- as an invalidation
-/// does, counting it (`JitStatistics::invalidated_copies`), and answers
-/// whether it had some. No version is raised and no trap counted: what
+/// for `cause` does, counting it (`JitStatistics::invalidated_copies`),
+/// and answers whether it had some. No version is raised and no trap counted: what
 /// the copy was compiled against changed, which says nothing of its
 /// speculations (`docs/design/execution.md`, "Speculation", "Invalidation").
 #[cfg(ns_jit)]
@@ -8422,21 +8437,33 @@ fn invalidate_copy(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
+    cause: InvalidationCause,
     entries: &mut Vec<u64>,
 ) -> bool {
     let exists = match key {
         Some(key) => mutator.jit.copy_of(code, key).is_some(),
         None => mutator.jit.optimized(code).is_some(),
     };
-    if !exists || unlink_optimized(mutator, code, key, entries).is_none() {
+    if !exists {
         return false;
     }
+    let Some(copy) = unlink_optimized(mutator, code, key, entries) else {
+        return false;
+    };
     mutator.jit.statistics.invalidated_copies += 1;
+    if mutator.jit.tracer.traces(TraceCategory::Deoptimize) {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Deoptimize,
+            code,
+            PendingKind::Invalidated { key: copy, cause },
+        ));
+    }
     true
 }
 
 /// Frees every customized copy of `code` whose key `stale` says is stale,
-/// and the body's one uncustomized copy too when `uncustomized` is set, adding
+/// for `cause`, and the body's one uncustomized copy too when
+/// `uncustomized` is set, adding
 /// the addresses cells may name of them to `entries`; then, if any was
 /// freed, arms the body's budget afresh at the longest wait the freed
 /// copies' versions earned (`optimization_budget_after`), so that the next
@@ -8450,6 +8477,7 @@ fn invalidate_copies_of(
     code: &Rc<CompiledCode>,
     stale: &dyn Fn(CustomizationKey) -> bool,
     uncustomized: bool,
+    cause: InvalidationCause,
     entries: &mut Vec<u64>,
 ) -> Option<u8> {
     let keys: Vec<(CustomizationKey, u8)> = code
@@ -8462,11 +8490,11 @@ fn invalidate_copies_of(
         .collect();
     let mut wait: Option<u8> = None;
     let mut note = |version: u8| wait = Some(wait.map_or(version, |longest| longest.max(version)));
-    if uncustomized && invalidate_copy(mutator, code, None, entries) {
+    if uncustomized && invalidate_copy(mutator, code, None, cause, entries) {
         note(code.jit.optimized_version(None));
     }
     for (key, version) in keys {
-        if invalidate_copy(mutator, code, Some(key), entries) {
+        if invalidate_copy(mutator, code, Some(key), cause, entries) {
             note(version);
         }
     }
@@ -8477,7 +8505,7 @@ fn invalidate_copies_of(
 }
 
 /// Frees each of `copies` -- a body and the key of one of its copies,
-/// `None` for its uncustomized one -- as an invalidation does
+/// `None` for its uncustomized one -- as an invalidation for `cause` does
 /// (`invalidate_copies_of`), adding the addresses cells may name of them
 /// to `entries`, and answers each body whose copies it freed with the
 /// version whose wait it armed its budget at.
@@ -8485,6 +8513,7 @@ fn invalidate_copies_of(
 fn invalidate_dependent_copies(
     mutator: &mut Mutator<'_>,
     copies: Vec<(Rc<CompiledCode>, Option<CustomizationKey>)>,
+    cause: InvalidationCause,
     entries: &mut Vec<u64>,
 ) -> Vec<(Rc<CompiledCode>, u8)> {
     let mut by_body: Vec<(Rc<CompiledCode>, Vec<CustomizationKey>, bool)> = Vec::new();
@@ -8507,7 +8536,9 @@ fn invalidate_dependent_copies(
     let mut armed = Vec::new();
     for (code, keys, uncustomized) in by_body {
         let stale = |key: CustomizationKey| keys.contains(&key);
-        if let Some(version) = invalidate_copies_of(mutator, &code, &stale, uncustomized, entries) {
+        if let Some(version) =
+            invalidate_copies_of(mutator, &code, &stale, uncustomized, cause, entries)
+        {
             armed.push((code, version));
         }
     }
@@ -8561,7 +8592,14 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     let dropped = drop_stale_requests(mutator, &stale);
     let mut entries = Vec::new();
     for code in mutator.jit.customized_codes() {
-        invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
+        invalidate_copies_of(
+            mutator,
+            &code,
+            &stale,
+            false,
+            InvalidationCause::Edit,
+            &mut entries,
+        );
     }
     // A copy of any key, the uncustomized one too, whose arm or inlined
     // scope relied on a rebuilt application: what its lookup found, its
@@ -8572,7 +8610,7 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
             .iter()
             .any(|guard| rebuilt.contains(guard))
     });
-    invalidate_dependent_copies(mutator, dependent, &mut entries);
+    invalidate_dependent_copies(mutator, dependent, InvalidationCause::Edit, &mut entries);
     rearm_after_dropped_requests(mutator, dropped, None);
     refresh_cells_entering(mutator, entries);
 }
@@ -8652,13 +8690,15 @@ fn rearm_after_dropped_requests(
 /// free the same, but for the bodies backing off
 /// (`invalidate_optimized_for_stress`). Freed at once, as
 /// `invalidate_applications` frees: the forward is a mirror leaf run
-/// after an exit.
+/// after an exit. A breakpoint frees the same, for `cause`, when it
+/// switches a method's fast path or patches a lazy slot's getter
+/// (`free_for_patch`).
 /// No version is raised (`invalidate_copy`).
 #[cfg(ns_jit)]
-pub(crate) fn invalidate_all_optimized(mutator: &mut Mutator<'_>) {
+pub(crate) fn invalidate_all_optimized(mutator: &mut Mutator<'_>, cause: InvalidationCause) {
     let mut entries = Vec::new();
     for code in mutator.jit.codes_with_optimized_bodies() {
-        invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
+        invalidate_copies_of(mutator, &code, &|_| true, true, cause, &mut entries);
     }
     refresh_cells_entering(mutator, entries);
 }
@@ -8678,7 +8718,14 @@ pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
     let mut entries = Vec::new();
     for code in mutator.jit.codes_with_optimized_bodies() {
         if mutator.jit.stress_round_frees(&code) {
-            invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
+            invalidate_copies_of(
+                mutator,
+                &code,
+                &|_| true,
+                true,
+                InvalidationCause::Stress,
+                &mut entries,
+            );
         }
     }
     refresh_cells_entering(mutator, entries);
@@ -8782,7 +8829,13 @@ pub(crate) fn forget_freed_copies(
             .filter(|key| stale(*key))
             .collect();
         for key in keys {
-            invalidate_copy(mutator, &code, Some(key), &mut entries);
+            invalidate_copy(
+                mutator,
+                &code,
+                Some(key),
+                InvalidationCause::ReclaimedId,
+                &mut entries,
+            );
         }
         code.jit.copies.borrow_mut().retain(|copy| !stale(copy.key));
     }
@@ -8795,7 +8848,12 @@ pub(crate) fn forget_freed_copies(
             .iter()
             .any(|guard| freed.guards.contains(guard))
     });
-    let armed = invalidate_dependent_copies(mutator, dependent, &mut entries);
+    let armed = invalidate_dependent_copies(
+        mutator,
+        dependent,
+        InvalidationCause::ReclaimedId,
+        &mut entries,
+    );
     carry_armings(mutator, armed, carried);
     mutator
         .jit
@@ -8879,7 +8937,12 @@ pub(crate) fn invalidate_copies_of_moved_bases(
         return;
     }
     let mut entries = Vec::new();
-    invalidate_dependent_copies(mutator, dependent, &mut entries);
+    invalidate_dependent_copies(
+        mutator,
+        dependent,
+        InvalidationCause::MovedFeedbackBase,
+        &mut entries,
+    );
     refresh_cells_entering(mutator, entries);
 }
 
@@ -8895,7 +8958,11 @@ pub(crate) fn invalidate_applications(_mutator: &mut Mutator<'_>, _rebuilt: &[Di
 
 /// Without a JIT there is no optimized code to invalidate.
 #[cfg(not(ns_jit))]
-pub(crate) fn invalidate_all_optimized(_mutator: &mut Mutator<'_>) {}
+pub(crate) fn invalidate_all_optimized(
+    _mutator: &mut Mutator<'_>,
+    _cause: crate::trace_events::InvalidationCause,
+) {
+}
 
 /// Without a JIT there is no optimized code to invalidate.
 #[cfg(not(ns_jit))]
@@ -8965,7 +9032,8 @@ impl JitState {
         let Some(index) = index else {
             unreachable!("internal: a live copy has its row");
         };
-        self.free_one(index);
+        // Its `deoptimize` event, the caller's, says why.
+        self.free_one(index, None);
         match copy {
             Some(copy) => code.jit.set_copy_body(copy, NO_BODY),
             None => code.jit.optimized.set(NO_BODY),
@@ -8974,12 +9042,12 @@ impl JitState {
     }
 
     /// Frees `code`'s baseline code and the optimized code beside it -- its
-    /// one copy and every customized one -- if it has machine code here
-    /// (`JitState::free_body`), answering the addresses a cell may name of
+    /// one copy and every customized one -- for `cause`, if it has machine
+    /// code here (`JitState::free_body`), answering the addresses a cell may name of
     /// them -- each copy's start, sorted -- for the caller to write afresh
     /// once the slot says what it says now.
     #[cfg(ns_jit)]
-    fn free_entered_code(&mut self, code: &CompiledCode) -> Vec<u64> {
+    fn free_entered_code(&mut self, code: &CompiledCode, cause: FreeCause) -> Vec<u64> {
         let Some(lean) = self.installed(code).map(|_| code.jit.map.get()) else {
             return Vec::new();
         };
@@ -8991,7 +9059,7 @@ impl JitState {
             .map(|index| self.bodies[index as usize].start)
             .chain(dispatching)
             .collect();
-        self.free_body(code.jit.map.get());
+        self.free_body(code.jit.map.get(), cause);
         let Some(zone) = self.zone.as_ref() else {
             return Vec::new();
         };
@@ -9013,7 +9081,7 @@ impl JitState {
 /// (`abandon`); between entries only.
 #[cfg(ns_jit)]
 fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let entries = mutator.jit.free_entered_code(code);
+    let entries = mutator.jit.free_entered_code(code, FreeCause::Abandoned);
     if code.jit.state.get() != REFUSED {
         code.jit.refuse();
         mutator.jit.statistics.refused_bodies += 1;
@@ -9052,7 +9120,7 @@ fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 /// zone exists, as every free.
 #[cfg(ns_jit)]
 pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let mut entries = mutator.jit.free_entered_code(code);
+    let mut entries = mutator.jit.free_entered_code(code, FreeCause::Breakpoint);
     let state = code.jit.state.get();
     // A cell names the stub that refuses the call of a body abandoned or
     // exiting at once, which a revival writes afresh everywhere
@@ -9066,7 +9134,12 @@ pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>)
         let dependent = mutator
             .jit
             .copies_depending(|dependencies| dependencies.code_ids.contains(&code_id));
-        invalidate_dependent_copies(mutator, dependent, &mut entries);
+        invalidate_dependent_copies(
+            mutator,
+            dependent,
+            InvalidationCause::Breakpoint,
+            &mut entries,
+        );
     }
     // An inlined lazy slot's getter reads the slot without naming the
     // getter's code id (`AlwaysInlined::LazyGetter`), and so would answer
@@ -9081,7 +9154,7 @@ pub(crate) fn free_for_patch(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>)
         );
     refresh_cells_entering(mutator, entries);
     if lazy_getter {
-        invalidate_all_optimized(mutator);
+        invalidate_all_optimized(mutator, InvalidationCause::Breakpoint);
     }
     if refused_by_cells {
         mutator.caches.refresh_all_cells(&mutator.jit);
@@ -10111,7 +10184,9 @@ mod tests {
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
                 // Freed whenever its baseline body is.
-                mutator.jit.free_body(lean);
+                mutator
+                    .jit
+                    .free_body(lean, crate::trace_events::FreeCause::Abandoned);
                 assert!(mutator.jit.bodies[optimized as usize].free);
                 code.jit.forget();
                 assert!(mutator.jit.optimized(&code).is_none());
@@ -10780,7 +10855,9 @@ mod tests {
                         .rows(block)
                 };
                 assert!(!rows(mutator).is_empty(), "the copies' rows");
-                mutator.jit.free_body(lean);
+                mutator
+                    .jit
+                    .free_body(lean, crate::trace_events::FreeCause::Abandoned);
                 assert!(rows(mutator).is_empty(), "vacant once the body is freed");
                 #[cfg(debug_assertions)]
                 mutator.jit.verify_dispatching_rows();

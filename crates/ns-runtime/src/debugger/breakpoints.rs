@@ -1631,7 +1631,10 @@ pub(crate) fn settle(mutator: &mut Mutator<'_>) {
     }
     if std::mem::take(&mut mutator.breakpoints.fast_paths_switched) {
         mutator.caches.invalidate();
-        crate::jit::invalidate_all_optimized(mutator);
+        crate::jit::invalidate_all_optimized(
+            mutator,
+            crate::trace_events::InvalidationCause::Breakpoint,
+        );
     }
 }
 
