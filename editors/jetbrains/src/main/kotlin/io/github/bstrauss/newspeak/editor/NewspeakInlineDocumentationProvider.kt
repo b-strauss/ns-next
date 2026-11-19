@@ -22,8 +22,9 @@ import org.eclipse.lsp4j.DocumentSymbol
  * reader mode.
  *
  * What a doc comment documents is the server's to say: the document symbol
- * -- a class, a method, a slot -- that starts on the line after it, the
- * first of them when several do, so the outermost. Without the server's
+ * -- a class, a method, a slot -- that starts on the line after it, past
+ * the metadata comments between (`NewspeakDocComments.documentedStart`),
+ * the first of them when several do, so the outermost. Without the server's
  * symbols for the current text the comment has no owner yet and renders
  * all the same; the daemon runs again once they arrive.
  */
@@ -39,7 +40,9 @@ class NewspeakInlineDocumentationProvider : InlineDocumentationProvider {
         val symbols = file.virtualFile?.let { DocumentSymbolCache.getInstance(file.project).currentForDaemon(it) }
         return blocks.map { lines ->
             val range = TextRange(lines.first().textRange.startOffset, lines.last().textRange.endOffset)
-            NewspeakDocComment(file.project, NewspeakDocComments.markdown(lines), range, symbols?.let { owner(it, range, document) })
+            val documented = NewspeakDocComments.documentedStart(lines)
+            val owner = if (symbols == null || documented == null) null else owner(symbols, documented, document)
+            NewspeakDocComment(file.project, NewspeakDocComments.markdown(lines), range, owner)
         }
     }
 
@@ -47,9 +50,9 @@ class NewspeakInlineDocumentationProvider : InlineDocumentationProvider {
         // Matched on the comment's own range: getDocumentationRange is override-only, never called by a plugin.
         comments(file).firstOrNull { it.range == textRange }
 
-    /** The range of the first symbol, in pre-order, that starts on the line after `comment`. */
-    private fun owner(symbols: List<DocumentSymbol>, comment: TextRange, document: Document): TextRange? {
-        val line = document.getLineNumber(comment.endOffset) + 1
+    /** The range of the first symbol, in pre-order, that starts on the line of `documented`, where what the comment documents starts. */
+    private fun owner(symbols: List<DocumentSymbol>, documented: Int, document: Document): TextRange? {
+        val line = document.getLineNumber(documented)
         fun find(level: List<DocumentSymbol>): DocumentSymbol? {
             for (symbol in level) {
                 if (symbol.range.start.line == line) return symbol

@@ -244,23 +244,48 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
                 breakpoints.addBreakpoint(
                     methodType(),
                     NewspeakMethodBreakpointProperties().apply {
-                        methodName = "Program.Inner class>>make:"
+                        methodName = "Program/Inner class>>make:"
                         passCount = ">=2"
                     },
                 )
             }
         }
-        assertEquals("Program.Inner class>>make:", methodType().getDisplayText(method))
+        assertEquals("Program/Inner class>>make:", methodType().getDisplayText(method))
         val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":7,"verified":true}]}""").asJsonObject }
         val handler = NewspeakMethodBreakpointHandler(RecordingSession().proxy)
         handler.registerBreakpoint(method)
         handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
 
         assertEquals(
-            JsonParser.parseString("""{"breakpoints":[{"name":"Program.Inner class>>make:","hitCondition":">=2"}]}"""),
+            JsonParser.parseString("""{"breakpoints":[{"name":"Program/Inner class>>make:","hitCondition":">=2"}]}"""),
             agent.requests("setFunctionBreakpoints").last(),
         )
         assertSame(method, handler.breakpointOf(7))
+    }
+
+    /**
+     * A breakpoint kept from before modules had ids, in the dotted form, is
+     * sent as it was written and shown with the agent's refusal, which
+     * names the form to write: never rewritten behind the user's back.
+     */
+    fun testADottedMethodBreakpointIsSentUnchangedAndShownWithTheAgentsRefusal() {
+        val dotted = addMethodBreakpoint("Demo.Account>>deposit:")
+        val refusal = "no module `Demo.Account`; a class inside a module is written `Demo/Account`"
+        val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"verified":false,"message":"$refusal"}]}""").asJsonObject }
+        val session = RecordingSession()
+        val handler = NewspeakMethodBreakpointHandler(session.proxy)
+        handler.registerBreakpoint(dotted)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+
+        assertEquals(
+            JsonParser.parseString("""{"breakpoints":[{"name":"Demo.Account>>deposit:"}]}"""),
+            agent.requests("setFunctionBreakpoints").last(),
+        )
+        assertEquals("Demo.Account>>deposit:", dotted.properties.methodName)
+        assertEquals(
+            listOf("reportMessage " + NewspeakBundle.message("debugger.breakpoint.method.unverified", "Demo.Account>>deposit:", refusal)),
+            session.calls,
+        )
     }
 
     /** A breakpoint's condition is the agent's `condition`, a line breakpoint's and a method breakpoint's alike, which the runtime decides. */
@@ -372,7 +397,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
                 breakpoints.addBreakpoint(
                     type,
                     NewspeakExceptionBreakpointProperties().apply {
-                        className = "Program.Failure"
+                        className = "Program/Failure"
                         uncaught = false
                         caught = true
                     },
@@ -385,7 +410,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         handler.registerBreakpoint(failure)
         handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
         assertEquals(
-            JsonParser.parseString("""{"filters":["halt"],"filterOptions":[{"filterId":"caught","condition":"Program.Failure"}]}"""),
+            JsonParser.parseString("""{"filters":["halt"],"filterOptions":[{"filterId":"caught","condition":"Program/Failure"}]}"""),
             agent.requests("setExceptionBreakpoints").last(),
         )
 
@@ -402,20 +427,31 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
 
     fun testTheMethodDialogSplitsAtTheFirstSelectorSeparatorAsTheAgentDoes() {
         val validator = NewspeakMethodBreakpointType.MethodNameValidator
-        for (accepted in listOf("Module.Class>>>>", "Module.Class class>>>>", "Module.Inner>>at:put:", "Module.Class>>+")) {
-            assertTrue(accepted, validator.checkInput(accepted))
+        val accepted = listOf(
+            "Module/Class>>>>",
+            "com.acme.Module@1.2.0/Class class>>>>",
+            "newspeak.core.Kernel/Array>>at:put:",
+            "Module>>+",
+        )
+        for (name in accepted) {
+            assertTrue(name, validator.checkInput(name))
         }
-        for (refused in listOf("Module.Class", ">>run", "Module.Class>>", "Module.Class>>at: put:")) {
+        for (refused in listOf("Module/Class", ">>run", "Module/Class>>", "Module/Class>>at: put:")) {
             assertFalse(refused, validator.checkInput(refused))
         }
     }
 
     fun testTheExceptionDialogRefusesACommaTheAgentWouldReadAsTwoClasses() {
         val validator = NewspeakExceptionBreakpointType.ClassNameValidator
-        assertTrue(validator.checkInput("Program.Failure"))
-        assertFalse(validator.checkInput("A.B,C.D"))
+        assertTrue(validator.checkInput("Program/Failure"))
+        assertTrue(validator.checkInput("newspeak.core.Kernel/Error"))
+        assertTrue(validator.checkInput("com.acme.Json@2.1.0-rc.1/Parser.Failure"))
+        assertFalse(validator.checkInput("A/B,C/D"))
         assertFalse(validator.checkInput("Program..Failure"))
-        assertFalse(validator.checkInput("Program. Failure"))
+        assertFalse(validator.checkInput("Program//Failure"))
+        assertFalse(validator.checkInput("Program/"))
+        assertFalse(validator.checkInput("Program@/Failure"))
+        assertFalse(validator.checkInput("Program/ Failure"))
     }
 
     fun testABreakpointTheAgentDidNotAnswerIsInvalidAndOneRegisteredTwiceIsSentOnce() {
@@ -476,6 +512,72 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         assertTrue("one stop, in the first iteration: ${debugging.pauses}", debugging.pauses.isEmpty())
         assertFalse("removed once hit", breakpoints.allBreakpoints.contains(temporary))
         assertTrue(debugging.output(), Regex("""1\s+2\s+3""").containsMatchIn(debugging.output()))
+    }
+
+    /**
+     * A method breakpoint names a class inside a module after a `/`, as the
+     * agent reads it: `Demo/Account>>deposit:` stops at the method's entry,
+     * its first statement, and at its exit.
+     */
+    fun testAMethodBreakpointOnANestedClassStops() {
+        NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        cache.fetcher = { null }
+        val program = program("Demo", DEMO)
+        addMethodBreakpoint("Demo/Account>>deposit:")
+        val debugging = debug(program)
+
+        val entry = debugging.nextPause()
+        assertEquals(program, entry.file)
+        assertEquals(DEMO_DEPOSIT_LINE, entry.line)
+        runInEdtAndWait { debugging.session.resume() }
+        assertEquals("the exit", program, debugging.nextPause().file)
+        runInEdtAndWait { debugging.session.resume() }
+
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertEquals(0, debugging.process.processHandler.exitCode)
+        assertTrue("no other stop: ${debugging.pauses}", debugging.pauses.isEmpty())
+        assertTrue(debugging.output(), debugging.output().contains("balance 5"))
+    }
+
+    /**
+     * An exception breakpoint names a shipped module's class by the
+     * module's id: `newspeak.core.Kernel/Error` for caught exceptions stops
+     * a caught `Error` at its handler's first statement. "Any exception" is
+     * off, or it would take every class.
+     */
+    fun testAnExceptionBreakpointByIdStops() {
+        NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
+        cache.fetcher = { null }
+        for (any in breakpoints.getDefaultBreakpoints(exceptionType())) {
+            any.properties.uncaught = false
+            any.properties.halt = false
+        }
+        val program = program("Caught", CAUGHT)
+        runInEdtAndWait {
+            WriteAction.run<Throwable> {
+                breakpoints.addBreakpoint(
+                    exceptionType(),
+                    NewspeakExceptionBreakpointProperties().apply {
+                        className = "newspeak.core.Kernel/Error"
+                        uncaught = false
+                        caught = true
+                    },
+                )
+            }
+        }
+        val debugging = debug(program)
+
+        val stop = debugging.nextPause()
+        assertEquals(program, stop.file)
+        assertEquals(CAUGHT_HANDLER_LINE, stop.line)
+        runInEdtAndWait { debugging.session.resume() }
+
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
+        assertEquals(0, debugging.process.processHandler.exitCode)
+        assertTrue("one stop: ${debugging.pauses}", debugging.pauses.isEmpty())
+        assertTrue(debugging.output(), debugging.output().contains("caught refused"))
     }
 
     // ---- Helpers ----
@@ -698,5 +800,37 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             ) : ()
         """.trimIndent() + "\n"
         const val COUNTED_BODY_LINE = 5
+
+        /** A module whose nested `Account`'s `deposit:` has its first statement on line 5, counted from 0. */
+        val DEMO = """
+            class Demo = Object new () (
+              class Account = Object new (
+                | public balance ::= 0. |
+              ) (
+                public deposit: amount = (
+                  balance:: balance + amount.
+                )
+              ) : ()
+              public main: platform args: arguments = (
+                | account = Account new. |
+                account deposit: 5.
+                platform transcript show: 'balance ' , account balance printString; newLine.
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+        const val DEMO_DEPOSIT_LINE = 5
+
+        /** A module that catches an `Error`, its handler's first statement on line 4, counted from 0. */
+        val CAUGHT = """
+            class Caught = Object new () (
+              public main: platform args: arguments = (
+                | answer |
+                answer:: [Error signal: 'refused'] on: Error do: [:error |
+                  'caught ' , error messageText].
+                platform transcript show: answer; newLine.
+              )
+            ) : ()
+        """.trimIndent() + "\n"
+        const val CAUGHT_HANDLER_LINE = 4
     }
 }

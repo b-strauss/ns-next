@@ -138,9 +138,10 @@ class NewspeakStructureElementSummaryTest : BasePlatformTestCase() {
         return DocumentSymbol(name, SymbolKind.Method, range, range, "public")
     }
 
-    private fun tooltipOf(symbol: DocumentSymbol): String? {
-        val file = myFixture.configureByText("Module.ns", source)
-        val element = NewspeakStructureElement(project, file.virtualFile, symbol, psiFile = file)
+    /** The hover of `symbol` over `text`, configured as `name`: one test configuring several texts names each file afresh. */
+    private fun tooltipOf(symbol: DocumentSymbol, text: String = source, root: Boolean = false, name: String = "Module.ns"): String? {
+        val file = myFixture.configureByText(name, text)
+        val element = NewspeakStructureElement(project, file.virtualFile, symbol, root = root, psiFile = file)
         return (element.presentation as PresentationData).tooltip
     }
 
@@ -164,5 +165,30 @@ class NewspeakStructureElementSummaryTest : BasePlatformTestCase() {
 
     fun testAMemberWithoutADocCommentKeepsItsTooltip() {
         assertEquals("Public method", tooltipOf(method("three", 4)))
+    }
+
+    /**
+     * A module's `:module:` line, and any metadata comment, stands between
+     * the doc comment and the class it documents, each on the line right
+     * above the next, as the server's hover reads it
+     * (`hover::doc_comment_above`); a blank line, a plain comment or code
+     * after a metadata comment on its line ends the doc comment's reach.
+     */
+    fun testTheSummaryStepsOverMetadataAboveTheClass() {
+        var configured = 0
+        fun rootAt(line: Int, text: String): String? {
+            val range = Range(Position(line, 0), Position(line, "class Module".length))
+            configured++
+            return tooltipOf(DocumentSymbol("Module", SymbolKind.Class, range, range, "public"), text, root = true, name = "Module$configured.ns")
+        }
+        val documented = "/// The module.\n/// Holds it.\n"
+        val declaration = "class Module = () ()\n"
+        val summarized = "<html>Root class<br>The module.</html>"
+        assertEquals(summarized, rootAt(3, documented + "(* :module: com.acme.Module *)\n" + declaration))
+        assertEquals(summarized, rootAt(4, documented + "(* :module: com.acme.Module@1.0.0 *)\n  (* :since: 2 *)\n" + declaration))
+        assertEquals("Root class", rootAt(4, documented + "(* :module: com.acme.Module *)\n\n" + declaration))
+        assertEquals("Root class", rootAt(4, documented + "(* :module: com.acme.Module *)\n(* a remark *)\n" + declaration))
+        assertEquals("Root class", rootAt(2, documented + "(* :module: com.acme.Module *) " + declaration))
+        assertEquals("Root class", rootAt(2, documented + "(* a remark *) " + declaration))
     }
 }

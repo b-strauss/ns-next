@@ -505,9 +505,11 @@ a hover shows. Metadata comments (§4.3) on the lines between are passed
 over, each on the line right above the next (`hover::doc_comment_above`):
 a module's `(* :module: … *)` stands below its class's doc comment
 ([modules.md](modules.md), decision 2), which still documents the class,
-and the doc-tag warnings take the same rule. The plugin's
-`NewspeakDocComments` does not pass over them yet
-([OPEN-WORK.md](../OPEN-WORK.md)). Its text is `Comment::text`'s, read as a doc comment
+and the doc-tag warnings take the same rule, as does the plugin's
+`NewspeakDocComments` (`documentedStart`), for the rendered view's owner
+and the structure view's summary: a blank line or another comment between,
+or code after a metadata comment on its line, leaves the block documenting
+nothing. Its text is `Comment::text`'s, read as a doc comment
 (`ns_syntax::doc_comment`, "Doc comments" below): the description goes
 into the hover as Markdown, an inline `{@summary …}` replaced by its text,
 and the tags as the section table.
@@ -1007,11 +1009,12 @@ its own under the hover in the table, the two escaped and joined as HTML
 tooltip and the icon's alike, so the view tells what a member does without
 opening it. The plugin reads it from the file's current text
 (`NewspeakDocComments.summaryAbove`: the doc comment ending on the line
-above the symbol's range), never from the server: a document symbol's
+above the symbol's range, or above the metadata comments right above it),
+never from the server: a document symbol's
 `detail` carries words the plugin reads (the access, `class`, `value`),
 and the comment stands right above the symbol anyway. The summaries are
-computed once per change of the file, by the 0-based line each comment
-ends on, since the view asks for every row and a walk of the file per row
+computed once per change of the file, by the 0-based line what each
+comment documents starts on, since the view asks for every row and a walk of the file per row
 would make a large module's tree quadratic.
 
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind

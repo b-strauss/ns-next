@@ -99,6 +99,25 @@ class NewspeakInlineDocumentationProviderTest : BasePlatformTestCase() {
         assertEquals(listOf(source.substring(source.indexOf("class M")), "public two = ( ^2 )"), owners)
     }
 
+    /**
+     * A module's `:module:` line stands between its class's doc comment and
+     * the class, as in every shipped module: the owner is the symbol after
+     * the metadata comments, each on the line right above the next.
+     */
+    fun testTheOwnerStepsOverMetadata() {
+        val text = """
+            /// The module.
+            /// Holds nothing.
+            (* :module: com.acme.Module@1.0.0 *)
+            (* :since: 2 *)
+            class Module = () ()
+        """.trimIndent()
+        val file = myFixture.configureByText("Module.ns", text)
+        val range = Range(Position(4, 0), Position(4, text.lines()[4].length))
+        cache.fetch(file.virtualFile) { listOf(DocumentSymbol("Module", SymbolKind.Class, range, range, null, emptyList())) }
+        assertEquals(listOf("class Module = () ()"), items(file).map { it.documentationOwnerRange?.substring(text) })
+    }
+
     fun testWithoutTheServersSymbolsThereIsNoOwner() {
         val file = myFixture.configureByText("Module.ns", source)
         assertEquals(listOf(null, null), items(file).map { it.documentationOwnerRange })

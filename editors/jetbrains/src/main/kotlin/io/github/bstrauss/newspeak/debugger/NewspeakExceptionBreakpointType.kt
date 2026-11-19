@@ -21,8 +21,13 @@ import javax.swing.JPanel
  * An exception breakpoint: the default "Any exception", which stops at an
  * uncaught exception, at a caught one where its handler is about to run,
  * and at a `halt`, as each of its boxes says; and one per exception class,
- * `Module.Path.To.Class`, which stops at that class's exceptions and its
- * subclasses' (`docs/design/debugger.md`, "Exceptions").
+ * named as the agent names it -- the module's id, `@` a version where one
+ * module of several is meant, and `/` before a class inside it:
+ * `com.acme.Json@2.1.0/Parser.Failure`, `newspeak.core.Kernel/Error` --
+ * which stops at that class's exceptions and its subclasses'
+ * (`docs/design/debugger.md`, "Exceptions"). The agent refuses a name of
+ * another form, the dotted form before modules had ids among them, with
+ * its reason.
  */
 class NewspeakExceptionBreakpointType :
     XBreakpointType<XBreakpoint<NewspeakExceptionBreakpointProperties>, NewspeakExceptionBreakpointProperties>(
@@ -72,15 +77,16 @@ class NewspeakExceptionBreakpointType :
     ): XBreakpointCustomPropertiesPanel<XBreakpoint<NewspeakExceptionBreakpointProperties>> = ExceptionFiltersPanel()
 
     /**
-     * A dotted name without blanks or commas -- the agent reads a comma in
-     * a condition as the start of another class -- the agent decides the rest.
+     * A name without blanks or commas -- the agent reads a comma in a
+     * condition as the start of another class -- and with no empty part
+     * around a `.`, `@` or `/`; the agent decides the rest.
      */
     internal object ClassNameValidator : InputValidator {
         override fun checkInput(inputString: String?): Boolean {
             val name = inputString?.trim() ?: return false
             return name.isNotEmpty() &&
                 name.none { character -> character.isWhitespace() || character == ',' } &&
-                name.split('.').none(String::isEmpty)
+                name.split('.', '@', '/').none(String::isEmpty)
         }
 
         override fun canClose(inputString: String?): Boolean = checkInput(inputString)

@@ -130,9 +130,10 @@ data class DapStepInTarget(val id: Int, val label: String, val line: Int?, val c
 
 /**
  * One class of an `nsNext/instanceCounts` response: its name,
- * `Module.Path.To.Class`, how many instances the object space holds, and
- * whether a shipped module declares it -- a program may declare a module
- * of a shipped module's name.
+ * `<id>[@<version>][/<Class>(.<Class>)*]`, which names one module's class,
+ * so that `nsNext/instances` takes it alone; how many instances the object
+ * space holds; and whether a shipped module declares it, which the memory
+ * view marks as the core library's.
  */
 data class DapInstanceCount(val name: String, val count: Int, val shipped: Boolean) {
     companion object {

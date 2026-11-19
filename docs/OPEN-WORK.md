@@ -2318,16 +2318,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: editor support and the analyzer
 
-- **The plugin's doc comment does not pass over metadata.** A module's
-  `(* :module: … *)` stands between its class's `///` comment and the
-  class ([modules.md](design/modules.md), decision 2); the language
-  server's hover and doc-tag warnings pass over metadata comments
-  (`hover::doc_comment_above`), but the plugin's `NewspeakDocComments`
-  (`summaryAbove`, the rendered view) looks for the block on the line
-  right above the declaration, so it shows no documentation for such a
-  class -- every shipped module's root among them
-  ([editor-support.md](design/editor-support.md), "Hover").
-
 - **`disasm --initializer` leaves out the factory of a class that declares
   none** (noted 2026-10-22). It lists a factory entry's body only when the
   mixin declares a factory (`crates/ns-analyzer/src/commands/disasm.rs`),

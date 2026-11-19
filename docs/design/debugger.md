@@ -5881,18 +5881,27 @@ time:
   file's set before the `continue`.
 - **Method breakpoints** (`NewspeakMethodBreakpointType`), added from the
   Breakpoints dialog by the method's name in the agent's form,
-  `Module.Outer.Inner>>selector` or `Module.Inner class>>selector`, with
-  a pass count, sent by `setFunctionBreakpoints`. One the agent cannot set
-  -- its name refused, or no built module declaring the method yet -- is
+  `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>` --
+  `Demo/Account>>deposit:`, `com.acme.Json@2.1.0/Parser class>>on:`
+  ([modules.md](modules.md), decision 8) -- with a pass count, sent by
+  `setFunctionBreakpoints` as written. One the agent cannot set -- its
+  name refused, or no built module declaring the method yet -- is
   reported with the agent's reason, since the platform shows whether a
-  breakpoint is verified for line breakpoints only.
+  breakpoint is verified for line breakpoints only; a breakpoint kept in
+  the dotted form of before, `Demo.Account>>deposit:`, is one such, shown
+  with the agent's refusal, which names the form to write, and never
+  rewritten (`testAMethodBreakpointOnANestedClassStops`,
+  `testADottedMethodBreakpointIsSentUnchangedAndShownWithTheAgentsRefusal`).
 - **Exception breakpoints** (`NewspeakExceptionBreakpointType`): the
   default "Any exception", on, with boxes for uncaught exceptions (on),
   caught ones (off) and `halt` (on), and one per class the user adds,
-  `Module.Path.To.Class`, with boxes for uncaught and caught exceptions;
-  sent by `setExceptionBreakpoints` as the filters `uncaught`, `caught`
-  and `halt`, each class breakpoint's filters as `filterOptions` whose
-  condition names its class. The agent keeps one list of classes for
+  `<id>[@<version>][/<Inner>(.<Inner>)*]` -- `newspeak.core.Kernel/Error`
+  for the kernel's `Error` -- with boxes for uncaught and caught
+  exceptions; sent by `setExceptionBreakpoints` as the filters
+  `uncaught`, `caught` and `halt`, each class breakpoint's filters as
+  `filterOptions` whose condition names its class as written, a name the
+  agent refuses reported as the request's error
+  (`testAnExceptionBreakpointByIdStops`). The agent keeps one list of classes for
   both filters (`Command::SetExceptionBreakpoints`), so a class taken for
   caught exceptions is taken for uncaught ones too when another class
   breakpoint takes those, and "Any exception" taking uncaught or caught
@@ -6053,8 +6062,8 @@ largest first, a shipped module's class marked as the core library's --
 a walk of the whole object space, never asked while the panel is hidden;
 a class chosen lists its instances below as a value tree, the
 platform's `XDebuggerTree` under one node whose children are
-`nsNext/instances`' pages, by the class's name and, for a shipped
-module's class, `shipped`; and leaving the stop empties both, since the
+`nsNext/instances`' pages, by the class's name alone, which names one
+module's class, a shipped module's by its `newspeak.core.` id; and leaving the stop empties both, since the
 next stop knows none of the references. Every value the agent hands a
 value reference for, in the memory view and in every other tree, answers
 the platform's Show Referring Objects through its `XReferrersProvider`,
