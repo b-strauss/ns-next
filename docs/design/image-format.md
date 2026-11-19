@@ -127,7 +127,8 @@ header:        magic "NSNX", FORMAT_VERSION (u32), flags (u8), fingerprint (u64)
 texts:         only with FLAG_HAS_SOURCE: count (u32), then per text
                [range (2 x u32)][hole count (u32)][holes (2 x u32 each)][cut text]
 mixins:        per row as "Mixin table" below, with FLAG_HAS_SOURCE a text index (u32)
-modules:       count (u32), then per module [origin][root object id (u32)]
+modules:       count (u32), then per module [origin (u8)][path][id][version tag (u8)]
+               [version, when tagged][root object id (u32)]
 shipped names: count (u32), then per name [module][declaration][kind (u8)][clause (u32)?]
 graph:         object table, roots
 ```
@@ -731,18 +732,31 @@ record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
-per module, in module order, its origin and the `u32` object id of its root
-class's record in the graph; a module's text is no field of it, since it is
+per module, in module order, its identity -- its path, id and version
+([modules.md](modules.md), decision 10) -- and the `u32` object id of its
+root class's record in the graph; a module's text is no field of it, since it is
 assembled from its declarations' texts ("Source" below). **Module order** is the
 application module (a project file's `main`) first, then a project file's
 modules in the order written, then the embedded `Manifest.ns` ("Packaging"
 below); a source file's program is its one module. The count is bounded by the bytes left before anything is
 reserved for it.
 
-The **origin** is a tag from `opcodes.rs`, `ORIGIN_FILE` (0) followed by the
-path the module was read from, or `ORIGIN_EMBEDDED` (1) followed by the name
-of a source compiled into the binary -- `Manifest.ns`'s. It is provenance, in
-every artifact, source or not; `inspect` shows it. Source travels for every
+The **identity** names the module as the program did, in every artifact,
+source or not, and `inspect` shows it (`com.acme.util.Util@1.0.0 at
+libs/util-1/Util.ns`). Its path is the module's path relative to its
+project, never a directory of the machine that built the image: an origin
+tag from `opcodes.rs`, `ORIGIN_PROJECT` (2) followed by that path, or
+`ORIGIN_CORE` (3) followed by the file name of a module the binary holds,
+whose path is `core:` and that name -- `Manifest.ns`'s, `core:Manifest.ns`.
+Then the id as resolved, after an `as`, and `MODULE_UNVERSIONED` (0), or
+`MODULE_VERSIONED` (1) followed by the version's text; every string is a
+`u32` length and UTF-8. The origins 0 (`ORIGIN_FILE`, the path the module
+was read from) and 1 (`ORIGIN_EMBEDDED`, an embedded source's name) are
+retired (`opcodes::RETIRED_ORIGIN_TAGS`), so a stale image's record meets
+an unknown tag. The loader hands each identity to its module's root mixin
+(`Mixin::module_identity`) and to `LoadedModule::identity`, so that a tool
+names an image's module as `run` names it ("Verification" below holds them
+to the project's rules). Source travels for every
 module or for none, as the header's one flag says, so the encoder refuses a
 set of modules of which only some ask for theirs rather than invent an empty
 text, and refuses a module asked for its source one of whose declarations
@@ -1150,7 +1164,7 @@ edited (`<name> has no source text to edit`) and every `source` answers
 
 **The host asks for the source; the encoder reads it from the heap.** A
 host hands the writer each module as an `image::ModuleSource` -- its root
-class, its origin and `with_source: bool` -- and no text: the encoder
+class, its identity and `with_source: bool` -- and no text: the encoder
 reads every declaration's text from the heap (`Mixin::text`), because
 after an edit the host's file is no longer the program's text. Source
 travels for every module or for none, as the header's one flag says, so
@@ -1232,7 +1246,24 @@ the mixins (`mixins::build`, which first holds the texts to the rows, then
 attaches the bodies without checking) and only then reconciles them
 (`verify_mixins`); so a defect of a text is reported before one of the
 rows, and a defect of the module section before one of the mixins' bodies.
-`inspect` reads the same sections and builds through `mixins::build` too,
+**The module section is held to the project's rules** before any of its
+identities is used (`modules::decode_modules`; [modules.md](modules.md),
+decision 10), each refusal a `DecodeError` naming the module or, for two
+modules, their paths: each record's path relative to the project
+(`modules::check_project_path`: no root, drive, `\`, `core:`, empty or `.`
+segment, a `..` only leading, ending in `.ns`) or a `core:` file name; its
+id identifiers separated by dots, ending in the root class's name, which
+the mixin table's root row gives (`ModuleId::parse`); the namespace
+`newspeak.` with `ORIGIN_CORE` and only there (`modules::check_namespace`);
+a version semver's (`Version::parse`); and over all records, no two modules
+of one id and one version, nor of one id where either has none
+(`modules::check_distinct`). The encoder holds every identity it is handed
+to the same rules (`modules::identity_defect`, which both sides share), so
+it never writes a record the loader refuses
+(`a_module_record_is_held_to_the_project_rules`,
+`a_module_record_s_unknown_tags_are_refused`,
+`the_building_machine_s_paths_are_not_written`,
+`crates/ns-runtime/tests/image.rs`). `inspect` reads the same sections and builds through `mixins::build` too,
 so it refuses texts that do not hold to the rows, but runs no
 `verify_mixins`, so it can still display an artifact whose halves
 disagree; only `load` refuses it. A corrupt but version-matching image is an
@@ -1813,7 +1844,7 @@ contents — header flags, whether the image carries source (`source:
 yes`) and the shipped world's fingerprint, section offsets, the symbol
 table, **the code table with every body named**, the text table, one line
 a text (`text 0: 0..143, 1 hole, 95 bytes`), the mixin table, each row
-with its text's index, the module section, each module's origin and its
+with its text's index, the module section, each module's identity and its
 root's object id, and the count of shipped names — and
 `--full` prints everything, the shipped names among it, each as
 `ShippedName::describe` spells it (`Kernel Array`, `Kernel Integer class`,
@@ -2134,7 +2165,8 @@ and `load`.
 `ns_runtime::MANIFEST_SOURCE` ([core-library.md](core-library.md), "The
 manifest"). It is neither privileged nor shipped: it has no VM mirror, is
 resolved with `resolve` like a user module and compiled into the program
-beside the modules (`SourceOrigin::Embedded("Manifest.ns")`), so an
+beside the modules (`SourceOrigin::Embedded("Manifest.ns")`, its identity
+`newspeak.core.Manifest` at `core:Manifest.ns`), so an
 application that keeps its manifest in a slot serializes it like any other
 object (`goldens/tool/manifest/an_application_may_keep_its_manifest`). The
 host instantiates it with `ids: versions: ranks: definitions:`: an `Array`
@@ -2166,8 +2198,8 @@ which a debugger's carried step or a pause asked between runs would stop.
 `build` prints the assembly's warnings; `load` prints none, since the
 loaded image's application holds its manifest only if it kept it.
 
-**What `build` writes.** `image::package` takes the modules in module order
-and the application, and writes an image whose graph has the application as
+**What `build` writes.** `image::package` takes the modules in module order,
+each with its identity (`program::module_sources`), and the application, and writes an image whose graph has the application as
 its one root and whose header sets `FLAG_START`. No platform exists for the
 application yet, and before `main:args:` a program reaches nothing of the
 shipped world but the kernel, so a graph naming anything of
@@ -2778,7 +2810,9 @@ shipped world.
   reused, and `CLASS_MODULE` (6), `CLASS_MODULE_LEVEL` (7),
   `HASHED_MODULE_CLASS` (5), `HASHED_MODULE_LEVEL` (6), `FLAG_START` (4) and
   the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
-  free numbers, so a stale artifact meets an unknown tag instead of decoding
+  free numbers (both retired on 2026-11-19 for `ORIGIN_PROJECT` (2) and
+  `ORIGIN_CORE` (3), when a module record came to carry the module's
+  identity rather than the building machine's path), so a stale artifact meets an unknown tag instead of decoding
   into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
   `HASHED_MODULE_CLASS` and `HASHED_MODULE_LEVEL` are retired in turn, since
   a module's root class and its levels became records of the graph, which

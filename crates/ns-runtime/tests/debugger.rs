@@ -2016,13 +2016,13 @@ ns_runtime::for_each_lowering! {
 fn an_image_without_source_shows_unnamed_frames() {
     let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+    let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Stacked");
     let bytes = interpreter
         .enter(|mutator| {
             let class = mutator.fetch(&class).as_object().expect("the module class");
             let modules = [ns_runtime::image::ModuleSource {
                 class,
-                origin: &origin,
+                identity: &identity,
                 with_source: false,
             }];
             ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
@@ -2078,13 +2078,13 @@ ns_runtime::for_each_lowering! {
             interpreter.send(&instance, Symbol::intern("prepare"), &[]),
             "prepare",
         );
-        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Kept");
         let bytes = interpreter
             .enter(|mutator| {
                 let class = mutator.fetch(&class).as_object().expect("the module class");
                 let modules = [ns_runtime::image::ModuleSource {
                     class,
-                    origin: &origin,
+                    identity: &identity,
                     with_source: true,
                 }];
                 ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])
@@ -15517,13 +15517,13 @@ mod restarting {
     fn a_restarted_body_without_metadata_stops_at_its_start() {
         let (mut interpreter, class) = load(STACKED, Lowering::Optimized);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let origin = ns_runtime::SourceOrigin::File("test.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("test.ns", "Stacked");
         let bytes = interpreter
             .enter(|mutator| {
                 let class = mutator.fetch(&class).as_object().expect("the module class");
                 let modules = [ns_runtime::image::ModuleSource {
                     class,
-                    origin: &origin,
+                    identity: &identity,
                     with_source: false,
                 }];
                 ns_runtime::image::snapshot(mutator, &modules, &[mutator.fetch(&instance)])

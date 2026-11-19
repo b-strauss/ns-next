@@ -451,6 +451,103 @@ fn build_warns_of_a_request_that_matched_several_versions() {
     assert!(!loaded.2.contains("matched"), "load's stderr: {}", loaded.2);
 }
 
+/// An image names its modules as the program did: each by its path in the
+/// project, its id -- after an `as` -- and its version, the manifest by
+/// its `core:` path and its `newspeak.core` id, and never by a directory
+/// of the machine that built it, even without its source.
+#[test]
+fn load_names_modules_by_their_identity() {
+    let directory = ScratchDirectory::new("build-identity");
+    let root = std::path::absolute(directory.path()).expect("an absolute directory");
+    std::fs::write(
+        root.join("App.ns"),
+        indoc! {"
+            class App packageUsing: manifest = Object new (
+              | private Util = manifest at: 'com.acme.util.Util' version: '1'. |
+            ) (
+              public main: platform args: arguments = (
+                platform transcript show: Util new answer; newLine
+              )
+            ) : ()
+        "},
+    )
+    .expect("write the root");
+    for (version, answer) in [("1.4.0", "one"), ("2.0.0-beta.1", "two")] {
+        let library = root.join(format!("libs/util-{version}"));
+        std::fs::create_dir_all(&library).expect("create the library directory");
+        std::fs::write(
+            library.join("Util.ns"),
+            formatdoc! {"
+                (* :module: com.acme.util.Util@{version} *)
+                class Util = Object new () (
+                  public answer = ( ^'{answer}' )
+                ) : ()
+            "},
+        )
+        .expect("write a version");
+    }
+    std::fs::write(
+        root.join("Plain.ns"),
+        indoc! {"
+            class Plain = Object new () () : ()
+        "},
+    )
+    .expect("write the module given an id");
+    std::fs::write(
+        root.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": ["libs/util-1.4.0/Util.ns", "libs/util-2.0.0-beta.1/Util.ns", { "path": "Plain.ns", "as": "org.example.Plain" }] }"#,
+    )
+    .expect("write the project file");
+    let image = root.join("app.nsi");
+    let built = ns_next(&[
+        "build".as_ref(),
+        root.as_os_str(),
+        image.as_os_str(),
+        "--strip-source".as_ref(),
+    ]);
+    assert!(built.0, "build failed: {}", built.2);
+    let bytes = std::fs::read(&image).expect("read the image");
+    let loaded = match ns_runtime::image::load(&bytes) {
+        Ok(loaded) => loaded,
+        Err(error) => panic!("{error}"),
+    };
+    let names: Vec<(String, String)> = loaded
+        .modules
+        .iter()
+        .map(|module| {
+            assert_eq!(
+                module.declaration.module_identity.as_deref(),
+                Some(&*module.identity),
+                "the root mixin carries the module's identity"
+            );
+            (module.identity.path.clone(), module.identity.display_name())
+        })
+        .collect();
+    let expected = [
+        ("App.ns", "App"),
+        ("libs/util-1.4.0/Util.ns", "com.acme.util.Util@1.4.0"),
+        (
+            "libs/util-2.0.0-beta.1/Util.ns",
+            "com.acme.util.Util@2.0.0-beta.1",
+        ),
+        ("Plain.ns", "org.example.Plain"),
+        ("core:Manifest.ns", "newspeak.core.Manifest"),
+    ];
+    let expected: Vec<(String, String)> = expected
+        .iter()
+        .map(|(path, name)| ((*path).to_string(), (*name).to_string()))
+        .collect();
+    assert_eq!(names, expected);
+    let written = root.to_string_lossy();
+    assert!(
+        !contains(&bytes, written.as_bytes()),
+        "the image holds the building machine's directory {written}"
+    );
+    let loaded = ns_next(&["load".as_ref(), image.as_os_str()]);
+    assert!(loaded.0, "load failed: {}", loaded.2);
+    assert_eq!(loaded.1, "one\n");
+}
+
 #[test]
 fn a_project_builds_and_loads_as_it_runs() {
     let project =
@@ -486,10 +583,10 @@ fn load_refuses_an_image_that_is_not_started() {
         let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
         };
-        let origin = SourceOrigin::File("plain.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("plain.ns", "Plain");
         let modules = [ns_runtime::image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: false,
         }];
         ns_runtime::image::snapshot(mutator, &modules, &[]).expect("snapshot")

@@ -12,13 +12,13 @@ them.
 Status: partly built. Ids, versions and ranges (`ns-runtime`'s
 `modules.rs`), the metadata (`ns-syntax`'s `metadata.rs`), each module's
 identity on its root mixin, the string manifest, `newspeak.json`'s `as` and
-the project's refusals (decisions 1-5 and 9) are built
-([core-library.md](core-library.md), "The manifest";
-[image-format.md](image-format.md), "Packaging"). Not yet: an image's
-module record still holds the building machine's origin rather than the
-identity (decision 10), and the debugger's `ModuleName` is a name and a
-shipped flag ([debugger.md](debugger.md)), so tools name modules by their
-class's name (decision 8). The design below lets several versions of one
+the project's refusals (decisions 1-5 and 9), and an image's module record
+of each module's path, id and version, held to the project's rules by the
+decoder (decision 10), are built ([core-library.md](core-library.md), "The
+manifest"; [image-format.md](image-format.md), "Packaging", "Module
+section", "Verification"). Not yet: the debugger's `ModuleName` is a name
+and a shipped flag ([debugger.md](debugger.md)), so tools name modules by
+their class's name (decision 8). The design below lets several versions of one
 module live in one running program.
 
 ## The three roles

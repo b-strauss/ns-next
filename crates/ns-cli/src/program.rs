@@ -52,10 +52,6 @@ pub(crate) struct Loaded {
 /// The slot of `Manifest.ns` that holds the texts `ambiguities` answers.
 const AMBIGUITIES_SLOT: &str = "ambiguitiesFound";
 
-/// The prefix of the path a shipped module's identity has, followed by its
-/// file's name (`ModuleIdentity::path`).
-const CORE_PATH_PREFIX: &str = "core:";
-
 /// The name of the manifest's source file, as the binary embeds it.
 const MANIFEST_FILE: &str = "Manifest.ns";
 
@@ -239,7 +235,7 @@ fn program_identity(
 fn manifest_identity(manifest: &source::LoadedSource) -> ModuleIdentity {
     match modules::declared_identity(&manifest.resolved.module, &manifest.source) {
         Ok((id, None)) if id.is_reserved() => ModuleIdentity {
-            path: format!("{CORE_PATH_PREFIX}{MANIFEST_FILE}"),
+            path: modules::core_path(MANIFEST_FILE),
             id,
             version: None,
         },
@@ -530,9 +526,10 @@ fn ranks(identities: &[&ModuleIdentity]) -> Vec<i64> {
         .collect()
 }
 
-/// The modules as `image::package` takes them, in module order. Takes the
-/// classes rather than `Loaded`, because the caller holds `Loaded`'s
-/// interpreter mutably while it encodes.
+/// The modules as `image::package` takes them, in module order, each
+/// named by its identity -- its path in the project, never the directory
+/// it was read from. Takes the classes rather than `Loaded`, because the
+/// caller holds `Loaded`'s interpreter mutably while it encodes.
 pub(crate) fn module_sources<'program, 'gc>(
     program: &'program Program,
     classes: &[ns_runtime::Root],
@@ -545,7 +542,10 @@ pub(crate) fn module_sources<'program, 'gc>(
         .zip(classes)
         .map(|(source, class)| ns_runtime::image::ModuleSource {
             class: crate::entry::class_reference(mutator, class),
-            origin: &source.origin,
+            identity: match source.resolved.identity.as_deref() {
+                Some(identity) => identity,
+                None => unreachable!("internal: `read_program` gives every module its identity"),
+            },
             with_source,
         })
         .collect()

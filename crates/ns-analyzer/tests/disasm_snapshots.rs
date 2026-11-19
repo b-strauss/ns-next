@@ -270,10 +270,10 @@ fn bare_artifact(edit: fn(ns_runtime::Mixin) -> ns_runtime::Mixin) -> Vec<u8> {
         let bare = edit((*application.mixin).clone());
         let rewired = mutator.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
         assert!(mutator.heap_mut().class_set_application(class, rewired));
-        let origin = SourceOrigin::File("bare.ns".into());
+        let identity = ns_runtime::modules::ModuleIdentity::undeclared("bare.ns", "Bare");
         let modules = [ns_runtime::image::ModuleSource {
             class,
-            origin: &origin,
+            identity: &identity,
             with_source: false,
         }];
         ns_runtime::image::package(mutator, &modules, mutator.fetch(&instance)).expect("package")

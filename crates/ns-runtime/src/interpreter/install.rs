@@ -522,10 +522,11 @@ mod tests {
     ) -> Vec<u8> {
         interpreter.enter(|mutator| {
             let class = mutator.fetch(class).as_object().expect("a class object");
-            let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+            let name = mutator.heap.class_declaration(class).expect("a root").name;
+            let identity = crate::modules::ModuleIdentity::undeclared("t.ns", name.as_str());
             let modules = [crate::image::ModuleSource {
                 class,
-                origin: &origin,
+                identity: &identity,
                 with_source,
             }];
             let roots: Vec<Value<'_>> = roots.iter().map(|root| mutator.fetch(root)).collect();

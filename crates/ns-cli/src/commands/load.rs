@@ -66,11 +66,13 @@ pub(crate) fn execute(
         ));
     };
     // An image's modules have no files: a stop shows each by a reference.
+    // Each is named from the identity the image recorded, whose id ends in
+    // its root class's name, as `run` names the program's modules.
     let modules = loaded
         .modules
         .iter()
         .map(|module| debug::ProgramModule {
-            name: module.declaration.name.as_str().to_string(),
+            name: module.identity.id.class_name().to_string(),
             path: None,
             identity: None,
             text: module.source.as_deref().map(str::to_string),

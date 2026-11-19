@@ -518,6 +518,23 @@ pub const SLOT_MUTABLE: u8 = 1;
 pub const SLOT_LAZY_IMMUTABLE: u8 = 2;
 pub const SLOT_LAZY_MUTABLE: u8 = 3;
 
-/// How a module's `SourceOrigin` is written. Next free number: 2.
-pub const ORIGIN_FILE: u8 = 0;
-pub const ORIGIN_EMBEDDED: u8 = 1;
+/// Where a module record's path lies (`image::modules`): `ORIGIN_PROJECT`,
+/// followed by the module's path relative to its project, or `ORIGIN_CORE`,
+/// followed by the file name of a module the binary holds -- `Manifest.ns`
+/// -- whose path is `core:` and that name. Next free number: 4.
+pub const ORIGIN_PROJECT: u8 = 2;
+pub const ORIGIN_CORE: u8 = 3;
+
+/// Origins that no longer name anything and are never reused: 0 was
+/// `ORIGIN_FILE`, the path a module was read from on the building machine,
+/// and 1 `ORIGIN_EMBEDDED`, a source compiled into the binary, named by its
+/// file. A module record came to carry the module's identity on
+/// 2026-11-19 -- its path relative to the project, its id and its version
+/// (`docs/design/modules.md`, decision 10) -- so a stale record meets an
+/// unknown tag instead of being read as a path. Next free number: 4.
+pub const RETIRED_ORIGIN_TAGS: [u8; 2] = [0, 1];
+
+/// Whether a module record carries a version after its id: none, or one,
+/// followed by its text. Next free number: 2.
+pub const MODULE_UNVERSIONED: u8 = 0;
+pub const MODULE_VERSIONED: u8 = 1;

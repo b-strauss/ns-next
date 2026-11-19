@@ -3508,9 +3508,10 @@ three things follow from that:
   slots. A program that reaches its class, as `manifest class`, gains
   nothing the manifest's own code does not already have.
 - **An image carries it.** It is compiled into the program beside the
-  project's modules, as the last module in module order, from the origin
-  `ORIGIN_EMBEDDED` `Manifest.ns`, so an application that keeps its manifest
-  in a slot is written and loaded like any other object. A shipped module's
+  project's modules, as the last module in module order, named
+  `newspeak.core.Manifest` at `core:Manifest.ns` (`ORIGIN_CORE`), so an
+  application that keeps its manifest in a slot is written and loaded like
+  any other object. A shipped module's
   instance is never written ("Shipped names in the image" below); the
   manifest must be, and is.
 - **It is compiled as user code**, by the interpreter's own lowering, with

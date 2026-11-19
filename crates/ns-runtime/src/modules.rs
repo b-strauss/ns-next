@@ -71,6 +71,11 @@ impl ModuleId {
         self.0.starts_with(RESERVED_PREFIX)
     }
 
+    /// The id's last segment, the name of the module's class.
+    pub fn class_name(&self) -> &str {
+        self.0.rsplit('.').next().unwrap_or(&self.0)
+    }
+
     /// The id's text.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -272,6 +277,16 @@ pub struct ModuleIdentity {
 }
 
 impl ModuleIdentity {
+    /// The identity of the module at `path` that declares neither an id nor
+    /// a version: its class's name, `class_name`, without a version.
+    pub fn undeclared(path: impl Into<String>, class_name: &str) -> ModuleIdentity {
+        ModuleIdentity {
+            path: path.into(),
+            id: ModuleId::of_class(class_name),
+            version: None,
+        }
+    }
+
     /// The id, `@` the version when there is one.
     pub fn display_name(&self) -> String {
         match &self.version {
@@ -381,7 +396,7 @@ pub fn check_distinct<'identity>(
 /// `\`, without an empty or `.` segment, `..` only leading, ending in `.ns`;
 /// or `core:` and a file name.
 pub fn check_relative_path(path: &str) -> Result<(), String> {
-    if let Some(file) = path.strip_prefix(CORE_PATH_PREFIX) {
+    if let Some(file) = core_file(path) {
         let is_file_name = !file.is_empty()
             && file.ends_with(SOURCE_EXTENSION)
             && !file.contains(['/', '\\', ':']);
@@ -393,6 +408,44 @@ pub fn check_relative_path(path: &str) -> Result<(), String> {
             ))
         };
     }
+    check_project_path(path)
+}
+
+/// The file name of a path that names a module of the binary's own,
+/// `core:<File>.ns`; `None` for a path in the project.
+pub fn core_file(path: &str) -> Option<&str> {
+    path.strip_prefix(CORE_PATH_PREFIX)
+}
+
+/// The path of the binary's module whose file is `file`.
+pub fn core_path(file: &str) -> String {
+    format!("{CORE_PATH_PREFIX}{file}")
+}
+
+/// Message of a module of the binary's own whose id lies outside the
+/// reserved namespace; `{id}` and `{path}` are replaced.
+const OUTSIDE_RESERVED_NAMESPACE: &str = "`{id}` at `{path}` lies outside the namespace `newspeak.`, which every module ns-next ships declares";
+
+/// Holds a module's id to where its path lies (decision 9): the namespace
+/// `newspeak.` for the binary's modules, which have a `core:` path, and
+/// for them alone, so that no program's module claims the binary's
+/// namespace and no module of the binary's is named as a program's.
+pub fn check_namespace(identity: &ModuleIdentity) -> Result<(), String> {
+    if core_file(&identity.path).is_none() {
+        return check_unreserved(&identity.id);
+    }
+    if !identity.id.is_reserved() {
+        return Err(OUTSIDE_RESERVED_NAMESPACE
+            .replace("{id}", identity.id.as_str())
+            .replace("{path}", &identity.path));
+    }
+    Ok(())
+}
+
+/// Checks the path of a module in the project: everything
+/// `check_relative_path` holds such a path to. A `core:` path is refused
+/// here as one with a drive, since it names no file of the project.
+pub fn check_project_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("a module's path is empty".to_string());
     }
@@ -562,6 +615,69 @@ mod tests {
         ] {
             assert!(check_relative_path(refused).is_err(), "{refused}");
         }
+    }
+
+    /// A project's path is never a `core:` one, so that no module of a
+    /// project is named as one of the binary's.
+    #[test]
+    fn a_project_s_path_is_no_core_path() {
+        assert_eq!(check_project_path("libs/a/Util.ns"), Ok(()));
+        assert_eq!(
+            check_project_path("core:Manifest.ns"),
+            Err("`core:Manifest.ns` has a root or a drive; it must be relative".to_string())
+        );
+        assert_eq!(core_file("core:Manifest.ns"), Some("Manifest.ns"));
+        assert_eq!(core_file("libs/Manifest.ns"), None);
+        assert_eq!(core_path("Manifest.ns"), "core:Manifest.ns");
+    }
+
+    /// The namespace `newspeak.` goes with a `core:` path, both ways.
+    #[test]
+    fn the_namespace_goes_with_the_core_path() {
+        let core = |id: &str| ModuleIdentity {
+            path: "core:Registry.ns".to_string(),
+            id: ModuleId::parse(id, "Registry").unwrap(),
+            version: None,
+        };
+        assert_eq!(check_namespace(&core("newspeak.core.Registry")), Ok(()));
+        assert_eq!(
+            check_namespace(&core("Registry")),
+            Err(
+                "`Registry` at `core:Registry.ns` lies outside the namespace `newspeak.`, \
+                 which every module ns-next ships declares"
+                    .to_string()
+            )
+        );
+        let project = ModuleIdentity {
+            path: "Registry.ns".to_string(),
+            ..core("newspeak.core.Registry")
+        };
+        assert_eq!(
+            check_namespace(&project),
+            Err(
+                "`newspeak.core.Registry` lies in the namespace `newspeak.`, which belongs to \
+                 the modules ns-next ships"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            check_namespace(&ModuleIdentity::undeclared("Registry.ns", "Registry")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_id_names_its_class_last() {
+        assert_eq!(
+            ModuleId::parse("com.acme.Json", "Json")
+                .unwrap()
+                .class_name(),
+            "Json"
+        );
+        assert_eq!(ModuleId::of_class("Json").class_name(), "Json");
+        let undeclared = ModuleIdentity::undeclared("Json.ns", "Json");
+        assert_eq!(undeclared.display_name(), "Json");
+        assert_eq!(undeclared.path, "Json.ns");
     }
 
     fn identity_of(source: &str) -> Result<(ModuleId, Option<Version>), String> {

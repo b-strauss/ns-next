@@ -18,9 +18,9 @@ use std::fmt::Write as _;
 use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
+use crate::ArbitraryInteger;
 use crate::image::shipped_names::{self, ShippedName};
 use crate::image::{decode, mixins, modules, opcodes, symbols, texts};
-use crate::{ArbitraryInteger, SourceOrigin};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -33,8 +33,9 @@ pub struct Section {
 
 /// One module the module section describes.
 pub struct ModuleReport {
-    /// Where the module came from: `embedded <name>` or the file's path.
-    pub origin: String,
+    /// The module's id, `@` its version when it has one, and its path:
+    /// `com.acme.Util@1.0.0 at libs/util/Util.ns`.
+    pub identity: String,
     /// Which record of the graph is its root class: `root object {id}`.
     pub root: String,
 }
@@ -714,9 +715,13 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     let mixins_end = reader.position();
     // The module section is read with the mixin table, as `load` reads it,
     // so a count that disagrees with the trees is refused here as there.
-    let decoded_modules = modules::decode_modules(&mut reader, &read.module_rows)
+    let decoded_modules = modules::decode_modules(&mut reader, &read.module_root_names())
         .map_err(|error| error.to_string())?;
     let modules_end = reader.position();
+    let identities: Vec<_> = decoded_modules
+        .iter()
+        .map(|module| Rc::clone(&module.identity))
+        .collect();
     let decoded = mixins::build(
         read,
         &table.codes,
@@ -724,6 +729,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
             .iter()
             .map(|(_, text)| Rc::clone(text))
             .collect::<Vec<_>>(),
+        &identities,
     )
     .map_err(|error| error.to_string())?;
     let text_reports: Vec<Text> = decoded_texts.into_iter().map(|(text, _)| text).collect();
@@ -792,7 +798,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         })
         .collect::<Vec<_>>();
 
-    // Each module's origin and the object id of its root class record,
+    // Each module's identity and the object id of its root class record,
     // shown as written: the graph it indexes comes later. A count that
     // disagrees with the mixin table's trees was refused above as it is by
     // `load`: which tree a module's root is held to depends on the count,
@@ -802,10 +808,11 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         .map(|module| {
             let root = format!("root object {}", module.root);
             ModuleReport {
-                origin: match &module.origin {
-                    SourceOrigin::Embedded(name) => format!("embedded {name}"),
-                    SourceOrigin::File(_) => format!("{:?}", module.origin),
-                },
+                identity: format!(
+                    "{} at {}",
+                    module.identity.display_name(),
+                    module.identity.path
+                ),
                 root,
             }
         })
@@ -880,7 +887,7 @@ pub fn render(report: &Report) -> String {
     );
     let _ = writeln!(out, "modules: {}", report.modules.len());
     for (index, module) in report.modules.iter().enumerate() {
-        let _ = writeln!(out, "  {index}: {}, {}", module.origin, module.root);
+        let _ = writeln!(out, "  {index}: {}, {}", module.identity, module.root);
     }
     let _ = writeln!(out, "total: {} bytes", report.total_length);
 

@@ -1,79 +1,197 @@
-//! The module section: which top-level modules an artifact carries, where
-//! each came from, and which record of the graph is its root class. A
-//! module's root class, the levels its `<:` clauses add and their
-//! metaclasses are ordinary class records; the section names each root by
-//! its object id, and the loader holds the record it names to its module's
-//! declaration and to the root rule (`root_record_defect`).
+//! The module section: which top-level modules an artifact carries, each
+//! module's identity -- its path relative to its project, its id and its
+//! version (`docs/design/modules.md`, decision 10) -- and which record of
+//! the graph is its root class. A module's root class, the levels its `<:`
+//! clauses add and their metaclasses are ordinary class records; the
+//! section names each root by its object id, and the loader holds the
+//! record it names to its module's declaration and to the root rule
+//! (`root_record_defect`).
 
 use std::rc::Rc;
 
 use super::decode::{self, DecodeError, Reader};
 use super::encode::{self, Writer};
 use super::mixins;
+use super::opcodes::{MODULE_UNVERSIONED, MODULE_VERSIONED, ORIGIN_CORE, ORIGIN_PROJECT};
 use crate::Mutator;
 use crate::heap::Heap;
 use crate::mixin::Mixin;
-use crate::types::{BuiltinClass, ClassReference, SourceOrigin};
+use crate::modules::{self as identities, ModuleId, ModuleIdentity, Version};
+use crate::symbol::Symbol;
+use crate::types::{BuiltinClass, ClassReference};
 
 /// One module an artifact carries, as a writer is handed it. `with_source`
 /// asks for the module's text in the image, which the encoder reads from
 /// the heap, each declaration's own (`Mixin::text`): after an edit the
 /// host's file is no longer the program's text. Source travels for every
-/// module or for none.
+/// module or for none. `identity` is what the image names the module by,
+/// as the program named it: never a directory of the machine that writes
+/// it.
 pub struct ModuleSource<'a, 'gc> {
     pub class: ClassReference<'gc>,
-    pub origin: &'a SourceOrigin,
+    pub identity: &'a ModuleIdentity,
     pub with_source: bool,
 }
 
-/// Every module's origin and the object id of its root class's record
+/// Why `identity` cannot name the module whose root class is named
+/// `root_name`, if it cannot: the one check of a single module the encoder
+/// and the decoder share, so that the encoder never writes a record the
+/// loader refuses. Its path is relative to the project or a `core:` file
+/// name, its id ends in the root's name, and the namespace `newspeak.` is
+/// the binary's modules' and theirs alone (decisions 1, 2 and 9).
+pub fn identity_defect(identity: &ModuleIdentity, root_name: &str) -> Result<(), String> {
+    identities::check_relative_path(&identity.path)?;
+    ModuleId::parse(identity.id.as_str(), root_name)?;
+    identities::check_namespace(identity)
+}
+
+/// Every module's identity and the object id of its root class's record
 /// (`root_ids`, in the same order), in module order -- the order of the
 /// mixin table's trees. A module's text is not here: the text table holds
 /// its declarations' (`texts`), from which it is assembled.
+///
+/// A record is an origin tag and its path -- `ORIGIN_PROJECT` and the path
+/// relative to the project, or `ORIGIN_CORE` and the file name of a
+/// `core:` path -- the id, `MODULE_UNVERSIONED` or `MODULE_VERSIONED` and
+/// the version's text, and the root's object id.
 pub fn encode_modules(writer: &mut Writer, modules: &[ModuleSource<'_, '_>], root_ids: &[u32]) {
     writer.write_u32(encode::u32_field("module count", modules.len()));
     for (module, root_id) in modules.iter().zip(root_ids) {
-        encode::encode_source_origin(writer, module.origin);
+        let identity = module.identity;
+        match identities::core_file(&identity.path) {
+            Some(file) => {
+                writer.write_u8(ORIGIN_CORE);
+                writer.write_str(file);
+            }
+            None => {
+                writer.write_u8(ORIGIN_PROJECT);
+                writer.write_str(&identity.path);
+            }
+        }
+        writer.write_str(identity.id.as_str());
+        match &identity.version {
+            Some(version) => {
+                writer.write_u8(MODULE_VERSIONED);
+                writer.write_str(&version.to_string());
+            }
+            None => writer.write_u8(MODULE_UNVERSIONED),
+        }
         writer.write_u32(*root_id);
     }
 }
 
-/// The smallest a module record can be: an origin tag, an empty name's
-/// length, and the root's object id.
-const MIN_MODULE_BYTES: usize = 1 + 4 + 4;
+/// The smallest a module record can be: an origin tag, an empty path's
+/// length, an empty id's length, a version tag, and the root's object id.
+const MIN_MODULE_BYTES: usize = 1 + 4 + 4 + 1 + 4;
 
 /// One module as the module section describes it.
 pub struct DecodedModule {
-    pub origin: SourceOrigin,
+    /// Its path, id and version, held to the project's rules
+    /// (`decode_modules`); the loader hands it to the module's root mixin.
+    pub identity: Rc<ModuleIdentity>,
     /// The object id of the graph record that is the module's root class,
     /// held to the module by `module_root_classes` once the graph exists.
     pub root: u32,
 }
 
 /// The inverse of `encode_modules`. The declared count must be the mixin
-/// table's tree count, the length of `module_rows` -- each tree's first
-/// row, as `mixins::read` found them; a surplus tree would be declarations
-/// no module names, a missing one a module without a root -- and is
-/// bounded by the bytes left before anything is reserved for it. A root's
-/// id is only read here: the graph it indexes comes later
+/// table's tree count, the length of `root_names` -- each tree's root
+/// declaration's name, as `mixins::read` found the trees; a surplus tree
+/// would be declarations no module names, a missing one a module without a
+/// root -- and is bounded by the bytes left before anything is reserved for
+/// it. A root's id is only read here: the graph it indexes comes later
 /// (`module_root_classes`).
+///
+/// Every identity is held to the rules a project's modules are held to
+/// before any is used (`docs/design/modules.md`, decision 10): each
+/// record's by `decode_record`, and then all of them together -- no two
+/// modules of one id and one version, nor of one id where either has none
+/// (`modules::check_distinct`), since a request could pick between neither
+/// pair and a tool would name both alike.
 pub fn decode_modules(
     reader: &mut Reader,
-    module_rows: &[u32],
+    root_names: &[Symbol],
 ) -> Result<Vec<DecodedModule>, DecodeError> {
     let declared = reader.read_u32()?;
-    let trees = u32::try_from(module_rows.len()).unwrap_or(u32::MAX);
+    let trees = u32::try_from(root_names.len()).unwrap_or(u32::MAX);
     if declared != trees {
         return Err(DecodeError::ModuleCountMismatch { declared, trees });
     }
     let count = decode::bounded_count(declared as usize, MIN_MODULE_BYTES, reader)?;
     let mut modules = Vec::with_capacity(count);
-    for _ in 0..count {
-        let origin = decode::decode_source_origin(reader)?;
+    for (index, root_name) in root_names.iter().enumerate().take(count) {
+        let module = u32::try_from(index).unwrap_or(u32::MAX);
+        let identity =
+            decode_record(reader, root_name.as_str()).map_err(|reason| match reason {
+                RecordDefect::Malformed(error) => error,
+                RecordDefect::Refused(reason) => DecodeError::ModuleIdentity { module, reason },
+            })?;
         let root = reader.read_u32()?;
-        modules.push(DecodedModule { origin, root });
+        modules.push(DecodedModule {
+            identity: Rc::new(identity),
+            root,
+        });
     }
+    identities::check_distinct(modules.iter().map(|module| &*module.identity))
+        .map_err(DecodeError::IndistinctModules)?;
     Ok(modules)
+}
+
+/// Why a module record was not read: bytes that are no record, or a record
+/// the project's rules refuse.
+enum RecordDefect {
+    Malformed(DecodeError),
+    Refused(String),
+}
+
+impl From<DecodeError> for RecordDefect {
+    fn from(error: DecodeError) -> RecordDefect {
+        RecordDefect::Malformed(error)
+    }
+}
+
+/// One module record's identity, up to its root's object id, held to the
+/// rules of one module (`identity_defect`) against `root_name`, its root
+/// declaration's name. A project's path is held to a project's rules
+/// before it is joined into the identity, so that a `core:` path cannot
+/// pass as a project's; the origin and version tags are read before
+/// anything they introduce.
+fn decode_record(reader: &mut Reader, root_name: &str) -> Result<ModuleIdentity, RecordDefect> {
+    let path = match reader.read_u8()? {
+        ORIGIN_PROJECT => {
+            let path = reader.read_text()?;
+            identities::check_project_path(path).map_err(RecordDefect::Refused)?;
+            path.to_string()
+        }
+        ORIGIN_CORE => identities::core_path(reader.read_text()?),
+        tag => {
+            return Err(RecordDefect::Malformed(DecodeError::InvalidTag {
+                what: "module origin",
+                tag,
+            }));
+        }
+    };
+    let id = reader.read_text()?;
+    let version = match reader.read_u8()? {
+        MODULE_UNVERSIONED => None,
+        MODULE_VERSIONED => Some(reader.read_text()?),
+        tag => {
+            return Err(RecordDefect::Malformed(DecodeError::InvalidTag {
+                what: "module version",
+                tag,
+            }));
+        }
+    };
+    let identity = ModuleIdentity {
+        path,
+        id: ModuleId::parse(id, root_name).map_err(RecordDefect::Refused)?,
+        version: version
+            .map(Version::parse)
+            .transpose()
+            .map_err(RecordDefect::Refused)?,
+    };
+    identity_defect(&identity, root_name).map_err(RecordDefect::Refused)?;
+    Ok(identity)
 }
 
 /// What disqualifies a class object as a module's root class.

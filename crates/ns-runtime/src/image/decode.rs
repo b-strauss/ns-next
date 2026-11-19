@@ -2,7 +2,6 @@
 //! is a `DecodeError`, never a panic.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_syntax::Span;
@@ -20,7 +19,7 @@ use crate::heap::{
 use crate::interpreter::instantiate;
 use crate::numeric::Rational;
 use crate::types::{
-    BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference, SourceOrigin, Value,
+    BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference, Value,
     fits_small_integer,
 };
 use crate::{ArbitraryInteger, Mutator};
@@ -182,6 +181,20 @@ pub enum DecodeError {
         declared: u32,
         trees: u32,
     },
+    /// A module record names its module as no project could: a path that
+    /// is not relative to the project or no `core:` file name, an id that
+    /// is no id or does not end in its root class's name, an id in the
+    /// namespace `newspeak.` outside the binary's modules or one outside it
+    /// for them, or a version that is no semver (`docs/design/modules.md`,
+    /// decision 10). `reason` is the rule's own message.
+    ModuleIdentity {
+        module: u32,
+        reason: String,
+    },
+    /// Two module records no request could pick between: of one id and one
+    /// version, or of one id where either has none. The message names both
+    /// by their paths.
+    IndistinctModules(String),
     /// A text of the text table whose parts do not describe a declaration:
     /// holes out of order, overlapping or outside its range, or a cut text
     /// whose length is not the range's less the holes'
@@ -874,6 +887,10 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
             ),
+            DecodeError::ModuleIdentity { module, reason } => {
+                write!(f, "module {module} of the image: {reason}")
+            }
+            DecodeError::IndistinctModules(reason) => write!(f, "the image's modules: {reason}"),
             DecodeError::MalformedText { text } => {
                 write!(
                     f,
@@ -1493,19 +1510,6 @@ pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
         start: flags & super::encode::FLAG_START != 0,
     })
-}
-
-/// The inverse of `encode::encode_source_origin`: the provenance a loaded
-/// world reports for a module.
-pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeError> {
-    match reader.read_u8()? {
-        ORIGIN_FILE => Ok(SourceOrigin::File(PathBuf::from(reader.read_str()?))),
-        ORIGIN_EMBEDDED => Ok(SourceOrigin::Embedded(reader.read_str()?)),
-        tag => Err(DecodeError::InvalidTag {
-            what: "source origin",
-            tag,
-        }),
-    }
 }
 
 pub fn decode_scalar_value<'gc>(
