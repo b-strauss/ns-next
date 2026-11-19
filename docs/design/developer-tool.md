@@ -129,12 +129,19 @@ bytecode and machine code through a request of the agent; the shell needs
 no tool of its own, since `debug_evaluate` evaluates at a stop
 ([debugger.md](debugger.md), "The MCP server").
 
-**8. A trace event is one line: `[<category>] <body> <event>`, then
-`name=value` pairs.** For example
-`[compile] Demo>>factorial: compiled trigger=entry bytes=412` or
-`[caches] Demo>>main:args: monomorphic->polymorphic selector=#deposit: site=3 receiver=Account`;
-`-` stands for an event that names no body, every reason is spelled in
-kebab case, and no line carries a time, so that a test pins it. It is
+**8. A trace event is one line: `[<category>] {<body>} <event>`, then
+`name=value` pairs, every name in braces.** For example
+`[compile] {Demo>>factorial:} compiled trigger=entry bytes=412`,
+`[inlining] {Demo>>main:args:} declined callee={[] in Demo>>run} reason=over-weight at=31` or
+`[caches] {Demo>>main:args:} monomorphic->polymorphic selector=#deposit: site=3 receiver={Demo/Account}`;
+`{}` stands for an event that names no body, every reason is spelled in
+kebab case, and no line carries a time, so that a test pins it. A name
+holds spaces (`[] in Demo>>main:args:`, `Demo/Account class>>named:`)
+and nearly every punctuation character, since a binary selector may be
+made of `+ - / \ * ~ < > = @ % | & ? ! ,` (§4.2, PDF p. 20), but never
+a brace: the braces delimit it, so that a line splits at the spaces
+outside them, for a script as for the eye (decided with the user on
+2026-11-19). It is
 V8's `--trace-*` kind of line and HotSpot's unified logging's, a category
 first; HotSpot's `PrintCompilation` columns
 (`jdk/src/hotspot/share/compiler/compileTask.cpp:187-300`) fit one event
