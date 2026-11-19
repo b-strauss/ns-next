@@ -1083,8 +1083,9 @@ fn a_dead_body_is_traced_freed_by_a_full_collection() {
     );
 }
 
-/// Setting the zone's size between two runs replaces it, dropping every
-/// body's machine code at once: one event, naming no body, counts them.
+/// Setting the zone's size after a run replaces it, dropping every
+/// body's machine code at once: one event, naming no body, counts them,
+/// delivered before the setter returns, with no run after it.
 #[test]
 fn a_zone_replaced_is_traced() {
     let mut replaced = None;
@@ -1234,6 +1235,100 @@ fn a_site_is_traced_through_its_states() {
             after.name()
         );
     }
+    // A megamorphic site stays so: the sixth receiver records nothing.
+    let at_the_site = |state: SiteState, position: fn(&(SiteState, SiteState)) -> SiteState| {
+        transitions
+            .iter()
+            .filter(|transition| {
+                transition.4 == 0 && position(&(transition.0, transition.1)) == state
+            })
+            .count()
+    };
+    assert_eq!(
+        at_the_site(SiteState::Megamorphic, |states| states.1),
+        1,
+        "{transitions:?}"
+    );
+    assert_eq!(
+        at_the_site(SiteState::Megamorphic, |states| states.0),
+        0,
+        "{transitions:?}"
+    );
+}
+
+/// A site that misses only once its body runs machine code moves on in
+/// the miss leaf, which records the transition and leaves it queued; it
+/// is delivered at the next safepoint or the host's return, after the
+/// body's compile.
+#[test]
+fn a_transition_the_miss_leaf_makes_is_traced() {
+    let source = indoc! {"
+        class Test = Object new () (
+          class First = Object new () (
+            public value = (
+              ^1.
+            )
+          )
+
+          class Second = Object new () (
+            public value = (
+              ^2.
+            )
+          )
+
+          public run = (
+            |
+              sum ::= 0.
+              first = First new.
+            |
+            1 to: 2000 do: [:index | sum:: sum + (self send: first)].
+            ^sum + (self send: Second new).
+          )
+
+          send: object = (
+            ^object value.
+          )
+        )
+    "};
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::new(Collector(Rc::clone(&events)));
+    let interpreter = run_source(source, |interpreter| {
+        interpreter.set_jit_stress(false);
+        interpreter.set_optimize_stress(false);
+        interpreter.set_optimization_budget(i64::MAX);
+        interpreter.set_stress_caches(false);
+        interpreter.set_trace(
+            TraceCategories::default()
+                .with(TraceCategory::Compile)
+                .with(TraceCategory::Caches),
+            TraceFilter::everything(),
+            sink,
+        );
+    });
+    assert!(
+        interpreter.jit_statistics().miss_leaf_calls > 0,
+        "machine code's sends missed"
+    );
+    let events = events.take();
+    let send = about(&events, "Test>>send:");
+    let compiled = send
+        .iter()
+        .position(|event| matches!(event.kind, TraceEventKind::Compiled { .. }));
+    let polymorphic = send.iter().position(|event| {
+        matches!(
+            &event.kind,
+            TraceEventKind::CacheTransition {
+                before: SiteState::Monomorphic,
+                after: SiteState::Polymorphic,
+                receiver,
+                ..
+            } if receiver == "Test/Second"
+        )
+    });
+    assert!(
+        matches!((compiled, polymorphic), (Some(compiled), Some(polymorphic)) if compiled < polymorphic),
+        "the site moved on after its body's compile: {send:?}"
+    );
 }
 
 /// Polymorphic sends record nothing once their site settled, and what
