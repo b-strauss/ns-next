@@ -28,7 +28,7 @@ use lsp_types::{
 };
 use ns_syntax::{Severity, Span};
 
-use crate::analysis::{Analysis, analyze};
+use crate::analysis::{Analysis, analyze_at};
 use crate::breakable::{self, Breakable};
 use crate::code_actions;
 use crate::document_symbols;
@@ -60,9 +60,11 @@ struct Document {
 }
 
 impl Document {
-    fn new(text: String, version: i32) -> Document {
+    /// `path` is the file the document's URI names, if any: the module
+    /// metadata's check tells the binary's own core library by it.
+    fn new(text: String, version: i32, path: Option<&std::path::Path>) -> Document {
         let line_index = LineIndex::new(&text);
-        let analysis = analyze(&text);
+        let analysis = analyze_at(&text, path);
         Document {
             text,
             version,
@@ -303,7 +305,7 @@ fn document_on_disk(uri: &Uri) -> Option<Document> {
     if text.starts_with('\u{feff}') {
         text.drain(..'\u{feff}'.len_utf8());
     }
-    Some(Document::new(text, 0))
+    Some(Document::new(text, 0, Some(&path)))
 }
 
 /// Whether a file of `length` bytes, a regular file or not, may be read as a
@@ -440,7 +442,11 @@ fn apply(
             let uri = params.text_document.uri;
             documents.insert(
                 uri.as_str().to_string(),
-                Document::new(params.text_document.text, params.text_document.version),
+                Document::new(
+                    params.text_document.text,
+                    params.text_document.version,
+                    file_path_of(&uri).as_deref(),
+                ),
             );
             Ok(Some(uri))
         }
@@ -453,7 +459,11 @@ fn apply(
             };
             documents.insert(
                 uri.as_str().to_string(),
-                Document::new(change.text, params.text_document.version),
+                Document::new(
+                    change.text,
+                    params.text_document.version,
+                    file_path_of(&uri).as_deref(),
+                ),
             );
             Ok(Some(uri))
         }

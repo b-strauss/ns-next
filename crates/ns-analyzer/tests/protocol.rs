@@ -1305,3 +1305,41 @@ fn a_parameter_s_expectation_is_shown_on_hover() {
     );
     shut_down(&client, server_thread);
 }
+
+/// The server tells the binary's own source by the file its URI names: an
+/// edited `Kernel.ns` at its place in a `core-library` directory declares
+/// its reserved id by right, while a program's file elsewhere declaring
+/// the same id is refused, as `ns-next run` refuses it.
+#[test]
+fn a_reserved_id_is_the_core_library_s_by_the_document_s_place() {
+    let (client, server_thread) = initialized_server();
+    let directory = scratch_directory("core-library-place");
+    let kernel = ns_runtime::shipped_module_source("Kernel").expect("the kernel's text");
+    let edited = format!("/// An edit.\n{kernel}");
+    let reserved = |uri: &str| -> Vec<String> {
+        notify(
+            &client,
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": edited } }),
+        );
+        next_diagnostics(&client)["diagnostics"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .filter_map(|diagnostic| diagnostic["message"].as_str())
+            .filter(|message| message.contains("lies in the namespace"))
+            .map(str::to_string)
+            .collect()
+    };
+    let in_place = file_uri_of(&directory.join("core-library").join("Kernel.ns"));
+    assert_eq!(reserved(&in_place), Vec::<String>::new());
+    let elsewhere = file_uri_of(&directory.join("program").join("Kernel.ns"));
+    assert_eq!(
+        reserved(&elsewhere),
+        vec![
+            "`newspeak.core.Kernel` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships"
+                .to_string()
+        ]
+    );
+    shut_down(&client, server_thread);
+}

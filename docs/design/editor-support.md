@@ -547,11 +547,16 @@ the editor refuses, as an error, exactly what `ns-next run` refuses and
 in its words: an id that is no dotted identifiers or whose last segment
 is not the class's name, a version that is no semver version, and two
 such metadata, the finding on the second; and an id in the namespace
-`newspeak.`, unless it is one the binary's own sources declare -- a
-shipped module's or the manifest's -- since the server sees only a
-document's text and the copy of `Kernel.ns` being edited is not the
-binary's text byte for byte; a program's module claiming such an id is
-the loader's to refuse. The one before a parameter documents the module
+`newspeak.`, unless the document is a copy of the binary's own source
+that declares it -- a shipped module's or the manifest's: its text is
+that source's byte for byte, or the file its URI names stands at that
+source's place in the core library's layout, below a directory named
+`core-library` (the repository's `crates/ns-runtime/core-library/`) or
+below a fingerprint's directory within one (the plugin's store of what
+`ns-next shipped-sources` wrote; "The core library"). The place counts
+because the `Kernel.ns` being edited is no longer the binary's text and
+a store may hold another binary's; a program's module declaring such an
+id anywhere else is reported, as the loader refuses it. The one before a parameter documents the module
 the parameter expects, `<id>` or `<id>@<range>`, and is checked by
 nothing at run time (decision 7), so a malformed one is a warning: the
 id's segments must be identifiers -- there is no class to hold its last
