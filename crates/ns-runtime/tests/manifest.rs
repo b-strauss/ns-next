@@ -323,6 +323,34 @@ fn a_module_without_a_version_matches_no_range() {
     );
     assert_eq!(
         message,
-        "no module `Util` of version 1; there are one without a version"
+        "no module `Util` of version 1; there are no versions"
+    );
+    // The host never pairs a versionless module with another of its id, but
+    // the message still reads as a sentence for a manifest made by hand.
+    let other = module(&mut interpreter, "other/Util.ns");
+    let manifest = manifest_over(
+        &mut interpreter,
+        &[
+            Held {
+                id: "Util",
+                version: None,
+                rank: 0,
+                definition: &util,
+            },
+            Held {
+                id: "Util",
+                version: Some("1.0.0"),
+                rank: 1,
+                definition: &other,
+            },
+        ],
+    );
+    let message = expect_error(
+        ask_at_version(&mut interpreter, &manifest, "Util", "2"),
+        "2",
+    );
+    assert_eq!(
+        message,
+        "no module `Util` of version 2; there are 1.0.0 and a module without a version"
     );
 }

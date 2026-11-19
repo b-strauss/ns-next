@@ -3,7 +3,7 @@
 
 mod common;
 use common::{ScratchDirectory, golden, goldens_root, ns_next};
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use std::path::Path;
 
 /// `build` then `load` of `program`, compared with `run` of it: the three
@@ -394,6 +394,61 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
     assert!(ok, "{error}");
     let hashes: Vec<&str> = out.trim_end().split(' ').collect();
     assert_eq!(hashes.len(), 3, "three hashes: {out}");
+}
+
+/// `build` assembles the application as `run` does, so it warns of a
+/// request that matched several versions as `run` does; `load` does not
+/// assemble it again, and the image runs the version `build` took.
+#[test]
+fn build_warns_of_a_request_that_matched_several_versions() {
+    let directory = ScratchDirectory::new("build-ambiguity");
+    std::fs::write(
+        directory.join("App.ns"),
+        indoc! {"
+            class App packageUsing: manifest = Object new (
+              | private Util = manifest at: 'com.acme.util.Util' version: '2'. |
+            ) (
+              public main: platform args: arguments = (
+                platform transcript show: Util new answer; newLine
+              )
+            ) : ()
+        "},
+    )
+    .expect("write the root");
+    for (version, answer) in [("2.1.0", "older"), ("2.3.1", "newer")] {
+        let library = directory.join(&format!("libs/{version}"));
+        std::fs::create_dir_all(&library).expect("create the library directory");
+        std::fs::write(
+            library.join("Util.ns"),
+            formatdoc! {"
+                (* :module: com.acme.util.Util@{version} *)
+                class Util = Object new () (
+                  public answer = ( ^'{answer}' )
+                ) : ()
+            "},
+        )
+        .expect("write a version");
+    }
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": ["libs/2.3.1/Util.ns", "libs/2.1.0/Util.ns"] }"#,
+    )
+    .expect("write the project file");
+    let image = directory.join("app.nsi");
+    let built = ns_next(&[
+        "build".as_ref(),
+        directory.path().as_os_str(),
+        image.as_os_str(),
+    ]);
+    assert!(built.0, "build failed: {}", built.2);
+    // Only the warning is held: a JIT that is off says so first.
+    let warning = "warning: `com.acme.util.Util` version 2 matched 2.1.0, 2.3.1; took 2.3.1\n";
+    assert!(built.2.ends_with(warning), "build's stderr: {}", built.2);
+    assert_eq!(built.2.matches("warning: `").count(), 1, "{}", built.2);
+    let loaded = ns_next(&["load".as_ref(), image.as_os_str()]);
+    assert!(loaded.0, "load failed: {}", loaded.2);
+    assert_eq!(loaded.1, "newer\n");
+    assert!(!loaded.2.contains("matched"), "load's stderr: {}", loaded.2);
 }
 
 #[test]

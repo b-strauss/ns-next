@@ -83,21 +83,28 @@ class Manifest
   /// or a whole version.
   /// @answers the module definition, a class object.
   /// @signals Error 'no module `<id>`' when no module has the id, and 'no
-  /// module `<id>` of version <range>; there are <versions>' when none of
-  /// its versions matches, the versions in ascending order.
+  /// module `<id>` of version <range>; there are <candidates>' when none
+  /// of its versions matches, the versions in ascending order, then 'and a
+  /// module without a version' for one, or 'no versions' when there is
+  /// only such a module.
   /// @see `at:` and `ambiguities`.
   public at: id version: range = (
     |
       rank ::= 0.
       index ::= self indexOf: id rank: 0.
       candidates ::= ''.
+      unversioned ::= false.
       matches ::= ''.
       matchCount ::= 0.
       taken ::= 0.
     |
     index = 0 ifTrue: [^Error signal: 'no module `' , id , '`'].
     [index > 0] whileTrue: [
-      candidates:: self join: candidates and: (self describeVersionAt: index).
+      (versions at: index) isNil ifTrue: [
+        unversioned:: true.
+      ] ifFalse: [
+        candidates:: self join: candidates and: (versions at: index).
+      ].
       (self version: (versions at: index) matches: range) ifTrue: [
         matches:: self join: matches and: (versions at: index).
         matchCount:: matchCount + 1.
@@ -107,7 +114,12 @@ class Manifest
       index:: self indexOf: id rank: rank.
     ].
     taken = 0 ifTrue: [
-      ^Error signal: 'no module `' , id , '` of version ' , range , '; there are ' , candidates.
+      ^Error signal: 'no module `'
+          , id
+          , '` of version '
+          , range
+          , '; there are '
+          , (self describeCandidates: candidates unversioned: unversioned).
     ].
     matchCount > 1 ifTrue: [
       ambiguitiesFound:: ambiguitiesFound copyWith: '`'
@@ -159,13 +171,19 @@ class Manifest
     ^(version indexOf: '-') = 0.
   )
 
-  /// Describes the version of the module at `index` for a message.
+  /// Describes the modules of an id for the message that follows 'there
+  /// are', so that it reads as a sentence whichever modules there are.
   ///
-  /// @param index an Integer, a module's index.
-  /// @answers the version's text, or 'one without a version'.
-  private describeVersionAt: index = (
-    (versions at: index) isNil ifTrue: [^'one without a version'].
-    ^versions at: index.
+  /// @param versionTexts a String, the versions there are, joined by
+  /// `join:and:`, empty for none.
+  /// @param unversioned a Boolean, whether a module without a version is
+  /// among them.
+  /// @answers `versionTexts`, followed by ' and a module without a
+  /// version' when there is one, or 'no versions' when it is alone.
+  private describeCandidates: versionTexts unversioned: unversioned = (
+    unversioned ifFalse: [^versionTexts].
+    versionTexts isEmpty ifTrue: [^'no versions'].
+    ^versionTexts , ' and a module without a version'.
   )
 
   /// Joins two parts of a list for a message.

@@ -41,8 +41,12 @@ pub(crate) struct Loaded {
     pub(crate) classes: Vec<ns_runtime::Root>,
     /// The manifest a project's application was assembled with, once made.
     manifest: Option<ns_runtime::Root>,
-    /// How many of the manifest's ambiguities were warned of already.
+    /// How many of the manifest's ambiguities were warned of already;
+    /// back to 0 with each new manifest.
     ambiguities_warned: usize,
+    /// Whether ambiguities are printed: `bench` assembles the application
+    /// again for every sample and turns it off after the first assembly.
+    pub(crate) warns: bool,
 }
 
 /// The slot of `Manifest.ns` that holds the texts `ambiguities` answers.
@@ -204,6 +208,9 @@ fn program_identity(
     let in_file = |error: String| format!("{}: {error}", file.display());
     let (declared, version) =
         modules::declared_identity(&loaded.resolved.module, &loaded.source).map_err(in_file)?;
+    // A module that declares a reserved id is refused even under an `as`:
+    // its source claims to be the binary's (decision 9).
+    modules::check_unreserved(&declared).map_err(in_file)?;
     let id = match given {
         Some(given) => {
             let in_project = |error: String| {
@@ -217,10 +224,7 @@ fn program_identity(
             modules::check_unreserved(&id).map_err(in_project)?;
             id
         }
-        None => {
-            modules::check_unreserved(&declared).map_err(in_file)?;
-            declared
-        }
+        None => declared,
     };
     Ok(ModuleIdentity {
         path: path_in_project(directory, file)?,
@@ -333,6 +337,7 @@ pub(crate) fn load_program(program: &Program, lowering: ns_runtime::Lowering) ->
         classes,
         manifest: None,
         ambiguities_warned: 0,
+        warns: true,
     }
 }
 
@@ -350,8 +355,10 @@ pub(crate) fn warn_of_ambiguities(loaded: &mut Loaded) {
     let texts = loaded
         .interpreter
         .enter(|mutator| manifest_ambiguities(mutator, manifest));
-    for text in texts.iter().skip(loaded.ambiguities_warned) {
-        eprintln!("warning: {text}");
+    if loaded.warns {
+        for text in texts.iter().skip(loaded.ambiguities_warned) {
+            eprintln!("warning: {text}");
+        }
     }
     loaded.ambiguities_warned = loaded.ambiguities_warned.max(texts.len());
 }
@@ -494,6 +501,8 @@ fn build_manifest(
         .instantiate(&loaded.classes[last], &arguments)
         .map_err(crate::entry::report_instantiation)?;
     loaded.manifest = Some(manifest.clone());
+    // A new manifest has recorded nothing yet.
+    loaded.ambiguities_warned = 0;
     Ok(manifest)
 }
 
@@ -572,11 +581,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_module_on_another_drive_has_no_path_in_the_project() {
-        let error =
-            match path_in_project(Path::new(r"C:\project"), Path::new(r"\server\share\A.ns")) {
-                Ok(path) => panic!("answered {path}"),
+        // Every path absolute with its own drive or share, so that the
+        // answer does not depend on the drive the working directory is on.
+        for file in [r"\\server\share\A.ns", r"D:\A.ns"] {
+            let error = match path_in_project(Path::new(r"C:\project"), Path::new(file)) {
+                Ok(path) => panic!("{file} answered {path}"),
                 Err(error) => error,
             };
-        assert!(error.contains("another drive or share"), "{error}");
+            assert!(error.contains("another drive or share"), "{file}: {error}");
+        }
+        assert_eq!(
+            path_in_project(Path::new(r"C:\project"), Path::new(r"c:\project\libs\A.ns")),
+            Ok("libs/A.ns".to_string())
+        );
     }
 }

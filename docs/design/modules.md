@@ -83,12 +83,14 @@ class Json usingPlatform: platform = Object new ( ... ) ( ... )
   would be ambiguous beside an unannotated `Json`.
 
 **3. The manifest is asked with strings.** `Manifest.ns` answers
-`at: id` -- the one module of that id, an error naming the candidates and
-their versions when there is none or more than one -- and
-`at: id version: range`, and nothing through `doesNotUnderstand:`: an id
-is any string, so a dotted one, and no key collides with a selector
-`Object` answers, which removes that rule
-(`crates/ns-cli/src/program.rs`'s check). Canonical Newspeak's unary
+`at: id` -- the one module of that id, an `Error` `` no module `<id>` ``
+when there is none and `` `<id>` names <count> modules; ask with
+at:version: `` when there are several -- and `at: id version: range`,
+whose `Error` for a range none of the id's versions matches names the
+versions there are (`` no module `<id>` of version <range>; there are
+1.0.0, 2.0.0 ``), and nothing through `doesNotUnderstand:`: an id is any
+string, so a dotted one, and no key collides with a selector `Object`
+answers, which removed the rule that refused a module named like one. Canonical Newspeak's unary
 `manifest Browsing` is not kept (decided with the user: the string is the
 form, and the version is a second argument beside it).
 

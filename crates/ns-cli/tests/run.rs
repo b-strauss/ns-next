@@ -712,6 +712,17 @@ fn an_id_in_newspeak_is_refused() {
         stderr.contains(&format!("`newspeak.json.Json` {refusal}")),
         "stderr: {stderr}"
     );
+    // An `as` outside the namespace does not excuse a declaration inside it.
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "App.ns", "modules": [{ "path": "Json.ns", "as": "legacy.Json" }] }"#,
+    )
+    .unwrap();
+    let stderr = refused(&run(directory.path()));
+    assert!(
+        stderr.contains(&format!("`newspeak.json.Json` {refusal}")),
+        "stderr: {stderr}"
+    );
     std::fs::write(
         directory.join("newspeak.json"),
         r#"{ "main": "App.ns", "modules": [{ "path": "Util.ns", "as": "newspeak.Util" }] }"#,

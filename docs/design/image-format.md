@@ -2702,14 +2702,13 @@ shipped world.
   it was written, not in their sections, so there is one decoder to hold the
   untrusted-input guarantee, and a header flag, `FLAG_START`, says which to
   expect. The entry needs no field, because it is always `main:args:`.
-- **Modules reach the application through a manifest answering
-  `doesNotUnderstand:`**, not through a namespace builtin, a factory
-  convention or a lookup on the VM mirror: it is what both upstream
-  `Manifest` classes do, it needs nothing privileged, so the manifest is
-  ordinary user code an image may carry, and a missing module is an
-  ordinary `doesNotUnderstand:` at run time. A module shadowed by a public
-  member of every object is refused before anything runs, since the
-  manifest could never answer it.
+- **Modules reach the application through a manifest asked with
+  strings**, `at:` and `at:version:` ([modules.md](modules.md), decision
+  3), not through a namespace builtin, a factory convention or a lookup on
+  the VM mirror: it needs nothing privileged, so the manifest is ordinary
+  user code an image may carry. A missing id, an `at:` of an id several
+  versions share, and a range no version matches each signal an `Error`
+  at run time with its fixed text ("The manifest" above).
 - **The project file is JSON** (the user's choice), read with `serde_json`,
   which `ns-analyzer` already depended on, so no new crate entered the lock file.
 - **A project is the directory its `newspeak.json` describes** (decided with
