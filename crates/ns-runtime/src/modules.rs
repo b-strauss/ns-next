@@ -314,7 +314,7 @@ impl ModuleIdentity {
 }
 
 /// The tag of the metadata that declares a module's id and version.
-const MODULE_TAG: &str = "module";
+pub const MODULE_TAG: &str = "module";
 
 /// Message of a module above whose class two `:module:` metadata stand;
 /// `{first}` and `{second}` are replaced by their payloads.

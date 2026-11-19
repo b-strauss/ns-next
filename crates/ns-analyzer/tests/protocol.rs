@@ -1158,3 +1158,150 @@ fn a_text_one_byte_from_a_shipped_module_s_is_an_ordinary_module() {
     );
     shut_down_within(&client, server_thread, STRESS_TIMEOUT);
 }
+
+/// The diagnostics the server publishes for `text`, each its message, its
+/// severity and its range.
+fn published_diagnostics(text: &str) -> Vec<(String, u64, Value)> {
+    let (client, server_thread) = initialized_server();
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": URI, "languageId": "newspeak", "version": 1, "text": text } }),
+    );
+    let published = next_diagnostics(&client);
+    shut_down(&client, server_thread);
+    published["diagnostics"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic["message"]
+                    .as_str()
+                    .expect("a message")
+                    .to_string(),
+                diagnostic["severity"].as_u64().expect("a severity"),
+                diagnostic["range"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// The range of the first line's metadata comment, `(*` through `*)`.
+fn first_line_comment_range(text: &str) -> Value {
+    let line = text.lines().next().expect("a first line");
+    let start = line.find("(*").expect("the comment") as u64;
+    let end = line.find("*)").expect("its end") as u64 + 2;
+    json!({ "start": { "line": 0, "character": start }, "end": { "line": 0, "character": end } })
+}
+
+/// `ns-next run` refuses a module whose `:module:` id ends in another name
+/// than its class's (`docs/design/modules.md`, decision 2); the editor
+/// shows the same message, as an error, on the metadata.
+#[test]
+fn a_module_id_not_ending_in_its_class_is_reported() {
+    let text = indoc! {"
+        (* :module: com.acme.json.Parser@2.1.0 *)
+        class Json = Object new () ()
+    "};
+    assert_eq!(
+        published_diagnostics(text),
+        vec![(
+            "`com.acme.json.Parser` does not end in the class's name `Json`".to_string(),
+            1,
+            first_line_comment_range(text)
+        )]
+    );
+}
+
+#[test]
+fn a_malformed_version_is_reported() {
+    let text = indoc! {"
+        (* :module: com.acme.json.Json@2.1 *)
+        class Json = Object new () ()
+    "};
+    let found = published_diagnostics(text);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (message, severity, range) = &found[0];
+    assert!(message.starts_with("`2.1` is no version: "), "{message}");
+    assert_eq!(*severity, 1, "an error");
+    assert_eq!(*range, first_line_comment_range(text));
+}
+
+#[test]
+fn a_reserved_id_is_reported() {
+    let text = indoc! {"
+        (* :module: newspeak.acme.Json *)
+        class Json = Object new () ()
+    "};
+    assert_eq!(
+        published_diagnostics(text),
+        vec![(
+            "`newspeak.acme.Json` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships"
+                .to_string(),
+            1,
+            first_line_comment_range(text)
+        )]
+    );
+}
+
+/// What a factory parameter expects is documentation (decision 7): checked
+/// by nothing at run time, so a malformed one is a warning, and a library
+/// may expect a shipped module.
+#[test]
+fn a_malformed_expectation_is_a_warning_and_a_shipped_one_is_none() {
+    let text = indoc! {"
+        class Reports usingPlatform: platform json: (* :module: com.acme.json.Json@2.x *) json = Object new () ()
+    "};
+    let found = published_diagnostics(text);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (message, severity, _) = &found[0];
+    assert!(message.starts_with("`2.x` is no version: "), "{message}");
+    assert_eq!(*severity, 2, "a warning");
+    let malformed_id = text.replace("com.acme.json.Json@2.x", "com.acme..Json");
+    let found = published_diagnostics(&malformed_id);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].0.starts_with("`com.acme..Json` is no module id"),
+        "{}",
+        found[0].0
+    );
+    let shipped = text.replace("com.acme.json.Json@2.x", "newspeak.core.CollectionsFactory");
+    assert_eq!(published_diagnostics(&shipped), Vec::new());
+}
+
+/// The hover over the module's class names its id and version, and over a
+/// factory parameter the module it expects.
+#[test]
+fn a_parameter_s_expectation_is_shown_on_hover() {
+    let text = indoc! {"
+        (* :module: com.acme.reports.Reports@1.0.0 *)
+        class Reports usingPlatform: platform json: (* :module: com.acme.json.Json@2 *) json = Object new () ()
+    "};
+    let (client, server_thread) = initialized_server();
+    open_document(&client, URI, text);
+    let hover_at = |id: i32, name: &str| -> String {
+        let line = text.lines().nth(1).expect("the class's line");
+        let column = line.rfind(name).expect("the name") as u64 + 1;
+        let hover = request(
+            &client,
+            id,
+            "textDocument/hover",
+            json!({ "textDocument": { "uri": URI }, "position": { "line": 1, "character": column } }),
+        );
+        hover["contents"]["value"]
+            .as_str()
+            .expect("a hover")
+            .to_string()
+    };
+    assert_eq!(
+        hover_at(2, " json = "),
+        "```newspeak\njson\n```\n\n*Expects* `com.acme.json.Json@2`"
+    );
+    let class = hover_at(3, "Reports");
+    assert!(
+        class.ends_with("\n```\n\n*Module* `com.acme.reports.Reports@1.0.0`"),
+        "{class}"
+    );
+    shut_down(&client, server_thread);
+}

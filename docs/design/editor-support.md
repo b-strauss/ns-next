@@ -233,8 +233,12 @@ Modules:
   parse's tokens and the folds over its module and comments, and the hints
   of a source that parses without error ("Hints"). Its
   findings are every diagnostic together -- the lexer's, then the parser's,
-  then the resolver's -- so a lexer error does not hide a parser error after
-  it.
+  then the resolver's, then the doc-tag warnings and the module
+  metadata's findings -- so a lexer error does not hide a parser error
+  after it.
+- `module_metadata.rs` — the `:module:` metadata (§4.3;
+  [modules.md](modules.md), decisions 2, 7 and 9), "Module metadata"
+  below.
 - `semantic_tokens.rs` — classification and the LSP encoding.
 - `folding.rs` — the fold ranges and their LSP encoding ("Folding").
 - `hints/` — the hints and their fixes as byte-offset text edits, and
@@ -524,6 +528,36 @@ comment's `@param`s, and an "Answers:" row the server writes itself,
 one; its container is `` `Shapes`'s class side``. Over the class's name the
 hover shows the class comment whole: its description, then its sections,
 "Factory:" and "Params:" among them.
+
+**Module metadata** shows below the doc comment's text: over the module's
+class the id and version its `(* :module: … *)` declares, as tools name a
+module (``*Module* `com.acme.json.Json@2.1.0` ``), and over a parameter the
+module its `:module:` expects (``*Expects* `com.acme.json.Json@2` ``) --
+only a well-formed one, since a malformed one is a finding ("Module
+metadata" below). A module without metadata shows no line: its id is its
+class's name, which the signature shows already.
+
+### Module metadata
+
+`module_metadata.rs` checks every `(* :module: … *)` of a document
+([modules.md](modules.md), decisions 2, 7 and 9), each finding on the
+metadata comment. The one above the module's class is read by
+`ns_runtime::modules::declared_identity`, the loader's own reading, so
+the editor refuses, as an error, exactly what `ns-next run` refuses and
+in its words: an id that is no dotted identifiers or whose last segment
+is not the class's name, a version that is no semver version, and two
+such metadata, the finding on the second; and an id in the namespace
+`newspeak.`, unless it is one the binary's own sources declare -- a
+shipped module's or the manifest's -- since the server sees only a
+document's text and the copy of `Kernel.ns` being edited is not the
+binary's text byte for byte; a program's module claiming such an id is
+the loader's to refuse. The one before a parameter documents the module
+the parameter expects, `<id>` or `<id>@<range>`, and is checked by
+nothing at run time (decision 7), so a malformed one is a warning: the
+id's segments must be identifiers -- there is no class to hold its last
+to -- and the range must be one `VersionRange::parse` reads; an id in
+the reserved namespace is no warning, since a library may expect a
+shipped module.
 
 ### Doc comments
 

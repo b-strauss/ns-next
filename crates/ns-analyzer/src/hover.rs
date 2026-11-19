@@ -41,6 +41,10 @@ pub struct Declared {
     /// A factory's class, by its declaration's node: the factory is
     /// documented in the class's doc comment, by `@factory` and `@param`.
     pub class: Option<Span>,
+    /// The well-formed `:module:` metadata comment it carries
+    /// (`module_metadata.rs`): over the module's class its id and
+    /// version, over a parameter the module it expects.
+    pub module_metadata: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +136,16 @@ fn markdown(declared: &Declared, declarations: &HashMap<Span, Declared>, text: &
     if !rows.is_empty() {
         markdown.push_str("\n\n");
         markdown.push_str(&section_table(&rows));
+    }
+    if let Some(metadata) = declared
+        .module_metadata
+        .and_then(|span| ns_syntax::Metadata::read(span, text))
+    {
+        let label = match declared.kind {
+            DeclaredKind::Parameter => "Expects",
+            _ => "Module",
+        };
+        markdown.push_str(&format!("\n\n*{label}* `{}`", metadata.payload));
     }
     if let Some(container) = declared.container {
         let name = slice(text, container.name);
@@ -495,8 +509,9 @@ mod tests {
 
     /// A module's `:module:` metadata stands between its class's doc
     /// comment and the class (`docs/design/modules.md`, decision 2); the
-    /// comment still renders over the class. An ordinary comment there
-    /// still detaches it.
+    /// comment still renders over the class, followed by the id and
+    /// version the metadata declares. An ordinary comment there still
+    /// detaches it.
     #[test]
     fn a_doc_comment_above_the_module_metadata_renders_over_the_class() {
         let module = indoc! {"
@@ -513,7 +528,9 @@ class Shapes = Object new
 ```
 
 A module of shapes.
-It grows."
+It grows.
+
+*Module* `com.example.Shapes@1.0.0`"
             )
         );
         let detached = module.replace(":module: com.example.Shapes@1.0.0 ", "a remark ");

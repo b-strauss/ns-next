@@ -103,8 +103,14 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let semantic_tokens::Classification {
         classified,
         references,
-        declarations,
+        mut declarations,
     } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens, text);
+    let module_metadata = crate::module_metadata::check(&resolution.module, text);
+    for (declaration, metadata) in module_metadata.shown {
+        if let Some(declared) = declarations.get_mut(&declaration) {
+            declared.module_metadata = Some(metadata);
+        }
+    }
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     // Only a source that parses without error gets hints: their fixes are
@@ -121,6 +127,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
         &comments,
         text,
     ));
+    findings.extend(module_metadata.findings);
     Analysis {
         findings,
         classified,

@@ -372,6 +372,7 @@ impl Classifier<'_> {
                 ),
                 container,
                 class: None,
+                module_metadata: None,
             },
         );
         self.emit_to(
@@ -399,6 +400,7 @@ impl Classifier<'_> {
                 documentation: None,
                 container: class_side_member,
                 class: Some(declaration.span),
+                module_metadata: None,
             },
         );
         // The header's factory pattern declares the class side's factory
@@ -552,6 +554,7 @@ impl Classifier<'_> {
                 documentation: hover::doc_comment_above(&slot.comments, self.text, slot.span.start),
                 container,
                 class: None,
+                module_metadata: None,
             },
         );
         self.emit_to(
@@ -585,6 +588,7 @@ impl Classifier<'_> {
                 ),
                 container,
                 class: None,
+                module_metadata: None,
             },
         );
         let target = Some(method.span);
@@ -649,6 +653,7 @@ impl Classifier<'_> {
                     documentation: None,
                     container: None,
                     class: None,
+                    module_metadata: None,
                 },
             );
             self.emit_to(
@@ -674,6 +679,7 @@ impl Classifier<'_> {
                     documentation: None,
                     container: None,
                     class: None,
+                    module_metadata: None,
                 },
             );
             self.emit_to(
