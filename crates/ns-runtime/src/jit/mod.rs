@@ -56,6 +56,9 @@ use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
+use crate::trace_events::{
+    CompileRefusal, CompileTrigger, Pending, PendingKind, Revival, TraceCategory,
+};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -4472,6 +4475,15 @@ impl JitState {
             }
             code.jit.forget();
             revived += 1;
+            if self.tracer.traces(TraceCategory::Compile) {
+                self.tracer.record(Pending::about(
+                    TraceCategory::Compile,
+                    &code,
+                    PendingKind::Revived {
+                        revival: Revival::Decay,
+                    },
+                ));
+            }
             false
         });
         self.statistics.revived_bodies += revived;
@@ -4501,6 +4513,15 @@ impl JitState {
             .retain(|body| !std::ptr::eq(body.as_ptr(), revived));
         self.statistics.revived_bodies += 1;
         self.revived_by_entries = true;
+        if self.tracer.traces(TraceCategory::Compile) {
+            self.tracer.record(Pending::about(
+                TraceCategory::Compile,
+                code,
+                PendingKind::Revived {
+                    revival: Revival::Entries,
+                },
+            ));
+        }
     }
 
     /// Whether a body was revived by its entries since the cells were last
@@ -4581,15 +4602,30 @@ fn activation_key(
 ///
 /// A caller that holds the mutator then calls `after_compile_trigger`,
 /// which passes the compaction a full zone asks for on to the heap's
-/// safepoint request and writes the cells a revival changed.
+/// safepoint request and writes the cells a revival changed. `trigger`
+/// is what the trace says made the compile: a compiled call's miss, or
+/// an interpreted entry.
 pub(crate) fn note_entry(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
+    trigger: CompileTrigger,
 ) {
     let slot = &code.jit;
     if !state.enabled {
+        // Once per body: a refused body is entered interpreted from then
+        // on, but a test may refuse it again.
+        if state.tracer.traces(TraceCategory::Compile) && slot.state.get() != REFUSED {
+            state.tracer.record(Pending::about(
+                TraceCategory::Compile,
+                code,
+                PendingKind::CompileRefused {
+                    trigger,
+                    reason: CompileRefusal::JitOff,
+                },
+            ));
+        }
         slot.refuse();
         state.statistics.refused_bodies += 1;
         return;
@@ -4604,7 +4640,7 @@ pub(crate) fn note_entry(
         // (`docs/OPEN-WORK.md`, road step 8).
         COMPILED => {
             if state.may_compile_now(slot) {
-                compile_into_slot(state, code, feedback_base, method);
+                compile_into_slot(state, code, feedback_base, method, trigger);
             } else {
                 state.hold_compile();
             }
@@ -4614,7 +4650,7 @@ pub(crate) fn note_entry(
             if entries < state.compile_at_entry {
                 slot.state.set(entries);
             } else if state.may_compile_now(slot) {
-                compile_into_slot(state, code, feedback_base, method);
+                compile_into_slot(state, code, feedback_base, method, trigger);
             } else {
                 // Held at the entry that compiles, so that the first entry
                 // after the zone has room again compiles a body that came
@@ -4647,7 +4683,7 @@ pub(crate) fn note_entry_by_call(
             entries => entries + 1 >= state.compile_at_entry,
         };
     if compiles {
-        note_entry(state, code, feedback_base, method);
+        note_entry(state, code, feedback_base, method, CompileTrigger::Call);
     }
 }
 
@@ -4672,16 +4708,38 @@ pub(crate) fn note_call_refused(state: &mut JitState, code: &CompiledCode) {
 }
 
 /// Compiles `code` into the zone and records the outcome in its slot and
-/// the statistics.
+/// the statistics, and for the trace with the `trigger` that asked for
+/// it.
 fn compile_into_slot(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
+    trigger: CompileTrigger,
 ) {
     let started = std::time::Instant::now();
     let outcome = compile(state, code, feedback_base, method);
     state.statistics.count_compile_time(started);
+    // A full zone's refusal too: the body counts its entries again, and
+    // the trace says why it was not compiled at the entry it came due.
+    if state.tracer.traces(TraceCategory::Compile) {
+        let kind = match &outcome {
+            Ok((_, map)) => {
+                let body = &state.bodies[*map as usize];
+                PendingKind::Compiled {
+                    trigger,
+                    bytes: (body.end - body.start) as usize,
+                }
+            }
+            Err(refusal) => PendingKind::CompileRefused {
+                trigger,
+                reason: CompileRefusal::from_refusal(*refusal),
+            },
+        };
+        state
+            .tracer
+            .record(Pending::about(TraceCategory::Compile, code, kind));
+    }
     match outcome {
         Ok((offsets, map)) => {
             code.jit.compiled(state.zone_identity(), offsets, map);
@@ -5113,6 +5171,15 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     lean_body.twin_needed = 0;
     state.write_pair_transfer_words(lean);
     state.statistics.compiled_twins += 1;
+    if state.tracer.traces(TraceCategory::Compile) {
+        let twin = &state.bodies[index as usize];
+        let bytes = (twin.end - twin.start) as usize;
+        state.tracer.record(Pending::about(
+            TraceCategory::Compile,
+            &installed.code,
+            PendingKind::CompiledTwin { bytes },
+        ));
+    }
     Ok(index)
 }
 
@@ -6660,7 +6727,13 @@ pub(crate) fn entered(
             };
         }
         let method = mutator.heap.activation_method(activation);
-        note_entry(&mut mutator.jit, code, feedback_base, method.as_ref());
+        note_entry(
+            &mut mutator.jit,
+            code,
+            feedback_base,
+            method.as_ref(),
+            CompileTrigger::Entry,
+        );
         after_compile_trigger(mutator);
     }
     // Every push of a block keeps its row current, the compiling one and
@@ -6855,6 +6928,22 @@ pub(crate) fn back_edge_ready(
                 crate::types::ActivationKind::TopLevel
             )
         {
+            // Only the JIT switched off is traced: a top-level
+            // activation's body is refused for its frame, which no
+            // compile was asked for, as at `entered`.
+            if !mutator.jit.enabled
+                && mutator.jit.tracer.traces(TraceCategory::Compile)
+                && slot.state.get() != REFUSED
+            {
+                mutator.jit.tracer.record(Pending::about(
+                    TraceCategory::Compile,
+                    code,
+                    PendingKind::CompileRefused {
+                        trigger: CompileTrigger::BackJump,
+                        reason: CompileRefusal::JitOff,
+                    },
+                ));
+            }
             slot.refuse();
             mutator.jit.statistics.refused_bodies += 1;
             return false;
@@ -6872,7 +6961,13 @@ pub(crate) fn back_edge_ready(
         }
         if mutator.jit.may_compile_now(slot) {
             let method = mutator.heap.activation_method(activation);
-            compile_into_slot(&mut mutator.jit, code, feedback_base, method.as_ref());
+            compile_into_slot(
+                &mut mutator.jit,
+                code,
+                feedback_base,
+                method.as_ref(),
+                CompileTrigger::BackJump,
+            );
         } else {
             mutator.jit.hold_compile();
         }
@@ -6881,6 +6976,13 @@ pub(crate) fn back_edge_ready(
             return false;
         }
         mutator.jit.statistics.back_edge_compiles += 1;
+        if mutator.jit.tracer.traces(TraceCategory::Osr) {
+            mutator.jit.tracer.record(Pending::about(
+                TraceCategory::Osr,
+                code,
+                PendingKind::OsrCompiled { loop_head: target },
+            ));
+        }
         // The row the closure stubs enter a block through, which only a
         // push writes otherwise (`note_block_entry`).
         #[cfg(ns_jit)]
@@ -6934,6 +7036,13 @@ pub(crate) fn at_back_edge(
     #[cfg(all(test, ns_jit))]
     inlining_tests::record_resumption(mutator, activation, target, entry);
     mutator.jit.statistics.back_edge_switches += 1;
+    if mutator.jit.tracer.traces(TraceCategory::Osr) {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Osr,
+            code,
+            PendingKind::OsrEntered { loop_head: target },
+        ));
+    }
     Some(run_machine_code(mutator, activation, register_base, entry))
 }
 
@@ -7938,6 +8047,14 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
 /// code does.
 #[cfg(ns_jit)]
 fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    if mutator.jit.tracer.traces(TraceCategory::Compile) {
+        let exits = code.jit.exits.get();
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Compile,
+            code,
+            PendingKind::Abandoned { exits },
+        ));
+    }
     let entries = mutator.jit.free_entered_code(code);
     code.jit.abandon(mutator.jit.revival_base);
     mutator.jit.abandoned.push(Rc::downgrade(code));
@@ -8729,6 +8846,13 @@ fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if code.jit.state.get() != REFUSED {
         code.jit.refuse();
         mutator.jit.statistics.refused_bodies += 1;
+        if mutator.jit.tracer.traces(TraceCategory::Compile) {
+            mutator.jit.tracer.record(Pending::about(
+                TraceCategory::Compile,
+                code,
+                PendingKind::RefusedForItsTwin,
+            ));
+        }
     }
     mutator.heap.forget_machine_entry(code);
     mutator
@@ -9164,8 +9288,20 @@ mod tests {
         }
 
         pub(in crate::jit) fn enter_twice(state: &mut JitState, code: &Rc<CompiledCode>) {
-            note_entry(state, code, FeedbackBase::NOT_ASSIGNED, None);
-            note_entry(state, code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                state,
+                code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
+            note_entry(
+                state,
+                code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
         }
 
         /// A body whose code runs straight to its return is compiled, and
@@ -9225,7 +9361,13 @@ mod tests {
             let mut state = JitState::for_test(1 << 16, true);
             let code = body();
             let _ = state.set_enabled(false);
-            note_entry(&mut state, &code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                &mut state,
+                &code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
             assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
             assert!(
                 !code.jit.push_is_armed(),
@@ -9233,7 +9375,13 @@ mod tests {
             );
             assert_eq!(state.statistics().refused_bodies, 1);
             let _ = state.set_enabled(true);
-            note_entry(&mut state, &code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                &mut state,
+                &code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
             assert_eq!(machine_entry(&state, &code), None, "not revived");
             assert_eq!(state.statistics().refused_bodies, 1);
             assert_eq!(state.statistics().compiled_bodies, 0);
@@ -9298,7 +9446,13 @@ mod tests {
                 None,
                 "an offset into the first zone means nothing in the second"
             );
-            note_entry(&mut second, &code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                &mut second,
+                &code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
             assert!(machine_entry(&second, &code).is_some());
             assert_eq!(machine_entry(&first, &code), None);
             assert_eq!(second.statistics().compiled_bodies, 1);
@@ -10676,8 +10830,20 @@ mod tests {
             retains_registers: bool,
         ) {
             let code = body_making_a_closure();
-            note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
-            note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                &mut mutator.jit,
+                &code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
+            note_entry(
+                &mut mutator.jit,
+                &code,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
             let depth = mutator.heap.activation_depth();
             // A factory's activation, as the body compiled without a method
             // runs: a top-level one is never entered in machine code.
@@ -10762,8 +10928,20 @@ mod tests {
             interpreter.set_jit_enabled(true);
             interpreter.enter(|mutator| {
                 let code = body();
-                note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
-                note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+                note_entry(
+                    &mut mutator.jit,
+                    &code,
+                    FeedbackBase::NOT_ASSIGNED,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
+                note_entry(
+                    &mut mutator.jit,
+                    &code,
+                    FeedbackBase::NOT_ASSIGNED,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
                 let resume = |mutator: &mut crate::interpreter::Mutator<'_>, reified: bool| {
                     let activation = push_factory(mutator, &code);
                     let frame = reified.then(|| mutator.heap.reify(activation));
@@ -11114,7 +11292,13 @@ mod tests {
             );
             state.note_full_collection();
             state.compaction_requested = false;
-            note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(
+                &mut state,
+                last,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+                crate::trace_events::CompileTrigger::Entry,
+            );
             assert!(state.compaction_requested(), "the zone is still full");
         }
 
@@ -11144,10 +11328,22 @@ mod tests {
                     crate::jit::zone::COMPILES_HELD_BEFORE_RETRY << (fruitless - 1)
                 );
                 for _ in 1..wait {
-                    note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
+                    note_entry(
+                        &mut state,
+                        last,
+                        FeedbackBase::NOT_ASSIGNED,
+                        None,
+                        crate::trace_events::CompileTrigger::Entry,
+                    );
                 }
                 assert!(!state.compaction_requested(), "one held compile short");
-                note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
+                note_entry(
+                    &mut state,
+                    last,
+                    FeedbackBase::NOT_ASSIGNED,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
                 assert!(state.compaction_requested(), "asked again");
                 assert!(state.zone_exhausted, "but compiling nothing until then");
             }
@@ -11204,8 +11400,20 @@ mod tests {
             ));
             let feedback_base = FeedbackBase::from_raw(0);
             let id = interpreter.enter(|mutator| {
-                note_entry(&mut mutator.jit, &block, feedback_base, None);
-                note_entry(&mut mutator.jit, &block, feedback_base, None);
+                note_entry(
+                    &mut mutator.jit,
+                    &block,
+                    feedback_base,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
+                note_entry(
+                    &mut mutator.jit,
+                    &block,
+                    feedback_base,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
                 assert!(machine_entry(&mutator.jit, &block).is_some(), "compiled");
                 let id = mutator.heap.code_id(&block);
                 super::super::note_block_entry(mutator, id, &block);
@@ -11218,7 +11426,13 @@ mod tests {
             interpreter.set_jit_enabled(false);
             interpreter.enter(|mutator| {
                 // The push of the block while the JIT is off.
-                note_entry(&mut mutator.jit, &block, feedback_base, None);
+                note_entry(
+                    &mut mutator.jit,
+                    &block,
+                    feedback_base,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
                 super::super::note_block_entry(mutator, id, &block);
                 assert_eq!(format!("{:?}", block.jit), "JitSlot::Refused");
             });

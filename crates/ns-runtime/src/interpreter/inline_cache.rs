@@ -2848,7 +2848,13 @@ pub(crate) fn decide_at<'gc>(
             return MissAnswer::Refuse;
         }
         let base = mutator.feedback_base_for(code);
-        jit::note_entry(&mut mutator.jit, code, base, None);
+        jit::note_entry(
+            &mut mutator.jit,
+            code,
+            base,
+            None,
+            crate::trace_events::CompileTrigger::Entry,
+        );
         jit::after_compile_trigger(mutator);
         let address = jit::machine_entry_address(&mutator.jit, code, base, None);
         mutator

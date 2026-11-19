@@ -1694,8 +1694,20 @@ mod tests {
             let freed = body_with_a_loop();
             let moved = body_with_a_loop();
             for code in [&freed, &moved] {
-                note_entry(&mut mutator.jit, code, FeedbackBase::NOT_ASSIGNED, None);
-                note_entry(&mut mutator.jit, code, FeedbackBase::NOT_ASSIGNED, None);
+                note_entry(
+                    &mut mutator.jit,
+                    code,
+                    FeedbackBase::NOT_ASSIGNED,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
+                note_entry(
+                    &mut mutator.jit,
+                    code,
+                    FeedbackBase::NOT_ASSIGNED,
+                    None,
+                    crate::trace_events::CompileTrigger::Entry,
+                );
             }
             let moved_before = mutator.jit.body_offset(&moved).expect("compiled");
             let stopped = push(mutator, &freed);
