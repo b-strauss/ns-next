@@ -1,0 +1,15 @@
+/// An application that keeps its manifest and asks it in main:args: for a
+/// range two versions match: the manifest takes the higher one and records
+/// the request, and the host warns of it after main:args: ends, as it warns
+/// of one the assembly made (docs/design/modules.md, decision 4).
+class App packageUsing: manifest = Object new (
+  |
+    private modules = manifest.
+  |
+) (
+  public main: platform args: arguments = (
+    platform transcript
+        show: (modules at: 'com.acme.util.Util' version: '2') new answer;
+        newLine.
+  )
+)

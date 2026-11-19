@@ -365,6 +365,64 @@ pub(crate) fn warn_of_ambiguities(loaded: &mut Loaded) {
     loaded.ambiguities_warned = loaded.ambiguities_warned.max(texts.len());
 }
 
+/// The manifests a loaded image's application kept, each with how many
+/// ambiguities it held when the image was loaded: those its assembly
+/// recorded, which `build` warned of.
+pub(crate) struct KeptManifests(Vec<(ns_runtime::Root, usize)>);
+
+/// The manifests the image `image` holds: every instance of its manifest
+/// module's root class (the module record at `core:Manifest.ns`, which the
+/// decoder holds to `newspeak.core.Manifest`). None for an image without a
+/// manifest -- a one-file program's -- or whose application did not keep
+/// it, since the graph holds only what the application reached.
+pub(crate) fn kept_manifests(image: &mut ns_runtime::image::LoadedImage) -> KeptManifests {
+    let manifest_path = modules::core_path(MANIFEST_FILE);
+    let Some(module) = image
+        .modules
+        .iter()
+        .find(|module| module.identity.path == manifest_path)
+    else {
+        return KeptManifests(Vec::new());
+    };
+    let class = &module.class;
+    let manifests: Vec<ns_runtime::Root> = image.interpreter.enter(|mutator| {
+        let class = crate::entry::class_reference(mutator, class);
+        mutator
+            .heap()
+            .instances_of(class)
+            .into_iter()
+            .map(|instance| mutator.stash(ns_runtime::Value::object(instance)))
+            .collect()
+    });
+    KeptManifests(
+        manifests
+            .into_iter()
+            .map(|manifest| {
+                let count = image
+                    .interpreter
+                    .enter(|mutator| manifest_ambiguities(mutator, &manifest).len());
+                (manifest, count)
+            })
+            .collect(),
+    )
+}
+
+/// Prints a warning for each ambiguity a kept manifest recorded since the
+/// load -- the requests `main:args:` made -- as `warn_of_ambiguities` does
+/// for `run` (`docs/design/modules.md`, decision 4).
+pub(crate) fn warn_of_kept_ambiguities(
+    interpreter: &mut ns_runtime::Interpreter,
+    kept: &mut KeptManifests,
+) {
+    for (manifest, warned) in &mut kept.0 {
+        let texts = interpreter.enter(|mutator| manifest_ambiguities(mutator, manifest));
+        for text in texts.iter().skip(*warned) {
+            eprintln!("warning: {text}");
+        }
+        *warned = (*warned).max(texts.len());
+    }
+}
+
 /// The Strings of the manifest's ambiguities slot, which only its
 /// `at:version:` writes, each time with a longer copy.
 fn manifest_ambiguities(

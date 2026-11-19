@@ -809,6 +809,24 @@ fn the_highest_matching_version_is_taken_and_warned() {
         String::from_utf8_lossy(&out.stderr),
         format!("{warning}{warning}")
     );
+    // `build` runs the assembly and warns of its request; `load` warns of
+    // the one `main:args:` makes, and not again of the assembly's, which
+    // the kept manifest still records.
+    let image = directory.join("app.img");
+    let built = ns_next()
+        .arg("build")
+        .arg(directory.path())
+        .arg(&image)
+        .output()
+        .unwrap();
+    succeeded(&built);
+    assert_eq!(String::from_utf8_lossy(&built.stderr), warning);
+    let loaded = ns_next().arg("load").arg(&image).output().unwrap();
+    assert_eq!(
+        succeeded(&loaded),
+        "two three one\ntwo one zero\ntwo three one\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&loaded.stderr), warning);
 }
 
 /// A range that names no pre-release matches none, so `2` takes `2.0.0`

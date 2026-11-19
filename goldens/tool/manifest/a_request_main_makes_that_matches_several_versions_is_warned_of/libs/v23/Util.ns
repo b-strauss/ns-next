@@ -1,0 +1,8 @@
+/// The higher of two versions of one major that a range of the major
+/// matches: the one the manifest takes.
+(* :module: com.acme.util.Util@2.3.1 *)
+class Util = Object new () (
+  public answer = (
+    ^'2.3.1'.
+  )
+)

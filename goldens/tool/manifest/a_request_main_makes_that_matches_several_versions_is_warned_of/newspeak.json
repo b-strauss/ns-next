@@ -1,0 +1,4 @@
+{
+  "main": "App.ns",
+  "modules": ["libs/v21/Util.ns", "libs/v23/Util.ns"]
+}

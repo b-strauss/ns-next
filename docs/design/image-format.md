@@ -2207,8 +2207,16 @@ added since (`program::warn_of_ambiguities`; `run.rs`,
 `the_highest_matching_version_is_taken_and_warned`). It reads the slot
 rather than sending `ambiguities`, so that no host run starts for it, in
 which a debugger's carried step or a pause asked between runs would stop.
-`build` prints the assembly's warnings; `load` prints none, since the
-loaded image's application holds its manifest only if it kept it.
+`build` prints the assembly's warnings. `load` prints those `main:args:`
+adds: the loaded image's application holds its manifest only if it kept
+it, so right after the load `load` finds every instance of the class of
+the manifest's module record (`core:Manifest.ns`, which the decoder holds
+to `newspeak.core.Manifest`; `Heap::instances_of`), counts the records
+each holds already -- the assembly's, which `build` warned of -- and after
+`main:args:` warns of the rest, as `run` does (`program::kept_manifests`,
+`warn_of_kept_ambiguities`;
+`goldens/tool/manifest/a_request_main_makes_that_matches_several_versions_is_warned_of`,
+which the `images` gate holds `load` to).
 
 **What `build` writes.** `image::package` takes the modules in module
 order, each with its identity (`program::module_sources`), and the
