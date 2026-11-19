@@ -1747,7 +1747,13 @@ newspeak.json: ns-next refuses --script with a .ns module"). A relative
 program file is the IDE project's, resolved against its base directory, both
 to run it and to recognise the configuration from the file. The arguments
 are one field, split as the platform splits program parameters
-(`ParametersListUtil`), and go after `--`. A program that is missing, names
+(`ParametersListUtil`), and go after `--`. The **runtime options**
+(`runtimeOptions`) are another such field, options of ns-next itself --
+`--trace=compile --trace-filter=Demo>>...` and the statistics flags -- each
+token passed as is (`--trace-filter` is repeatable, one pattern per
+occurrence, quoting keeps a pattern with a space whole) and placed after the
+subcommand and `--debug-connect`, before `--script`
+([developer-tool.md](developer-tool.md), decision 9). A program that is missing, names
 a file of neither kind, or is a text that is no valid path is refused before
 anything starts ("Choose the program: a project's newspeak.json or a .ns
 module"), and so are fewer than one iteration.

@@ -45,6 +45,9 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
 
     var script by string()
     var programArguments by string()
+
+    /** Options of ns-next itself, placed before the program: `--trace=…`, `--trace-filter=…`. */
+    var runtimeOptions by string()
     var iterations by property(10)
 }
 
@@ -78,6 +81,13 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         get() = options.programArguments
         set(value) {
             options.programArguments = value
+        }
+
+    /** Options for ns-next itself, split as the platform splits parameters, one option per token. */
+    var runtimeOptions: String?
+        get() = options.runtimeOptions
+        set(value) {
+            options.runtimeOptions = value
         }
 
     var iterations: Int
@@ -267,6 +277,8 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, 
     add(runtime.toString())
     add(configuration.command.subcommand)
     debugAddress?.let { address -> add("--debug-connect=$address") }
+    // Each token as is: `--trace-filter` is repeatable, one pattern per occurrence.
+    addAll(ParametersListUtil.parse(configuration.runtimeOptions.orEmpty()))
     // One token, so a name starting with `-` is not read as an option.
     configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
