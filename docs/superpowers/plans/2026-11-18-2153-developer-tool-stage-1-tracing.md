@@ -38,12 +38,13 @@
 ### Task 1: The `trace` module, its sink, names and filter
 
 **Files:**
-- Create: `crates/ns-runtime/src/trace.rs`, `crates/ns-runtime/src/trace/names.rs`, `crates/ns-runtime/src/trace/filter.rs`
-- Modify: `crates/ns-runtime/src/lib.rs` (re-exports), `crates/ns-runtime/src/jit/mod.rs` (`JitState::tracer`), `crates/ns-runtime/src/interpreter/mod.rs` (`Interpreter::set_trace`, the flush after `run_from_host`), `crates/ns-runtime/src/interpreter/safepoint.rs` (the flush in `Mutator::safepoint`), `crates/ns-runtime/src/jit/mod.rs` (`after_compile_trigger` flushes)
+- Create: `crates/ns-runtime/src/trace.rs`, `crates/ns-runtime/src/trace/names.rs`, `crates/ns-runtime/src/trace/filter.rs`, `crates/ns-runtime/src/tool_names.rs` (the tools' name grammar, moved)
+- Modify: `crates/ns-cli/src/debug/breakpoints.rs` (its `parse_method_name` and `parse_class` call `tool_names`), `crates/ns-runtime/src/lib.rs` (re-exports), `crates/ns-runtime/src/jit/mod.rs` (`JitState::tracer`), `crates/ns-runtime/src/interpreter/mod.rs` (`Interpreter::set_trace`, the flush after `run_from_host`), `crates/ns-runtime/src/interpreter/safepoint.rs` (the flush in `Mutator::safepoint`), `crates/ns-runtime/src/jit/mod.rs` (`after_compile_trigger` flushes)
 - Test: `crates/ns-runtime/src/trace/filter.rs`, `trace/names.rs` (unit), `crates/ns-runtime/tests/trace.rs` (new)
 
 **Interfaces:**
 - Produces (public, re-exported from `lib.rs`):
+  - `tool_names`: the grammar of `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>` and of a class name, moved from `crates/ns-cli/src/debug/breakpoints.rs` with its unit tests and its refusal texts unchanged, answering `ModuleName`, the inner path, the side and the selector; what needs the program's modules (the dotted-form refusal, an unknown id or version) stays a caller's check, the agent's against its `Sources`, the filter's against the heap's roots at the first flush.
   - `pub enum TraceCategory { Compile, Osr, Optimize, Inlining, Deoptimize, CodeZone, Caches }` with `pub const ALL: [TraceCategory; 7]`, `pub fn name(self) -> &'static str` and `pub fn from_name(name: &str) -> Option<TraceCategory>`.
   - `#[derive(Clone, Copy, Default, PartialEq, Eq)] pub struct TraceCategories(u8)` with `pub fn with(self, category: TraceCategory) -> TraceCategories`, `pub fn contains(self, category: TraceCategory) -> bool`, `pub fn is_empty(self) -> bool`.
   - `pub struct TraceFilter` with `pub fn everything() -> TraceFilter`, `pub fn parse(text: &str) -> Result<TraceFilter, String>` (the error names the bad pattern) and `pub fn matches(&self, body: &str) -> bool`.
