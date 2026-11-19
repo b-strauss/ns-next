@@ -93,7 +93,7 @@ enum Command {
         /// the option is given (`,` is a selector, so nothing splits a
         /// pattern):
         /// `<id>[@<version>][/<Class>(.<Class>)*][ class]>><selector>`, a
-        /// trailing `*` making a prefix.
+        /// trailing `...` making a prefix (`*` is a selector's character).
         #[arg(long, value_name = "PATTERN", requires = "trace")]
         trace_filter: Vec<String>,
         /// A script of the project's `newspeak.json`: its arguments go to

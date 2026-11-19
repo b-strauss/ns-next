@@ -829,28 +829,28 @@ fn trace_lines_are_whole_lines_beside_the_programs_stderr() {
     );
 }
 
-/// `--trace-filter` delivers only the events of the bodies it selects.
+/// `--trace-filter` delivers only the events of the bodies it selects,
+/// named whole or by a prefix ending in `...`.
 #[test]
 fn the_filter_narrows_the_lines() {
     let Some((_directory, program)) = hot_method_program("trace-filter") else {
         return;
     };
-    let stderr = traced_stderr(
-        &program,
-        &["--trace=compile", "--trace-filter=Demo>>square:"],
-    );
-    let compiles: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.starts_with("[compile] "))
-        .collect();
-    assert!(!compiles.is_empty(), "stderr: {stderr}");
-    assert!(
-        compiles.iter().all(|line| {
-            line.starts_with("[compile] {Demo>>square:} ")
-                || line.starts_with("[compile] {[] in Demo>>square:} ")
-        }),
-        "stderr: {stderr}"
-    );
+    for pattern in ["--trace-filter=Demo>>square:", "--trace-filter=Demo>>sq..."] {
+        let stderr = traced_stderr(&program, &["--trace=compile", pattern]);
+        let compiles: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("[compile] "))
+            .collect();
+        assert!(!compiles.is_empty(), "{pattern}: {stderr}");
+        assert!(
+            compiles.iter().all(|line| {
+                line.starts_with("[compile] {Demo>>square:} ")
+                    || line.starts_with("[compile] {[] in Demo>>square:} ")
+            }),
+            "{pattern}: {stderr}"
+        );
+    }
 }
 
 /// A run of `A_HOT_METHOD` with `arguments`, which are refused before the

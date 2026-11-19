@@ -1,7 +1,10 @@
 //! The trace filter (`--trace-filter`; `docs/design/developer-tool.md`,
 //! decision 5): patterns in the tools' method syntax, one each,
 //! `<id>[@<version>][/<Class>(.<Class>)*][ class]>><selector>`, read by
-//! the tools' one grammar (`tool_names`), a trailing `*` making a prefix.
+//! the tools' one grammar (`tool_names`), a trailing `...` making a
+//! prefix -- never a `*`, which is a binary selector's character (`Demo>>*`
+//! names the method `*`), while `...` occurs in no name: a selector holds
+//! no `.`, and an id no empty segment.
 //! A pattern is matched against a body's name by parts -- its module's id
 //! and version, the path inside the module, the side and the selector --
 //! never as one string, so that a pattern without a version covers every
@@ -40,7 +43,7 @@ enum Selection {
     /// One method: `Demo/Account>>deposit:`.
     Method(MethodName),
     /// The methods of one class and side whose selectors begin with
-    /// `prefix`: `Demo/Account>>dep*`, `Demo/Account class>>*`.
+    /// `prefix`: `Demo/Account>>dep...`, `Demo/Account class>>...`.
     Selectors {
         class: ClassName,
         class_side: bool,
@@ -48,19 +51,22 @@ enum Selection {
     },
     /// Every body of the classes inside a module whose path begins with
     /// `path` and then a class whose name begins with `last`:
-    /// `Demo/Account.En*`, `Demo/*`.
+    /// `Demo/Account.En...`, `Demo/...`.
     Classes {
         module: ModuleName,
         path: Vec<String>,
         last: String,
     },
     /// Every body of the modules of the id whose versions begin with
-    /// `prefix`: `com.acme.util.Util@1.*`.
+    /// `prefix`: `com.acme.util.Util@1....`.
     Versions { id: String, prefix: String },
-    /// Every body of the modules whose ids begin with `prefix`: `Demo*`,
-    /// `com.acme.*`.
+    /// Every body of the modules whose ids begin with `prefix`: `Demo...`,
+    /// `com.acme....`.
     Ids { prefix: String },
 }
+
+/// What ends a pattern that selects by a prefix.
+const PREFIX_MARK: &str = "...";
 
 /// The refusal of an empty pattern.
 const EMPTY_PATTERN: &str = "an empty pattern selects nothing: a trace filter pattern names a \
@@ -206,17 +212,18 @@ impl Selection {
 
 /// What the pattern `text` selects, or why it is not of the form.
 fn selection(text: &str) -> Result<Selection, String> {
-    let Some(stem) = text.strip_suffix('*') else {
-        if text.contains('*') {
-            return Err(misplaced_star(text));
+    let Some(stem) = text.strip_suffix(PREFIX_MARK) else {
+        if text.contains(PREFIX_MARK) {
+            return Err(misplaced_mark(text));
         }
         return tool_names::method_form(text).map(Selection::Method);
     };
-    if stem.contains('*') {
-        return Err(misplaced_star(text));
+    if stem.contains(PREFIX_MARK) {
+        return Err(misplaced_mark(text));
     }
     if let Some((class, prefix)) = stem.split_once(">>") {
-        if prefix.contains(char::is_whitespace) {
+        // A selector holds no `.`, so a prefix with one selects nothing.
+        if prefix.contains(char::is_whitespace) || prefix.contains('.') {
             return Err(not_a_pattern(text));
         }
         let (class, class_side) =
@@ -297,14 +304,14 @@ fn is_version_prefix(text: &str) -> bool {
 fn not_a_pattern(text: &str) -> String {
     format!(
         "`{text}` is no trace filter pattern: write {} followed by `>>selector`, or by \
-         ` class>>selector` for the class side, a trailing `*` making a prefix",
+         ` class>>selector` for the class side, a trailing `...` making a prefix",
         tool_names::CLASS_FORM
     )
 }
 
-/// The refusal of a pattern with a `*` before its end.
-fn misplaced_star(text: &str) -> String {
-    format!("`{text}` is no trace filter pattern: a `*` stands only at its end")
+/// The refusal of a pattern with a `...` before its end.
+fn misplaced_mark(text: &str) -> String {
+    format!("`{text}` is no trace filter pattern: a `...` stands only at its end")
 }
 
 /// The parts of the body named `name`, a block's those of the body it is
@@ -353,23 +360,23 @@ mod tests {
 
     #[test]
     fn a_star_makes_a_prefix() {
-        let every_method = filter("Demo/Account>>*");
+        let every_method = filter("Demo/Account>>...");
         assert!(every_method.matches("Demo/Account>>deposit:"));
         assert!(every_method.matches("Demo/Account>>withdraw:"));
         assert!(!every_method.matches("Demo/Account class>>named:"));
-        let module = filter("Demo*");
+        let module = filter("Demo...");
         assert!(module.matches("Demo>>main:args:"));
         assert!(module.matches("Demo/Account class>>named:"));
         assert!(module.matches("Demo/Account initializer"));
         assert!(!module.matches("Other>>main:args:"));
-        let selectors = filter("Demo/Account>>dep*");
+        let selectors = filter("Demo/Account>>dep...");
         assert!(selectors.matches("Demo/Account>>deposit:"));
         assert!(!selectors.matches("Demo/Account>>withdraw:"));
-        let classes = filter("Demo/Acc*");
+        let classes = filter("Demo/Acc...");
         assert!(classes.matches("Demo/Account>>deposit:"));
         assert!(classes.matches("Demo/Account superclass clause"));
         assert!(!classes.matches("Demo>>main:args:"));
-        let class_side = filter("Demo/Account class*");
+        let class_side = filter("Demo/Account class...");
         assert!(class_side.matches("Demo/Account class>>named:"));
         assert!(!class_side.matches("Demo/Account>>deposit:"));
     }
@@ -384,7 +391,7 @@ mod tests {
         assert!(one_version.matches("com.acme.util.Util@1.0.0/Inner>>run"));
         assert!(!one_version.matches("com.acme.util.Util@2.0.0/Inner>>run"));
         assert!(!one_version.matches("com.acme.util.Util/Inner>>run"));
-        let versions = filter("com.acme.util.Util@1.*");
+        let versions = filter("com.acme.util.Util@1....");
         assert!(versions.matches("com.acme.util.Util@1.0.0/Inner>>run"));
         assert!(!versions.matches("com.acme.util.Util@2.0.0/Inner>>run"));
     }
@@ -408,10 +415,14 @@ mod tests {
         );
         assert_eq!(filter("Demo/Account>>deposit:").check(&module_of), Ok(()));
         assert_eq!(
-            filter("Other/Account>>*").check(&module_of),
-            Err("`Other/Account>>*`: no module `Other`".to_string())
+            filter("Other/Account>>...").check(&module_of),
+            Err("`Other/Account>>...`: no module `Other`".to_string())
         );
-        assert_eq!(filter("Oth*").check(&module_of), Ok(()), "a prefix of ids");
+        assert_eq!(
+            filter("Oth...").check(&module_of),
+            Ok(()),
+            "a prefix of ids"
+        );
     }
 
     #[test]
@@ -419,7 +430,7 @@ mod tests {
         let main = filter("Demo>>main:args:");
         assert!(main.matches("[] in Demo>>main:args:"));
         assert!(!main.matches("[] in Demo>>run"));
-        let initializer = filter("Demo/Account*");
+        let initializer = filter("Demo/Account...");
         assert!(initializer.matches("[] in Demo/Account initializer"));
     }
 
@@ -447,8 +458,30 @@ mod tests {
         assert!(comma.matches("Demo>>,"));
         assert!(comma.matches("[] in Demo>>,"));
         assert!(!comma.matches("Demo>>run"));
-        let prefix = filter("newspeak.core.Kernel/String>>,*");
+        let prefix = filter("newspeak.core.Kernel/String>>,...");
         assert!(prefix.matches("newspeak.core.Kernel/String>>,"));
+    }
+
+    /// A trailing `*` is a selector's character, never a prefix's mark:
+    /// `*`, `**` and `*=` are binary selectors.
+    #[test]
+    fn a_star_is_a_selector() {
+        let star = filter("Demo>>*");
+        assert!(star.matches("Demo>>*"));
+        assert!(star.matches("[] in Demo>>*"));
+        assert!(!star.matches("Demo>>**"));
+        assert!(!star.matches("Demo>>run"));
+        let double = filter("Demo>>**");
+        assert!(double.matches("Demo>>**"));
+        assert!(!double.matches("Demo>>*"));
+        let stars = filter("Demo>>*...");
+        assert!(stars.matches("Demo>>*"));
+        assert!(stars.matches("Demo>>*="));
+        assert!(!stars.matches("Demo>>run"));
+        assert!(
+            TraceFilter::parse(&["Demo*"]).is_err(),
+            "an id holds no `*`"
+        );
     }
 
     #[test]
@@ -463,10 +496,12 @@ mod tests {
         for text in [
             ">>",
             "Demo>>",
-            "*>>x",
-            "*",
-            "Demo/Account>>de*p",
-            "Demo/Acc ount*",
+            "...>>x",
+            "...",
+            "Demo/Account>>de...p",
+            "Demo/Acc ount...",
+            "Demo>>at.....",
+            "Demo......",
             "Demo..Account>>x",
         ] {
             match TraceFilter::parse(&[text]) {

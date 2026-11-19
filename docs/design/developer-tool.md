@@ -97,11 +97,14 @@ replacement copy included, which a dump at the end would miss -- as V8's
 bodies in the syntax every tool names a method by
 (`id[@version][/Inner…][ class]>>selector`: `Demo/Account>>deposit:`,
 `com.acme.json.Json@2.1.0/Parser class>>on:`; a name without a version
-covers every version; [modules.md](modules.md), decision 8), with `*`
-ending a prefix, as V8's filters
+covers every version; [modules.md](modules.md), decision 8), with `...`
+ending a prefix (`Demo/Account>>de...`, `com.acme...`), as V8's filters
 (`v8/src/utils/utils.cc:225-265`) and HotSpot's `CompileCommand=print`
 (`jdk/src/hotspot/share/compiler/compilerOracle.hpp:52-68`) select one
-method. Beside it, the debugging API answers the code of a stopped frame.
+method. Their `*` cannot be the mark here: `*`, `**` and `*=` are binary
+selectors (§4.2, PDF p. 20), so `Demo>>*` names the method `*`, while
+`...` occurs in no name -- a selector holds no `.`, and an id has no
+empty segment. Beside it, the debugging API answers the code of a stopped frame.
 
 **6. The shell evaluates against a workspace object, as the Newspeak IDE
 does.** `ns-next shell [program]` runs in the process, as `d8`'s shell does
@@ -208,7 +211,8 @@ DAP stays possible, since the events are typed (decided with the user on
   `--trace-filter=<pattern>`, given once for each pattern -- never a
   list split at commas, since `,` is a binary selector and
   `newspeak.core.Kernel/String>>,` a method a pattern must be able to
-  name -- an unknown category, a malformed pattern and one naming a
+  name; a prefix ends in `...`, never in `*`, a binary selector's
+  character (decision 5) -- an unknown category, a malformed pattern and one naming a
   module the program does not have refused with exit status 2 before
   the program runs; each event is one line on standard error
   (decision 8), the format pinned by tests.
