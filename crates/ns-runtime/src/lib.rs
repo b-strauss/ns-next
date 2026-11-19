@@ -40,6 +40,7 @@ pub mod resolver;
 pub mod shipped_code;
 pub mod symbol;
 pub mod tool_names;
+pub mod trace;
 pub mod types;
 pub mod vm;
 
@@ -120,4 +121,7 @@ pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use ns_memory::reach;
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;
+pub use trace::{
+    TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter, TraceSink,
+};
 pub use types::*;

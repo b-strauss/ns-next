@@ -1043,6 +1043,12 @@ impl Interpreter {
                     crate::debugger::stepping::run_ended(mutator);
                     crate::debugger::exceptions::drop_pending(mutator);
                     crate::debugger::evaluation::run_ended(mutator);
+                    // What the run's last stretch recorded is delivered
+                    // before the host reads its result, so that no event
+                    // waits for a run that may never come.
+                    if mutator.jit.tracer.has_pending() {
+                        crate::trace::flush(mutator);
+                    }
                 });
                 result
             }
@@ -1166,6 +1172,30 @@ impl Interpreter {
     /// it counts. Available in every build, like `heap_statistics`.
     pub fn jit_statistics(&self) -> crate::jit::JitStatistics {
         self.world.jit_statistics()
+    }
+
+    /// Installs `sink` to receive the trace events of `categories` whose
+    /// bodies `filter` selects (`docs/design/developer-tool.md`, "Stage
+    /// 1: tracing"), replacing any sink installed before and dropping
+    /// what it had not received; with no category it is the same as no
+    /// tracing. Every event is delivered at the end of the compile trigger,
+    /// the safepoint or the host's run it happened in, in order.
+    pub fn set_trace(
+        &mut self,
+        categories: crate::trace::TraceCategories,
+        filter: crate::trace::TraceFilter,
+        sink: Box<dyn crate::trace::TraceSink>,
+    ) {
+        self.enter(|mutator| mutator.jit.tracer.install(categories, filter, sink));
+    }
+
+    /// Why the trace filter names a module the program does not have --
+    /// an id or version no module has, or the dotted form a nested class
+    /// was written in before -- as the first delivery of events checked it
+    /// (`TraceFilter::check`); `None` before and when it names none. Such
+    /// a pattern selects nothing.
+    pub fn trace_filter_refusal(&mut self) -> Option<String> {
+        self.enter(|mutator| mutator.jit.tracer.filter_refusal())
     }
 
     /// Why the JIT is off though it was wanted, `None` while it runs or

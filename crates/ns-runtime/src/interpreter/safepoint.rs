@@ -117,6 +117,14 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        // The trace's events are delivered first, before a debugger's
+        // stop or a collection, so that the sink hears of them in the order
+        // they happened and the pending queue never outlives a safepoint.
+        self.enter(|mutator| {
+            if mutator.jit.tracer.has_pending() {
+                crate::trace::flush(mutator);
+            }
+        });
         // Whether the pause stress mode's stop is kept for an evaluation
         // its reader began, which this safepoint may serve.
         #[cfg(debug_assertions)]

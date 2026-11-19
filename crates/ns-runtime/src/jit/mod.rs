@@ -1793,6 +1793,12 @@ pub(crate) struct JitState {
     /// is made (`share_machine_words`), or a state's own in a test that
     /// has no heap.
     machine_words: crate::heap::machine_words::MachineWords,
+    /// The developer tool's trace: the categories a host asked for, the
+    /// events recorded and not yet delivered, and the sink
+    /// (`docs/design/developer-tool.md`, "Stage 1: tracing"). Here since
+    /// nearly every site that records an event holds the JIT's state
+    /// alone.
+    pub(crate) tracer: crate::trace::Tracer,
     /// The dispatching rows of the method bodies' optimized copies, by
     /// code id (`heap/optimized_copies.rs`), reserved at the first install
     /// of a method body: what the bodies' dispatching entries compare a
@@ -2080,6 +2086,7 @@ impl JitState {
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            tracer: crate::trace::Tracer::default(),
             #[cfg(ns_jit)]
             optimized_copies: None,
         }
@@ -3156,6 +3163,7 @@ impl JitState {
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            tracer: crate::trace::Tracer::default(),
             #[cfg(ns_jit)]
             optimized_copies: None,
         }
@@ -4724,6 +4732,9 @@ fn compile_into_slot(
 /// - Each body the trigger installed has its budget word pointed at its
 ///   row, armed with `OPTIMIZATION_BUDGET` unless it is armed already
 ///   (`point_budget_words`), before its code first runs.
+/// - The trace events the trigger recorded are delivered
+///   (`trace::flush`); a flush runs no Newspeak code and never collects,
+///   so a leaf may make it.
 ///
 /// Every initializer invocation a leaf decides passes through here,
 /// nearly always with nothing installed: only the test for an installed
@@ -4739,6 +4750,11 @@ pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
     }
     if mutator.jit.take_revival() {
         mutator.caches.refresh_all_cells(&mutator.jit);
+    }
+    // What the trigger recorded is delivered before the code it compiled
+    // runs, so that the sink hears of a body before it hears of its exits.
+    if mutator.jit.tracer.has_pending() {
+        crate::trace::flush(mutator);
     }
 }
 
