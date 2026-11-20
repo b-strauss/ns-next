@@ -43,11 +43,15 @@ plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
 
 The developer tool (the item "A developer tool like V8's `d8`" below)
-is designed and its stage 1 planned
-(`docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`);
-its traces name a body by the tools' form `id@version/Inner>>selector`
-([developer-tool.md](design/developer-tool.md), decision 5;
-[modules.md](design/modules.md), decision 8).
+has its stage 1, tracing, built: `ns-next run --trace=<categories>`
+writes a line for every decision of the tiers and the caches with its
+reasons, each body named by the tools' form `id@version/Inner>>selector`
+([developer-tool.md](design/developer-tool.md), "Stage 1: tracing";
+[modules.md](design/modules.md), decision 8). Its stage 2, printing the
+code a run makes, is next for it and needs a plan of its own, which
+decides that stage's open questions
+([developer-tool.md](design/developer-tool.md), "Stage 2: printing
+code", "Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -2433,17 +2437,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   client of the same request ([execution.md](design/execution.md), "The
   baseline JIT's foundation", "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15;
-  designed with the user on 2026-11-18, not built): three stages, each
-  reaching the agent and the IDE as it is built -- tracing, typed events
-  with their reasons reported to a sink the host installs and written by
-  `ns-next run --trace=<categories>`; printing the code a run makes,
-  bytecode, baseline and optimized machine code at install and the
-  inlining plan, decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`; and
-  `ns-next shell`, evaluating against a workspace object as the Newspeak
-  IDE does. It matters because a question about the JIT -- why a loop
-  stayed in the interpreter, why a copy was retired -- is answered today
-  only by a counter or a print added for the occasion. Next is stage 1;
-  each stage's open questions are decided in its plan
+  designed with the user on 2026-11-18; stage 1 built 2026-11-20): three
+  stages, each reaching the agent and the IDE as it is built. Stage 1,
+  tracing, is built: typed events with their reasons reported to a sink
+  the host installs (`ns_runtime::trace_events`), written by `ns-next run
+  --trace=<categories>`, narrowed by `--trace-filter`, passed on by
+  `debug_start` and the plugin's runtime options. Open: stage 2, printing
+  the code a run makes -- bytecode, baseline and optimized machine code
+  at install and the inlining plan, decoded by `iced-x86` and
+  `yaxpeax-arm` in `ns-cli`, and a stopped frame's code through the
+  agent -- next; and stage 3, `ns-next shell`, evaluating against a
+  workspace object as the Newspeak IDE does. It matters because a
+  question about the code the tiers made is still answered only by a
+  debugger on the process, and an expression only at a stop. Each
+  stage's open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
 - **The IDE's debug session as MCP tools** (asked for by the user on
@@ -3147,6 +3154,26 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
+- **A plugin debugger test timed out once under load** (noted
+  2026-11-18, with the trace's stage 1): `NewspeakBreakpointTypesTest`'s
+  `testATemporaryBreakpointIsRemovedAfterItsStop` failed with a
+  `TimeoutException` in one `cargo xtask gates commit` while the machine
+  was busy, and passed on the rerun; nothing it runs had changed. It may
+  be flaky: its waits may be too short for a loaded machine, or a stop
+  may race its temporary breakpoint's removal. Repeating it under load
+  and reading where it waits would tell
+  ([debugger.md](design/debugger.md), "The JetBrains plugin", "Hit
+  counts and temporary breakpoints").
+- **The plugin offers runtime options for `bench` that include
+  `--trace`** (noted 2026-11-20): the run configuration's "Runtime
+  options" row stays enabled for the Benchmark command, where the
+  statistics flags are valid, but `ns-next bench` takes no `--trace` or
+  `--trace-filter`, so a configuration naming them fails only when it
+  runs, with clap's refusal. The form could say which options a command
+  takes, or the check refuse a trace option for Benchmark before
+  anything starts ([editor-support.md](design/editor-support.md), "The
+  project file and running projects";
+  [developer-tool.md](design/developer-tool.md), "The hosts").
 - **`ns-next load` walks the whole heap for the manifests an image kept**
   (noted 2026-11-19, unmeasured): to warn of an ambiguous `at:version:`
   that `main:args:` makes, as `run` does ([modules.md](design/modules.md),
@@ -3621,6 +3648,16 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **The trace's rarer events end to end** (noted 2026-11-20, with the
+  trace's stage 1). No test runs a program to `[optimize] … not-due` --
+  a recompilee whose copy was settled between the walk and the due
+  check -- nor to `[code-zone] … freed … cause=refused-for-its-twin`
+  (`FreeCause::RefusedForItsTwin`); both lines are pinned only by the
+  line format's unit test. Nor does a plugin test cover the runtime
+  options with the Benchmark command, or a blank field stored as none.
+  On a target without a JIT the CLI's and the MCP server's trace tests
+  return without asserting anything and without saying so
+  ([developer-tool.md](design/developer-tool.md), "Tests").
 - **The core library as the IDE draws it** (noted 2026-11-15, with the
   header stops and the library). No `runIde` check was made of the
   "Newspeak Core Library" node under External Libraries -- its name, its
@@ -3803,6 +3840,14 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The inlining plan's decisions are collected by every optimizing compile
+  (noted 2026-11-19): `optimizing::compile_tree_explained` fills a
+  `PlanDecisions` -- small `Vec`s of the scopes the plan inlined and
+  the callees it declined -- whether the `inlining` category is traced
+  or not, and drops it unread when not. A flag
+  telling the planner to keep its decisions would save the allocation,
+  once per optimization ([developer-tool.md](design/developer-tool.md),
+  "The events and their lines").
 - The codegen gate does not see what fat LTO inlines (noted 2026-11-16).
   `xtask/src/codegen.rs` reads `cargo asm`'s listing of `ns-runtime`'s
   lib, which is compiled without the binaries' cross-crate LTO. Under

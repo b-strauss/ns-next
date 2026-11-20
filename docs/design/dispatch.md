@@ -1114,6 +1114,13 @@ lexical send the private rule decides (below). And some are polymorphic by
 nature: `true` and `false` are instances of two builtin classes, so every
 site that is not inlined and sees both is bimorphic.
 
+Every transition -- vacant to monomorphic, monomorphic to polymorphic,
+polymorphic to megamorphic -- is traced in the category `caches`, with
+its selector, its site and the receiver's class: `advance` answers the
+transition it made, and its callers on the miss path record it, the hit
+path untouched ([developer-tool.md](developer-tool.md), "Stage 1:
+tracing").
+
 #### The global cache
 
 The global cache (`GlobalCache`) has 512 two-slot groups, 1024 entries in

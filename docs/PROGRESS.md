@@ -67,6 +67,7 @@ first.
 | The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project; stage 5, evaluation and what rests on it -- an expression compiled as a block standing at a stopped frame's program counter and pushed above it, its depth reserve and its abort, setting a variable and the refusal of one a block may have copied, conditions and logpoints decided where the hit is counted, restart frame and force return through the one unwinder, smart step into, marks, the memory view and the shipped frames folded, in the VM, the DAP agent and the plugin, and `ns-next mcp`, through which an agent debugs a program | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name), 2026-11-17 (stage 5) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md), [debugger-stage-5](superpowers/plans/2026-11-16-2110-debugger-stage-5.md) |
 | Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
+| The developer tool: designed in nine decisions and three stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace` and the plugin's runtime options | Partial (stage 1 of 3) | 2026-11-20 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8336,3 +8337,90 @@ The Docker groups `linux` and `aarch64` were not run.
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): metadata through
 the mirrors, and a module on another drive or share than its project,
 which has no relative path and is refused.
+
+## The developer tool's stage 1: tracing (2026-11-20)
+
+[developer-tool.md](design/developer-tool.md), decisions 1 to 9, "Stage 1:
+tracing"; [execution.md](design/execution.md) and
+[dispatch.md](design/dispatch.md), where each traced decision is
+described; [debugger.md](design/debugger.md), "The MCP server";
+[editor-support.md](design/editor-support.md), "The project file and
+running projects".
+
+Asked for by the user on 2026-11-15 and designed with the user on
+2026-11-18 and 2026-11-19: what V8's `d8` is to V8, `ns-next` becomes to
+this runtime, in three stages -- tracing, printing the code a run makes,
+a shell. Stage 1 turns the reasons the JIT and the caches decided by
+control flow into values: `ns_runtime::trace_events` declares a typed
+event for every baseline compile and its refusal, on-stack replacement,
+abandonment and revival, optimization requested -- with where the walk
+up the stack stopped and why -- put off, installed or refused, callee
+the inlining plan took or declined with its reason, copy retired or
+invalidated, free of machine code, compaction and replacement of the
+zone, and inline cache transition, in seven categories. A sink the host
+installs receives them (`Interpreter::set_trace`); every site is cold
+and tests one bit first, the codegen budgets unchanged, and a release
+build traces. A site records the event pending, holding the bodies it
+names as `Rc<CompiledCode>` and never a handle, and a flush names them
+as the debugger names a frame, applies the filter and delivers them at
+the interpreter's compile trigger, the safepoint and a host's return --
+never in a leaf of machine code, whose events wait for the next of those
+without a safepoint requested, so that tracing changes nothing it
+observes.
+
+`ns-next run --trace=<categories>` writes each event as one line on
+standard error, `[<category>] {<body>} <event> name=value…`, every name
+in braces; `--trace-filter=<pattern>`, given once per pattern since `,`
+is a binary selector, selects bodies in the tools' method syntax, a
+trailing `...` making a prefix since `*` is one too (the second a change
+of decision 5 made while building it); a malformed filter or one naming
+no module is refused with exit status 2 before anything runs. The
+grammar of the tools' names moved from the DAP agent into `ns-runtime`
+(`tool_names`), with `KnownModule::resolve` the one module lookup of the
+agent, the MCP server and the filter. `debug_start` takes `trace` and
+`trace_filter`, and the plugin's run configuration takes runtime options.
+
+No golden, `run-corpus` outcome, image or instruction encoding changed;
+without `--trace` every program's output is what it was.
+`crates/ns-runtime/tests/trace.rs` pins the events programs make,
+`crates/ns-cli/src/trace.rs` every line, `tests/cli.rs` the flags and
+their refusals, `tests/mcp.rs` `debug_start`'s trace and
+`NewspeakRunConfigurationTest` the runtime options.
+
+The commit gates passed on every commit (`commit`, with `caches` and
+`codegen` where their files changed). The end-of-batch gates passed on
+the final tree, after `release-checks` found that the trace tests did
+not compile without debug assertions (`f6576a4b`):
+- `images` 2,196 tests;
+- `caches` 549;
+- `benchmarks` 177;
+- `release-checks` 7,549, with both lints;
+- `codegen`, every budget held, its counts unchanged;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,818 tests each (WIDE 5,621), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, with reports for all six IDEs it checks.
+
+The Docker groups `linux` and `aarch64` were not run.
+
+- `3ac19d10`, `28b27d63`, `05dc3765`, `c58fd03f`, `0b3d4edb`, `2830d8c2`
+  -- the design and the plan
+  (`docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`).
+- `b2ddce5d`, `3b9ca334`, `0181fadc`, `8e77c323` -- the tools' name
+  grammar in `ns-runtime`, the events, their sink, the names and the
+  filter.
+- `40caf29e`, `84dfc9c8`, `5536ba57` -- `compile` and `osr`; a leaf only
+  records.
+- `e04ecd6c`, `692dac01` -- `optimize` and `inlining`.
+- `799523a6`, `2f2b941d` -- `deoptimize` and `code-zone`.
+- `7da72044`, `b27aba2b` -- `caches`.
+- `495e022b`, `917b80c4`, `5ca5fcaa` -- `ns-next run --trace` and its
+  filter.
+- `5cf617f2`, `3fcbd640` -- `debug_start`'s trace.
+- `040b9536` -- the plugin's runtime options.
+- `f6576a4b` and the documentation commit after it.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 2,
+printing code, next, and stage 3, the shell; the rarer events untested
+end to end; the plugin's runtime options offered for `bench`; a plugin
+test that timed out once under load.

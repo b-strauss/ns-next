@@ -7,10 +7,13 @@ why a loop stayed in the interpreter, why an optimized copy was retired,
 why a send went megamorphic -- is today answered only by a counter or a
 print added for the occasion.
 
-Status: the static half exists (below, "What exists"); tracing, printing
-the code a run makes and the shell are designed here and built in three
-stages, in that order ("Planned: the stages"). The profiler is not part of
-it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
+**Partial.** Stage 1, tracing, is built ("Stage 1: tracing"): `ns-next
+run --trace=<categories>` writes a line on standard error for every
+decision of the tiers and the caches, with its reasons. Printing the
+code a run makes and the shell are designed here and built as stages 2
+and 3, in that order ("Planned: the stages"); stage 2 is next. The
+profiler is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A
+profiler").
 
 ## What exists
 
@@ -22,15 +25,23 @@ it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
   standard error after the run (`crates/ns-cli/src/entry.rs`). The cache
   statistics are a scan of the sites on demand, the collector's and the
   JIT's plain counters; none of them says *why*.
-- The JIT's decisions have their sites, but few of their reasons are
-  values: a baseline compile's refusal is (`jit::Refusal`), while where
-  `find_recompilee` stops walking, why the planner declines a callee
-  (`Planner::take` returns), why an optimization fails (its `Err(_)` is
-  dropped) and why a copy is retired or invalidated are decided by control
-  flow and recorded nowhere.
-- Every inline cache transition happens in one function,
-  `InlineCaches::advance` (`interpreter/inline_cache.rs`), machine code's
-  miss leaf included.
+- The trace says why ("Stage 1: tracing"): every decision of the JIT --
+  a baseline compile and its refusal, on-stack replacement, an
+  abandonment and a revival, an optimization requested, put off,
+  installed or refused, where `find_recompilee` stopped walking, every
+  callee the inlining plan took or declined and why, a copy retired or
+  invalidated, machine code freed and the zone compacted -- and every
+  inline cache transition is a typed event with its reasons as enums
+  (`ns_runtime::trace_events`), written as one line each by `ns-next run
+  --trace`, by `debug_start`'s `trace` and by the plugin's runtime
+  options.
+- `ns_runtime::tool_names` is the one grammar of the tools' names,
+  `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`, and
+  `tool_names::KnownModule::resolve` the one lookup of a module a name
+  gives: the DAP agent's method and exception breakpoints and evaluation
+  -- which the MCP server's locations reach through the agent -- and the
+  trace filter read names through them, so that a refusal reads the same
+  in every tool.
 - A body's machine code can be read out of the zone (`CodeWriter::bytes`)
   and mapped to its instructions (`ProgramCounterMap`).
 - The debugger evaluates an expression as a block over a stopped frame
@@ -161,81 +172,221 @@ line is dropped by its bounded connection. A channel of their own over
 DAP stays possible, since the events are typed (decided with the user on
 2026-11-18).
 
+## Stage 1: tracing
+
+**Built** (2026-11-18 to 2026-11-20;
+`docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`).
+`ns-next run --trace=<categories>` writes one line on standard error for
+every decision of the tiers and the caches in the categories named, with
+its reasons; `debug_start` and the plugin's run configuration pass the
+same flags on.
+
+### The runtime's half
+
+`ns_runtime::trace_events` (`crates/ns-runtime/src/trace_events.rs`,
+with `trace_events/names.rs` and `trace_events/filter.rs`; not `trace`,
+which is the collector's edge enumeration) declares the events and
+formats nothing (decision 2). A host installs a sink with
+`Interpreter::set_trace(categories, filter, sink)`: a `TraceCategories`
+set of `TraceCategory`s, a `TraceFilter` and a `Box<dyn TraceSink>`,
+whose `event` receives a `TraceEvent { category, body, kind }` -- `body`
+the name of the body the event is about, `None` for one about no body,
+`kind` a `TraceEventKind` whose reasons are enums, each with a `name()`
+in kebab case, the spelling of its line. Installing replaces the sink
+before and drops what it had not received; no category is no tracing.
+
+- **The switch.** The tracer (`EventTracer`, `JitState::tracer`) holds
+  one bit per category, and every site tests its category's bit
+  (`EventTracer::traces`, `#[inline]`) before it builds anything. Every
+  site is cold -- a compile, an optimization, a retirement, an
+  invalidation, a free, a compaction, a cache miss's transition; no
+  template, stub or leaf of machine code changed for it, and the
+  `codegen` gate's budgets held unchanged. Nothing of it is
+  `cfg(debug_assertions)`: a release build traces (decision 3). A target
+  without a JIT (`cfg(not(ns_jit))`) records only `caches`.
+- **Pending events.** A site holds only the JIT's state, so it records
+  a pending event (`EventTracer::record`): the bodies it names as
+  `Rc<CompiledCode>`, a copy's key as its `CustomizationKey`, a selector
+  as its `Symbol`, and the receiver of a cache transition as its class's
+  qualified name, a `String` computed when it is recorded. No pending
+  event holds a handle, so no collection between its record and its
+  delivery moves what it names, and it keeps no object of the program
+  alive ("A handle means nothing against a `Heap` that did not mint it",
+  `CLAUDE.md`).
+- **Delivery.** A flush (`trace_events::flush`, cold) names the bodies
+  and keys, applies the filter and delivers each event in the order it
+  was recorded: at the end of every compile trigger the interpreter
+  makes (`jit::after_compile_trigger`), at the run loop's safepoint,
+  when a host's run returns, and before a host method that records
+  outside a run returns (`set_jit_enabled`, `set_jit_zone_bytes`,
+  `compact_jit_zone`), so that no event waits for a later run. **A leaf
+  of machine code only records** (`jit::after_compile_trigger_in_leaf`):
+  a flush runs the host's sink, which must not run with machine code's
+  frames on the native stack, so the sink is called outside machine
+  code only. A leaf's events wait for the next safepoint or host return
+  the run reaches on its own, and no safepoint is requested for them:
+  tracing must not change what it observes, and a requested safepoint
+  would make machine code exit only when tracing. What leaves record is
+  bounded by the program -- a compile per body and per twin, at most
+  three transitions per send site -- so the queue never grows with the
+  run.
+- **Names.** A body is named as the debugger names a frame
+  (`debugger/stack.rs`'s `frame_name`), its owner by `qualified_name`
+  (`debugger/metadata/again.rs`), the module's id and version, `/` and
+  the classes inside it ([modules.md](modules.md), decision 8):
+  `Demo>>factorial:`, `Demo/Account>>deposit:`, `Demo/Account
+  class>>named:` (a factory's too), `[] in Demo>>main:args:`,
+  `Demo/Account initializer`, `Demo/Account superclass clause`,
+  `com.acme.util.Util@1.0.0/Inner>>run`,
+  `newspeak.core.Kernel/Array>>do:`. `BodyNames`
+  (`trace_events/names.rs`) caches each name beside a `Weak` of its body
+  and, at a miss, indexes every body the heap's mixins hold -- methods,
+  factory entries, the three initializer bodies, the superclass clause
+  and every block they create, transitively, the mixins an edit
+  superseded included, so that a body an edit replaced keeps its name. A
+  body no mixin holds is `(unnamed)`. A copy's key is named by two
+  fields, `key=` the receiver's class and `entered=` the class the body
+  was entered at, the latter only where it is another, both absent for a
+  body optimized as one copy; `#<id>` where no application holds the
+  dispatch id any longer. A cache transition's receiver whose class has
+  no declaration -- the VM mirror's -- is named by its class's display
+  name, unqualified.
+
+### The events and their lines
+
+Each event is one line (decision 8; `crates/ns-cli/src/trace.rs`'s
+`line`, every event's line pinned by `every_event_has_its_line`):
+`[<category>] {<body>} <event>`, then its fields in a fixed order --
+`key=` and `entered=` first where present, `at=` last for the inlining
+plan's -- every name in braces, every reason in kebab case, `{}` for an
+event about no body.
+
+| Category | Line after the body | What it says |
+|---|---|---|
+| `compile` | `compiled trigger= bytes=` | Baseline code installed (`jit::compile_into_slot`). `trigger=entry` an entry the interpreter makes -- a push, an initializer's invocation, a future it forced; `call` one machine code makes -- the miss leaf, the initializer leaf, the forcing leaf (`note_entry_by_call`); `back-jump` the 40th interpreted backward jump. |
+| `compile` | `compiled-twin bytes=` | The body's reifying twin installed (`jit::compile_twin`). |
+| `compile` | `refused trigger= reason=` | No baseline code, for good but for `zone-full`, after which the body counts its entries again: `jit-off`, `too-many-instructions`, `unassembled`, `zone-full`, `too-large`, `exits-at-once` (`CompileRefusal::from_refusal`). |
+| `compile` | `abandoned exits=` | The body's code spent its exit budget and was freed (`jit::abandon`). |
+| `compile` | `revived by=` | An abandoned body counts its entries again: `decay` (`JitState::decay_exits`) or `entries` (`note_abandoned_entry`). |
+| `compile` | `refused-for-its-twin` | Refused for good, its code freed, since its twin was refused (`jit::refuse_for_its_twin`). |
+| `osr` | `osr-compiled at=` | Compiled at an interpreted backward jump to the loop's head `at=` (`jit::back_edge_ready`). |
+| `osr` | `osr-entered at=` | An interpreted frame switched into the body's code there (`jit::at_back_edge`). |
+| `optimize` | `requested key= entered= spent-by={} walk-end=` | The body, the recompilee, is requested an optimization: `spent-by`'s budget ran out and the walk up the stack (`jit::find_recompilee`) stopped here for `bottom-of-stack`, `no-frames-between`, `search-length`, `inlined-into-a-copy-below`, `not-recompilable` or `not-inlined`; `not-walked` for the optimize stress mode's request of the spending frame's own copy. |
+| `optimize` | `not-due key= entered= spent-by={} walk-end=` | The walk found the body, but its copy for the key was installed or refused meanwhile: nothing is requested, and `spent-by`'s budget stays parked until the next safepoint arms it. |
+| `optimize` | `deferred key= entered= reason=` | The optimization put off, the budget armed afresh: `patched` (a breakpoint stands in the body), `zone-full`. |
+| `optimize` | `optimized key= entered= bytes= inlined-scopes= inlined-sites= type-case-arms= eliminated-blocks=` | The copy installed. |
+| `optimize` | `refused key= entered= reason=` | The copy refused for good, the reason a `CompileRefusal`'s. |
+| `inlining` | `inlined key= entered= in-body={} callee={} at=` | The plan inlined `callee` at the send at `at=` of the scope running `in-body`. |
+| `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead (`callee={}` where it is no body): `not-snapshotted` (the tree holds no body of it -- a method past the limits where it is sent, a nested class's accessor, a factory, a `doesNotUnderstand:` target), `not-expressed` (a leaf or primitive the graph does not express), `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`. |
+| `deoptimize` | `retired key= entered= reason= version=` | The copy retired for `traps` or `exits` (`jit::retire_optimized`), its version raised to `version=`, or `none` when it is refused for good. |
+| `deoptimize` | `invalidated key= entered= cause=` | The copy freed since what it was compiled against changed: `edit`, `bulk-forward`, `reclaimed-id`, `moved-feedback-base`, `breakpoint`, `stress` (the invalidate stress mode's round). |
+| `code-zone` | `freed tier= cause=` | A body's `baseline` or `optimized` code freed (`zone.rs`'s `mark_free`): `compaction`, `dead-body` (by a full collection; about no body, since its code died), `moved-feedback-base`, `breakpoint`, `abandoned`, `refused-for-its-twin`. A retired or invalidated copy's free is its `deoptimize` event alone. |
+| `code-zone` | `compacted freeing= bodies-freed=` | About no body: the zone compacted, freeing `to-a-quarter` or `every-inactive-body`, each body freed also its own `freed` event. |
+| `code-zone` | `replaced bodies-freed=` | About no body: the zone replaced -- its size set afresh, the JIT switched on or off -- dropping the code of `bodies-freed` bodies at once, none of them its own `freed` event. |
+| `caches` | `<before>-><after> selector=#<selector> site= receiver={}` | A miss moved a site `vacant->monomorphic`, `monomorphic->polymorphic` or `polymorphic->megamorphic` (`InlineCaches::advance` answers the transition; `global_found`, `decided_miss` and `fill` record it), the miss leaf's included; the body is the root of the family the site is in and `site=` its number within the family's range, `{}` for a site of no family's, a closure's an image decoded. A refill and a megamorphic site record nothing. |
+
+For example:
+
+```
+[compile] {Demo>>square:} compiled trigger=call bytes=1216
+[osr] {newspeak.core.Kernel/Number>>to:do:} osr-compiled at=3
+[optimize] {Demo/Account>>deposit:} requested key={Demo/Account} spent-by={[] in Demo>>main:args:} walk-end=not-inlined
+[inlining] {Demo>>main:args:} declined in-body={Demo>>main:args:} callee={[] in Demo>>run} reason=over-weight at=31
+[deoptimize] {Demo>>run} retired reason=exits version=none
+[code-zone] {} compacted freeing=to-a-quarter bodies-freed=7
+[caches] {Demo>>main:args:} monomorphic->polymorphic selector=#deposit: site=3 receiver={Demo/Account}
+```
+
+The inlining plan's decisions are collected by every optimizing compile
+(`optimizing::compile_tree_explained` answers them, `PlanDecisions`,
+beside the copy or its refusal) and traced whether the copy is installed
+or refused after planning; a callee dropped late -- a block that escapes
+after all, a scope that would create a block -- is declined at its
+sender's send, and one dropped only with its parent, which lies in no
+scope of the copy, is not reported.
+
+### The filter
+
+`TraceFilter` (`trace_events/filter.rs`) delivers the events of the
+bodies one of its patterns selects, and every event about no body. A
+pattern is written in the tools' method syntax,
+`<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`, read by the
+tools' one grammar (`tool_names`); a trailing `...` makes it a prefix:
+`Demo/Account>>...` and `Demo/Account>>de...` (a class's selectors),
+`Demo/Account class>>...` (its class side), `Demo/Acc...` and
+`Demo/...` (classes inside a module), `com.acme.util.Util@1....` (a
+version prefix), `Demo...` and `com.acme...` (an id prefix). Never `*`:
+`*`, `**` and `*=` are binary selectors, so `Demo>>*` names the method
+`*` (decision 5). A pattern is matched against a body's name by parts --
+the module's id and version, the path inside it, the side and the
+selector -- so that a pattern without a version covers every version
+(`ModuleName::covers`), a block's event matches through its `[] in `
+owner, and an initializer or a superclass clause, having no selector,
+only by the class forms. A pattern is one pattern, never split at a
+comma: `,` is a binary selector, and `newspeak.core.Kernel/String>>,` a
+method a pattern must be able to name. `TraceFilter::parse` refuses a
+pattern not of the form, `TraceFilter::check` one whose module no module
+of the program or the binary has, through
+`tool_names::KnownModule::resolve`, as the debugger refuses a method
+breakpoint's name; each refusal names the pattern.
+
+### The hosts
+
+- **`ns-next run`** (`crates/ns-cli/src/trace.rs`, `commands/run.rs`)
+  takes `--trace=<categories>`, comma-separated category names or `all`,
+  as HotSpot's `-Xlog` takes its tags rather than V8's flag per kind,
+  and `--trace-filter=<pattern>`, once for each pattern, which clap
+  refuses without `--trace`. An unknown category and a malformed pattern
+  are refused before the program is read, and a pattern naming a module
+  neither the program nor the binary has once the program is loaded
+  (`program::known_modules`, the list the DAP agent's
+  `Sources::module_of` reads too), before the application is assembled
+  -- each with exit status 2, nothing run. The sink
+  (`StandardErrorSink`) writes each line and its newline in one write on
+  standard error, so that the program's own output to standard error
+  never tears a line; a failed write is ignored, so that a closed
+  standard error never stops the program. Only `run` takes the flags;
+  `load` and `bench` do not.
+- **`debug_start`** takes `trace`, `--trace`'s value, and `trace_filter`,
+  an array of patterns, each passed as one `--trace-filter`, both before
+  the program; the lines arrive with the program's output in every
+  answer ([debugger.md](debugger.md), "The MCP server"; decisions 7 and
+  9).
+- **The plugin's run configuration** takes runtime options, ns-next's
+  own options placed after the subcommand and `--debug-connect` and
+  before `--script` ([editor-support.md](editor-support.md), "The
+  project file and running projects"; decision 9).
+
+### Tests
+
+`crates/ns-runtime/tests/trace.rs` runs programs with a collecting sink,
+as `tests/jit.rs` does (`#![cfg(ns_jit)]`, the JIT on, a stress mode
+that would defeat what a test pins switched off by its debug-only
+setter), and names the events that must occur, never a complete
+sequence, so that a changed threshold breaks only what it changes; the
+plan's declines are unit tests in `jit/optimizing/plan.rs`, the filter's
+and the names' in their modules. The line format is pinned by
+`crates/ns-cli/src/trace.rs`'s unit tests, `--trace` and its refusals by
+`crates/ns-cli/tests/cli.rs`, `debug_start`'s trace by
+`crates/ns-cli/tests/mcp.rs` (`a_trace_arrives_with_the_output`) and the
+runtime options by the plugin's `NewspeakRunConfigurationTest`; the
+CLI's and the MCP server's tests strip every stress mode from the child
+and answer nothing on a target without a JIT.
+
 ## Planned: the stages
-
-### Stage 1: tracing
-
-- **The events.** `ns_runtime::trace_events` declares `TraceEvent` and
-  the reason enums the decisions above turn into values (`trace_events`,
-  since `trace` is the collector's edge enumeration):
-  - a baseline compile, its trigger (entry, call, back jump) and its
-    `Refusal`;
-  - on-stack replacement compiled and switched into;
-  - a body abandoned for its exits, revived by decay or by its counted
-    entries;
-  - an optimization requested (the budget spent, the recompilee and why
-    the walk up the stack stopped there), installed or refused (why);
-  - the inlining plan's decisions, each declined callee with its reason
-    (observed, reaching past the compile, over the weight, the compile
-    limit or the recursion limit, out of registers);
-  - an optimized copy retired (traps, exits; its version raised or
-    refused for good) or invalidated (an edit, a bulk forward, a reclaimed
-    id, a moved feedback base, a breakpoint's patch, the invalidate
-    stress mode's round), each copy named by its key;
-  - machine code freed, per body and tier, by a compaction, a full
-    collection (a dead body, a moved feedback base), an abandonment for
-    its exits, a refusal for good once its twin was refused, or a
-    breakpoint's patch -- a retired or invalidated copy's free is its
-    `deoptimize` event alone -- each compaction summed up, how it freed
-    and how many bodies, and a replacement of the zone with the number of
-    bodies it dropped, both naming no body;
-  - an inline cache's transition, from its old to its new state
-    (vacant, monomorphic, polymorphic, megamorphic), with the send site
-    and the receiver's application.
-- **No handle leaves the call.** An event names a body as the debugger
-  names a frame -- its owner by `qualified_name`
-  (`debugger/metadata/again.rs`), `id@version/Inner>>selector` -- and a
-  receiver application by its class's qualified name, computed when it
-  is recorded; a pending event holds the code it names as
-  `Rc<CompiledCode>` and plain values, so no collection between its
-  record and its delivery can move what it names, and it keeps no
-  object of the program alive ("A handle means nothing against a `Heap`
-  that did not mint it", `CLAUDE.md`; decided with the user on
-  2026-11-19).
-- **The switch.** One flag per category, read at the cold site; installing
-  a sink sets them (`Interpreter::set_trace`).
-- **`ns-next run`** takes one flag, `--trace=<categories>` (`compile`,
-  `osr`, `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches`, or
-  `all`), as HotSpot's `-Xlog` takes its tags, rather than V8's flag per
-  kind (decided with the user on 2026-11-19), and
-  `--trace-filter=<pattern>`, given once for each pattern -- never a
-  list split at commas, since `,` is a binary selector and
-  `newspeak.core.Kernel/String>>,` a method a pattern must be able to
-  name; a prefix ends in `...`, never in `*`, a binary selector's
-  character (decision 5) -- an unknown category, a malformed pattern and one naming a
-  module the program does not have refused with exit status 2 before
-  the program runs; each event is one line on standard error
-  (decision 8), the format pinned by tests.
-- **`debug_start`** takes `trace` and `trace_filter` and passes them to
-  the child; the plugin's run configuration takes runtime options placed
-  before the program (decision 9).
-- **Pending events.** A site that holds only the JIT's state records the
-  event with the bodies it names as `Rc<CompiledCode>`; the bodies are
-  named and the filter applied at a flush -- at the end of every compile
-  trigger the interpreter makes, at the run loop's safepoint and when a
-  host run returns, never in a leaf of machine code, so that no host code
-  runs with machine code's frames on the native stack; a leaf's events,
-  bounded by the program (a compile per body and twin, a few cache
-  transitions per site), wait for the next safepoint the run reaches on
-  its own, since a requested one would make machine code exit only when
-  tracing -- so that no site needs the heap and the queue never grows
-  with the run.
 
 ### Stage 2: printing code
 
 - `--print-bytecode`, `--print-code` (baseline and optimized, at install)
   and `--print-inlining` (the plan as a tree of scopes, arms and declined
-  sites with stage 1's reasons), all selected by `--print-filter`.
+  sites with stage 1's reasons), all selected by `--print-filter`, whose
+  patterns are the trace filter's (`--print-filter` given once for each
+  pattern, a prefix ending in `...`). Stage 1 leaves what this builds on:
+  the bodies' names (`trace_events/names.rs`), the filter
+  (`TraceFilter`), the plan's decisions with their reasons
+  (`PlanDecisions`, collected by every optimizing compile) and the events
+  of an install (`compiled`, `compiled-twin`, `optimized`), at whose
+  sites a listing is taken.
 - The runtime answers a listing: the body's name, its tier and, for an
   optimized copy, its receiver application; its bytes and base address;
   the bytecode index per machine offset; the named targets of its calls.

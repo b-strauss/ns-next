@@ -12258,6 +12258,10 @@ again once it has run as long. A body a breakpoint patched is put off
 the same way, never refused, so that it stays in its baseline code,
 which exits at the patch, and is optimized once its breakpoints are gone
 ([debugger.md](debugger.md), "Where the original lives").
+A request, its recompilee and why the walk stopped there, a request no
+longer due, a deferral, an install and a refusal are traced in the
+category `optimize` ([developer-tool.md](developer-tool.md), "Stage 1:
+tracing").
 
 ### The snapshot
 
@@ -12772,7 +12776,10 @@ halved, held a body that kept exiting at about twice the budget. The
 budget is one per body, so a re-arm for one key can shorten another
 retired key's wait; mostly it cuts nothing, since a run-out parked the
 budget and its wait was spent by whichever pair's frames
-(`rearm_optimization_budget`).
+(`rearm_optimization_budget`). A retirement, its reason and the version
+it raised -- or that the key is refused for good -- is traced in the
+category `deoptimize` ([developer-tool.md](developer-tool.md), "Stage 1:
+tracing").
 
 ### Invalidation
 
@@ -12816,6 +12823,10 @@ speculation: it raises no version and counts no trap, and the body's
 budget is armed at the longest wait the freed copies' versions earned,
 so that the next copy waits for feedback gathered since. The caches go
 on being flushed whole ([dispatch.md](dispatch.md), "Invalidation").
+Each copy an invalidation frees is traced in the category `deoptimize`
+with its cause -- an edit, a bulk forward, a reclaimed id, a moved
+feedback base, a breakpoint or the invalidate stress mode's round
+([developer-tool.md](developer-tool.md), "Stage 1: tracing").
 
 ### Verification
 
@@ -12986,6 +12997,12 @@ exits for, after which the frame goes on in baseline code; and the
 decoder holds every instance of a program class to its application's
 slot count, as for a copy's own slots ("Speculation", "Own slots at
 fixed offsets").
+
+Every callee the plan inlines and every one it declines, with the
+reason it was declined (`InlineDecline`), is traced in the category
+`inlining`, from the plan's decisions every optimizing compile collects
+(`PlanDecisions`), whether the copy is installed or refused after
+planning ([developer-tool.md](developer-tool.md), "Stage 1: tracing").
 
 ### Inlined scopes in the frame
 
@@ -15172,6 +15189,11 @@ compare is not built.
   compiler alone ("Planned: the optimizing JIT", "The compiler thread
   and the snapshot").
 
+Every compile, its trigger and its refusal, a twin's compile, an
+abandonment and a revival are traced in the category `compile`, an
+on-stack replacement's compile and switch in `osr`
+([developer-tool.md](developer-tool.md), "Stage 1: tracing").
+
 ### The code zone
 
 Cog's citations in this subsection are to
@@ -15439,6 +15461,12 @@ freed bytes count towards the quarter at which the collection asks for a
 compaction. Nothing else in the zone holds a base: a closure site and an
 outer-local site name code ids and epochs, and neither the entry block's
 words nor the machine words name one.
+
+Every free of a body's machine code is traced in the category
+`code-zone` with its cause and tier, each compaction summed up with how
+it freed and how many bodies, and a replacement of the zone with the
+bodies it dropped ([developer-tool.md](developer-tool.md), "Stage 1:
+tracing").
 
 ### Polls and the depth check
 
