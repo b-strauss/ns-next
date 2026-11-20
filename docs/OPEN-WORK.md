@@ -3167,11 +3167,17 @@ classes and a class from source with no predecessor are not edited
   2026-11-18, with the trace's stage 1): `NewspeakBreakpointTypesTest`'s
   `testATemporaryBreakpointIsRemovedAfterItsStop` failed with a
   `TimeoutException` in one `cargo xtask gates commit` while the machine
-  was busy, and passed on the rerun; nothing it runs had changed. It may
-  be flaky: its waits may be too short for a loaded machine, or a stop
-  may race its temporary breakpoint's removal. Repeating it under load
-  and reading where it waits would tell
-  ([debugger.md](design/debugger.md), "The JetBrains plugin", "Hit
+  was busy, and passed on the rerun; nothing it runs had changed. Not
+  reproduced since: 20 runs while `ns-runtime`'s suite loaded the
+  machine passed in about 4 s each, against the 30 s wait. The removal
+  of a temporary breakpoint is ordered before the resume -- IntelliJ
+  removes it in `sessionResumed`, which runs before
+  `XDebugProcess.resume`, and the handler sends the emptied set before
+  the `continue` on the one connection -- and the stop's breakpoint ids
+  are known before the program starts. Each of the test's waits now
+  says which it was, with the stops made and the program's output
+  (`Debugging.awaitEnd`), so that a recurrence names where the run
+  stood ([debugger.md](design/debugger.md), "The JetBrains plugin", "Hit
   counts and temporary breakpoints").
 - **The plugin offers runtime options for `bench` that include
   `--trace`** (noted 2026-11-20): the run configuration's "Runtime

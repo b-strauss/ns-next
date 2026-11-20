@@ -50,6 +50,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -85,7 +86,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
                 val handler = debugging.process.processHandler
                 if (!handler.isProcessTerminated) (handler as KillableProcess).killProcess()
                 handler.waitFor(WAIT_MILLISECONDS)
-                debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+                debugging.awaitEnd("the session's end after the test")
             }
             for (resource in opened.asReversed()) resource.close()
             cache.fetcher = serverFetcher
@@ -379,7 +380,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             assertEquals("the stop at hit ${hit + 1}", COUNTED_BODY_LINE, debugging.nextPause().line)
             runInEdtAndWait { debugging.session.resume() }
         }
-        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        debugging.awaitEnd("the session's end")
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertTrue("no fourth stop: ${debugging.pauses}", debugging.pauses.isEmpty())
         assertTrue(debugging.output(), debugging.output().contains("hits 3"))
@@ -506,7 +507,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         assertTrue("still there while stopped", breakpoints.allBreakpoints.contains(temporary))
         runInEdtAndWait { debugging.session.resume() }
 
-        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        debugging.awaitEnd("the session's end")
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertEquals(0, debugging.process.processHandler.exitCode)
         assertTrue("one stop, in the first iteration: ${debugging.pauses}", debugging.pauses.isEmpty())
@@ -533,7 +534,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         assertEquals("the exit", program, debugging.nextPause().file)
         runInEdtAndWait { debugging.session.resume() }
 
-        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        debugging.awaitEnd("the session's end")
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertEquals(0, debugging.process.processHandler.exitCode)
         assertTrue("no other stop: ${debugging.pauses}", debugging.pauses.isEmpty())
@@ -573,7 +574,7 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         assertEquals(CAUGHT_HANDLER_LINE, stop.line)
         runInEdtAndWait { debugging.session.resume() }
 
-        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        debugging.awaitEnd("the session's end")
         assertTrue(debugging.output(), debugging.process.processHandler.waitFor(WAIT_MILLISECONDS))
         assertEquals(0, debugging.process.processHandler.exitCode)
         assertTrue("one stop: ${debugging.pauses}", debugging.pauses.isEmpty())
@@ -721,8 +722,23 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
         fun nextPause(): XSourcePosition =
             pauses.poll(WAIT_SECONDS, TimeUnit.SECONDS) ?: throw AssertionError("no stop within $WAIT_SECONDS s: ${output()}")
 
+        /**
+         * Waits for the session to stop; a session that does not names
+         * [what] it waited for, the stops it made and the program's output,
+         * so that a timeout says where the run stood.
+         */
+        fun awaitEnd(what: String) {
+            try {
+                stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                throw AssertionError("not within $WAIT_SECONDS s: $what; paused at ${pauses.map(::describe)}, suspended ${session.isSuspended}; output: ${output()}")
+            }
+        }
+
         fun output(): String = text.toString()
     }
+
+    private fun describe(position: XSourcePosition): String = "${position.file.name}:${position.line}"
 
     /** Debug on a Newspeak run configuration of `program`, as the user starts it; its listeners see every stop. */
     private fun debug(program: VirtualFile): Debugging {
@@ -742,7 +758,11 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             },
         )
         runInEdtAndWait { environment.runner.execute(environment) }
-        return started.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        return try {
+            started.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: TimeoutException) {
+            throw AssertionError("no debug process started within $WAIT_SECONDS s")
+        }
     }
 
     private companion object {
