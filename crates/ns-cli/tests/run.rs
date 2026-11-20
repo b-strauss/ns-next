@@ -829,6 +829,63 @@ fn the_highest_matching_version_is_taken_and_warned() {
     assert_eq!(String::from_utf8_lossy(&loaded.stderr), warning);
 }
 
+/// The only stderr a run writes beside the trace before it ends is the
+/// host's warning of an ambiguous request, between the assembly's run and
+/// `main:args:`'s -- a program has no stream of its own to stderr, its
+/// transcript writing stdout -- and each of its lines stays whole among
+/// the trace's lines of both runs, each written in one write.
+#[test]
+fn a_warning_between_runs_stays_whole_among_the_trace_lines() {
+    let directory = ScratchDirectory::new("project-warning-traced");
+    let app = indoc! {"
+        class App packageUsing: manifest = Object new (
+          |
+            private modules = manifest.
+            private Util = manifest at: 'com.acme.util.Util' version: '2'.
+          |
+        ) (
+          public main: platform args: arguments = (
+            platform transcript
+                show: (modules at: 'com.acme.util.Util' version: '2') new answer;
+                newLine.
+          )
+        ) : ()
+    "};
+    write_project(
+        &directory,
+        &[
+            ("App.ns", app),
+            ("libs/a/Util.ns", &util(Some("2.3.1"), "two three one")),
+            ("libs/b/Util.ns", &util(Some("2.1.0"), "two one zero")),
+        ],
+        r#"{ "main": "App.ns", "modules": ["libs/a/Util.ns", "libs/b/Util.ns"] }"#,
+    );
+    let out = ns_next()
+        .arg("run")
+        .arg("--trace=all")
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert_eq!(succeeded(&out), "two three one\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warning = "warning: `com.acme.util.Util` version 2 matched 2.1.0, 2.3.1; took 2.3.1";
+    assert!(
+        stderr
+            .lines()
+            .all(|line| line == warning || line.starts_with('[')),
+        "stderr: {stderr}"
+    );
+    assert_eq!(
+        stderr.lines().filter(|line| *line == warning).count(),
+        2,
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line.starts_with("[caches] ")),
+        "stderr: {stderr}"
+    );
+}
+
 /// A program that is one source file is named by its file, which ends in
 /// `.ns` as every module's does, so that `build` can write its path; any
 /// other is refused before anything runs.
