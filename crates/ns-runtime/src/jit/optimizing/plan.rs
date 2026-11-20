@@ -338,6 +338,38 @@ pub(crate) enum AlwaysInlined {
     Primitive(Primitive),
 }
 
+impl AlwaysInlined {
+    /// What the arm runs, as an inlining listing names it: kebab case, a
+    /// leaf by what the graph expresses it as.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            AlwaysInlined::SlotLoad { .. } => "getter",
+            AlwaysInlined::SlotStore { .. } => "setter",
+            AlwaysInlined::Constant(_) | AlwaysInlined::Receiver | AlwaysInlined::Parameter(_) => {
+                "quick"
+            }
+            AlwaysInlined::BuiltinClass(_) => "builtin-class",
+            AlwaysInlined::ValueOfParameter(_) => "value-of-parameter",
+            AlwaysInlined::CullParameter(_) => "cull-parameter",
+            AlwaysInlined::LazyGetter { .. } => "lazy-getter",
+            AlwaysInlined::Primitive(primitive) => match primitive {
+                Primitive::Object(ObjectPrimitive::Identical) => "identity",
+                Primitive::Object(ObjectPrimitive::Class) => "class",
+                Primitive::Collection(
+                    CollectionPrimitive::ElementAt | CollectionPrimitive::ElementAtPut,
+                )
+                | Primitive::Bytes(BytePrimitive::ElementAt | BytePrimitive::ElementAtPut) => {
+                    "indexed"
+                }
+                Primitive::Integer(_) => "integer",
+                _ if FloatOperation::of_primitive(primitive).is_some() => "float",
+                // No leaf the plan takes (`expressed`) is any other.
+                _ => "primitive",
+            },
+        }
+    }
+}
+
 /// What a site's send becomes.
 ///
 /// For a public send, a type-case: `arms` in the cache's order, one for

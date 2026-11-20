@@ -15,10 +15,12 @@
 use std::rc::Rc;
 
 use crate::bytecode::{self, CompiledCode};
+use crate::interpreter::Mutator;
 use crate::jit::CustomizationKey;
+use crate::mixin::DispatchId;
 
-use super::names::NamedRoot;
-use super::{CodeTier, TraceFilter};
+use super::names::{BodyNames, NamedRoot};
+use super::{CodeTier, CompileRefusal, InlineDecline, TraceFilter, class_name_of_id};
 
 /// What the sink's `listing` receives: the code of one body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +29,9 @@ pub enum Listing {
     Bytecode(BytecodeListing),
     /// A body's machine code, listed when it was installed.
     Code(CodeListing),
+    /// The inlining plan of an optimizing compile, listed once its outcome
+    /// is known.
+    Inlining(InliningListing),
 }
 
 /// A body's bytecode: its name, as the trace names a body
@@ -137,6 +142,79 @@ pub struct ListedScope {
     pub instructions: Vec<String>,
 }
 
+/// The inlining plan of one optimizing compile of a body that made one,
+/// installed or refused (decision 13): the tree of the scopes its code
+/// lays out, numbered as a code listing's positions name them, the arms of
+/// its type-cases, the callees it sent rather than inline, and the
+/// compile's outcome, so that a body that stayed unoptimized shows the
+/// plan that failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InliningListing {
+    /// The compiled body's name, as the trace names a body.
+    pub body: String,
+    /// The copy's customization key, named as a code listing's is; `None`
+    /// for a body's one uncustomized copy.
+    pub key: Option<(String, Option<String>)>,
+    /// The scopes the code lays out, `s0` the body's own, each after the
+    /// scope it is inlined into; their `instructions` empty, since the
+    /// plan is printed without its code.
+    pub scopes: Vec<ListedScope>,
+    /// Each arm of a type-case in a scope of `scopes`, in the order of its
+    /// scope and program counter, then of the cache.
+    pub arms: Vec<ListedArm>,
+    /// Each callee a send of a scope of `scopes` could have inlined and
+    /// the plan sent instead, in the order the plan decided them.
+    pub declined: Vec<ListedDecline>,
+    /// Whether the copy was installed.
+    pub outcome: InliningOutcome,
+}
+
+/// An arm of a type-case: at the send at `program_counter` of the scope
+/// numbered `scope`, the receiver whose class `receiver` names -- as the
+/// trace names a key's, `#<id>` for an id no application holds any longer
+/// -- runs `inlined`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedArm {
+    pub scope: u32,
+    pub program_counter: u32,
+    pub receiver: String,
+    pub inlined: ArmKind,
+}
+
+/// What an arm runs for its receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmKind {
+    /// The callee's body, inlined as the scope of this number.
+    Scope(u32),
+    /// What the callee does, expressed inline whatever its weight, named
+    /// in kebab case: `getter`, `setter`, `lazy-getter`, `quick` (a
+    /// constant, `self` or an argument answered), `builtin-class`,
+    /// `value-of-parameter`, `cull-parameter`, and for a leaf `integer`,
+    /// `identity`, `class`, `indexed`, `float` or `primitive`.
+    Always(&'static str),
+}
+
+/// A callee the plan sent rather than inline: at the send at
+/// `program_counter` of the scope numbered `scope`, the body `callee` --
+/// as the trace names a body, `None` for a callee that is no body --
+/// declined for `reason`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedDecline {
+    pub scope: u32,
+    pub program_counter: u32,
+    pub callee: Option<String>,
+    pub reason: InlineDecline,
+}
+
+/// What became of an optimizing compile's copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InliningOutcome {
+    /// Installed, taking `bytes` of the code zone.
+    Installed { bytes: usize },
+    /// Refused, for the reason the trace's `optimize` category gives.
+    Refused(CompileRefusal),
+}
+
 /// What a call or jump out of the body reaches, named so that a listing
 /// holds no address of its run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +263,7 @@ pub enum DataWord {
 /// have moved or been freed.
 pub(crate) enum PendingListing {
     Code(PendingCode),
+    Inlining(PendingInlining),
 }
 
 /// A `CodeListing`'s facts, its body and key not yet named.
@@ -212,29 +291,64 @@ pub(crate) struct PendingScope {
     pub(crate) parent: Option<(u32, u32)>,
 }
 
+/// An `InliningListing`'s facts, its bodies and receivers not yet named.
+pub(crate) struct PendingInlining {
+    pub(crate) key: Option<CustomizationKey>,
+    /// The scopes the plan inlined, `s1` on.
+    pub(crate) scopes: Vec<PendingScope>,
+    pub(crate) arms: Vec<PendingArm>,
+    pub(crate) declined: Vec<PendingDecline>,
+    pub(crate) outcome: InliningOutcome,
+}
+
+/// A `ListedArm`, its receiver held by its dispatch id until the flush
+/// names it, or named before when a full collection reclaims the id
+/// (`trace_events::name_freed_keys`): named at the flush, the id would be
+/// no application's, or another's minted it since.
+pub(crate) struct PendingArm {
+    pub(crate) scope: u32,
+    pub(crate) program_counter: u32,
+    pub(crate) receiver: DispatchId,
+    pub(crate) named: Option<String>,
+    pub(crate) inlined: ArmKind,
+}
+
+/// A `ListedDecline`, its callee held as the body itself.
+pub(crate) struct PendingDecline {
+    pub(crate) scope: u32,
+    pub(crate) program_counter: u32,
+    pub(crate) callee: Option<Rc<CompiledCode>>,
+    pub(crate) reason: InlineDecline,
+}
+
 impl PendingListing {
     /// The customization key the listing names, if any.
     pub(crate) fn key(&self) -> Option<CustomizationKey> {
         match self {
             PendingListing::Code(code) => code.key,
+            PendingListing::Inlining(inlining) => inlining.key,
         }
     }
 
-    /// The bodies of the listing's inlined scopes, in order.
-    pub(crate) fn scope_bodies(&self) -> impl Iterator<Item = &Rc<CompiledCode>> {
-        match self {
-            PendingListing::Code(code) => code.scopes.iter().map(|scope| &scope.code),
-        }
+    /// The arms whose receivers are not named yet: those a full collection
+    /// that reclaims their ids names before the flush.
+    pub(crate) fn unnamed_arms(&mut self) -> impl Iterator<Item = &mut PendingArm> {
+        let arms = match self {
+            PendingListing::Code(_) => None,
+            PendingListing::Inlining(inlining) => Some(inlining.arms.iter_mut()),
+        };
+        arms.into_iter().flatten().filter(|arm| arm.named.is_none())
     }
 
-    /// The listing of `code`, named `name`, its key named `key` and its
-    /// inlined scopes' bodies `scope_names`, in order.
+    /// The listing of `code`, named `name`, its key named `key`, the rest
+    /// of its bodies and its receivers named now, as the flush names them.
     pub(crate) fn delivered(
         self,
+        mutator: &Mutator<'_>,
+        names: &mut BodyNames,
         code: &CompiledCode,
         name: String,
         key: Option<(String, Option<String>)>,
-        scope_names: Vec<String>,
     ) -> Listing {
         match self {
             PendingListing::Code(pending) => {
@@ -244,17 +358,14 @@ impl PendingListing {
                     parent: None,
                     instructions: bytecode::instruction_lines(code),
                 };
-                let inlined = pending.scopes.into_iter().zip(scope_names).map(
-                    |(
-                        PendingScope {
-                            number,
-                            code,
-                            parent,
-                        },
-                        body,
-                    )| ListedScope {
+                let inlined = pending.scopes.into_iter().map(
+                    |PendingScope {
+                         number,
+                         code,
+                         parent,
+                     }| ListedScope {
                         number,
-                        body,
+                        body: names.name(mutator, &code),
                         parent,
                         instructions: bytecode::instruction_lines(&code),
                     },
@@ -273,6 +384,57 @@ impl PendingListing {
                     annotations: pending.annotations,
                     scopes,
                     mark: None,
+                })
+            }
+            PendingListing::Inlining(pending) => {
+                let root = ListedScope {
+                    number: 0,
+                    body: name.clone(),
+                    parent: None,
+                    instructions: Vec::new(),
+                };
+                let inlined = pending.scopes.into_iter().map(
+                    |PendingScope {
+                         number,
+                         code,
+                         parent,
+                     }| ListedScope {
+                        number,
+                        body: names.name(mutator, &code),
+                        parent,
+                        instructions: Vec::new(),
+                    },
+                );
+                let scopes = std::iter::once(root).chain(inlined).collect();
+                let arms = pending
+                    .arms
+                    .into_iter()
+                    .map(|arm| ListedArm {
+                        scope: arm.scope,
+                        program_counter: arm.program_counter,
+                        receiver: arm
+                            .named
+                            .unwrap_or_else(|| class_name_of_id(mutator, arm.receiver)),
+                        inlined: arm.inlined,
+                    })
+                    .collect();
+                let declined = pending
+                    .declined
+                    .into_iter()
+                    .map(|declined| ListedDecline {
+                        scope: declined.scope,
+                        program_counter: declined.program_counter,
+                        callee: declined.callee.map(|callee| names.name(mutator, &callee)),
+                        reason: declined.reason,
+                    })
+                    .collect();
+                Listing::Inlining(InliningListing {
+                    body: name,
+                    key,
+                    scopes,
+                    arms,
+                    declined,
+                    outcome: pending.outcome,
                 })
             }
         }

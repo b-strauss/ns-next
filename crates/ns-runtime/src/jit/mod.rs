@@ -58,8 +58,8 @@ use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Muta
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 #[cfg(ns_jit)]
 use crate::trace_events::{
-    CodeTier, DataWord, Deferral, FreeCause, InvalidationCause, PendingCode, PendingScope,
-    RecompileWalkEnd, RetireReason,
+    CodeTier, DataWord, Deferral, FreeCause, InliningOutcome, InvalidationCause, PendingArm,
+    PendingCode, PendingDecline, PendingInlining, PendingScope, RecompileWalkEnd, RetireReason,
 };
 use crate::trace_events::{
     CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, PendingListing,
@@ -6524,6 +6524,13 @@ fn optimize(
                 mutator.jit.zone_exhausted = true;
             }
             defer_optimization(mutator, code, key, Deferral::ZoneFull);
+            record_plan(
+                mutator,
+                code,
+                key,
+                decisions.as_ref(),
+                InliningOutcome::Refused(CompileRefusal::ZoneFull),
+            );
             return;
         }
         Err(refusal) => {
@@ -6531,16 +6538,21 @@ fn optimize(
                 None => code.jit.optimized_refused.set(true),
                 Some(key) => code.jit.refuse_copy(key),
             }
+            let reason = CompileRefusal::from_refusal(refusal);
             if mutator.jit.tracer.traces(TraceCategory::Optimize) {
                 mutator.jit.tracer.record(Pending::about(
                     TraceCategory::Optimize,
                     code,
-                    PendingKind::OptimizationRefused {
-                        key,
-                        reason: CompileRefusal::from_refusal(refusal),
-                    },
+                    PendingKind::OptimizationRefused { key, reason },
                 ));
             }
+            record_plan(
+                mutator,
+                code,
+                key,
+                decisions.as_ref(),
+                InliningOutcome::Refused(reason),
+            );
             return;
         }
     };
@@ -6564,9 +6576,11 @@ fn optimize(
     statistics.type_case_arms += inlined.1;
     statistics.eliminated_blocks += inlined.2;
     statistics.inlined_sites += inlined.3;
-    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+    let bytes = {
         let installed = &mutator.jit.bodies[index as usize];
-        let bytes = (installed.end - installed.start) as usize;
+        (installed.end - installed.start) as usize
+    };
+    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
         mutator.jit.tracer.record(Pending::about(
             TraceCategory::Optimize,
             code,
@@ -6580,7 +6594,15 @@ fn optimize(
             },
         ));
     }
-    // After the compile's event, which the listing follows.
+    // After the compile's event, which the listings follow: the plan, then
+    // the code whose positions name its scopes.
+    record_plan(
+        mutator,
+        code,
+        key,
+        decisions.as_ref(),
+        InliningOutcome::Installed { bytes },
+    );
     if let Some(captured) = captured
         && let Some(listing) = optimized_listing(mutator, index, captured, key, decisions.as_ref())
     {
@@ -6626,23 +6648,12 @@ fn optimized_listing(
     let scopes = decisions.map_or_else(
         || Some(Vec::new()),
         |decisions| {
-            decisions
-                .scopes
-                .iter()
-                .skip(1)
-                .map(|scope| {
-                    let code = mutator.heap.code(scope.code_id);
-                    debug_assert!(
-                        code.is_some(),
-                        "internal: an inlined scope's body is registered while its copy installs"
-                    );
-                    Some(PendingScope {
-                        number: scope.number,
-                        code: code?,
-                        parent: scope.parent,
-                    })
-                })
-                .collect::<Option<Vec<PendingScope>>>()
+            let scopes = inlined_scopes(mutator, decisions);
+            debug_assert!(
+                scopes.is_some(),
+                "internal: an inlined scope's body is registered while its copy installs"
+            );
+            scopes
         },
     )?;
     let offset = CodeOffset(mutator.jit.bodies[index as usize].start);
@@ -6654,6 +6665,89 @@ fn optimized_listing(
         },
         offset,
     ))
+}
+
+/// The scopes `decisions` lays out below the body's own, each with its
+/// body, which the heap registered when the tree was taken at this
+/// safepoint, so that a listing holds it whatever becomes of its code id
+/// before the flush names it; `None` where the heap no longer names one.
+#[cfg(ns_jit)]
+fn inlined_scopes(
+    mutator: &Mutator<'_>,
+    decisions: &optimizing::PlanDecisions,
+) -> Option<Vec<PendingScope>> {
+    decisions
+        .scopes
+        .iter()
+        .skip(1)
+        .map(|scope| {
+            Some(PendingScope {
+                number: scope.number,
+                code: mutator.heap.code(scope.code_id)?,
+                parent: scope.parent,
+            })
+        })
+        .collect()
+}
+
+/// Records, when inlining plans are printed, the plan `decisions` of the
+/// compile of `code`'s copy for `key` with its `outcome`, once that is
+/// known, after the compile's events (decision 13). A compile refused
+/// before its plan was made has no plan to print, nor has one a scope of
+/// which the heap no longer names, which no compile at the tree's
+/// safepoint meets. An arm or a decline in a scope the code lays out
+/// nothing for -- the graph sends at that scope's site instead -- has no
+/// number to name its scope by and is left out: it is no part of the copy.
+#[cfg(ns_jit)]
+fn record_plan(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    decisions: Option<&optimizing::PlanDecisions>,
+    outcome: InliningOutcome,
+) {
+    if !mutator.jit.tracer.prints_inlining() {
+        return;
+    }
+    let Some(decisions) = decisions else {
+        return;
+    };
+    let Some(scopes) = inlined_scopes(mutator, decisions) else {
+        return;
+    };
+    let arms = decisions
+        .arms
+        .iter()
+        .filter_map(|&(scope, program_counter, receiver, inlined)| {
+            Some(PendingArm {
+                scope: decisions.number_of(scope)?,
+                program_counter,
+                receiver,
+                named: None,
+                inlined,
+            })
+        })
+        .collect();
+    let declined = decisions
+        .declined
+        .iter()
+        .filter_map(|declined| {
+            Some(PendingDecline {
+                scope: decisions.number_of(declined.scope)?,
+                program_counter: declined.program_counter,
+                callee: declined.callee.and_then(|callee| mutator.heap.code(callee)),
+                reason: declined.reason,
+            })
+        })
+        .collect();
+    let listing = PendingListing::Inlining(PendingInlining {
+        key,
+        scopes,
+        arms,
+        declined,
+        outcome,
+    });
+    mutator.jit.tracer.record_listing(code, listing);
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would

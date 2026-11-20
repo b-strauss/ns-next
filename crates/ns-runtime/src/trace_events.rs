@@ -34,11 +34,11 @@ use crate::symbol::Symbol;
 pub use filter::TraceFilter;
 pub(crate) use listings::PendingListing;
 pub use listings::{
-    Annotation, Architecture, BytecodeListing, CodeListing, DataWord, ListedScope, Listing,
-    Position,
+    Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, DataWord, InliningListing,
+    InliningOutcome, ListedArm, ListedDecline, ListedScope, Listing, Position,
 };
 #[cfg(ns_jit)]
-pub(crate) use listings::{PendingCode, PendingScope};
+pub(crate) use listings::{PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope};
 use names::BodyNames;
 
 /// What a trace event is about, each switched on by its own flag.
@@ -133,8 +133,8 @@ pub struct Printing {
     /// Every body's machine code, baseline and optimized, when it is
     /// installed.
     pub code: bool,
-    /// The inlining plan of every optimizing compile that installed a
-    /// copy.
+    /// The inlining plan of every optimizing compile that made one, with
+    /// its outcome: the copy installed or refused.
     pub inlining: bool,
 }
 
@@ -1141,12 +1141,22 @@ impl EventTracer {
         self.printing.code
     }
 
+    /// Whether inlining plans are printed: what makes an optimizing
+    /// compile record its plan once its outcome is known.
+    #[inline]
+    pub(crate) fn prints_inlining(&self) -> bool {
+        self.printing.inlining
+    }
+
     /// Records the listing of `code`, delivered at the next flush after
     /// the events recorded before it. Not an event: no category selects
     /// it, and it is not counted among the events recorded.
     pub(crate) fn record_listing(&mut self, code: &Rc<CompiledCode>, listing: PendingListing) {
         debug_assert!(
-            self.printing.code,
+            match &listing {
+                PendingListing::Code(_) => self.printing.code,
+                PendingListing::Inlining(_) => self.printing.inlining,
+            },
             "internal: a listing nothing asked for was recorded"
         );
         self.pending.push(Pending {
@@ -1397,11 +1407,7 @@ fn listing_delivered(
         (Some(key), None) => Some(key_names(mutator, key)),
         (None, _) => None,
     };
-    let scope_names = listing
-        .scope_bodies()
-        .map(|scope| names.name(mutator, scope))
-        .collect();
-    Some(listing.delivered(&code, name, key, scope_names))
+    Some(listing.delivered(mutator, names, &code, name, key))
 }
 
 /// The event a pending event's kind delivers, its bodies and keys named --
@@ -1635,6 +1641,14 @@ fn class_name_of_id(mutator: &Mutator<'_>, id: DispatchId) -> String {
 pub(crate) fn name_freed_keys(mutator: &mut Mutator<'_>, freed: &IdentityMap<DispatchId, String>) {
     let mut pending = std::mem::take(&mut mutator.jit.tracer.pending);
     for event in &mut pending {
+        // An arm's receiver likewise, by the same names.
+        if let PendingKind::Listing(listing) = &mut event.kind {
+            for arm in listing.unnamed_arms() {
+                if let Some(name) = freed.get(&arm.receiver) {
+                    arm.named = Some(name.clone());
+                }
+            }
+        }
         if event.named_key.is_some() {
             continue;
         }

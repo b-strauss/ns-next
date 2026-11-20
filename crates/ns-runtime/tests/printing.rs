@@ -125,7 +125,7 @@ fn bytecode(listings: &[Listing]) -> Vec<&BytecodeListing> {
         .iter()
         .filter_map(|listing| match listing {
             Listing::Bytecode(bytecode) => Some(bytecode),
-            Listing::Code(_) => None,
+            Listing::Code(_) | Listing::Inlining(_) => None,
         })
         .collect()
 }
@@ -278,9 +278,10 @@ mod code {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use indoc::indoc;
+    use indoc::{formatdoc, indoc};
     use ns_runtime::trace_events::{
-        Annotation, Architecture, CodeListing, CodeTier, DataWord, Listing, Position, Printing,
+        Annotation, Architecture, ArmKind, CodeListing, CodeTier, CompileRefusal, DataWord,
+        InlineDecline, InliningListing, InliningOutcome, ListedArm, Listing, Position, Printing,
         TraceSettings,
     };
     use ns_runtime::{
@@ -611,13 +612,27 @@ mod code {
     /// own, tracing the optimize and inlining categories and printing the
     /// machine code of `Demo>>total`: what the sink received.
     fn optimized_total() -> Vec<Received> {
-        let module = ns_syntax::parse(INLINING).expect("parse");
-        let resolved = ns_runtime::resolve(
-            module,
-            INLINING.into(),
-            SourceOrigin::File("demo.ns".into()),
-        )
-        .expect("resolve");
+        let printing = Printing {
+            code: true,
+            ..Printing::default()
+        };
+        run_total(INLINING, printing, |_| {}).1
+    }
+
+    /// `source`'s `total` run once with the JIT on, its budget the JIT's
+    /// own, `prepare` run on the interpreter before the module is loaded,
+    /// tracing the optimize and inlining categories and printing what
+    /// `printing` names of `Demo>>total`: the interpreter and what the sink
+    /// received.
+    fn run_total(
+        source: &str,
+        printing: Printing,
+        prepare: impl FnOnce(&mut Interpreter),
+    ) -> (Interpreter, Vec<Received>) {
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved =
+            ns_runtime::resolve(module, source.into(), SourceOrigin::File("demo.ns".into()))
+                .expect("resolve");
         let mut interpreter = Interpreter::bootstrap();
         // On whatever the environment says, every body compiled at its
         // second entry and optimized when its budget runs out: the
@@ -635,6 +650,7 @@ mod code {
             interpreter.set_stress_step(false);
             interpreter.set_stress_suspend(false);
         }
+        prepare(&mut interpreter);
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let received = Rc::new(RefCell::new(Vec::new()));
@@ -644,10 +660,7 @@ mod code {
                     .with(TraceCategory::Optimize)
                     .with(TraceCategory::Inlining),
                 filter: TraceFilter::everything(),
-                printing: Printing {
-                    code: true,
-                    ..Printing::default()
-                },
+                printing,
                 print_filter: TraceFilter::parse(&["Demo>>total"]).expect("a valid filter"),
             },
             Box::new(Recorder(Rc::clone(&received))),
@@ -656,7 +669,7 @@ mod code {
             interpreter.send(&instance, Symbol::intern("total"), &[]),
             "total",
         );
-        received.take()
+        (interpreter, received.take())
     }
 
     /// The optimized listings of `Demo>>total` among `received`.
@@ -837,5 +850,203 @@ mod code {
             }
         }
         assert!(compared > 0, "an optimized listing of `total`");
+    }
+
+    /// Only the plans are printed.
+    fn plans_only() -> Printing {
+        Printing {
+            inlining: true,
+            ..Printing::default()
+        }
+    }
+
+    /// The inlining listings of `Demo>>total` among `received`.
+    fn plans_of_total(received: &[Received]) -> Vec<InliningListing> {
+        received
+            .iter()
+            .filter_map(|item| match item {
+                Received::Listing(Listing::Inlining(plan)) if plan.body == "Demo>>total" => {
+                    Some(plan.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_installed_optimization_prints_its_plan() {
+        let (_, received) = run_total(INLINING, plans_only(), |_| {});
+        let plans = plans_of_total(&received);
+        let Some(plan) = plans.first() else {
+            panic!("the plan of `total` listed");
+        };
+        assert_eq!(plan.key, Some(("Demo".to_string(), None)));
+        assert_eq!(
+            (plan.scopes[0].number, plan.scopes[0].body.as_str()),
+            (0, "Demo>>total")
+        );
+        let Some(balance) = plan
+            .scopes
+            .iter()
+            .find(|scope| scope.body == "Demo/Account>>balance")
+        else {
+            panic!("`balance` inlined as a scope: {:?}", plan.scopes);
+        };
+        assert_eq!(balance.number, 1);
+        let Some((0, program_counter)) = balance.parent else {
+            panic!("`balance` inlined into the body's own scope");
+        };
+        assert!(
+            plan.scopes
+                .iter()
+                .all(|scope| scope.instructions.is_empty()),
+            "a plan lists no instructions"
+        );
+        assert!(
+            plan.arms.contains(&ListedArm {
+                scope: 0,
+                program_counter,
+                receiver: "Demo/Account".to_string(),
+                inlined: ArmKind::Scope(1),
+            }),
+            "the type-case's arm for `Account` inlines `balance`: {:?}",
+            plan.arms
+        );
+        assert!(
+            plan.arms
+                .is_sorted_by_key(|arm| (arm.scope, arm.program_counter)),
+            "{:?}",
+            plan.arms
+        );
+        // The listing follows the compile's event, and says what it said.
+        let optimized = received.iter().position(|item| {
+            matches!(item, Received::Event(event)
+                if event.body.as_deref() == Some("Demo>>total")
+                    && matches!(event.kind, TraceEventKind::Optimized { .. }))
+        });
+        let listed = received
+            .iter()
+            .position(|item| matches!(item, Received::Listing(Listing::Inlining(_))));
+        let (Some(optimized), Some(listed)) = (optimized, listed) else {
+            panic!("the compile's event and its plan");
+        };
+        assert!(optimized < listed, "the plan follows its compile's event");
+        let Received::Event(TraceEvent {
+            kind: TraceEventKind::Optimized { bytes, .. },
+            ..
+        }) = &received[optimized]
+        else {
+            unreachable!("found above");
+        };
+        assert_eq!(plan.outcome, InliningOutcome::Installed { bytes: *bytes });
+    }
+
+    #[test]
+    fn a_refused_optimization_prints_its_plan() {
+        let printing = Printing {
+            code: true,
+            inlining: true,
+            ..Printing::default()
+        };
+        let roomy = |interpreter: &mut Interpreter| {
+            interpreter.set_jit_zone_bytes(1 << 20);
+            // The zone stress mode's compactions and frees change what
+            // the zone holds when the copy is compiled.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_zone(false);
+        };
+        // The zone the run fills with room for every copy, and the copies'
+        // bytes: the architecture's, and the build's.
+        let (interpreter, received) = run_total(INLINING, printing, roomy);
+        let used = interpreter.table_sizes().zone_used_bytes;
+        let copies: Vec<usize> = received
+            .iter()
+            .filter_map(|item| match item {
+                Received::Event(TraceEvent {
+                    kind: TraceEventKind::Optimized { bytes, .. },
+                    ..
+                }) => Some(*bytes),
+                _ => None,
+            })
+            .collect();
+        let Some(smallest) = copies.iter().min() else {
+            panic!("a copy installed with room");
+        };
+        // Room for the baseline code, and for half the smallest copy.
+        let zone = used - copies.iter().sum::<usize>() + smallest / 2;
+        let (_, received) = run_total(INLINING, printing, |interpreter| {
+            roomy(interpreter);
+            interpreter.set_jit_zone_bytes(zone);
+        });
+        let plans = plans_of_total(&received);
+        assert!(
+            plans.iter().any(|plan| plan.outcome
+                == InliningOutcome::Refused(CompileRefusal::ZoneFull)
+                && plan
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.body == "Demo/Account>>balance")),
+            "the plan of the copy no room held: {:?}",
+            plans.iter().map(|plan| &plan.outcome).collect::<Vec<_>>()
+        );
+        assert!(
+            plans
+                .iter()
+                .all(|plan| !matches!(plan.outcome, InliningOutcome::Installed { .. })),
+            "no copy installed"
+        );
+        assert!(
+            optimized_listings(&received).is_empty(),
+            "no machine code of a copy refused"
+        );
+    }
+
+    /// A module whose `total`'s loop sends `value:` to a block it made,
+    /// which weighs more than a block the plan inlines may: thirty sends
+    /// of `step:`, a method with no fast path.
+    fn heavy() -> String {
+        let steps: String = (0..30)
+            .map(|_| "        value:: self step: value.\n")
+            .collect();
+        formatdoc! {"
+            class Demo = Object new () (
+              public step: number = (
+                ^number + 1
+              )
+
+              public total = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                  heavy = [:number |
+                    | value ::= number. |
+            {steps}        value
+                  ].
+                |
+                [index < 1000000] whileTrue: [
+                  sum:: sum + (heavy value: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            )
+        "}
+    }
+
+    #[test]
+    fn a_decline_names_its_scope() {
+        let (_, received) = run_total(&heavy(), plans_only(), |_| {});
+        let plans = plans_of_total(&received);
+        assert!(
+            plans
+                .iter()
+                .any(|plan| plan.declined.iter().any(|declined| {
+                    declined.scope == 0
+                        && declined.reason == InlineDecline::OverWeight
+                        && declined.callee.as_deref() == Some("[] in Demo>>total")
+                })),
+            "the block declined in the body's own scope: {:?}",
+            plans.iter().map(|plan| &plan.declined).collect::<Vec<_>>()
+        );
     }
 }

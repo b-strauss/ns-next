@@ -136,6 +136,18 @@ pub(crate) struct PlanDecisions {
     /// The scopes the code lays out, in the order of the plan's scopes,
     /// numbered from 0 without a gap.
     pub(crate) scopes: Vec<PlannedScope>,
+    /// Each arm of the plan's type-cases, by its site's scope as the plan
+    /// numbers it and the send's program counter, in that order, then the
+    /// cache's: its receiver's dispatch id and what it runs, a scope by
+    /// its number among `scopes`. An arm whose callee's scope the code
+    /// lays out nothing for -- the graph sends instead -- has no number to
+    /// name it and is left out.
+    pub(crate) arms: Vec<(
+        graph::ScopeId,
+        u32,
+        crate::mixin::DispatchId,
+        crate::trace_events::ArmKind,
+    )>,
     /// The number of each of the plan's scopes among `scopes`, by its
     /// `ScopeId`; `None` for a scope the code lays out nothing for.
     numbers: Vec<Option<u32>>,
@@ -146,10 +158,6 @@ impl PlanDecisions {
     /// The number among `scopes` of the plan's scope `scope` -- a
     /// `plan::Declined`'s -- or `None` for one the code lays out nothing
     /// for (`laid_out_scopes`).
-    #[expect(
-        dead_code,
-        reason = "the plan's printing reads it, which a later step adds"
-    )]
     pub(crate) fn number_of(&self, scope: graph::ScopeId) -> Option<u32> {
         self.numbers.get(scope.0 as usize).copied().flatten()
     }
@@ -202,6 +210,38 @@ fn planned_scopes(
     (scopes, numbers)
 }
 
+/// The arms of `plan`'s type-cases as `PlanDecisions::arms` keeps them,
+/// each inlined scope by its number in `numbers`.
+#[cfg(ns_jit)]
+fn planned_arms(
+    plan: &plan::InliningPlan,
+    numbers: &[Option<u32>],
+) -> Vec<(
+    graph::ScopeId,
+    u32,
+    crate::mixin::DispatchId,
+    crate::trace_events::ArmKind,
+)> {
+    use crate::trace_events::ArmKind;
+
+    let mut sites: Vec<(&(graph::ScopeId, u32), &plan::SitePlan)> = plan.sites.iter().collect();
+    sites.sort_by_key(|(key, _)| **key);
+    sites
+        .into_iter()
+        .flat_map(|(&(scope, program_counter), site)| {
+            site.arms.iter().filter_map(move |(guard, _, arm)| {
+                let inlined = match arm {
+                    plan::ArmPlan::Inline { callee } => {
+                        ArmKind::Scope(numbers.get(callee.0 as usize).copied().flatten()?)
+                    }
+                    plan::ArmPlan::Always(always) => ArmKind::Always(always.name()),
+                };
+                Some((scope, program_counter, *guard, inlined))
+            })
+        })
+        .collect()
+}
+
 /// `compile_tree`'s work, `decisions` filled once the plan is made and
 /// its graph built.
 #[cfg(ns_jit)]
@@ -246,6 +286,7 @@ fn compile_planned(
             .collect(),
         declined: std::mem::take(&mut plan.declined),
         scopes: planned,
+        arms: planned_arms(&plan, &numbers),
         numbers: numbers.clone(),
     });
     let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
