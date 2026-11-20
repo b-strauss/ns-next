@@ -1059,6 +1059,7 @@ fn a_print_filter_needs_a_print_option() {
 
 /// A method that answers a constant, sent a hundred times so that the
 /// baseline JIT compiles it.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
 const A_CONSTANT_METHOD: &str = indoc! {"
     class Demo = Object new () (
       answer = (
