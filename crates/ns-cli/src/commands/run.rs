@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use ns_runtime::TraceFilter;
+use ns_runtime::{Printing, TraceFilter, TraceSettings};
 
 use crate::debug::{self, DebugOptions, HostLink, HostStart};
 use crate::{entry, program, trace};
@@ -74,9 +74,15 @@ pub(crate) fn execute(
         if let Err(refusal) = trace::check_filter(&trace_filter, program::module_names(&program)) {
             return refuse_trace(&refusal);
         }
-        loaded
-            .interpreter
-            .set_trace(categories, trace_filter, Box::new(trace::StandardErrorSink));
+        loaded.interpreter.set_trace(
+            TraceSettings {
+                categories,
+                filter: trace_filter,
+                printing: Printing::default(),
+                print_filter: TraceFilter::everything(),
+            },
+            Box::new(trace::StandardErrorSink),
+        );
     }
     let link = match &debug {
         Some(options) => {

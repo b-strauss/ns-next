@@ -18,6 +18,7 @@
 //! while the id still names its class.
 
 mod filter;
+mod listings;
 mod names;
 
 use std::collections::HashMap;
@@ -31,6 +32,7 @@ use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
 pub use filter::TraceFilter;
+pub use listings::{BytecodeListing, Listing};
 use names::BodyNames;
 
 /// What a trace event is about, each switched on by its own flag.
@@ -113,6 +115,39 @@ impl TraceCategories {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
+}
+
+/// Which code a run's listings print (`--print-bytecode`, `--print-code`,
+/// `--print-inlining`; `docs/design/developer-tool.md`, "Stage 2: printing
+/// code"), each switched on by its own flag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Printing {
+    /// Every body's bytecode, when its mixin is made.
+    pub bytecode: bool,
+    /// Every body's machine code, baseline and optimized, when it is
+    /// installed.
+    pub code: bool,
+    /// The inlining plan of every optimizing compile that installed a
+    /// copy.
+    pub inlining: bool,
+}
+
+impl Printing {
+    /// Whether nothing is printed.
+    pub fn is_empty(self) -> bool {
+        !(self.bytecode || self.code || self.inlining)
+    }
+}
+
+/// What a host asks of the trace (`Interpreter::set_trace`): the events of
+/// `categories` about the bodies `filter` selects, and the listings
+/// `printing` names of the bodies `print_filter` selects. Empty
+/// categories and empty printing are no tracing.
+pub struct TraceSettings {
+    pub categories: TraceCategories,
+    pub filter: TraceFilter,
+    pub printing: Printing,
+    pub print_filter: TraceFilter,
 }
 
 /// One event, as the sink receives it: its category, the body it is
@@ -822,6 +857,12 @@ pub trait TraceSink {
     /// never from a leaf machine code calls, whose events wait for the
     /// next of those.
     fn event(&mut self, event: &TraceEvent);
+
+    /// Receives `listing`, at the same flushes as the events, in its
+    /// place among them. A sink that prints no code ignores it.
+    fn listing(&mut self, listing: &Listing) {
+        let _ = listing;
+    }
 }
 
 /// An event recorded and not yet delivered: the bodies it names held as
@@ -1029,6 +1070,10 @@ pub(crate) struct EventTracer {
     /// The categories the sink asked for; empty without a sink.
     categories: TraceCategories,
     filter: Option<TraceFilter>,
+    /// The listings the sink asked for; empty without a sink.
+    printing: Printing,
+    /// The bodies whose listings the sink receives.
+    print_filter: Option<TraceFilter>,
     sink: Option<Box<dyn TraceSink>>,
     /// The events recorded since the last flush, in order.
     pending: Vec<Pending>,
@@ -1170,47 +1215,80 @@ impl EventTracer {
         self.pending.len()
     }
 
-    /// Whether a sink listens for any category: the test a site that
-    /// serves several categories' events makes first.
+    /// Whether a sink listens for any category or listing: the test a
+    /// site that serves several categories' events makes first.
     #[inline]
     pub(crate) fn is_on(&self) -> bool {
-        !self.categories.is_empty()
+        !self.categories.is_empty() || !self.printing.is_empty()
     }
 
-    /// Whether an event waits for a flush: the test each flush point
+    /// Whether an event waits for a flush: the test a compile trigger
     /// makes before it calls `flush`.
     #[inline]
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    /// Installs `sink` for `categories` and `filter`, replacing any sink
-    /// and dropping what it had not delivered; with no category, no sink.
-    pub(crate) fn install(
-        &mut self,
-        categories: TraceCategories,
-        filter: TraceFilter,
-        sink: Box<dyn TraceSink>,
-    ) {
+    /// Whether a flush may deliver something: an event waits, or bytecode
+    /// is printed, whose bodies a flush finds by looking for the mixins
+    /// made since the last one. The test of every flush point but a
+    /// compile trigger's -- the safepoint's and a host's -- so that a
+    /// mixin made mid-run is listed at the next of them (decision 10).
+    #[inline]
+    pub(crate) fn flush_due(&self) -> bool {
+        self.has_pending() || self.printing.bytecode
+    }
+
+    /// Installs `sink` for `settings`, replacing any sink and dropping
+    /// what it had not delivered; with no category and nothing printed,
+    /// no sink.
+    pub(crate) fn install(&mut self, settings: TraceSettings, sink: Box<dyn TraceSink>) {
         *self = EventTracer::default();
-        if categories.is_empty() {
+        let TraceSettings {
+            categories,
+            filter,
+            printing,
+            print_filter,
+        } = settings;
+        if categories.is_empty() && printing.is_empty() {
             return;
         }
         self.categories = categories;
         self.filter = Some(filter);
+        self.printing = printing;
+        self.print_filter = Some(print_filter);
         self.sink = Some(sink);
     }
 }
 
+/// What a flush hands the sink, in order.
+enum Delivery {
+    Event(TraceEvent),
+    Listing(Listing),
+}
+
 /// Delivers every pending event: names each body it holds, drops what the
 /// filter refuses, hands the rest to the sink in order and empties the
-/// queue.
+/// queue. When bytecode is printed, the bodies made since the last flush
+/// are listed first, so that a body's listing precedes its events.
 #[cold]
 #[inline(never)]
 pub(crate) fn flush(mutator: &mut Mutator<'_>) {
     let pending = std::mem::take(&mut mutator.jit.tracer.pending);
     let mut names = std::mem::take(&mut mutator.jit.tracer.names);
-    let mut events = Vec::with_capacity(pending.len());
+    let mut deliveries = Vec::with_capacity(pending.len());
+    if mutator.jit.tracer.printing.bytecode {
+        // Indexed before any event is named: naming indexes the same
+        // sides, which would then be listed by no flush.
+        let made = names.index_new_sides(mutator);
+        if let Some(filter) = &mutator.jit.tracer.print_filter {
+            deliveries.extend(
+                listings::bytecode_listings(made, filter)
+                    .into_iter()
+                    .map(Delivery::Listing),
+            );
+        }
+    }
     for Pending {
         category,
         body,
@@ -1225,17 +1303,20 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         };
         if passes {
             let kind = event_kind(mutator, &mut names, kind, named_key);
-            events.push(TraceEvent {
+            deliveries.push(Delivery::Event(TraceEvent {
                 category,
                 body,
                 kind,
-            });
+            }));
         }
     }
     mutator.jit.tracer.names = names;
     if let Some(sink) = mutator.jit.tracer.sink.as_mut() {
-        for event in &events {
-            sink.event(event);
+        for delivery in &deliveries {
+            match delivery {
+                Delivery::Event(event) => sink.event(event),
+                Delivery::Listing(listing) => sink.listing(listing),
+            }
         }
     }
 }

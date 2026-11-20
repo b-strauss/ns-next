@@ -1700,12 +1700,20 @@ pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
 /// A human-readable listing of `code` for `ns-next-analyzer disasm`. Nested block
 /// code is printed indented under its `MakeClosure`. Pure formatting.
 pub fn disassemble(code: &CompiledCode, name: &str) -> String {
+    disassemble_marked(code, name, None)
+}
+
+/// `disassemble`'s listing with the instruction of the root body at the
+/// index `mark` -- a stopped frame's -- beginning `->` in place of its two
+/// leading spaces, every other line as `disassemble` writes it. A block's
+/// instruction is never marked: a mark names the body it was taken in.
+pub fn disassemble_marked(code: &CompiledCode, name: &str, mark: Option<u32>) -> String {
     let mut out = String::new();
-    write_code(&mut out, code, name, 0);
+    write_code(&mut out, code, name, 0, mark);
     out
 }
 
-fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) {
+fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, mark: Option<u32>) {
     use std::fmt::Write;
     let pad = " ".repeat(indent);
     let kind = match code.kind {
@@ -1727,14 +1735,21 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
             .find(|(_, range)| range.contains(&index))
             .map(|(statement_index, _)| format!("stmt {statement_index}"))
             .unwrap_or_else(|| "-".to_string());
+        // The arrow takes the place of the index's two leading spaces, so
+        // that the marked line keeps its columns while the index fits.
+        let label = if mark.is_some_and(|mark| usize::try_from(mark).ok() == Some(index)) {
+            format!("->{index:>2}")
+        } else {
+            format!("{index:4}")
+        };
         writeln!(
             out,
-            "{pad}{index:4}  {statement:>7}  {}",
+            "{pad}{label}  {statement:>7}  {}",
             format_instruction(instruction)
         )
         .expect("writing to a String cannot fail");
         if let Instruction::MakeClosure { code: block, .. } = instruction {
-            write_code(out, block, "block", indent + 8);
+            write_code(out, block, "block", indent + 8, None);
         }
     }
 }
@@ -2417,6 +2432,69 @@ method foo: (args 1, registers 4)
    3        -  ImplicitReturn r3
 ";
         assert_eq!(text, expected);
+        let marked = disassemble_marked(&code, "foo:", Some(3));
+        let expected_marked = "\
+method foo: (args 1, registers 4)
+   0   stmt 0  MakeClosure r1, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadOuterLocal r0, depth 1 index 0
+           1   stmt 0  NonLocalReturn r0
+   1   stmt 0  SendPublic r2 <- r1 #value () @1
+   2        -  LoadSelf r3
+-> 3        -  ImplicitReturn r3
+";
+        assert_eq!(marked, expected_marked);
+    }
+
+    /// The mark names an instruction of the root body: a block's
+    /// instruction at the same index keeps its two spaces.
+    #[test]
+    fn a_marked_instruction_begins_with_an_arrow() {
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![
+                Instruction::LoadSelf { destination: 0 },
+                Instruction::ImplicitReturn { register: 0 },
+            ],
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 5),
+        ));
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::LoadSelf { destination: 0 },
+                Instruction::MakeClosure {
+                    destination: 1,
+                    parameters: Rc::new(vec![]),
+                    code: block,
+                    copied: Vec::new(),
+                },
+                Instruction::ImplicitReturn { register: 1 },
+            ],
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 10),
+        );
+        let plain = disassemble(&code, "bar");
+        let marked = disassemble_marked(&code, "bar", Some(1));
+        let plain_lines: Vec<&str> = plain.lines().collect();
+        let marked_lines: Vec<&str> = marked.lines().collect();
+        assert_eq!(plain_lines.len(), marked_lines.len());
+        for (index, (plain_line, marked_line)) in plain_lines.iter().zip(&marked_lines).enumerate()
+        {
+            if index == 2 {
+                assert_eq!(*marked_line, "-> 1   stmt 0  MakeClosure r1, [] ->");
+                assert_eq!(plain_line.get(2..), marked_line.get(2..));
+            } else {
+                assert_eq!(plain_line, marked_line, "line {index}");
+            }
+        }
+        assert_eq!(disassemble_marked(&code, "bar", None), plain);
     }
 
     /// A `MakeClosure` with copied registers names them; one without reads

@@ -14,9 +14,9 @@ use ns_runtime::trace_events::{
     InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
 };
 use ns_runtime::{
-    Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
-    SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
-    TraceSink,
+    Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName,
+    Printing, Root, SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent,
+    TraceEventKind, TraceFilter, TraceSettings, TraceSink,
 };
 
 /// A sink that keeps every event it receives where the test reads it.
@@ -25,6 +25,17 @@ struct Collector(Rc<RefCell<Vec<TraceEvent>>>);
 impl TraceSink for Collector {
     fn event(&mut self, event: &TraceEvent) {
         self.0.borrow_mut().push(event.clone());
+    }
+}
+
+/// The settings that trace `categories` through `filter` and print
+/// nothing: stage 1's.
+fn tracing(categories: TraceCategories, filter: TraceFilter) -> TraceSettings {
+    TraceSettings {
+        categories,
+        filter,
+        printing: Printing::default(),
+        print_filter: TraceFilter::everything(),
     }
 }
 
@@ -136,8 +147,7 @@ fn no_sink_no_events_and_no_cost() {
     let events = Rc::new(RefCell::new(Vec::new()));
     let mut without_categories = run_hot(|interpreter| {
         interpreter.set_trace(
-            TraceCategories::default(),
-            TraceFilter::everything(),
+            tracing(TraceCategories::default(), TraceFilter::everything()),
             Box::new(Collector(Rc::clone(&events))),
         );
     });
@@ -228,7 +238,7 @@ fn traced_made_by(
         |interpreter| {
             interpreter.set_jit_stress(false);
             interpreter.set_optimize_stress(false);
-            interpreter.set_trace(categories, filter, sink);
+            interpreter.set_trace(tracing(categories, filter), sink);
             prepare(interpreter);
         },
         again,
@@ -1310,10 +1320,12 @@ fn a_transition_the_miss_leaf_makes_is_traced() {
         interpreter.set_optimization_budget(i64::MAX);
         caches_stress_off(interpreter);
         interpreter.set_trace(
-            TraceCategories::default()
-                .with(TraceCategory::Compile)
-                .with(TraceCategory::Caches),
-            TraceFilter::everything(),
+            tracing(
+                TraceCategories::default()
+                    .with(TraceCategory::Compile)
+                    .with(TraceCategory::Caches),
+                TraceFilter::everything(),
+            ),
             sink,
         );
     });
@@ -1380,8 +1392,10 @@ fn the_queue_is_empty_after_a_run() {
         interpreter.set_optimization_budget(i64::MAX);
         caches_stress_off(interpreter);
         interpreter.set_trace(
-            TraceCategories::default().with(TraceCategory::Caches),
-            TraceFilter::everything(),
+            tracing(
+                TraceCategories::default().with(TraceCategory::Caches),
+                TraceFilter::everything(),
+            ),
             sink,
         );
     });
@@ -1485,8 +1499,10 @@ fn a_reclaimed_id_s_invalidation_names_its_class() {
         interpreter.set_stress_suspend(false);
     }
     interpreter.set_trace(
-        TraceCategories::default().with(TraceCategory::Deoptimize),
-        TraceFilter::everything(),
+        tracing(
+            TraceCategories::default().with(TraceCategory::Deoptimize),
+            TraceFilter::everything(),
+        ),
         Box::new(Collector(Rc::clone(&events))),
     );
     let class = interpreter.load_module(&resolved);
@@ -2006,8 +2022,10 @@ fn a_request_a_reclaimed_id_drops_is_traced_dropped() {
     interpreter.set_stress_collect(false);
     interpreter.set_stress_suspend(false);
     interpreter.set_trace(
-        TraceCategories::default().with(TraceCategory::Optimize),
-        TraceFilter::everything(),
+        tracing(
+            TraceCategories::default().with(TraceCategory::Optimize),
+            TraceFilter::everything(),
+        ),
         Box::new(Collector(Rc::clone(&events))),
     );
     let class = interpreter.load_module(&resolved);

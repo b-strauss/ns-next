@@ -122,6 +122,7 @@ pub use ns_memory::reach;
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;
 pub use trace_events::{
-    TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter, TraceSink,
+    Printing, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
+    TraceSettings, TraceSink,
 };
 pub use types::*;
