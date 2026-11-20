@@ -853,6 +853,68 @@ fn the_filter_narrows_the_lines() {
     }
 }
 
+/// `compare`'s loop compares a string with `==`, whose leaf its copy
+/// does not express, after a nested class's accessor and factory ran,
+/// neither of them snapshotted: three callees that are no body.
+const A_COMPARING_LOOP: &str = indoc! {"
+    class Demo = Object new () (
+      class Account = () ()
+
+      compare = (
+        |
+          account = Account new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000000] whileTrue: [
+          ('a' == account) ifTrue: [
+            sum:: sum + 1].
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public main: platform args: arguments = (
+        platform transcript show: compare printString; newLine.
+      )
+    )
+"};
+
+/// `--trace=inlining` folds the declines of callees that are no body
+/// into one line per copy, counting them by reason, and writes no
+/// decline that names no callee.
+#[test]
+fn trace_inlining_folds_the_declines_of_no_body() {
+    let directory = ScratchDirectory::new("trace-inlining-folded");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_COMPARING_LOOP).unwrap();
+    if plain_jit_counts(&program, "0\n", &[]).is_none() {
+        return;
+    }
+    let output = plain_run(&program)
+        .arg("--trace=inlining")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n");
+    let folded: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("[inlining] {Demo>>compare} declined-no-body "))
+        .collect();
+    assert!(!folded.is_empty(), "stderr: {stderr}");
+    assert!(
+        folded
+            .iter()
+            .all(|line| line.ends_with(" count=3 reasons=not-snapshotted:2,not-expressed:1")),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|line| line.contains(" callee={} ")),
+        "stderr: {stderr}"
+    );
+}
+
 /// A run of `A_HOT_METHOD` with `arguments`, which are refused before the
 /// program runs: status 2, nothing on stdout, and the stderr answered.
 fn refused_stderr(name: &str, arguments: &[&str]) -> String {

@@ -189,7 +189,7 @@ line is dropped by its bounded connection. A channel of their own over
 DAP stays possible, since the events are typed (decided with the user on
 2026-11-18).
 
-Decisions 10 to 15, stage 2's, were decided with the user on 2026-11-20.
+Decisions 10 to 16, stage 2's, were decided with the user on 2026-11-20.
 
 **10. A body's bytecode is printed when it is made.** Every body of a
 mixin is compiled when the mixin is built -- a module's when it is
@@ -279,6 +279,19 @@ request is built on memory addresses
 scopes of decision 11 only a `symbol`, and the offsets of decision 14
 none; no client of ours uses it, and it can be answered from the same
 listings when one does.
+
+**16. The trace folds the declines of callees that are no body into one
+event per copy; `--print-inlining` keeps each.** A callee that is no
+body -- a leaf or primitive the graph does not express, a nested
+class's accessor, a factory -- is declined at nearly every send of it
+in every copy: every inlined `==` of a string declines its leaf, so that
+a line per decline would be most of a trace of a program that compares,
+each naming nothing. The `inlining` category writes them as one
+`declined-no-body` line per optimizing compile, counted by reason, and
+keeps its own `declined` line for every callee that is a body, the
+decline a body explains. The inlining plan is the compile's whole plan,
+and lists every decline as a line of its own, each at its scope's send
+(decided with the user on 2026-11-20).
 
 ## Stage 1: tracing
 
@@ -410,7 +423,8 @@ event about no body.
 | `optimize` | `optimized key= entered= bytes= inlined-scopes= inlined-sites= type-case-arms= eliminated-blocks=` | The copy installed. |
 | `optimize` | `refused key= entered= reason=` | The copy refused for good, the reason a `CompileRefusal`'s. |
 | `inlining` | `inlined key= entered= in-body={} callee={} at=` | The plan inlined `callee` at the send at `at=` of the scope running `in-body`. |
-| `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead (`callee={}` where it is no body): `not-snapshotted` (the tree holds no body of it -- a method past the limits where it is sent, a nested class's accessor, a factory, a `doesNotUnderstand:` target), `not-expressed` (a leaf or primitive the graph does not express), `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`. |
+| `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead, only for a callee that is a body (decision 16): `not-snapshotted` (the tree holds no body of it -- a method past the limits where it is sent, a nested class's accessor, a factory, a `doesNotUnderstand:` target), `not-expressed` (a leaf or primitive the graph does not express), `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`. |
+| `inlining` | `declined-no-body key= entered= count= reasons=<reason>:<count>,…` | Once per optimizing compile that declined a callee that is no body -- a leaf or primitive, or a body the heap no longer names -- `count=` the declines in all and `reasons=` each reason given with its count, in the order the `declined` row lists them (`InlineDecline::ALL`), joined by commas (decision 16). |
 | `deoptimize` | `retired key= entered= reason= version=` | The copy retired for `traps` or `exits` (`jit::retire_optimized`), its version raised to `version=`, or `none` when it is refused for good. |
 | `deoptimize` | `invalidated key= entered= cause=` | The copy freed since what it was compiled against changed: `edit`, `bulk-forward`, `reclaimed-id`, `moved-feedback-base`, `breakpoint`, `stress` (the invalidate stress mode's round). |
 | `code-zone` | `freed key= entered= tier= cause=` | A body's `baseline` or `optimized` code freed, an optimized copy's key named as the optimizing tier's lines name it (`zone.rs`'s `mark_free`): `compaction`, `dead-body` (by a full collection; about no body, since its code died), `moved-feedback-base`, `breakpoint`, `abandoned`, `refused-for-its-twin`. A retired or invalidated copy's free is its `deoptimize` event alone. |
@@ -426,6 +440,7 @@ For example:
 [osr] {newspeak.core.Kernel/Number>>to:do:} osr-compiled at=3
 [optimize] {Demo/Account>>deposit:} requested key={Demo/Account} spent-by={[] in Demo>>main:args:} walk-end=not-inlined
 [inlining] {Demo>>main:args:} declined in-body={Demo>>main:args:} callee={[] in Demo>>run} reason=over-weight at=31
+[inlining] {Demo>>compare} declined-no-body key={Demo} count=3 reasons=not-snapshotted:2,not-expressed:1
 [deoptimize] {Demo>>run} retired reason=exits version=none
 [code-zone] {} compacted freeing=to-a-quarter bodies-freed=7
 [caches] {Demo>>main:args:} monomorphic->polymorphic selector=#deposit: site=3 receiver={Demo/Account}
@@ -510,9 +525,13 @@ assertions only, since only a host's collection
 request and the safepoint that compiles it. What no test reaches is
 [OPEN-WORK.md](../OPEN-WORK.md)'s "The trace's rarer events end to
 end". The plan's declines are unit tests in `jit/optimizing/plan.rs`, the filter's
-and the names' in their modules. The line format is pinned by
+and the names' in their modules; their trace, the declines of callees
+that are no body folded per copy beside a body's own `declined`, is
+`declines_of_no_body_are_folded_per_copy`, and the counting in
+declaration order `trace_events.rs`'s unit tests. The line format is pinned by
 `crates/ns-cli/src/trace.rs`'s unit tests, `--trace` and its refusals by
-`crates/ns-cli/tests/cli.rs`, `debug_start`'s trace by
+`crates/ns-cli/tests/cli.rs` (the folded line by
+`trace_inlining_folds_the_declines_of_no_body`), `debug_start`'s trace by
 `crates/ns-cli/tests/mcp.rs` (`a_trace_arrives_with_the_output`) and the
 runtime options by the plugin's `NewspeakRunConfigurationTest`; the
 CLI's and the MCP server's tests strip every stress mode from the child
@@ -664,7 +683,10 @@ optimized copy, the instruction as the bytecode listing writes it
 without its index, and `  out of line` -- and a line per instruction,
 `    +0x<offset:04x>  <decoded>`, ending in `  ; leaf <name>`,
 `  ; stub <name>`, `  ; exit <kind> @<pc>`, `  ; cell site <n>` or
-`  ; target <name>` where an annotation stands on it. The prologue's
+`  ; target <name>` where an annotation stands on it. A stub's
+annotation names the entry-block word the call or jump loads by that
+word's own name (`BlockWord::name`, `; stub polymorphic-stub`), so that
+each word has one name and a search for it finds every use. The prologue's
 instructions before the first position have no position line. A target
 in the body is written `+0x<offset>` and a data word's address
 `data+0x<offset from the first data word>`; an address outside the

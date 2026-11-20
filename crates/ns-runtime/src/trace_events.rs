@@ -298,14 +298,27 @@ pub enum TraceEventKind {
     /// The plan of the body's copy sent the callee at the send at
     /// `program_counter` (the line's `at=`) in the scope running `in_body`
     /// rather than inline it, for `reason`
-    /// (`declined`); `callee` is `None` for a callee that is no body.
+    /// (`declined`). Only for a callee that is a body: the declines of
+    /// callees that are none are `InlineDeclinedNoBody`.
     InlineDeclined {
         key: Option<String>,
         entered: Option<String>,
         in_body: String,
         program_counter: u32,
-        callee: Option<String>,
+        callee: String,
         reason: InlineDecline,
+    },
+    /// The plan of the body's copy sent, rather than inline, callees that
+    /// are no body -- a leaf or primitive, or a body the heap no longer
+    /// names -- counted by reason in `reasons`, in `InlineDecline`'s
+    /// declaration order, each count above zero (`declined-no-body`).
+    /// One event per optimizing compile, and only for one that declined
+    /// such a callee: every inlined `==` declines its leaf, so that a line
+    /// per decline would bury the declines a body explains.
+    InlineDeclinedNoBody {
+        key: Option<String>,
+        entered: Option<String>,
+        reasons: Vec<(InlineDecline, u32)>,
     },
     /// The body's optimized copy for `key` was retired for `reason` --
     /// freed, the body going on in its baseline code -- and its version
@@ -395,6 +408,7 @@ impl TraceEventKind {
             TraceEventKind::OptimizationRefused { .. } => "refused",
             TraceEventKind::Inlined { .. } => "inlined",
             TraceEventKind::InlineDeclined { .. } => "declined",
+            TraceEventKind::InlineDeclinedNoBody { .. } => "declined-no-body",
             TraceEventKind::Retired { .. } => "retired",
             TraceEventKind::Invalidated { .. } => "invalidated",
             TraceEventKind::Compacted { .. } => "compacted",
@@ -682,6 +696,25 @@ pub enum InlineDecline {
 }
 
 impl InlineDecline {
+    /// Every reason, in declaration order: the order a folded decline
+    /// counts them in (`TraceEventKind::InlineDeclinedNoBody`). A new
+    /// reason joins it in its place, which `every_reason_in_its_place`
+    /// checks.
+    pub const ALL: [InlineDecline; 12] = [
+        InlineDecline::NotSnapshotted,
+        InlineDecline::NotExpressed,
+        InlineDecline::ReturnsOtherwise,
+        InlineDecline::UnknownLazyField,
+        InlineDecline::Observed,
+        InlineDecline::ReachesPastTheCompile,
+        InlineDecline::BlockEscapes,
+        InlineDecline::CreatesABlock,
+        InlineDecline::OverWeight,
+        InlineDecline::OverCompileLimit,
+        InlineDecline::OverRecursionLimit,
+        InlineDecline::OutOfRegisters,
+    ];
+
     /// The reason's name, as a line spells it: kebab case.
     pub fn name(self) -> &'static str {
         match self {
@@ -698,6 +731,20 @@ impl InlineDecline {
             InlineDecline::OverRecursionLimit => "over-recursion-limit",
             InlineDecline::OutOfRegisters => "out-of-registers",
         }
+    }
+
+    /// `reasons` counted, in declaration order, each count above zero:
+    /// what a folded decline holds.
+    pub(crate) fn counted(reasons: impl IntoIterator<Item = InlineDecline>) -> Vec<(Self, u32)> {
+        let mut counts = [0u32; InlineDecline::ALL.len()];
+        for reason in reasons {
+            counts[reason as usize] += 1;
+        }
+        InlineDecline::ALL
+            .into_iter()
+            .zip(counts)
+            .filter(|&(_, count)| count > 0)
+            .collect()
     }
 }
 
@@ -981,8 +1028,12 @@ pub(crate) enum PendingKind {
         key: Option<CustomizationKey>,
         in_body: Rc<CompiledCode>,
         program_counter: u32,
-        callee: Option<Rc<CompiledCode>>,
+        callee: Rc<CompiledCode>,
         reason: InlineDecline,
+    },
+    InlineDeclinedNoBody {
+        key: Option<CustomizationKey>,
+        reasons: Vec<(InlineDecline, u32)>,
     },
     Retired {
         key: Option<CustomizationKey>,
@@ -1057,6 +1108,7 @@ impl PendingKind {
             | PendingKind::OptimizationRefused { key, .. }
             | PendingKind::Inlined { key, .. }
             | PendingKind::InlineDeclined { key, .. }
+            | PendingKind::InlineDeclinedNoBody { key, .. }
             | PendingKind::Retired { key, .. }
             | PendingKind::Invalidated { key, .. }
             | PendingKind::OptimizationDropped { key, .. }
@@ -1544,8 +1596,16 @@ fn event_kind(
                 entered,
                 in_body: name(&in_body),
                 program_counter,
-                callee: callee.map(|callee| name(&callee)),
+                callee: name(&callee),
                 reason,
+            }
+        }
+        PendingKind::InlineDeclinedNoBody { key, reasons } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::InlineDeclinedNoBody {
+                key,
+                entered,
+                reasons,
             }
         }
         PendingKind::Retired {
@@ -1679,6 +1739,37 @@ mod tests {
     /// A body of its own for each test's events.
     fn body() -> Rc<CompiledCode> {
         Rc::new(crate::compiler::factory_body(3))
+    }
+
+    /// `InlineDecline::ALL` holds every reason once, each at the place
+    /// its declaration gives it, so that the counts follow it.
+    #[test]
+    fn every_reason_in_its_place() {
+        for (index, reason) in InlineDecline::ALL.into_iter().enumerate() {
+            assert_eq!(reason as usize, index, "{}", reason.name());
+        }
+    }
+
+    /// Declines are counted by reason in declaration order, whatever
+    /// order they came in, and a reason no decline gave is left out.
+    #[test]
+    fn declines_are_counted_in_declaration_order() {
+        let counted = InlineDecline::counted([
+            InlineDecline::NotExpressed,
+            InlineDecline::OutOfRegisters,
+            InlineDecline::NotExpressed,
+            InlineDecline::NotSnapshotted,
+            InlineDecline::NotExpressed,
+        ]);
+        assert_eq!(
+            counted,
+            vec![
+                (InlineDecline::NotSnapshotted, 1),
+                (InlineDecline::NotExpressed, 3),
+                (InlineDecline::OutOfRegisters, 1),
+            ]
+        );
+        assert!(InlineDecline::counted([]).is_empty());
     }
 
     /// A frame that can never switch is refused once per loop head and

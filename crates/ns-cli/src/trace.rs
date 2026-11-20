@@ -200,11 +200,29 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.event(event);
             fields.key(key, entered);
             fields.name("in-body", in_body);
-            // A callee that is no body is named by nothing, as an event
-            // about no body is.
-            fields.name("callee", callee.as_deref().unwrap_or(""));
+            fields.name("callee", callee);
             fields.value("reason", reason.name());
             fields.value("at", program_counter);
+        }
+        TraceEventKind::InlineDeclinedNoBody {
+            key,
+            entered,
+            reasons,
+        } => {
+            fields.event(event);
+            fields.key(key, entered);
+            fields.value(
+                "count",
+                reasons.iter().map(|&(_, count)| count).sum::<u32>(),
+            );
+            // Each reason with its count, `<reason>:<count>`, joined by
+            // commas: one value, which no space splits.
+            let reasons = reasons
+                .iter()
+                .map(|(reason, count)| format!("{}:{count}", reason.name()))
+                .collect::<Vec<_>>()
+                .join(",");
+            fields.value("reasons", reasons);
         }
         TraceEventKind::Retired {
             key,
@@ -595,7 +613,7 @@ mod tests {
                         entered: None,
                         in_body: "Demo>>main:args:".to_string(),
                         program_counter: 31,
-                        callee: named("[] in Demo>>run"),
+                        callee: "[] in Demo>>run".to_string(),
                         reason: InlineDecline::OverWeight,
                     },
                 ),
@@ -605,18 +623,31 @@ mod tests {
             (
                 about(
                     Inlining,
-                    "Demo>>main:args:",
-                    TraceEventKind::InlineDeclined {
-                        key: None,
-                        entered: None,
-                        in_body: "[] in Demo>>main:args:".to_string(),
-                        program_counter: 4,
-                        callee: None,
-                        reason: InlineDecline::NotExpressed,
+                    "Demo/Account>>deposit:",
+                    TraceEventKind::InlineDeclinedNoBody {
+                        key: named("Demo/Account"),
+                        entered: named("Demo/Base"),
+                        reasons: vec![
+                            (InlineDecline::NotSnapshotted, 2),
+                            (InlineDecline::NotExpressed, 7),
+                        ],
                     },
                 ),
-                "[inlining] {Demo>>main:args:} declined in-body={[] in Demo>>main:args:} \
-                 callee={} reason=not-expressed at=4",
+                "[inlining] {Demo/Account>>deposit:} declined-no-body key={Demo/Account} \
+                 entered={Demo/Base} count=9 reasons=not-snapshotted:2,not-expressed:7",
+            ),
+            (
+                about(
+                    Inlining,
+                    "Demo>>main:args:",
+                    TraceEventKind::InlineDeclinedNoBody {
+                        key: None,
+                        entered: None,
+                        reasons: vec![(InlineDecline::NotExpressed, 1)],
+                    },
+                ),
+                "[inlining] {Demo>>main:args:} declined-no-body count=1 \
+                 reasons=not-expressed:1",
             ),
             (
                 about(
@@ -748,7 +779,7 @@ mod tests {
 
     /// How many kinds of event there are: one past the last index the
     /// match in `every_kind_is_listed` gives, raised with every arm added.
-    const EVENT_KINDS: usize = 27;
+    const EVENT_KINDS: usize = 28;
 
     /// Every kind of event appears in `every_event`: the match fails to
     /// compile for a kind added without its arm, and the test fails for
@@ -785,6 +816,7 @@ mod tests {
                 TraceEventKind::OsrRefused { .. } => 24,
                 TraceEventKind::OptimizationDropped { .. } => 25,
                 TraceEventKind::CachesVacated { .. } => 26,
+                TraceEventKind::InlineDeclinedNoBody { .. } => 27,
             };
             seen.insert(index);
         }

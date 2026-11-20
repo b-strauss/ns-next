@@ -2457,16 +2457,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   as the Newspeak IDE does, next; it matters because an expression is
   still evaluated only at a stop. Its open questions are decided in its
   plan ([developer-tool.md](design/developer-tool.md), "The decisions",
-  "Planned: the stages", "Open questions"). Open too (noted 2026-11-20,
-  in stage 1's final review, and not decided in stage 2's plan): the
-  `inlining` category declines every inlined `==` -- `declined
-  in-body={newspeak.core.Kernel/Value>>==} callee={}
-  reason=not-expressed` for each copy that inlines one -- and so every
-  leaf or primitive the graph does not express, which is most of a
-  trace of a program that compares; `--print-inlining` lists each such
-  decline as a line of its own too (`declined callee={} reason=…`).
-  Whether both keep it, fold it into one line per copy, or leave out
-  what is no body is still to be decided with the user.
+  "Planned: the stages", "Open questions").
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,

@@ -11,7 +11,8 @@ use std::rc::Rc;
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
     CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, HoldReason,
-    InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
+    InlineDecline, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState,
+    VacateCause,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName,
@@ -644,6 +645,94 @@ fn a_hot_loop_is_traced_requested_and_optimized() {
                         if in_body == "Test>>run" && callee == "Test>>step:"
                 )),
         "{events:?}"
+    );
+}
+
+/// A hot loop that compares a string with `==`, which the plan inlines
+/// as `Value>>==`, whose leaf the graph does not express for a string,
+/// and sends `value:` to a block that weighs more than a block the plan
+/// inlines may: thirty sends of `step:`. Before the loop, a nested
+/// class's accessor and its factory run, neither of them snapshotted.
+fn comparing_loop() -> String {
+    let steps: String = (0..30)
+        .map(|_| "        value:: self step: value.\n")
+        .collect();
+    formatdoc! {"
+        class Test = Object new () (
+          class Account = () ()
+
+          public run = (
+            |
+              account = Account new.
+              sum ::= 0.
+              index ::= 0.
+              heavy = [:number |
+                | value ::= number. |
+        {steps}        value
+              ].
+            |
+            [index < 1000000] whileTrue: [
+              ('a' == account) ifTrue: [
+                sum:: sum + 1].
+              sum:: sum + (heavy value: index).
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+
+          step: value = (
+            ^value + 1.
+          )
+        )
+    "}
+}
+
+/// The declines of callees that are no body are folded into one event
+/// per copy, counting them by reason, while a callee that is a body --
+/// the block that weighs too much -- keeps its own `declined` event.
+#[test]
+fn declines_of_no_body_are_folded_per_copy() {
+    let events = traced_spending(
+        &comparing_loop(),
+        &[TraceCategory::Optimize, TraceCategory::Inlining],
+        hot_loop_stress_off,
+    );
+    let run = about(&events, "Test>>run");
+    let optimized = run
+        .iter()
+        .filter(|event| matches!(event.kind, TraceEventKind::Optimized { .. }))
+        .count();
+    assert!(optimized > 0, "{events:?}");
+    let folded: Vec<&Vec<(InlineDecline, u32)>> = run
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TraceEventKind::InlineDeclinedNoBody { reasons, .. } => Some(reasons),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(folded.len(), optimized, "one per copy: {events:?}");
+    for reasons in &folded {
+        // `Account` and `new`, which ran once before the loop, and the
+        // string's `==` leaf, in declaration order.
+        assert_eq!(
+            reasons.as_slice(),
+            [
+                (InlineDecline::NotSnapshotted, 2),
+                (InlineDecline::NotExpressed, 1)
+            ],
+            "{events:?}"
+        );
+    }
+    assert!(
+        run.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::InlineDeclined {
+                callee,
+                reason: InlineDecline::OverWeight,
+                ..
+            } if callee == "[] in Test>>run"
+        )),
+        "the heavy block declined on its own: {events:?}"
     );
 }
 

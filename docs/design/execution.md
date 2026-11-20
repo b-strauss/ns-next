@@ -13002,7 +13002,9 @@ Every callee the plan inlines and every one it declines, with the
 reason it was declined (`InlineDecline`), is traced in the category
 `inlining`, from the plan's decisions every optimizing compile collects
 (`PlanDecisions`), whether the copy is installed or refused after
-planning ([developer-tool.md](developer-tool.md), "Stage 1: tracing").
+planning, the declines of callees that are no body counted by reason in
+one event per compile ([developer-tool.md](developer-tool.md), "Stage 1:
+tracing", decision 16).
 
 ### Inlined scopes in the frame
 

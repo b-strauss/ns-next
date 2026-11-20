@@ -62,8 +62,9 @@ use crate::trace_events::{
 };
 #[cfg(ns_jit)]
 use crate::trace_events::{
-    CodeTier, DataWord, Deferral, FreeCause, InliningOutcome, InvalidationCause, PendingArm,
-    PendingCode, PendingDecline, PendingInlining, PendingScope, RecompileWalkEnd, RetireReason,
+    CodeTier, DataWord, Deferral, FreeCause, InlineDecline, InliningOutcome, InvalidationCause,
+    PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope, RecompileWalkEnd,
+    RetireReason,
 };
 
 /// The code zone's size unless a test asks for another. A first guess
@@ -6870,9 +6871,11 @@ fn defer_optimization(
 /// Records the inlining plan's decisions for the copy of `code` for
 /// `key`: each scope the copy lays out below its own, by its sender
 /// scope's body, the send's program counter and its own body, and each
-/// callee the plan sent rather than inline (`PlanDecisions`). Bodies are
-/// named by their code ids at this safepoint, where the tree that
-/// registered them was taken; an id the heap no longer names is left out.
+/// callee the plan sent rather than inline (`PlanDecisions`), the
+/// callees that are no body folded into one event counting them by
+/// reason. Bodies are named by their code ids at this safepoint, where
+/// the tree that registered them was taken; an id the heap no longer
+/// names is left out, and a callee's such id counted as no body.
 #[cfg(ns_jit)]
 #[cold]
 #[inline(never)]
@@ -6898,11 +6901,15 @@ fn trace_inlining(
             },
         ));
     }
+    let mut no_body = Vec::new();
     for declined in &decisions.declined {
+        let Some(callee) = declined.callee.and_then(|callee| mutator.heap.code(callee)) else {
+            no_body.push(declined.reason);
+            continue;
+        };
         let Some(in_body) = mutator.heap.code(declined.scope_code) else {
             continue;
         };
-        let callee = declined.callee.and_then(|callee| mutator.heap.code(callee));
         mutator.jit.tracer.record(Pending::about(
             TraceCategory::Inlining,
             code,
@@ -6912,6 +6919,18 @@ fn trace_inlining(
                 program_counter: declined.program_counter,
                 callee,
                 reason: declined.reason,
+            },
+        ));
+    }
+    // One event for the callees that are no body: each would name
+    // nothing, and every inlined `==` declines one.
+    if !no_body.is_empty() {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Inlining,
+            code,
+            PendingKind::InlineDeclinedNoBody {
+                key,
+                reasons: InlineDecline::counted(no_body),
             },
         ));
     }
