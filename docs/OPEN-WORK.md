@@ -2452,7 +2452,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   debugger on the process, and an expression only at a stop. Each
   stage's open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
-  "Planned: the stages", "Open questions").
+  "Planned: the stages", "Open questions"). A question for stage 2's
+  plan (noted 2026-11-20, in the stage's final review): the `inlining`
+  category declines every inlined `==` -- `declined
+  in-body={newspeak.core.Kernel/Value>>==} callee={}
+  reason=not-expressed` for each copy that inlines one -- and so every
+  leaf or primitive the graph does not express, which is most of a
+  trace of a program that compares; whether `--print-inlining`'s tree
+  and the trace keep such a decline, fold it into one line per copy, or
+  leave out what is no body, is decided with the listing that shows the
+  same plan.
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,
@@ -3652,8 +3661,13 @@ program's subclass of `String` as an argument, the error of a
   trace's stage 1). No test runs a program to `[optimize] … not-due` --
   a recompilee whose copy was settled between the walk and the due
   check -- nor to `[code-zone] … freed … cause=refused-for-its-twin`
-  (`FreeCause::RefusedForItsTwin`); both lines are pinned only by the
-  line format's unit test. Nor does a plugin test cover the runtime
+  (`FreeCause::RefusedForItsTwin`), nor to `[optimize] … dropped` -- a
+  request an edit or a reclaimed id drops in the window between the
+  leaf that recorded it and the safepoint that would compile it -- nor
+  to `[osr] … osr-refused` or `[compile] … held-twin`, which need a
+  reified frame whose twin the exhausted zone holds, or a frame of
+  another feedback base, at a loop's head; these lines are pinned only
+  by the line format's unit test. Nor does a plugin test cover the runtime
   options with the Benchmark command, or a blank field stored as none.
   On a target without a JIT the CLI's and the MCP server's trace tests
   return without asserting anything and without saying so
