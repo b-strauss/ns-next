@@ -51,7 +51,7 @@ reasons, each body named by the tools' form `id@version/Inner>>selector`
 code a run makes, is next for it and needs a plan of its own, which
 decides that stage's open questions
 ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
-code", "Open questions").
+code"; its questions decided as decisions 10 to 15).
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled

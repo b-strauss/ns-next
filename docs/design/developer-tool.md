@@ -177,6 +177,83 @@ line is dropped by its bounded connection. A channel of their own over
 DAP stays possible, since the events are typed (decided with the user on
 2026-11-18).
 
+Decisions 10 to 15, stage 2's, were decided with the user on 2026-11-20.
+
+**10. A body's bytecode is printed when it is made.** Every body of a
+mixin is compiled when the mixin is built -- a module's when it is
+loaded, an edit's when it is installed -- or decoded, the shipped
+modules' from the embedded artifact and an image's from its code
+section; `--print-bytecode` prints each body the filter selects at that
+moment, its blocks indented under it as `disasm` prints them, whether or
+not it ever runs. V8 prints bytecode when an Ignition job is finalized
+(`v8/src/interpreter/interpreter.cc:254-283`), which its lazy compile
+makes the first call (`v8/src/codegen/compiler.cc:3100-3168`); here the
+making is the load, and printing at the first entry instead would test
+a bit at every push, in the interpreter and in machine code, the hot
+path the `codegen` gate holds. HotSpot prints bytecode only on demand
+(`jdk/src/hotspot/share/oops/method.cpp:1988-1997`). What runs is the
+trace's to say (`[compile] … trigger=entry`). Compiling a body's
+debugger metadata again makes no body and prints nothing.
+
+**11. An optimized copy's listing heads with its tree of scopes; each
+stretch of code names its scope by number.** The head numbers the
+scopes, `s0` the body's own, each indented under the scope it is
+inlined into with the send it is inlined at (`s2 {Demo/Account>>balance}
+at s1@5`); wherever the code's scope or program counter changes, a line
+names the scope, its innermost body and the program counter
+(`s2 {Demo/Account>>balance} @2`). The tree is the one `--print-inlining`
+prints. Strongtalk keeps the scopes as a tree apart from the code
+(`strongtalk/vm/code/nmethod.cpp:782-807`); HotSpot repeats the whole
+chain at every annotated instruction
+(`jdk/src/hotspot/share/code/nmethod.cpp:4265-4397`), which the number
+spares a listing of deep inlining, and V8 marks a stretch by an
+inlining id resolved through a table
+(`v8/src/codegen/source-position.cc:14-81`). A number tells apart the
+arms of a type-case that inline the same callee; the body's name beside
+it keeps every stretch of a callee found by its name.
+
+**12. Listings go to standard error, as the trace's lines do.** A
+listing follows the trace line of the event it belongs to, in one
+stream, and standard output stays the program's; the MCP server and the
+plugin receive it as they receive the trace (decision 9). V8's code
+tracer writes to standard output or a file
+(`v8/src/diagnostics/code-tracer.h:31-36`), HotSpot's listings to its
+`tty`; neither keeps the program's output apart.
+
+**13. `--print-inlining` prints the plan of every compile that made
+one, installed or refused.** The tree ends with the compile's outcome --
+the copy installed, or the refusal's reason as the trace spells it -- so
+that the question why a body stayed unoptimized is answered by the plan
+that failed. HotSpot's C1, Strongtalk and V8's `--trace-turbo-inlining`
+print the decisions as they are made, whatever the outcome
+(`jdk/src/hotspot/share/c1/c1_GraphBuilder.cpp:4858-4880`,
+`v8/src/compiler/js-inlining.cc:695-766`); C2 prints the last attempt
+only (`jdk/src/hotspot/share/opto/c2compiler.cpp:244-245`). A body
+refused before its plan was made -- more instructions than a program
+counter holds -- has none to print. A listing of code stays bound to its
+install (decision 5).
+
+**14. A machine-code listing shows offsets; the base address appears
+once, in its head.** An instruction's line carries its offset from the
+body's start; a target in the body is `+0x…`, a data word `data+0x…`,
+and a call or jump out of it names the stub, leaf or cell it reaches,
+so that a listing differs between runs only in its head and a test
+pins it. The code zone is placed anew by every run and compacted in
+one, which would make an absolute address in each line, as V8's
+(`v8/src/diagnostics/disassembler.cc:425-429`) and HotSpot's carry,
+stale. x64 is written in Intel syntax, AArch64 in the architecture's.
+
+**15. The agent answers a frame's code through a request of its own,
+`newspeak/frameCode`.** It answers the stopped frame's body's bytecode
+and, if the frame runs machine code, that code's listing, in the format
+`--print-bytecode` and `--print-code` print, each marked where the frame
+stands; the MCP server's tool `debug_code` passes the text on. DAP's
+`disassemble` request is built on memory addresses
+(`instructionPointerReference`), in which bytecode has no place, the
+scopes of decision 11 only a `symbol`, and the offsets of decision 14
+none; no client of ours uses it, and it can be answered from the same
+listings when one does.
+
 ## Stage 1: tracing
 
 **Built** (2026-11-18 to 2026-11-20;
@@ -426,15 +503,18 @@ and answer nothing on a target without a JIT.
   (`TraceFilter`), the plan's decisions with their reasons
   (`PlanDecisions`, collected by every optimizing compile) and the events
   of an install (`compiled`, `compiled-twin`, `optimized`), at whose
-  sites a listing is taken.
+  sites a listing is taken; bytecode is printed when a mixin's bodies
+  are made (decision 10), the plan of every compile that made one
+  (decision 13), everything on standard error (decision 12).
 - The runtime answers a listing: the body's name, its tier and, for an
-  optimized copy, its receiver application; its bytes and base address;
-  the bytecode index per machine offset; the named targets of its calls.
-  `ns-next` decodes it for the target it runs on, x64 or AArch64; a target
-  without a JIT prints bytecode only.
-- The agent answers a request for the code of a stopped frame -- the
-  body's bytecode, and the machine code the frame runs if any -- and the
-  MCP server's new tool asks it.
+  optimized copy, its receiver application and its tree of scopes
+  (decision 11); its bytes and base address; the scope and bytecode
+  index per machine offset; the named targets of its calls and its data
+  words. `ns-next` decodes it for the target it runs on, x64 or AArch64,
+  in offsets (decision 14); a target without a JIT prints bytecode only.
+- The agent answers `newspeak/frameCode`, the code of a stopped frame --
+  the body's bytecode, and the machine code the frame runs if any -- and
+  the MCP server's new tool `debug_code` asks it (decision 15).
 
 ### Stage 3: the shell
 
@@ -451,9 +531,6 @@ and answer nothing on a target without a JIT.
 
 Each is decided in its stage's plan.
 
-- **Stage 2:** when a body's bytecode counts as made for
-  `--print-bytecode` (its mixin's compile, or its first entry); how an
-  optimized copy's inlined scopes are marked in its listing.
 - **Stage 3:** how an input is compiled -- a method on the workspace's
   mixin, as the Newspeak IDE does, or a block over a top-level activation
   (`FrameKind::TopLevel`) -- and how a new workspace variable becomes a
