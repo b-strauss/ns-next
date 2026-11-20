@@ -486,6 +486,14 @@ mod code {
             "the lean body's transfer into its twin: {:?}",
             leans[0].words
         );
+        assert!(
+            leans[0]
+                .annotations
+                .iter()
+                .any(|(_, annotation)| *annotation == Annotation::Target("twin")),
+            "the transfer's jump into the twin named: {:?}",
+            leans[0].annotations
+        );
     }
 
     #[test]
@@ -534,5 +542,15 @@ mod code {
             };
             assert_eq!(code.body, "Demo>>square:");
         }
+        // The same run with the filter on `cube:` lists it: the body the
+        // first filter left out was compiled.
+        let (mut interpreter, instance, cubes) = hot("Demo>>cube:");
+        enter(&mut interpreter, &instance, "runSquare", 2);
+        enter(&mut interpreter, &instance, "runCube", 2);
+        assert_eq!(
+            code_of(&cubes.borrow(), "Demo>>cube:", CodeTier::Baseline).len(),
+            1,
+            "the body the filter left out was compiled"
+        );
     }
 }

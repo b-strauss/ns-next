@@ -12227,6 +12227,7 @@ mod cross_assembly_tests {
         use crate::trace_events::{Annotation, Position};
         let mut annotated = 0usize;
         let (mut cells, mut exits) = (0usize, 0usize);
+        let mut targets = std::collections::BTreeSet::new();
         for (code, method) in golden_bodies(Lowering::Optimized) {
             for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
                 for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
@@ -12277,12 +12278,22 @@ mod cross_assembly_tests {
                         .iter()
                         .filter(|(_, annotation)| matches!(annotation, Annotation::Exit { .. }))
                         .count();
+                    targets.extend(listed.annotations.iter().filter_map(|(_, annotation)| {
+                        match annotation {
+                            Annotation::Target(name) => Some(*name),
+                            _ => None,
+                        }
+                    }));
                     annotated += 1;
                 }
             }
         }
         assert!(annotated > 10_000, "only {annotated} bodies");
         assert!(cells > 0 && exits > 0, "{cells} cells, {exits} exits");
+        // Every indirect call or jump to no stub, leaf or cell is named.
+        for target in ["initializer-callee", "forcing-callee", "twin"] {
+            assert!(targets.contains(target), "{target} among {targets:?}");
+        }
     }
 
     #[test]

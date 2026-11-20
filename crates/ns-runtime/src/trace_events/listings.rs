@@ -139,7 +139,10 @@ pub struct ListedScope {
 pub enum Annotation {
     /// A call of the named leaf, a Rust function, through the leaf shim.
     Leaf(&'static str),
-    /// A call or jump through the entry block's word of the named stub.
+    /// A call or jump through the entry block's word of the named stub,
+    /// or the instruction that selects that stub's address for a call
+    /// shared with another path -- a send's load of the polymorphic stub,
+    /// which the call its cell's hit makes too.
     Stub(&'static str),
     /// The exit of the named kind, which hands the instruction at
     /// `program_counter` to the interpreter.
@@ -149,6 +152,11 @@ pub enum Annotation {
     },
     /// A send's call through the cell of its site numbered `site`.
     Cell { site: u32 },
+    /// An indirect call or jump to a target that is no stub, leaf or
+    /// cell: the callee a leaf decided (`initializer-callee`,
+    /// `forcing-callee`), or the body's twin a transfer goes on in
+    /// (`twin`).
+    Target(&'static str),
 }
 
 /// What a body's data word holds, named rather than shown: its value is
