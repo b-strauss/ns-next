@@ -244,7 +244,8 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             if self.stress_caches {
-                self.world.invalidate_caches();
+                self.world
+                    .invalidate_caches(crate::trace_events::VacateCause::Stress);
                 self.cache_invalidations += 1;
                 stressed = true;
             }

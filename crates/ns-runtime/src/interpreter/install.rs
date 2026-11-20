@@ -73,7 +73,7 @@ impl<'gc> Mutator<'gc> {
         if migration.old.is_empty() {
             // The applications changed under unchanged class objects, so
             // every entry decided for the old ones is stale.
-            self.caches.invalidate();
+            super::inline_cache::vacate_every_cache(self, crate::trace_events::VacateCause::Edit);
         } else {
             debug_assert!(
                 migration
@@ -83,7 +83,14 @@ impl<'gc> Mutator<'gc> {
                     .all(|object| crate::builtins::reflection::may_be_forwarded(self, *object)),
                 "internal: the install forwards only instances the forward accepts"
             );
-            if crate::heap::forward_identity(self, &migration.old, &migration.new).is_err() {
+            if crate::heap::forward_identity(
+                self,
+                &migration.old,
+                &migration.new,
+                crate::trace_events::VacateCause::Edit,
+            )
+            .is_err()
+            {
                 unreachable!("internal: each migrated instance is forwarded once, to a new one");
             }
         }

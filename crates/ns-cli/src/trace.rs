@@ -82,6 +82,15 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.value("trigger", trigger.name());
             fields.value("reason", reason.name());
         }
+        TraceEventKind::CompileHeld { trigger, reason } => {
+            fields.event(event);
+            fields.value("trigger", trigger.name());
+            fields.value("reason", reason.name());
+        }
+        TraceEventKind::TwinHeld { reason } => {
+            fields.event(event);
+            fields.value("reason", reason.name());
+        }
         TraceEventKind::Abandoned { exits } => {
             fields.event(event);
             fields.value("exits", exits);
@@ -91,9 +100,18 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.value("by", revival.name());
         }
         TraceEventKind::RefusedForItsTwin => fields.event(event),
+        TraceEventKind::AbandonedRefused { reason } => {
+            fields.event(event);
+            fields.value("reason", reason.name());
+        }
         TraceEventKind::OsrCompiled { loop_head } | TraceEventKind::OsrEntered { loop_head } => {
             fields.event(event);
             fields.value("at", loop_head);
+        }
+        TraceEventKind::OsrRefused { loop_head, reason } => {
+            fields.event(event);
+            fields.value("at", loop_head);
+            fields.value("reason", reason.name());
         }
         TraceEventKind::OptimizationRequested {
             spent_by,
@@ -111,6 +129,15 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.key(key, entered);
             fields.name("spent-by", spent_by);
             fields.value("walk-end", walk_end.name());
+        }
+        TraceEventKind::OptimizationDropped {
+            key,
+            entered,
+            cause,
+        } => {
+            fields.event(event);
+            fields.key(key, entered);
+            fields.value("cause", cause.name());
         }
         TraceEventKind::OptimizationDeferred {
             key,
@@ -208,8 +235,14 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.value("freeing", freeing.name());
             fields.value("bodies-freed", bodies_freed);
         }
-        TraceEventKind::Freed { tier, cause } => {
+        TraceEventKind::Freed {
+            key,
+            entered,
+            tier,
+            cause,
+        } => {
             fields.event(event);
+            fields.key(key, entered);
             fields.value("tier", tier.name());
             fields.value("cause", cause.name());
         }
@@ -229,6 +262,10 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.value("selector", format!("#{selector}"));
             fields.value("site", site);
             fields.name("receiver", receiver);
+        }
+        TraceEventKind::CachesVacated { cause } => {
+            fields.event(event);
+            fields.value("cause", cause.name());
         }
     }
     line
@@ -290,7 +327,8 @@ mod tests {
     use super::*;
     use ns_runtime::trace_events::{
         CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
-        InlineDecline, InvalidationCause, RecompileWalkEnd, RetireReason, Revival, SiteState,
+        HoldReason, InlineDecline, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason,
+        Revival, SiteState, VacateCause,
     };
 
     /// An event of `category` about the body named `body`.
@@ -365,6 +403,27 @@ mod tests {
             (
                 about(
                     Compile,
+                    "Demo>>run",
+                    TraceEventKind::CompileHeld {
+                        trigger: CompileTrigger::BackJump,
+                        reason: HoldReason::ZoneFull,
+                    },
+                ),
+                "[compile] {Demo>>run} held trigger=back-jump reason=zone-full",
+            ),
+            (
+                about(
+                    Compile,
+                    "[] in Demo>>run",
+                    TraceEventKind::TwinHeld {
+                        reason: HoldReason::ZoneFull,
+                    },
+                ),
+                "[compile] {[] in Demo>>run} held-twin reason=zone-full",
+            ),
+            (
+                about(
+                    Compile,
                     "Demo>>+",
                     TraceEventKind::Abandoned { exits: 1000 },
                 ),
@@ -386,6 +445,16 @@ mod tests {
             ),
             (
                 about(
+                    Compile,
+                    "Demo>>run",
+                    TraceEventKind::AbandonedRefused {
+                        reason: CompileRefusal::JitOff,
+                    },
+                ),
+                "[compile] {Demo>>run} refused-abandoned reason=jit-off",
+            ),
+            (
+                about(
                     Osr,
                     "Demo>>loop",
                     TraceEventKind::OsrCompiled { loop_head: 12 },
@@ -399,6 +468,17 @@ mod tests {
                     TraceEventKind::OsrEntered { loop_head: 12 },
                 ),
                 "[osr] {Demo>>loop} osr-entered at=12",
+            ),
+            (
+                about(
+                    Osr,
+                    "Demo>>loop",
+                    TraceEventKind::OsrRefused {
+                        loop_head: 12,
+                        reason: OsrRefusal::TwinHeld,
+                    },
+                ),
+                "[osr] {Demo>>loop} osr-refused at=12 reason=twin-held",
             ),
             (
                 about(
@@ -426,6 +506,19 @@ mod tests {
                     },
                 ),
                 "[optimize] {Demo>>run} not-due spent-by={Demo>>run} walk-end=bottom-of-stack",
+            ),
+            (
+                about(
+                    Optimize,
+                    "Demo/Account>>deposit:",
+                    TraceEventKind::OptimizationDropped {
+                        key: named("Demo/Account"),
+                        entered: named("Demo/Base"),
+                        cause: InvalidationCause::Edit,
+                    },
+                ),
+                "[optimize] {Demo/Account>>deposit:} dropped key={Demo/Account} \
+                 entered={Demo/Base} cause=edit",
             ),
             (
                 about(
@@ -570,16 +663,21 @@ mod tests {
                     CodeZone,
                     "Demo>>run",
                     TraceEventKind::Freed {
+                        key: named("Demo"),
+                        entered: None,
                         tier: CodeTier::Optimized,
                         cause: FreeCause::MovedFeedbackBase,
                     },
                 ),
-                "[code-zone] {Demo>>run} freed tier=optimized cause=moved-feedback-base",
+                "[code-zone] {Demo>>run} freed key={Demo} tier=optimized \
+                 cause=moved-feedback-base",
             ),
             (
                 about_no_body(
                     CodeZone,
                     TraceEventKind::Freed {
+                        key: None,
+                        entered: None,
                         tier: CodeTier::Baseline,
                         cause: FreeCause::DeadBody,
                     },
@@ -620,6 +718,15 @@ mod tests {
                 "[caches] {com.acme.util.Util@1.0.0/Inner>>run} vacant->monomorphic selector=#, \
                  site=0 receiver={newspeak.core.Kernel/String}",
             ),
+            (
+                about_no_body(
+                    Caches,
+                    TraceEventKind::CachesVacated {
+                        cause: VacateCause::JitSwitched,
+                    },
+                ),
+                "[caches] {} vacated cause=jit-switched",
+            ),
         ]
     }
 
@@ -632,7 +739,7 @@ mod tests {
 
     /// How many kinds of event there are: one past the last index the
     /// match in `every_kind_is_listed` gives, raised with every arm added.
-    const EVENT_KINDS: usize = 21;
+    const EVENT_KINDS: usize = 27;
 
     /// Every kind of event appears in `every_event`: the match fails to
     /// compile for a kind added without its arm, and the test fails for
@@ -663,6 +770,12 @@ mod tests {
                 TraceEventKind::Freed { .. } => 18,
                 TraceEventKind::ZoneReplaced { .. } => 19,
                 TraceEventKind::CacheTransition { .. } => 20,
+                TraceEventKind::CompileHeld { .. } => 21,
+                TraceEventKind::TwinHeld { .. } => 22,
+                TraceEventKind::AbandonedRefused { .. } => 23,
+                TraceEventKind::OsrRefused { .. } => 24,
+                TraceEventKind::OptimizationDropped { .. } => 25,
+                TraceEventKind::CachesVacated { .. } => 26,
             };
             seen.insert(index);
         }

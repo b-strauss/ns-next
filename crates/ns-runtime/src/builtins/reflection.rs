@@ -198,7 +198,13 @@ fn forward_identity<'gc>(
 ) -> Option<Value<'gc>> {
     let old = forwardable_elements(mutator, subject)?;
     let new = forwardable_elements(mutator, arguments.first(&mutator.heap)?)?;
-    crate::heap::forward_identity(mutator, &old, &new).ok()?;
+    crate::heap::forward_identity(
+        mutator,
+        &old,
+        &new,
+        crate::trace_events::VacateCause::BulkForward,
+    )
+    .ok()?;
     // Any forwarded object may be what an optimized copy was verified for
     // or reached, so every copy goes; an install's own migration frees
     // only those of the classes it rebuilt (`Mutator::install_edit`).

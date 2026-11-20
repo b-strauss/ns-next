@@ -10,15 +10,18 @@
 //! the record and the delivery moves what it names and it keeps no object
 //! of the program alive. A flush (`flush`) names them from the heap,
 //! applies the filter and delivers each event in order -- at the end of
-//! every compile trigger the interpreter makes, at the run loop's
-//! safepoint and when a host's run returns, never in a leaf machine code
-//! calls, whose events, bounded by the program, wait for the next of
-//! those -- so that the queue never grows with the run.
+//! every compile trigger the interpreter makes, on the way into and out
+//! of the run loop's safepoint and when a host's run returns, never in a
+//! leaf machine code calls, whose events wait for the next of those --
+//! so that the queue never grows with the run. A key whose id a full
+//! collection reclaims is named in the collection (`name_freed_keys`),
+//! while the id still names its class.
 
 mod filter;
 mod names;
 
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
@@ -33,13 +36,13 @@ use names::BodyNames;
 /// What a trace event is about, each switched on by its own flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TraceCategory {
-    /// A baseline compile, its trigger and its refusal, a twin's compile,
-    /// and a baseline body abandoned for its exits, revived, or refused
-    /// for its twin.
+    /// A baseline compile, its trigger, its refusal and its hold, a
+    /// twin's compile and hold, and a baseline body abandoned for its
+    /// exits, revived, refused for its twin, or refused while abandoned.
     Compile,
-    /// On-stack replacement compiled and switched into.
+    /// On-stack replacement compiled, switched into, or refused.
     Osr,
-    /// An optimization requested, installed or refused.
+    /// An optimization requested, installed, refused or dropped.
     Optimize,
     /// The inlining plan's decisions.
     Inlining,
@@ -48,7 +51,7 @@ pub enum TraceCategory {
     /// Machine code freed, the code zone compacted, and the zone
     /// replaced.
     CodeZone,
-    /// An inline cache's transition.
+    /// An inline cache's transition, and every site vacated at once.
     Caches,
 }
 
@@ -141,6 +144,19 @@ pub enum TraceEventKind {
         trigger: CompileTrigger,
         reason: CompileRefusal,
     },
+    /// The body came due but its compile was held, for `reason`, and not
+    /// tried (`held`): the exhausted zone is known to have no room for
+    /// it. Its first hold since it was last compiled only; the body is
+    /// tried again once the zone has room.
+    CompileHeld {
+        trigger: CompileTrigger,
+        reason: HoldReason,
+    },
+    /// The body's twin was needed but its compile was held, for `reason`
+    /// (`held-twin`), as `CompileHeld` says of a body: the frame that
+    /// needed it goes on interpreted. Its first hold since the twin was
+    /// last compiled only.
+    TwinHeld { reason: HoldReason },
     /// The body's machine code spent its exit budget and was freed; the
     /// body runs interpreted until it is revived (`abandoned`).
     Abandoned { exits: u32 },
@@ -151,6 +167,9 @@ pub enum TraceEventKind {
     /// compiler refused its twin and every frame that reifies would exit
     /// (`refused-for-its-twin`).
     RefusedForItsTwin,
+    /// The abandoned body is refused for good, for `reason`, rather than
+    /// revived later (`refused-abandoned`): the JIT was switched off.
+    AbandonedRefused { reason: CompileRefusal },
     /// The body was compiled at an interpreted backward jump to
     /// `loop_head`, the bytecode index of the loop's head
     /// (`osr-compiled`, its value `at=`).
@@ -159,6 +178,11 @@ pub enum TraceEventKind {
     /// backward jump to `loop_head`, the bytecode index of the loop's
     /// head (`osr-entered`, its value `at=`).
     OsrEntered { loop_head: u32 },
+    /// An interpreted frame of the body, which has machine code, did not
+    /// switch into it at the backward jump to `loop_head` for `reason`
+    /// (`osr-refused`, its value `at=`): it goes on interpreted, and
+    /// tries again after as many back jumps as compile a body.
+    OsrRefused { loop_head: u32, reason: OsrRefusal },
     /// The body -- the recompilee -- was requested an optimization, which
     /// the next safepoint compiles (`requested`): `spent_by`'s budget ran
     /// out, and the walk up the stack from its frame stopped at the body
@@ -182,6 +206,14 @@ pub enum TraceEventKind {
         walk_end: RecompileWalkEnd,
         key: Option<String>,
         entered: Option<String>,
+    },
+    /// The body's pending request for the copy of `key` was dropped before
+    /// the safepoint compiled it, since what it would be compiled against
+    /// changed, for `cause`; its budget is armed afresh (`dropped`).
+    OptimizationDropped {
+        key: Option<String>,
+        entered: Option<String>,
+        cause: InvalidationCause,
     },
     /// The body's optimization was put off, its budget armed afresh
     /// (`deferred`).
@@ -259,8 +291,15 @@ pub enum TraceEventKind {
     },
     /// The body's machine code of `tier` was freed for `cause`, its bytes
     /// reclaimed by the next compaction (`freed`); about no body when the
-    /// body's code died, which no mixin holds any longer.
-    Freed { tier: CodeTier, cause: FreeCause },
+    /// body's code died, which no mixin holds any longer. `key` and
+    /// `entered` name an optimized copy's customization key, as the
+    /// optimizing tier's events do.
+    Freed {
+        key: Option<String>,
+        entered: Option<String>,
+        tier: CodeTier,
+        cause: FreeCause,
+    },
     /// The code zone was replaced -- its size set afresh, or the JIT
     /// switched on or off -- dropping the machine code of `bodies_freed`
     /// bodies at once, none of them its own `Freed` event (`replaced`);
@@ -281,6 +320,10 @@ pub enum TraceEventKind {
         site: u32,
         receiver: String,
     },
+    /// Every inline cache was vacated at once -- every site, every
+    /// polymorphic block and the global cache -- for `cause` (`vacated`);
+    /// about no body. Each site's next miss moves it from `vacant` again.
+    CachesVacated { cause: VacateCause },
 }
 
 impl TraceEventKind {
@@ -290,13 +333,18 @@ impl TraceEventKind {
             TraceEventKind::Compiled { .. } => "compiled",
             TraceEventKind::CompiledTwin { .. } => "compiled-twin",
             TraceEventKind::CompileRefused { .. } => "refused",
+            TraceEventKind::CompileHeld { .. } => "held",
+            TraceEventKind::TwinHeld { .. } => "held-twin",
             TraceEventKind::Abandoned { .. } => "abandoned",
             TraceEventKind::Revived { .. } => "revived",
             TraceEventKind::RefusedForItsTwin => "refused-for-its-twin",
+            TraceEventKind::AbandonedRefused { .. } => "refused-abandoned",
             TraceEventKind::OsrCompiled { .. } => "osr-compiled",
             TraceEventKind::OsrEntered { .. } => "osr-entered",
+            TraceEventKind::OsrRefused { .. } => "osr-refused",
             TraceEventKind::OptimizationRequested { .. } => "requested",
             TraceEventKind::OptimizationNotDue { .. } => "not-due",
+            TraceEventKind::OptimizationDropped { .. } => "dropped",
             TraceEventKind::OptimizationDeferred { .. } => "deferred",
             TraceEventKind::Optimized { .. } => "optimized",
             TraceEventKind::OptimizationRefused { .. } => "refused",
@@ -309,6 +357,7 @@ impl TraceEventKind {
             TraceEventKind::ZoneReplaced { .. } => "replaced",
             // The line spells the states instead, `<before>-><after>`.
             TraceEventKind::CacheTransition { .. } => "transition",
+            TraceEventKind::CachesVacated { .. } => "vacated",
         }
     }
 }
@@ -381,6 +430,96 @@ impl CompileRefusal {
             CompileRefusal::ZoneFull => "zone-full",
             CompileRefusal::TooLarge => "too-large",
             CompileRefusal::ExitsAtOnce => "exits-at-once",
+        }
+    }
+}
+
+/// Why a compile that came due was held rather than tried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldReason {
+    /// The zone is exhausted and known to have no room for the body: the
+    /// compile waits for a compaction, each hold counting towards the
+    /// next one.
+    ZoneFull,
+}
+
+impl HoldReason {
+    /// The reason's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            HoldReason::ZoneFull => "zone-full",
+        }
+    }
+}
+
+/// Why an interpreted frame did not switch into its body's machine code
+/// at a backward jump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OsrRefusal {
+    /// The native stack has no room for machine code's frames.
+    NativeStackFull,
+    /// The body has no machine code in this zone any more.
+    NoMachineCode,
+    /// The frame runs against another feedback base than the one the
+    /// body's machine code was compiled against.
+    OtherFeedbackBase,
+    /// The frame is reified, so it enters the body's twin, which the
+    /// compiler refused for good.
+    TwinRefused,
+    /// The frame is reified, so it enters the body's twin, which the
+    /// zone has no room for now.
+    TwinHeld,
+    /// The machine code has no entry at the loop's head.
+    NoEntry,
+}
+
+impl OsrRefusal {
+    /// The refusal's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            OsrRefusal::NativeStackFull => "native-stack-full",
+            OsrRefusal::NoMachineCode => "no-machine-code",
+            OsrRefusal::OtherFeedbackBase => "other-feedback-base",
+            OsrRefusal::TwinRefused => "twin-refused",
+            OsrRefusal::TwinHeld => "twin-held",
+            OsrRefusal::NoEntry => "no-entry",
+        }
+    }
+}
+
+/// What vacated every inline cache at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VacateCause {
+    /// An install rebuilt applications under unchanged class objects.
+    Edit,
+    /// A bulk forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`),
+    /// an edit's migration of instances among them.
+    BulkForward,
+    /// A breakpoint switched a method's fast path, which every entry
+    /// decided for the method reads.
+    Breakpoint,
+    /// The JIT was switched on or off, deciding afresh what a cell may
+    /// enter.
+    JitSwitched,
+    /// The code zone was replaced, and every cell named an address in it.
+    ZoneReplaced,
+    /// The host asked for it (`Interpreter::invalidate_caches`).
+    Host,
+    /// The cache stress mode's safepoint.
+    Stress,
+}
+
+impl VacateCause {
+    /// The cause's name, as a line spells it: kebab case.
+    pub fn name(self) -> &'static str {
+        match self {
+            VacateCause::Edit => "edit",
+            VacateCause::BulkForward => "bulk-forward",
+            VacateCause::Breakpoint => "breakpoint",
+            VacateCause::JitSwitched => "jit-switched",
+            VacateCause::ZoneReplaced => "zone-replaced",
+            VacateCause::Host => "host",
+            VacateCause::Stress => "stress",
         }
     }
 }
@@ -723,6 +862,13 @@ pub(crate) enum PendingKind {
         trigger: CompileTrigger,
         reason: CompileRefusal,
     },
+    CompileHeld {
+        trigger: CompileTrigger,
+        reason: HoldReason,
+    },
+    TwinHeld {
+        reason: HoldReason,
+    },
     Abandoned {
         exits: u32,
     },
@@ -730,11 +876,18 @@ pub(crate) enum PendingKind {
         revival: Revival,
     },
     RefusedForItsTwin,
+    AbandonedRefused {
+        reason: CompileRefusal,
+    },
     OsrCompiled {
         loop_head: u32,
     },
     OsrEntered {
         loop_head: u32,
+    },
+    OsrRefused {
+        loop_head: u32,
+        reason: OsrRefusal,
     },
     OptimizationRequested {
         spent_by: Rc<CompiledCode>,
@@ -745,6 +898,10 @@ pub(crate) enum PendingKind {
         spent_by: Rc<CompiledCode>,
         walk_end: RecompileWalkEnd,
         key: Option<CustomizationKey>,
+    },
+    OptimizationDropped {
+        key: Option<CustomizationKey>,
+        cause: InvalidationCause,
     },
     OptimizationDeferred {
         key: Option<CustomizationKey>,
@@ -789,6 +946,7 @@ pub(crate) enum PendingKind {
         bodies_freed: usize,
     },
     Freed {
+        key: Option<CustomizationKey>,
         tier: CodeTier,
         cause: FreeCause,
     },
@@ -801,6 +959,9 @@ pub(crate) enum PendingKind {
         selector: Symbol,
         site: u32,
         receiver: String,
+    },
+    CachesVacated {
+        cause: VacateCause,
     },
 }
 
@@ -842,19 +1003,25 @@ impl PendingKind {
             | PendingKind::Inlined { key, .. }
             | PendingKind::InlineDeclined { key, .. }
             | PendingKind::Retired { key, .. }
-            | PendingKind::Invalidated { key, .. } => *key,
+            | PendingKind::Invalidated { key, .. }
+            | PendingKind::OptimizationDropped { key, .. }
+            | PendingKind::Freed { key, .. } => *key,
             PendingKind::Compiled { .. }
             | PendingKind::CompiledTwin { .. }
             | PendingKind::CompileRefused { .. }
+            | PendingKind::CompileHeld { .. }
+            | PendingKind::TwinHeld { .. }
             | PendingKind::Abandoned { .. }
             | PendingKind::Revived { .. }
             | PendingKind::RefusedForItsTwin
+            | PendingKind::AbandonedRefused { .. }
             | PendingKind::OsrCompiled { .. }
             | PendingKind::OsrEntered { .. }
+            | PendingKind::OsrRefused { .. }
             | PendingKind::Compacted { .. }
-            | PendingKind::Freed { .. }
             | PendingKind::ZoneReplaced { .. }
-            | PendingKind::CacheTransition { .. } => None,
+            | PendingKind::CacheTransition { .. }
+            | PendingKind::CachesVacated { .. } => None,
         }
     }
 }
@@ -874,6 +1041,11 @@ pub(crate) struct EventTracer {
     /// for (`Interpreter::trace_events_recorded`).
     recorded: u64,
     names: BodyNames,
+    /// Each body whose compile -- or its twin's, the flag set -- was held
+    /// since it was last compiled, by its address, held weakly as the
+    /// names are: so that a body the exhausted zone holds at every entry
+    /// is traced held once, not at each.
+    held: HashMap<(usize, bool), Weak<CompiledCode>>,
 }
 
 impl EventTracer {
@@ -892,6 +1064,28 @@ impl EventTracer {
         );
         self.recorded += 1;
         self.pending.push(pending);
+    }
+
+    /// Whether this is the first hold of `code`'s compile -- its twin's
+    /// for `twin` -- since it was last compiled, remembering it if so.
+    pub(crate) fn first_hold(&mut self, code: &Rc<CompiledCode>, twin: bool) -> bool {
+        let address = Rc::as_ptr(code) as usize;
+        if let Some(held) = self.held.get(&(address, twin))
+            && held.upgrade().is_some_and(|held| Rc::ptr_eq(&held, code))
+        {
+            return false;
+        }
+        self.held.retain(|_, held| held.strong_count() > 0);
+        self.held.insert((address, twin), Rc::downgrade(code));
+        true
+    }
+
+    /// Forgets the hold of `code`'s compile -- its twin's for `twin` --
+    /// now that it was compiled, so that its next hold is traced.
+    pub(crate) fn compiled_after_hold(&mut self, code: &Rc<CompiledCode>, twin: bool) {
+        if !self.held.is_empty() {
+            self.held.remove(&(Rc::as_ptr(code) as usize, twin));
+        }
     }
 
     /// How many events were recorded since the sink was installed.
@@ -998,11 +1192,27 @@ fn event_kind(
         PendingKind::CompileRefused { trigger, reason } => {
             TraceEventKind::CompileRefused { trigger, reason }
         }
+        PendingKind::CompileHeld { trigger, reason } => {
+            TraceEventKind::CompileHeld { trigger, reason }
+        }
+        PendingKind::TwinHeld { reason } => TraceEventKind::TwinHeld { reason },
         PendingKind::Abandoned { exits } => TraceEventKind::Abandoned { exits },
         PendingKind::Revived { revival } => TraceEventKind::Revived { revival },
         PendingKind::RefusedForItsTwin => TraceEventKind::RefusedForItsTwin,
+        PendingKind::AbandonedRefused { reason } => TraceEventKind::AbandonedRefused { reason },
         PendingKind::OsrCompiled { loop_head } => TraceEventKind::OsrCompiled { loop_head },
         PendingKind::OsrEntered { loop_head } => TraceEventKind::OsrEntered { loop_head },
+        PendingKind::OsrRefused { loop_head, reason } => {
+            TraceEventKind::OsrRefused { loop_head, reason }
+        }
+        PendingKind::OptimizationDropped { key, cause } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::OptimizationDropped {
+                key,
+                entered,
+                cause,
+            }
+        }
         PendingKind::OptimizationRequested {
             spent_by,
             walk_end,
@@ -1124,7 +1334,15 @@ fn event_kind(
             freeing,
             bodies_freed,
         },
-        PendingKind::Freed { tier, cause } => TraceEventKind::Freed { tier, cause },
+        PendingKind::Freed { key, tier, cause } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::Freed {
+                key,
+                entered,
+                tier,
+                cause,
+            }
+        }
         PendingKind::ZoneReplaced { bodies_freed } => TraceEventKind::ZoneReplaced { bodies_freed },
         PendingKind::CacheTransition {
             before,
@@ -1139,6 +1357,7 @@ fn event_kind(
             site,
             receiver,
         },
+        PendingKind::CachesVacated { cause } => TraceEventKind::CachesVacated { cause },
     }
 }
 

@@ -5,12 +5,13 @@
 #![cfg(ns_jit)]
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
-    CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
-    InvalidationCause, RecompileWalkEnd, RetireReason, SiteState,
+    CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, HoldReason,
+    InvalidationCause, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
@@ -373,57 +374,63 @@ fn a_body_entered_while_the_jit_is_off_is_traced_refused() {
     );
 }
 
+/// `step:` sends `one`, which its class answers in its own
+/// `doesNotUnderstand:`: its machine code leaves at every call.
+const ABANDONING: &str = indoc! {"
+    class Test = Object new () (
+      twice: value = (
+        ^value + value
+      )
+      step: value = (
+        |
+          doubled = self twice: value.
+        |
+        ^doubled + self one.
+      )
+      public doesNotUnderstand: message = (
+        ^1
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (self step: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// Off whatever the environment says: the zone stress mode frees
+/// `ABANDONING`'s `step:` and compiles it again, its exits counted from
+/// none, and the scavenge and collect stress modes halve its exits at
+/// every collection they force: under them a thousand calls need not
+/// spend its budget.
+fn abandoning_stress_off(interpreter: &mut Interpreter) {
+    #[cfg(debug_assertions)]
+    {
+        interpreter.set_stress_zone(false);
+        interpreter.set_stress_scavenge(false);
+        interpreter.set_stress_collect(false);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = interpreter;
+}
+
 /// A body whose send its class answers in its own `doesNotUnderstand:`
 /// leaves its machine code at every call, and is abandoned once it has
 /// spent its exit budget, as in `tests/jit.rs`'s
 /// `a_body_that_keeps_leaving_is_abandoned`.
 #[test]
 fn an_exiting_body_is_traced_abandoned() {
-    let source = indoc! {"
-        class Test = Object new () (
-          twice: value = (
-            ^value + value
-          )
-          step: value = (
-            |
-              doubled = self twice: value.
-            |
-            ^doubled + self one.
-          )
-          public doesNotUnderstand: message = (
-            ^1
-          )
-          public run = (
-            |
-              sum ::= 0.
-              index ::= 0.
-            |
-            [index < 1000] whileTrue: [
-              sum:: sum + (self step: index).
-              index:: index + 1.
-            ].
-            ^sum.
-          )
-        ) : ()
-    "};
     let events = traced(
-        source,
+        ABANDONING,
         &[TraceCategory::Compile],
         TraceFilter::everything(),
-        // The zone stress mode frees `step:`'s code and compiles it
-        // again, its exits counted from none, and the scavenge and
-        // collect stress modes halve its exits at every collection they
-        // force: under them a thousand calls need not spend its budget.
-        |interpreter| {
-            #[cfg(debug_assertions)]
-            {
-                interpreter.set_stress_zone(false);
-                interpreter.set_stress_scavenge(false);
-                interpreter.set_stress_collect(false);
-            }
-            #[cfg(not(debug_assertions))]
-            let _ = interpreter;
-        },
+        abandoning_stress_off,
     );
     let abandoned = about(&events, "Test>>step:")
         .into_iter()
@@ -1008,8 +1015,10 @@ fn a_breakpoint_on_a_compiled_body_is_traced_freeing_it() {
         about(&events, "Test>>run").iter().any(|event| matches!(
             event.kind,
             TraceEventKind::Freed {
+                key: None,
                 tier: CodeTier::Baseline,
                 cause: FreeCause::Breakpoint,
+                ..
             }
         )),
         "{events:?}"
@@ -1517,4 +1526,191 @@ fn a_reclaimed_id_s_invalidation_names_its_class() {
             assert!(!name.starts_with('#'), "{events:?}");
         }
     }
+}
+
+/// The JIT switched off after `ABANDONING`'s `step:` was abandoned refuses
+/// it for good, which its abandonment's revival would have compiled
+/// again: traced as such. The switch, and the host's own request after
+/// it, vacate every cache, each traced once, about no body.
+#[test]
+fn switching_the_jit_off_is_traced_refusing_the_abandoned_and_vacating_the_caches() {
+    let events = traced_made_by(
+        ABANDONING,
+        Factory::Plain,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        TraceFilter::everything(),
+        |interpreter| {
+            abandoning_stress_off(interpreter);
+            // No revival by entries before the switch.
+            interpreter.set_jit_revival_entries(u32::MAX);
+        },
+        |interpreter| {
+            // Each delivers its events before it returns, with no run
+            // after them.
+            interpreter.set_jit_enabled(false);
+            interpreter.invalidate_caches();
+            false
+        },
+    );
+    let step = about(&events, "Test>>step:");
+    assert!(
+        step.iter()
+            .any(|event| matches!(event.kind, TraceEventKind::Abandoned { .. })),
+        "{events:?}"
+    );
+    assert!(
+        step.iter()
+            .any(|event| event.category == TraceCategory::Compile
+                && matches!(
+                    event.kind,
+                    TraceEventKind::AbandonedRefused {
+                        reason: CompileRefusal::JitOff
+                    }
+                )),
+        "{events:?}"
+    );
+    for cause in [VacateCause::JitSwitched, VacateCause::Host] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.category == TraceCategory::Caches
+                    && event.body.is_none()
+                    && event.kind == TraceEventKind::CachesVacated { cause })
+                .count(),
+            1,
+            "{}: {events:?}",
+            cause.name()
+        );
+    }
+}
+
+/// A recursion through more bodies than a small zone holds, as in
+/// `tests/jit.rs`'s `a_zone_full_of_active_code_does_not_compact_at_every_safepoint`,
+/// fills the zone with active code: a body that comes due while the zone
+/// stays exhausted is held rather than tried, traced once until it is
+/// compiled -- not at every entry the exhausted zone holds it at.
+#[test]
+fn a_compile_the_exhausted_zone_holds_is_traced_once() {
+    let count = 300;
+    let methods: String = (0..count)
+        .map(|index| {
+            let next = if index + 1 == count {
+                "0".to_string()
+            } else {
+                format!("(self m{}) + 1", index + 1)
+            };
+            formatdoc! {"
+                  m{index} = (
+                    ^{next}
+                  )
+            "}
+        })
+        .collect();
+    let source = formatdoc! {"
+        class Test = Object new () (
+        {methods}  public run = (
+            ^(self m0) + (self m0) + (self m0)
+          )
+        ) : ()
+    "};
+    let events = traced(
+        &source,
+        &[TraceCategory::Compile],
+        TraceFilter::everything(),
+        |interpreter| {
+            interpreter.set_jit_zone_bytes(1 << 20);
+            let stubs = interpreter.table_sizes().zone_used_bytes;
+            interpreter.set_jit_zone_bytes(stubs + 4_544);
+            interpreter.set_jit_stress(true);
+            // The zone stress mode's compactions make room at every
+            // safepoint, so that nothing need be held.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_zone(false);
+        },
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.kind,
+            TraceEventKind::CompileHeld {
+                reason: HoldReason::ZoneFull,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    // Between two holds of one body, a compile of it.
+    let mut held_since_compiled: HashSet<&str> = HashSet::new();
+    for event in &events {
+        let Some(body) = event.body.as_deref() else {
+            continue;
+        };
+        match event.kind {
+            TraceEventKind::CompileHeld { .. } => {
+                assert!(
+                    held_since_compiled.insert(body),
+                    "{body} held twice without a compile between: {events:?}"
+                );
+            }
+            TraceEventKind::Compiled { .. } => {
+                held_since_compiled.remove(body);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A breakpoint set on a body with an optimized copy frees the copy with
+/// its baseline code: the freed copy's line names its key, as the
+/// optimizing tier's lines do.
+#[test]
+fn a_freed_copy_is_traced_with_its_key() {
+    let mut remote: Option<DebugRemote> = None;
+    let events = traced_made_by(
+        HOT_LOOP,
+        Factory::Plain,
+        &[TraceCategory::CodeZone, TraceCategory::Optimize],
+        TraceFilter::everything(),
+        |interpreter| {
+            hot_loop_stress_off(interpreter);
+            // The zone stress mode's compactions free the copy before
+            // the breakpoint does.
+            #[cfg(debug_assertions)]
+            interpreter.set_stress_zone(false);
+        },
+        |interpreter| {
+            let attached = interpreter.attach_debugger();
+            let offset = HOT_LOOP
+                .find("^0].")
+                .expect("the statement no turn reaches");
+            attached.send(Command::SetBreakpoints {
+                module: ModuleName::named("Test"),
+                breakpoints: vec![LineBreakpoint::at_offset(
+                    u32::try_from(offset).expect("a small source"),
+                )],
+            });
+            remote = Some(attached);
+            true
+        },
+    );
+    drop(remote);
+    let run = about(&events, "Test>>run");
+    assert!(
+        run.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::Optimized { key: Some(key), .. } if key == "Test"
+        )),
+        "{events:?}"
+    );
+    assert!(
+        run.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::Freed {
+                key: Some(key),
+                entered: None,
+                tier: CodeTier::Optimized,
+                cause: FreeCause::Breakpoint,
+            } if key == "Test"
+        )),
+        "{events:?}"
+    );
 }

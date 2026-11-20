@@ -27,7 +27,7 @@ use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
-use crate::trace_events::{Pending, PendingKind, SiteState, TraceCategory};
+use crate::trace_events::{Pending, PendingKind, SiteState, TraceCategory, VacateCause};
 use crate::types::*;
 
 use super::resolve::{Chain, Resolved};
@@ -1265,7 +1265,8 @@ impl InlineCaches {
     }
 
     /// Vacates every site, every polymorphic block and the global cache
-    /// (`docs/design/dispatch.md`, "Invalidation"): a class redefinition
+    /// (`docs/design/dispatch.md`, "Invalidation"), untraced: a run's
+    /// caller goes through `vacate_every_cache`. A class redefinition
     /// invalidates every guard at once, rather than tracking which ones a
     /// change could affect. `families` stays -- an activation already
     /// running still names its family's range, so the next send through a
@@ -2730,6 +2731,20 @@ fn record_transition<'gc>(
             receiver,
         },
     ));
+}
+
+/// Vacates every inline cache (`InlineCaches::invalidate`) for `cause`,
+/// traced as one event about no body, so that the `vacant->monomorphic`
+/// transitions that follow have their reason.
+pub(crate) fn vacate_every_cache(mutator: &mut Mutator<'_>, cause: VacateCause) {
+    mutator.caches.invalidate();
+    if mutator.jit.tracer.traces(TraceCategory::Caches) {
+        mutator.jit.tracer.record(Pending::about_body(
+            TraceCategory::Caches,
+            None,
+            PendingKind::CachesVacated { cause },
+        ));
+    }
 }
 
 /// What the miss leaf answers machine code for a send its cell did not

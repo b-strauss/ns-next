@@ -57,10 +57,12 @@ use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBas
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 use crate::trace_events::{
-    CompileRefusal, CompileTrigger, Pending, PendingKind, Revival, TraceCategory,
+    CompileRefusal, CompileTrigger, HoldReason, Pending, PendingKind, Revival, TraceCategory,
 };
 #[cfg(ns_jit)]
-use crate::trace_events::{Deferral, FreeCause, InvalidationCause, RecompileWalkEnd, RetireReason};
+use crate::trace_events::{
+    Deferral, FreeCause, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason,
+};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -2196,6 +2198,17 @@ impl JitState {
             if code.jit.is_abandoned() {
                 code.jit.refuse();
                 self.statistics.refused_bodies += 1;
+                // Its abandonment said it would be revived, which it now
+                // never is.
+                if self.tracer.traces(TraceCategory::Compile) {
+                    self.tracer.record(Pending::about(
+                        TraceCategory::Compile,
+                        &code,
+                        PendingKind::AbandonedRefused {
+                            reason: CompileRefusal::JitOff,
+                        },
+                    ));
+                }
             }
         }
     }
@@ -4653,7 +4666,7 @@ pub(crate) fn note_entry(
             if state.may_compile_now(slot) {
                 compile_into_slot(state, code, feedback_base, method, trigger);
             } else {
-                state.hold_compile();
+                hold_compile_of(state, code, Some(trigger));
             }
         }
         entries => {
@@ -4667,9 +4680,30 @@ pub(crate) fn note_entry(
                 // after the zone has room again compiles a body that came
                 // due meanwhile.
                 slot.state.set(state.compile_at_entry);
-                state.hold_compile();
+                hold_compile_of(state, code, Some(trigger));
             }
         }
+    }
+}
+
+/// Holds a compile of `code` the exhausted zone is known to have no room
+/// for (`JitState::hold_compile`) -- its twin's for no `trigger` -- and
+/// traces its first hold since it was last compiled: a body due at every
+/// entry while the zone stays exhausted would otherwise be a line at
+/// each, or, untraced, held without a word.
+fn hold_compile_of(state: &mut JitState, code: &Rc<CompiledCode>, trigger: Option<CompileTrigger>) {
+    state.hold_compile();
+    if state.tracer.traces(TraceCategory::Compile)
+        && state.tracer.first_hold(code, trigger.is_none())
+    {
+        let reason = HoldReason::ZoneFull;
+        let kind = match trigger {
+            Some(trigger) => PendingKind::CompileHeld { trigger, reason },
+            None => PendingKind::TwinHeld { reason },
+        };
+        state
+            .tracer
+            .record(Pending::about(TraceCategory::Compile, code, kind));
     }
 }
 
@@ -4755,6 +4789,9 @@ fn compile_into_slot(
         Ok((offsets, map)) => {
             code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
+            if state.tracer.traces(TraceCategory::Compile) {
+                state.tracer.compiled_after_hold(code, false);
+            }
         }
         Err(Refusal::ExitsAtOnce) => {
             code.jit.settle(EXITS_AT_ONCE);
@@ -5139,7 +5176,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         return Err(Refusal::TooLarge);
     }
     if !state.may_compile_needing(needed) {
-        state.hold_compile();
+        hold_compile_of(state, &installed.code, None);
         return Err(Refusal::ZoneFull);
     }
     let started = std::time::Instant::now();
@@ -5179,7 +5216,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             state.wanted_bytes = state.wanted_bytes.max(needed);
             state.bodies[lean as usize].twin_needed = needed;
             if state.zone_exhausted {
-                state.hold_compile();
+                hold_compile_of(state, &installed.code, None);
             } else {
                 state.compaction_requested = true;
                 state.zone_exhausted = true;
@@ -5209,6 +5246,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             &installed.code,
             PendingKind::CompiledTwin { bytes },
         ));
+        state.tracer.compiled_after_hold(&installed.code, true);
     }
     Ok(index)
 }
@@ -7149,7 +7187,7 @@ pub(crate) fn back_edge_ready(
                 CompileTrigger::BackJump,
             );
         } else {
-            mutator.jit.hold_compile();
+            hold_compile_of(&mut mutator.jit, code, Some(CompileTrigger::BackJump));
         }
         after_compile_trigger(mutator);
         if !mutator.jit.is_entered_here(code) {
@@ -7176,8 +7214,54 @@ pub(crate) fn back_edge_ready(
         && entry_of_frame(mutator, activation, code, feedback_base, target).is_some();
     if !ready && mutator.jit.is_entered_here(code) {
         slot.back_jumps.set(1);
+        // Once per wait, as the frame tries once per wait.
+        if mutator.jit.tracer.traces(TraceCategory::Osr) {
+            record_osr_refusal(mutator, activation, code, feedback_base, target);
+        }
     }
     ready
+}
+
+/// Records why `activation`, running `code` against `feedback_base`, did
+/// not switch into the body's machine code at the backward jump to
+/// `target`: read after the decision from what `entry_of_frame` read, so
+/// that the decision itself stays as it was untraced.
+#[cold]
+#[inline(never)]
+fn record_osr_refusal(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    code: &Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+    target: u32,
+) {
+    let reason = if !native_stack_has_room() {
+        OsrRefusal::NativeStackFull
+    } else {
+        match mutator.jit.installed(code) {
+            None => OsrRefusal::NoMachineCode,
+            Some(body) if body.feedback_base != feedback_base => OsrRefusal::OtherFeedbackBase,
+            Some(body) => {
+                if mutator.heap.activation_reified(activation).is_none() {
+                    OsrRefusal::NoEntry
+                } else if code.jit.twin_refused.get() {
+                    OsrRefusal::TwinRefused
+                } else if body.twin.is_none() {
+                    OsrRefusal::TwinHeld
+                } else {
+                    OsrRefusal::NoEntry
+                }
+            }
+        }
+    };
+    mutator.jit.tracer.record(Pending::about(
+        TraceCategory::Osr,
+        code,
+        PendingKind::OsrRefused {
+            loop_head: target,
+            reason,
+        },
+    ));
 }
 
 /// The switch `back_edge_ready` answered for: runs `activation`'s
@@ -7212,7 +7296,12 @@ pub(crate) fn at_back_edge(
         "internal: machine code is entered for a top-level activation"
     );
     let feedback_base = mutator.heap.activation_feedback_base(activation);
-    let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
+    let Some(entry) = entry_of_frame(mutator, activation, code, feedback_base, target) else {
+        if mutator.jit.tracer.traces(TraceCategory::Osr) {
+            record_osr_refusal(mutator, activation, code, feedback_base, target);
+        }
+        return None;
+    };
     #[cfg(all(test, ns_jit))]
     inlining_tests::record_resumption(mutator, activation, target, entry);
     mutator.jit.statistics.back_edge_switches += 1;
@@ -8598,7 +8687,7 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     let stale =
         |key: CustomizationKey| rebuilt.contains(&key.receiver) || rebuilt.contains(&key.entered);
     // A request still pending would compile a copy for the old layout.
-    let dropped = drop_stale_requests(mutator, &stale);
+    let dropped = drop_stale_requests(mutator, &stale, InvalidationCause::Edit);
     let mut entries = Vec::new();
     for code in mutator.jit.customized_codes() {
         invalidate_copies_of(
@@ -8624,20 +8713,34 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     refresh_cells_entering(mutator, entries);
 }
 
-/// Drops every pending request whose key `stale` says is stale, answering
-/// each body a request was dropped for, once, with the longest wait its
-/// dropped keys' rows earned (`CustomizedCopy::version`).
+/// Drops every pending request whose key `stale` says is stale, for
+/// `cause`, answering each body a request was dropped for, once, with the
+/// longest wait its dropped keys' rows earned (`CustomizedCopy::version`).
 #[cfg(ns_jit)]
 fn drop_stale_requests(
     mutator: &mut Mutator<'_>,
     stale: &dyn Fn(CustomizationKey) -> bool,
+    cause: InvalidationCause,
 ) -> Vec<(Rc<CompiledCode>, u8)> {
     let mut dropped: Vec<(Rc<CompiledCode>, u8)> = Vec::new();
+    let tracer = &mut mutator.jit.tracer;
     mutator.jit.optimization_requests.retain(|request| {
         let Some(key) = request.key.filter(|key| stale(*key)) else {
             return true;
         };
         if let Some(code) = request.code.upgrade() {
+            // The request was traced; so is its end, which no install or
+            // refusal will be.
+            if tracer.traces(TraceCategory::Optimize) {
+                tracer.record(Pending::about(
+                    TraceCategory::Optimize,
+                    &code,
+                    PendingKind::OptimizationDropped {
+                        key: Some(key),
+                        cause,
+                    },
+                ));
+            }
             let version = code.jit.copy_row(key).map_or(0, |row| row.version);
             match dropped
                 .iter_mut()
@@ -8822,7 +8925,7 @@ pub(crate) fn forget_freed_copies(
     };
     // The dropped key's row goes too, so its version is no wait of the
     // body's any more: the plain one.
-    let dropped = drop_stale_requests(mutator, &stale)
+    let dropped = drop_stale_requests(mutator, &stale, InvalidationCause::ReclaimedId)
         .into_iter()
         .map(|(code, _)| (code, 0))
         .collect();

@@ -26,12 +26,13 @@ profiler").
   statistics are a scan of the sites on demand, the collector's and the
   JIT's plain counters; none of them says *why*.
 - The trace says why ("Stage 1: tracing"): every decision of the JIT --
-  a baseline compile and its refusal, on-stack replacement, an
-  abandonment and a revival, an optimization requested, put off,
-  installed or refused, where `find_recompilee` stopped walking, every
-  callee the inlining plan took or declined and why, a copy retired or
-  invalidated, machine code freed and the zone compacted -- and every
-  inline cache transition is a typed event with its reasons as enums
+  a baseline compile, its refusal and its hold, on-stack replacement and
+  its refusal, an abandonment, a revival and a refusal instead, an
+  optimization requested, put off, dropped, installed or refused, where
+  `find_recompilee` stopped walking, every callee the inlining plan took
+  or declined and why, a copy retired or invalidated, machine code freed
+  and the zone compacted -- and every inline cache transition and
+  vacating of every cache is a typed event with its reasons as enums
   (`ns_runtime::trace_events`), written as one line each by `ns-next run
   --trace`, by `debug_start`'s `trace` and by the plugin's runtime
   options.
@@ -216,20 +217,35 @@ before and drops what it had not received; no category is no tracing.
 - **Delivery.** A flush (`trace_events::flush`, cold) names the bodies
   and keys, applies the filter and delivers each event in the order it
   was recorded: at the end of every compile trigger the interpreter
-  makes (`jit::after_compile_trigger`), at the run loop's safepoint,
-  when a host's run returns, and before a host method that records
+  makes (`jit::after_compile_trigger`), at the run loop's safepoint --
+  on its way in and again on its way out, whichever way it ends, so
+  that what the safepoint itself recorded (an optimization, a
+  compaction, a collection's frees and invalidations) never outlives it
+  -- when a host's run returns, and before a host method that records
   outside a run returns (`set_jit_enabled`, `set_jit_zone_bytes`,
-  `compact_jit_zone`), so that no event waits for a later run. **A leaf
-  of machine code only records** (`jit::after_compile_trigger_in_leaf`):
-  a flush runs the host's sink, which must not run with machine code's
-  frames on the native stack, so the sink is called outside machine
-  code only. A leaf's events wait for the next safepoint or host return
-  the run reaches on its own, and no safepoint is requested for them:
-  tracing must not change what it observes, and a requested safepoint
-  would make machine code exit only when tracing. What leaves record is
-  bounded by the program -- a compile per body and per twin, at most
-  three transitions per send site -- so the queue never grows with the
-  run.
+  `compact_jit_zone`, `invalidate_caches`), so that no event waits for a
+  later run. A copy's
+  key whose id a full collection reclaims is named in the collection,
+  before the id is freed (`trace_events::name_freed_keys`): named at the
+  flush, the id would be no class's, or another class's that was minted
+  it meanwhile. **A leaf of machine code only records**
+  (`jit::after_compile_trigger_in_leaf`): a flush runs the host's sink,
+  which must not run with machine code's frames on the native stack, so
+  the sink is called outside machine code only. A leaf's events wait
+  for the next safepoint or host return the run reaches on its own, and
+  no safepoint is requested for them: tracing must not change what it
+  observes, and a requested safepoint would make machine code exit only
+  when tracing. So a leaf's events are lost when the process reaches
+  neither -- killed while machine code loops without a poll that
+  safepoints, or ended from the DAP agent's own thread, as a
+  `disconnect` that terminates the debuggee ends it, before the run
+  reaches either. Between two safepoints the leaves
+  record at most a compile per body and per twin and three transitions
+  per send site; a site passes its transitions again only after an
+  invalidation vacated it, and a body compiles again only after a
+  revival, a compaction or a replaced zone freed its code, each of which
+  passes a safepoint or a host's return, which delivers the queue -- so
+  it never grows with the run.
 - **Names.** A body is named as the debugger names a frame
   (`debugger/stack.rs`'s `frame_name`), its owner by `qualified_name`
   (`debugger/metadata/again.rs`), the module's id and version, `/` and
@@ -266,13 +282,18 @@ event about no body.
 | `compile` | `compiled trigger= bytes=` | Baseline code installed (`jit::compile_into_slot`). `trigger=entry` an entry the interpreter makes -- a push, an initializer's invocation, a future it forced; `call` one machine code makes -- the miss leaf, the initializer leaf, the forcing leaf (`note_entry_by_call`); `back-jump` the 40th interpreted backward jump. |
 | `compile` | `compiled-twin bytes=` | The body's reifying twin installed (`jit::compile_twin`). |
 | `compile` | `refused trigger= reason=` | No baseline code, for good but for `zone-full`, after which the body counts its entries again: `jit-off`, `too-many-instructions`, `unassembled`, `zone-full`, `too-large`, `exits-at-once` (`CompileRefusal::from_refusal`). |
+| `compile` | `held trigger= reason=` | A body that came due was not tried: `zone-full`, the exhausted zone is known to have no room for it (`jit::hold_compile_of`). Its first hold since it was last compiled only, not every entry the zone holds it at. |
+| `compile` | `held-twin reason=` | A frame needed the body's twin, which the exhausted zone holds likewise; the frame goes on interpreted. |
 | `compile` | `abandoned exits=` | The body's code spent its exit budget and was freed (`jit::abandon`). |
 | `compile` | `revived by=` | An abandoned body counts its entries again: `decay` (`JitState::decay_exits`) or `entries` (`note_abandoned_entry`). |
 | `compile` | `refused-for-its-twin` | Refused for good, its code freed, since its twin was refused (`jit::refuse_for_its_twin`). |
+| `compile` | `refused-abandoned reason=` | An abandoned body refused for good rather than revived: `jit-off`, the JIT switched off (`JitState::refuse_abandoned`). |
 | `osr` | `osr-compiled at=` | Compiled at an interpreted backward jump to the loop's head `at=` (`jit::back_edge_ready`). |
 | `osr` | `osr-entered at=` | An interpreted frame switched into the body's code there (`jit::at_back_edge`). |
+| `osr` | `osr-refused at= reason=` | A frame of a body with machine code did not switch at the loop's head `at=`, and tries again after as many back jumps as compile a body (`jit::back_edge_ready`, `jit::at_back_edge`): `native-stack-full`, `no-machine-code`, `other-feedback-base` (the frame runs against another feedback base than the code), `twin-refused` or `twin-held` (a reified frame enters the twin, refused for good or held by the exhausted zone), `no-entry`. Once per wait. |
 | `optimize` | `requested key= entered= spent-by={} walk-end=` | The body, the recompilee, is requested an optimization: `spent-by`'s budget ran out and the walk up the stack (`jit::find_recompilee`) stopped here for `bottom-of-stack`, `no-frames-between`, `search-length`, `inlined-into-a-copy-below`, `not-recompilable` or `not-inlined`; `not-walked` for the optimize stress mode's request of the spending frame's own copy. |
 | `optimize` | `not-due key= entered= spent-by={} walk-end=` | The walk found the body, but its copy for the key was installed or refused meanwhile: nothing is requested, and `spent-by`'s budget stays parked until the next safepoint arms it. |
+| `optimize` | `dropped key= entered= cause=` | A pending request dropped before the safepoint compiled it, since what it would be compiled against changed: `edit`, `reclaimed-id` (`drop_stale_requests`); the budget is armed afresh. |
 | `optimize` | `deferred key= entered= reason=` | The optimization put off, the budget armed afresh: `patched` (a breakpoint stands in the body), `zone-full`. |
 | `optimize` | `optimized key= entered= bytes= inlined-scopes= inlined-sites= type-case-arms= eliminated-blocks=` | The copy installed. |
 | `optimize` | `refused key= entered= reason=` | The copy refused for good, the reason a `CompileRefusal`'s. |
@@ -280,10 +301,11 @@ event about no body.
 | `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead (`callee={}` where it is no body): `not-snapshotted` (the tree holds no body of it -- a method past the limits where it is sent, a nested class's accessor, a factory, a `doesNotUnderstand:` target), `not-expressed` (a leaf or primitive the graph does not express), `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`. |
 | `deoptimize` | `retired key= entered= reason= version=` | The copy retired for `traps` or `exits` (`jit::retire_optimized`), its version raised to `version=`, or `none` when it is refused for good. |
 | `deoptimize` | `invalidated key= entered= cause=` | The copy freed since what it was compiled against changed: `edit`, `bulk-forward`, `reclaimed-id`, `moved-feedback-base`, `breakpoint`, `stress` (the invalidate stress mode's round). |
-| `code-zone` | `freed tier= cause=` | A body's `baseline` or `optimized` code freed (`zone.rs`'s `mark_free`): `compaction`, `dead-body` (by a full collection; about no body, since its code died), `moved-feedback-base`, `breakpoint`, `abandoned`, `refused-for-its-twin`. A retired or invalidated copy's free is its `deoptimize` event alone. |
+| `code-zone` | `freed key= entered= tier= cause=` | A body's `baseline` or `optimized` code freed, an optimized copy's key named as the optimizing tier's lines name it (`zone.rs`'s `mark_free`): `compaction`, `dead-body` (by a full collection; about no body, since its code died), `moved-feedback-base`, `breakpoint`, `abandoned`, `refused-for-its-twin`. A retired or invalidated copy's free is its `deoptimize` event alone. |
 | `code-zone` | `compacted freeing= bodies-freed=` | About no body: the zone compacted, freeing `to-a-quarter` or `every-inactive-body`, each body freed also its own `freed` event. |
 | `code-zone` | `replaced bodies-freed=` | About no body: the zone replaced -- its size set afresh, the JIT switched on or off -- dropping the code of `bodies-freed` bodies at once, none of them its own `freed` event. |
 | `caches` | `<before>-><after> selector=#<selector> site= receiver={}` | A miss moved a site `vacant->monomorphic`, `monomorphic->polymorphic` or `polymorphic->megamorphic` (`InlineCaches::advance` answers the transition; `global_found`, `decided_miss` and `fill` record it), the miss leaf's included; the body is the root of the family the site is in and `site=` its number within the family's range, `{}` for a site of no family's, a closure's an image decoded. A refill and a megamorphic site record nothing. |
+| `caches` | `vacated cause=` | About no body: every site, polymorphic block and the global cache vacated at once (`inline_cache::vacate_every_cache`), so that the `vacant->` transitions after it have their reason: `edit`, `bulk-forward`, `breakpoint` (a method's fast path switched), `jit-switched`, `zone-replaced`, `host` (`Interpreter::invalidate_caches`), `stress` (the cache stress mode's safepoint). |
 
 For example:
 

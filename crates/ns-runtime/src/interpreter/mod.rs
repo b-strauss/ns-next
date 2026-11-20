@@ -1158,7 +1158,15 @@ impl Interpreter {
     /// send through a vacated site simply fills it again and answers what it
     /// answered before.
     pub fn invalidate_caches(&mut self) {
-        self.world.invalidate_caches();
+        self.world
+            .invalidate_caches(crate::trace_events::VacateCause::Host);
+        // Its event, recorded between runs, is delivered now rather than
+        // wait for a run that may never come.
+        self.enter(|mutator| {
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
+        });
     }
 
     /// The inline caches' sizes: how much of what is allocated is actually
@@ -1235,7 +1243,10 @@ impl Interpreter {
             // on again. Rows are written afresh at a block's next push,
             // cells at their sites' next miss.
             if reserved || was_enabled != mutator.jit.is_enabled() {
-                mutator.caches.invalidate();
+                inline_cache::vacate_every_cache(
+                    mutator,
+                    crate::trace_events::VacateCause::JitSwitched,
+                );
                 mutator.heap.forget_machine_entries();
             }
             // A replaced zone's event, recorded between runs, is
@@ -1254,7 +1265,10 @@ impl Interpreter {
     pub fn set_jit_zone_bytes(&mut self, bytes: usize) {
         self.enter(|mutator| {
             mutator.jit.replace_zone(bytes);
-            mutator.caches.invalidate();
+            inline_cache::vacate_every_cache(
+                mutator,
+                crate::trace_events::VacateCause::ZoneReplaced,
+            );
             // Every machine entry the table records lies in the old zone.
             mutator.heap.forget_machine_entries();
             // The replacement's event, recorded between runs, is delivered

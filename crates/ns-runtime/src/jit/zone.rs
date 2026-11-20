@@ -386,7 +386,11 @@ impl JitState {
             self.tracer.record(Pending::about_body(
                 TraceCategory::CodeZone,
                 body.code.upgrade(),
-                PendingKind::Freed { tier, cause },
+                PendingKind::Freed {
+                    key: body.key,
+                    tier,
+                    cause,
+                },
             ));
         }
         // What a freed copy inlined is no one's any more: its scopes hold
