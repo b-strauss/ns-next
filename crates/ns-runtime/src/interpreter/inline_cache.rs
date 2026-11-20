@@ -1239,7 +1239,13 @@ impl InlineCaches {
     /// closure's an image decoded, no family's -- or within the table
     /// when none does.
     fn loose_site_number(&self, index: usize) -> u32 {
-        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        // Every site lies in a range whose start is a `u32`
+        // (`FeedbackBase`), so its index fits and `u32::MAX`, a number no
+        // site of a range has, is never answered: it only keeps a site the
+        // trace names from panicking the run the trace describes.
+        let Ok(index) = u32::try_from(index) else {
+            return u32::MAX;
+        };
         match self.loose_ranges.range(..=index).next_back() {
             Some((start, size)) if index - start < *size => index - start,
             _ => index,
@@ -2713,17 +2719,17 @@ fn record_transition<'gc>(
         Some((code, number)) => (Some(code), number),
         None => (None, mutator.caches.loose_site_number(index)),
     };
-    mutator.jit.tracer.record(Pending {
-        category: TraceCategory::Caches,
+    mutator.jit.tracer.record(Pending::about_body(
+        TraceCategory::Caches,
         body,
-        kind: PendingKind::CacheTransition {
+        PendingKind::CacheTransition {
             before,
             after,
             selector,
             site,
             receiver,
         },
-    });
+    ));
 }
 
 /// What the miss leaf answers machine code for a send its cell did not

@@ -109,6 +109,10 @@ impl Mutator<'_> {
         }
         let mut freed = FreedIds::default();
         let mut dropped = Vec::new();
+        // The trace names a copy's key at its flush, after this collection:
+        // a freed guard would be no class's by then, or another's minted it.
+        let mut freed_names: IdentityMap<DispatchId, String> = IdentityMap::default();
+        let naming = self.jit.tracer.is_on();
         for (row, is_live) in live.iter().enumerate() {
             let index = application_index(row);
             if *is_live || self.heap.application(index).is_none() {
@@ -116,6 +120,13 @@ impl Mutator<'_> {
             }
             let application = self.heap.free_application(index);
             let guard = application.dispatch_ids.instances;
+            if naming
+                && guard != DispatchId::NONE
+                && let Some(name) =
+                    crate::debugger::metadata::again::qualified_name(self, &application.mixin)
+            {
+                freed_names.insert(guard, name);
+            }
             if guard != DispatchId::NONE {
                 self.dispatch_ids.free(guard);
                 freed.guards.insert(guard);
@@ -134,6 +145,9 @@ impl Mutator<'_> {
             // The copies keyed on a freed guard go with it, their rows
             // too: the guard is minted again for another application.
             crate::jit::forget_freed_copies(self, &freed, carried_budgets);
+        }
+        if !freed_names.is_empty() {
+            crate::trace_events::name_freed_keys(self, &freed_names);
         }
         // No other holder may outlive the scrub: an index freed while an
         // `Rc` still names it would alias the next application minted

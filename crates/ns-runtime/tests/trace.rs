@@ -1389,3 +1389,132 @@ fn the_queue_is_empty_after_a_run() {
     );
     assert_eq!(interpreter.trace_queue_length(), 0);
 }
+
+/// `tests/jit.rs`'s program of the same name: `Cell`, applied once over
+/// `Narrow` and once over `Wide`, its lazy getter `step` customized per
+/// receiver application under the optimize stress mode.
+const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
+    class Subject = Object new () (
+      class Narrow = Object new () ()
+
+      class Wide = Object new (
+        |
+          public first ::= 100.
+        |
+      ) ()
+
+      class Box on: base = Object new (
+        |
+          base = base.
+        |
+      ) (
+        public class Cell = base new () (
+          lazy public step = 2.
+        )
+      )
+
+      public bases = (
+        ^Narrow == Wide ifTrue: [1] ifFalse: [0].
+      )
+
+      public narrow = (
+        ^(Box on: Narrow) Cell new.
+      )
+
+      public sumOf: cell = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + cell step.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A full collection that reclaims `Cell` over `Narrow`'s application
+/// frees the copies keyed on its dispatch id, and the invalidation names
+/// the key's class as it was before the id was freed -- never `#<id>`,
+/// which the flush after the collection would find for an id no
+/// application holds.
+#[cfg(debug_assertions)]
+#[test]
+fn a_reclaimed_id_s_invalidation_names_its_class() {
+    let module = ns_syntax::parse(ONE_MIXIN_OVER_TWO_BASES).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        ONE_MIXIN_OVER_TWO_BASES.into(),
+        SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(true);
+    interpreter.set_optimize_stress(true);
+    // Each would free the copies, or reclaim the id, before the
+    // collection this test makes.
+    interpreter.set_stress_breakpoints(false);
+    interpreter.set_stress_step(false);
+    interpreter.set_stress_zone(false);
+    interpreter.set_stress_collect(false);
+    interpreter.set_stress_suspend(false);
+    interpreter.set_trace(
+        TraceCategories::default().with(TraceCategory::Deoptimize),
+        TraceFilter::everything(),
+        Box::new(Collector(Rc::clone(&events))),
+    );
+    let class = interpreter.load_module(&resolved);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&subject, Symbol::intern("bases"), &[]),
+        "bases",
+    );
+    for _ in 0..3 {
+        let cell = expect_ok(
+            interpreter.send(&subject, Symbol::intern("narrow"), &[]),
+            "narrow",
+        );
+        expect_ok(
+            interpreter.send(&subject, Symbol::intern("sumOf:"), &[cell]),
+            "sumOf:",
+        );
+    }
+    interpreter.collect_now();
+    // A run's return delivers what the collection recorded.
+    expect_ok(
+        interpreter.send(&subject, Symbol::intern("bases"), &[]),
+        "bases",
+    );
+    let events = events.take();
+    let reclaimed: Vec<&TraceEvent> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                TraceEventKind::Invalidated {
+                    cause: InvalidationCause::ReclaimedId,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert!(
+        reclaimed.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::Invalidated { key: Some(key), .. } if key == "Subject/Box.Cell"
+        )),
+        "{events:?}"
+    );
+    for event in reclaimed {
+        let TraceEventKind::Invalidated { key, entered, .. } = &event.kind else {
+            unreachable!("filtered to invalidations");
+        };
+        for name in key.iter().chain(entered) {
+            assert!(!name.starts_with('#'), "{events:?}");
+        }
+    }
+}

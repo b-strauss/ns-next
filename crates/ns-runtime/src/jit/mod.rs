@@ -2216,11 +2216,11 @@ impl JitState {
         // One event for the lot: no body's code is freed one by one here.
         if self.tracer.traces(TraceCategory::CodeZone) {
             let bodies_freed = self.bodies.iter().filter(|body| !body.free).count();
-            self.tracer.record(Pending {
-                category: TraceCategory::CodeZone,
-                body: None,
-                kind: PendingKind::ZoneReplaced { bodies_freed },
-            });
+            self.tracer.record(Pending::about_body(
+                TraceCategory::CodeZone,
+                None,
+                PendingKind::ZoneReplaced { bodies_freed },
+            ));
         }
         self.bodies.clear();
         // Every row's entry lies in the old zone.

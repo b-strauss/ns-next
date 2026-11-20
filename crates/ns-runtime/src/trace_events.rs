@@ -21,8 +21,10 @@ mod names;
 use std::rc::Rc;
 
 use crate::bytecode::CompiledCode;
+use crate::hash::IdentityMap;
 use crate::interpreter::Mutator;
 use crate::jit::CustomizationKey;
+use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
 pub use filter::TraceFilter;
@@ -693,6 +695,17 @@ pub(crate) struct Pending {
     pub(crate) category: TraceCategory,
     pub(crate) body: Option<Rc<CompiledCode>>,
     pub(crate) kind: PendingKind,
+    /// The names of the kind's customization key, given before the flush
+    /// when a full collection reclaimed an id of the key
+    /// (`name_freed_keys`): named at the flush, the id would be no
+    /// application's, or another's minted it since.
+    named_key: Option<NamedKey>,
+}
+
+/// A customization key's names, as `key_names` answers them.
+struct NamedKey {
+    key: String,
+    entered: Option<String>,
 }
 
 /// What a pending event says happened: `TraceEventKind`'s variants, a
@@ -798,10 +811,50 @@ impl Pending {
         code: &Rc<CompiledCode>,
         kind: PendingKind,
     ) -> Pending {
+        Pending::about_body(category, Some(Rc::clone(code)), kind)
+    }
+
+    /// A pending event of `category` about `body`, `None` for one about
+    /// no body.
+    pub(crate) fn about_body(
+        category: TraceCategory,
+        body: Option<Rc<CompiledCode>>,
+        kind: PendingKind,
+    ) -> Pending {
         Pending {
             category,
-            body: Some(Rc::clone(code)),
+            body,
             kind,
+            named_key: None,
+        }
+    }
+}
+
+impl PendingKind {
+    /// The customization key the event names, if any.
+    fn key(&self) -> Option<CustomizationKey> {
+        match self {
+            PendingKind::OptimizationRequested { key, .. }
+            | PendingKind::OptimizationNotDue { key, .. }
+            | PendingKind::OptimizationDeferred { key, .. }
+            | PendingKind::Optimized { key, .. }
+            | PendingKind::OptimizationRefused { key, .. }
+            | PendingKind::Inlined { key, .. }
+            | PendingKind::InlineDeclined { key, .. }
+            | PendingKind::Retired { key, .. }
+            | PendingKind::Invalidated { key, .. } => *key,
+            PendingKind::Compiled { .. }
+            | PendingKind::CompiledTwin { .. }
+            | PendingKind::CompileRefused { .. }
+            | PendingKind::Abandoned { .. }
+            | PendingKind::Revived { .. }
+            | PendingKind::RefusedForItsTwin
+            | PendingKind::OsrCompiled { .. }
+            | PendingKind::OsrEntered { .. }
+            | PendingKind::Compacted { .. }
+            | PendingKind::Freed { .. }
+            | PendingKind::ZoneReplaced { .. }
+            | PendingKind::CacheTransition { .. } => None,
         }
     }
 }
@@ -851,6 +904,13 @@ impl EventTracer {
         self.pending.len()
     }
 
+    /// Whether a sink listens for any category: the test a site that
+    /// serves several categories' events makes first.
+    #[inline]
+    pub(crate) fn is_on(&self) -> bool {
+        !self.categories.is_empty()
+    }
+
     /// Whether an event waits for a flush: the test each flush point
     /// makes before it calls `flush`.
     #[inline]
@@ -889,6 +949,7 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         category,
         body,
         kind,
+        named_key,
     } in pending
     {
         let body = body.map(|code| names.name(mutator, &code));
@@ -897,7 +958,7 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
             _ => true,
         };
         if passes {
-            let kind = event_kind(mutator, &mut names, kind);
+            let kind = event_kind(mutator, &mut names, kind, named_key);
             events.push(TraceEvent {
                 category,
                 body,
@@ -913,15 +974,23 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
     }
 }
 
-/// The event a pending event's kind delivers, its bodies and keys named.
-fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -> TraceEventKind {
+/// The event a pending event's kind delivers, its bodies and keys named --
+/// its key by `named_key` where it was named before the flush.
+fn event_kind(
+    mutator: &Mutator<'_>,
+    names: &mut BodyNames,
+    kind: PendingKind,
+    named_key: Option<NamedKey>,
+) -> TraceEventKind {
     let mut name = |code: &Rc<CompiledCode>| names.name(mutator, code);
-    let key_fields = |key: Option<CustomizationKey>| match key {
-        Some(key) => {
+    let mut named_key = named_key;
+    let mut key_fields = |key: Option<CustomizationKey>| match (key, named_key.take()) {
+        (Some(_), Some(named)) => (Some(named.key), named.entered),
+        (Some(key), None) => {
             let (receiver, entered) = key_names(mutator, key);
             (Some(receiver), entered)
         }
-        None => (None, None),
+        (None, _) => (None, None),
     };
     match kind {
         PendingKind::Compiled { trigger, bytes } => TraceEventKind::Compiled { trigger, bytes },
@@ -1079,16 +1148,54 @@ fn event_kind(mutator: &Mutator<'_>, names: &mut BodyNames, kind: PendingKind) -
 /// application holds any longer is `#<id>`. Never joined by `@`, which
 /// names a version.
 pub(crate) fn key_names(mutator: &Mutator<'_>, key: CustomizationKey) -> (String, Option<String>) {
-    let name = |id: crate::mixin::DispatchId| {
-        mutator
-            .heap
-            .application_of_dispatch_id(id)
-            .and_then(|application| mutator.heap.application(application))
-            .and_then(|application| {
-                crate::debugger::metadata::again::qualified_name(mutator, &application.mixin)
-            })
-            .unwrap_or_else(|| format!("#{}", id.bits()))
-    };
+    let name = |id: DispatchId| class_name_of_id(mutator, id);
     let entered = (key.entered != key.receiver).then(|| name(key.entered));
     (name(key.receiver), entered)
+}
+
+/// The qualified name of the class whose application holds the dispatch
+/// id `id` now; `#<id>` where none does.
+fn class_name_of_id(mutator: &Mutator<'_>, id: DispatchId) -> String {
+    mutator
+        .heap
+        .application_of_dispatch_id(id)
+        .and_then(|application| mutator.heap.application(application))
+        .and_then(|application| {
+            crate::debugger::metadata::again::qualified_name(mutator, &application.mixin)
+        })
+        .unwrap_or_else(|| format!("#{}", id.bits()))
+}
+
+/// Names now the key of every pending event whose key holds an id a full
+/// collection reclaims, `freed` naming each such id's class as it was
+/// before the collection freed it (`Mutator::reclaim_ids`): named at the
+/// flush, the id would be no application's -- `#<id>` -- or, minted again
+/// meanwhile, another class's. Run in the collection, once the copies it
+/// frees with the ids have recorded their events.
+#[cold]
+#[inline(never)]
+pub(crate) fn name_freed_keys(mutator: &mut Mutator<'_>, freed: &IdentityMap<DispatchId, String>) {
+    let mut pending = std::mem::take(&mut mutator.jit.tracer.pending);
+    for event in &mut pending {
+        if event.named_key.is_some() {
+            continue;
+        }
+        let Some(key) = event.kind.key() else {
+            continue;
+        };
+        if !freed.contains_key(&key.receiver) && !freed.contains_key(&key.entered) {
+            continue;
+        }
+        let name = |id: DispatchId| {
+            freed
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| class_name_of_id(mutator, id))
+        };
+        event.named_key = Some(NamedKey {
+            key: name(key.receiver),
+            entered: (key.entered != key.receiver).then(|| name(key.entered)),
+        });
+    }
+    mutator.jit.tracer.pending = pending;
 }

@@ -383,11 +383,11 @@ impl JitState {
                 Tier::Optimized => CodeTier::Optimized,
             };
             // A body whose code died is named by none: no mixin holds it.
-            self.tracer.record(Pending {
-                category: TraceCategory::CodeZone,
-                body: body.code.upgrade(),
-                kind: PendingKind::Freed { tier, cause },
-            });
+            self.tracer.record(Pending::about_body(
+                TraceCategory::CodeZone,
+                body.code.upgrade(),
+                PendingKind::Freed { tier, cause },
+            ));
         }
         // What a freed copy inlined is no one's any more: its scopes hold
         // the inlined bodies' code, which would keep every version an edit
@@ -1414,14 +1414,14 @@ impl Mutator<'_> {
         };
         if let Some(before) = freed_before {
             let bodies_freed = self.jit.freed_body_count() - before;
-            self.jit.tracer.record(Pending {
-                category: TraceCategory::CodeZone,
-                body: None,
-                kind: PendingKind::Compacted {
+            self.jit.tracer.record(Pending::about_body(
+                TraceCategory::CodeZone,
+                None,
+                PendingKind::Compacted {
                     freeing: freeing.traced(),
                     bodies_freed,
                 },
-            });
+            ));
         }
         self.caches.remap_cell_entries(&plan);
         #[cfg(ns_jit)]
