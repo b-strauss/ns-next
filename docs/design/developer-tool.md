@@ -256,7 +256,10 @@ before and drops what it had not received; no category is no tracing.
   `com.acme.util.Util@1.0.0/Inner>>run`,
   `newspeak.core.Kernel/Array>>do:`. `BodyNames`
   (`trace_events/names.rs`) caches each name beside a `Weak` of its body
-  and, at a miss, indexes every body the heap's mixins hold -- methods,
+  and, at a miss, indexes the bodies of every mixin it has not indexed
+  yet -- none while the mixin tables' generation stands, so that each
+  mixin is walked once in a run whose nested classes register one by
+  one -- methods,
   factory entries, the three initializer bodies, the superclass clause
   and every block they create, transitively, the mixins an edit
   superseded included, so that a body an edit replaced keeps its name. A

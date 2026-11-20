@@ -6,8 +6,8 @@
 //!
 //! A pending event holds a body as its code alone, and code knows neither
 //! its mixin nor its member, so a body is found by an index over every
-//! body of every mixin the heap holds, built afresh when a body is not in
-//! it and cached between flushes.
+//! body of every mixin the heap holds, kept between flushes and extended
+//! when a body is not in it by the mixins it has not indexed yet.
 
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -28,16 +28,38 @@ pub(crate) struct BodyNames {
     /// successor reuses is never answered the dropped one's name -- and
     /// its name.
     names: HashMap<usize, (Weak<CompiledCode>, String)>,
+    /// Each side whose bodies `names` holds, by its address, held weakly
+    /// as the bodies are: a miss names the bodies of the sides not among
+    /// them alone -- a mixin registered since, as nested classes register
+    /// one by one while a traced run goes on, or a version an edit
+    /// superseded -- so that each side is walked once, not at every miss.
+    indexed: HashMap<usize, Weak<Mixin>>,
+    /// The generations of the heap's mixin tables and of the synthesized
+    /// class sides (`Heap::mixin_generation`, `MetaclassMixins::generation`)
+    /// when the sides were last looked through: while both stay, no side
+    /// is new, and a miss looks through none.
+    indexed_at: Option<(u64, u64)>,
+    /// How many entries `names` and `indexed` may hold before the dead
+    /// ones are dropped: twice what lived at the last drop, so that the
+    /// drops cost as much as the inserts, and no more.
+    prune_at: usize,
+    /// How many sides were walked: what a test reads to see that a miss
+    /// walks only the sides it has not indexed.
+    #[cfg(test)]
+    sides_named: usize,
 }
 
+/// The fewest entries the index holds before it drops dead ones.
+const FIRST_PRUNE: usize = 1024;
+
 impl BodyNames {
-    /// The name of `code`: cached, or found by building the index afresh
-    /// over every mixin of the heap, `(unnamed)` where none holds it.
+    /// The name of `code`: cached, or found by indexing the mixins of the
+    /// heap not indexed yet, `(unnamed)` where none holds it.
     pub(crate) fn name(&mut self, mutator: &Mutator<'_>, code: &Rc<CompiledCode>) -> String {
         if let Some(name) = self.cached(code) {
             return name;
         }
-        self.rebuild(mutator);
+        self.index_new_sides(mutator);
         if let Some(name) = self.cached(code) {
             return name;
         }
@@ -56,16 +78,29 @@ impl BodyNames {
         Rc::ptr_eq(&alive, code).then(|| name.clone())
     }
 
-    /// The index built afresh: every body of every mixin the heap holds,
-    /// current versions and those an edit superseded, both sides -- a
+    /// The index extended by every side not indexed yet of every mixin the
+    /// heap holds, current versions and those an edit superseded -- a
     /// synthesized class side among the mixins by its own id, and its
-    /// superseded versions among the superseded ones. A body found
-    /// `(unnamed)` stays so while it lives: no mixin comes to hold a body
-    /// that exists already, so looking for it again would only walk every
-    /// mixin once more.
-    fn rebuild(&mut self, mutator: &Mutator<'_>) {
-        self.names
-            .retain(|_, (body, name)| name == UNNAMED && body.strong_count() > 0);
+    /// superseded versions among the superseded ones -- the current
+    /// versions first; nothing when no mixin changed since the last look.
+    /// A side is immutable, so a side indexed once stays indexed while it
+    /// lives. A body found `(unnamed)` stays so while it lives: no mixin
+    /// comes to hold a body that exists already, so looking for it again
+    /// would only walk every mixin once more.
+    fn index_new_sides(&mut self, mutator: &Mutator<'_>) {
+        let generations = (
+            mutator.heap.mixin_generation(),
+            mutator.metaclass_mixins.generation(),
+        );
+        if self.indexed_at == Some(generations) {
+            return;
+        }
+        self.indexed_at = Some(generations);
+        if self.names.len() + self.indexed.len() >= self.prune_at.max(FIRST_PRUNE) {
+            self.names.retain(|_, (body, _)| body.strong_count() > 0);
+            self.indexed.retain(|_, side| side.strong_count() > 0);
+            self.prune_at = 2 * (self.names.len() + self.indexed.len());
+        }
         let heap = &mutator.heap;
         let mut sides: Vec<Rc<Mixin>> = Vec::new();
         let mut add_level = |mixin: Rc<Mixin>, synthesized: Option<Rc<Mixin>>| {
@@ -84,7 +119,16 @@ impl BodyNames {
             add_level(Rc::clone(mixin), None);
         }
         for side in &sides {
+            let address = Rc::as_ptr(side) as usize;
+            if let Some(indexed) = self.indexed.get(&address)
+                && indexed
+                    .upgrade()
+                    .is_some_and(|indexed| Rc::ptr_eq(&indexed, side))
+            {
+                continue;
+            }
             self.name_side(mutator, side);
+            self.indexed.insert(address, Rc::downgrade(side));
         }
     }
 
@@ -93,6 +137,10 @@ impl BodyNames {
     /// creates, transitively, after it. A body already named keeps its
     /// name: the current version's, named first.
     fn name_side(&mut self, mutator: &Mutator<'_>, side: &Rc<Mixin>) {
+        #[cfg(test)]
+        {
+            self.sides_named += 1;
+        }
         let owner = crate::debugger::metadata::again::qualified_name(mutator, side)
             .unwrap_or_else(|| side.reflected_name());
         let mut roots: Vec<(Rc<CompiledCode>, String)> = Vec::new();
@@ -448,8 +496,53 @@ mod tests {
         });
     }
 
+    /// A miss walks only the sides it has not indexed: none while no
+    /// mixin changed, and after an edit only the versions it made.
+    #[test]
+    fn a_miss_walks_only_the_sides_not_indexed() {
+        let (mut interpreter, class) = load(DEMO, None, "Account");
+        let id: MixinId = interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let account = nested(mutator, &demo, "Account");
+            mutator.heap.known_mixin_id(&account).expect("registered")
+        });
+        let mut names = BodyNames::default();
+        let walked = interpreter.enter(|mutator| {
+            let loose = Rc::new(crate::compiler::factory_body(3));
+            assert_eq!(names.name(mutator, &loose), "(unnamed)");
+            let walked = names.sides_named;
+            assert!(walked > 2, "every side of the heap walked once");
+            let another = Rc::new(crate::compiler::factory_body(4));
+            assert_eq!(names.name(mutator, &another), "(unnamed)");
+            assert_eq!(names.sides_named, walked, "no mixin changed");
+            walked
+        });
+        let edit = Edit {
+            header: None,
+            instance_side: vec![MemberEdit::AddMethod(
+                "public deposit: amount = ( balance:: balance + amount + 1 )".to_string(),
+            )],
+            class_side: Vec::new(),
+        };
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, &edit)) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        interpreter.enter(|mutator| {
+            let current = mutator.heap.mixin(id).expect("the current version");
+            assert_eq!(
+                names.name(mutator, &method(&current, "deposit:")),
+                "Demo/Account>>deposit:"
+            );
+            let added = names.sides_named - walked;
+            assert!(
+                (1..=2).contains(&added),
+                "only the edit's new versions walked, {added} of {walked}"
+            );
+        });
+    }
+
     /// A body found unnamed is not looked for again when another body's
-    /// miss builds the index afresh.
+    /// miss extends the index.
     #[test]
     fn an_unnamed_body_survives_a_rebuild() {
         let (mut interpreter, class) = load(DEMO, None, "Account");
@@ -457,7 +550,8 @@ mod tests {
             let loose = Rc::new(crate::compiler::factory_body(3));
             let mut names = BodyNames::default();
             assert_eq!(names.name(mutator, &loose), "(unnamed)");
-            names.rebuild(mutator);
+            names.indexed_at = None;
+            names.index_new_sides(mutator);
             assert_eq!(
                 names
                     .names
@@ -490,7 +584,9 @@ mod tests {
                 .names
                 .insert(address(&deposit), (stale, "Demo>>dropped".to_string()));
             assert_eq!(names.name(mutator, &deposit), "Demo/Account>>deposit:");
-            // And one whose body lives but is another.
+            // And one whose body lives but is another, in an index not
+            // built yet.
+            let mut names = BodyNames::default();
             let other = method(&demo, "main:args:");
             names.names.insert(
                 address(&deposit),
