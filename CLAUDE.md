@@ -166,7 +166,11 @@ Rust 1.100.0, edition 2024, seven crates:
   chosen send (`stepping::begin_smart`); objects marked with labels later
   evaluations name, and the memory view's instance counts, instances
   and referrers over a heap walk, withheld values never handed out
-  (`debugger/memory.rs`, `Mutator::is_withheld`); `debugger.md`, "The
+  (`debugger/memory.rs`, `Mutator::is_withheld`); a stopped frame's
+  code (`Command::FrameCode`), its bytecode marked where it stands and,
+  for a frame that goes on in baseline or twin code, that code read from
+  the zone and assembled again annotated, marked where its call returns
+  (`jit::frame_code_listing`); `debugger.md`, "The
   debugging API at the safepoint", "Compiling the metadata again",
   "Where the original lives", "Step over in recursion and blocks",
   "Exceptions", "Hit counts and temporary breakpoints", "Evaluation",
@@ -186,7 +190,15 @@ Rust 1.100.0, edition 2024, seven crates:
   returns and before a host method that records outside a run returns,
   never in a leaf, whose events wait for the next of those without a
   safepoint requested, so that tracing changes nothing it observes
-  (`developer-tool.md`, "Stage 1: tracing"); the tools' one grammar of
+  (`developer-tool.md`, "Stage 1: tracing"); and, in the same queue, the
+  listings (`trace_events/listings.rs`, `TraceSettings::printing` and its
+  own `print_filter`): a body's bytecode at the first flush after its
+  mixin joined the heap's tables, its machine code -- baseline, twin or
+  optimized, with its scopes -- captured at its install with the
+  positions and annotations the macro assembler records only when
+  `CompileSettings::annotate` is set, the bytes unchanged, and every
+  optimizing compile's inlining plan with its outcome
+  (`developer-tool.md`, "Stage 2: printing code"); the tools' one grammar of
   names, `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`
   (`tool_names.rs`), and `KnownModule::resolve`, the one lookup of the
   module a name gives, which the DAP agent, the MCP server's locations
@@ -293,14 +305,23 @@ Rust 1.100.0, edition 2024, seven crates:
   are refused with exit status 2 before the program runs, and each event
   is one line on standard error, `[<category>] {<body>} <event>
   name=value…`, every name in braces (`trace.rs`; `developer-tool.md`,
-  decision 8, "The events and their lines"). `mcp` is a Model Context Protocol server on
+  decision 8, "The events and their lines"). `run` also takes
+  `--print-bytecode`, `--print-code` and `--print-inlining`, each listing
+  on standard error between `--- <kind> {<body>} …` and `--- end` in one
+  write, machine code decoded by `iced-x86` on x64 and `yaxpeax-arm` on
+  AArch64 in offsets from the body's start (`listing.rs`, `listing/`),
+  and `--print-filter=<pattern>`, `--trace-filter`'s syntax and
+  refusals, which needs a print option (`developer-tool.md`, "Stage 2:
+  printing code"). The agent answers its own request `nsNext/frameCode`,
+  a stopped frame's code as those listings print it. `mcp` is a Model Context Protocol server on
   standard input and output (`mcp/`), registered by `.mcp.json` from
   the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools
   an agent debugs a program: each `debug_start` runs it in a child
   `ns-next run --debug-connect` the server is a DAP client of, and
   each stop is answered as a summary in text, `debug_start`'s `trace`
   and `trace_filter` passed on as `--trace` and one `--trace-filter` per
-  pattern, the lines arriving with the program's output; a child runs the server's
+  pattern, the lines arriving with the program's output, and
+  `debug_code` answering a frame's code through `nsNext/frameCode`; a child runs the server's
   own executable unless `runtime` names another, and the server knows
   nothing of the build (`debugger.md`, "The MCP server"; tests
   `tests/mcp.rs`).
@@ -366,8 +387,10 @@ Rust 1.100.0, edition 2024, seven crates:
   flags, the call convention's operations (`enter_called` begins every
   address a call reaches, `jump_into_called`, `call_unentered`), every
   encoding constant named and sourced (Conventions, below), every encoding
-  checked against `iced-x86` and `yaxpeax-arm`, dev-dependencies only
-  (`execution.md`, "The foundation and the one extension point").
+  checked against `iced-x86` and `yaxpeax-arm`, its dev-dependencies --
+  and normal dependencies of `ns-cli` alone, each only for its target
+  architecture, which decodes listings with them (`developer-tool.md`,
+  decision 4) (`execution.md`, "The foundation and the one extension point").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
 of "The gates" below, grouped; `shipped-code`, which writes that

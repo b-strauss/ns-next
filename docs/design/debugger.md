@@ -610,6 +610,15 @@ The commands (`debugger::Command`):
   for every module: a text read at a revision is current until it is
   raised, so that an agent asks again only whether it changed. Served
   only at a stop, where the agent reads positions in it.
+- `FrameCode { frame }` -- the code of the activation at index `frame`
+  of the stack trace ([developer-tool.md](developer-tool.md), decision
+  15, "A stopped frame's code"); answered by `Event::FrameCode { body,
+  bytecode, machine }`: the frame's name as the stack trace names it,
+  its body's bytecode marked at the instruction it stands at, and, for a
+  frame that goes on in machine code, the listing of its baseline code
+  or its twin, marked where the call it waits on returns
+  (`jit::frame_code_listing`), `None` otherwise; or refused with "no
+  frame at that index". Served only at a stop.
 
 The events (`debugger::Event`): `Stopped { reason, returned, elsewhere }`,
 the program stopped and serves commands until a `Continue` or a
@@ -644,11 +653,12 @@ its id and whether its method is declared (`verified`) -- in the order
 they were set, the answer to `SetMethodBreakpoints`, and sent unasked when
 a module's build or an install changes whether one is verified;
 `ExceptionBreakpointsSet`, the answer to `SetExceptionBreakpoints`;
-`ModuleText`, the answer to `ModuleText`; and `Logged { breakpoint, text
+`ModuleText`, the answer to `ModuleText`; `FrameCode`, the answer to
+`FrameCode`; and `Logged { breakpoint, text
 }`, sent unasked where a logpoint holds, its message made, while the
 program goes on. `Continue`, the three steps, `RunToPosition`,
-`StackTrace`, `Variables`, `Children` and `ModuleText` are served only at
-a stop; one that arrives while the program runs is refused with "the
+`StackTrace`, `Variables`, `Children`, `ModuleText` and `FrameCode` are
+served only at a stop; one that arrives while the program runs is refused with "the
 program is running", and one queued between runs is dropped and refused
 with "no run executes". Every command a stop or a safepoint serves but
 `Terminate` is answered by one event, in the order the commands came. An
@@ -2635,7 +2645,7 @@ conditions and logpoints, the marks (`nsNext/mark`, `nsNext/unmark`),
 smart step into (`stepInTargets`, `stepIn`'s `targetId`),
 `restartFrame`, force return (`nsNext/forceReturn`), the memory view
 (`nsNext/instanceCounts`, `nsNext/instances`, `nsNext/referrers`),
-the shipped frames' hints, `terminate` and `disconnect`, and the
+a stopped frame's code (`nsNext/frameCode`), the shipped frames' hints, `terminate` and `disconnect`, and the
 `stopped`, `breakpoint`, `output` and `exited` events
 (`crates/ns-cli/src/debug/`, "Launching, the start and the end");
 `breakpointLocations` and the requests of ns-next's own for hot swap
@@ -5423,6 +5433,21 @@ reference, since what it holds is the value asked of. A missing or 0
 of instances is never described whole in one response
 (`instance_counts_name_the_program_s_classes`).
 
+A frame's code (`agent.rs`): `nsNext/frameCode { frameId }`, a request
+of ns-next's own, answers `{ body, bytecode, machineCode }` for a frame
+of the stop, `Command::FrameCode`'s answer as text: the frame's name,
+its bytecode and the machine code it goes on in -- `null` for a frame
+that goes on interpreted, the top frame among them -- each listing as
+`ns-next run --print-bytecode` and `--print-code` print it, marked
+where the frame stands ([developer-tool.md](developer-tool.md),
+decision 15, "The listings and their text"). An unknown frame id is
+refused with "no frame of this stop has that id", and an answer the VM
+gives after the program went on with "the program went on"
+(`frame_code_marks_the_stopped_instruction`,
+`frame_code_marks_where_a_compiled_caller_returns`). DAP's
+`disassemble` is not answered: it is built on memory addresses, in
+which bytecode has no place.
+
 The steps (`stepping.rs`): `continue`; `next` and `stepIn` by line, by
 default, or by statement (decision 4); `stepOut`, one `StepOut`; and
 `nsNext/runToPosition`, a request of ns-next's own, which runs to the
@@ -5630,7 +5655,10 @@ the way not taken: every question would run the program from its start.
   program's output in every answer), `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
-  `debug_pause`, `debug_wait(seconds)`, `debug_stack`,
+  `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`
+  -- the frame's bytecode and the machine code it goes on in, or `the
+  frame goes on in the interpreter`, through `nsNext/frameCode`
+  ([developer-tool.md](developer-tool.md), "Stage 2: printing code") --
   `debug_variables(frame? | reference?, start?, count?)`,
   `debug_evaluate(expression, frame?)`, `debug_set_variable(name, value,
   frame?)`, `debug_frame(action: restart | return, frame, value?)`,

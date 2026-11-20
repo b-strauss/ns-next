@@ -13734,7 +13734,10 @@ the baseline JIT's foundation moved" that of the first two.
   encoding is checked against a disassembler, `iced-x86`'s for x64
   (`tests/x64_encodings.rs`) and `yaxpeax-arm`'s for AArch64
   (`tests/aarch64_encodings.rs`, decided with the user on 2026-11-03),
-  both dev-dependencies of `ns-assembler` alone.
+  both dev-dependencies of `ns-assembler`, and normal dependencies of
+  `ns-cli` alone, each for its own target architecture, which decodes a
+  listing with them ([developer-tool.md](developer-tool.md), decision
+  4).
 - **The macro assembler** (`jit/macro_assembler.rs`) assembles through
   `Encoding`, one type over both encoders, which the `Abi` chooses
   (`Abi::Windows64`, `Abi::SystemV`, `Abi::Aapcs64`; `Abi::host()` the
@@ -13776,7 +13779,24 @@ the baseline JIT's foundation moved" that of the first two.
   register's load refuses a dead register's poison word as the
   interpreter's read does, by an exit of its own (`ExitKind::DeadRegister`,
   the register's index in block word `ExitRegister`, 30), after which Rust
-  panics with `heap.rs`'s message for it.
+  panics with `heap.rs`'s message for it. For a listing of the code
+  ([developer-tool.md](developer-tool.md), "Stage 2: printing code") it
+  records, when asked (`set_annotating`, set from
+  `CompileSettings::annotate`), what each call or jump out of the body
+  reaches -- `call_leaf` the leaf, an exit's jump the exit's kind and
+  program counter, a send's call its cell's site, the polymorphic stub's
+  load, the cut and dispatching stubs, a decided callee's call and the
+  twin transfer as their targets (`annotate`) -- and where code out of
+  the straight line starts (`mark_out_of_line`), as labels bound at the
+  next instruction, which emit no byte: a body compiled annotated has
+  every byte of the body compiled without
+  (`annotating_changes_no_byte`, over every body of the core library
+  and the goldens under all three conventions), and a compile not asked
+  records nothing. `finish_annotated` turns the labels into offsets and
+  answers `instructions_end`, bound before the data words' alignment, so
+  that a listing's `code_end` is the end of the last instruction and no
+  padding is decoded as code; the baseline compiler and the optimizing
+  emitter add the positions of the instructions they lower.
 - **The stubs** (`jit/stubs.rs`), at the zone's base: the entry stub saves
   every general-purpose register either x64 convention has its callee
   preserve, and under AAPCS64 `x19` to `x29` (`Abi::callee_saved`; no
@@ -15931,7 +15951,8 @@ lookup's remembered answers ("The code zone").
   activation runs, so every golden runs through the compaction's remap
   ("The code zone").
 - **The encoders are tested against disassemblers**, dev-dependencies of
-  `ns-assembler` only: `iced-x86` for x64 (`tests/x64_encodings.rs`) and
+  `ns-assembler` (and normal dependencies of `ns-cli`, which decodes
+  listings with them): `iced-x86` for x64 (`tests/x64_encodings.rs`) and
   `yaxpeax-arm` for AArch64 (`tests/aarch64_encodings.rs`), each
   operation over every register it allows and over the boundaries of
   each form's reach, with literal expected texts at the boundaries the

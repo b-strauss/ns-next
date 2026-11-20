@@ -46,7 +46,7 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     var script by string()
     var programArguments by string()
 
-    /** Options of ns-next itself, placed before the program: `--trace=…`, `--trace-filter=…`. */
+    /** Options of ns-next itself, placed before the program: `--trace=…`, `--trace-filter=…`, `--print-code`. */
     var runtimeOptions by string()
     var iterations by property(10)
 }

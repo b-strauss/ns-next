@@ -43,14 +43,20 @@ plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
 
 The developer tool (the item "A developer tool like V8's `d8`" below)
-has its stage 1, tracing, built: `ns-next run --trace=<categories>`
-writes a line for every decision of the tiers and the caches with its
-reasons, each body named by the tools' form `id@version/Inner>>selector`
-([developer-tool.md](design/developer-tool.md), "Stage 1: tracing";
-[modules.md](design/modules.md), decision 8). Its stage 2, printing the
-code a run makes, is next for it: its questions are decided
-([developer-tool.md](design/developer-tool.md), decisions 10 to 15;
-"Stage 2: printing code"), and it needs a plan of its own.
+has its stages 1 and 2 built: `ns-next run --trace=<categories>` writes
+a line for every decision of the tiers and the caches with its reasons,
+each body named by the tools' form `id@version/Inner>>selector`, and
+`--print-bytecode`, `--print-code` and `--print-inlining` print the
+bytecode a run makes, the machine code it installs and every optimizing
+compile's inlining plan, a stopped frame's code answered through
+`nsNext/frameCode` and `debug_code`
+([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
+"Stage 2: printing code"; [modules.md](design/modules.md), decision 8).
+Its stage 3, the shell, is next for it: it needs a plan of its own,
+which decides its open questions -- how an input is compiled, how a
+workspace variable becomes a slot, whether results are named, how an
+interrupt stops an input, line editing without a new dependency
+([developer-tool.md](design/developer-tool.md), "Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
@@ -2430,37 +2436,37 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   matters because a slow body is explained by what the tiers made of it,
   which today only a debugger on the process or a `dumpbin`/`objdump` of the
   code zone shows, without names. The flags of `ns-next run` and the
-  request at a stop, with its MCP tool, are the developer tool's stage 2
-  ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
-  code"); what stays open here is the IDE's view beside the source, a
-  client of the same request ([execution.md](design/execution.md), "The
+  request at a stop, with its MCP tool, are built, the developer tool's
+  stage 2 ([developer-tool.md](design/developer-tool.md), "Stage 2:
+  printing code"); what stays open here is the IDE's view beside the
+  source, a client of the same request ([execution.md](design/execution.md), "The
   baseline JIT's foundation", "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15;
-  designed with the user on 2026-11-18; stage 1 built 2026-11-20): three
-  stages, each reaching the agent and the IDE as it is built. Stage 1,
-  tracing, is built: typed events with their reasons reported to a sink
-  the host installs (`ns_runtime::trace_events`), written by `ns-next run
-  --trace=<categories>`, narrowed by `--trace-filter`, passed on by
-  `debug_start` and the plugin's runtime options. Open: stage 2, printing
-  the code a run makes -- bytecode, baseline and optimized machine code
-  at install and the inlining plan, decoded by `iced-x86` and
-  `yaxpeax-arm` in `ns-cli`, and a stopped frame's code through the
-  agent -- next; and stage 3, `ns-next shell`, evaluating against a
-  workspace object as the Newspeak IDE does. It matters because a
-  question about the code the tiers made is still answered only by a
-  debugger on the process, and an expression only at a stop. Each
-  stage's open questions are decided in its plan
-  ([developer-tool.md](design/developer-tool.md), "The decisions",
-  "Planned: the stages", "Open questions"). A question for stage 2's
-  plan (noted 2026-11-20, in the stage's final review): the `inlining`
-  category declines every inlined `==` -- `declined
+  designed with the user on 2026-11-18; stages 1 and 2 built
+  2026-11-20): three stages, each reaching the agent and the IDE as it
+  is built. Stage 1, tracing, is built: typed events with their reasons
+  reported to a sink the host installs (`ns_runtime::trace_events`),
+  written by `ns-next run --trace=<categories>`, narrowed by
+  `--trace-filter`, passed on by `debug_start` and the plugin's runtime
+  options. Stage 2, printing code, is built: bytecode, baseline, twin
+  and optimized machine code at install and the inlining plan, written
+  by `--print-bytecode`, `--print-code` and `--print-inlining`, machine
+  code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and a
+  stopped frame's code through `nsNext/frameCode` and `debug_code`.
+  Open: stage 3, `ns-next shell`, evaluating against a workspace object
+  as the Newspeak IDE does, next; it matters because an expression is
+  still evaluated only at a stop. Its open questions are decided in its
+  plan ([developer-tool.md](design/developer-tool.md), "The decisions",
+  "Planned: the stages", "Open questions"). Open too (noted 2026-11-20,
+  in stage 1's final review, and not decided in stage 2's plan): the
+  `inlining` category declines every inlined `==` -- `declined
   in-body={newspeak.core.Kernel/Value>>==} callee={}
   reason=not-expressed` for each copy that inlines one -- and so every
   leaf or primitive the graph does not express, which is most of a
-  trace of a program that compares; whether `--print-inlining`'s tree
-  and the trace keep such a decline, fold it into one line per copy, or
-  leave out what is no body, is decided with the listing that shows the
-  same plan.
+  trace of a program that compares; `--print-inlining` lists each such
+  decline as a line of its own too (`declined callee={} reason=…`).
+  Whether both keep it, fold it into one line per copy, or leave out
+  what is no body is still to be decided with the user.
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,
@@ -3662,6 +3668,42 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- **A frame's code under the stress modes** (noted 2026-11-20, with the
+  developer tool's stage 2). The pause and step stress modes' readers
+  never issue `Command::FrameCode`, so `jit::frame_code_listing`'s check
+  that a body assembled again is the body in the zone -- a debug
+  build's `debug_assert_eq!` over every byte up to `code_end` -- runs
+  only in the debugger's and the DAP agent's few tests, never where the
+  stress modes compact the zone, move objects and free bodies. A reader
+  that asks every stop's frames for their code would hold the
+  reassembly to the zone under every mode
+  ([developer-tool.md](design/developer-tool.md), "A stopped frame's
+  code"; [debugger.md](design/debugger.md), "The pause stress mode").
+- **What the reviews of the developer tool's stage 2 left** (noted
+  2026-11-20), none of them a wrong listing: no System V or AArch64
+  listing is pinned whole, only Windows x64's
+  (`a_leafless_body_pins_its_listing`), so another platform's layout is
+  held by the lines' shape alone;
+  `frame_code_marks_where_a_compiled_caller_returns`
+  (`tests/debug_adapter.rs`) asserts only when `machineCode` is present,
+  so a change of the JIT's thresholds would leave it checking nothing,
+  and it does not assert where the mark stands; `debug_code`'s refusal
+  test asserts little, and `Session::code` reads a missing `bytecode`
+  as empty; `an_optimized_copy_lists_its_scopes`'s straight-line check
+  is weaker for the earlier fast paths than for the last; no test
+  reaches an inlining listing's arm whose receiver's id a collection
+  reclaims before the flush (`name_freed_keys`);
+  `a_refused_optimization_prints_its_plan` sizes its zone by
+  subtraction, which alignment padding past half the smallest copy
+  would make flaky; `AlwaysInlined::name` answers `primitive` for a
+  primitive kind no leaf takes by a fallback rather than an exhaustive
+  arm, and `record_plan` records nothing, unasserted, when a scope's
+  body is missing; an `Inline` arm whose callee is not laid out is left
+  out while an `Always` arm the graph does not express is listed; an
+  `OutOfLine` position may stand before alignment padding; and the
+  queue's length counts listings where `recorded` does not
+  ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
+  code").
 - **The trace's rarer events end to end** (noted 2026-11-20, with the
   trace's stage 1). No test runs a program to `[optimize] … not-due`:
   the walk's `recompilable` and `optimization_due` read the same
@@ -3865,8 +3907,10 @@ Small, deliberately left, none affecting an outcome.
 - The inlining plan's decisions are collected by every optimizing compile
   (noted 2026-11-19): `optimizing::compile_tree_explained` fills a
   `PlanDecisions` -- small `Vec`s of the scopes the plan inlined and
-  the callees it declined -- whether the `inlining` category is traced
-  or not, and drops it unread when not. A flag
+  the callees it declined, and the laid-out scopes and the type-case
+  arms, sorted, that `--print-inlining` lists -- whether the `inlining`
+  category is traced, or the plan printed, or not, and drops it unread
+  when not. A flag
   telling the planner to keep its decisions would save the allocation,
   once per optimization ([developer-tool.md](design/developer-tool.md),
   "The events and their lines").
