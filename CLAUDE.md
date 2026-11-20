@@ -313,18 +313,18 @@ Rust 1.100.0, edition 2024, seven crates:
   and `--print-filter=<pattern>`, `--trace-filter`'s syntax and
   refusals, which needs a print option (`developer-tool.md`, "Stage 2:
   printing code"). The agent answers its own request `nsNext/frameCode`,
-  a stopped frame's code as those listings print it. `mcp` is a Model Context Protocol server on
-  standard input and output (`mcp/`), registered by `.mcp.json` from
-  the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools
-  an agent debugs a program: each `debug_start` runs it in a child
-  `ns-next run --debug-connect` the server is a DAP client of, and
-  each stop is answered as a summary in text, `debug_start`'s `trace`
-  and `trace_filter` passed on as `--trace` and one `--trace-filter` per
-  pattern, the lines arriving with the program's output, and
-  `debug_code` answering a frame's code through `nsNext/frameCode`; a child runs the server's
-  own executable unless `runtime` names another, and the server knows
-  nothing of the build (`debugger.md`, "The MCP server"; tests
-  `tests/mcp.rs`).
+  a stopped frame's code as those listings print it. `mcp` is a Model
+  Context Protocol server on standard input and output (`mcp/`),
+  registered by `.mcp.json` from the copy `cargo xtask mcp` puts in
+  `target/mcp/`, through whose tools an agent debugs a program: each
+  `debug_start` runs it in a child `ns-next run --debug-connect` the
+  server is a DAP client of, and each stop is answered as a summary in
+  text, `debug_start`'s `trace` and `trace_filter` passed on as `--trace`
+  and one `--trace-filter` per pattern, the lines arriving with the
+  program's output, and `debug_code` answering a frame's code through
+  `nsNext/frameCode`; a child runs the server's own executable unless
+  `runtime` names another, and the server knows nothing of the build
+  (`debugger.md`, "The MCP server"; tests `tests/mcp.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,

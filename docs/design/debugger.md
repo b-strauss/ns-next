@@ -658,14 +658,14 @@ a module's build or an install changes whether one is verified;
 }`, sent unasked where a logpoint holds, its message made, while the
 program goes on. `Continue`, the three steps, `RunToPosition`,
 `StackTrace`, `Variables`, `Children`, `ModuleText` and `FrameCode` are
-served only at a stop; one that arrives while the program runs is refused with "the
-program is running", and one queued between runs is dropped and refused
-with "no run executes". Every command a stop or a safepoint serves but
-`Terminate` is answered by one event, in the order the commands came. An
-agent therefore waits for `Stopped` before it sends a command only a stop
-serves: one sent right after `pause()` is refused or served depending on
-whether a safepoint drains the queue before the stop or the stop serves
-it.
+served only at a stop; one that arrives while the program runs is
+refused with "the program is running", and one queued between runs is
+dropped and refused with "no run executes". Every command a stop or a
+safepoint serves but `Terminate` is answered by one event, in the order
+the commands came. An agent therefore waits for `Stopped` before it
+sends a command only a stop serves: one sent right after `pause()` is
+refused or served depending on whether a safepoint drains the queue
+before the stop or the stop serves it.
 
 ### The poll words as atomics
 
@@ -2645,11 +2645,11 @@ conditions and logpoints, the marks (`nsNext/mark`, `nsNext/unmark`),
 smart step into (`stepInTargets`, `stepIn`'s `targetId`),
 `restartFrame`, force return (`nsNext/forceReturn`), the memory view
 (`nsNext/instanceCounts`, `nsNext/instances`, `nsNext/referrers`),
-a stopped frame's code (`nsNext/frameCode`), the shipped frames' hints, `terminate` and `disconnect`, and the
-`stopped`, `breakpoint`, `output` and `exited` events
-(`crates/ns-cli/src/debug/`, "Launching, the start and the end");
-`breakpointLocations` and the requests of ns-next's own for hot swap
-and edit-and-continue are planned.
+a stopped frame's code (`nsNext/frameCode`), the shipped frames' hints,
+`terminate` and `disconnect`, and the `stopped`, `breakpoint`, `output`
+and `exited` events (`crates/ns-cli/src/debug/`, "Launching, the start
+and the end"); `breakpointLocations` and the requests of ns-next's own
+for hot swap and edit-and-continue are planned.
 
 The agent speaks the Debug Adapter Protocol, JSON in `Content-Length`
 frames, over a TCP socket bound to 127.0.0.1, since the program owns its
@@ -5656,17 +5656,18 @@ the way not taken: every question would run the program from its start.
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
   `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`
-  -- the frame's bytecode and the machine code it goes on in, or `the
-  frame goes on in the interpreter`, through `nsNext/frameCode`
-  ([developer-tool.md](developer-tool.md), "Stage 2: printing code") --
-  `debug_variables(frame? | reference?, start?, count?)`,
-  `debug_evaluate(expression, frame?)`, `debug_set_variable(name, value,
-  frame?)`, `debug_frame(action: restart | return, frame, value?)`,
-  `debug_memory(class? | referrers_of?)`, `debug_mark(reference?,
-  label)` -- without a reference it takes the label off -- and
-  `debug_stop`. A breakpoint is a location, `<absolute path>:<line>`, or
-  a method, `<id>[@<version>][/<Class>(.<Class>)*]>>selector` (` class>>selector` for
-  the class side) as a function breakpoint names it, each with an
+  -- the frame's bytecode and the machine code it goes on in, marked
+  where its call returns, or `the frame goes on in the interpreter`,
+  through `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
+  printing code") -- `debug_variables(frame? | reference?, start?,
+  count?)`, `debug_evaluate(expression, frame?)`,
+  `debug_set_variable(name, value, frame?)`, `debug_frame(action:
+  restart | return, frame, value?)`, `debug_memory(class? |
+  referrers_of?)`, `debug_mark(reference?, label)` -- without a
+  reference it takes the label off -- and `debug_stop`. A breakpoint is
+  a location, `<absolute path>:<line>`, or a method,
+  `<id>[@<version>][/<Class>(.<Class>)*]>>selector` (` class>>selector`
+  for the class side) as a function breakpoint names it, each with an
   optional `condition`, `log` message or `hit_condition`. The server
   holds a session's breakpoints and sends a file's whole set, or the
   methods', at each change, since DAP sets them so; a breakpoint at a

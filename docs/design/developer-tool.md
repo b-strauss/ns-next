@@ -272,8 +272,9 @@ the machine code where the call the frame waits on returns. A stopped
 frame goes on in its body's baseline code or, reified, in its twin,
 never in an optimized copy, since a frame that goes on mid-body goes on
 in the baseline code ([execution.md](execution.md), "The optimizing
-tier's foundation"); so the listing is one of those two. The MCP server's tool `debug_code` passes the text on. DAP's
-`disassemble` request is built on memory addresses
+tier's foundation"); so the listing is one of those two. The MCP
+server's tool `debug_code` passes the text on. DAP's `disassemble`
+request is built on memory addresses
 (`instructionPointerReference`), in which bytecode has no place, the
 scopes of decision 11 only a `symbol`, and the offsets of decision 14
 none; no client of ours uses it, and it can be answered from the same
@@ -297,12 +298,12 @@ formats nothing (decision 2). A host installs a sink with
 `Interpreter::set_trace(settings, sink)`: `TraceSettings` -- its
 `categories`, a `TraceCategories` set of `TraceCategory`s, and its
 `filter`, a `TraceFilter`, beside stage 2's `printing` and
-`print_filter` -- and a `Box<dyn TraceSink>`, whose `event` receives a `TraceEvent { category, body, kind }` -- `body`
-the name of the body the event is about, `None` for one about no body,
-`kind` a `TraceEventKind` whose reasons are enums, each with a `name()`
-in kebab case, the spelling of its line. Installing replaces the sink
-before and drops what it had not received; no category and no
-printing is no tracing.
+`print_filter` -- and a `Box<dyn TraceSink>`, whose `event` receives a
+`TraceEvent { category, body, kind }` -- `body` the name of the body the
+event is about, `None` for one about no body, `kind` a `TraceEventKind`
+whose reasons are enums, each with a `name()` in kebab case, the
+spelling of its line. Installing replaces the sink before and drops what
+it had not received; no category and no printing is no tracing.
 
 - **The switch.** The tracer (`EventTracer`, `JitState::tracer`) holds
   one bit per category, and every site tests its category's bit
@@ -567,7 +568,7 @@ values, and the host formats it.
   module built on first demand and an installed edit are listed at the
   next safepoint or host return, whose flush runs, when bytecode is
   printed, even with no event pending (`EventTracer::flush_due`). The
-  compile trigger's own flush still tests only for pending events, so
+  compile trigger's own flush tests only for pending events, so
   that nothing is added on its path. The debugger's metadata compile and
   an edit only checked add no mixin to the heap's tables and print
   nothing.
@@ -575,27 +576,27 @@ values, and the host formats it.
   when `CompileSettings::annotate` is set, which every compile reads
   from the tracer (`EventTracer::prints_code`): the macro assembler then
   records positions and annotations as labels, which emit no byte, so
-  that the bytes are those of a compile without them ([execution.md](execution.md),
-  "The baseline JIT's foundation"; `annotating_changes_no_byte`). At the install
-  (`jit::captured_code`, `JitState::installed_listing`) the listing
-  takes the body's bytes, its data words zeroed, its base address,
-  `code_end` -- the end of the last instruction, past which the words'
-  alignment padding is no instruction -- the data words by kind
-  (`DataWord`: the budget word, the dispatching rows and tail, a twin
-  transfer's address, a closure's or an outer local's site), the
-  positions (`Position::Instruction { scope, program_counter }` at each
-  instruction's start, `Position::OutOfLine` where code out of the
-  straight line starts: the cold paths, a backward jump's tail, the
-  dispatching entry), and the annotations of the calls and jumps out of
-  the body (`Annotation::Leaf`, `Stub`, `Exit { kind, program_counter
-  }`, `Cell { site }`, and `Target` for a callee a leaf decided,
-  `initializer-callee` or `forcing-callee`, and for the `twin` a
-  transfer goes on in; a `Stub` may mark the instruction that selects
+  that the bytes are those of a compile without them
+  ([execution.md](execution.md), "The baseline JIT's foundation";
+  `annotating_changes_no_byte`). At the install (`jit::captured_code`,
+  `JitState::installed_listing`) the listing takes the body's bytes, its
+  data words zeroed, its base address, `code_end` -- the end of the last
+  instruction, past which the words' alignment padding is no instruction
+  -- the data words by kind (`DataWord`: the budget word, the
+  dispatching rows and tail, a twin transfer's address, a closure's or
+  an outer local's site), the positions (`Position::Instruction { scope,
+  program_counter }` at each instruction's start, `Position::OutOfLine`
+  where code out of the straight line starts: the cold paths, a backward
+  jump's tail, the dispatching entry), and the annotations of the calls
+  and jumps out of the body (`Annotation::Leaf`, `Stub`, `Exit { kind,
+  program_counter }`, `Cell { site }`, and `Target` for a callee a leaf
+  decided, `initializer-callee` or `forcing-callee`, and for the `twin`
+  a transfer goes on in; a `Stub` may mark the instruction that selects
   the stub, as a send's load of the polymorphic stub does). A baseline
   body's listing is recorded after its `compiled` event, a twin's after
   its `compiled-twin`, in the leaf that compiled it, and delivered at
-  the next flush: captured at the install, it survives a compaction or
-  a free before that flush.
+  the next flush: captured at the install, it survives a compaction or a
+  free before that flush.
 - **An optimized copy's scopes** (decision 11). The emitter records a
   position wherever the scope or the program counter of the code
   changes -- at each block, frame node, node and block end with a
@@ -614,7 +615,8 @@ values, and the host formats it.
   its scope's number, or what an always-inlined callee does, in kebab
   case (`AlwaysInlined::name`: `getter`, `setter`, `lazy-getter`,
   `quick`, `builtin-class`, `value-of-parameter`, `cull-parameter`, and
-  for a leaf `identity`, `class`, `indexed`, `integer`, `float`) -- and
+  for a leaf `identity`, `class`, `indexed`, `integer`, `float`,
+  `primitive`) -- and
   each callee sent instead, with stage 1's reason. An arm or a decline
   in a scope the code does not lay out, and an arm whose inlined scope
   is not laid out, are left out: they have no number, and the graph

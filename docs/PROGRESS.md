@@ -8420,10 +8420,10 @@ The Docker groups `linux` and `aarch64` were not run.
 - `040b9536` -- the plugin's runtime options.
 - `f6576a4b` and the documentation commit after it.
 
-What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 2,
-printing code, next, and stage 3, the shell; the rarer events untested
-end to end; the plugin's runtime options offered for `bench`; a plugin
-test that timed out once under load.
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
+shell, next; the rarer events untested end to end; the plugin's runtime
+options offered for `bench`; a plugin test that timed out once under
+load.
 
 ## The developer tool's stage 2: printing code (2026-11-20)
 

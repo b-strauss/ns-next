@@ -3168,6 +3168,15 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
+- **`debug_code` answers a whole listing** (noted 2026-11-20, in the
+  developer tool's stage 2's final review): the MCP tool has no bound,
+  so a very large body gives megabytes in one answer; a line cap with a
+  tail naming the lines left out would bound it.
+- **A class's three initializer bodies print under one name** (noted
+  2026-11-20, in the final review): the full initializer, its own part
+  and the standalone body of `Demo` all head their listings and trace
+  lines `{Demo initializer}`, so they cannot be told apart (stage 1's
+  naming, `trace_events/names.rs`).
 - **A plugin debugger test timed out once under load** (noted
   2026-11-18, with the trace's stage 1): `NewspeakBreakpointTypesTest`'s
   `testATemporaryBreakpointIsRemovedAfterItsStop` failed with a
@@ -3679,6 +3688,9 @@ program's subclass of `String` as an argument, the error of a
   reassembly to the zone under every mode
   ([developer-tool.md](design/developer-tool.md), "A stopped frame's
   code"; [debugger.md](design/debugger.md), "The pause stress mode").
+  The check is a debug build's only: a release build would pair the
+  zone's bytes with the positions of a diverging layout, where an
+  answer of `None` on a mismatch would hold in release too.
 - **What the reviews of the developer tool's stage 2 left** (noted
   2026-11-20), none of them a wrong listing: no System V or AArch64
   listing is pinned whole, only Windows x64's
@@ -3695,14 +3707,11 @@ program's subclass of `String` as an argument, the error of a
   reclaims before the flush (`name_freed_keys`);
   `a_refused_optimization_prints_its_plan` sizes its zone by
   subtraction, which alignment padding past half the smallest copy
-  would make flaky; `AlwaysInlined::name` answers `primitive` for a
-  primitive kind no leaf takes by a fallback rather than an exhaustive
-  arm, and `record_plan` records nothing, unasserted, when a scope's
-  body is missing; an `Inline` arm whose callee is not laid out is left
-  out while an `Always` arm the graph does not express is listed; an
-  `OutOfLine` position may stand before alignment padding; and the
-  queue's length counts listings where `recorded` does not
-  ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
+  would make flaky; `record_plan` records nothing, unasserted, when a
+  scope's body is missing; an `Inline` arm whose callee is not laid out
+  is left out while an `Always` arm the graph does not express is
+  listed; and the queue's length counts listings where `recorded` does
+  not ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
   code").
 - **The trace's rarer events end to end** (noted 2026-11-20, with the
   trace's stage 1). No test runs a program to `[optimize] … not-due`:
@@ -4098,6 +4107,15 @@ Small, deliberately left, none affecting an outcome.
   `doubles_equal` says in its doc that it compares two Floats only; `tests/image.rs` repeats its `1e+300`
   assertion inside the NaN and Infinity loop; and `float_text`'s
   precondition lines lack a blank `///` before them.
+
+- The developer tool's stage 2 leaves two small things in its code
+  (noted 2026-11-20, in the final review): `Leaf::ALL`'s const assertion
+  (`jit/leaves.rs`) does not catch a leaf added after `Budget`, which
+  would compile and be listed as `leaf unknown`, so it is tied to the
+  leaf table's own count; and `AlwaysInlined::name` answers `primitive`
+  for a primitive kind no leaf takes by a fallback arm rather than an
+  exhaustive one. An `OutOfLine` position may also stand before
+  alignment padding.
 
 ## Goldens and documentation
 
