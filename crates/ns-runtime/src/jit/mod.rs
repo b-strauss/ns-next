@@ -11652,8 +11652,10 @@ mod tests {
 
         /// A sink that keeps every listing it receives where the test
         /// reads it.
+        #[cfg(debug_assertions)]
         struct ListingCollector(Rc<std::cell::RefCell<Vec<crate::trace_events::Listing>>>);
 
+        #[cfg(debug_assertions)]
         impl crate::trace_events::TraceSink for ListingCollector {
             fn event(&mut self, _event: &crate::trace_events::TraceEvent) {}
 
@@ -11668,7 +11670,10 @@ mod tests {
         /// bytes, the base address and the positions it was installed
         /// with. The run loop's safepoint flushes before it compacts, so
         /// only a body compiled in a leaf waits that long, and the test
-        /// makes the order itself.
+        /// makes the order itself, by the zone stress mode's compaction,
+        /// which frees every body no activation runs and exists only with
+        /// debug assertions.
+        #[cfg(debug_assertions)]
         #[test]
         fn a_listing_survives_a_compaction_before_its_flush() {
             use crate::trace_events::{

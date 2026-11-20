@@ -3300,8 +3300,14 @@ fn a_caller_in_its_twin_lists_the_twin() {
 fn caller_listing(selector: &str, caller: &str) -> Box<CodeListing> {
     let (mut interpreter, instance, _) = compiled(FRAME_CODE, Lowering::Optimized);
     interpreter.set_jit_enabled(true);
-    interpreter.set_stress_breakpoints(false);
-    interpreter.set_stress_step(false);
+    // Off whatever the environment says: a body either mode patched
+    // loses its machine code at every statement. A build without debug
+    // assertions has neither mode.
+    #[cfg(debug_assertions)]
+    {
+        interpreter.set_stress_breakpoints(false);
+        interpreter.set_stress_step(false);
+    }
     assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 0);
     let offset = line_start(FRAME_CODE, "^total + 0");
     let remote = interpreter.attach_debugger();
