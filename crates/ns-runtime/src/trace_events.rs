@@ -464,9 +464,6 @@ pub enum OsrRefusal {
     /// body's machine code was compiled against.
     OtherFeedbackBase,
     /// The frame is reified, so it enters the body's twin, which the
-    /// compiler refused for good.
-    TwinRefused,
-    /// The frame is reified, so it enters the body's twin, which the
     /// zone has no room for now.
     TwinHeld,
     /// The machine code has no entry at the loop's head.
@@ -480,7 +477,6 @@ impl OsrRefusal {
             OsrRefusal::NativeStackFull => "native-stack-full",
             OsrRefusal::NoMachineCode => "no-machine-code",
             OsrRefusal::OtherFeedbackBase => "other-feedback-base",
-            OsrRefusal::TwinRefused => "twin-refused",
             OsrRefusal::TwinHeld => "twin-held",
             OsrRefusal::NoEntry => "no-entry",
         }
@@ -1046,7 +1042,25 @@ pub(crate) struct EventTracer {
     /// names are: so that a body the exhausted zone holds at every entry
     /// is traced held once, not at each.
     held: HashMap<(usize, bool), Weak<CompiledCode>>,
+    /// Each body some frame of which was refused the switch into its
+    /// machine code since it was last compiled, by its address, held
+    /// weakly, with the loop heads and the reason traced at each: so that
+    /// a frame that can never switch is traced refused once per reason,
+    /// not once per wait of its back jumps.
+    osr_refusals: HashMap<usize, (Weak<CompiledCode>, OsrRefusals)>,
+    /// How many entries `held` and `osr_refusals` may hold before the
+    /// dead ones are dropped: twice what lived at the last drop, so that
+    /// the drops cost as much as the inserts, and no more.
+    prune_at: usize,
 }
+
+/// The loop heads at which a body's frames were refused the switch, each
+/// with the reason traced there.
+type OsrRefusals = Vec<(u32, OsrRefusal)>;
+
+/// The fewest entries the tracer's memories of holds and refusals hold
+/// before they drop dead ones.
+const FIRST_PRUNE: usize = 1024;
 
 impl EventTracer {
     /// Whether an event of `category` is recorded: the one test a site
@@ -1075,17 +1089,75 @@ impl EventTracer {
         {
             return false;
         }
-        self.held.retain(|_, held| held.strong_count() > 0);
+        self.prune();
         self.held.insert((address, twin), Rc::downgrade(code));
         true
     }
 
-    /// Forgets the hold of `code`'s compile -- its twin's for `twin` --
-    /// now that it was compiled, so that its next hold is traced.
-    pub(crate) fn compiled_after_hold(&mut self, code: &Rc<CompiledCode>, twin: bool) {
-        if !self.held.is_empty() {
-            self.held.remove(&(Rc::as_ptr(code) as usize, twin));
+    /// Whether this is the first refusal for `reason` of a switch into
+    /// `code`'s machine code at the loop head `loop_head` since the body
+    /// was last compiled or a frame switched there, remembering it if so.
+    pub(crate) fn first_osr_refusal(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        loop_head: u32,
+        reason: OsrRefusal,
+    ) -> bool {
+        let address = Rc::as_ptr(code) as usize;
+        let own = self
+            .osr_refusals
+            .get(&address)
+            .is_some_and(|(body, _)| body.upgrade().is_some_and(|body| Rc::ptr_eq(&body, code)));
+        if !own {
+            self.prune();
+            self.osr_refusals
+                .insert(address, (Rc::downgrade(code), Vec::new()));
         }
+        let Some((_, refusals)) = self.osr_refusals.get_mut(&address) else {
+            unreachable!("internal: the body's entry was just made");
+        };
+        match refusals.iter_mut().find(|(head, _)| *head == loop_head) {
+            Some((_, known)) if *known == reason => false,
+            Some((_, known)) => {
+                *known = reason;
+                true
+            }
+            None => {
+                refusals.push((loop_head, reason));
+                true
+            }
+        }
+    }
+
+    /// Forgets the refusal at `loop_head` of `code`, whose frame switched
+    /// there, so that its next refusal there is traced.
+    pub(crate) fn osr_entered(&mut self, code: &Rc<CompiledCode>, loop_head: u32) {
+        if let Some((body, refusals)) = self.osr_refusals.get_mut(&(Rc::as_ptr(code) as usize))
+            && body.upgrade().is_some_and(|body| Rc::ptr_eq(&body, code))
+        {
+            refusals.retain(|(head, _)| *head != loop_head);
+        }
+    }
+
+    /// Forgets the hold of `code`'s compile -- its twin's for `twin` --
+    /// and every refusal of a switch into its machine code, now that it
+    /// was compiled, so that its next hold and refusals are traced.
+    pub(crate) fn body_compiled(&mut self, code: &Rc<CompiledCode>, twin: bool) {
+        let address = Rc::as_ptr(code) as usize;
+        self.held.remove(&(address, twin));
+        self.osr_refusals.remove(&address);
+    }
+
+    /// Drops the memories of dead bodies once there are twice as many as
+    /// lived at the last drop.
+    fn prune(&mut self) {
+        if self.held.len() + self.osr_refusals.len() < self.prune_at.max(FIRST_PRUNE) {
+            return;
+        }
+        self.held.retain(|_, held| held.strong_count() > 0);
+        self.osr_refusals
+            .retain(|_, (body, _)| body.strong_count() > 0);
+        self.prune_at = 2 * (self.held.len() + self.osr_refusals.len());
     }
 
     /// How many events were recorded since the sink was installed.
@@ -1417,4 +1489,61 @@ pub(crate) fn name_freed_keys(mutator: &mut Mutator<'_>, freed: &IdentityMap<Dis
         });
     }
     mutator.jit.tracer.pending = pending;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A body of its own for each test's events.
+    fn body() -> Rc<CompiledCode> {
+        Rc::new(crate::compiler::factory_body(3))
+    }
+
+    /// A frame that can never switch is refused once per loop head and
+    /// reason, however many waits it tries again; a new reason, a switch
+    /// there or a compile of the body lets the next refusal through.
+    #[test]
+    fn a_refused_switch_is_traced_once_per_reason() {
+        let mut tracer = EventTracer::default();
+        let code = body();
+        assert!(tracer.first_osr_refusal(&code, 12, OsrRefusal::OtherFeedbackBase));
+        for _ in 0..1000 {
+            assert!(!tracer.first_osr_refusal(&code, 12, OsrRefusal::OtherFeedbackBase));
+        }
+        assert!(tracer.first_osr_refusal(&code, 30, OsrRefusal::OtherFeedbackBase));
+        assert!(tracer.first_osr_refusal(&code, 12, OsrRefusal::TwinHeld));
+        assert!(!tracer.first_osr_refusal(&code, 12, OsrRefusal::TwinHeld));
+        tracer.osr_entered(&code, 12);
+        assert!(tracer.first_osr_refusal(&code, 12, OsrRefusal::TwinHeld));
+        assert!(!tracer.first_osr_refusal(&code, 30, OsrRefusal::OtherFeedbackBase));
+        tracer.body_compiled(&code, false);
+        assert!(tracer.first_osr_refusal(&code, 30, OsrRefusal::OtherFeedbackBase));
+        // Another body's refusals are its own.
+        let other = body();
+        assert!(tracer.first_osr_refusal(&other, 30, OsrRefusal::OtherFeedbackBase));
+    }
+
+    /// The memories of dead bodies are dropped once they pass the
+    /// threshold, not at every first hold, and a live body's memory stays.
+    #[test]
+    fn dead_bodies_are_pruned_past_the_threshold() {
+        let mut tracer = EventTracer::default();
+        let live = body();
+        assert!(tracer.first_hold(&live, false));
+        let mut dropped = Vec::new();
+        for _ in 0..FIRST_PRUNE - 1 {
+            let code = body();
+            assert!(tracer.first_hold(&code, false));
+            dropped.push(code);
+        }
+        drop(dropped);
+        // Below the threshold, nothing was dropped yet.
+        assert_eq!(tracer.held.len(), FIRST_PRUNE);
+        let next = body();
+        assert!(tracer.first_hold(&next, false));
+        assert_eq!(tracer.held.len(), 2, "the dead dropped at the threshold");
+        assert_eq!(tracer.prune_at, 2);
+        assert!(!tracer.first_hold(&live, false), "a live body's hold stays");
+    }
 }

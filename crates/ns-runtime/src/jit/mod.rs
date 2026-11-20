@@ -4788,8 +4788,8 @@ fn compile_into_slot(
         Ok((offsets, map)) => {
             code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
-            if state.tracer.traces(TraceCategory::Compile) {
-                state.tracer.compiled_after_hold(code, false);
+            if state.tracer.is_on() {
+                state.tracer.body_compiled(code, false);
             }
         }
         Err(Refusal::ExitsAtOnce) => {
@@ -5245,7 +5245,9 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             &installed.code,
             PendingKind::CompiledTwin { bytes },
         ));
-        state.tracer.compiled_after_hold(&installed.code, true);
+    }
+    if state.tracer.is_on() {
+        state.tracer.body_compiled(&installed.code, true);
     }
     Ok(index)
 }
@@ -7213,7 +7215,6 @@ pub(crate) fn back_edge_ready(
         && entry_of_frame(mutator, activation, code, feedback_base, target).is_some();
     if !ready && mutator.jit.is_entered_here(code) {
         slot.back_jumps.set(1);
-        // Once per wait, as the frame tries once per wait.
         if mutator.jit.tracer.traces(TraceCategory::Osr) {
             record_osr_refusal(mutator, activation, code, feedback_base, target);
         }
@@ -7241,10 +7242,11 @@ fn record_osr_refusal(
             None => OsrRefusal::NoMachineCode,
             Some(body) if body.feedback_base != feedback_base => OsrRefusal::OtherFeedbackBase,
             Some(body) => {
+                // A twin refused for good refuses its body at once
+                // (`refuse_for_its_twin`), traced as such, and frees the
+                // code: no frame is refused for it here.
                 if mutator.heap.activation_reified(activation).is_none() {
                     OsrRefusal::NoEntry
-                } else if code.jit.twin_refused.get() {
-                    OsrRefusal::TwinRefused
                 } else if body.twin.is_none() {
                     OsrRefusal::TwinHeld
                 } else {
@@ -7253,6 +7255,11 @@ fn record_osr_refusal(
             }
         }
     };
+    // A frame that can never switch tries once per wait: one line per
+    // reason, not one per wait.
+    if !mutator.jit.tracer.first_osr_refusal(code, target, reason) {
+        return;
+    }
     mutator.jit.tracer.record(Pending::about(
         TraceCategory::Osr,
         code,
@@ -7305,6 +7312,7 @@ pub(crate) fn at_back_edge(
     inlining_tests::record_resumption(mutator, activation, target, entry);
     mutator.jit.statistics.back_edge_switches += 1;
     if mutator.jit.tracer.traces(TraceCategory::Osr) {
+        mutator.jit.tracer.osr_entered(code, target);
         mutator.jit.tracer.record(Pending::about(
             TraceCategory::Osr,
             code,
