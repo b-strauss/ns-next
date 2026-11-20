@@ -3184,6 +3184,14 @@ classes and a class from source with no predecessor are not edited
   (`Debugging.awaitEnd`), so that a recurrence names where the run
   stood ([debugger.md](design/debugger.md), "The JetBrains plugin", "Hit
   counts and temporary breakpoints").
+- **A debugger test runs close to its event wait under MOVES** (noted
+  2026-11-20, with the developer tool's stage 2): `debugger`'s
+  `evaluation::a_collection_during_an_evaluation_keeps_the_stop_s_values`
+  (reference lowering) hit the 10 s event wait at `tests/debugger.rs:597`
+  once in the `stress` gate's MOVES suite, and passed three times alone
+  in about 7 s each and in a full rerun of that suite; nothing it runs had
+  changed. Its margin under MOVES is too small for a loaded machine: the
+  wait, or the work the test makes MOVES move, wants a look.
 - **The plugin offers runtime options for `bench` that include
   `--trace`** (noted 2026-11-20): the run configuration's "Runtime
   options" row stays enabled for the Benchmark command, where the
