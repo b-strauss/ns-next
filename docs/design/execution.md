@@ -16016,9 +16016,13 @@ lookup's remembered answers ("The code zone").
   translations -- 6.2 runs stale code -- while before 8.0 QEMU's page
   tracking runs out of memory on the heap's reservations, 64 GiB of
   object space and 16 GiB of stack an interpreter. Each step is a
-  `docker run --rm --platform linux/amd64` of the image, built for that
-  platform too, so that an arm64 host runs the image the Dockerfile
-  describes or fails (`xtask/src/main.rs`, `Step::docker`), the checkout
+  `docker run --rm --init --platform linux/amd64` of the image, built for
+  that platform too, so that an arm64 host runs the image the Dockerfile
+  describes or fails (`xtask/src/main.rs`, `Step::docker`), Docker's init
+  its process 1, which reaps the processes orphaned in it -- bash runs a
+  script's last command in its own place, which would reap none, and a
+  program whose MCP server a test killed would stay a zombie that still
+  answers a signal (`killing_the_server_ends_its_program`) -- the checkout
   the gate runs from bind-mounted read-only and rsynced, `.git`
   included, since `source_formatting` lists the tracked sources with
   `git ls-files`, and what a `.gitignore` names left out, into a volume
