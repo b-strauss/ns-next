@@ -904,3 +904,456 @@ fn a_filter_naming_no_module_is_refused() {
     assert!(stderr.contains("`Other>>run`"), "stderr: {stderr}");
     assert!(stderr.contains("no module `Other`"), "stderr: {stderr}");
 }
+
+/// `--print-bytecode` prints without any trace category: the bodies its
+/// filter selects, listed when the program's module is made.
+#[test]
+fn print_bytecode_alone_prints() {
+    let directory = ScratchDirectory::new("print-bytecode");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let stderr = traced_stderr(&program, &["--print-bytecode", "--print-filter=Demo..."]);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line == "--- bytecode {Demo>>square:}"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("--- bytecode "))
+            .all(|line| line.starts_with("--- bytecode {Demo")),
+        "stderr: {stderr}"
+    );
+}
+
+/// The listings of `stderr`: each from its head line to its `--- end`,
+/// the lines between, whatever else `stderr` holds outside them.
+fn listings(stderr: &str) -> Vec<Vec<&str>> {
+    let mut listings = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for line in stderr.lines() {
+        match current.as_mut() {
+            Some(lines) => {
+                lines.push(line);
+                if line == "--- end" {
+                    listings.extend(current.take());
+                }
+            }
+            None if line.starts_with("--- ") => current = Some(vec![line]),
+            None => {}
+        }
+    }
+    assert!(current.is_none(), "a listing without its end: {stderr}");
+    listings
+}
+
+/// Whether `line` is an instruction's or a data word's line of a code
+/// listing: four spaces, its offset in the body as `+0x` and four hex
+/// digits, two spaces.
+fn is_offset_line(line: &str) -> bool {
+    line.strip_prefix("    +0x").is_some_and(|rest| {
+        rest.len() > 6
+            && rest[..4]
+                .chars()
+                .all(|digit| digit.is_ascii_digit() || ('a'..='f').contains(&digit))
+            && rest[4..].starts_with("  ")
+    })
+}
+
+/// `--print-code` prints the hot method's baseline code as it is
+/// installed, every instruction at its offset in the body.
+#[test]
+fn print_code_prints_the_hot_method() {
+    let Some((_directory, program)) = hot_method_program("print-code") else {
+        return;
+    };
+    let stderr = traced_stderr(&program, &["--print-code", "--print-filter=Demo>>square:"]);
+    let listings = listings(&stderr);
+    let square = listings
+        .iter()
+        .find(|lines| lines[0].starts_with("--- code {Demo>>square:} baseline "))
+        .unwrap_or_else(|| panic!("no baseline listing of square: in {stderr}"));
+    assert!(
+        square[0].contains(" base=0x") && square[0].contains(" bytes="),
+        "{stderr}"
+    );
+    let offsets: Vec<&&str> = square
+        .iter()
+        .filter(|line| line.starts_with("    "))
+        .collect();
+    assert!(!offsets.is_empty(), "{stderr}");
+    assert!(offsets.iter().all(|line| is_offset_line(line)), "{stderr}");
+    assert!(
+        listings
+            .iter()
+            .all(|lines| lines[0].starts_with("--- code {Demo>>square:} ")),
+        "{stderr}"
+    );
+}
+
+/// A listing is written whole beside the other lines the run writes on
+/// stderr -- the trace's, the statistics' -- never with one inside it.
+#[test]
+fn a_listing_is_one_write_beside_the_programs_stderr() {
+    let Some((_directory, program)) = hot_method_program("print-whole") else {
+        return;
+    };
+    let stderr = traced_stderr(
+        &program,
+        &[
+            "--trace=all",
+            "--jit-statistics",
+            "--print-bytecode",
+            "--print-code",
+            "--print-inlining",
+            "--print-filter=Demo...",
+        ],
+    );
+    let listings = listings(&stderr);
+    assert!(
+        listings
+            .iter()
+            .any(|lines| lines[0].starts_with("--- code {Demo>>square:} ")),
+        "{stderr}"
+    );
+    for lines in &listings {
+        assert!(
+            lines[1..].iter().all(|line| !line.starts_with('[')
+                && !line.starts_with("jit: ")
+                && !line.starts_with("--- ")
+                || *line == "--- end"),
+            "{stderr}"
+        );
+    }
+    assert!(
+        stderr.lines().any(|line| line.starts_with("[compile] ")),
+        "{stderr}"
+    );
+}
+
+/// A print filter naming a module the program does not have is refused
+/// before the program runs, as a trace filter is.
+#[test]
+fn a_print_filter_naming_no_module_is_refused() {
+    let stderr = refused_stderr(
+        "print-unknown-module",
+        &["--print-code", "--print-filter=Other>>run"],
+    );
+    assert!(stderr.contains("--print-filter: "), "stderr: {stderr}");
+    assert!(stderr.contains("no module `Other`"), "stderr: {stderr}");
+}
+
+/// `--print-filter` selects what a print option prints, so it is refused
+/// without one.
+#[test]
+fn a_print_filter_needs_a_print_option() {
+    let stderr = refused_stderr("print-filter-alone", &["--print-filter=Demo>>square:"]);
+    assert!(stderr.contains("--print-filter"), "stderr: {stderr}");
+}
+
+/// A method that answers a constant, sent a hundred times so that the
+/// baseline JIT compiles it.
+const A_CONSTANT_METHOD: &str = indoc! {"
+    class Demo = Object new () (
+      answer = (
+        ^42.
+      )
+
+      public main: platform args: arguments = (
+        |
+          total ::= 0.
+        |
+        1 to: 100 do: [:index | total:: total + answer].
+        platform transcript show: total printString; newLine.
+      )
+    )
+"};
+
+/// The listing of `answer`'s baseline code in a build with debug
+/// assertions, which checks every register it reads for the dead word.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const THE_CONSTANT_METHODS_LISTING_CHECKED: &str = r"--- code {Demo>>answer} baseline x64 base=0x… bytes=576
+    +0x0000  mov r11,[r14+58h]
+    +0x0004  mov rcx,[r11+8]
+    +0x0008  cmp rcx,[r11+10h]
+    +0x000c  jae +0x00d6
+    +0x0012  mov rax,rbx
+    +0x0015  mov rdx,[r14+28h]
+    +0x0019  sub rax,rdx
+    +0x001c  add rax,70h
+    +0x0020  mov rdx,[r11+18h]
+    +0x0024  shl rdx,3
+    +0x0028  cmp rax,rdx
+    +0x002b  ja +0x00ee
+    +0x0031  add rcx,1
+    +0x0035  mov [r11+8],rcx
+    +0x0039  mov [rbx],rsi
+    +0x003c  mov [rbx+8],rdi
+    +0x0040  mov rdx,2F56AF56Eh
+    +0x004a  mov [rbx+68h],rdx
+    +0x004e  mov qword ptr [rbx+18h],2
+    +0x0056  mov r11,[r14+58h]
+    +0x005a  mov rdx,[r11+70h]
+    +0x005e  add rdx,1
+    +0x0062  and rdx,7FFFFFFFh
+    +0x0069  mov [r11+70h],rdx
+    +0x006d  shl rdx,1Eh
+    +0x0071  mov ecx,28000001h
+    +0x0076  add rdx,rcx
+    +0x0079  mov [rbx+20h],rdx
+    +0x007d  mov r11,[+0x0210]
+    +0x0084  sub qword ptr [r11],2
+    +0x0088  jl +0x0171
+  @0  stmt 0  LoadLiteral r13, 42
+    +0x008e  mov ecx,151h
+    +0x0093  mov [rbx+68h],rcx
+  @1  stmt 0  Return r13
+    +0x0097  mov rax,[rbx+68h]
+    +0x009b  mov r11,2F56AF56Eh
+    +0x00a5  cmp rax,r11
+    +0x00a8  je +0x01d1
+    +0x00ae  mov r11,[r14+58h]
+    +0x00b2  mov rcx,[r11+8]
+    +0x00b6  add rcx,0FFFFFFFFFFFFFFFFh
+    +0x00ba  mov [r11+8],rcx
+    +0x00be  ret
+  out of line
+    +0x00bf  mov r9,[+0x0200]
+    +0x00c6  mov rcx,[+0x0208]
+    +0x00cd  lea r10,[+0x0000]
+    +0x00d4  jmp rcx  ; stub dispatching-stub
+    +0x00d6  lea rdx,[+0x00dd]
+    +0x00dd  mov eax,3
+    +0x00e2  mov ecx,1
+    +0x00e7  mov r11,[r14+60h]
+    +0x00eb  jmp r11  ; exit push-refused @1
+    +0x00ee  push r11
+    +0x00f0  push rcx
+    +0x00f1  push rsi
+    +0x00f2  push rdi
+    +0x00f3  push r9
+    +0x00f5  push r10
+    +0x00f7  push r12
+    +0x00f9  mov [r14+70h],rsp
+    +0x00fd  and rsp,0FFFFFFFFFFFFFFF0h
+    +0x0101  lea rsp,[rsp-30h]
+    +0x0106  mov [rsp],rax
+    +0x010a  mov r8,[rsp]
+    +0x010e  mov r9d,0
+    +0x0114  mov qword ptr [rsp+20h],0
+    +0x011d  mov rcx,r14
+    +0x0120  mov edx,11h
+    +0x0125  mov r11,[r14+8]
+    +0x0129  call r11  ; leaf grow-stack
+    +0x012c  mov rsp,[r14+70h]
+    +0x0130  mov rdx,2F56AF56Eh
+    +0x013a  mov r8,2F56AF56Eh
+    +0x0144  pop r12
+    +0x0146  pop r10
+    +0x0148  pop r9
+    +0x014a  pop rdi
+    +0x014b  pop rsi
+    +0x014c  pop rcx
+    +0x014d  pop r11
+    +0x014f  cmp rax,0
+    +0x0153  je +0x0031
+    +0x0159  lea rdx,[+0x0160]
+    +0x0160  mov eax,3
+    +0x0165  mov ecx,0
+    +0x016a  mov r11,[r14+60h]
+    +0x016e  jmp r11  ; exit push-refused @0
+    +0x0171  mov [r14+70h],rsp
+    +0x0175  and rsp,0FFFFFFFFFFFFFFF0h
+    +0x0179  lea rsp,[rsp-30h]
+    +0x017e  mov [rsp],r11
+    +0x0182  mov [rsp+8],rbx
+    +0x0187  mov r8,[rsp]
+    +0x018b  mov r9,[rsp+8]
+    +0x0190  lea r11,[+0x0197]
+    +0x0197  mov [rsp+20h],r11
+    +0x019c  mov rcx,r14
+    +0x019f  mov edx,13h
+    +0x01a4  mov r11,[r14+8]
+    +0x01a8  call r11  ; leaf budget
+    +0x01ab  mov rsp,[r14+70h]
+    +0x01af  cmp rax,0
+    +0x01b3  je +0x008e
+    +0x01b9  lea rdx,[+0x01c0]
+    +0x01c0  mov eax,6
+    +0x01c5  mov ecx,0
+    +0x01ca  mov r11,[r14+60h]
+    +0x01ce  jmp r11  ; exit budget-spent @0
+    +0x01d1  mov qword ptr [r14+0F0h],0Dh
+    +0x01dc  lea rdx,[+0x01e3]
+    +0x01e3  mov eax,2
+    +0x01e8  mov ecx,1
+    +0x01ed  mov r11,[r14+60h]
+    +0x01f1  jmp r11  ; exit dead-register @1
+data:
+    +0x0200  dispatching rows
+    +0x0208  dispatching tail
+    +0x0210  budget word
+--- end
+";
+
+/// The listing of `answer`'s baseline code in a build without debug
+/// assertions.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+const THE_CONSTANT_METHODS_LISTING: &str = r"--- code {Demo>>answer} baseline x64 base=0x… bytes=448
+    +0x0000  mov r11,[r14+58h]
+    +0x0004  mov rcx,[r11+8]
+    +0x0008  cmp rcx,[r11+10h]
+    +0x000c  jae +0x0086
+    +0x0012  mov rax,rbx
+    +0x0015  mov rdx,[r14+28h]
+    +0x0019  sub rax,rdx
+    +0x001c  add rax,70h
+    +0x0020  mov rdx,[r11+18h]
+    +0x0024  shl rdx,3
+    +0x0028  cmp rax,rdx
+    +0x002b  ja +0x009e
+    +0x0031  add rcx,1
+    +0x0035  mov [r11+8],rcx
+    +0x0039  mov [rbx],rsi
+    +0x003c  mov [rbx+8],rdi
+    +0x0040  mov r11,[+0x0190]
+    +0x0047  sub qword ptr [r11],2
+    +0x004b  jl +0x010d
+  @0  stmt 0  LoadLiteral r13, 42
+    +0x0051  mov ecx,151h
+    +0x0056  mov [rbx+68h],rcx
+  @1  stmt 0  Return r13
+    +0x005a  mov rax,[rbx+68h]
+    +0x005e  mov r11,[r14+58h]
+    +0x0062  mov rcx,[r11+8]
+    +0x0066  add rcx,0FFFFFFFFFFFFFFFFh
+    +0x006a  mov [r11+8],rcx
+    +0x006e  ret
+  out of line
+    +0x006f  mov r9,[+0x0180]
+    +0x0076  mov rcx,[+0x0188]
+    +0x007d  lea r10,[+0x0000]
+    +0x0084  jmp rcx  ; stub dispatching-stub
+    +0x0086  lea rdx,[+0x008d]
+    +0x008d  mov eax,3
+    +0x0092  mov ecx,1
+    +0x0097  mov r11,[r14+60h]
+    +0x009b  jmp r11  ; exit push-refused @1
+    +0x009e  push r11
+    +0x00a0  push rcx
+    +0x00a1  push rsi
+    +0x00a2  push rdi
+    +0x00a3  push r9
+    +0x00a5  push r10
+    +0x00a7  push r12
+    +0x00a9  mov [r14+70h],rsp
+    +0x00ad  and rsp,0FFFFFFFFFFFFFFF0h
+    +0x00b1  lea rsp,[rsp-30h]
+    +0x00b6  mov [rsp],rax
+    +0x00ba  mov r8,[rsp]
+    +0x00be  mov r9d,0
+    +0x00c4  mov qword ptr [rsp+20h],0
+    +0x00cd  mov rcx,r14
+    +0x00d0  mov edx,11h
+    +0x00d5  mov r11,[r14+8]
+    +0x00d9  call r11  ; leaf grow-stack
+    +0x00dc  mov rsp,[r14+70h]
+    +0x00e0  pop r12
+    +0x00e2  pop r10
+    +0x00e4  pop r9
+    +0x00e6  pop rdi
+    +0x00e7  pop rsi
+    +0x00e8  pop rcx
+    +0x00e9  pop r11
+    +0x00eb  cmp rax,0
+    +0x00ef  je +0x0031
+    +0x00f5  lea rdx,[+0x00fc]
+    +0x00fc  mov eax,3
+    +0x0101  mov ecx,0
+    +0x0106  mov r11,[r14+60h]
+    +0x010a  jmp r11  ; exit push-refused @0
+    +0x010d  mov [r14+70h],rsp
+    +0x0111  and rsp,0FFFFFFFFFFFFFFF0h
+    +0x0115  lea rsp,[rsp-30h]
+    +0x011a  mov [rsp],r11
+    +0x011e  mov [rsp+8],rbx
+    +0x0123  mov r8,[rsp]
+    +0x0127  mov r9,[rsp+8]
+    +0x012c  lea r11,[+0x0133]
+    +0x0133  mov [rsp+20h],r11
+    +0x0138  mov rcx,r14
+    +0x013b  mov edx,13h
+    +0x0140  mov r11,[r14+8]
+    +0x0144  call r11  ; leaf budget
+    +0x0147  mov rsp,[r14+70h]
+    +0x014b  cmp rax,0
+    +0x014f  je +0x0051
+    +0x0155  lea rdx,[+0x015c]
+    +0x015c  mov eax,6
+    +0x0161  mov ecx,0
+    +0x0166  mov r11,[r14+60h]
+    +0x016a  jmp r11  ; exit budget-spent @0
+data:
+    +0x0180  dispatching rows
+    +0x0188  dispatching tail
+    +0x0190  budget word
+--- end
+";
+
+/// A whole listing of a body that calls nothing but the prologue's and
+/// the budget's leaves, pinned but for its base address: it differs
+/// between runs only in its head (decision 14). The code is that of the
+/// x64 Windows convention, its leaf calls the convention's.
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+#[test]
+fn a_leafless_body_pins_its_listing() {
+    let directory = ScratchDirectory::new("print-pinned");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_CONSTANT_METHOD).unwrap();
+    if plain_jit_counts(
+        &program,
+        "4200
+",
+        &[],
+    )
+    .is_none()
+    {
+        return;
+    }
+    let output = plain_run(&program)
+        .args(["--print-code", "--print-filter=Demo>>answer"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "4200
+"
+    );
+    let listings = listings(&stderr);
+    assert_eq!(listings.len(), 1, "{stderr}");
+    let mut lines = listings[0].clone();
+    let head = lines[0];
+    let base = head
+        .find(" base=0x")
+        .and_then(|start| Some((start, head[start..].find(" bytes=")? + start)))
+        .unwrap_or_else(|| panic!("no base in {head}"));
+    let masked = format!("{} base=0x…{}", &head[..base.0], &head[base.1..]);
+    lines[0] = &masked;
+    let expected = if cfg!(debug_assertions) {
+        THE_CONSTANT_METHODS_LISTING_CHECKED
+    } else {
+        THE_CONSTANT_METHODS_LISTING
+    };
+    assert_eq!(
+        lines.join(
+            "
+"
+        ) + "
+",
+        expected
+    );
+}

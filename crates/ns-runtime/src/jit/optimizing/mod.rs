@@ -343,6 +343,7 @@ fn compile_planned(
     let crate::jit::macro_assembler::Finished {
         assembled: code,
         sites: site_labels,
+        instructions_end,
         annotations,
         out_of_line,
     } = body
@@ -382,6 +383,7 @@ fn compile_planned(
         code,
         returns,
         words,
+        instructions_end,
         twin_transfers,
         metadata,
         sites,

@@ -6,12 +6,13 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 mod command_line;
 mod commands;
 mod debug;
 mod entry;
+mod listing;
 mod mcp;
 mod program;
 mod project;
@@ -65,6 +66,11 @@ enum Command {
     /// `newspeak.json`, or that file itself -- whose root is instantiated
     /// with `packageUsing:` a manifest of its other modules. Either way the
     /// application is sent `main: platform args:`.
+    #[command(group(
+        ArgGroup::new("printing")
+            .multiple(true)
+            .args(["print_bytecode", "print_code", "print_inlining"])
+    ))]
     Run {
         /// A `.ns` source file, a project directory or its `newspeak.json`;
         /// the current directory when omitted.
@@ -96,6 +102,24 @@ enum Command {
         /// trailing `...` making a prefix (`*` is a selector's character).
         #[arg(long, value_name = "PATTERN", requires = "trace")]
         trace_filter: Vec<String>,
+        /// Print on stderr each body's bytecode when its module is made,
+        /// between `--- bytecode {<body>}` and `--- end`.
+        #[arg(long)]
+        print_bytecode: bool,
+        /// Print on stderr each body's machine code when it is installed,
+        /// baseline and optimized, between `--- code {<body>} …` and
+        /// `--- end`.
+        #[arg(long)]
+        print_code: bool,
+        /// Print on stderr the inlining plan of every optimizing compile,
+        /// with the copy installed or the reason it was refused, between
+        /// `--- inlining {<body>} …` and `--- end`.
+        #[arg(long)]
+        print_inlining: bool,
+        /// Print only the bodies a pattern selects, one pattern each time
+        /// the option is given, in `--trace-filter`'s syntax.
+        #[arg(long, value_name = "PATTERN", requires = "printing")]
+        print_filter: Vec<String>,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -275,6 +299,10 @@ fn execute(command: Command) -> ExitCode {
             jit_statistics,
             trace,
             trace_filter,
+            print_bytecode,
+            print_code,
+            print_inlining,
+            print_filter,
             script,
             debug,
             debug_connect,
@@ -288,6 +316,12 @@ fn execute(command: Command) -> ExitCode {
             commands::run::TraceOptions {
                 categories: trace.as_deref(),
                 filter: trace_filter.iter().map(String::as_str).collect(),
+                printing: ns_runtime::Printing {
+                    bytecode: print_bytecode,
+                    code: print_code,
+                    inlining: print_inlining,
+                },
+                print_filter: print_filter.iter().map(String::as_str).collect(),
             },
             script.as_deref(),
             debug::DebugOptions::from_arguments(debug, debug_connect),

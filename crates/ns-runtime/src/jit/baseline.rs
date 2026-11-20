@@ -45,6 +45,9 @@ pub(crate) struct BaselineBody {
     /// (`MacroAssembler::take_body_words`): the alignment padding after
     /// them is no word's.
     pub(crate) words: Option<std::ops::Range<u32>>,
+    /// The offset past the code's last instruction
+    /// (`macro_assembler::Finished::instructions_end`).
+    pub(crate) instructions_end: u32,
     /// A lean body's transfers into its twin, one per `MakeClosure`: the instruction's
     /// program counter and the index of the data word that holds the
     /// address of its code in the twin (`closures::transfer_to_twin`). None in a
@@ -1340,6 +1343,7 @@ pub(crate) fn compile(
         exits_at_once,
         reifies: body.reifies,
         words,
+        instructions_end: finished.instructions_end,
         twin_transfers: body.twin_transfers,
         budget_word: body.budget_word,
         dispatching,

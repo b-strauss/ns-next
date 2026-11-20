@@ -519,9 +519,18 @@ mod code {
             .first()
             .expect("a method's lean body has words")
             .0;
-        assert_eq!(
-            first, square.code_end,
-            "the words begin where the code ends"
+        // The words begin at the next cache line past the code; the
+        // padding between is no instruction, and a listing decodes none.
+        assert!(
+            square.code_end <= first && first - square.code_end < 64,
+            "the words at {first:#x} follow the code's end at {:#x}",
+            square.code_end
+        );
+        assert!(
+            square.bytes[square.code_end as usize..first as usize]
+                .iter()
+                .all(|byte| *byte == 0),
+            "the padding is zeroed"
         );
         for (offset, _) in &square.words {
             let start = *offset as usize;

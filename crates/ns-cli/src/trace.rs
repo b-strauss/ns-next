@@ -6,10 +6,11 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 
 use ns_runtime::tool_names::KnownModule;
+use ns_runtime::trace_events::Listing;
 use ns_runtime::{ModuleName, TraceCategories, TraceCategory, TraceEvent, TraceEventKind};
 use ns_runtime::{TraceFilter, TraceSink};
 
-use crate::program;
+use crate::{listing, program};
 
 /// The word `--trace` takes for every category.
 const ALL: &str = "all";
@@ -41,19 +42,20 @@ pub(crate) fn categories(text: &str) -> Result<TraceCategories, String> {
     Ok(categories)
 }
 
-/// Refuses a pattern of `filter` that names a module neither the
-/// program, whose modules are `modules`, nor the binary has, naming the
-/// pattern; checked once the program is loaded and before it runs, so
-/// that a filter that would select nothing for good is refused rather
-/// than leave the trace silent.
+/// Refuses a pattern of `filter`, given by `option`, that names a module
+/// neither the program, whose modules are `modules`, nor the binary has,
+/// naming the option and the pattern; checked once the program is loaded
+/// and before it runs, so that a filter that would select nothing for
+/// good is refused rather than leave the trace or the listings silent.
 pub(crate) fn check_filter(
+    option: &str,
     filter: &TraceFilter,
     modules: impl IntoIterator<Item = ModuleName>,
 ) -> Result<(), String> {
     let modules = program::known_modules(modules);
     filter
         .check(&|text: &str| KnownModule::resolve(text, &modules))
-        .map_err(|reason| format!("--trace-filter: {reason}"))
+        .map_err(|reason| format!("{option}: {reason}"))
 }
 
 /// The line `event` is written as (`docs/design/developer-tool.md`,
@@ -318,6 +320,13 @@ impl TraceSink for StandardErrorSink {
         // that no other line the process writes on stderr lands inside it.
         // A stderr that cannot be written to loses the trace, never the
         // program's run.
+        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+    }
+
+    fn listing(&mut self, listing: &Listing) {
+        // The whole listing in one write, as a line is: a script cuts it
+        // out from its head to its end, which no other write interrupts.
+        let text = listing::text(listing);
         let _ = std::io::stderr().lock().write_all(text.as_bytes());
     }
 }

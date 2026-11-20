@@ -78,8 +78,9 @@ pub struct CodeListing {
     pub base_address: u64,
     /// The body's bytes, its data words zeroed.
     pub bytes: Vec<u8>,
-    /// The offset of the first data word, past the last instruction; the
-    /// bytes' length for a body without data words.
+    /// The offset past the last instruction: the bytes from there to the
+    /// first data word align the words and are no instruction; the bytes'
+    /// length for a body without data words.
     pub code_end: u32,
     /// Each data word's offset and what it holds, ascending by offset.
     pub words: Vec<(u32, DataWord)>,

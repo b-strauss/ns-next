@@ -20,6 +20,16 @@ toml.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# `--print-code` decodes machine code with the decoder of the target it
+# runs on, the one its JIT emits for (`docs/design/developer-tool.md`,
+# decision 4); the other's stays out of the binary.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+iced-x86.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+yaxpeax-arm.workspace = true
+yaxpeax-arch.workspace = true
+
 [dev-dependencies]
 indoc.workspace = true
 libtest-mimic.workspace = true

@@ -4981,10 +4981,7 @@ fn compile(
 #[cfg(ns_jit)]
 fn captured_code(body: &baseline::BaselineBody, tier: CodeTier) -> PendingCode {
     let bytes = body.code.bytes.clone();
-    let code_end = body.words.as_ref().map_or_else(
-        || u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-        |words| words.start,
-    );
+    let code_end = body.instructions_end;
     let words = body.words.as_ref().map_or_else(Vec::new, |words| {
         let named = |index: usize| {
             if body.budget_word == Some(index) {
@@ -6855,6 +6852,7 @@ fn install_optimized(
         code: assembled,
         returns,
         words,
+        instructions_end,
         twin_transfers,
         push_entry,
         deepest_chain,
@@ -6882,6 +6880,7 @@ fn install_optimized(
         exits_at_once: false,
         reifies: false,
         words,
+        instructions_end,
         twin_transfers,
         budget_word: None,
         dispatching: None,

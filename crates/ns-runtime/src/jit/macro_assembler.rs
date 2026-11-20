@@ -733,12 +733,17 @@ struct Annotations {
 }
 
 /// A macro assembler's code laid out (`MacroAssembler::finish_annotated`):
-/// the code, every address recorded with its site, and, when it was
-/// annotating, its annotations and the starts of its code out of the
-/// straight line as offsets from its start, ascending.
+/// the code, every address recorded with its site, the offset past its
+/// last instruction, and, when it was annotating, its annotations and the
+/// starts of its code out of the straight line as offsets from its start,
+/// ascending.
 pub(crate) struct Finished {
     pub(crate) assembled: Assembled,
     pub(crate) sites: Vec<(Label, u32)>,
+    /// Where the instructions end: the alignment of the data words, which
+    /// no instruction is, starts there, so that a listing decodes no
+    /// padding as code.
+    pub(crate) instructions_end: u32,
     pub(crate) annotations: Vec<(u32, Annotation)>,
     pub(crate) out_of_line: Vec<u32>,
 }
@@ -3728,6 +3733,8 @@ impl MacroAssembler {
                 }
             }
         }
+        let instructions_end = self.assembler.label();
+        self.assembler.bind(instructions_end);
         if let Some(label) = self.body_words_label {
             let bytes = u32::try_from(self.body_words)
                 .ok()
@@ -3747,6 +3754,7 @@ impl MacroAssembler {
             assembled.label_offsets[label.index()]
                 .expect("internal: an annotation's label is bound")
         };
+        let instructions_end = offset_of(instructions_end);
         let (annotations, out_of_line) = annotations.map_or_else(
             || (Vec::new(), Vec::new()),
             |recorded| {
@@ -3763,6 +3771,7 @@ impl MacroAssembler {
         Ok(Finished {
             assembled,
             sites: site_addresses,
+            instructions_end,
             annotations,
             out_of_line,
         })

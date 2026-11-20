@@ -70,6 +70,9 @@ pub(crate) struct OptimizedBody {
     /// The offsets in the code of its first data word and of the byte past
     /// its last, if it has any (`baseline::BaselineBody::words`).
     pub(crate) words: Option<std::ops::Range<u32>>,
+    /// The offset past the code's last instruction
+    /// (`macro_assembler::Finished::instructions_end`).
+    pub(crate) instructions_end: u32,
     /// The transfers into the baseline twin, one per `MakeClosure` of the
     /// body's own scope (`closures::transfer_to_twin`).
     pub(crate) twin_transfers: Vec<TwinTransfer>,

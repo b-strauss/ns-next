@@ -32,9 +32,16 @@ libtest-mimic = "0.8"
 # by `cc`, so the build needs the C compiler a Rust toolchain on these
 # targets already relies on.
 mimalloc = { version = "0.1", default-features = false }
-# The x64 decoder the tests check ns-assembler's encodings and the JIT's
-# listings against, in ns-assembler and ns-runtime alike; dev-dependencies only.
+# The decoders of machine code: ns-assembler's encodings and the JIT's
+# listings are checked against them in tests, and `ns-next run --print-code`
+# decodes with the one of the target it runs on
+# (`docs/design/developer-tool.md`, decision 4). The x64 decoder and its
+# Intel formatter, the encoder and the other formatters left out.
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+# The AArch64 decoder and its text, its serde support left out; `yaxpeax-arch`
+# is named for the `Decoder` trait and the byte reader.
+yaxpeax-arm = { version = "0.5", default-features = false, features = ["std", "fmt"] }
+yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the
 # optimizer sees the whole picture. Both usually help runtime speed as well as size --
