@@ -779,6 +779,9 @@ ns-cli::bin/ns-next project::tests::a_script_name_written_twice_is_refused_namin
 ns-cli::bin/ns-next project::tests::a_script_that_does_not_split_is_refused_naming_it
 ns-cli::bin/ns-next project::tests::a_script_that_is_no_string_is_refused_naming_scripts
 ns-cli::bin/ns-next project::tests::an_empty_script_name_is_refused
+ns-cli::bin/ns-next trace::tests::a_line_splits_at_spaces_outside_braces
+ns-cli::bin/ns-next trace::tests::every_event_has_its_line
+ns-cli::bin/ns-next trace::tests::every_kind_is_listed
 ns-cli::debug_metadata breakable_statements_agree_with_the_breakpoints::optimized::language/method/spec_3_6_a_parameter_and_a_local_of_the_same_name_is_an_error
 ns-cli::debug_metadata breakable_statements_agree_with_the_breakpoints::optimized::language/module/root_applying_two_mixins_is_refused
 ns-cli::debug_metadata breakable_statements_agree_with_the_breakpoints::optimized::language/module/root_applying_value_to_value_is_refused
@@ -1189,6 +1192,7 @@ ns-runtime symbol::tests::interning_the_same_string_twice_gives_the_same_symbol
 ns-runtime symbol::tests::the_stored_hash_is_the_one_the_text_computes
 ns-runtime tool_names::tests::a_dotted_nested_class_is_refused_with_the_new_form
 ns-runtime tool_names::tests::a_malformed_method_name_is_refused
+ns-runtime tool_names::tests::a_module_is_resolved_with_its_versions_in_semver_order
 ns-runtime tool_names::tests::a_program_kernel_and_the_shipped_kernel_are_named_apart
 ns-runtime tool_names::tests::a_root_method_has_no_slash
 ns-runtime tool_names::tests::a_version_no_module_of_the_id_has_is_refused
@@ -1197,6 +1201,15 @@ ns-runtime tool_names::tests::class_names_parse_from_a_list
 ns-runtime tool_names::tests::method_names_parse_with_and_without_class_side
 ns-runtime tool_names::tests::method_names_parse_with_id_version_and_inner_path
 ns-runtime tool_names::tests::the_form_needs_no_module
+ns-runtime trace_events::filter::tests::a_block_matches_through_its_owner
+ns-runtime trace_events::filter::tests::a_comma_is_a_selector
+ns-runtime trace_events::filter::tests::a_malformed_pattern_is_refused
+ns-runtime trace_events::filter::tests::a_pattern_names_one_method
+ns-runtime trace_events::filter::tests::a_pattern_without_a_version_covers_every_version
+ns-runtime trace_events::filter::tests::a_star_is_a_selector
+ns-runtime trace_events::filter::tests::a_star_makes_a_prefix
+ns-runtime trace_events::filter::tests::several_patterns_are_alternatives
+ns-runtime trace_events::filter::tests::the_dotted_form_is_refused
 ns-runtime types::tests::binding_variants_are_copy_and_comparable
 ns-runtime types::tests::frame_kind_top_level_has_no_current_class
 ns-runtime types::value_tests::each_constructor_answers_through_its_accessor_and_no_other
@@ -2247,6 +2260,8 @@ ns-cli::bin/ns-next project::tests::an_absolute_path_is_taken_as_written
 ns-cli::bin/ns-next project::tests::any_other_file_is_a_source
 ns-cli::bin/ns-next project::tests::modules_may_be_absent_or_empty
 ns-cli::bin/ns-next project::tests::other_keys_are_ignored
+ns-cli::cli a_malformed_filter_is_refused
+ns-cli::cli an_unknown_category_is_refused
 ns-cli::cli benchmark_rejects_zero_iterations
 ns-cli::cli run_corpus_malformed_whitelist_fails_with_error
 ns-cli::cli run_corpus_refuses_a_module_whose_factory_it_cannot_fill
