@@ -152,6 +152,33 @@ pub(crate) fn entry_arguments(
     Ok(script_arguments.iter().chain(arguments).cloned().collect())
 }
 
+/// Every module of the program by its id and version, the embedded
+/// manifest of a project included.
+pub(crate) fn module_names(program: &Program) -> Vec<ns_runtime::ModuleName> {
+    program
+        .sources
+        .iter()
+        .filter_map(|loaded| loaded.resolved.identity.as_deref())
+        .map(ns_runtime::ModuleName::of_identity)
+        .collect()
+}
+
+/// The program's `modules` and every shipped module: what a tool's name
+/// -- a breakpoint's, a trace filter's -- may name a module of
+/// (`KnownModule::resolve`).
+pub(crate) fn known_modules(
+    modules: impl IntoIterator<Item = ns_runtime::ModuleName>,
+) -> Vec<ns_runtime::ModuleName> {
+    modules
+        .into_iter()
+        .chain(
+            ns_runtime::shipped_source_files().iter().map(|file| {
+                ns_runtime::ModuleName::named(ns_runtime::shipped_module_id(file.name))
+            }),
+        )
+        .collect()
+}
+
 /// The program's modules as a debugger shows them: each by its id and
 /// version, with the file it was read from and its text as read.
 /// A file is shown by its absolute path as the program named it, and

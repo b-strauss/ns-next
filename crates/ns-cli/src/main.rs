@@ -16,6 +16,7 @@ mod mcp;
 mod program;
 mod project;
 mod target_runner;
+mod trace;
 
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
@@ -83,6 +84,18 @@ enum Command {
         /// leaves uncounted, which changes the code: time without it.
         #[arg(long)]
         jit_statistics: bool,
+        /// Write a line on stderr for every event of the categories
+        /// named, separated by commas: `compile`, `osr`, `optimize`,
+        /// `inlining`, `deoptimize`, `code-zone`, `caches`, or `all`.
+        #[arg(long, value_name = "CATEGORIES")]
+        trace: Option<String>,
+        /// Trace only the bodies a pattern selects, one pattern each time
+        /// the option is given (`,` is a selector, so nothing splits a
+        /// pattern):
+        /// `<id>[@<version>][/<Class>(.<Class>)*][ class]>><selector>`, a
+        /// trailing `...` making a prefix (`*` is a selector's character).
+        #[arg(long, value_name = "PATTERN", requires = "trace")]
+        trace_filter: Vec<String>,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -260,6 +273,8 @@ fn execute(command: Command) -> ExitCode {
             cache_statistics,
             collector_statistics,
             jit_statistics,
+            trace,
+            trace_filter,
             script,
             debug,
             debug_connect,
@@ -270,6 +285,10 @@ fn execute(command: Command) -> ExitCode {
             cache_statistics,
             collector_statistics,
             jit_statistics,
+            commands::run::TraceOptions {
+                categories: trace.as_deref(),
+                filter: trace_filter.iter().map(String::as_str).collect(),
+            },
             script.as_deref(),
             debug::DebugOptions::from_arguments(debug, debug_connect),
             &arguments,

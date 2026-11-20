@@ -1253,12 +1253,16 @@ mixin's three initializer bodies -- the full one, `<Name> own part` and
 `<Name> standalone` when it has one -- and the factory entry's body, as
 `method <Name> factory <selector>`.
 
-These are the first pieces of the VM's own introspection tooling, the equivalent
-of `d8`; the rest -- tracing why a body is compiled, optimized, deoptimized or
-retired and the inline caches' transitions, printing the machine code a run
-generates, and a REPL -- is planned
-([OPEN-WORK.md](../OPEN-WORK.md), "A developer tool like V8's `d8`", "A view of
-what a method compiles to").
+These are the static half of the VM's own introspection tooling, the
+equivalent of `d8` ([developer-tool.md](developer-tool.md)). What a run
+makes of the code is traced: `ns-next run --trace=<categories>` writes a
+line on standard error for every baseline compile and its refusal,
+on-stack replacement, optimization, inlining decision, retirement,
+invalidation and free of machine code and every inline cache transition,
+each with its reasons, and `--trace-filter=<pattern>` narrows it to the
+bodies named in the tools' method syntax ("Stage 1: tracing"). Printing
+the code a run makes, machine code included, and a shell are its stages
+2 and 3, designed there and not built.
 
 ## The reference lowering
 

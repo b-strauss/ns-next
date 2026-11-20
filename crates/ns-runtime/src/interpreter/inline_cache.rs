@@ -27,6 +27,7 @@ use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
+use crate::trace_events::{Pending, PendingKind, SiteState, TraceCategory, VacateCause};
 use crate::types::*;
 
 use super::resolve::{Chain, Resolved};
@@ -1122,6 +1123,10 @@ impl InlineCaches {
     /// send's key and `jit::cell_entry` (`cell_for`); it is written beside
     /// the entry wherever the entry lands, and the site's own cell follows
     /// the site's state, its entry address from `jit`.
+    ///
+    /// Answers the site's state before and after, only where it changed:
+    /// what the `caches` trace records (`record_transition`). A refill
+    /// that keeps the state answers `None`.
     fn advance(
         &mut self,
         index: usize,
@@ -1130,16 +1135,14 @@ impl InlineCaches {
         private: bool,
         cell: Cell,
         jit: &JitState,
-    ) {
-        let Some(entry) = self.sites.get_mut(index) else {
-            return;
-        };
+    ) -> Option<(SiteState, SiteState)> {
+        let entry = self.sites.get_mut(index)?;
         if entry
             .target
             .site_privacy()
             .is_some_and(|site_private| site_private != private)
         {
-            return;
+            return None;
         }
         // Every arm below writes a non-vacant entry or keeps one that is
         // already there.
@@ -1148,12 +1151,11 @@ impl InlineCaches {
             Target::Vacant => {
                 *entry = CacheEntry { guard, target };
                 self.cells.write_site(index, cell);
+                Some((SiteState::Vacant, SiteState::Monomorphic))
             }
-            Target::Megamorphic { .. } => {}
+            Target::Megamorphic { .. } => None,
             Target::Polymorphic { block, .. } => {
-                let Some(slots) = self.pool.get_mut(block as usize) else {
-                    return;
-                };
+                let slots = self.pool.get_mut(block as usize)?;
                 // A guard already in the block is one whose entry could not
                 // be materialized for this receiver; the fresh answer
                 // replaces it rather than taking a second slot.
@@ -1163,7 +1165,7 @@ impl InlineCaches {
                 {
                     slots[slot] = CacheEntry { guard, target };
                     self.cells.write_block_cell(block, slot, cell);
-                    return;
+                    return None;
                 }
                 *slots = CacheEntry::vacant_block();
                 self.cells.vacate_blocks(block as usize..block as usize + 1);
@@ -1175,10 +1177,12 @@ impl InlineCaches {
                     guard: DispatchId::VACANT,
                     target: megamorphic,
                 };
+                Some((SiteState::Polymorphic, SiteState::Megamorphic))
             }
             _ if entry.guard == guard => {
                 *entry = CacheEntry { guard, target };
                 self.cells.write_site(index, cell);
+                None
             }
             _ => {
                 let block = match self.free_blocks.pop() {
@@ -1189,7 +1193,7 @@ impl InlineCaches {
                             self.cells.vacate_blocks(block as usize..block as usize + 1);
                             block
                         }
-                        _ => return,
+                        _ => return None,
                     },
                 };
                 let polymorphic = Target::Polymorphic { block, private };
@@ -1214,7 +1218,37 @@ impl InlineCaches {
                 self.cells.write_block_cell(block, 0, first_cell);
                 self.cells.write_block_cell(block, 1, cell);
                 self.cells.write_site(index, site_cell);
+                Some((SiteState::Monomorphic, SiteState::Polymorphic))
             }
+        }
+    }
+
+    /// The root body of the family whose range holds site `index`, with
+    /// the site's number within it; `None` for a site of no family's, a
+    /// loose range's. A scan of every family: only a traced transition
+    /// asks it.
+    pub(crate) fn family_of_site(&self, index: usize) -> Option<(Rc<CompiledCode>, u32)> {
+        self.families.values().find_map(|family| {
+            let number = index.checked_sub(family.base.index())?;
+            let number = u32::try_from(number).ok()?;
+            (number < family.code.family_size).then(|| (Rc::clone(&family.code), number))
+        })
+    }
+
+    /// Site `index`'s number within the loose range that holds it -- a
+    /// closure's an image decoded, no family's -- or within the table
+    /// when none does.
+    fn loose_site_number(&self, index: usize) -> u32 {
+        // Every site lies in a range whose start is a `u32`
+        // (`FeedbackBase`), so its index fits and `u32::MAX`, a number no
+        // site of a range has, is never answered: it only keeps a site the
+        // trace names from panicking the run the trace describes.
+        let Ok(index) = u32::try_from(index) else {
+            return u32::MAX;
+        };
+        match self.loose_ranges.range(..=index).next_back() {
+            Some((start, size)) if index - start < *size => index - start,
+            _ => index,
         }
     }
 
@@ -1231,7 +1265,8 @@ impl InlineCaches {
     }
 
     /// Vacates every site, every polymorphic block and the global cache
-    /// (`docs/design/dispatch.md`, "Invalidation"): a class redefinition
+    /// (`docs/design/dispatch.md`, "Invalidation"), untraced: a run's
+    /// caller goes through `vacate_every_cache`. A class redefinition
     /// invalidates every guard at once, rather than tracking which ones a
     /// change could affect. `families` stays -- an activation already
     /// running still names its family's range, so the next send through a
@@ -2384,9 +2419,15 @@ fn global_found<'gc>(
         .cloned()?;
     let found = materialize(mutator, target.clone(), key)?;
     let cell = cell_for(mutator, key, &target);
-    mutator
-        .caches
-        .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+    let transition =
+        mutator
+            .caches
+            .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+    if let Some(transition) = transition
+        && mutator.jit.tracer.traces(TraceCategory::Caches)
+    {
+        record_transition(mutator, index, transition, selector, *key.receiver);
+    }
     Some(found)
 }
 
@@ -2635,15 +2676,75 @@ fn decided_miss<'gc, Answer>(
             && let Some((found, base)) = materialize(mutator, target.clone(), key)
         {
             let cell = cell_for(mutator, key, &target);
-            mutator
-                .caches
-                .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+            let transition =
+                mutator
+                    .caches
+                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+            if let Some(transition) = transition
+                && mutator.jit.tracer.traces(TraceCategory::Caches)
+            {
+                record_transition(mutator, index, transition, selector, *key.receiver);
+            }
             return hit(mutator, found, base);
         }
     }
     let found = resolve(mutator, known_lexical_class);
     fill(mutator, index, key, selector, &found);
     resolved(mutator, found)
+}
+
+/// Records site `index`'s `transition` at a miss of a send of `selector`
+/// to `receiver`, its body the family's root and its receiver named now,
+/// qualified as every class is, so that the pending event holds no
+/// handle. Out of line and cold: only a traced transition comes here. A
+/// transition the miss leaf made waits in the queue, as every leaf's
+/// event does, for the next safepoint or host return.
+#[cold]
+#[inline(never)]
+fn record_transition<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    (before, after): (SiteState, SiteState),
+    selector: Symbol,
+    receiver: Value<'gc>,
+) {
+    let class = mutator.class_of(receiver);
+    let receiver = mutator
+        .heap
+        .class_application(class)
+        .and_then(|application| {
+            crate::debugger::metadata::again::qualified_name(mutator, &application.mixin)
+        })
+        .unwrap_or_else(|| mutator.heap.class_display_name(class));
+    let (body, site) = match mutator.caches.family_of_site(index) {
+        Some((code, number)) => (Some(code), number),
+        None => (None, mutator.caches.loose_site_number(index)),
+    };
+    mutator.jit.tracer.record(Pending::about_body(
+        TraceCategory::Caches,
+        body,
+        PendingKind::CacheTransition {
+            before,
+            after,
+            selector,
+            site,
+            receiver,
+        },
+    ));
+}
+
+/// Vacates every inline cache (`InlineCaches::invalidate`) for `cause`,
+/// traced as one event about no body, so that the `vacant->monomorphic`
+/// transitions that follow have their reason.
+pub(crate) fn vacate_every_cache(mutator: &mut Mutator<'_>, cause: VacateCause) {
+    mutator.caches.invalidate();
+    if mutator.jit.tracer.traces(TraceCategory::Caches) {
+        mutator.jit.tracer.record(Pending::about_body(
+            TraceCategory::Caches,
+            None,
+            PendingKind::CachesVacated { cause },
+        ));
+    }
 }
 
 /// What the miss leaf answers machine code for a send its cell did not
@@ -2848,8 +2949,14 @@ pub(crate) fn decide_at<'gc>(
             return MissAnswer::Refuse;
         }
         let base = mutator.feedback_base_for(code);
-        jit::note_entry(&mut mutator.jit, code, base, None);
-        jit::after_compile_trigger(mutator);
+        jit::note_entry(
+            &mut mutator.jit,
+            code,
+            base,
+            None,
+            crate::trace_events::CompileTrigger::Call,
+        );
+        jit::after_compile_trigger_in_leaf(mutator);
         let address = jit::machine_entry_address(&mutator.jit, code, base, None);
         mutator
             .caches
@@ -2916,7 +3023,7 @@ pub(crate) fn decide_at<'gc>(
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
-    jit::after_compile_trigger(mutator);
+    jit::after_compile_trigger_in_leaf(mutator);
     // The callee entered at its copy for its key, which a cell names only
     // behind a guard that is the receiver's own id.
     let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));
@@ -3016,9 +3123,15 @@ fn fill<'gc>(
         mutator
             .caches
             .global_insert(key.guard, selector, key.rule, target.clone(), cell);
-        mutator
-            .caches
-            .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+        let transition =
+            mutator
+                .caches
+                .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+        if let Some(transition) = transition
+            && mutator.jit.tracer.traces(TraceCategory::Caches)
+        {
+            record_transition(mutator, index, transition, selector, *key.receiver);
+        }
         // The sender's feedback changed: its optimization waits for it to
         // settle -- but under the optimize stress mode, whose budgets run
         // out at once. The sender is the innermost activation, the

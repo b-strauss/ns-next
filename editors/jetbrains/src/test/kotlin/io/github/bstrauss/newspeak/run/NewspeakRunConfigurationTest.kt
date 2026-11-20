@@ -89,6 +89,23 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         )
     }
 
+    fun testRuntimeOptionsComeBeforeTheProgram() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            script = "timed"
+            runtimeOptions = "--trace=compile --trace-filter=Demo>>... --trace-filter=\"Other Demo>>...\""
+        }
+        val options = listOf("--trace=compile", "--trace-filter=Demo>>...", "--trace-filter=Other Demo>>...")
+        assertEquals(
+            listOf(runtime.toString(), "run") + options + listOf("--script=timed", projectDirectory),
+            newspeakCommandLine(runtime, run),
+        )
+        assertEquals(
+            listOf(runtime.toString(), "run", "--debug-connect=127.0.0.1:5005") + options + listOf("--script=timed", projectDirectory),
+            newspeakCommandLine(runtime, run, "127.0.0.1:5005"),
+        )
+    }
+
     fun testTheProcessDecodesOutputAsUtf8() {
         val run = configuration().apply { program = "/work/app/newspeak.json" }
         assertEquals(StandardCharsets.UTF_8, newspeakProcessCommandLine(runtime, run).charset)
@@ -117,6 +134,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
             command = NewspeakCommand.BENCH
             script = "timed"
             programArguments = "Sieve \"Delta Blue\""
+            runtimeOptions = "--trace=compile"
             iterations = 7
         }
         val editor = NewspeakRunConfigurationEditor()
@@ -128,6 +146,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         assertEquals(shown.command, applied.command)
         assertEquals(shown.script, applied.script)
         assertEquals(shown.programArguments, applied.programArguments)
+        assertEquals(shown.runtimeOptions, applied.runtimeOptions)
         assertEquals(shown.iterations, applied.iterations)
     }
 

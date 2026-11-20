@@ -479,18 +479,12 @@ fn jit_statistics_print_one_line_to_stderr() {
     );
 }
 
-/// The `jit: ` line's counts before each of `labels`, of a run of
-/// `program` with `--jit-statistics` and with neither a stress mode nor
-/// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
-/// optimizer inlines is what a plain run's budgets decide; `None` on a
-/// target without a JIT, which compiles no body.
-fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) -> Option<Vec<u64>> {
+/// A `run` of `program` with neither a stress mode nor `NS_NEXT_NO_JIT`,
+/// whatever the environment says, so that what the tiers do is what a
+/// plain run decides.
+fn plain_run(program: &std::path::Path) -> Command {
     let mut command = ns_next();
-    command
-        .arg("run")
-        .arg(program)
-        .arg("--jit-statistics")
-        .env_remove("NS_NEXT_NO_JIT");
+    command.arg("run").arg(program).env_remove("NS_NEXT_NO_JIT");
     for mode in [
         "MOVES",
         "COLLECT",
@@ -510,6 +504,17 @@ fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) ->
     ] {
         command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
     }
+    command
+}
+
+/// The `jit: ` line's counts before each of `labels`, of a run of
+/// `program` with `--jit-statistics` and with neither a stress mode nor
+/// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
+/// optimizer inlines is what a plain run's budgets decide; `None` on a
+/// target without a JIT, which compiles no body.
+fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) -> Option<Vec<u64>> {
+    let mut command = plain_run(program);
+    command.arg("--jit-statistics");
     let output = command.output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
@@ -732,4 +737,170 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         "bench_block.ns scavenges even at one iteration; a report of zero means the \
          trigger did not fire: {stderr}"
     );
+}
+
+/// `square:` is sent a hundred times, so that the baseline JIT compiles
+/// it at its second entry.
+const A_HOT_METHOD: &str = indoc! {"
+    class Demo = Object new () (
+      square: number = (
+        ^number * number.
+      )
+
+      public main: platform args: arguments = (
+        |
+          total ::= 0.
+        |
+        1 to: 100 do: [:index | total:: total + (square: index)].
+        platform transcript show: total printString; newLine.
+      )
+    )
+"};
+
+/// What `A_HOT_METHOD` prints.
+const A_HOT_METHOD_STDOUT: &str = "338350\n";
+
+/// `A_HOT_METHOD` written as `Demo.ns` in a scratch directory, and the
+/// file's path; `None` on a target without a JIT, which compiles no body
+/// and so traces nothing of what these tests read.
+fn hot_method_program(name: &str) -> Option<(ScratchDirectory, std::path::PathBuf)> {
+    let directory = ScratchDirectory::new(name);
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    plain_jit_counts(&program, A_HOT_METHOD_STDOUT, &[])?;
+    Some((directory, program))
+}
+
+/// A plain run of `program` with `arguments` before it, its stdout held to
+/// `A_HOT_METHOD_STDOUT`; answers its stderr.
+fn traced_stderr(program: &std::path::Path, arguments: &[&str]) -> String {
+    let output = plain_run(program).args(arguments).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), A_HOT_METHOD_STDOUT);
+    stderr
+}
+
+/// `--trace=compile` writes a line for the method the baseline JIT
+/// compiled, and leaves stdout as it was.
+#[test]
+fn trace_compile_names_the_hot_method() {
+    let Some((_directory, program)) = hot_method_program("trace-compile") else {
+        return;
+    };
+    let stderr = traced_stderr(&program, &["--trace=compile"]);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.starts_with("[compile] {Demo>>square:} compiled trigger=")),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.lines().all(|line| line.starts_with("[compile] ")),
+        "stderr: {stderr}"
+    );
+}
+
+/// Every trace line is a whole line beside the other lines the run writes
+/// on stderr, here `--jit-statistics`'s.
+#[test]
+fn trace_lines_are_whole_lines_beside_the_programs_stderr() {
+    let Some((_directory, program)) = hot_method_program("trace-whole-lines") else {
+        return;
+    };
+    let stderr = traced_stderr(&program, &["--trace=all", "--jit-statistics"]);
+    assert!(
+        stderr
+            .lines()
+            .all(|line| line.starts_with('[') || line.starts_with("jit: ")),
+        "stderr: {stderr}"
+    );
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("jit: "))
+            .count(),
+        1,
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line.starts_with("[caches] ")),
+        "stderr: {stderr}"
+    );
+}
+
+/// `--trace-filter` delivers only the events of the bodies it selects,
+/// named whole or by a prefix ending in `...`.
+#[test]
+fn the_filter_narrows_the_lines() {
+    let Some((_directory, program)) = hot_method_program("trace-filter") else {
+        return;
+    };
+    for pattern in ["--trace-filter=Demo>>square:", "--trace-filter=Demo>>sq..."] {
+        let stderr = traced_stderr(&program, &["--trace=compile", pattern]);
+        let compiles: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("[compile] "))
+            .collect();
+        assert!(!compiles.is_empty(), "{pattern}: {stderr}");
+        assert!(
+            compiles.iter().all(|line| {
+                line.starts_with("[compile] {Demo>>square:} ")
+                    || line.starts_with("[compile] {[] in Demo>>square:} ")
+            }),
+            "{pattern}: {stderr}"
+        );
+    }
+}
+
+/// A run of `A_HOT_METHOD` with `arguments`, which are refused before the
+/// program runs: status 2, nothing on stdout, and the stderr answered.
+fn refused_stderr(name: &str, arguments: &[&str]) -> String {
+    let directory = ScratchDirectory::new(name);
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let output = plain_run(&program).args(arguments).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "stderr: {stderr}"
+    );
+    stderr
+}
+
+#[test]
+fn an_unknown_category_is_refused() {
+    let stderr = refused_stderr("trace-unknown-category", &["--trace=compile,compil"]);
+    assert!(stderr.contains("`compil`"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_malformed_filter_is_refused() {
+    let stderr = refused_stderr(
+        "trace-malformed-filter",
+        &[
+            "--trace=compile",
+            "--trace-filter=Demo>>square:",
+            "--trace-filter=Demo>>",
+        ],
+    );
+    assert!(stderr.contains("`Demo>>`"), "stderr: {stderr}");
+}
+
+/// A pattern naming a module the program does not have is refused once
+/// the program is loaded, before `main:args:` runs.
+#[test]
+fn a_filter_naming_no_module_is_refused() {
+    let stderr = refused_stderr(
+        "trace-unknown-module",
+        &[
+            "--trace=compile",
+            "--trace-filter=Demo>>square:",
+            "--trace-filter=Other>>run",
+        ],
+    );
+    assert!(stderr.contains("`Other>>run`"), "stderr: {stderr}");
+    assert!(stderr.contains("no module `Other`"), "stderr: {stderr}");
 }

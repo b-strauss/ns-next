@@ -1043,6 +1043,12 @@ impl Interpreter {
                     crate::debugger::stepping::run_ended(mutator);
                     crate::debugger::exceptions::drop_pending(mutator);
                     crate::debugger::evaluation::run_ended(mutator);
+                    // What the run's last stretch recorded is delivered
+                    // before the host reads its result, so that no event
+                    // waits for a run that may never come.
+                    if mutator.jit.tracer.has_pending() {
+                        crate::trace_events::flush(mutator);
+                    }
                 });
                 result
             }
@@ -1152,7 +1158,15 @@ impl Interpreter {
     /// send through a vacated site simply fills it again and answers what it
     /// answered before.
     pub fn invalidate_caches(&mut self) {
-        self.world.invalidate_caches();
+        self.world
+            .invalidate_caches(crate::trace_events::VacateCause::Host);
+        // Its event, recorded between runs, is delivered now rather than
+        // wait for a run that may never come.
+        self.enter(|mutator| {
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
+        });
     }
 
     /// The inline caches' sizes: how much of what is allocated is actually
@@ -1166,6 +1180,38 @@ impl Interpreter {
     /// it counts. Available in every build, like `heap_statistics`.
     pub fn jit_statistics(&self) -> crate::jit::JitStatistics {
         self.world.jit_statistics()
+    }
+
+    /// Installs `sink` to receive the trace events of `categories` whose
+    /// bodies `filter` selects (`docs/design/developer-tool.md`, "Stage
+    /// 1: tracing"), replacing any sink installed before and dropping
+    /// what it had not received; with no category it is the same as no
+    /// tracing. Every event is delivered, in order, at the end of the
+    /// interpreter's compile trigger, the safepoint or the host's run it
+    /// happened in -- one a leaf of machine code recorded at the next
+    /// safepoint or host's return.
+    pub fn set_trace(
+        &mut self,
+        categories: crate::trace_events::TraceCategories,
+        filter: crate::trace_events::TraceFilter,
+        sink: Box<dyn crate::trace_events::TraceSink>,
+    ) {
+        self.enter(|mutator| mutator.jit.tracer.install(categories, filter, sink));
+    }
+
+    /// How many trace events were recorded since the sink was installed,
+    /// delivered or not: a test hook, by which a run without a sink, or
+    /// with one for no category, is seen to record nothing.
+    #[doc(hidden)]
+    pub fn trace_events_recorded(&mut self) -> u64 {
+        self.enter(|mutator| mutator.jit.tracer.recorded())
+    }
+
+    /// How many trace events wait for their delivery: a test hook, by
+    /// which a run is seen to leave none behind.
+    #[doc(hidden)]
+    pub fn trace_queue_length(&mut self) -> usize {
+        self.enter(|mutator| mutator.jit.tracer.queue_length())
     }
 
     /// Why the JIT is off though it was wanted, `None` while it runs or
@@ -1197,8 +1243,16 @@ impl Interpreter {
             // on again. Rows are written afresh at a block's next push,
             // cells at their sites' next miss.
             if reserved || was_enabled != mutator.jit.is_enabled() {
-                mutator.caches.invalidate();
+                inline_cache::vacate_every_cache(
+                    mutator,
+                    crate::trace_events::VacateCause::JitSwitched,
+                );
                 mutator.heap.forget_machine_entries();
+            }
+            // A replaced zone's event, recorded between runs, is
+            // delivered now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
             }
         });
     }
@@ -1211,9 +1265,17 @@ impl Interpreter {
     pub fn set_jit_zone_bytes(&mut self, bytes: usize) {
         self.enter(|mutator| {
             mutator.jit.replace_zone(bytes);
-            mutator.caches.invalidate();
+            inline_cache::vacate_every_cache(
+                mutator,
+                crate::trace_events::VacateCause::ZoneReplaced,
+            );
             // Every machine entry the table records lies in the old zone.
             mutator.heap.forget_machine_entries();
+            // The replacement's event, recorded between runs, is delivered
+            // now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
         });
     }
 
@@ -1224,7 +1286,14 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn compact_jit_zone(&mut self) {
         assert!(!self.running, "compact_jit_zone is for between runs");
-        self.enter(|mutator| mutator.compact_code_zone());
+        self.enter(|mutator| {
+            mutator.compact_code_zone();
+            // The compaction's events, recorded between runs, are
+            // delivered now rather than wait for a run that may never come.
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
+        });
     }
 
     /// The zone offset at which `method`'s body has machine code in this

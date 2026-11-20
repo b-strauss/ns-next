@@ -2037,7 +2037,10 @@ mod polls {
 
     /// Frees every optimized copy there is.
     fn free_every_copy(mutator: &mut Mutator<'_>, _stopped: &crate::jit::StoppedAtPoll) {
-        crate::jit::invalidate_all_optimized(mutator);
+        crate::jit::invalidate_all_optimized(
+            mutator,
+            crate::trace_events::InvalidationCause::BulkForward,
+        );
     }
 
     /// A frame that left its optimized code at a poll does not go back in
@@ -2239,8 +2242,15 @@ mod polls {
         let physical = stopped.physical();
         let code = mutator.heap.activation_code(physical);
         let frame = mutator.heap.activation_receiver_and_current_class(physical);
-        crate::jit::invalidate_all_optimized(mutator);
-        crate::jit::request_optimization(mutator, &code, Some(frame));
+        crate::jit::invalidate_all_optimized(
+            mutator,
+            crate::trace_events::InvalidationCause::BulkForward,
+        );
+        let cause = crate::jit::RequestCause {
+            spent_by: &code,
+            walk_end: crate::trace_events::RecompileWalkEnd::NotWalked,
+        };
+        crate::jit::request_optimization(mutator, &code, Some(frame), cause);
         crate::jit::optimize_requested(mutator);
         let key = crate::jit::activation_key(&mutator.heap, &code, physical);
         let installed = match key {

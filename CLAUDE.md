@@ -172,6 +172,25 @@ Rust 1.100.0, edition 2024, seven crates:
   "Exceptions", "Hit counts and temporary breakpoints", "Evaluation",
   "Writing a frame", "Restart frame and force return", "Marking
   objects", "The memory view"),
+  the developer tool's trace (`trace_events.rs`, `ns_runtime::trace_events`,
+  not `trace`, which is the collector's edge enumeration): a sink the
+  host installs (`Interpreter::set_trace`) receives typed events, their
+  reasons enums with kebab-case names, in seven categories -- `compile`,
+  `osr`, `optimize`, `inlining`, `deoptimize`, `code-zone`, `caches` --
+  each site cold and testing its category's bit first, a release build
+  tracing too; a site records the event pending, its bodies as
+  `Rc<CompiledCode>` and never a handle, and a flush names them as the
+  debugger names a frame (`trace_events/names.rs`), applies the filter
+  (`trace_events/filter.rs`) and delivers them at the end of the
+  interpreter's compile trigger, at the safepoint, when a host's run
+  returns and before a host method that records outside a run returns,
+  never in a leaf, whose events wait for the next of those without a
+  safepoint requested, so that tracing changes nothing it observes
+  (`developer-tool.md`, "Stage 1: tracing"); the tools' one grammar of
+  names, `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`
+  (`tool_names.rs`), and `KnownModule::resolve`, the one lookup of the
+  module a name gives, which the DAP agent, the MCP server's locations
+  and the trace filter share,
   the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
   `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
@@ -265,12 +284,23 @@ Rust 1.100.0, edition 2024, seven crates:
   `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>` and a class
   `<id>[@<version>][/<Inner>(.<Inner>)*]`, as the MCP server's locations
   and the plugin's breakpoint types do, and refuses the dotted form
-  `Module.Inner` (`debug/breakpoints.rs`, `debug/sources.rs`). `mcp` is a Model Context Protocol server on
+  `Module.Inner` (`debug/breakpoints.rs`, `debug/sources.rs`). `run`
+  takes `--trace=<categories>`, comma-separated or `all`, and
+  `--trace-filter=<pattern>`, repeatable, one pattern each -- a `,` is a
+  binary selector -- in the tools' method syntax, a trailing `...` making
+  a prefix, since `*` is a selector's character; an unknown category, a
+  malformed pattern and one naming no module of the program or the binary
+  are refused with exit status 2 before the program runs, and each event
+  is one line on standard error, `[<category>] {<body>} <event>
+  name=value…`, every name in braces (`trace.rs`; `developer-tool.md`,
+  decision 8, "The events and their lines"). `mcp` is a Model Context Protocol server on
   standard input and output (`mcp/`), registered by `.mcp.json` from
   the copy `cargo xtask mcp` puts in `target/mcp/`, through whose tools
   an agent debugs a program: each `debug_start` runs it in a child
   `ns-next run --debug-connect` the server is a DAP client of, and
-  each stop is answered as a summary in text; a child runs the server's
+  each stop is answered as a summary in text, `debug_start`'s `trace`
+  and `trace_filter` passed on as `--trace` and one `--trace-filter` per
+  pattern, the lines arriving with the program's output; a child runs the server's
   own executable unless `runtime` names another, and the server knows
   nothing of the build (`debugger.md`, "The MCP server"; tests
   `tests/mcp.rs`).
@@ -362,7 +392,10 @@ configuration through an `XDebugProcess` that starts `ns-next run
 process it started, named by its PID and a one-time secret, and three
 breakpoint types -- line breakpoints on the
 server's breakable lines with block variants and pass counts, method
-and exception breakpoints (`debugger.md`, "The JetBrains plugin").
+and exception breakpoints (`debugger.md`, "The JetBrains plugin"); a
+run configuration's runtime options are ns-next's own, placed after the
+subcommand and `--debug-connect`, before `--script` (`editor-support.md`,
+"The project file and running projects").
 
 `benchmarks/are-we-fast-yet/newspeak/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM

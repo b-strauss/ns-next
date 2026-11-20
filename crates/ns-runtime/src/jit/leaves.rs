@@ -448,7 +448,7 @@ fn initializer_in(
             }
             let base = mutator.feedback_base_for(&code);
             jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
-            jit::after_compile_trigger(mutator);
+            jit::after_compile_trigger_in_leaf(mutator);
             let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base, None) else {
                 return 0;
             };
@@ -513,7 +513,7 @@ fn forcing_in(
         } => {
             let base = mutator.feedback_base_for(&method.code);
             jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
-            jit::after_compile_trigger(mutator);
+            jit::after_compile_trigger_in_leaf(mutator);
             let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));
             let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base, key)
             else {
@@ -873,7 +873,7 @@ fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         unreachable!("internal: an address fits the pointer width");
     };
     let compiled = jit::compile_twin_at(&mut mutator.jit, code_address);
-    jit::after_compile_trigger(mutator);
+    jit::after_compile_trigger_in_leaf(mutator);
     if compiled { DONE } else { REFUSED }
 }
 

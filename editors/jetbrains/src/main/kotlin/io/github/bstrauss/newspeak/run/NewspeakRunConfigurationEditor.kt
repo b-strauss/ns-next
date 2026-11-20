@@ -25,6 +25,7 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
     private lateinit var commandBox: ComboBox<NewspeakCommand>
     private lateinit var scriptField: JBTextField
     private lateinit var argumentsField: ExpandableTextField
+    private lateinit var runtimeOptionsField: ExpandableTextField
     private lateinit var iterationsSpinner: JBIntSpinner
 
     /** ns-next refuses `--script` with a `.ns` module, so the field is off for one. */
@@ -73,6 +74,12 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
                 .align(AlignX.FILL)
                 .component
         }
+        row(NewspeakBundle.message("run.configuration.editor.runtime.options.label")) {
+            runtimeOptionsField = expandableTextField(ParametersListUtil.DEFAULT_LINE_PARSER, ParametersListUtil.DEFAULT_LINE_JOINER)
+                .align(AlignX.FILL)
+                .comment(NewspeakBundle.message("run.configuration.editor.runtime.options.comment"))
+                .component
+        }
         row(NewspeakBundle.message("run.configuration.editor.iterations.label")) {
             iterationsSpinner = spinner(1..Int.MAX_VALUE).component
         }.enabledIf(commandBox.selectedValueIs(NewspeakCommand.BENCH))
@@ -85,6 +92,7 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
         commandBox.selectedItem = configuration.command
         scriptField.text = configuration.script.orEmpty()
         argumentsField.text = configuration.programArguments.orEmpty()
+        runtimeOptionsField.text = configuration.runtimeOptions.orEmpty()
         iterationsSpinner.number = configuration.iterations
     }
 
@@ -94,6 +102,7 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
         configuration.command = commandBox.selectedItem as? NewspeakCommand ?: NewspeakCommand.RUN
         configuration.script = if (namesAModule(programField.text)) null else scriptField.text.trim().ifEmpty { null }
         configuration.programArguments = argumentsField.text.ifBlank { null }
+        configuration.runtimeOptions = runtimeOptionsField.text.ifBlank { null }
         configuration.iterations = iterationsSpinner.number
     }
 }

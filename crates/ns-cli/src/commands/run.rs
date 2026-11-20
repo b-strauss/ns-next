@@ -3,8 +3,28 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use ns_runtime::TraceFilter;
+
 use crate::debug::{self, DebugOptions, HostLink, HostStart};
-use crate::{entry, program};
+use crate::{entry, program, trace};
+
+/// `--trace` and `--trace-filter` as given: the categories, and one
+/// pattern for each `--trace-filter`.
+pub(crate) struct TraceOptions<'text> {
+    pub(crate) categories: Option<&'text str>,
+    pub(crate) filter: Vec<&'text str>,
+}
+
+/// The status a refused option exits with, as the command line's own
+/// refusals do.
+const REFUSED_OPTION: u8 = 2;
+
+/// Reports `refusal` of a trace option and answers the status it exits
+/// with.
+fn refuse_trace(refusal: &str) -> ExitCode {
+    eprintln!("error: {refusal}");
+    ExitCode::from(REFUSED_OPTION)
+}
 
 /// `ns-next run`: read the program, compile every module, assemble the
 /// application, send it `main: platform args:`, report. Under a debugger
@@ -21,10 +41,22 @@ pub(crate) fn execute(
     cache_statistics: bool,
     collector_statistics: bool,
     jit_statistics: bool,
+    trace_options: TraceOptions<'_>,
     script: Option<&str>,
     debug: Option<DebugOptions>,
     program_arguments: &[String],
 ) -> ExitCode {
+    // Both are read before the program, so that a misspelt category or
+    // pattern is refused before anything is read or runs.
+    let trace_categories = match trace_options.categories.map(trace::categories) {
+        Some(Ok(categories)) => Some(categories),
+        Some(Err(refusal)) => return refuse_trace(&refusal),
+        None => None,
+    };
+    let trace_filter = match TraceFilter::parse(&trace_options.filter) {
+        Ok(filter) => filter,
+        Err(refusal) => return refuse_trace(&format!("--trace-filter: {refusal}")),
+    };
     let program = match program::read_program(file) {
         Ok(program) => program,
         Err(code) => return code,
@@ -36,6 +68,16 @@ pub(crate) fn execute(
     let mut loaded = program::load_program(&program, lowering);
     entry::report_jit_unavailable(&loaded.interpreter);
     entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
+    if let Some(categories) = trace_categories {
+        // Whether a pattern names a module of the program is known only
+        // once it is read, and is decided before anything of it runs.
+        if let Err(refusal) = trace::check_filter(&trace_filter, program::module_names(&program)) {
+            return refuse_trace(&refusal);
+        }
+        loaded
+            .interpreter
+            .set_trace(categories, trace_filter, Box::new(trace::StandardErrorSink));
+    }
     let link = match &debug {
         Some(options) => {
             let modules = program::debug_modules(&program);

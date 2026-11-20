@@ -90,7 +90,8 @@ fn split<'state, 'gc>(
 /// Forwards every object of `old` to the object of `new` at the same index
 /// (`Heap::forward_identity`), then what the step state holds beside the
 /// heap (`StepRoots`), then vacates every inline cache, whose entries were
-/// decided for receivers that are now forwarders. Inside a step: nothing
+/// decided for receivers that are now forwarders, traced for `cause`.
+/// Inside a step: nothing
 /// moves, so no handle a caller holds goes stale but one naming an object
 /// of `old`, and the VM mirror's leaf holds none. The optimized code the
 /// forward makes stale is the caller's to invalidate: the mirror leaf
@@ -100,13 +101,14 @@ pub(crate) fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     old: &[ObjectReference<'gc>],
     new: &[ObjectReference<'gc>],
+    cause: crate::trace_events::VacateCause,
 ) -> Result<(), ForwardRefusal> {
     use crate::trace::Trace;
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
     mutator.rewrite_machine_classes();
-    mutator.caches.invalidate();
+    crate::interpreter::inline_cache::vacate_every_cache(mutator, cause);
     Ok(())
 }
 
@@ -266,10 +268,10 @@ impl World {
         self.mutator.creations_in_progress
     }
 
-    /// Vacates every inline cache (`Interpreter::invalidate_caches`, and the
-    /// cache stress mode's safepoint).
-    pub(crate) fn invalidate_caches(&mut self) {
-        self.mutator.caches.invalidate();
+    /// Vacates every inline cache for `cause` (`Interpreter::invalidate_caches`,
+    /// and the cache stress mode's safepoint).
+    pub(crate) fn invalidate_caches(&mut self, cause: crate::trace_events::VacateCause) {
+        crate::interpreter::inline_cache::vacate_every_cache(&mut self.mutator, cause);
     }
 
     /// What the JIT has done (`Interpreter::jit_statistics`).
@@ -603,7 +605,15 @@ mod tests {
             let class = mutator.heap().object_class(platform);
             let replacement = mutator.heap_mut().allocate_instance(class, 0);
             let root = mutator.heap().stash(Value::object(platform));
-            assert!(super::forward_identity(mutator, &[platform], &[replacement]).is_ok());
+            assert!(
+                super::forward_identity(
+                    mutator,
+                    &[platform],
+                    &[replacement],
+                    crate::trace_events::VacateCause::BulkForward,
+                )
+                .is_ok()
+            );
             assert!(
                 mutator
                     .platform_singleton

@@ -1630,8 +1630,14 @@ pub(crate) fn settle(mutator: &mut Mutator<'_>) {
         crate::jit::free_for_patch(mutator, code);
     }
     if std::mem::take(&mut mutator.breakpoints.fast_paths_switched) {
-        mutator.caches.invalidate();
-        crate::jit::invalidate_all_optimized(mutator);
+        crate::interpreter::inline_cache::vacate_every_cache(
+            mutator,
+            crate::trace_events::VacateCause::Breakpoint,
+        );
+        crate::jit::invalidate_all_optimized(
+            mutator,
+            crate::trace_events::InvalidationCause::Breakpoint,
+        );
     }
 }
 

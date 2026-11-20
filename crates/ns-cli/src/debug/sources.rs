@@ -22,11 +22,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use ns_runtime::tool_names::KnownModule;
 use ns_runtime::{ModuleName, ModuleTextAnswer};
 use ns_syntax::Span;
 use ns_tooling::lines::{LineColumn, LineIndex};
 
-use super::breakpoints::KnownModule;
 use super::protocol::{self, SourceArgument};
 
 /// The file a directory of shipped sources holds its fingerprint in, as
@@ -352,43 +352,13 @@ impl Sources {
 
     /// The module the program or the binary has -- a program's module,
     /// the embedded manifest included, or a shipped one -- that `text`
-    /// names, as a class name a client typed is read against
-    /// (`breakpoints::parse_class_name`), with the versions the program
-    /// has of its id: `text` itself where it is such an id, and otherwise,
-    /// for an undotted `text`, the one such module whose class `text`
-    /// names -- `newspeak.core.Kernel` for `Kernel` where the program has
-    /// no `Kernel` -- so that a name in the form before ids,
-    /// `Kernel.Array`, is refused with the form it means.
+    /// names, as a class name a client typed is read against, resolved
+    /// as every tool resolves it (`KnownModule::resolve`).
     pub(crate) fn module_of(&self, text: &str) -> Option<KnownModule> {
-        let ids: Vec<String> = self
-            .program
-            .iter()
-            .map(|program| program.module.id.clone())
-            .chain(
-                ns_runtime::shipped_source_files()
-                    .iter()
-                    .map(|file| ns_runtime::shipped_module_id(file.name)),
-            )
-            .collect();
-        let id = if ids.iter().any(|id| id == text) {
-            text.to_string()
-        } else if text.contains('.') {
-            return None;
-        } else {
-            let mut by_class = ids.iter().filter(|id| id.rsplit('.').next() == Some(text));
-            let first = by_class.next()?;
-            if !by_class.all(|other| other == first) {
-                return None;
-            }
-            first.clone()
-        };
-        let versions = self
-            .program
-            .iter()
-            .filter(|program| program.module.id == id)
-            .filter_map(|program| program.module.version.clone())
-            .collect();
-        Some(KnownModule { id, versions })
+        let modules = crate::program::known_modules(
+            self.program.iter().map(|program| program.module.clone()),
+        );
+        KnownModule::resolve(text, &modules)
     }
 
     /// Whether `module`'s current text declares the class `path` names

@@ -5623,7 +5623,11 @@ the way not taken: every question would run the program from its start.
   and take the server down with a crash.
 - **The tools** (`tools.rs`). One session at a time; a new `debug_start`
   ends the last. `debug_start(program, breakpoints?, stop_on_entry?,
-  arguments?, runtime?, wait?)`, `debug_breakpoints(set?, clear?)`,
+  arguments?, runtime?, trace?, trace_filter?, wait?)` (`trace` is `ns-next
+  run --trace`'s value, `trace_filter` an array of patterns, each passed as
+  one `--trace-filter=<pattern>`, a prefix ending in `...`; both go before
+  the program, and the trace lines arrive on standard error, with the
+  program's output in every answer), `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
   `debug_pause`, `debug_wait(seconds)`, `debug_stack`,

@@ -117,6 +117,28 @@ impl Interpreter {
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self, floor: usize) -> SafepointOutcome {
+        // The trace's events are delivered first, before a debugger's
+        // stop or a collection, so that the sink hears of them in the order
+        // they happened; and again last, whichever way the safepoint ends,
+        // so that what it recorded -- an optimization, a compaction, a
+        // collection's frees and invalidations -- never outlives it.
+        self.flush_trace();
+        let outcome = self.serve_safepoint(floor);
+        self.flush_trace();
+        outcome
+    }
+
+    /// Delivers every trace event waiting for a flush.
+    fn flush_trace(&mut self) {
+        self.enter(|mutator| {
+            if mutator.jit.tracer.has_pending() {
+                crate::trace_events::flush(mutator);
+            }
+        });
+    }
+
+    /// `safepoint`'s work, between its two flushes of the trace.
+    fn serve_safepoint(&mut self, floor: usize) -> SafepointOutcome {
         // Whether the pause stress mode's stop is kept for an evaluation
         // its reader began, which this safepoint may serve.
         #[cfg(debug_assertions)]
@@ -222,7 +244,8 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             if self.stress_caches {
-                self.world.invalidate_caches();
+                self.world
+                    .invalidate_caches(crate::trace_events::VacateCause::Stress);
                 self.cache_invalidations += 1;
                 stressed = true;
             }
