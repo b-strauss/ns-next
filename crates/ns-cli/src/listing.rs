@@ -212,9 +212,16 @@ fn write_code(text: &mut String, code: &CodeListing) {
                 last_position = Some(position);
             }
         }
+        // The instruction a stopped frame returns to takes `->` in its
+        // indentation, so that the columns stay those of every other line.
+        let indent = if code.mark == Some(instruction.offset) {
+            "  ->"
+        } else {
+            "    "
+        };
         let _ = write!(
             text,
-            "    {}  {}",
+            "{indent}{}  {}",
             body_offset(instruction.offset),
             instruction.text
         );
@@ -533,6 +540,49 @@ mod tests {
                  \x20   +0x000c  0c 0d 0e 0f\n\
                  data:\n\
                  \x20   data+0x0000  twin transfer @3\n\
+                 --- end\n",
+                foreign_architecture().name()
+            )
+        );
+    }
+
+    /// A stopped frame's listing marks the instruction its frame returns
+    /// to, in the indentation, every column kept.
+    #[test]
+    fn a_frame_s_listing_marks_the_instruction_it_returns_to() {
+        let listing = Listing::Code(CodeListing {
+            body: "Demo>>main:args:".to_string(),
+            tier: CodeTier::Baseline,
+            key: None,
+            architecture: foreign_architecture(),
+            base_address: 0x3000,
+            bytes: (0u8..12).collect(),
+            code_end: 12,
+            words: Vec::new(),
+            positions: vec![(
+                0,
+                Position::Instruction {
+                    scope: 0,
+                    program_counter: 0,
+                },
+            )],
+            annotations: vec![(0, Annotation::Cell { site: 0 })],
+            scopes: vec![scope(
+                0,
+                "Demo>>main:args:",
+                None,
+                &["   0   stmt 0  SendSelf #run"],
+            )],
+            mark: Some(4),
+        });
+        assert_eq!(
+            text(&listing),
+            format!(
+                "--- code {{Demo>>main:args:}} baseline {} base=0x3000 bytes=12\n\
+                 \x20 @0  stmt 0  SendSelf #run\n\
+                 \x20   +0x0000  00 01 02 03  ; cell site 0\n\
+                 \x20 ->+0x0004  04 05 06 07\n\
+                 \x20   +0x0008  08 09 0a 0b\n\
                  --- end\n",
                 foreign_architecture().name()
             )

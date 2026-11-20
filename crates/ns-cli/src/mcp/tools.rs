@@ -85,6 +85,9 @@ impl Debugger {
                 Ok(self.session()?.wait(wait))
             }),
             "debug_stack" => self.session().and_then(Session::stack),
+            "debug_code" => parse(arguments).and_then(|arguments: CodeArguments| {
+                self.session()?.code(arguments.frame.unwrap_or(0))
+            }),
             "debug_variables" => parse(arguments).and_then(|arguments: VariablesArguments| {
                 self.session()?.variables(
                     arguments.frame,
@@ -314,6 +317,12 @@ struct FrameArguments {
 }
 
 #[derive(Deserialize)]
+struct CodeArguments {
+    #[serde(default)]
+    frame: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct MemoryArguments {
     #[serde(default)]
     class: Option<String>,
@@ -444,6 +453,12 @@ pub(crate) fn list() -> Value {
             "debug_stack",
             "Lists the stopped program's frames, one a line, each with its absolute path, line and column.",
             json!({}),
+            &[],
+        ),
+        tool(
+            "debug_code",
+            "Answers the code of a frame of the stopped program as ns-next run's --print-bytecode and --print-code print it: its method's or block's bytecode, the instruction the frame stands at marked ->, then the machine code the frame goes on in, the instruction it returns to marked ->, or that it goes on in the interpreter.",
+            json!({ "frame": frame() }),
             &[],
         ),
         tool(

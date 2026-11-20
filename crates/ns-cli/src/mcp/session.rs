@@ -918,6 +918,23 @@ impl Session {
             .join("\n"))
     }
 
+    /// `debug_code`: the bytecode of frame `frame`, then the machine code
+    /// it goes on in, or the line saying it goes on interpreted.
+    pub(crate) fn code(&mut self, frame: usize) -> Result<String, String> {
+        self.require_stopped()?;
+        let body = self.request(
+            "nsNext/frameCode",
+            json!({ "frameId": frame.saturating_add(1) }),
+        )?;
+        let bytecode = body["bytecode"].as_str().unwrap_or_default();
+        let text = match body["machineCode"].as_str() {
+            // Every listing ends its lines; the answer ends with its last.
+            Some(machine_code) => format!("{bytecode}{}", machine_code.trim_end_matches('\n')),
+            None => format!("{bytecode}the frame goes on in the interpreter"),
+        };
+        Ok(self.with_output(text))
+    }
+
     /// `debug_frame`: restarts frame `frame` or makes it return `value`,
     /// then waits for the stop that follows.
     pub(crate) fn frame_action(
