@@ -14,7 +14,7 @@ use std::rc::Rc;
 use super::metadata::again::{BodyOrigin, Member, module_is_shipped, module_name, qualified_name};
 use super::metadata::{BodyMetadata, Cache, VariablePlace, VectorHolder};
 use super::remote::{
-    FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
+    Event, FrameDescription, FrameKind, FrameLocation, SendLocation, Variable, VariableValue,
 };
 use super::stepping::RecordedCall;
 use super::values::StopValues;
@@ -387,16 +387,7 @@ pub(crate) fn stack_trace(
         let frame = stack_frame.read(heap);
         let kind = frame.kind(heap);
         let program_counter = frame.program_counter(heap);
-        let owner = origin
-            .as_ref()
-            .and_then(|origin| qualified_name(mutator, &origin.mixin));
-        let name = frame_name(
-            heap,
-            kind,
-            origin.as_ref(),
-            owner,
-            frame.current_class(heap),
-        );
+        let name = name_of(mutator, frame, origin.as_ref());
         let location = origin
             .as_ref()
             .zip(metadata.as_deref())
@@ -428,6 +419,59 @@ pub(crate) fn stack_trace(
         });
     }
     descriptions
+}
+
+/// The name of `frame`, which belongs to the declaration `origin` names,
+/// as the stack trace names it (`frame_name`).
+fn name_of<'gc>(mutator: &Mutator<'gc>, frame: Frame<'gc>, origin: Option<&BodyOrigin>) -> String {
+    let heap = &mutator.heap;
+    let owner = origin.and_then(|origin| qualified_name(mutator, &origin.mixin));
+    frame_name(
+        heap,
+        frame.kind(heap),
+        origin,
+        owner,
+        frame.current_class(heap),
+    )
+}
+
+/// The code of the frame at index `frame` of the stack trace
+/// (`Command::FrameCode`): its body named as the stack trace names the
+/// frame, its bytecode marked at the program counter the frame stores,
+/// and, for a running frame stopped in machine code, the listing of the
+/// code a return to it resumes (`jit::frame_code_listing`). A suspended
+/// frame goes on interpreted whenever it is resumed: its suspension keeps
+/// no compiled bit. `None` past the stack.
+pub(crate) fn frame_code(
+    mutator: &Mutator<'_>,
+    frames: &[StackFrame],
+    frame: usize,
+) -> Option<Event> {
+    let stack_frame = frames.get(frame)?;
+    let (body, bytecode, activation) = {
+        let heap = &mutator.heap;
+        let read = stack_frame.read(heap);
+        let code = read.code(heap);
+        let origin = origin_of(heap, read, &code);
+        let body = name_of(mutator, read, origin.as_ref());
+        let program_counter = program_counter(heap, stack_frame);
+        let bytecode = crate::bytecode::disassemble_marked(&code, &body, Some(program_counter));
+        let activation = match read {
+            Frame::Running(activation) if heap.activation_is_compiled(activation) => {
+                Some(activation)
+            }
+            Frame::Running(_) | Frame::Suspended(_) => None,
+        };
+        (body, bytecode, activation)
+    };
+    let machine = activation
+        .and_then(|activation| crate::jit::frame_code_listing(mutator, activation, &body))
+        .map(Box::new);
+    Some(Event::FrameCode {
+        body,
+        bytecode,
+        machine,
+    })
 }
 
 fn frame_kind(kind: ActivationKind<'_>) -> FrameKind {

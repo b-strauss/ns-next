@@ -14,9 +14,10 @@ use std::time::Duration;
 use super::Attachments;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 use crate::heap::{DEBUGGER_COMMANDS, DEBUGGER_PAUSE};
+use crate::trace_events::CodeListing;
 
 /// What the agent asks of the VM. `Continue`, the steps, `RunToPosition`,
-/// `StackTrace`, `Variables`, `Children`, `ModuleText`, `Evaluate`,
+/// `StackTrace`, `Variables`, `FrameCode`, `Children`, `ModuleText`, `Evaluate`,
 /// `SetVariable`, `RestartFrame`, `ForceReturn`, `StepInTargets`,
 /// `StepIntoTarget`, `Mark`, `InstanceCounts`, `Instances` and
 /// `Referrers` are served only while the program is stopped; one that
@@ -71,6 +72,12 @@ pub enum Command {
     /// The variables of the stopped program's activation at index `frame`
     /// of the stack trace.
     Variables { frame: usize },
+    /// The code of the stopped program's activation at index `frame` of
+    /// the stack trace (`docs/design/developer-tool.md`, decision 15):
+    /// its body's bytecode, and the machine code it goes on in, if any.
+    /// Answered by `Event::FrameCode`, or by `Event::Refused` for a frame
+    /// index past the stack (`"no frame at that index"`).
+    FrameCode { frame: usize },
     /// `count` of the children of a value the stop handed out, from the
     /// `start`th.
     Children {
@@ -578,6 +585,7 @@ impl Command {
             Command::Terminate => "Terminate",
             Command::StackTrace => "StackTrace",
             Command::Variables { .. } => "Variables",
+            Command::FrameCode { .. } => "FrameCode",
             Command::Children { .. } => "Children",
             Command::SetBreakpoints { .. } => "SetBreakpoints",
             Command::SetStepFilters { .. } => "SetStepFilters",
@@ -628,6 +636,25 @@ pub enum Event {
     /// The answer to `Command::Variables`, `Command::Children` and
     /// `Command::Instances`.
     Variables(Vec<Variable>),
+    /// The answer to `Command::FrameCode`: the frame's body named as the
+    /// stack trace names the frame; its bytecode as
+    /// `bytecode::disassemble_marked` lists it, marked at the instruction
+    /// the frame stands at -- for a frame below the top, the send it
+    /// waits on; and the listing of the baseline machine code the frame
+    /// goes on in once the program does -- its body's lean code, or its
+    /// twin for a frame reified -- marked at the return of the call it
+    /// waits on. `None` for every frame a return to does not resume in
+    /// machine code: the top frame, which stands at the stop's safepoint
+    /// rather than at a call, a frame that runs interpreted, a suspended
+    /// one, and one whose machine code is gone or not compiled yet. No
+    /// frame goes on in optimized code from a stop
+    /// (`docs/design/debugger.md`, "The stop"). The listing is boxed, so
+    /// that every other event stays as small as it was.
+    FrameCode {
+        body: String,
+        bytecode: String,
+        machine: Option<Box<CodeListing>>,
+    },
     /// The command `command` names (`Command::name`) was not served, for
     /// `reason`.
     Refused { command: String, reason: String },

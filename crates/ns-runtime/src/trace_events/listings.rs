@@ -292,6 +292,59 @@ pub(crate) struct PendingScope {
     pub(crate) parent: Option<(u32, u32)>,
 }
 
+impl PendingCode {
+    /// The listing of these facts, of the body named `name`, its key named
+    /// `key`, laying out `scopes`, marked at `mark`.
+    fn listed(
+        self,
+        name: String,
+        key: Option<(String, Option<String>)>,
+        scopes: Vec<ListedScope>,
+        mark: Option<u32>,
+    ) -> CodeListing {
+        CodeListing {
+            body: name,
+            tier: self.tier,
+            key,
+            architecture: self.architecture,
+            base_address: self.base_address,
+            bytes: self.bytes,
+            code_end: self.code_end,
+            words: self.words,
+            positions: self.positions,
+            annotations: self.annotations,
+            scopes,
+            mark,
+        }
+    }
+
+    /// The listing of a stopped frame's baseline code, `code`'s, which the
+    /// debugger names `name`, marked at `mark`, the offset the frame
+    /// returns to (`Command::FrameCode`): one scope, the body's own.
+    #[cfg(ns_jit)]
+    pub(crate) fn frame_listing(self, code: &CompiledCode, name: &str, mark: u32) -> CodeListing {
+        debug_assert!(
+            self.scopes.is_empty(),
+            "internal: baseline code lays out its body's scope alone"
+        );
+        let scopes = vec![ListedScope::root(code, name)];
+        self.listed(name.to_owned(), None, scopes, Some(mark))
+    }
+}
+
+impl ListedScope {
+    /// The scope numbered 0 of a listing of `code`'s machine code, which
+    /// is named `name`.
+    fn root(code: &CompiledCode, name: &str) -> ListedScope {
+        ListedScope {
+            number: 0,
+            body: name.to_owned(),
+            parent: None,
+            instructions: bytecode::instruction_lines(code),
+        }
+    }
+}
+
 /// An `InliningListing`'s facts, its bodies and receivers not yet named.
 pub(crate) struct PendingInlining {
     pub(crate) key: Option<CustomizationKey>,
@@ -352,14 +405,9 @@ impl PendingListing {
         key: Option<(String, Option<String>)>,
     ) -> Listing {
         match self {
-            PendingListing::Code(pending) => {
-                let root = ListedScope {
-                    number: 0,
-                    body: name.clone(),
-                    parent: None,
-                    instructions: bytecode::instruction_lines(code),
-                };
-                let inlined = pending.scopes.into_iter().map(
+            PendingListing::Code(mut pending) => {
+                let root = ListedScope::root(code, &name);
+                let inlined = std::mem::take(&mut pending.scopes).into_iter().map(
                     |PendingScope {
                          number,
                          code,
@@ -372,20 +420,7 @@ impl PendingListing {
                     },
                 );
                 let scopes = std::iter::once(root).chain(inlined).collect();
-                Listing::Code(CodeListing {
-                    body: name,
-                    tier: pending.tier,
-                    key,
-                    architecture: pending.architecture,
-                    base_address: pending.base_address,
-                    bytes: pending.bytes,
-                    code_end: pending.code_end,
-                    words: pending.words,
-                    positions: pending.positions,
-                    annotations: pending.annotations,
-                    scopes,
-                    mark: None,
-                })
+                Listing::Code(pending.listed(name, key, scopes, None))
             }
             PendingListing::Inlining(pending) => {
                 let root = ListedScope {

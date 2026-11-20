@@ -2144,6 +2144,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
         Event::InstanceCounts(_) => command == "InstanceCounts",
         Event::Referrers(_) => command == "Referrers",
+        Event::FrameCode { .. } => command == "FrameCode",
         Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }

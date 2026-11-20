@@ -56,14 +56,14 @@ use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
+use crate::trace_events::{
+    CodeListing, CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind,
+    PendingListing, Revival, TraceCategory,
+};
 #[cfg(ns_jit)]
 use crate::trace_events::{
     CodeTier, DataWord, Deferral, FreeCause, InliningOutcome, InvalidationCause, PendingArm,
     PendingCode, PendingDecline, PendingInlining, PendingScope, RecompileWalkEnd, RetireReason,
-};
-use crate::trace_events::{
-    CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, PendingListing,
-    Revival, TraceCategory,
 };
 
 /// The code zone's size unless a test asks for another. A first guess
@@ -5026,6 +5026,94 @@ fn captured_code(body: &baseline::BaselineBody, tier: CodeTier) -> PendingCode {
         annotations: body.annotations.clone(),
         scopes: Vec::new(),
     }
+}
+
+/// The listing of the baseline code a return to `activation` resumes --
+/// a frame stopped in machine code (`Heap::activation_is_compiled`), named
+/// `name` -- marked at the return of the call it waits on, as `resumed`
+/// would find that code: its body's lean code compiled into this zone
+/// against the frame's feedback base, or that code's twin for a frame
+/// reified. `None` where `resumed` would go on interpreted, and for a
+/// reified frame whose twin is not compiled yet, which its resumption
+/// would compile: a listing compiles nothing, so that asking for it
+/// changes nothing it observes.
+///
+/// The bytes are read from the zone; the positions and the annotations,
+/// which an install keeps nowhere, are those of the same body assembled
+/// again with annotating on -- the precedent of the debugger's metadata,
+/// compiled again on demand -- which changes no byte of its code: a debug
+/// build checks that every byte up to the code's end is the zone's. The
+/// data words are listed by kind with their bytes zeroed, as an install's
+/// listing has them: the zone's hold addresses of the run.
+#[cfg(ns_jit)]
+pub(crate) fn frame_code_listing(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+    name: &str,
+) -> Option<CodeListing> {
+    let state = &mutator.jit;
+    let code = mutator.heap.activation_code(activation);
+    let Ok(program_counter) = u32::try_from(mutator.heap.activation_program_counter(activation))
+    else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let lean = state.installed(&code)?;
+    if lean.feedback_base != mutator.heap.activation_feedback_base(activation) {
+        return None;
+    }
+    let (body, tier, copy) = if mutator.heap.activation_reified(activation).is_some() {
+        let twin = state.live_body(lean.twin?)?;
+        (twin, CodeTier::Twin, baseline::BodyCopy::Twin)
+    } else {
+        (lean, CodeTier::Baseline, baseline::BodyCopy::Lean)
+    };
+    let method = match &body.method {
+        Some(method) => Some(method.upgrade()?),
+        None => None,
+    };
+    let settings = CompileSettings {
+        annotate: true,
+        ..body.settings
+    };
+    let assembled = assemble(
+        macro_assembler::Abi::host(),
+        settings,
+        &code,
+        body.feedback_base,
+        method.as_ref(),
+        copy,
+    )
+    .ok()?;
+    let mark = body
+        .map
+        .returns
+        .iter()
+        .find(|call| call.program_counter == program_counter)?
+        .machine_offset;
+    let mut captured = captured_code(&assembled, tier);
+    let zone = state.zone.as_ref()?;
+    let code_end = captured.code_end;
+    let installed = zone.writer.bytes(body.start..body.start + code_end)?;
+    debug_assert_eq!(
+        installed[..],
+        captured.bytes[..code_end as usize],
+        "internal: a body assembled again is the body installed"
+    );
+    captured.bytes.splice(..code_end as usize, installed);
+    captured.base_address = zone
+        .writer
+        .zone()
+        .executable_address(CodeOffset(body.start)) as u64;
+    Some(captured.frame_listing(&code, name, mark))
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn frame_code_listing(
+    _mutator: &Mutator<'_>,
+    _activation: ActivationReference,
+    _name: &str,
+) -> Option<CodeListing> {
+    None
 }
 
 /// `code` assembled for `abi` as its body's `copy` under `settings`, for
