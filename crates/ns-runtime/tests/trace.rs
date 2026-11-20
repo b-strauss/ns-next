@@ -695,7 +695,18 @@ fn declines_of_no_body_are_folded_per_copy() {
     let events = traced_spending(
         &comparing_loop(),
         &[TraceCategory::Optimize, TraceCategory::Inlining],
-        hot_loop_stress_off,
+        |interpreter| {
+            hot_loop_stress_off(interpreter);
+            // Off whatever the environment says: the cache stress mode
+            // vacates every cache at each safepoint, leaving the plan no
+            // receiver to inline `==` for, and the zone stress mode frees
+            // the code whose budget would request the copy.
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_caches(false);
+                interpreter.set_stress_zone(false);
+            }
+        },
     );
     let run = about(&events, "Test>>run");
     let optimized = run
