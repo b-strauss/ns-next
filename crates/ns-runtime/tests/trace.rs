@@ -1401,10 +1401,15 @@ fn the_queue_is_empty_after_a_run() {
 
 /// `tests/jit.rs`'s program of the same name: `Cell`, applied once over
 /// `Narrow` and once over `Wide`, its lazy getter `step` customized per
-/// receiver application under the optimize stress mode.
-#[cfg(debug_assertions)]
+/// receiver application under the optimize stress mode; and `collect`,
+/// the program's own full collection, which a build without debug
+/// assertions has no host's for.
 const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
-    class Subject = Object new () (
+    class Subject usingPlatform: platform = Object new (
+      |
+        kernel = platform kernel.
+      |
+    ) (
       class Narrow = Object new () ()
 
       class Wide = Object new (
@@ -1442,6 +1447,10 @@ const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
         ].
         ^sum.
       )
+
+      public collect = (
+        kernel garbageCollect.
+      )
     ) : ()
 "};
 
@@ -1450,7 +1459,6 @@ const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
 /// the key's class as it was before the id was freed -- never `#<id>`,
 /// which the flush after the collection would find for an id no
 /// application holds.
-#[cfg(debug_assertions)]
 #[test]
 fn a_reclaimed_id_s_invalidation_names_its_class() {
     let module = ns_syntax::parse(ONE_MIXIN_OVER_TWO_BASES).expect("parse");
@@ -1466,19 +1474,27 @@ fn a_reclaimed_id_s_invalidation_names_its_class() {
     interpreter.set_jit_stress(true);
     interpreter.set_optimize_stress(true);
     // Each would free the copies, or reclaim the id, before the
-    // collection this test makes.
-    interpreter.set_stress_breakpoints(false);
-    interpreter.set_stress_step(false);
-    interpreter.set_stress_zone(false);
-    interpreter.set_stress_collect(false);
-    interpreter.set_stress_suspend(false);
+    // collection this test makes; a build without debug assertions has
+    // none of them.
+    #[cfg(debug_assertions)]
+    {
+        interpreter.set_stress_breakpoints(false);
+        interpreter.set_stress_step(false);
+        interpreter.set_stress_zone(false);
+        interpreter.set_stress_collect(false);
+        interpreter.set_stress_suspend(false);
+    }
     interpreter.set_trace(
         TraceCategories::default().with(TraceCategory::Deoptimize),
         TraceFilter::everything(),
         Box::new(Collector(Rc::clone(&events))),
     );
     let class = interpreter.load_module(&resolved);
-    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let subject = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
     expect_ok(
         interpreter.send(&subject, Symbol::intern("bases"), &[]),
         "bases",
@@ -1493,7 +1509,11 @@ fn a_reclaimed_id_s_invalidation_names_its_class() {
             "sumOf:",
         );
     }
-    interpreter.collect_now();
+    // Served at the safepoint of `collect`'s return.
+    expect_ok(
+        interpreter.send(&subject, Symbol::intern("collect"), &[]),
+        "collect",
+    );
     // A run's return delivers what the collection recorded.
     expect_ok(
         interpreter.send(&subject, Symbol::intern("bases"), &[]),
