@@ -293,6 +293,72 @@ pub(in crate::jit) fn emit(
     })
 }
 
+/// The instruction a node of a block of `scope` lowers, if it lowers one
+/// of its own -- a fast path, an inlined callee's check, a frame node --
+/// rather than a part of the instruction before it.
+fn node_position(node: &Node, scope: ScopeId) -> Option<(ScopeId, u32)> {
+    match node {
+        Node::Frame {
+            scope,
+            program_counter,
+            ..
+        } => Some((*scope, *program_counter)),
+        Node::IntegerBinary {
+            program_counter, ..
+        }
+        | Node::FloatOperation {
+            program_counter, ..
+        }
+        | Node::IdentityCompare {
+            program_counter, ..
+        }
+        | Node::IndexedLoad {
+            program_counter, ..
+        }
+        | Node::IndexedStore {
+            program_counter, ..
+        }
+        | Node::TrapIfNil {
+            program_counter, ..
+        } => Some((scope, *program_counter)),
+        Node::FrameRead { .. }
+        | Node::Constant { .. }
+        | Node::Receiver { .. }
+        | Node::Copy { .. }
+        | Node::OwnSlotLoad { .. }
+        | Node::CurrentClass { .. }
+        | Node::ResetOwnSlotGuard
+        | Node::Overlay { .. }
+        | Node::FieldLoad { .. }
+        | Node::FieldStore { .. }
+        | Node::ClassOf { .. }
+        | Node::EliminatedBlock { .. } => None,
+    }
+}
+
+/// The instruction a block of `scope`'s end lowers, if it lowers one of
+/// its own: a conditional's test, a send's trap or type-case.
+fn end_position(end: &End, scope: ScopeId) -> Option<(ScopeId, u32)> {
+    match end {
+        End::Branch {
+            program_counter, ..
+        }
+        | End::Trap {
+            program_counter, ..
+        } => Some((scope, *program_counter)),
+        End::TypeCase {
+            program_counter,
+            scope,
+            ..
+        } => Some((*scope, *program_counter)),
+        End::Jump(_)
+        | End::Return { .. }
+        | End::ReturnUnlessNil { .. }
+        | End::Frame
+        | End::FrameJump { .. } => None,
+    }
+}
+
 /// The positions an annotating emitter records: a label bound wherever
 /// the code's position changes, so that a listing names the scope and
 /// the instruction each stretch of code lowers. A label emits no byte.
@@ -511,12 +577,19 @@ impl Emitter<'_> {
         self.moves(body, positions.phi_definition(block_id));
         for (index, node) in block.nodes.iter().enumerate() {
             let use_position = positions.node_use(block_id, index);
+            // The moves into a node's operands are its instruction's.
+            if let Some(position) = node_position(node, block.scope) {
+                self.record_position(body, Some(position));
+            }
             self.hold(body, use_position);
             self.moves(body, use_position);
             self.node(body, block_id, index, node, use_position);
             self.moves(body, use_position + 1);
         }
         let end_use = positions.end_use(block_id);
+        if let Some(position) = end_position(&block.end, block.scope) {
+            self.record_position(body, Some(position));
+        }
         self.hold(body, end_use);
         self.moves(body, end_use);
         self.end(body, block_id, next, end_use);
@@ -1465,6 +1538,12 @@ impl Emitter<'_> {
     fn emit_traps(&mut self, body: &mut BodyAssembler) {
         for trap in std::mem::take(&mut self.traps) {
             body.macro_assembler.assembler().bind(trap.label);
+            let innermost = &self.metadata.points[trap.point].scopes[0];
+            debug_assert_eq!(
+                (trap.scope, trap.program_counter),
+                (innermost.scope, innermost.program_counter),
+                "internal: a trap runs again the instruction its point stops at"
+            );
             self.record_position(body, Some((trap.scope, trap.program_counter)));
             body.macro_assembler.assume_frame_shift(trap.shift);
             for (register, from) in trap.stores {

@@ -6613,7 +6613,8 @@ fn optimize(
 /// when the tree was taken at this safepoint, so that the listing holds
 /// it whatever becomes of its code id before the flush names it; `None`
 /// for a copy one of whose scopes' bodies the heap no longer names, which
-/// no compile at the tree's safepoint meets.
+/// no compile at the tree's safepoint meets: `optimized_metadata` refuses
+/// such a copy, and a debug build says so.
 #[cfg(ns_jit)]
 fn optimized_listing(
     mutator: &Mutator<'_>,
@@ -6630,9 +6631,14 @@ fn optimized_listing(
                 .iter()
                 .skip(1)
                 .map(|scope| {
+                    let code = mutator.heap.code(scope.code_id);
+                    debug_assert!(
+                        code.is_some(),
+                        "internal: an inlined scope's body is registered while its copy installs"
+                    );
                     Some(PendingScope {
                         number: scope.number,
-                        code: mutator.heap.code(scope.code_id)?,
+                        code: code?,
                         parent: scope.parent,
                     })
                 })

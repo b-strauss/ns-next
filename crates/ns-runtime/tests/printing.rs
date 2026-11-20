@@ -717,6 +717,43 @@ mod code {
             "a stretch of code in `balance`'s scope: {:?}",
             listing.positions
         );
+        // Every fast path of the body's own -- `index < …`, `sum + …` and
+        // `index + 1`, the last two past `balance`'s scope -- names its
+        // own instruction where the straight line runs it, before the
+        // code of a later instruction, not only at its trap out of line,
+        // which follows all of them.
+        let program_counters: Vec<u32> = listing
+            .positions
+            .iter()
+            .filter_map(|(_, position)| match position {
+                Position::Instruction {
+                    scope: 0,
+                    program_counter,
+                } => Some(*program_counter),
+                _ => None,
+            })
+            .collect();
+        let fast_paths: Vec<u32> = (0u32..)
+            .zip(&root.instructions)
+            .filter(|(_, line)| line.contains("IntegerBinary"))
+            .map(|(program_counter, _)| program_counter)
+            .collect();
+        assert!(fast_paths.len() >= 3, "{:?}", root.instructions);
+        for fast_path in fast_paths {
+            let in_line = program_counters
+                .iter()
+                .position(|program_counter| *program_counter == fast_path)
+                .is_some_and(|index| {
+                    program_counters[index + 1..]
+                        .iter()
+                        .any(|later| *later > fast_path)
+                });
+            assert!(
+                in_line,
+                "s0@{fast_path} in the straight line: {:?}",
+                listing.positions
+            );
+        }
         assert_eq!(
             listing.positions.first().map(|(offset, _)| *offset),
             Some(0)
