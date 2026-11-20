@@ -8481,7 +8481,29 @@ Windows x64, `tests/debug_adapter.rs` `nsNext/frameCode` and
 `tests/mcp.rs` `debug_code`.
 
 The commit gates passed on every commit (`commit`, with `codegen` where
-its files changed).
+its files changed). The end-of-batch gates passed on the final tree,
+after `release-checks` found that three of the stage's tests did not
+compile without debug assertions (`8b00a56c`) and `stress` that the
+plan and frame-code tests needed the cache, zone and collect stress
+modes off (`887f023f`):
+- `images` 2,196 tests;
+- `caches` 549;
+- `benchmarks` 177;
+- `release-checks` 7,598, with both lints;
+- `codegen`, every budget held, its counts unchanged;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,854 tests each (WIDE 5,657), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups ran too, since the JIT's annotations and `ns-cli`'s
+decoders are platform-dependent: `linux` 5,736 tests, the doctests and
+101 benchmark programs, after its clippy found the pinned listing's
+program dead on Linux (`2d06e68d`) and its suite that the containers
+reaped no orphan, so that `killing_the_server_ends_its_program` saw its
+program a zombie (`3f131ea4`, `docker run --init`); and `aarch64` 5,736
+tests under QEMU, `listing/aarch64.rs` compiled and run there for the
+first time.
 
 - `b618dffd`, `f26a9b45` -- the decisions and the plan
   (`docs/superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md`).
@@ -8497,7 +8519,9 @@ its files changed).
   the formats.
 - `137804cd`, `88bbbabb` -- the debugger answers a stopped frame's code.
 - `c145f544` -- `nsNext/frameCode` and the MCP tool `debug_code`.
-- the documentation commit after them.
+- `d927a55d` -- the documentation.
+- `8b00a56c`, `887f023f`, `2d06e68d`, `3f131ea4` -- what the gates of
+  the batch's end found, and the gate results after them.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
 shell, next; the stress modes never asking a frame's code; the
