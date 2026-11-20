@@ -217,12 +217,12 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             );
             // Each reason with its count, `<reason>:<count>`, joined by
             // commas: one value, which no space splits.
-            let reasons = reasons
+            let spelled = reasons
                 .iter()
                 .map(|(reason, count)| format!("{}:{count}", reason.name()))
                 .collect::<Vec<_>>()
                 .join(",");
-            fields.value("reasons", reasons);
+            fields.value("reasons", spelled);
         }
         TraceEventKind::Retired {
             key,

@@ -658,8 +658,10 @@ impl Deferral {
     }
 }
 
-/// Why the inlining plan sent a callee rather than inline it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why the inlining plan sent a callee rather than inline it. Ordered
+/// as declared: the order a folded decline counts them in
+/// (`TraceEventKind::InlineDeclinedNoBody`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InlineDecline {
     /// The tree holds no body of the callee to inline: a method past
     /// what the limits allow where it is sent, a nested class's accessor,
@@ -696,25 +698,6 @@ pub enum InlineDecline {
 }
 
 impl InlineDecline {
-    /// Every reason, in declaration order: the order a folded decline
-    /// counts them in (`TraceEventKind::InlineDeclinedNoBody`). A new
-    /// reason joins it in its place, which `every_reason_in_its_place`
-    /// checks.
-    pub const ALL: [InlineDecline; 12] = [
-        InlineDecline::NotSnapshotted,
-        InlineDecline::NotExpressed,
-        InlineDecline::ReturnsOtherwise,
-        InlineDecline::UnknownLazyField,
-        InlineDecline::Observed,
-        InlineDecline::ReachesPastTheCompile,
-        InlineDecline::BlockEscapes,
-        InlineDecline::CreatesABlock,
-        InlineDecline::OverWeight,
-        InlineDecline::OverCompileLimit,
-        InlineDecline::OverRecursionLimit,
-        InlineDecline::OutOfRegisters,
-    ];
-
     /// The reason's name, as a line spells it: kebab case.
     pub fn name(self) -> &'static str {
         match self {
@@ -734,17 +717,14 @@ impl InlineDecline {
     }
 
     /// `reasons` counted, in declaration order, each count above zero:
-    /// what a folded decline holds.
+    /// what a folded decline holds. Counted by the reasons' order, never
+    /// by an index, so that no reason can fall outside the count.
     pub(crate) fn counted(reasons: impl IntoIterator<Item = InlineDecline>) -> Vec<(Self, u32)> {
-        let mut counts = [0u32; InlineDecline::ALL.len()];
+        let mut counts = std::collections::BTreeMap::new();
         for reason in reasons {
-            counts[reason as usize] += 1;
+            *counts.entry(reason).or_insert(0u32) += 1;
         }
-        InlineDecline::ALL
-            .into_iter()
-            .zip(counts)
-            .filter(|&(_, count)| count > 0)
-            .collect()
+        counts.into_iter().collect()
     }
 }
 
@@ -1739,15 +1719,6 @@ mod tests {
     /// A body of its own for each test's events.
     fn body() -> Rc<CompiledCode> {
         Rc::new(crate::compiler::factory_body(3))
-    }
-
-    /// `InlineDecline::ALL` holds every reason once, each at the place
-    /// its declaration gives it, so that the counts follow it.
-    #[test]
-    fn every_reason_in_its_place() {
-        for (index, reason) in InlineDecline::ALL.into_iter().enumerate() {
-            assert_eq!(reason as usize, index, "{}", reason.name());
-        }
     }
 
     /// Declines are counted by reason in declaration order, whatever

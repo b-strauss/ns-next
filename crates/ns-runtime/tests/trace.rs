@@ -709,11 +709,32 @@ fn declines_of_no_body_are_folded_per_copy() {
         },
     );
     let run = about(&events, "Test>>run");
-    let optimized = run
+    assert!(
+        run.iter()
+            .any(|event| matches!(event.kind, TraceEventKind::Optimized { .. })),
+        "{events:?}"
+    );
+    // Every compile that made a plan traces its decisions, installed or
+    // not: an installed copy, a refusal after planning -- every refusal
+    // but too many instructions, which comes before the plan -- and a
+    // zone without room, which defers.
+    let planned = run
         .iter()
-        .filter(|event| matches!(event.kind, TraceEventKind::Optimized { .. }))
+        .filter(|event| {
+            matches!(
+                event.kind,
+                TraceEventKind::Optimized { .. }
+                    | TraceEventKind::OptimizationDeferred {
+                        reason: Deferral::ZoneFull,
+                        ..
+                    }
+            ) || matches!(
+                event.kind,
+                TraceEventKind::OptimizationRefused { reason, .. }
+                    if reason != CompileRefusal::TooManyInstructions
+            )
+        })
         .count();
-    assert!(optimized > 0, "{events:?}");
     let folded: Vec<&Vec<(InlineDecline, u32)>> = run
         .iter()
         .filter_map(|event| match &event.kind {
@@ -721,7 +742,7 @@ fn declines_of_no_body_are_folded_per_copy() {
             _ => None,
         })
         .collect();
-    assert_eq!(folded.len(), optimized, "one per copy: {events:?}");
+    assert_eq!(folded.len(), planned, "one per planned compile: {events:?}");
     for reasons in &folded {
         // `Account` and `new`, which ran once before the loop, and the
         // string's `==` leaf, in declaration order.
