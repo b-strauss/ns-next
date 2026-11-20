@@ -3658,17 +3658,20 @@ program's subclass of `String` as an argument, the error of a
 ## Missing tests
 
 - **The trace's rarer events end to end** (noted 2026-11-20, with the
-  trace's stage 1). No test runs a program to `[optimize] … not-due` --
-  a recompilee whose copy was settled between the walk and the due
-  check -- nor to `[code-zone] … freed … cause=refused-for-its-twin`
-  (`FreeCause::RefusedForItsTwin`), nor to `[optimize] … dropped` -- a
-  request an edit or a reclaimed id drops in the window between the
-  leaf that recorded it and the safepoint that would compile it -- nor
-  to `[osr] … osr-refused` or `[compile] … held-twin`, which need a
-  reified frame whose twin the exhausted zone holds, or a frame of
-  another feedback base, at a loop's head; these lines are pinned only
-  by the line format's unit test. Nor does a plugin test cover the runtime
-  options with the Benchmark command, or a blank field stored as none.
+  trace's stage 1). No test runs a program to `[optimize] … not-due`:
+  the walk's `recompilable` and `optimization_due` read the same
+  settled state, and nothing between them settles a copy, so no
+  program reaches it today. Nor to `[osr] … osr-refused` for a reason
+  other than `twin-held` (`other-feedback-base`, `no-machine-code`,
+  `no-entry`, `native-stack-full`), nor to `[optimize] … dropped` for
+  an edit -- the install leaf is reached only through sends, each a
+  safepoint that compiles the pending requests first -- or, in a build
+  without debug assertions, for a reclaimed id: only a host's
+  collection between runs (`Interpreter::collect_now`, debug builds
+  only) falls between the run-out that records a request and the
+  safepoint that compiles it. These are pinned only by the line
+  format's unit test. Nor does a plugin test cover the runtime options
+  with the Benchmark command, or a blank field stored as none.
   On a target without a JIT the CLI's and the MCP server's trace tests
   return without asserting anything and without saying so
   ([developer-tool.md](design/developer-tool.md), "Tests").

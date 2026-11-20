@@ -392,8 +392,19 @@ breakpoint's name; each refusal names the pattern.
 as `tests/jit.rs` does (`#![cfg(ns_jit)]`, the JIT on, a stress mode
 that would defeat what a test pins switched off by its debug-only
 setter), and names the events that must occur, never a complete
-sequence, so that a changed threshold breaks only what it changes; the
-plan's declines are unit tests in `jit/optimizing/plan.rs`, the filter's
+sequence, so that a changed threshold breaks only what it changes. The
+rarer events run there too: a twin no empty zone holds
+(`refused-for-its-twin`, and its `freed`), a twin the exhausted zone
+holds (`held-twin`) and the reified frame that therefore does not
+switch at its loop's head (`osr-refused reason=twin-held`), each in a
+zone sized from the bytes a run with room measured, so that the tests
+hold on every architecture; and a pending request a collection between
+runs drops for a reclaimed id (`dropped`), in a build with debug
+assertions only, since only a host's collection
+(`Interpreter::collect_now`) falls between the run-out that records a
+request and the safepoint that compiles it. What no test reaches is
+[OPEN-WORK.md](../OPEN-WORK.md)'s "The trace's rarer events end to
+end". The plan's declines are unit tests in `jit/optimizing/plan.rs`, the filter's
 and the names' in their modules. The line format is pinned by
 `crates/ns-cli/src/trace.rs`'s unit tests, `--trace` and its refusals by
 `crates/ns-cli/tests/cli.rs`, `debug_start`'s trace by
