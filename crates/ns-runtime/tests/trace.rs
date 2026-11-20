@@ -1402,6 +1402,7 @@ fn the_queue_is_empty_after_a_run() {
 /// `tests/jit.rs`'s program of the same name: `Cell`, applied once over
 /// `Narrow` and once over `Wide`, its lazy getter `step` customized per
 /// receiver application under the optimize stress mode.
+#[cfg(debug_assertions)]
 const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
     class Subject = Object new () (
       class Narrow = Object new () ()

@@ -57,12 +57,11 @@ use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBas
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 use crate::trace_events::{
-    CompileRefusal, CompileTrigger, HoldReason, Pending, PendingKind, Revival, TraceCategory,
+    CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, Revival,
+    TraceCategory,
 };
 #[cfg(ns_jit)]
-use crate::trace_events::{
-    Deferral, FreeCause, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason,
-};
+use crate::trace_events::{Deferral, FreeCause, InvalidationCause, RecompileWalkEnd, RetireReason};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
