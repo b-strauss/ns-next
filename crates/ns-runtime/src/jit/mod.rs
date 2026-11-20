@@ -5084,12 +5084,18 @@ pub(crate) fn frame_code_listing(
         copy,
     )
     .ok()?;
-    let mark = body
+    // A send's template makes one call, whose return is where the frame
+    // goes on; a second would leave the mark ambiguous.
+    let mut returns = body
         .map
         .returns
         .iter()
-        .find(|call| call.program_counter == program_counter)?
-        .machine_offset;
+        .filter(|call| call.program_counter == program_counter);
+    let mark = returns.next()?.machine_offset;
+    debug_assert!(
+        returns.next().is_none(),
+        "internal: one call of a body returns into the send at a program counter"
+    );
     let mut captured = captured_code(&assembled, tier);
     let zone = state.zone.as_ref()?;
     let code_end = captured.code_end;

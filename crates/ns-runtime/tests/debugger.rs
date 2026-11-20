@@ -3125,12 +3125,15 @@ ns_runtime::for_each_lowering! {
 }
 
 /// `run` sends `caller:` three times, each sending `sum:`, whose last
-/// statement stands after a send of its own; `warm` sends `caller:` 2,000
-/// times.
+/// statement stands after a send of its own, and `runClosing` sends
+/// `closing:` so, which makes a block with a non-local return before it
+/// sends `sum:`; `warm` sends both 2,000 times.
 const FRAME_CODE: &str = indoc! {"
     class Demo = Object new () (
       public warm = (
-        1 to: 2000 do: [:index | self caller: index].
+        1 to: 2000 do: [:index |
+          self caller: index.
+          self closing: index].
         ^0
       )
       public run = (
@@ -3138,8 +3141,20 @@ const FRAME_CODE: &str = indoc! {"
         self caller: 2.
         ^self caller: 3
       )
+      public runClosing = (
+        self closing: 1.
+        self closing: 2.
+        ^self closing: 3
+      )
       caller: value = (
         ^(self sum: value) + 1
+      )
+      closing: value = (
+        | block |
+        block:: [:given |
+          given < 0 ifTrue: [^0].
+          given].
+        ^(self sum: (block value: value)) + 1
       )
       sum: value = (
         | total |
@@ -3166,20 +3181,36 @@ fn frame_code(remote: &DebugRemote, frame: usize) -> (String, String, Option<Box
 }
 
 /// The index of the instruction `bytecode`'s marked line lists: the one
-/// line that begins `->`.
+/// line whose first word, its index, is followed by `->`.
 fn marked_index(bytecode: &str) -> usize {
     let marked: Vec<&str> = bytecode
         .lines()
-        .filter(|line| line.starts_with("->"))
+        .filter_map(|line| line.split_whitespace().next()?.strip_suffix("->"))
         .collect();
-    let [line] = marked[..] else {
+    let [index] = marked[..] else {
         panic!("one marked line was expected in {bytecode}");
     };
-    line[2..]
-        .split_whitespace()
-        .next()
-        .and_then(|index| index.parse().ok())
-        .unwrap_or_else(|| panic!("the marked line {line} names its index"))
+    index
+        .parse()
+        .unwrap_or_else(|_| panic!("the marked line's index {index} is a number"))
+}
+
+/// A mark at an index of 100 or more is read as one below it is, and a
+/// `MakeClosure`'s trailing arrow is no mark.
+#[test]
+fn a_mark_past_index_99_is_read() {
+    let wide = indoc! {"
+        method m (args 0, registers 1)
+          99   stmt 0  LoadSelf r0
+         100-> stmt 0  LoadSelf r0
+    "};
+    assert_eq!(marked_index(wide), 100);
+    let closing = indoc! {"
+        method m (args 0, registers 2)
+           0   stmt 0  MakeClosure r1, [] ->
+           7->      -  ImplicitReturn r1
+    "};
+    assert_eq!(marked_index(closing), 7);
 }
 
 ns_runtime::for_each_lowering! {
@@ -3241,78 +3272,106 @@ fn frame_code_past_the_stack_is_refused() {
 
 /// A caller entered in machine code, waiting on a send whose callee stops
 /// at a breakpoint, goes on in its baseline code: its frame answers that
-/// code, marked at the return of the call it waits on. The breakpoint
-/// stops at its third hit, so that the callee, whose code its patch
-/// freed, is compiled again and called from the caller's code, rather
-/// than sent by the caller's exit.
+/// code, marked at the return of the call it waits on.
 #[cfg(ns_jit)]
 #[test]
 fn a_caller_in_machine_code_lists_it() {
+    let listing = caller_listing("run", "Demo>>caller:");
+    assert_eq!(listing.tier, CodeTier::Baseline);
+}
+
+/// A caller whose `MakeClosure` moved its frame into its body's twin,
+/// which reifies it, goes on in the twin: its frame answers the twin's
+/// code.
+#[cfg(ns_jit)]
+#[test]
+fn a_caller_in_its_twin_lists_the_twin() {
+    let listing = caller_listing("runClosing", "Demo>>closing:");
+    assert_eq!(listing.tier, CodeTier::Twin);
+}
+
+/// The listing `FrameCode` answers for frame 1, which runs `caller`, when
+/// `FRAME_CODE`'s `selector` stops at the breakpoint in `sum:`, every body
+/// warmed into machine code first; checked for what every frame's listing
+/// holds, its tier left to the test. The breakpoint stops at its third
+/// hit, so that `sum:`, whose code its patch freed, is compiled again and
+/// called from the caller's code, rather than sent by the caller's exit.
+#[cfg(ns_jit)]
+fn caller_listing(selector: &str, caller: &str) -> Box<CodeListing> {
     let (mut interpreter, instance, _) = compiled(FRAME_CODE, Lowering::Optimized);
     interpreter.set_jit_enabled(true);
     interpreter.set_stress_breakpoints(false);
     interpreter.set_stress_step(false);
     assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 0);
     let offset = line_start(FRAME_CODE, "^total + 0");
-    let ((), result) = debugged_in(
-        &mut interpreter,
-        &instance,
-        |remote| {
-            let breakpoint = LineBreakpoint {
-                hit_condition: Some(HitCondition::Equal(3)),
-                ..LineBreakpoint::at_offset(offset)
-            };
-            set_line_breakpoints(remote, "Demo", vec![breakpoint]);
-        },
+    let remote = interpreter.attach_debugger();
+    let breakpoint = LineBreakpoint {
+        hit_condition: Some(HitCondition::Equal(3)),
+        ..LineBreakpoint::at_offset(offset)
+    };
+    set_line_breakpoints(&remote, "Demo", vec![breakpoint]);
+    let ((frame, body, bytecode, machine), result, _) = debugged_by(
+        remote,
         |remote| {
             resolved(&expect_breakpoints(remote, "Demo"));
             expect_breakpoint_stop(remote);
             let frames = stack_trace(remote);
-            assert!(frames[1].name.ends_with("Demo>>caller:"), "{frames:?}");
             let (body, bytecode, machine) = frame_code(remote, 1);
-            assert_eq!(body, frames[1].name);
-            let waiting = frames[1].program_counter;
-            assert_eq!(marked_index(&bytecode), waiting);
-            let listing = machine.expect("the caller goes on in machine code");
-            assert_eq!(listing.body, body);
-            assert_eq!(listing.tier, CodeTier::Baseline);
-            assert_eq!(listing.key, None);
-            assert_eq!(listing.scopes.len(), 1);
-            let mark = listing.mark.expect("the listing marks the return");
-            assert!(mark > 0 && mark <= listing.code_end, "{mark}");
-            // The return lies in the code of the send the frame waits on.
-            let standing = listing
-                .positions
-                .iter()
-                .filter(|(position_offset, _)| *position_offset < mark)
-                .filter_map(|(_, position)| match position {
-                    Position::Instruction {
-                        scope: 0,
-                        program_counter,
-                    } => Some(*program_counter as usize),
-                    _ => None,
-                })
-                .next_back();
-            assert_eq!(standing, Some(waiting));
-            assert!(
-                listing
-                    .words
-                    .iter()
-                    .all(|(word_offset, _)| *word_offset >= listing.code_end),
-                "every data word lies past the code"
-            );
-            for (word_offset, _) in &listing.words {
-                let start = *word_offset as usize;
-                assert_eq!(
-                    listing.bytes[start..start + 8],
-                    [0; 8],
-                    "a data word is zeroed"
-                );
-            }
             continue_stopped(remote);
+            (frames[1].clone(), body, bytecode, machine)
         },
+        || interpreter.send(&instance, Symbol::intern(selector), &[]),
     );
     assert_eq!(answered(&mut interpreter, result), 7);
+    assert!(frame.name.ends_with(caller), "{frame:?}");
+    assert_eq!(body, frame.name);
+    let waiting = frame.program_counter;
+    assert_eq!(marked_index(&bytecode), waiting);
+    // The listing depends on the caller having stopped in machine code,
+    // which rests on the JIT's thresholds: a failure says which of its
+    // decisions went otherwise.
+    let statistics = interpreter.jit_statistics();
+    let listing = machine.unwrap_or_else(|| {
+        panic!(
+            "{caller} did not stop in machine code: the breakpoint's third hit must reach \
+             `sum:` compiled again and called from its code: {statistics:?}"
+        )
+    });
+    assert_eq!(listing.body, body);
+    assert_eq!(listing.key, None);
+    assert_eq!(listing.scopes.len(), 1);
+    let mark = listing.mark.expect("the listing marks the return");
+    assert!(mark > 0 && mark <= listing.code_end, "{mark}");
+    // The return lies in the code of the send the frame waits on.
+    let standing = listing
+        .positions
+        .iter()
+        .filter(|(position_offset, _)| *position_offset < mark)
+        .filter_map(|(_, position)| match position {
+            Position::Instruction {
+                scope: 0,
+                program_counter,
+            } => Some(*program_counter as usize),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(standing, Some(waiting));
+    assert!(
+        listing
+            .words
+            .iter()
+            .all(|(word_offset, _)| *word_offset >= listing.code_end),
+        "every data word lies past the code"
+    );
+    for (word_offset, _) in &listing.words {
+        let start = *word_offset as usize;
+        assert_eq!(
+            listing.bytes[start..start + 8],
+            [0; 8],
+            "a data word is zeroed"
+        );
+    }
+    listing
 }
 
 /// `loop:` sums `Helper>>helper:` over its passes, a callee its optimized

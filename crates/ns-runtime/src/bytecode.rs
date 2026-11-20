@@ -1705,9 +1705,9 @@ pub fn disassemble(code: &CompiledCode, name: &str) -> String {
 
 /// `disassemble`'s listing with the instruction of the root body at the
 /// index `mark` -- a stopped frame's -- marked as wide as it was: `->` in
-/// place of its two leading spaces, or, at an index of 100 or more, `<-`
-/// in place of the two spaces after the index; every other line as
-/// `disassemble` writes it. A block's
+/// place of the two spaces after its four-column index (`   7->`,
+/// ` 100->`), at every index; every other line as `disassemble` writes
+/// it. A block's
 /// instruction is never marked: a mark names the body it was taken in.
 pub fn disassemble_marked(code: &CompiledCode, name: &str, mark: Option<u32>) -> String {
     let mut out = String::new();
@@ -1753,8 +1753,7 @@ pub fn instruction_lines(code: &CompiledCode) -> Vec<String> {
 }
 
 /// The line of `instruction`, at `index` of `code`, marked when `marked`:
-/// `->` in place of its two leading spaces below index 100, `<-` in place
-/// of the two spaces after the index from there on.
+/// `->` in place of the two spaces after the index.
 fn instruction_line(
     code: &CompiledCode,
     index: usize,
@@ -1767,15 +1766,10 @@ fn instruction_line(
         .find(|(_, range)| range.contains(&index))
         .map(|(statement_index, _)| format!("stmt {statement_index}"))
         .unwrap_or_else(|| "-".to_string());
-    // The marked line keeps the columns of the line it replaces, so that
-    // the listing reads as the unmarked one does: the arrow takes the
-    // index's two leading spaces, and from index 100 on, which leaves
-    // fewer, `<-` takes the two spaces after the index instead.
-    let label = match (marked, index < 100) {
-        (false, _) => format!("{index:4}  "),
-        (true, true) => format!("->{index:>2}  "),
-        (true, false) => format!("{index:4}<-"),
-    };
+    // The arrow takes the two spaces that always follow the index, so
+    // that a marked line keeps every column at every index.
+    let gap = if marked { "->" } else { "  " };
+    let label = format!("{index:4}{gap}");
     format!("{label}{statement:>7}  {}", format_instruction(instruction))
 }
 
@@ -2466,7 +2460,7 @@ method foo: (args 1, registers 4)
            1   stmt 0  NonLocalReturn r0
    1   stmt 0  SendPublic r2 <- r1 #value () @1
    2        -  LoadSelf r3
--> 3        -  ImplicitReturn r3
+   3->      -  ImplicitReturn r3
 ";
         assert_eq!(marked, expected_marked);
     }
@@ -2474,7 +2468,7 @@ method foo: (args 1, registers 4)
     /// The mark names an instruction of the root body: a block's
     /// instruction at the same index keeps its two spaces.
     #[test]
-    fn a_marked_instruction_begins_with_an_arrow() {
+    fn a_mark_names_an_instruction_of_the_root_body() {
         let block = Rc::new(CompiledCode::new(
             CodeKind::Block,
             vec![
@@ -2513,8 +2507,9 @@ method foo: (args 1, registers 4)
         for (index, (plain_line, marked_line)) in plain_lines.iter().zip(&marked_lines).enumerate()
         {
             if index == 2 {
-                assert_eq!(*marked_line, "-> 1   stmt 0  MakeClosure r1, [] ->");
-                assert_eq!(plain_line.get(2..), marked_line.get(2..));
+                assert_eq!(*marked_line, "   1-> stmt 0  MakeClosure r1, [] ->");
+                assert_eq!(plain_line.get(..4), marked_line.get(..4));
+                assert_eq!(plain_line.get(6..), marked_line.get(6..));
             } else {
                 assert_eq!(plain_line, marked_line, "line {index}");
             }
@@ -2523,9 +2518,7 @@ method foo: (args 1, registers 4)
     }
 
     /// A marked line is as wide as the line it replaces at every index:
-    /// below 100 the arrow takes the index's two leading spaces, from 100
-    /// on, which leave fewer, the arrow `<-` takes the two spaces after
-    /// the index.
+    /// the arrow takes the two spaces after the four-column index.
     #[test]
     fn a_marked_line_keeps_its_columns_at_every_index() {
         let mut instructions = vec![Instruction::LoadSelf { destination: 0 }; 1000];
@@ -2542,10 +2535,10 @@ method foo: (args 1, registers 4)
         let plain = disassemble(&code, "wide");
         let plain_lines: Vec<&str> = plain.lines().collect();
         for (mark, expected) in [
-            (7, "-> 7   stmt 0  LoadSelf r0"),
-            (99, "->99   stmt 0  LoadSelf r0"),
-            (100, " 100<- stmt 0  LoadSelf r0"),
-            (1000, "1000<- stmt 0  ImplicitReturn r0"),
+            (7, "   7-> stmt 0  LoadSelf r0"),
+            (99, "  99-> stmt 0  LoadSelf r0"),
+            (100, " 100-> stmt 0  LoadSelf r0"),
+            (1000, "1000-> stmt 0  ImplicitReturn r0"),
         ] {
             let marked = disassemble_marked(&code, "wide", Some(mark));
             let marked_lines: Vec<&str> = marked.lines().collect();
@@ -2559,7 +2552,7 @@ method foo: (args 1, registers 4)
             assert_eq!(
                 marked_lines
                     .iter()
-                    .filter(|candidate| candidate.contains("->") || candidate.contains("<-"))
+                    .filter(|candidate| candidate.get(4..6) == Some("->"))
                     .count(),
                 1,
                 "only the line at {mark} is marked"
