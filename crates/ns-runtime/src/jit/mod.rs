@@ -58,8 +58,8 @@ use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Muta
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 #[cfg(ns_jit)]
 use crate::trace_events::{
-    CodeTier, DataWord, Deferral, FreeCause, InvalidationCause, PendingCode, RecompileWalkEnd,
-    RetireReason,
+    CodeTier, DataWord, Deferral, FreeCause, InvalidationCause, PendingCode, PendingScope,
+    RecompileWalkEnd, RetireReason,
 };
 use crate::trace_events::{
     CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, PendingListing,
@@ -5027,6 +5027,7 @@ fn captured_code(body: &baseline::BaselineBody, tier: CodeTier) -> PendingCode {
         words,
         positions: body.positions.clone(),
         annotations: body.annotations.clone(),
+        scopes: Vec::new(),
     }
 }
 
@@ -6454,6 +6455,13 @@ fn optimize(
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
+    // The state's, not the baseline body's: a copy is listed if machine
+    // code is printed when it is compiled.
+    let settings = CompileSettings {
+        annotate: mutator.jit.tracer.prints_code(),
+        ..settings
+    };
+    macro_assembler.set_annotating(settings.annotate);
     // Under the invalidate stress mode the countdown's last point leaves
     // for the safepoint that runs its round (`invalidation_due_for_stress`).
     // The entry is a point of the countdown under both: a copy whose
@@ -6498,12 +6506,12 @@ fn optimize(
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
     if mutator.jit.tracer.traces(TraceCategory::Inlining)
-        && let Some(decisions) = decisions
+        && let Some(decisions) = decisions.as_ref()
     {
-        trace_inlining(mutator, code, key, &decisions);
+        trace_inlining(mutator, code, key, decisions);
     }
-    let index = match installation {
-        Ok(index) => index,
+    let (index, captured) = match installation {
+        Ok(installed) => installed,
         // No room is no reason to give the body up: as for a baseline
         // compile, the zone is compacted -- at this same safepoint, which
         // serves the compaction next -- and the body's budget armed
@@ -6572,6 +6580,12 @@ fn optimize(
             },
         ));
     }
+    // After the compile's event, which the listing follows.
+    if let Some(captured) = captured
+        && let Some(listing) = optimized_listing(mutator, index, captured, key, decisions.as_ref())
+    {
+        mutator.jit.tracer.record_listing(code, listing);
+    }
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its
@@ -6591,6 +6605,49 @@ fn optimize(
     if key.is_some() {
         rearm_optimization_budget(mutator, code, 0);
     }
+}
+
+/// The listing of the copy for `key` installed at `index`, captured as
+/// `captured`, with the tree of the scopes its plan, `decisions`, laid
+/// out: each inlined scope's body found in the heap, which registered it
+/// when the tree was taken at this safepoint, so that the listing holds
+/// it whatever becomes of its code id before the flush names it; `None`
+/// for a copy one of whose scopes' bodies the heap no longer names, which
+/// no compile at the tree's safepoint meets.
+#[cfg(ns_jit)]
+fn optimized_listing(
+    mutator: &Mutator<'_>,
+    index: u32,
+    captured: PendingCode,
+    key: Option<CustomizationKey>,
+    decisions: Option<&optimizing::PlanDecisions>,
+) -> Option<PendingListing> {
+    let scopes = decisions.map_or_else(
+        || Some(Vec::new()),
+        |decisions| {
+            decisions
+                .scopes
+                .iter()
+                .skip(1)
+                .map(|scope| {
+                    Some(PendingScope {
+                        number: scope.number,
+                        code: mutator.heap.code(scope.code_id)?,
+                        parent: scope.parent,
+                    })
+                })
+                .collect::<Option<Vec<PendingScope>>>()
+        },
+    )?;
+    let offset = CodeOffset(mutator.jit.bodies[index as usize].start);
+    Some(mutator.jit.installed_listing(
+        PendingCode {
+            key,
+            scopes,
+            ..captured
+        },
+        offset,
+    ))
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would
@@ -6674,10 +6731,12 @@ fn trace_inlining(
 /// `bodies`, compiled against `feedback_base` under `settings` for `key`
 /// (`None` for the body's one uncustomized copy), with what it keeps of
 /// its inlining, `metadata`, and what it relied on, `dependencies`,
-/// answering its index among the installed bodies. Its call returns are recorded
-/// as the baseline's are, so that a leaf and the exit's walk find the
-/// send each of its calls returns to; its program-counter map has no
-/// instruction's start, since no frame goes on mid-body in optimized code.
+/// answering its index among the installed bodies and, when machine code
+/// is printed, its listing but for its base address, key and scopes. Its
+/// call returns are recorded as the baseline's are, so that a leaf and
+/// the exit's walk find the send each of its calls returns to; its
+/// program-counter map has no instruction's start, since no frame goes
+/// on mid-body in optimized code.
 #[cfg(ns_jit)]
 fn install_optimized(
     state: &mut JitState,
@@ -6691,7 +6750,7 @@ fn install_optimized(
     ),
     optimized: optimizing::emit::OptimizedBody,
     (metadata, dependencies): (Option<Rc<OptimizedMetadata>>, CopyDependencies),
-) -> Result<u32, Refusal> {
+) -> Result<(u32, Option<PendingCode>), Refusal> {
     let optimizing::emit::OptimizedBody {
         code: assembled,
         returns,
@@ -6701,6 +6760,8 @@ fn install_optimized(
         deepest_chain,
         deepest_extent,
         polls,
+        annotations,
+        positions,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -6724,10 +6785,13 @@ fn install_optimized(
         twin_transfers,
         budget_word: None,
         dispatching: None,
-        annotations: Vec::new(),
-        positions: Vec::new(),
+        annotations,
+        positions,
     };
     let needed = needed_bytes(&body);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&body, CodeTier::Optimized));
     let index = install_body(
         state,
         code,
@@ -6754,7 +6818,7 @@ fn install_optimized(
     })?;
     state.bodies[index as usize].push_entry = push_entry;
     state.bodies[index as usize].key = key;
-    Ok(index)
+    Ok((index, captured))
 }
 
 /// What an install of optimized code takes beside its code: the lean

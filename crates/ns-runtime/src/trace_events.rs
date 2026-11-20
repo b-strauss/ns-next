@@ -32,13 +32,13 @@ use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
 pub use filter::TraceFilter;
-#[cfg(ns_jit)]
-pub(crate) use listings::PendingCode;
 pub(crate) use listings::PendingListing;
 pub use listings::{
     Annotation, Architecture, BytecodeListing, CodeListing, DataWord, ListedScope, Listing,
     Position,
 };
+#[cfg(ns_jit)]
+pub(crate) use listings::{PendingCode, PendingScope};
 use names::BodyNames;
 
 /// What a trace event is about, each switched on by its own flag.
@@ -1397,7 +1397,11 @@ fn listing_delivered(
         (Some(key), None) => Some(key_names(mutator, key)),
         (None, _) => None,
     };
-    Some(listing.delivered(&code, name, key))
+    let scope_names = listing
+        .scope_bodies()
+        .map(|scope| names.name(mutator, scope))
+        .collect();
+    Some(listing.delivered(&code, name, key, scope_names))
 }
 
 /// The event a pending event's kind delivers, its bodies and keys named --

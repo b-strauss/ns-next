@@ -12,6 +12,8 @@
 //! Nothing is tested at a push: the listing costs nothing where nothing
 //! asked for it.
 
+use std::rc::Rc;
+
 use crate::bytecode::{self, CompiledCode};
 use crate::jit::CustomizationKey;
 
@@ -82,8 +84,10 @@ pub struct CodeListing {
     /// What a call or jump out of the body at each offset reaches;
     /// ascending by offset.
     pub annotations: Vec<(u32, Annotation)>,
-    /// The scopes the positions name by number: a baseline body's one,
-    /// `s0`, the body itself.
+    /// The scopes the positions name by number, `s0` the body itself: a
+    /// baseline body's only one, and for an optimized copy each scope its
+    /// code lays out, numbered from 0 without a gap, each after the scope
+    /// it is inlined into -- the tree `--print-inlining` prints.
     pub scopes: Vec<ListedScope>,
     /// The offset a stopped frame's code stands at, in a frame's code the
     /// debugger answers; `None` in a listing printed at an install.
@@ -194,6 +198,18 @@ pub(crate) struct PendingCode {
     pub(crate) words: Vec<(u32, DataWord)>,
     pub(crate) positions: Vec<(u32, Position)>,
     pub(crate) annotations: Vec<(u32, Annotation)>,
+    /// The scopes an optimized copy inlined, `s1` on; empty for every
+    /// other code, whose one scope is its body's.
+    pub(crate) scopes: Vec<PendingScope>,
+}
+
+/// An inlined scope of a listing, its body not yet named: held as the
+/// body itself, never by its code id, which a full collection before the
+/// flush may give another body.
+pub(crate) struct PendingScope {
+    pub(crate) number: u32,
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) parent: Option<(u32, u32)>,
 }
 
 impl PendingListing {
@@ -204,21 +220,46 @@ impl PendingListing {
         }
     }
 
-    /// The listing of `code`, named `name`, its key named `key`.
+    /// The bodies of the listing's inlined scopes, in order.
+    pub(crate) fn scope_bodies(&self) -> impl Iterator<Item = &Rc<CompiledCode>> {
+        match self {
+            PendingListing::Code(code) => code.scopes.iter().map(|scope| &scope.code),
+        }
+    }
+
+    /// The listing of `code`, named `name`, its key named `key` and its
+    /// inlined scopes' bodies `scope_names`, in order.
     pub(crate) fn delivered(
         self,
         code: &CompiledCode,
         name: String,
         key: Option<(String, Option<String>)>,
+        scope_names: Vec<String>,
     ) -> Listing {
         match self {
             PendingListing::Code(pending) => {
-                let scope = ListedScope {
+                let root = ListedScope {
                     number: 0,
                     body: name.clone(),
                     parent: None,
                     instructions: bytecode::instruction_lines(code),
                 };
+                let inlined = pending.scopes.into_iter().zip(scope_names).map(
+                    |(
+                        PendingScope {
+                            number,
+                            code,
+                            parent,
+                        },
+                        body,
+                    )| ListedScope {
+                        number,
+                        body,
+                        parent,
+                        instructions: bytecode::instruction_lines(&code),
+                    },
+                );
+                let scopes = std::iter::once(root).chain(inlined).collect();
                 Listing::Code(CodeListing {
                     body: name,
                     tier: pending.tier,
@@ -230,7 +271,7 @@ impl PendingListing {
                     words: pending.words,
                     positions: pending.positions,
                     annotations: pending.annotations,
-                    scopes: vec![scope],
+                    scopes,
                     mark: None,
                 })
             }

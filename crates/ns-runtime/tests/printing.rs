@@ -283,7 +283,10 @@ mod code {
         Annotation, Architecture, CodeListing, CodeTier, DataWord, Listing, Position, Printing,
         TraceSettings,
     };
-    use ns_runtime::{Interpreter, Root, SourceOrigin, Symbol, TraceCategories, TraceFilter};
+    use ns_runtime::{
+        Interpreter, Root, SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent,
+        TraceEventKind, TraceFilter, TraceSink,
+    };
 
     use super::{Collector, expect_ok};
 
@@ -552,5 +555,250 @@ mod code {
             1,
             "the body the filter left out was compiled"
         );
+    }
+
+    /// A module whose `total`'s loop sends `balance` to an `Account` a
+    /// million times: its optimized copy inlines `balance`, a method with
+    /// a body of its own, as a scope.
+    const INLINING: &str = indoc! {"
+        class Demo = Object new () (
+          class Account = (
+            |
+              amount ::= 10.
+            |
+          ) (
+            public balance = (
+              | doubled = amount * 2. |
+              ^doubled - amount.
+            )
+          )
+
+          public total = (
+            |
+              account = Account new.
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 1000000] whileTrue: [
+              sum:: sum + account balance.
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+        )
+    "};
+
+    /// What a sink receives, in its order.
+    enum Received {
+        Event(TraceEvent),
+        Listing(Listing),
+    }
+
+    /// A sink that keeps every event and listing it receives, in order.
+    struct Recorder(Rc<RefCell<Vec<Received>>>);
+
+    impl TraceSink for Recorder {
+        fn event(&mut self, event: &TraceEvent) {
+            self.0.borrow_mut().push(Received::Event(event.clone()));
+        }
+
+        fn listing(&mut self, listing: &Listing) {
+            self.0.borrow_mut().push(Received::Listing(listing.clone()));
+        }
+    }
+
+    /// `INLINING`'s `total` run once with the JIT on, its budget the JIT's
+    /// own, tracing the optimize and inlining categories and printing the
+    /// machine code of `Demo>>total`: what the sink received.
+    fn optimized_total() -> Vec<Received> {
+        let module = ns_syntax::parse(INLINING).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            INLINING.into(),
+            SourceOrigin::File("demo.ns".into()),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        // On whatever the environment says, every body compiled at its
+        // second entry and optimized when its budget runs out: the
+        // listings are the JIT's installs, the plan made of what ran.
+        interpreter.set_jit_enabled(true);
+        interpreter.set_jit_stress(false);
+        interpreter.set_optimize_stress(false);
+        // Off whatever the environment says: a body the breakpoint or
+        // step stress mode patched loses its machine code at every
+        // statement, and the suspend stress mode serves a safepoint at
+        // the loop's backward jumps, so that the loop is never compiled.
+        #[cfg(debug_assertions)]
+        {
+            interpreter.set_stress_breakpoints(false);
+            interpreter.set_stress_step(false);
+            interpreter.set_stress_suspend(false);
+        }
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let received = Rc::new(RefCell::new(Vec::new()));
+        interpreter.set_trace(
+            TraceSettings {
+                categories: TraceCategories::default()
+                    .with(TraceCategory::Optimize)
+                    .with(TraceCategory::Inlining),
+                filter: TraceFilter::everything(),
+                printing: Printing {
+                    code: true,
+                    ..Printing::default()
+                },
+                print_filter: TraceFilter::parse(&["Demo>>total"]).expect("a valid filter"),
+            },
+            Box::new(Recorder(Rc::clone(&received))),
+        );
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("total"), &[]),
+            "total",
+        );
+        received.take()
+    }
+
+    /// The optimized listings of `Demo>>total` among `received`.
+    fn optimized_listings(received: &[Received]) -> Vec<CodeListing> {
+        received
+            .iter()
+            .filter_map(|item| match item {
+                Received::Listing(Listing::Code(code))
+                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                {
+                    Some(code.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_optimized_copy_lists_its_scopes() {
+        let received = optimized_total();
+        let listings = optimized_listings(&received);
+        let Some(listing) = listings.first() else {
+            panic!("the copy of `total` listed");
+        };
+        assert!(listing.code_end as usize <= listing.bytes.len());
+        let root = &listing.scopes[0];
+        assert_eq!(
+            (root.number, root.body.as_str(), root.parent),
+            (0, "Demo>>total", None)
+        );
+        let Some(balance) = listing
+            .scopes
+            .iter()
+            .find(|scope| scope.body == "Demo/Account>>balance")
+        else {
+            panic!("`balance` inlined as a scope: {:?}", listing.scopes);
+        };
+        let Some((0, program_counter)) = balance.parent else {
+            panic!("`balance` inlined into the body's own scope");
+        };
+        assert!(
+            root.instructions[program_counter as usize].contains("#balance"),
+            "inlined at the send of `balance`: {}",
+            root.instructions[program_counter as usize]
+        );
+        assert!(
+            !balance.instructions.is_empty(),
+            "the scope's instructions listed"
+        );
+        for (index, scope) in listing.scopes.iter().enumerate() {
+            assert_eq!(scope.number as usize, index, "the scopes numbered densely");
+        }
+        assert!(
+            listing.positions.iter().any(|(_, position)| matches!(
+                position,
+                Position::Instruction { scope, .. } if *scope == balance.number
+            )),
+            "a stretch of code in `balance`'s scope: {:?}",
+            listing.positions
+        );
+        assert_eq!(
+            listing.positions.first().map(|(offset, _)| *offset),
+            Some(0)
+        );
+        assert!(
+            listing
+                .positions
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 != pair[1].1),
+            "a position where the code's position changes: {:?}",
+            listing.positions
+        );
+        assert!(
+            listing.positions.iter().all(|(offset, position)| {
+                *offset < listing.code_end
+                    && match position {
+                        Position::Instruction {
+                            scope,
+                            program_counter,
+                        } => listing.scopes.get(*scope as usize).is_some_and(|listed| {
+                            (*program_counter as usize) < listed.instructions.len()
+                        }),
+                        Position::OutOfLine => true,
+                    }
+            }),
+            "{:?}",
+            listing.positions
+        );
+    }
+
+    #[test]
+    fn the_scopes_of_a_listing_are_the_plans() {
+        let received = optimized_total();
+        // The inlining events since the request, the plan of the compile
+        // the next `optimized` event installs.
+        let mut window = Vec::new();
+        let mut planned = None;
+        let mut compared = 0;
+        for item in &received {
+            match item {
+                Received::Event(event) if event.body.as_deref() == Some("Demo>>total") => {
+                    match &event.kind {
+                        TraceEventKind::Inlined {
+                            in_body,
+                            program_counter,
+                            callee,
+                            ..
+                        } => window.push((in_body.clone(), *program_counter, callee.clone())),
+                        TraceEventKind::Optimized { .. } => {
+                            planned = Some(std::mem::take(&mut window));
+                        }
+                        _ if event.category == TraceCategory::Optimize => window.clear(),
+                        _ => {}
+                    }
+                }
+                Received::Listing(Listing::Code(code))
+                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                {
+                    let Some(mut planned) = planned.take() else {
+                        panic!("the listing follows its compile's event");
+                    };
+                    let mut listed: Vec<(String, u32, String)> = code
+                        .scopes
+                        .iter()
+                        .filter_map(|scope| {
+                            let (parent, program_counter) = scope.parent?;
+                            Some((
+                                code.scopes[parent as usize].body.clone(),
+                                program_counter,
+                                scope.body.clone(),
+                            ))
+                        })
+                        .collect();
+                    planned.sort();
+                    listed.sort();
+                    assert!(!listed.is_empty(), "the copy inlines");
+                    assert_eq!(listed, planned);
+                    compared += 1;
+                }
+                _ => {}
+            }
+        }
+        assert!(compared > 0, "an optimized listing of `total`");
     }
 }
