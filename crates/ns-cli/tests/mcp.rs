@@ -40,7 +40,7 @@ const STRESS_MODES: [&str; 15] = [
 ];
 
 /// The tools and their parameters, the required ones first.
-const TOOLS: [(&str, &[&str], &[&str]); 16] = [
+const TOOLS: [(&str, &[&str], &[&str]); 17] = [
     (
         "debug_start",
         &["program"],
@@ -62,6 +62,7 @@ const TOOLS: [(&str, &[&str], &[&str]); 16] = [
     ("debug_pause", &[], &[]),
     ("debug_wait", &["seconds"], &[]),
     ("debug_stack", &[], &[]),
+    ("debug_code", &[], &["frame"]),
     (
         "debug_variables",
         &[],
@@ -448,6 +449,39 @@ fn a_step_and_an_evaluation_in_the_same_state() {
     assert_eq!(ended, "ended: exit status 0\noutput: \"82\\n\"");
     let refused = server.fail("debug_stack", json!({}));
     assert!(refused.contains("has ended"), "{refused}");
+}
+
+#[test]
+fn debug_code_answers_the_bytecode() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": location(&path, 5) }],
+        }),
+    );
+    let code = server.succeed("debug_code", json!({}));
+    assert!(
+        code.starts_with("--- bytecode {Counter>>main:args:}\n"),
+        "{code}"
+    );
+    assert!(
+        code.lines().any(|line| line
+            .split_whitespace()
+            .next()
+            .is_some_and(|word| word.ends_with("->") && word.len() > 2)),
+        "{code}"
+    );
+    // The top frame stands at the stop's safepoint, never at a call its
+    // machine code returns from.
+    assert!(
+        code.contains("--- end\nthe frame goes on in the interpreter"),
+        "{code}"
+    );
+    let refused = server.fail("debug_code", json!({ "frame": 9 }));
+    assert!(!refused.is_empty(), "{refused}");
 }
 
 /// A root that says it spins, then counts forever.

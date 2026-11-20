@@ -338,6 +338,38 @@ pub(crate) enum AlwaysInlined {
     Primitive(Primitive),
 }
 
+impl AlwaysInlined {
+    /// What the arm runs, as an inlining listing names it: kebab case, a
+    /// leaf by what the graph expresses it as.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            AlwaysInlined::SlotLoad { .. } => "getter",
+            AlwaysInlined::SlotStore { .. } => "setter",
+            AlwaysInlined::Constant(_) | AlwaysInlined::Receiver | AlwaysInlined::Parameter(_) => {
+                "quick"
+            }
+            AlwaysInlined::BuiltinClass(_) => "builtin-class",
+            AlwaysInlined::ValueOfParameter(_) => "value-of-parameter",
+            AlwaysInlined::CullParameter(_) => "cull-parameter",
+            AlwaysInlined::LazyGetter { .. } => "lazy-getter",
+            AlwaysInlined::Primitive(primitive) => match primitive {
+                Primitive::Object(ObjectPrimitive::Identical) => "identity",
+                Primitive::Object(ObjectPrimitive::Class) => "class",
+                Primitive::Collection(
+                    CollectionPrimitive::ElementAt | CollectionPrimitive::ElementAtPut,
+                )
+                | Primitive::Bytes(BytePrimitive::ElementAt | BytePrimitive::ElementAtPut) => {
+                    "indexed"
+                }
+                Primitive::Integer(_) => "integer",
+                _ if FloatOperation::of_primitive(primitive).is_some() => "float",
+                // No leaf the plan takes (`expressed`) is any other.
+                _ => "primitive",
+            },
+        }
+    }
+}
+
 /// What a site's send becomes.
 ///
 /// For a public send, a type-case: `arms` in the cache's order, one for
@@ -434,10 +466,12 @@ pub(crate) struct InliningPlan {
 }
 
 /// A callee the plan sent rather than inline: at the send at
-/// `program_counter` of the scope running `scope_code`, the body
-/// `callee`, `None` for one that is no body, declined for `reason`.
+/// `program_counter` of the scope `scope`, numbered as the plan's scopes
+/// are, running `scope_code`, the body `callee`, `None` for one that is
+/// no body, declined for `reason`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Declined {
+    pub(crate) scope: ScopeId,
     pub(crate) scope_code: CodeId,
     pub(crate) program_counter: u32,
     pub(crate) callee: Option<CodeId>,
@@ -1153,6 +1187,8 @@ impl<'tree> Planner<'tree> {
         self.declined.push((
             scope,
             Declined {
+                // Renumbered with the live scopes by `finish`.
+                scope,
                 scope_code,
                 program_counter,
                 callee,
@@ -2038,12 +2074,6 @@ impl<'tree> Planner<'tree> {
     /// The plan: the live scopes renumbered in order, their sites and
     /// blocks.
     fn finish(self, eliminated: &BTreeSet<BlockKey>) -> InliningPlan {
-        let declined = self
-            .declined
-            .iter()
-            .filter(|(scope, _)| self.scopes[scope.index()].alive)
-            .map(|(_, declined)| *declined)
-            .collect();
         let mut renumbered: Vec<Option<ScopeId>> = vec![None; self.scopes.len()];
         let mut next = 0_usize;
         for (index, scope) in self.scopes.iter().enumerate() {
@@ -2055,6 +2085,15 @@ impl<'tree> Planner<'tree> {
         let map = |scope: ScopeId| {
             renumbered[scope.index()].expect("internal: a live scope's relatives live")
         };
+        let declined = self
+            .declined
+            .iter()
+            .filter(|(scope, _)| self.scopes[scope.index()].alive)
+            .map(|(scope, declined)| Declined {
+                scope: map(*scope),
+                ..*declined
+            })
+            .collect();
         let mut scopes = Vec::with_capacity(next);
         let mut blocks = HashMap::new();
         let mut ids: HashMap<BlockKey, EliminatedId> = HashMap::new();
@@ -2539,6 +2578,7 @@ mod tests {
         assert_eq!(
             plan.declined,
             [Declined {
+                scope: ScopeId::ROOT,
                 scope_code: tree.root.code_id,
                 program_counter: send,
                 callee: Some(code_id_of(&mut interpreter, &class, "helper:")),
@@ -2555,8 +2595,15 @@ mod tests {
         let tree = tree_of(&mut interpreter, &class, "count:", &Limits::STANDARD);
         let plan = plan(&tree, Speculation::Traps);
         let send = send_of(&tree.root, "count:");
+        let inlined = plan
+            .scopes
+            .iter()
+            .position(|scope| scope.parent == Some((ScopeId::ROOT, send)))
+            .map(ScopeId::of_index)
+            .expect("the send inlined once");
         assert!(
             plan.declined.contains(&Declined {
+                scope: inlined,
                 scope_code: tree.root.code_id,
                 program_counter: send,
                 callee: Some(tree.root.code_id),
@@ -3474,11 +3521,13 @@ mod tests {
         callee: CodeId,
         reason: InlineDecline,
     ) -> bool {
-        plan.declined.contains(&Declined {
-            scope_code,
-            program_counter,
-            callee: Some(callee),
-            reason,
+        plan.declined.iter().any(|declined| {
+            (
+                declined.scope_code,
+                declined.program_counter,
+                declined.callee,
+                declined.reason,
+            ) == (scope_code, program_counter, Some(callee), reason)
         })
     }
 

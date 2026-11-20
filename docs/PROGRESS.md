@@ -67,7 +67,7 @@ first.
 | The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project; stage 5, evaluation and what rests on it -- an expression compiled as a block standing at a stopped frame's program counter and pushed above it, its depth reserve and its abort, setting a variable and the refusal of one a block may have copied, conditions and logpoints decided where the hit is counted, restart frame and force return through the one unwinder, smart step into, marks, the memory view and the shipped frames folded, in the VM, the DAP agent and the plugin, and `ns-next mcp`, through which an agent debugs a program | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name), 2026-11-17 (stage 5) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md), [debugger-stage-5](superpowers/plans/2026-11-16-2110-debugger-stage-5.md) |
 | Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
-| The developer tool: designed in nine decisions and three stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace` and the plugin's runtime options | Partial (stage 1 of 3) | 2026-11-20 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md) |
+| The developer tool: designed in fifteen decisions and three stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace` and the plugin's runtime options; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code` | Partial (stages 1 and 2 of 3) | 2026-11-20 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8420,7 +8420,110 @@ The Docker groups `linux` and `aarch64` were not run.
 - `040b9536` -- the plugin's runtime options.
 - `f6576a4b` and the documentation commit after it.
 
-What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 2,
-printing code, next, and stage 3, the shell; the rarer events untested
-end to end; the plugin's runtime options offered for `bench`; a plugin
-test that timed out once under load.
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
+shell, next; the rarer events untested end to end; the plugin's runtime
+options offered for `bench`; a plugin test that timed out once under
+load.
+
+## The developer tool's stage 2: printing code (2026-11-20)
+
+[developer-tool.md](design/developer-tool.md), decisions 10 to 15,
+"Stage 2: printing code"; [execution.md](design/execution.md), "The
+baseline JIT's foundation", where the macro assembler's annotations are
+described; [debugger.md](design/debugger.md), "Commands and events",
+"Launching, the start and the end", "The MCP server".
+
+Designed with the user on 2026-11-20, in six decisions: the second of
+the developer tool's three stages prints the code a run makes. Listings
+travel in the trace's one queue beside its events and reach the sink as
+values (`trace_events/listings.rs`): a body's bytecode at the first
+flush after its mixin joined the heap's tables, found by the index of
+new sides the trace's names keep, so that the boot's and the load's
+bodies print when the sink is installed and a shipped module built on
+demand or an installed edit at the next safepoint; every install's
+machine code -- baseline, twin and optimized -- captured at the install
+with its bytes, the data words zeroed, its base address, the bytecode
+each stretch lowers and what each call or jump out of it reaches, which
+the macro assembler records as labels only when a compile is asked to
+annotate, every byte unchanged; an optimized copy's tree of the scopes
+it lays out, each stretch naming its scope by number; and every
+optimizing compile's inlining plan -- its scopes, its type-case arms,
+the callees it sent and why -- with the copy installed or the reason it
+was refused. Nothing is tested on the hot path, the codegen budgets
+unchanged, and a release build prints.
+
+`ns-next run --print-bytecode`, `--print-code` and `--print-inlining`
+write each listing on standard error in one write between a head line
+`--- <kind> {<body>} …` and `--- end`, selected by `--print-filter`,
+the trace filter's patterns, refused with exit status 2 as they are.
+Machine code is decoded by `iced-x86` in Intel syntax on x64 and by
+`yaxpeax-arm` on AArch64, normal dependencies of `ns-cli` for its own
+architecture only, and written in offsets from the body's start -- a
+target in it `+0x…`, a data word `data+0x…`, a call out of it named
+`; leaf grow-stack`, `; cell site 0`, `; exit trap @9` -- so that two
+runs' listings differ only in the base address in the head. The
+debugger answers a stopped frame's code (`Command::FrameCode`): its
+bytecode marked at the instruction it stands at, and the baseline or
+twin code it goes on in, read from the zone and annotated by the same
+body assembled again, marked where its call returns; the agent's
+`nsNext/frameCode` and the MCP server's `debug_code` pass it on.
+`debug_start` takes no print option, since its answers keep the last
+2,000 characters of output.
+
+No golden, `run-corpus` outcome, image or instruction encoding changed;
+without the print options every program's output is what it was.
+`crates/ns-runtime/tests/printing.rs` pins the listings programs make,
+`annotating_changes_no_byte` every body's bytes with and without
+annotations under all three conventions, `tests/debugger.rs` a frame's
+code, `crates/ns-cli/src/listing.rs` the text of each kind,
+`tests/cli.rs` the options, their refusals and one whole listing on
+Windows x64, `tests/debug_adapter.rs` `nsNext/frameCode` and
+`tests/mcp.rs` `debug_code`.
+
+The commit gates passed on every commit (`commit`, with `codegen` where
+its files changed). The end-of-batch gates passed on the final tree,
+after `release-checks` found that three of the stage's tests did not
+compile without debug assertions (`8b00a56c`) and `stress` that the
+plan and frame-code tests needed the cache, zone and collect stress
+modes off (`887f023f`):
+- `images` 2,196 tests;
+- `caches` 549;
+- `benchmarks` 177;
+- `release-checks` 7,598, with both lints;
+- `codegen`, every budget held, its counts unchanged;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,854 tests each (WIDE 5,657), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups ran too, since the JIT's annotations and `ns-cli`'s
+decoders are platform-dependent: `linux` 5,736 tests, the doctests and
+101 benchmark programs, after its clippy found the pinned listing's
+program dead on Linux (`2d06e68d`) and its suite that the containers
+reaped no orphan, so that `killing_the_server_ends_its_program` saw its
+program a zombie (`3f131ea4`, `docker run --init`); and `aarch64` 5,736
+tests under QEMU, `listing/aarch64.rs` compiled and run there for the
+first time.
+
+- `b618dffd`, `f26a9b45` -- the decisions and the plan
+  (`docs/superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md`).
+- `c6ebeca8` -- listings in the trace's queue; bytecode printed when its
+  mixin is made.
+- `f41eb196`, `bfc729aa` -- baseline machine code captured at install,
+  annotated.
+- `e6c24de4`, `f85680be` -- an optimized copy's listing, its scopes and
+  their positions.
+- `e943fced` -- the inlining plan of every optimizing compile, with its
+  outcome.
+- `fbee496d`, `2a972a66` -- `ns-next run --print-*`, the decoders and
+  the formats.
+- `137804cd`, `88bbbabb` -- the debugger answers a stopped frame's code.
+- `c145f544` -- `nsNext/frameCode` and the MCP tool `debug_code`.
+- `d927a55d` -- the documentation.
+- `8b00a56c`, `887f023f`, `2d06e68d`, `3f131ea4` -- what the gates of
+  the batch's end found, and the gate results after them.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
+shell, next; the stress modes never asking a frame's code; the
+`inlining` category's and the plan's decline of every leaf the graph
+does not express; what the stage's reviews left.

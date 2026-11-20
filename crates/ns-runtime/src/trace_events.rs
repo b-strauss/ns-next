@@ -18,6 +18,7 @@
 //! while the id still names its class.
 
 mod filter;
+mod listings;
 mod names;
 
 use std::collections::HashMap;
@@ -31,6 +32,13 @@ use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
 pub use filter::TraceFilter;
+pub(crate) use listings::PendingListing;
+pub use listings::{
+    Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, DataWord, InliningListing,
+    InliningOutcome, ListedArm, ListedDecline, ListedScope, Listing, Position,
+};
+#[cfg(ns_jit)]
+pub(crate) use listings::{PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope};
 use names::BodyNames;
 
 /// What a trace event is about, each switched on by its own flag.
@@ -113,6 +121,43 @@ impl TraceCategories {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
+}
+
+/// Which code a run's listings print (`--print-bytecode`, `--print-code`,
+/// `--print-inlining`; `docs/design/developer-tool.md`, "Stage 2: printing
+/// code"), each switched on by its own flag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Printing {
+    /// Every body's bytecode, when its mixin is made.
+    pub bytecode: bool,
+    /// Every body's machine code, baseline and optimized, when it is
+    /// installed.
+    pub code: bool,
+    /// The inlining plan of every optimizing compile that made one, with
+    /// its outcome: the copy installed or refused.
+    pub inlining: bool,
+}
+
+impl Printing {
+    /// Whether nothing is printed.
+    pub fn is_empty(self) -> bool {
+        !(self.bytecode || self.code || self.inlining)
+    }
+}
+
+/// What a host asks of the trace (`Interpreter::set_trace`): the events of
+/// `categories` about the bodies `filter` selects, and the listings
+/// `printing` names of the bodies `print_filter` selects. Empty
+/// categories and empty printing are no tracing.
+pub struct TraceSettings {
+    /// The categories whose events the sink receives.
+    pub categories: TraceCategories,
+    /// The bodies whose events the sink receives.
+    pub filter: TraceFilter,
+    /// The listings the sink receives.
+    pub printing: Printing,
+    /// The bodies whose listings the sink receives.
+    pub print_filter: TraceFilter,
 }
 
 /// One event, as the sink receives it: its category, the body it is
@@ -253,14 +298,27 @@ pub enum TraceEventKind {
     /// The plan of the body's copy sent the callee at the send at
     /// `program_counter` (the line's `at=`) in the scope running `in_body`
     /// rather than inline it, for `reason`
-    /// (`declined`); `callee` is `None` for a callee that is no body.
+    /// (`declined`). Only for a callee that is a body: the declines of
+    /// callees that are none are `InlineDeclinedNoBody`.
     InlineDeclined {
         key: Option<String>,
         entered: Option<String>,
         in_body: String,
         program_counter: u32,
-        callee: Option<String>,
+        callee: String,
         reason: InlineDecline,
+    },
+    /// The plan of the body's copy sent, rather than inline, callees that
+    /// are no body -- a leaf or primitive, or a body the heap no longer
+    /// names -- counted by reason in `reasons`, in `InlineDecline`'s
+    /// declaration order, each count above zero (`declined-no-body`).
+    /// One event per optimizing compile, and only for one that declined
+    /// such a callee: every inlined `==` declines its leaf, so that a line
+    /// per decline would bury the declines a body explains.
+    InlineDeclinedNoBody {
+        key: Option<String>,
+        entered: Option<String>,
+        reasons: Vec<(InlineDecline, u32)>,
     },
     /// The body's optimized copy for `key` was retired for `reason` --
     /// freed, the body going on in its baseline code -- and its version
@@ -350,6 +408,7 @@ impl TraceEventKind {
             TraceEventKind::OptimizationRefused { .. } => "refused",
             TraceEventKind::Inlined { .. } => "inlined",
             TraceEventKind::InlineDeclined { .. } => "declined",
+            TraceEventKind::InlineDeclinedNoBody { .. } => "declined-no-body",
             TraceEventKind::Retired { .. } => "retired",
             TraceEventKind::Invalidated { .. } => "invalidated",
             TraceEventKind::Compacted { .. } => "compacted",
@@ -599,8 +658,10 @@ impl Deferral {
     }
 }
 
-/// Why the inlining plan sent a callee rather than inline it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why the inlining plan sent a callee rather than inline it. Ordered
+/// as declared: the order a folded decline counts them in
+/// (`TraceEventKind::InlineDeclinedNoBody`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InlineDecline {
     /// The tree holds no body of the callee to inline: a method past
     /// what the limits allow where it is sent, a nested class's accessor,
@@ -653,6 +714,17 @@ impl InlineDecline {
             InlineDecline::OverRecursionLimit => "over-recursion-limit",
             InlineDecline::OutOfRegisters => "out-of-registers",
         }
+    }
+
+    /// `reasons` counted, in declaration order, each count above zero:
+    /// what a folded decline holds. Counted by the reasons' order, never
+    /// by an index, so that no reason can fall outside the count.
+    pub(crate) fn counted(reasons: impl IntoIterator<Item = InlineDecline>) -> Vec<(Self, u32)> {
+        let mut counts = std::collections::BTreeMap::new();
+        for reason in reasons {
+            *counts.entry(reason).or_insert(0u32) += 1;
+        }
+        counts.into_iter().collect()
     }
 }
 
@@ -712,11 +784,15 @@ impl InvalidationCause {
     }
 }
 
-/// The tier whose machine code was freed.
+/// Which compile of a body machine code is: the tier whose code was
+/// freed -- a twin's freed with its lean body, as `Baseline` -- and the
+/// compile a listing shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeTier {
-    /// A body's baseline code, or its twin's.
+    /// A body's baseline code, its lean body.
     Baseline,
+    /// A body's twin, its baseline code that reifies its frame.
+    Twin,
     /// An optimized copy.
     Optimized,
 }
@@ -726,6 +802,7 @@ impl CodeTier {
     pub fn name(self) -> &'static str {
         match self {
             CodeTier::Baseline => "baseline",
+            CodeTier::Twin => "twin",
             CodeTier::Optimized => "optimized",
         }
     }
@@ -822,6 +899,12 @@ pub trait TraceSink {
     /// never from a leaf machine code calls, whose events wait for the
     /// next of those.
     fn event(&mut self, event: &TraceEvent);
+
+    /// Receives `listing`, at the same flushes as the events, in its
+    /// place among them. A sink that prints no code ignores it.
+    fn listing(&mut self, listing: &Listing) {
+        let _ = listing;
+    }
 }
 
 /// An event recorded and not yet delivered: the bodies it names held as
@@ -925,8 +1008,12 @@ pub(crate) enum PendingKind {
         key: Option<CustomizationKey>,
         in_body: Rc<CompiledCode>,
         program_counter: u32,
-        callee: Option<Rc<CompiledCode>>,
+        callee: Rc<CompiledCode>,
         reason: InlineDecline,
+    },
+    InlineDeclinedNoBody {
+        key: Option<CustomizationKey>,
+        reasons: Vec<(InlineDecline, u32)>,
     },
     Retired {
         key: Option<CustomizationKey>,
@@ -959,6 +1046,9 @@ pub(crate) enum PendingKind {
     CachesVacated {
         cause: VacateCause,
     },
+    /// Not an event: a listing, queued among the events so that it keeps
+    /// its place after the event of the compile it shows.
+    Listing(PendingListing),
 }
 
 impl Pending {
@@ -998,10 +1088,12 @@ impl PendingKind {
             | PendingKind::OptimizationRefused { key, .. }
             | PendingKind::Inlined { key, .. }
             | PendingKind::InlineDeclined { key, .. }
+            | PendingKind::InlineDeclinedNoBody { key, .. }
             | PendingKind::Retired { key, .. }
             | PendingKind::Invalidated { key, .. }
             | PendingKind::OptimizationDropped { key, .. }
             | PendingKind::Freed { key, .. } => *key,
+            PendingKind::Listing(listing) => listing.key(),
             PendingKind::Compiled { .. }
             | PendingKind::CompiledTwin { .. }
             | PendingKind::CompileRefused { .. }
@@ -1029,6 +1121,10 @@ pub(crate) struct EventTracer {
     /// The categories the sink asked for; empty without a sink.
     categories: TraceCategories,
     filter: Option<TraceFilter>,
+    /// The listings the sink asked for; empty without a sink.
+    printing: Printing,
+    /// The bodies whose listings the sink receives.
+    print_filter: Option<TraceFilter>,
     sink: Option<Box<dyn TraceSink>>,
     /// The events recorded since the last flush, in order.
     pending: Vec<Pending>,
@@ -1068,6 +1164,40 @@ impl EventTracer {
     #[inline]
     pub(crate) fn traces(&self, category: TraceCategory) -> bool {
         self.categories.contains(category)
+    }
+
+    /// Whether machine code is printed: what makes the JIT annotate the
+    /// code it assembles, and capture each body at its install.
+    #[inline]
+    pub(crate) fn prints_code(&self) -> bool {
+        self.printing.code
+    }
+
+    /// Whether inlining plans are printed: what makes an optimizing
+    /// compile record its plan once its outcome is known.
+    #[inline]
+    pub(crate) fn prints_inlining(&self) -> bool {
+        self.printing.inlining
+    }
+
+    /// Records the listing of `code`, delivered at the next flush after
+    /// the events recorded before it. Not an event: no category selects
+    /// it, and it is not counted among the events recorded.
+    pub(crate) fn record_listing(&mut self, code: &Rc<CompiledCode>, listing: PendingListing) {
+        debug_assert!(
+            match &listing {
+                PendingListing::Code(_) => self.printing.code,
+                PendingListing::Inlining(_) => self.printing.inlining,
+            },
+            "internal: a listing nothing asked for was recorded"
+        );
+        self.pending.push(Pending {
+            // Unread: the print filter selects a listing, not a category.
+            category: TraceCategory::Compile,
+            body: Some(Rc::clone(code)),
+            kind: PendingKind::Listing(listing),
+            named_key: None,
+        });
     }
 
     /// Records `pending`, delivered at the next flush.
@@ -1170,47 +1300,80 @@ impl EventTracer {
         self.pending.len()
     }
 
-    /// Whether a sink listens for any category: the test a site that
-    /// serves several categories' events makes first.
+    /// Whether a sink listens for any category or listing: the test a
+    /// site that serves several categories' events makes first.
     #[inline]
     pub(crate) fn is_on(&self) -> bool {
-        !self.categories.is_empty()
+        !self.categories.is_empty() || !self.printing.is_empty()
     }
 
-    /// Whether an event waits for a flush: the test each flush point
+    /// Whether an event waits for a flush: the test a compile trigger
     /// makes before it calls `flush`.
     #[inline]
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    /// Installs `sink` for `categories` and `filter`, replacing any sink
-    /// and dropping what it had not delivered; with no category, no sink.
-    pub(crate) fn install(
-        &mut self,
-        categories: TraceCategories,
-        filter: TraceFilter,
-        sink: Box<dyn TraceSink>,
-    ) {
+    /// Whether a flush may deliver something: an event waits, or bytecode
+    /// is printed, whose bodies a flush finds by looking for the mixins
+    /// made since the last one. The test of every flush point but a
+    /// compile trigger's -- the safepoint's and a host's -- so that a
+    /// mixin made mid-run is listed at the next of them (decision 10).
+    #[inline]
+    pub(crate) fn flush_due(&self) -> bool {
+        self.has_pending() || self.printing.bytecode
+    }
+
+    /// Installs `sink` for `settings`, replacing any sink and dropping
+    /// what it had not delivered; with no category and nothing printed,
+    /// no sink.
+    pub(crate) fn install(&mut self, settings: TraceSettings, sink: Box<dyn TraceSink>) {
         *self = EventTracer::default();
-        if categories.is_empty() {
+        let TraceSettings {
+            categories,
+            filter,
+            printing,
+            print_filter,
+        } = settings;
+        if categories.is_empty() && printing.is_empty() {
             return;
         }
         self.categories = categories;
         self.filter = Some(filter);
+        self.printing = printing;
+        self.print_filter = Some(print_filter);
         self.sink = Some(sink);
     }
 }
 
+/// What a flush hands the sink, in order.
+enum Delivery {
+    Event(TraceEvent),
+    Listing(Listing),
+}
+
 /// Delivers every pending event: names each body it holds, drops what the
 /// filter refuses, hands the rest to the sink in order and empties the
-/// queue.
+/// queue. When bytecode is printed, the bodies made since the last flush
+/// are listed first, so that a body's listing precedes its events.
 #[cold]
 #[inline(never)]
 pub(crate) fn flush(mutator: &mut Mutator<'_>) {
     let pending = std::mem::take(&mut mutator.jit.tracer.pending);
     let mut names = std::mem::take(&mut mutator.jit.tracer.names);
-    let mut events = Vec::with_capacity(pending.len());
+    let mut deliveries = Vec::with_capacity(pending.len());
+    if mutator.jit.tracer.printing.bytecode {
+        // Indexed before any event is named: naming indexes the same
+        // sides, which would then be listed by no flush.
+        let made = names.index_new_sides(mutator);
+        if let Some(filter) = &mutator.jit.tracer.print_filter {
+            deliveries.extend(
+                listings::bytecode_listings(made, filter)
+                    .into_iter()
+                    .map(Delivery::Listing),
+            );
+        }
+    }
     for Pending {
         category,
         body,
@@ -1218,6 +1381,13 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         named_key,
     } in pending
     {
+        if let PendingKind::Listing(listing) = kind {
+            if let Some(listing) = listing_delivered(mutator, &mut names, body, listing, named_key)
+            {
+                deliveries.push(Delivery::Listing(listing));
+            }
+            continue;
+        }
         let body = body.map(|code| names.name(mutator, &code));
         let passes = match (&mutator.jit.tracer.filter, &body) {
             (Some(filter), Some(body)) => filter.matches(body),
@@ -1225,19 +1395,51 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         };
         if passes {
             let kind = event_kind(mutator, &mut names, kind, named_key);
-            events.push(TraceEvent {
+            deliveries.push(Delivery::Event(TraceEvent {
                 category,
                 body,
                 kind,
-            });
+            }));
         }
     }
     mutator.jit.tracer.names = names;
     if let Some(sink) = mutator.jit.tracer.sink.as_mut() {
-        for event in &events {
-            sink.event(event);
+        for delivery in &deliveries {
+            match delivery {
+                Delivery::Event(event) => sink.event(event),
+                Delivery::Listing(listing) => sink.listing(listing),
+            }
         }
     }
+}
+
+/// The listing `listing` of `body` delivers, its body and key named -- its
+/// key by `named_key` where it was named before the flush -- or `None`
+/// when the print filter refuses the body.
+fn listing_delivered(
+    mutator: &Mutator<'_>,
+    names: &mut BodyNames,
+    body: Option<Rc<CompiledCode>>,
+    listing: PendingListing,
+    named_key: Option<NamedKey>,
+) -> Option<Listing> {
+    let code = body?;
+    let name = names.name(mutator, &code);
+    let selected = mutator
+        .jit
+        .tracer
+        .print_filter
+        .as_ref()
+        .is_some_and(|filter| filter.matches(&name));
+    if !selected {
+        return None;
+    }
+    let key = match (listing.key(), named_key) {
+        (Some(_), Some(named)) => Some((named.key, named.entered)),
+        (Some(key), None) => Some(key_names(mutator, key)),
+        (None, _) => None,
+    };
+    Some(listing.delivered(mutator, names, &code, name, key))
 }
 
 /// The event a pending event's kind delivers, its bodies and keys named --
@@ -1374,8 +1576,16 @@ fn event_kind(
                 entered,
                 in_body: name(&in_body),
                 program_counter,
-                callee: callee.map(|callee| name(&callee)),
+                callee: name(&callee),
                 reason,
+            }
+        }
+        PendingKind::InlineDeclinedNoBody { key, reasons } => {
+            let (key, entered) = key_fields(key);
+            TraceEventKind::InlineDeclinedNoBody {
+                key,
+                entered,
+                reasons,
             }
         }
         PendingKind::Retired {
@@ -1430,6 +1640,9 @@ fn event_kind(
             receiver,
         },
         PendingKind::CachesVacated { cause } => TraceEventKind::CachesVacated { cause },
+        PendingKind::Listing(_) => {
+            unreachable!("internal: a flush delivers a listing before it names an event")
+        }
     }
 }
 
@@ -1468,6 +1681,14 @@ fn class_name_of_id(mutator: &Mutator<'_>, id: DispatchId) -> String {
 pub(crate) fn name_freed_keys(mutator: &mut Mutator<'_>, freed: &IdentityMap<DispatchId, String>) {
     let mut pending = std::mem::take(&mut mutator.jit.tracer.pending);
     for event in &mut pending {
+        // An arm's receiver likewise, by the same names.
+        if let PendingKind::Listing(listing) = &mut event.kind {
+            for arm in listing.unnamed_arms() {
+                if let Some(name) = freed.get(&arm.receiver) {
+                    arm.named = Some(name.clone());
+                }
+            }
+        }
         if event.named_key.is_some() {
             continue;
         }
@@ -1498,6 +1719,28 @@ mod tests {
     /// A body of its own for each test's events.
     fn body() -> Rc<CompiledCode> {
         Rc::new(crate::compiler::factory_body(3))
+    }
+
+    /// Declines are counted by reason in declaration order, whatever
+    /// order they came in, and a reason no decline gave is left out.
+    #[test]
+    fn declines_are_counted_in_declaration_order() {
+        let counted = InlineDecline::counted([
+            InlineDecline::NotExpressed,
+            InlineDecline::OutOfRegisters,
+            InlineDecline::NotExpressed,
+            InlineDecline::NotSnapshotted,
+            InlineDecline::NotExpressed,
+        ]);
+        assert_eq!(
+            counted,
+            vec![
+                (InlineDecline::NotSnapshotted, 1),
+                (InlineDecline::NotExpressed, 3),
+                (InlineDecline::OutOfRegisters, 1),
+            ]
+        );
+        assert!(InlineDecline::counted([]).is_empty());
     }
 
     /// A frame that can never switch is refused once per loop head and

@@ -14,11 +14,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use ns_runtime::trace_events::{BytecodeListing, CodeListing, Listing};
 use ns_runtime::{
     Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+
+use crate::listing;
 
 use super::breakpoints::{self, Breakpoints, FunctionEntry, LineEntry};
 use super::connection::{self, Token};
@@ -254,6 +257,8 @@ pub(super) enum Conversion {
     InstanceCounts,
     /// `nsNext/referrers`', asked at the stop `generation`.
     Referrers { generation: u64 },
+    /// `nsNext/frameCode`'s, asked at the stop `generation`.
+    FrameCode { generation: u64 },
 }
 
 /// A command the VM has not answered yet. The VM answers every command
@@ -728,6 +733,7 @@ impl Agent {
             "nsNext/runToPosition" => self.run_to_position(connection, &request),
             "stackTrace" => self.stack_trace(connection, &request),
             "scopes" => self.scopes(connection, &request),
+            "nsNext/frameCode" => self.frame_code(connection, &request),
             "variables" => self.variables(connection, &request),
             "evaluate" => self.evaluate(connection, &request),
             "cancel" => self.cancel(connection, &request),
@@ -1158,6 +1164,31 @@ impl Agent {
             });
         }
         self.respond(connection, request, Some(json!({ "scopes": scopes })));
+    }
+
+    /// `nsNext/frameCode`: the code of the frame its id names
+    /// (`Command::FrameCode`), in the listings' format
+    /// (`docs/design/developer-tool.md`, decision 15).
+    fn frame_code(&mut self, connection: u64, request: &protocol::Request) {
+        let Some(arguments) = self.arguments::<protocol::FrameCodeArguments>(connection, request)
+        else {
+            return;
+        };
+        if !self.at_stop(connection, request) {
+            return;
+        }
+        let Some(frame) = self.stop.frame_of_id(arguments.frame_id) else {
+            self.respond_error(connection, request, super::stepping::NO_SUCH_FRAME);
+            return;
+        };
+        let generation = self.stop.generation();
+        let command = Command::FrameCode { frame };
+        self.forward_converted(
+            connection,
+            request,
+            command,
+            Conversion::FrameCode { generation },
+        );
     }
 
     fn variables(&mut self, connection: u64, request: &protocol::Request) {
@@ -1815,6 +1846,21 @@ impl Agent {
                 }
                 Ok(Some(self.referrers_body(&referrers)))
             }
+            (
+                Event::FrameCode {
+                    body,
+                    bytecode,
+                    machine,
+                },
+                Conversion::FrameCode { generation },
+            ) => {
+                // An answer of a stop the program left would name a frame
+                // that may run elsewhere by now.
+                if generation != self.stop.generation() {
+                    return Err("the program went on".to_string());
+                }
+                Ok(Some(frame_code_body(body, bytecode, machine)))
+            }
             _ => Ok(None),
         }
     }
@@ -2116,6 +2162,19 @@ fn is_going_on(name: &str) -> bool {
     )
 }
 
+/// `nsNext/frameCode`'s body: the frame's body's name, its bytecode and
+/// the machine code it goes on in, `null` where it goes on interpreted,
+/// each listing between the head and end lines `--print-bytecode` and
+/// `--print-code` write, so that a client reads them as a run prints them.
+fn frame_code_body(body: String, bytecode: String, machine: Option<Box<CodeListing>>) -> Value {
+    let machine_code = machine.map(|machine| listing::text(&Listing::Code(*machine)));
+    let bytecode = listing::text(&Listing::Bytecode(BytecodeListing {
+        body: body.clone(),
+        text: bytecode,
+    }));
+    json!({ "body": body, "bytecode": bytecode, "machineCode": machine_code })
+}
+
 /// Whether `event` answers the command `pending` waits for.
 fn answers(event: &Event, pending: &Pending) -> bool {
     let command = pending.command;
@@ -2144,6 +2203,7 @@ fn answers(event: &Event, pending: &Pending) -> bool {
         Event::Marked { .. } => matches!(command, "Mark" | "Unmark"),
         Event::InstanceCounts(_) => command == "InstanceCounts",
         Event::Referrers(_) => command == "Referrers",
+        Event::FrameCode { .. } => command == "FrameCode",
         Event::Stopped { .. } | Event::Logged { .. } => false,
     }
 }

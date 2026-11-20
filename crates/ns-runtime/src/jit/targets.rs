@@ -50,6 +50,7 @@ use crate::interpreter::inline_cache::cells::{
 };
 use crate::interpreter::inline_cache::{RULE_TAG_BITS, RULE_TAG_LEXICAL, RULE_TAG_MASK};
 use crate::mixin::AccessorKind;
+use crate::trace_events::Annotation;
 
 /// The bytes of a word.
 const WORD_BYTES: i32 = 8;
@@ -369,10 +370,16 @@ pub(crate) fn emit_dispatching_entry(
     assembler.enter_called();
     macro_assembler.load_body_word(rows, rows_word);
     macro_assembler.load_body_word(tail, tail_word);
-    let assembler = macro_assembler.assembler();
-    assembler.load_label_address(baseline, start, 0);
-    assembler.jump_register(tail);
+    macro_assembler
+        .assembler()
+        .load_label_address(baseline, start, 0);
+    macro_assembler.annotate(Annotation::Stub(DISPATCHING_STUB));
+    macro_assembler.assembler().jump_register(tail);
 }
+
+/// The dispatching stub's name in a listing, which the dispatching entry
+/// jumps to through its tail word rather than a block word.
+const DISPATCHING_STUB: &str = "dispatching-stub";
 
 /// `lookup_rule :=` the rule's tag, the low bits of `send_key`, which
 /// keeps them. Clobbers the flags.

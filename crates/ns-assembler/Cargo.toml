@@ -17,8 +17,8 @@ iced-x86.workspace = true
 # so a wrong field shows as the wrong instruction text. Its decoder and its
 # text are all the tests use; its serde support stays out of the build.
 # `yaxpeax-arch` is named for the `Decoder` trait and the byte reader.
-yaxpeax-arm = { version = "0.5", default-features = false, features = ["std", "fmt"] }
-yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
+yaxpeax-arm.workspace = true
+yaxpeax-arch.workspace = true
 
 [lints]
 workspace = true

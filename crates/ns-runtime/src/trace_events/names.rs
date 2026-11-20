@@ -87,13 +87,21 @@ impl BodyNames {
     /// lives. A body found `(unnamed)` stays so while it lives: no mixin
     /// comes to hold a body that exists already, so looking for it again
     /// would only walk every mixin once more.
-    fn index_new_sides(&mut self, mutator: &Mutator<'_>) {
+    ///
+    /// Answers the root bodies -- methods, factories, initializers and
+    /// superclass clauses, never a block -- it named for the first time,
+    /// each with its name, in the order of the sides indexed: the bodies
+    /// made since the last look, which `--print-bytecode` lists
+    /// (`docs/design/developer-tool.md`, decision 10). A body a new version
+    /// shares with the version it superseded was named with that one, and
+    /// is not answered again.
+    pub(crate) fn index_new_sides(&mut self, mutator: &Mutator<'_>) -> Vec<NamedRoot> {
         let generations = (
             mutator.heap.mixin_generation(),
             mutator.metaclass_mixins.generation(),
         );
         if self.indexed_at == Some(generations) {
-            return;
+            return Vec::new();
         }
         self.indexed_at = Some(generations);
         if self.names.len() + self.indexed.len() >= self.prune_at.max(FIRST_PRUNE) {
@@ -118,6 +126,7 @@ impl BodyNames {
         for mixin in heap.superseded_mixins() {
             add_level(Rc::clone(mixin), None);
         }
+        let mut named = Vec::new();
         for side in &sides {
             let address = Rc::as_ptr(side) as usize;
             if let Some(indexed) = self.indexed.get(&address)
@@ -127,16 +136,18 @@ impl BodyNames {
             {
                 continue;
             }
-            self.name_side(mutator, side);
+            self.name_side(mutator, side, &mut named);
             self.indexed.insert(address, Rc::downgrade(side));
         }
+        named
     }
 
     /// Names every body of `side` -- its methods, its factory, its
     /// initializer bodies, its superclass clause -- and the blocks each
-    /// creates, transitively, after it. A body already named keeps its
-    /// name: the current version's, named first.
-    fn name_side(&mut self, mutator: &Mutator<'_>, side: &Rc<Mixin>) {
+    /// creates, transitively, after it, adding to `named` each root body
+    /// it named. A body already named keeps its name: the current
+    /// version's, named first.
+    fn name_side(&mut self, mutator: &Mutator<'_>, side: &Rc<Mixin>, named: &mut Vec<NamedRoot>) {
         #[cfg(test)]
         {
             self.sides_named += 1;
@@ -169,7 +180,12 @@ impl BodyNames {
         }
         for (root, name) in roots {
             let block_name = format!("[] in {name}");
-            self.insert(&root, name);
+            if self.insert(&root, name.clone()) {
+                named.push(NamedRoot {
+                    code: Rc::clone(&root),
+                    name,
+                });
+            }
             // A worklist: an image's body chooses how deep its blocks nest.
             let mut pending: Vec<Rc<CompiledCode>> = vec![root];
             while let Some(code) = pending.pop() {
@@ -192,6 +208,12 @@ impl BodyNames {
             .insert(address(code), (Rc::downgrade(code), name));
         true
     }
+}
+
+/// A root body named for the first time, and its name.
+pub(crate) struct NamedRoot {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) name: String,
 }
 
 /// The address `code` is keyed by.

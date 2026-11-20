@@ -6,10 +6,11 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 
 use ns_runtime::tool_names::KnownModule;
+use ns_runtime::trace_events::Listing;
 use ns_runtime::{ModuleName, TraceCategories, TraceCategory, TraceEvent, TraceEventKind};
 use ns_runtime::{TraceFilter, TraceSink};
 
-use crate::program;
+use crate::{listing, program};
 
 /// The word `--trace` takes for every category.
 const ALL: &str = "all";
@@ -41,19 +42,20 @@ pub(crate) fn categories(text: &str) -> Result<TraceCategories, String> {
     Ok(categories)
 }
 
-/// Refuses a pattern of `filter` that names a module neither the
-/// program, whose modules are `modules`, nor the binary has, naming the
-/// pattern; checked once the program is loaded and before it runs, so
-/// that a filter that would select nothing for good is refused rather
-/// than leave the trace silent.
+/// Refuses a pattern of `filter`, given by `option`, that names a module
+/// neither the program, whose modules are `modules`, nor the binary has,
+/// naming the option and the pattern; checked once the program is loaded
+/// and before it runs, so that a filter that would select nothing for
+/// good is refused rather than leave the trace or the listings silent.
 pub(crate) fn check_filter(
+    option: &str,
     filter: &TraceFilter,
     modules: impl IntoIterator<Item = ModuleName>,
 ) -> Result<(), String> {
     let modules = program::known_modules(modules);
     filter
         .check(&|text: &str| KnownModule::resolve(text, &modules))
-        .map_err(|reason| format!("--trace-filter: {reason}"))
+        .map_err(|reason| format!("{option}: {reason}"))
 }
 
 /// The line `event` is written as (`docs/design/developer-tool.md`,
@@ -198,11 +200,29 @@ pub(crate) fn line(event: &TraceEvent) -> String {
             fields.event(event);
             fields.key(key, entered);
             fields.name("in-body", in_body);
-            // A callee that is no body is named by nothing, as an event
-            // about no body is.
-            fields.name("callee", callee.as_deref().unwrap_or(""));
+            fields.name("callee", callee);
             fields.value("reason", reason.name());
             fields.value("at", program_counter);
+        }
+        TraceEventKind::InlineDeclinedNoBody {
+            key,
+            entered,
+            reasons,
+        } => {
+            fields.event(event);
+            fields.key(key, entered);
+            fields.value(
+                "count",
+                reasons.iter().map(|&(_, count)| count).sum::<u32>(),
+            );
+            // Each reason with its count, `<reason>:<count>`, joined by
+            // commas: one value, which no space splits.
+            let spelled = reasons
+                .iter()
+                .map(|(reason, count)| format!("{}:{count}", reason.name()))
+                .collect::<Vec<_>>()
+                .join(",");
+            fields.value("reasons", spelled);
         }
         TraceEventKind::Retired {
             key,
@@ -318,6 +338,13 @@ impl TraceSink for StandardErrorSink {
         // that no other line the process writes on stderr lands inside it.
         // A stderr that cannot be written to loses the trace, never the
         // program's run.
+        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+    }
+
+    fn listing(&mut self, listing: &Listing) {
+        // The whole listing in one write, as a line is: a script cuts it
+        // out from its head to its end, which no other write interrupts.
+        let text = listing::text(listing);
         let _ = std::io::stderr().lock().write_all(text.as_bytes());
     }
 }
@@ -586,7 +613,7 @@ mod tests {
                         entered: None,
                         in_body: "Demo>>main:args:".to_string(),
                         program_counter: 31,
-                        callee: named("[] in Demo>>run"),
+                        callee: "[] in Demo>>run".to_string(),
                         reason: InlineDecline::OverWeight,
                     },
                 ),
@@ -596,18 +623,31 @@ mod tests {
             (
                 about(
                     Inlining,
-                    "Demo>>main:args:",
-                    TraceEventKind::InlineDeclined {
-                        key: None,
-                        entered: None,
-                        in_body: "[] in Demo>>main:args:".to_string(),
-                        program_counter: 4,
-                        callee: None,
-                        reason: InlineDecline::NotExpressed,
+                    "Demo/Account>>deposit:",
+                    TraceEventKind::InlineDeclinedNoBody {
+                        key: named("Demo/Account"),
+                        entered: named("Demo/Base"),
+                        reasons: vec![
+                            (InlineDecline::NotSnapshotted, 2),
+                            (InlineDecline::NotExpressed, 7),
+                        ],
                     },
                 ),
-                "[inlining] {Demo>>main:args:} declined in-body={[] in Demo>>main:args:} \
-                 callee={} reason=not-expressed at=4",
+                "[inlining] {Demo/Account>>deposit:} declined-no-body key={Demo/Account} \
+                 entered={Demo/Base} count=9 reasons=not-snapshotted:2,not-expressed:7",
+            ),
+            (
+                about(
+                    Inlining,
+                    "Demo>>main:args:",
+                    TraceEventKind::InlineDeclinedNoBody {
+                        key: None,
+                        entered: None,
+                        reasons: vec![(InlineDecline::NotExpressed, 1)],
+                    },
+                ),
+                "[inlining] {Demo>>main:args:} declined-no-body count=1 \
+                 reasons=not-expressed:1",
             ),
             (
                 about(
@@ -739,7 +779,7 @@ mod tests {
 
     /// How many kinds of event there are: one past the last index the
     /// match in `every_kind_is_listed` gives, raised with every arm added.
-    const EVENT_KINDS: usize = 27;
+    const EVENT_KINDS: usize = 28;
 
     /// Every kind of event appears in `every_event`: the match fails to
     /// compile for a kind added without its arm, and the test fails for
@@ -776,6 +816,7 @@ mod tests {
                 TraceEventKind::OsrRefused { .. } => 24,
                 TraceEventKind::OptimizationDropped { .. } => 25,
                 TraceEventKind::CachesVacated { .. } => 26,
+                TraceEventKind::InlineDeclinedNoBody { .. } => 27,
             };
             seen.insert(index);
         }

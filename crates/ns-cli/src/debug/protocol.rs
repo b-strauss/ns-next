@@ -347,6 +347,15 @@ pub(crate) struct ForceReturnArguments {
     pub(crate) expression: Option<String>,
 }
 
+/// `nsNext/frameCode`, a request of ns-next's own: the code of the frame
+/// `frameId` names -- its body's bytecode and, where the frame goes on in
+/// machine code, that code's listing, each marked where the frame stands.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct FrameCodeArguments {
+    pub(crate) frame_id: i64,
+}
+
 /// `nsNext/instances`, a request of ns-next's own: `count` of the
 /// instances of the class declaration `name` names,
 /// `<id>[@<version>][/<Class>(.<Class>)*]` as `nsNext/instanceCounts` names it,

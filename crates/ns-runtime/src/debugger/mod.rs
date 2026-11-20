@@ -507,6 +507,7 @@ impl StressReader {
             | Event::Marked { .. }
             | Event::InstanceCounts(_)
             | Event::Referrers(_)
+            | Event::FrameCode { .. }
             | Event::Logged { .. } => {}
         }
     }
@@ -1496,6 +1497,7 @@ impl Interpreter {
                 | Command::StackTrace
                 | Command::ModuleText { .. }
                 | Command::Variables { .. }
+                | Command::FrameCode { .. }
                 | Command::Children { .. }
                 | Command::Evaluate { .. }
                 | Command::SetVariable { .. }
@@ -1584,6 +1586,7 @@ impl Interpreter {
             | Command::StackTrace
             | Command::ModuleText { .. }
             | Command::Variables { .. }
+            | Command::FrameCode { .. }
             | Command::Children { .. }
             | Command::Evaluate { .. }
             | Command::SetVariable { .. }
@@ -1881,6 +1884,16 @@ impl Interpreter {
                         Some(variables) => {
                             self.answer(&mut stop.source, Event::Variables(variables));
                         }
+                        None => self.refuse(&mut stop.source, &command, NO_SUCH_FRAME),
+                    }
+                }
+                Command::FrameCode { frame } => {
+                    match self.enter(|mutator| {
+                        let Stop { frames, floor, .. } = &mut stop;
+                        let frames = frames.get_or_insert_with(|| stack::frames(mutator, *floor));
+                        stack::frame_code(mutator, frames, frame)
+                    }) {
+                        Some(event) => self.answer(&mut stop.source, event),
                         None => self.refuse(&mut stop.source, &command, NO_SUCH_FRAME),
                     }
                 }
@@ -2296,6 +2309,7 @@ impl Interpreter {
                     | Command::StackTrace
                     | Command::ModuleText { .. }
                     | Command::Variables { .. }
+                    | Command::FrameCode { .. }
                     | Command::Children { .. }
                     | Command::Evaluate { .. }
                     | Command::SetVariable { .. }

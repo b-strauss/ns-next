@@ -70,6 +70,9 @@ pub(crate) struct OptimizedBody {
     /// The offsets in the code of its first data word and of the byte past
     /// its last, if it has any (`baseline::BaselineBody::words`).
     pub(crate) words: Option<std::ops::Range<u32>>,
+    /// The offset past the code's last instruction
+    /// (`macro_assembler::Finished::instructions_end`).
+    pub(crate) instructions_end: u32,
     /// The transfers into the baseline twin, one per `MakeClosure` of the
     /// body's own scope (`closures::transfer_to_twin`).
     pub(crate) twin_transfers: Vec<TwinTransfer>,
@@ -109,6 +112,16 @@ pub(crate) struct OptimizedBody {
     pub(crate) type_case_arms: u32,
     /// The sites the code lays out as their arms (`graph::Graph::inlined_sites`).
     pub(crate) inlined_sites: u32,
+    /// What each call or jump out of the code reaches, by its offset
+    /// (`MacroAssembler::annotate`); empty unless the code was assembled
+    /// annotating, for a listing of it.
+    pub(crate) annotations: Vec<(u32, crate::trace_events::Annotation)>,
+    /// Where the code's scope or program counter changes, and where code
+    /// out of the straight line starts, by offset, ascending from the
+    /// code's first byte, each scope numbered as a listing numbers the
+    /// scopes the copy laid out (`optimizing::PlannedScope`); empty unless
+    /// the code was assembled annotating.
+    pub(crate) positions: Vec<(u32, crate::trace_events::Position)>,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,
@@ -208,19 +221,31 @@ pub(crate) struct EmittedScope<'tree> {
 /// body's own first -- allocated as `allocation` says and described by
 /// `metadata`, into `body`, which `BodyAssembler::for_optimized` made;
 /// answers the label the run loop's push enters at, past the prologue,
-/// and each poll a frame goes back in at.
+/// each poll a frame goes back in at and, when `body` annotates, the
+/// code's positions.
 pub(in crate::jit) fn emit(
     scopes: &[EmittedScope<'_>],
     graph: &Graph,
     allocation: &Allocation,
     metadata: &Metadata,
     body: &mut BodyAssembler,
-) -> Result<(Label, Vec<EmittedPoll>), Refusal> {
+) -> Result<Emitted, Refusal> {
     let root = scopes
         .first()
         .expect("internal: a compile has the body's own scope");
+    let order = &allocation.positions.order;
+    let first = *order.first().expect("internal: a graph has an entry block");
+    let first_program_counter = graph.block(first).program_counter;
+    let mut positions = body.macro_assembler.is_annotating().then(|| Positions {
+        recorded: Vec::new(),
+    });
+    // The prologue is the way into the body's first instruction.
+    if let Some(positions) = positions.as_mut() {
+        positions.record(body, Some((ScopeId::ROOT, first_program_counter)));
+    }
     sends::prologue(body, &root.snapshot.facts);
     let mut emitter = Emitter {
+        positions,
         graph,
         allocation,
         metadata,
@@ -242,15 +267,12 @@ pub(in crate::jit) fn emit(
         mixed_paths: Vec::new(),
         trampolines: Vec::new(),
     };
-    let order = &allocation.positions.order;
-    let first = *order.first().expect("internal: a graph has an entry block");
     // The push enters here, past the prologue, which falls through, and
     // before the first block, whose own label a back edge may jump to with
     // values in registers: the entry's countdown, if any, sees the frame
     // as the interpreter left it.
     let push_entry = body.macro_assembler.assembler().label();
     body.macro_assembler.assembler().bind(push_entry);
-    let first_program_counter = graph.block(first).program_counter;
     body.program_counter = first_program_counter;
     body.macro_assembler
         .set_program_counter(first_program_counter);
@@ -265,8 +287,118 @@ pub(in crate::jit) fn emit(
     emitter.emit_trampolines(body);
     body.macro_assembler.set_site(None);
     body.macro_assembler.hold_values(&[]);
-    Ok((push_entry, emitter.poll_entries))
+    Ok(Emitted {
+        push_entry,
+        polls: emitter.poll_entries,
+        positions: emitter
+            .positions
+            .map_or_else(Vec::new, |positions| positions.recorded),
+    })
 }
+
+/// The instruction a node of a block of `scope` lowers, if it lowers one
+/// of its own -- a fast path, an inlined callee's check, a frame node --
+/// rather than a part of the instruction before it.
+fn node_position(node: &Node, scope: ScopeId) -> Option<(ScopeId, u32)> {
+    match node {
+        Node::Frame {
+            scope,
+            program_counter,
+            ..
+        } => Some((*scope, *program_counter)),
+        Node::IntegerBinary {
+            program_counter, ..
+        }
+        | Node::FloatOperation {
+            program_counter, ..
+        }
+        | Node::IdentityCompare {
+            program_counter, ..
+        }
+        | Node::IndexedLoad {
+            program_counter, ..
+        }
+        | Node::IndexedStore {
+            program_counter, ..
+        }
+        | Node::TrapIfNil {
+            program_counter, ..
+        } => Some((scope, *program_counter)),
+        Node::FrameRead { .. }
+        | Node::Constant { .. }
+        | Node::Receiver { .. }
+        | Node::Copy { .. }
+        | Node::OwnSlotLoad { .. }
+        | Node::CurrentClass { .. }
+        | Node::ResetOwnSlotGuard
+        | Node::Overlay { .. }
+        | Node::FieldLoad { .. }
+        | Node::FieldStore { .. }
+        | Node::ClassOf { .. }
+        | Node::EliminatedBlock { .. } => None,
+    }
+}
+
+/// The instruction a block of `scope`'s end lowers, if it lowers one of
+/// its own: a conditional's test, a send's trap or type-case.
+fn end_position(end: &End, scope: ScopeId) -> Option<(ScopeId, u32)> {
+    match end {
+        End::Branch {
+            program_counter, ..
+        }
+        | End::Trap {
+            program_counter, ..
+        } => Some((scope, *program_counter)),
+        End::TypeCase {
+            program_counter,
+            scope,
+            ..
+        } => Some((*scope, *program_counter)),
+        End::Jump(_)
+        | End::Return { .. }
+        | End::ReturnUnlessNil { .. }
+        | End::Frame
+        | End::FrameJump { .. } => None,
+    }
+}
+
+/// The positions an annotating emitter records: a label bound wherever
+/// the code's position changes, so that a listing names the scope and
+/// the instruction each stretch of code lowers. A label emits no byte.
+struct Positions {
+    recorded: Vec<(Label, EmittedPosition)>,
+}
+
+impl Positions {
+    /// Records that the code emitted next lowers `position`, unless the
+    /// code before it does too.
+    fn record(&mut self, body: &mut BodyAssembler, position: EmittedPosition) {
+        if self
+            .recorded
+            .last()
+            .is_some_and(|(_, last)| *last == position)
+        {
+            return;
+        }
+        let label = body.macro_assembler.assembler().label();
+        body.macro_assembler.assembler().bind(label);
+        self.recorded.push((label, position));
+    }
+}
+
+/// What `emit` answers beside the code: the label the run loop's push
+/// enters at, past the prologue, each poll a frame goes back in at, and,
+/// when annotating, the positions of the code (`EmittedPosition`).
+pub(crate) struct Emitted {
+    pub(crate) push_entry: Label,
+    pub(crate) polls: Vec<EmittedPoll>,
+    pub(crate) positions: Vec<(Label, EmittedPosition)>,
+}
+
+/// What the code from a label on lowers, for a listing: the instruction
+/// at a program counter of a scope, numbered as the graph numbers it, or
+/// `None` for code out of the straight line.
+pub(crate) type EmittedPosition = Option<(ScopeId, u32)>;
 
 /// A back edge's poll, out of line: the label its test jumps to, the
 /// stores it owes the frame there, its interrupt point, whose innermost
@@ -308,11 +440,14 @@ struct Trap {
     shift: i32,
     stores: Vec<(u16, Register)>,
     point: usize,
+    scope: ScopeId,
     program_counter: u32,
     site: u32,
 }
 
 struct Emitter<'graph> {
+    /// The code's positions, when a listing is printed (`Positions`).
+    positions: Option<Positions>,
     graph: &'graph Graph,
     allocation: &'graph Allocation,
     metadata: &'graph Metadata,
@@ -333,6 +468,14 @@ struct Emitter<'graph> {
 }
 
 impl Emitter<'_> {
+    /// Records, when annotating, that the code emitted next lowers
+    /// `position` (`Positions::record`).
+    fn record_position(&mut self, body: &mut BodyAssembler, position: EmittedPosition) {
+        if let Some(positions) = self.positions.as_mut() {
+            positions.record(body, position);
+        }
+    }
+
     /// The machine register `value` is in at `position`, which the
     /// allocation placed it in because the code there reads it there.
     fn register_of(&self, value: ValueId, position: u32) -> Register {
@@ -427,6 +570,7 @@ impl Emitter<'_> {
         // Every way into a block brings the frame register at the physical
         // register 0.
         body.macro_assembler.assume_frame_shift(0);
+        self.record_position(body, Some((block.scope, block.program_counter)));
         // A debug build's refusal of a dead register names the instruction
         // being run: the block's first, then each frame node's.
         body.program_counter = block.program_counter;
@@ -436,12 +580,19 @@ impl Emitter<'_> {
         self.moves(body, positions.phi_definition(block_id));
         for (index, node) in block.nodes.iter().enumerate() {
             let use_position = positions.node_use(block_id, index);
+            // The moves into a node's operands are its instruction's.
+            if let Some(position) = node_position(node, block.scope) {
+                self.record_position(body, Some(position));
+            }
             self.hold(body, use_position);
             self.moves(body, use_position);
             self.node(body, block_id, index, node, use_position);
             self.moves(body, use_position + 1);
         }
         let end_use = positions.end_use(block_id);
+        if let Some(position) = end_position(&block.end, block.scope) {
+            self.record_position(body, Some(position));
+        }
         self.hold(body, end_use);
         self.moves(body, end_use);
         self.end(body, block_id, next, end_use);
@@ -897,6 +1048,7 @@ impl Emitter<'_> {
     fn emit_mixed_paths(&mut self, body: &mut BodyAssembler) {
         for path in std::mem::take(&mut self.mixed_paths) {
             body.macro_assembler.assembler().bind(path.label);
+            self.record_position(body, None);
             body.macro_assembler.assume_frame_shift(path.shift);
             self.hold(body, path.position);
             Self::float_operation(
@@ -990,6 +1142,9 @@ impl Emitter<'_> {
             (block_id, PointKind::Frame { node: index }),
             "internal: a frame node's write-back is its own"
         );
+        // The write-back belongs to the instruction: it is what the frame
+        // owes the template.
+        self.record_position(body, Some((scope, program_counter)));
         for (register, _, location) in &point.stores {
             let Location::Register(from) = location else {
                 panic!("internal: a value not in its frame word is in a register");
@@ -1374,6 +1529,7 @@ impl Emitter<'_> {
             shift: body.macro_assembler.frame_shift(),
             stores: self.trap_stores(position),
             point,
+            scope,
             program_counter,
             site,
         });
@@ -1385,6 +1541,13 @@ impl Emitter<'_> {
     fn emit_traps(&mut self, body: &mut BodyAssembler) {
         for trap in std::mem::take(&mut self.traps) {
             body.macro_assembler.assembler().bind(trap.label);
+            let innermost = &self.metadata.points[trap.point].scopes[0];
+            debug_assert_eq!(
+                (trap.scope, trap.program_counter),
+                (innermost.scope, innermost.program_counter),
+                "internal: a trap runs again the instruction its point stops at"
+            );
+            self.record_position(body, Some((trap.scope, trap.program_counter)));
             body.macro_assembler.assume_frame_shift(trap.shift);
             for (register, from) in trap.stores {
                 body.macro_assembler.store_physical_register(register, from);
@@ -1403,6 +1566,11 @@ impl Emitter<'_> {
     fn emit_polls(&mut self, body: &mut BodyAssembler) {
         for poll in std::mem::take(&mut self.polls) {
             body.macro_assembler.assembler().bind(poll.label);
+            // The poll exits in its point's innermost scope, at the loop's
+            // head, and its entry goes back in there.
+            let innermost = &self.metadata.points[poll.point].scopes[0];
+            let position = Some((innermost.scope, innermost.program_counter));
+            self.record_position(body, position);
             body.macro_assembler.assume_frame_shift(0);
             for (register, from) in poll.stores {
                 body.macro_assembler.store_physical_register(register, from);
@@ -1487,6 +1655,7 @@ impl Emitter<'_> {
     fn emit_trampolines(&mut self, body: &mut BodyAssembler) {
         for (label, shift, block) in std::mem::take(&mut self.trampolines) {
             body.macro_assembler.assembler().bind(label);
+            self.record_position(body, None);
             body.macro_assembler.assume_frame_shift(shift);
             body.macro_assembler.shift_frame(-shift);
             body.macro_assembler.assembler().jump(block);
@@ -2003,6 +2172,73 @@ mod tests {
         }
         assert!(inlined > 10, "{inlined} trees inline");
         assert!(eliminated > 5, "{eliminated} blocks eliminated");
+    }
+
+    /// A listing's positions cover the code: annotated, every tree of the
+    /// inlining corpus lists a position at its first byte, then one at
+    /// each offset where the scope or program counter changes, ascending
+    /// and below the code's end, each naming a scope the copy laid out
+    /// and an instruction of its body -- inlined scopes' among them -- and
+    /// the annotations change no byte of the code.
+    #[test]
+    fn positions_ascend_and_cover_the_code() {
+        use crate::trace_events::Position;
+
+        let mut inlined_positions = 0usize;
+        for tree in crate::jit::optimizing::inlining_corpus() {
+            let compiled = |annotating: bool| {
+                let mut macro_assembler = MacroAssembler::new(Abi::host());
+                macro_assembler.set_annotating(annotating);
+                crate::jit::optimizing::compile_tree(
+                    &tree,
+                    macro_assembler,
+                    role_of(&tree.root),
+                    false,
+                    Speculation::Traps,
+                )
+                .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"))
+            };
+            let (plain, listed) = (compiled(false), compiled(true));
+            assert_eq!(plain.code.bytes, listed.code.bytes);
+            assert!(plain.positions.is_empty() && plain.annotations.is_empty());
+            let code_end = listed.words.as_ref().map_or_else(
+                || u32::try_from(listed.code.bytes.len()).expect("small"),
+                |words| words.start,
+            );
+            let laid_out: Vec<&super::LaidOutScope> = listed.scopes.iter().flatten().collect();
+            assert_eq!(listed.positions.first().map(|(offset, _)| *offset), Some(0));
+            assert!(
+                listed
+                    .positions
+                    .windows(2)
+                    .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 != pair[1].1),
+                "{:?}",
+                listed.positions
+            );
+            for (offset, position) in &listed.positions {
+                assert!(*offset < code_end, "{offset} past the code");
+                if let Position::Instruction {
+                    scope,
+                    program_counter,
+                } = position
+                {
+                    let body = laid_out
+                        .get(*scope as usize)
+                        .unwrap_or_else(|| panic!("s{scope} is no scope laid out"));
+                    let snapshot = if *scope == 0 {
+                        &tree.root
+                    } else {
+                        tree.snapshot_of(body.code_id)
+                            .expect("every scope's body is snapshotted")
+                    };
+                    assert!((*program_counter as usize) < snapshot.instructions.len());
+                    if *scope > 0 {
+                        inlined_positions += 1;
+                    }
+                }
+            }
+        }
+        assert!(inlined_positions > 0, "the corpus inlines");
     }
 
     /// `r15 := r0 + r1. r16 := r15 < r2. ^r16`, each operation's fallback

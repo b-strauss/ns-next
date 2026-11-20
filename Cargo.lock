@@ -420,6 +420,7 @@ name = "ns-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "iced-x86",
  "indoc",
  "libtest-mimic",
  "mimalloc",
@@ -430,6 +431,8 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "yaxpeax-arch",
+ "yaxpeax-arm",
 ]
 
 [[package]]

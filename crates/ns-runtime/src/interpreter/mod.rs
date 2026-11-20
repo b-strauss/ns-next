@@ -1046,7 +1046,7 @@ impl Interpreter {
                     // What the run's last stretch recorded is delivered
                     // before the host reads its result, so that no event
                     // waits for a run that may never come.
-                    if mutator.jit.tracer.has_pending() {
+                    if mutator.jit.tracer.flush_due() {
                         crate::trace_events::flush(mutator);
                     }
                 });
@@ -1163,7 +1163,7 @@ impl Interpreter {
         // Its event, recorded between runs, is delivered now rather than
         // wait for a run that may never come.
         self.enter(|mutator| {
-            if mutator.jit.tracer.has_pending() {
+            if mutator.jit.tracer.flush_due() {
                 crate::trace_events::flush(mutator);
             }
         });
@@ -1182,21 +1182,29 @@ impl Interpreter {
         self.world.jit_statistics()
     }
 
-    /// Installs `sink` to receive the trace events of `categories` whose
-    /// bodies `filter` selects (`docs/design/developer-tool.md`, "Stage
-    /// 1: tracing"), replacing any sink installed before and dropping
-    /// what it had not received; with no category it is the same as no
-    /// tracing. Every event is delivered, in order, at the end of the
-    /// interpreter's compile trigger, the safepoint or the host's run it
-    /// happened in -- one a leaf of machine code recorded at the next
-    /// safepoint or host's return.
+    /// Installs `sink` to receive the trace events of `settings`'
+    /// categories whose bodies its filter selects, and the listings its
+    /// printing names of the bodies its print filter selects
+    /// (`docs/design/developer-tool.md`, "Stage 1: tracing", "Stage 2:
+    /// printing code"), replacing any sink installed before and dropping
+    /// what it had not received; with no category and nothing printed it
+    /// is the same as no tracing. Every event is delivered, in order, at
+    /// the end of the interpreter's compile trigger, the safepoint or the
+    /// host's run it happened in -- one a leaf of machine code recorded at
+    /// the next safepoint or host's return. It flushes before it returns,
+    /// so that the bodies the boot and the program's load made are listed
+    /// at once.
     pub fn set_trace(
         &mut self,
-        categories: crate::trace_events::TraceCategories,
-        filter: crate::trace_events::TraceFilter,
+        settings: crate::trace_events::TraceSettings,
         sink: Box<dyn crate::trace_events::TraceSink>,
     ) {
-        self.enter(|mutator| mutator.jit.tracer.install(categories, filter, sink));
+        self.enter(|mutator| {
+            mutator.jit.tracer.install(settings, sink);
+            if mutator.jit.tracer.flush_due() {
+                crate::trace_events::flush(mutator);
+            }
+        });
     }
 
     /// How many trace events were recorded since the sink was installed,
@@ -1251,7 +1259,7 @@ impl Interpreter {
             }
             // A replaced zone's event, recorded between runs, is
             // delivered now rather than wait for a run that may never come.
-            if mutator.jit.tracer.has_pending() {
+            if mutator.jit.tracer.flush_due() {
                 crate::trace_events::flush(mutator);
             }
         });
@@ -1273,7 +1281,7 @@ impl Interpreter {
             mutator.heap.forget_machine_entries();
             // The replacement's event, recorded between runs, is delivered
             // now rather than wait for a run that may never come.
-            if mutator.jit.tracer.has_pending() {
+            if mutator.jit.tracer.flush_due() {
                 crate::trace_events::flush(mutator);
             }
         });
@@ -1290,7 +1298,7 @@ impl Interpreter {
             mutator.compact_code_zone();
             // The compaction's events, recorded between runs, are
             // delivered now rather than wait for a run that may never come.
-            if mutator.jit.tracer.has_pending() {
+            if mutator.jit.tracer.flush_due() {
                 crate::trace_events::flush(mutator);
             }
         });

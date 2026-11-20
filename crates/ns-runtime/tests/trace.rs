@@ -11,12 +11,13 @@ use std::rc::Rc;
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
     CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, HoldReason,
-    InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
+    InlineDecline, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState,
+    VacateCause,
 };
 use ns_runtime::{
-    Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
-    SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceFilter,
-    TraceSink,
+    Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName,
+    Printing, Root, SourceOrigin, Symbol, TraceCategories, TraceCategory, TraceEvent,
+    TraceEventKind, TraceFilter, TraceSettings, TraceSink,
 };
 
 /// A sink that keeps every event it receives where the test reads it.
@@ -25,6 +26,17 @@ struct Collector(Rc<RefCell<Vec<TraceEvent>>>);
 impl TraceSink for Collector {
     fn event(&mut self, event: &TraceEvent) {
         self.0.borrow_mut().push(event.clone());
+    }
+}
+
+/// The settings that trace `categories` through `filter` and print
+/// nothing: stage 1's.
+fn tracing(categories: TraceCategories, filter: TraceFilter) -> TraceSettings {
+    TraceSettings {
+        categories,
+        filter,
+        printing: Printing::default(),
+        print_filter: TraceFilter::everything(),
     }
 }
 
@@ -136,8 +148,7 @@ fn no_sink_no_events_and_no_cost() {
     let events = Rc::new(RefCell::new(Vec::new()));
     let mut without_categories = run_hot(|interpreter| {
         interpreter.set_trace(
-            TraceCategories::default(),
-            TraceFilter::everything(),
+            tracing(TraceCategories::default(), TraceFilter::everything()),
             Box::new(Collector(Rc::clone(&events))),
         );
     });
@@ -228,7 +239,7 @@ fn traced_made_by(
         |interpreter| {
             interpreter.set_jit_stress(false);
             interpreter.set_optimize_stress(false);
-            interpreter.set_trace(categories, filter, sink);
+            interpreter.set_trace(tracing(categories, filter), sink);
             prepare(interpreter);
         },
         again,
@@ -634,6 +645,126 @@ fn a_hot_loop_is_traced_requested_and_optimized() {
                         if in_body == "Test>>run" && callee == "Test>>step:"
                 )),
         "{events:?}"
+    );
+}
+
+/// A hot loop that compares a string with `==`, which the plan inlines
+/// as `Value>>==`, whose leaf the graph does not express for a string,
+/// and sends `value:` to a block that weighs more than a block the plan
+/// inlines may: thirty sends of `step:`. Before the loop, a nested
+/// class's accessor and its factory run, neither of them snapshotted.
+fn comparing_loop() -> String {
+    let steps: String = (0..30)
+        .map(|_| "        value:: self step: value.\n")
+        .collect();
+    formatdoc! {"
+        class Test = Object new () (
+          class Account = () ()
+
+          public run = (
+            |
+              account = Account new.
+              sum ::= 0.
+              index ::= 0.
+              heavy = [:number |
+                | value ::= number. |
+        {steps}        value
+              ].
+            |
+            [index < 1000000] whileTrue: [
+              ('a' == account) ifTrue: [
+                sum:: sum + 1].
+              sum:: sum + (heavy value: index).
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+
+          step: value = (
+            ^value + 1.
+          )
+        )
+    "}
+}
+
+/// The declines of callees that are no body are folded into one event
+/// per copy, counting them by reason, while a callee that is a body --
+/// the block that weighs too much -- keeps its own `declined` event.
+#[test]
+fn declines_of_no_body_are_folded_per_copy() {
+    let events = traced_spending(
+        &comparing_loop(),
+        &[TraceCategory::Optimize, TraceCategory::Inlining],
+        |interpreter| {
+            hot_loop_stress_off(interpreter);
+            // Off whatever the environment says: the cache stress mode
+            // vacates every cache at each safepoint, leaving the plan no
+            // receiver to inline `==` for, and the zone stress mode frees
+            // the code whose budget would request the copy.
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_caches(false);
+                interpreter.set_stress_zone(false);
+            }
+        },
+    );
+    let run = about(&events, "Test>>run");
+    assert!(
+        run.iter()
+            .any(|event| matches!(event.kind, TraceEventKind::Optimized { .. })),
+        "{events:?}"
+    );
+    // Every compile that made a plan traces its decisions, installed or
+    // not: an installed copy, a refusal after planning -- every refusal
+    // but too many instructions, which comes before the plan -- and a
+    // zone without room, which defers.
+    let planned = run
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                TraceEventKind::Optimized { .. }
+                    | TraceEventKind::OptimizationDeferred {
+                        reason: Deferral::ZoneFull,
+                        ..
+                    }
+            ) || matches!(
+                event.kind,
+                TraceEventKind::OptimizationRefused { reason, .. }
+                    if reason != CompileRefusal::TooManyInstructions
+            )
+        })
+        .count();
+    let folded: Vec<&Vec<(InlineDecline, u32)>> = run
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TraceEventKind::InlineDeclinedNoBody { reasons, .. } => Some(reasons),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(folded.len(), planned, "one per planned compile: {events:?}");
+    for reasons in &folded {
+        // `Account` and `new`, which ran once before the loop, and the
+        // string's `==` leaf, in declaration order.
+        assert_eq!(
+            reasons.as_slice(),
+            [
+                (InlineDecline::NotSnapshotted, 2),
+                (InlineDecline::NotExpressed, 1)
+            ],
+            "{events:?}"
+        );
+    }
+    assert!(
+        run.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::InlineDeclined {
+                callee,
+                reason: InlineDecline::OverWeight,
+                ..
+            } if callee == "[] in Test>>run"
+        )),
+        "the heavy block declined on its own: {events:?}"
     );
 }
 
@@ -1310,10 +1441,12 @@ fn a_transition_the_miss_leaf_makes_is_traced() {
         interpreter.set_optimization_budget(i64::MAX);
         caches_stress_off(interpreter);
         interpreter.set_trace(
-            TraceCategories::default()
-                .with(TraceCategory::Compile)
-                .with(TraceCategory::Caches),
-            TraceFilter::everything(),
+            tracing(
+                TraceCategories::default()
+                    .with(TraceCategory::Compile)
+                    .with(TraceCategory::Caches),
+                TraceFilter::everything(),
+            ),
             sink,
         );
     });
@@ -1380,8 +1513,10 @@ fn the_queue_is_empty_after_a_run() {
         interpreter.set_optimization_budget(i64::MAX);
         caches_stress_off(interpreter);
         interpreter.set_trace(
-            TraceCategories::default().with(TraceCategory::Caches),
-            TraceFilter::everything(),
+            tracing(
+                TraceCategories::default().with(TraceCategory::Caches),
+                TraceFilter::everything(),
+            ),
             sink,
         );
     });
@@ -1485,8 +1620,10 @@ fn a_reclaimed_id_s_invalidation_names_its_class() {
         interpreter.set_stress_suspend(false);
     }
     interpreter.set_trace(
-        TraceCategories::default().with(TraceCategory::Deoptimize),
-        TraceFilter::everything(),
+        tracing(
+            TraceCategories::default().with(TraceCategory::Deoptimize),
+            TraceFilter::everything(),
+        ),
         Box::new(Collector(Rc::clone(&events))),
     );
     let class = interpreter.load_module(&resolved);
@@ -2006,8 +2143,10 @@ fn a_request_a_reclaimed_id_drops_is_traced_dropped() {
     interpreter.set_stress_collect(false);
     interpreter.set_stress_suspend(false);
     interpreter.set_trace(
-        TraceCategories::default().with(TraceCategory::Optimize),
-        TraceFilter::everything(),
+        tracing(
+            TraceCategories::default().with(TraceCategory::Optimize),
+            TraceFilter::everything(),
+        ),
         Box::new(Collector(Rc::clone(&events))),
     );
     let class = interpreter.load_module(&resolved);

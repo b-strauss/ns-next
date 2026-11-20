@@ -51,6 +51,10 @@ use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
 use super::stubs::BlockWord;
+use crate::trace_events::Annotation;
+
+/// The name a listing gives a transfer's jump into the body's twin.
+const TWIN: &str = "twin";
 #[cfg(debug_assertions)]
 use super::stubs::ExitKind;
 
@@ -262,6 +266,7 @@ pub(super) fn transfer_to_twin(body: &mut BodyAssembler) -> Lowering {
             Heap::machine_program_counter_word(program_counter),
         );
     }
+    macro_assembler.annotate(Annotation::Target(TWIN));
     macro_assembler.assembler().jump_register(target);
     Lowering::Template
 }
@@ -920,7 +925,13 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
             Operand::CodeAddress,
         ],
     );
-    super::sends::call_decided(body, window_end, 0, destination);
+    super::sends::call_decided(
+        body,
+        window_end,
+        0,
+        destination,
+        super::sends::FORCING_CALLEE,
+    );
     body.macro_assembler.assembler().bind(done);
     Lowering::Transfer
 }

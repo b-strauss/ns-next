@@ -19,9 +19,11 @@ use ns_assembler::{
     FloatRegister, Label, LabelReference, Memory, Operation, Register, Width, X64,
 };
 
+use super::leaves::Leaf;
 use super::stubs::{BlockWord, ExitKind};
 use crate::bytecode::IntegerOperation;
 use crate::heap::machine_words::{MachineWord, MachineWords};
+use crate::trace_events::{Annotation, Architecture};
 
 /// The platform calling convention the stubs and leaf calls cross.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,6 +123,14 @@ impl Abi {
             Abi::Windows64
         } else {
             Abi::SystemV
+        }
+    }
+
+    /// The architecture of this convention, as a listing names it.
+    pub(crate) fn architecture(self) -> Architecture {
+        match self {
+            Abi::Windows64 | Abi::SystemV => Architecture::X64,
+            Abi::Aapcs64 => Architecture::Aarch64,
         }
     }
 
@@ -706,6 +716,36 @@ pub(crate) struct MacroAssembler {
     /// compiler's tests count to see a known operand's left out.
     #[cfg(test)]
     small_integer_tag_tests: usize,
+    /// What each call or jump out of the code reaches, at a label bound
+    /// where its instruction starts (`annotate`), and where code out of
+    /// the straight line starts (`mark_out_of_line`): what a listing of
+    /// the code shows (`docs/design/developer-tool.md`, decision 4).
+    /// `None` unless a listing is printed, so that a compile nothing
+    /// prints records nothing; a label emits no byte either way.
+    annotations: Option<Annotations>,
+}
+
+/// The annotations a macro assembler records (`MacroAssembler::annotate`).
+#[derive(Default)]
+struct Annotations {
+    calls: Vec<(Label, Annotation)>,
+    out_of_line: Vec<Label>,
+}
+
+/// A macro assembler's code laid out (`MacroAssembler::finish_annotated`):
+/// the code, every address recorded with its site, the offset past its
+/// last instruction, and, when it was annotating, its annotations and the
+/// starts of its code out of the straight line as offsets from its start,
+/// ascending.
+pub(crate) struct Finished {
+    pub(crate) assembled: Assembled,
+    pub(crate) sites: Vec<(Label, u32)>,
+    /// Where the instructions end: the alignment of the data words, which
+    /// no instruction is, starts there, so that a listing decodes no
+    /// padding as code.
+    pub(crate) instructions_end: u32,
+    pub(crate) annotations: Vec<(u32, Annotation)>,
+    pub(crate) out_of_line: Vec<u32>,
 }
 
 /// The alignment of a body's data words, a cache line's, which they share
@@ -741,6 +781,39 @@ impl MacroAssembler {
             frame_shift: 0,
             #[cfg(test)]
             small_integer_tag_tests: 0,
+            annotations: None,
+        }
+    }
+
+    /// Makes the code emitted from now on record its annotations
+    /// (`annotate`, `mark_out_of_line`) or not, for a listing of it.
+    pub(crate) fn set_annotating(&mut self, annotating: bool) {
+        self.annotations = annotating.then(Annotations::default);
+    }
+
+    /// Whether the code records its annotations (`set_annotating`).
+    pub(crate) fn is_annotating(&self) -> bool {
+        self.annotations.is_some()
+    }
+
+    /// Records that the instruction emitted next calls or jumps where
+    /// `annotation` says, when annotating; nothing otherwise.
+    pub(crate) fn annotate(&mut self, annotation: Annotation) {
+        if let Some(annotations) = self.annotations.as_mut() {
+            let label = self.assembler.label();
+            self.assembler.bind(label);
+            annotations.calls.push((label, annotation));
+        }
+    }
+
+    /// Records that code out of the straight line starts here -- the
+    /// paths a failed check takes, a backward jump's tail, a dispatching
+    /// entry -- when annotating; nothing otherwise.
+    pub(crate) fn mark_out_of_line(&mut self) {
+        if let Some(annotations) = self.annotations.as_mut() {
+            let label = self.assembler.label();
+            self.assembler.bind(label);
+            annotations.out_of_line.push(label);
         }
     }
 
@@ -1507,6 +1580,7 @@ impl MacroAssembler {
         let shim = self.block_word(BlockWord::Shim);
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, shim);
+        self.annotate(Annotation::Leaf(Leaf::name_of(leaf)));
         self.assembler.call_register(roles.idiom_scratch);
         self.assembler
             .load(Width::Word64, stack_pointer, saved_stack_pointer);
@@ -1517,7 +1591,14 @@ impl MacroAssembler {
     /// address the processor pushes, with nothing emitted between the two.
     /// A send's call goes through here so that the exit's walk can map
     /// the return address it finds on the native stack back to the send.
-    pub(crate) fn call_returning(&mut self, target: Register) -> Label {
+    pub(crate) fn call_returning(
+        &mut self,
+        target: Register,
+        annotation: Option<Annotation>,
+    ) -> Label {
+        if let Some(annotation) = annotation {
+            self.annotate(annotation);
+        }
         self.assembler.call_register(target);
         let return_address = self.assembler.label();
         self.assembler.bind(return_address);
@@ -1570,6 +1651,10 @@ impl MacroAssembler {
         let stub = self.block_word(BlockWord::ExitStub);
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, stub);
+        self.annotate(Annotation::Exit {
+            kind: kind.name(),
+            program_counter,
+        });
         self.assembler.jump_register(roles.idiom_scratch);
     }
 
@@ -3528,9 +3613,18 @@ impl MacroAssembler {
 
     /// `finish`, answering besides the code every address recorded with
     /// its site (`set_site`), each as a label bound at it.
-    pub(crate) fn finish_with_sites(
-        mut self,
-    ) -> Result<(Assembled, Vec<(Label, u32)>), AssemblyError> {
+    pub(crate) fn finish_with_sites(self) -> Result<(Assembled, Vec<(Label, u32)>), AssemblyError> {
+        self.finish_annotated()
+            .map(|finished| (finished.assembled, finished.sites))
+    }
+
+    /// `finish_with_sites`, answering besides the annotations recorded
+    /// (`annotate`) and the starts of the code out of the straight line
+    /// (`mark_out_of_line`), the cold paths' among them, as offsets.
+    pub(crate) fn finish_annotated(mut self) -> Result<Finished, AssemblyError> {
+        if !self.cold_paths.is_empty() {
+            self.mark_out_of_line();
+        }
         #[cfg(debug_assertions)]
         let mut holds = std::mem::take(&mut self.cold_path_holds).into_iter();
         let mut sites = std::mem::take(&mut self.cold_path_sites).into_iter();
@@ -3639,6 +3733,8 @@ impl MacroAssembler {
                 }
             }
         }
+        let instructions_end = self.assembler.label();
+        self.assembler.bind(instructions_end);
         if let Some(label) = self.body_words_label {
             let bytes = u32::try_from(self.body_words)
                 .ok()
@@ -3652,7 +3748,33 @@ impl MacroAssembler {
             self.assembler.align_data(BODY_WORDS_ALIGNMENT);
         }
         let site_addresses = std::mem::take(&mut self.site_addresses);
-        Ok((self.assembler.finish()?, site_addresses))
+        let annotations = self.annotations.take();
+        let assembled = self.assembler.finish()?;
+        let offset_of = |label: Label| {
+            assembled.label_offsets[label.index()]
+                .expect("internal: an annotation's label is bound")
+        };
+        let instructions_end = offset_of(instructions_end);
+        let (annotations, out_of_line) = annotations.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |recorded| {
+                (
+                    recorded
+                        .calls
+                        .into_iter()
+                        .map(|(label, annotation)| (offset_of(label), annotation))
+                        .collect(),
+                    recorded.out_of_line.into_iter().map(offset_of).collect(),
+                )
+            },
+        );
+        Ok(Finished {
+            assembled,
+            sites: site_addresses,
+            instructions_end,
+            annotations,
+            out_of_line,
+        })
     }
 }
 

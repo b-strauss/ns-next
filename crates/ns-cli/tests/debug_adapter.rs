@@ -972,6 +972,102 @@ fn a_frame_after_non_ascii_text_reports_its_line_and_column() {
     assert_eq!(exit_code_reported(&mut client), 0);
 }
 
+/// Whether `bytecode` holds the line of the instruction a frame stands
+/// at: its index followed at once by `->`.
+fn marks_an_instruction(bytecode: &str) -> bool {
+    bytecode.lines().any(|line| {
+        line.split_whitespace()
+            .next()
+            .is_some_and(|word| word.ends_with("->") && word.len() > 2)
+    })
+}
+
+#[test]
+fn frame_code_marks_the_stopped_instruction() {
+    let (_directory, path) = program("Wide", NON_ASCII);
+    let mut client = DapClient::connect_mode(&path);
+    breakpoints_before_the_start(&mut client, &path, &[7]);
+    client.stopped("breakpoint");
+    let code = client.succeed("nsNext/frameCode", json!({ "frameId": 1 }));
+    assert_eq!(code["body"], "Wide>>report:", "{code}");
+    let bytecode = code["bytecode"].as_str().unwrap_or_default();
+    assert!(marks_an_instruction(bytecode), "{code}");
+    // The top frame stands at the stop's safepoint, never at a call its
+    // machine code returns from.
+    assert_eq!(code["machineCode"], Value::Null, "{code}");
+    // The caller is marked at the send it waits on.
+    let caller = client.succeed("nsNext/frameCode", json!({ "frameId": 2 }));
+    assert_eq!(caller["body"], "Wide>>main:args:", "{caller}");
+    let bytecode = caller["bytecode"].as_str().unwrap_or_default();
+    assert!(marks_an_instruction(bytecode), "{caller}");
+
+    let refused = client.request("nsNext/frameCode", json!({ "frameId": 9 }));
+    assert_eq!(refused["success"], false, "{refused}");
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
+/// A root whose `outer:`, sent 50 times, sends `report:`, whose second
+/// statement, line 11, a breakpoint stands on: past the first, so that
+/// `report:`'s body, compiled again after the patch freed its code, is
+/// called from `outer:`'s machine code rather than sent by its exit.
+const HOT_CALLER: &str = indoc! {"
+    class Hot = Object new () (
+      public main: platform args: arguments = (
+        1 to: 50 do: [:index | self outer: index].
+      )
+      outer: index = (
+        ^self report: index
+      )
+      report: index = (
+        | total |
+        total:: self double: index.
+        ^total + 1
+      )
+      double: index = (
+        ^index + index
+      )
+    ) : ()
+"};
+
+#[test]
+fn frame_code_marks_where_a_compiled_caller_returns() {
+    let (_directory, path) = program("Hot", HOT_CALLER);
+    let mut client = DapClient::connect_mode(&path);
+    client.initialize();
+    client.attach(false);
+    client.succeed(
+        "setBreakpoints",
+        json!({
+            "source": file_source(&path),
+            "breakpoints": [{ "line": 11, "hitCondition": "40" }],
+        }),
+    );
+    client.configuration_done();
+    client.stopped("breakpoint");
+    let caller = client.succeed("nsNext/frameCode", json!({ "frameId": 2 }));
+    assert_eq!(caller["body"], "Hot>>outer:", "{caller}");
+    // `outer:` runs its machine code from its second entry on, where a
+    // JIT compiles it; without one it goes on interpreted.
+    if let Some(machine_code) = caller["machineCode"].as_str() {
+        assert!(
+            machine_code.starts_with("--- code {Hot>>outer:} baseline "),
+            "{machine_code}"
+        );
+        assert!(machine_code.ends_with("--- end\n"), "{machine_code}");
+        assert_eq!(
+            machine_code
+                .lines()
+                .filter(|line| line.starts_with("  ->+0x"))
+                .count(),
+            1,
+            "{machine_code}"
+        );
+    }
+    client.succeed("continue", json!({ "threadId": 1 }));
+    assert_eq!(exit_code_reported(&mut client), 0);
+}
+
 /// A root whose first statement sends `do:` to an Array, a Kernel method.
 const WALKER: &str = indoc! {"
     class Walker = Object new () (

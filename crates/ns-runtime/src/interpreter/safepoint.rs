@@ -131,7 +131,7 @@ impl Interpreter {
     /// Delivers every trace event waiting for a flush.
     fn flush_trace(&mut self) {
         self.enter(|mutator| {
-            if mutator.jit.tracer.has_pending() {
+            if mutator.jit.tracer.flush_due() {
                 crate::trace_events::flush(mutator);
             }
         });

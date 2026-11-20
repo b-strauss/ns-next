@@ -110,7 +110,77 @@ impl Leaf {
     pub(crate) fn index(self) -> LeafIndex {
         LeafIndex(self as u32)
     }
+
+    /// Every leaf, in index order.
+    const ALL: [Leaf; 20] = [
+        Leaf::Step,
+        Leaf::Miss,
+        Leaf::MaterializeFrame,
+        Leaf::MaterializeInnermost,
+        Leaf::Act,
+        Leaf::Mirror,
+        Leaf::MirrorMethod,
+        Leaf::Allocate,
+        Leaf::Remember,
+        Leaf::OwnSlots,
+        Leaf::Initializer,
+        Leaf::Divorce,
+        Leaf::ClosureSite,
+        Leaf::OuterLocalSite,
+        Leaf::Forcing,
+        Leaf::Cut,
+        Leaf::CutFrame,
+        Leaf::GrowStack,
+        Leaf::Twin,
+        Leaf::Budget,
+    ];
+
+    /// The leaf's name, as a machine-code listing names a call of it:
+    /// kebab case.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Leaf::Step => "step",
+            Leaf::Miss => "miss",
+            Leaf::MaterializeFrame => "materialize-frame",
+            Leaf::MaterializeInnermost => "materialize-innermost",
+            Leaf::Act => "act",
+            Leaf::Mirror => "mirror",
+            Leaf::MirrorMethod => "mirror-method",
+            Leaf::Allocate => "allocate",
+            Leaf::Remember => "remember",
+            Leaf::OwnSlots => "own-slots",
+            Leaf::Initializer => "initializer",
+            Leaf::Divorce => "divorce",
+            Leaf::ClosureSite => "closure-site",
+            Leaf::OuterLocalSite => "outer-local-site",
+            Leaf::Forcing => "forcing",
+            Leaf::Cut => "cut",
+            Leaf::CutFrame => "cut-frame",
+            Leaf::GrowStack => "grow-stack",
+            Leaf::Twin => "twin",
+            Leaf::Budget => "budget",
+        }
+    }
+
+    /// The name of the leaf at `index`, which a leaf call names; a test's
+    /// leaf outside the table is `unknown`.
+    pub(crate) fn name_of(index: LeafIndex) -> &'static str {
+        usize::try_from(index.0)
+            .ok()
+            .and_then(|index| Leaf::ALL.get(index))
+            .map_or("unknown", |leaf| leaf.name())
+    }
 }
+
+// `Leaf::ALL` lists every leaf at its index.
+const _: () = {
+    let mut index = 0;
+    while index < Leaf::ALL.len() {
+        assert!(Leaf::ALL[index] as usize == index);
+        index += 1;
+    }
+    assert!(Leaf::Budget as usize + 1 == Leaf::ALL.len());
+};
 
 /// `leaf`, behind the count every call through the table takes
 /// (`JitStatistics::leaf_calls`): a function of its own per leaf, so that

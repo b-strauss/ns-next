@@ -7,13 +7,16 @@ why a loop stayed in the interpreter, why an optimized copy was retired,
 why a send went megamorphic -- is today answered only by a counter or a
 print added for the occasion.
 
-**Partial.** Stage 1, tracing, is built ("Stage 1: tracing"): `ns-next
-run --trace=<categories>` writes a line on standard error for every
-decision of the tiers and the caches, with its reasons. Printing the
-code a run makes and the shell are designed here and built as stages 2
-and 3, in that order ("Planned: the stages"); stage 2 is next. The
-profiler is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A
-profiler").
+**Partial.** Stages 1 and 2 are built. Stage 1, tracing ("Stage 1:
+tracing"): `ns-next run --trace=<categories>` writes a line on standard
+error for every decision of the tiers and the caches, with its reasons.
+Stage 2, printing code ("Stage 2: printing code"): `--print-bytecode`,
+`--print-code` and `--print-inlining` print the bytecode a run makes,
+the machine code it installs and the inlining plan of every optimizing
+compile, and the debugger answers a stopped frame's code
+(`nsNext/frameCode`, `debug_code`). The shell is designed here and
+built as stage 3, which is next ("Planned: the stages"). The profiler
+is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## What exists
 
@@ -43,8 +46,17 @@ profiler").
   -- which the MCP server's locations reach through the agent -- and the
   trace filter read names through them, so that a refusal reads the same
   in every tool.
-- A body's machine code can be read out of the zone (`CodeWriter::bytes`)
-  and mapped to its instructions (`ProgramCounterMap`).
+- The listings print the code ("Stage 2: printing code"): every body's
+  bytecode when its mixin is made, every install's machine code --
+  baseline, twin and optimized, an optimized copy with its tree of
+  inlined scopes -- annotated with the bytecode each stretch lowers and
+  what each call or jump out of the body reaches, and every optimizing
+  compile's inlining plan with its outcome, written by `ns-next run
+  --print-bytecode`, `--print-code` and `--print-inlining` between a
+  head line and `--- end`; and a stopped frame's bytecode and machine
+  code, each marked where the frame stands, through the debugger
+  (`Command::FrameCode`, the agent's `nsNext/frameCode`, the MCP
+  server's `debug_code`).
 - The debugger evaluates an expression as a block over a stopped frame
   ([debugger.md](debugger.md), "Evaluation"); nothing evaluates without
   one. `FrameKind::TopLevel` exists for a top-level activation, which only
@@ -92,8 +104,8 @@ dependencies of `ns-cli` only.** The runtime hands out a body's bytes with
 their annotations -- each instruction's bytecode index from the
 `ProgramCounterMap`, the name of every stub and leaf a call reaches, the
 extent of the data words -- and `ns-next` decodes them. The two decoders
-are the ones every encoding of `ns-assembler` is already checked against
-(dev-dependencies today), so a listing agrees with the encoder's tests by
+are the ones every encoding of `ns-assembler` is checked against (its
+dev-dependencies), so a listing agrees with the encoder's tests by
 construction; a decoder of our own would repeat them, and `ns-runtime`
 keeps no external dependency. The reason the dependency survives review:
 without it machine code cannot be read at all. V8 writes its own decoders
@@ -177,6 +189,110 @@ line is dropped by its bounded connection. A channel of their own over
 DAP stays possible, since the events are typed (decided with the user on
 2026-11-18).
 
+Decisions 10 to 16, stage 2's, were decided with the user on 2026-11-20.
+
+**10. A body's bytecode is printed when it is made.** Every body of a
+mixin is compiled when the mixin is built -- a module's when it is
+loaded, an edit's when it is installed -- or decoded, the shipped
+modules' from the embedded artifact and an image's from its code
+section; `--print-bytecode` prints each body the filter selects at that
+moment, its blocks indented under it as `disasm` prints them, whether or
+not it ever runs. V8 prints bytecode when an Ignition job is finalized
+(`v8/src/interpreter/interpreter.cc:254-283`), which its lazy compile
+makes the first call (`v8/src/codegen/compiler.cc:3100-3168`); here the
+making is the load, and printing at the first entry instead would test
+a bit at every push, in the interpreter and in machine code, the hot
+path the `codegen` gate holds. HotSpot prints bytecode only on demand
+(`jdk/src/hotspot/share/oops/method.cpp:1988-1997`). What runs is the
+trace's to say (`[compile] … trigger=entry`). Compiling a body's
+debugger metadata again makes no body and prints nothing, nor does an
+edit only checked. A body is printed at the first flush of the trace
+after its mixin joined the heap's tables -- the index of new sides the
+trace's names already keep (`trace_events/names.rs`) -- so that the
+bodies the boot and the program's load made before the host installed
+its sink are printed when it does, in the order their mixins joined, a
+shipped module built on first demand at the next safepoint, and an
+installed edit's new versions likewise.
+
+**11. An optimized copy's listing heads with its tree of scopes; each
+stretch of code names its scope by number.** The head numbers the
+scopes, `s0` the body's own, each indented under the scope it is
+inlined into with the send it is inlined at (`s2 {Demo/Account>>balance}
+at s1@5`); wherever the code's scope or program counter changes, a line
+names the scope, its innermost body and the program counter
+(`s2 {Demo/Account>>balance} @2`). The tree is the one `--print-inlining`
+prints. Strongtalk keeps the scopes as a tree apart from the code
+(`strongtalk/vm/code/nmethod.cpp:782-807`); HotSpot repeats the whole
+chain at every annotated instruction
+(`jdk/src/hotspot/share/code/nmethod.cpp:4265-4397`), which the number
+spares a listing of deep inlining, and V8 marks a stretch by an
+inlining id resolved through a table
+(`v8/src/codegen/source-position.cc:14-81`). A number tells apart the
+arms of a type-case that inline the same callee; the body's name beside
+it keeps every stretch of a callee found by its name.
+
+**12. Listings go to standard error, as the trace's lines do.** A
+listing follows the trace line of the event it belongs to, in one
+stream, and standard output stays the program's; the MCP server and the
+plugin receive it as they receive the trace (decision 9). V8's code
+tracer writes to standard output or a file
+(`v8/src/diagnostics/code-tracer.h:31-36`), HotSpot's listings to its
+`tty`; neither keeps the program's output apart.
+
+**13. `--print-inlining` prints the plan of every compile that made
+one, installed or refused.** The tree ends with the compile's outcome --
+the copy installed, or the refusal's reason as the trace spells it -- so
+that the question why a body stayed unoptimized is answered by the plan
+that failed. HotSpot's C1, Strongtalk and V8's `--trace-turbo-inlining`
+print the decisions as they are made, whatever the outcome
+(`jdk/src/hotspot/share/c1/c1_GraphBuilder.cpp:4858-4880`,
+`v8/src/compiler/js-inlining.cc:695-766`); C2 prints the last attempt
+only (`jdk/src/hotspot/share/opto/c2compiler.cpp:244-245`). A body
+refused before its plan was made -- more instructions than a program
+counter holds -- has none to print. A listing of code stays bound to its
+install (decision 5).
+
+**14. A machine-code listing shows offsets; the base address appears
+once, in its head.** An instruction's line carries its offset from the
+body's start; a target in the body is `+0x…`, a data word `data+0x…`,
+its offset from the first data word, and a call or jump out of it
+names the stub, leaf, exit, cell or target it reaches,
+so that a listing differs between runs only in its head and a test
+pins it. The code zone is placed anew by every run and compacted in
+one, which would make an absolute address in each line, as V8's
+(`v8/src/diagnostics/disassembler.cc:425-429`) and HotSpot's carry,
+stale. x64 is written in Intel syntax, AArch64 in the architecture's.
+
+**15. The agent answers a frame's code through a request of its own,
+`nsNext/frameCode`.** It answers the stopped frame's body's bytecode
+and, if the frame goes on in machine code, that code's listing, in the
+format `--print-bytecode` and `--print-code` print, each marked where
+the frame stands -- the bytecode at the instruction the frame is at,
+the machine code where the call the frame waits on returns. A stopped
+frame goes on in its body's baseline code or, reified, in its twin,
+never in an optimized copy, since a frame that goes on mid-body goes on
+in the baseline code ([execution.md](execution.md), "The optimizing
+tier's foundation"); so the listing is one of those two. The MCP
+server's tool `debug_code` passes the text on. DAP's `disassemble`
+request is built on memory addresses
+(`instructionPointerReference`), in which bytecode has no place, the
+scopes of decision 11 only a `symbol`, and the offsets of decision 14
+none; no client of ours uses it, and it can be answered from the same
+listings when one does.
+
+**16. The trace folds the declines of callees that are no body into one
+event per copy; `--print-inlining` keeps each.** A callee that is no
+body -- a leaf or primitive the graph does not express, a nested
+class's accessor, a factory -- is declined at nearly every send of it
+in every copy: every inlined `==` of a string declines its leaf, so that
+a line per decline would be most of a trace of a program that compares,
+each naming nothing. The `inlining` category writes them as one
+`declined-no-body` line per optimizing compile, counted by reason, and
+keeps its own `declined` line for every callee that is a body, the
+decline a body explains. The inlining plan is the compile's whole plan,
+and lists every decline as a line of its own, each at its scope's send
+(decided with the user on 2026-11-20).
+
 ## Stage 1: tracing
 
 **Built** (2026-11-18 to 2026-11-20;
@@ -192,13 +308,15 @@ same flags on.
 with `trace_events/names.rs` and `trace_events/filter.rs`; not `trace`,
 which is the collector's edge enumeration) declares the events and
 formats nothing (decision 2). A host installs a sink with
-`Interpreter::set_trace(categories, filter, sink)`: a `TraceCategories`
-set of `TraceCategory`s, a `TraceFilter` and a `Box<dyn TraceSink>`,
-whose `event` receives a `TraceEvent { category, body, kind }` -- `body`
-the name of the body the event is about, `None` for one about no body,
-`kind` a `TraceEventKind` whose reasons are enums, each with a `name()`
-in kebab case, the spelling of its line. Installing replaces the sink
-before and drops what it had not received; no category is no tracing.
+`Interpreter::set_trace(settings, sink)`: `TraceSettings` -- its
+`categories`, a `TraceCategories` set of `TraceCategory`s, and its
+`filter`, a `TraceFilter`, beside stage 2's `printing` and
+`print_filter` -- and a `Box<dyn TraceSink>`, whose `event` receives a
+`TraceEvent { category, body, kind }` -- `body` the name of the body the
+event is about, `None` for one about no body, `kind` a `TraceEventKind`
+whose reasons are enums, each with a `name()` in kebab case, the
+spelling of its line. Installing replaces the sink before and drops what
+it had not received; no category and no printing is no tracing.
 
 - **The switch.** The tracer (`EventTracer`, `JitState::tracer`) holds
   one bit per category, and every site tests its category's bit
@@ -305,7 +423,8 @@ event about no body.
 | `optimize` | `optimized key= entered= bytes= inlined-scopes= inlined-sites= type-case-arms= eliminated-blocks=` | The copy installed. |
 | `optimize` | `refused key= entered= reason=` | The copy refused for good, the reason a `CompileRefusal`'s. |
 | `inlining` | `inlined key= entered= in-body={} callee={} at=` | The plan inlined `callee` at the send at `at=` of the scope running `in-body`. |
-| `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead (`callee={}` where it is no body): `not-snapshotted` (the tree holds no body of it -- a method past the limits where it is sent, a nested class's accessor, a factory, a `doesNotUnderstand:` target), `not-expressed` (a leaf or primitive the graph does not express), `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`. |
+| `inlining` | `declined key= entered= in-body={} callee={} reason= at=` | The plan sends the callee instead, only for a callee that is a body (decision 16). The reasons, in declaration order, which `declined-no-body` counts in too: `not-snapshotted` (the tree holds no body of it -- a nested class's accessor, a factory, a `doesNotUnderstand:` target, or a method past the limits where it is sent) and `not-expressed` (a leaf or primitive the graph does not express), both given only for a callee that is no body and so written only by `declined-no-body`; `returns-otherwise`, `unknown-lazy-field`, `observed`, `reaches-past-the-compile`, `block-escapes`, `creates-a-block`, `over-weight`, `over-compile-limit`, `over-recursion-limit`, `out-of-registers`, given for a body, each in `declined-no-body` too where that body's code id the heap no longer names. |
+| `inlining` | `declined-no-body key= entered= count= reasons=<reason>:<count>,…` | Once per optimizing compile that declined a callee that is no body -- a leaf or primitive, or a body the heap no longer names -- `count=` the declines in all and `reasons=` each reason given with its count, in declaration order, as the `declined` row lists them, joined by commas (decision 16). |
 | `deoptimize` | `retired key= entered= reason= version=` | The copy retired for `traps` or `exits` (`jit::retire_optimized`), its version raised to `version=`, or `none` when it is refused for good. |
 | `deoptimize` | `invalidated key= entered= cause=` | The copy freed since what it was compiled against changed: `edit`, `bulk-forward`, `reclaimed-id`, `moved-feedback-base`, `breakpoint`, `stress` (the invalidate stress mode's round). |
 | `code-zone` | `freed key= entered= tier= cause=` | A body's `baseline` or `optimized` code freed, an optimized copy's key named as the optimizing tier's lines name it (`zone.rs`'s `mark_free`): `compaction`, `dead-body` (by a full collection; about no body, since its code died), `moved-feedback-base`, `breakpoint`, `abandoned`, `refused-for-its-twin`. A retired or invalidated copy's free is its `deoptimize` event alone. |
@@ -321,6 +440,7 @@ For example:
 [osr] {newspeak.core.Kernel/Number>>to:do:} osr-compiled at=3
 [optimize] {Demo/Account>>deposit:} requested key={Demo/Account} spent-by={[] in Demo>>main:args:} walk-end=not-inlined
 [inlining] {Demo>>main:args:} declined in-body={Demo>>main:args:} callee={[] in Demo>>run} reason=over-weight at=31
+[inlining] {Demo>>compare} declined-no-body key={Demo} count=3 reasons=not-snapshotted:2,not-expressed:1
 [deoptimize] {Demo>>run} retired reason=exits version=none
 [code-zone] {} compacted freeing=to-a-quarter bodies-freed=7
 [caches] {Demo>>main:args:} monomorphic->polymorphic selector=#deposit: site=3 receiver={Demo/Account}
@@ -405,36 +525,315 @@ assertions only, since only a host's collection
 request and the safepoint that compiles it. What no test reaches is
 [OPEN-WORK.md](../OPEN-WORK.md)'s "The trace's rarer events end to
 end". The plan's declines are unit tests in `jit/optimizing/plan.rs`, the filter's
-and the names' in their modules. The line format is pinned by
+and the names' in their modules; their trace, the declines of callees
+that are no body folded per copy beside a body's own `declined`, is
+`declines_of_no_body_are_folded_per_copy`, and the counting in
+declaration order `trace_events.rs`'s unit tests. The line format is pinned by
 `crates/ns-cli/src/trace.rs`'s unit tests, `--trace` and its refusals by
-`crates/ns-cli/tests/cli.rs`, `debug_start`'s trace by
+`crates/ns-cli/tests/cli.rs` (the folded line by
+`trace_inlining_folds_the_declines_of_no_body`), `debug_start`'s trace by
 `crates/ns-cli/tests/mcp.rs` (`a_trace_arrives_with_the_output`) and the
 runtime options by the plugin's `NewspeakRunConfigurationTest`; the
 CLI's and the MCP server's tests strip every stress mode from the child
 and answer nothing on a target without a JIT.
 
+## Stage 2: printing code
+
+**Built** (2026-11-20;
+`docs/superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md`).
+`ns-next run --print-bytecode`, `--print-code` and `--print-inlining`
+print, on standard error, every body's bytecode when its mixin is made,
+every install's machine code and every optimizing compile's inlining
+plan, selected by `--print-filter`; the debugger answers a stopped
+frame's code, which the agent's `nsNext/frameCode` and the MCP server's
+`debug_code` pass on.
+
+### The runtime's half
+
+`trace_events/listings.rs` declares the listings, and the sink receives
+them beside the events: `TraceSink::listing(&Listing)`, a default that
+ignores it, so that a sink of events alone needs nothing new. A
+`Listing` is a `BytecodeListing`, a `CodeListing` or an
+`InliningListing`. `TraceSettings::printing` (`Printing { bytecode,
+code, inlining }`) says which are made, and `print_filter`, a second
+`TraceFilter` of the trace filter's patterns, which bodies they are made
+of; the trace's categories and filter say nothing of them, so that
+printing needs no category. The runtime formats only bytecode, which it
+alone reads (`bytecode::disassemble`); everything else it hands out as
+values, and the host formats it.
+
+- **One queue.** A code listing and an inlining listing are recorded
+  pending in the trace's one queue (`PendingListing`, recorded by
+  `EventTracer::record_listing` right after the event of the install or
+  outcome it belongs to), holding bodies as `Rc<CompiledCode>`, keys as
+  their `CustomizationKey` and an arm's receiver as its dispatch id --
+  named before a full collection reclaims the id, as a key is
+  (`trace_events::name_freed_keys`) -- and no handle; a flush names them
+  as it names events, applies the print filter to the body and delivers
+  each in its place among the events, so that a listing follows the line
+  of its event (decision 12). Nothing of it is `cfg(debug_assertions)`:
+  a release build prints (decision 3).
+- **Bytecode when a mixin is made** (decision 10). A listing of bytecode
+  is never pending: at a flush, with `printing.bytecode` set, the
+  trace's names index the sides of every mixin that joined the heap's
+  tables since the last flush (`BodyNames::index_new_sides`), and each
+  root body named for the first time -- a method, a factory, the three
+  initializer bodies, a superclass clause, never a block, which is
+  listed nested under its maker -- is listed before the events, in the
+  order the mixins joined. A body a new version shares with the one it
+  superseded was named already and is not listed again. Installing the
+  sink resets the names, so `set_trace`, which flushes before it
+  returns, lists everything the boot and the load made; a shipped
+  module built on first demand and an installed edit are listed at the
+  next safepoint or host return, whose flush runs, when bytecode is
+  printed, even with no event pending (`EventTracer::flush_due`). The
+  compile trigger's own flush tests only for pending events, so
+  that nothing is added on its path. The debugger's metadata compile and
+  an edit only checked add no mixin to the heap's tables and print
+  nothing.
+- **Machine code at its install** (decision 5). A compile annotates
+  when `CompileSettings::annotate` is set, which every compile reads
+  from the tracer (`EventTracer::prints_code`): the macro assembler then
+  records positions and annotations as labels, which emit no byte, so
+  that the bytes are those of a compile without them
+  ([execution.md](execution.md), "The baseline JIT's foundation";
+  `annotating_changes_no_byte`). At the install (`jit::captured_code`,
+  `JitState::installed_listing`) the listing takes the body's bytes, its
+  data words zeroed, its base address, `code_end` -- the end of the last
+  instruction, past which the words' alignment padding is no instruction
+  -- the data words by kind (`DataWord`: the budget word, the
+  dispatching rows and tail, a twin transfer's address, a closure's or
+  an outer local's site), the positions (`Position::Instruction { scope,
+  program_counter }` at each instruction's start, `Position::OutOfLine`
+  where code out of the straight line starts: the cold paths, a backward
+  jump's tail, the dispatching entry), and the annotations of the calls
+  and jumps out of the body (`Annotation::Leaf`, `Stub`, `Exit { kind,
+  program_counter }`, `Cell { site }`, and `Target` for a callee a leaf
+  decided, `initializer-callee` or `forcing-callee`, and for the `twin`
+  a transfer goes on in; a `Stub` may mark the instruction that selects
+  the stub, as a send's load of the polymorphic stub does). A baseline
+  body's listing is recorded after its `compiled` event, a twin's after
+  its `compiled-twin`, in the leaf that compiled it, and delivered at
+  the next flush: captured at the install, it survives a compaction or a
+  free before that flush.
+- **An optimized copy's scopes** (decision 11). The emitter records a
+  position wherever the scope or the program counter of the code
+  changes -- at each block, frame node, node and block end with a
+  program counter of its own, poll and trap, and out of line at the
+  mixed paths and trampolines -- and the listing numbers the scopes the
+  code lays out from `s0`, the body's own, without a gap, each with the
+  scope and program counter it is inlined at (`PlanDecisions::scopes`),
+  its body held from the compile. The listing is recorded after the
+  `optimized` event, its key named as the events name one.
+- **The inlining plan** (decision 13). Every optimizing compile that
+  made a plan records it once its outcome is known: after `optimized`,
+  with the bytes installed; after `refused`, or `deferred` for a zone
+  with no room, with the refusal. It lists the scopes the code lays out,
+  numbered as the code listing's, each type-case arm in the order of its
+  scope and program counter, then of the cache -- an inlined callee as
+  its scope's number, or what an always-inlined callee does, in kebab
+  case (`AlwaysInlined::name`: `getter`, `setter`, `lazy-getter`,
+  `quick`, `builtin-class`, `value-of-parameter`, `cull-parameter`, and
+  for a leaf `identity`, `class`, `indexed`, `integer`, `float`,
+  `primitive`) -- and
+  each callee sent instead, with stage 1's reason. An arm or a decline
+  in a scope the code does not lay out, and an arm whose inlined scope
+  is not laid out, are left out: they have no number, and the graph
+  sends their site.
+- **No JIT.** On a target without `cfg(ns_jit)` bytecode is printed, and
+  `--print-code` and `--print-inlining` print nothing.
+
+### The listings and their text
+
+`crates/ns-cli/src/listing.rs` writes each listing between a head line
+`--- <kind> {<body>} …` and `--- end`, the body named as the trace names
+it, so that a script cuts a listing out of standard error. The sink
+writes a listing in one `write_all` on the locked standard error, so
+that neither the program's output nor a trace line tears it.
+
+A body's bytecode, as `disasm` prints it, its blocks nested under their
+`MakeClosure`:
+
+```
+--- bytecode {Demo>>total}
+method Demo>>total (args 0, registers 20)
+   0        -  MakeVector r15, size 1
+   1   stmt 0  SendLexical r16 <- depth 0 #Account () @0
+   …
+   8   stmt 2  MakeClosure r18, [:index] -> copying r15 r13
+        block block (args 1, registers 19)
+           0   stmt 0  LoadVector r16 <- r14[0]
+           …
+  11   stmt 3  Return r16
+--- end
+```
+
+Machine code (decision 14). The head is `--- code {<body>} <tier>
+<architecture>`, the tier `baseline`, `twin` or `optimized`, the
+architecture `x64` or `aarch64`, then ` key={…}` and ` entered={…}`
+where the copy has them, as the trace's events write a key, then
+` base=0x<address> bytes=<length>`, the base the only field that differs
+between runs. An optimized copy's head is followed by `scopes:` and its
+tree, `s0` two spaces in and each scope two spaces deeper than the one
+it is inlined into, `  s1 {Demo/Account>>balance} at s0@14`, the
+children of a scope in the order of their numbers. Then the code: a
+position line wherever the position changes -- `  @<pc>  <instruction>`
+in baseline and twin code, `  s<n> {<body>} @<pc>  <instruction>` in an
+optimized copy, the instruction as the bytecode listing writes it
+without its index, and `  out of line` -- and a line per instruction,
+`    +0x<offset:04x>  <decoded>`, ending in `  ; leaf <name>`,
+`  ; stub <name>`, `  ; exit <kind> @<pc>`, `  ; cell site <n>` or
+`  ; target <name>` where an annotation stands on it. A stub's
+annotation names the entry-block word the call or jump loads by that
+word's own name (`BlockWord::name`, `; stub polymorphic-stub`), so that
+each word has one name and a search for it finds every use. The prologue's
+instructions before the first position have no position line. A target
+in the body is written `+0x<offset>` and a data word's address
+`data+0x<offset from the first data word>`; an address outside the
+body, and an immediate, as the decoder writes it. x64 is decoded by
+`iced-x86` in Intel syntax (`listing/x64.rs`, a symbol resolver naming
+the body's addresses), AArch64 by `yaxpeax-arm`'s `Display`
+(`listing/aarch64.rs`, a branch's or a literal load's `$+0x…` renamed,
+`adrp`'s page left as it is); each binary carries the decoder of its
+own architecture alone, and a listing of another is shown in hex, four
+bytes a line. Last, `data:` and a line per data word,
+`    data+0x<offset>  <kind>`: `budget word`, `dispatching rows`,
+`dispatching tail`, `twin transfer @<pc>`, `site`.
+
+```
+--- code {Demo>>total} optimized x64 key={Demo} base=0x2961e3e6d00 bytes=2438
+scopes:
+  s0 {Demo>>total}
+    s1 {Demo/Account>>balance} at s0@14
+  s0 {Demo>>total} @0  stmt 0  SendLexical r16 <- depth 0 #Account () @0
+    …
+    +0x0263  mov rcx,[r14+80h]  ; stub polymorphic-stub
+    …
+    +0x0271  call rcx  ; cell site 0
+    …
+  s1 {Demo/Account>>balance} @2  stmt 0  IntegerBinary Add r15 <- r13, r14 else -> 4
+    …
+    +0x073a  jmp r11  ; exit trap @2
+  out of line
+    …
+    +0x0849  call r11  ; leaf grow-stack
+    …
+--- end
+```
+
+The inlining plan: the head `--- inlining {<body>}` with the key's
+fields, the tree of scopes as the code listing's, a line per arm,
+`  s<n>@<pc> {<receiver>} -> s<m>` or `-> always <kind>`, a line per
+decline, `  s<n>@<pc> declined callee={<body>} reason=<reason>`
+(`callee={}` for a callee that is no body), and the outcome,
+`  installed bytes=<n>` or `  refused reason=<reason>`:
+
+```
+--- inlining {Demo>>total} key={Demo}
+  s0 {Demo>>total}
+    s1 {Demo/Account>>balance} at s0@14
+  s0@14 {Demo/Account} -> s1
+  s1@0 {Demo/Account} -> always getter
+  s0@0 declined callee={} reason=not-snapshotted
+  s0@1 declined callee={} reason=not-snapshotted
+  installed bytes=2438
+--- end
+```
+
+A frame's code (decision 15) is marked where the frame stands, every
+column kept: in its bytecode the instruction the frame is at,
+`{index:4}->`, the arrow in place of the two spaces after the index
+(`   7->`, ` 100->`; `bytecode::disassemble_marked`, the root body's
+instruction only), and in its machine code the instruction the call it
+waits on returns to, `  ->+0x…`, the arrow in place of two of the
+line's four leading spaces (`CodeListing::mark`).
+
+### A stopped frame's code
+
+`Command::FrameCode { frame }`, served at a stop only -- refused with
+"the program is running" while it runs, "no run executes" between runs
+and "no frame at that index" past the stack -- answers
+`Event::FrameCode { body, bytecode, machine }`: the frame's body named
+as the stack trace names it, its bytecode marked at the frame's program
+counter, and, for a running frame whose activation is compiled, the
+code its return resumes (`jit::frame_code_listing`): the body's lean
+code compiled against the frame's feedback base, or its twin for a
+reified frame -- `None` where the frame goes on interpreted, for a
+suspended frame, and for a reified frame whose twin is not compiled
+yet, since asking compiles nothing. The bytes are read from the zone;
+the positions and annotations, which an install keeps nowhere, come
+from the same body assembled again with annotating on, a debug build
+holding every byte to the zone's -- the precedent of the debugger's
+metadata, compiled again on demand; the data words are zeroed as an
+install's listing has them, and the mark is the return of the frame's
+one call at its program counter (`ProgramCounterMap`'s `returns`). The
+top frame of a stop runs in the interpreter, so its machine code is
+`None`; a caller that called from machine code has one.
+
+### The hosts
+
+- **`ns-next run`** (`main.rs`, `commands/run.rs`, `trace.rs`'s
+  `StandardErrorSink::listing`) takes `--print-bytecode`,
+  `--print-code` and `--print-inlining`, any of them together and beside
+  `--trace`, and `--print-filter=<pattern>`, once for each pattern, in
+  `--trace-filter`'s syntax, which clap refuses without a print option.
+  A malformed pattern and one naming no module of the program or the
+  binary are refused as `--trace-filter`'s are, `--print-filter:` and
+  the reason, with exit status 2 before anything runs. Only `run`
+  prints; `load` and `bench` do not.
+- **`debug_start`** takes no print option, on purpose: its answers keep
+  the last 2,000 characters of the program's output and standard error,
+  which a run's listings would fill. An agent asks for the code of the
+  frame it stopped in instead.
+- **`nsNext/frameCode { frameId }`**, a request of the agent's own
+  (`debug/agent.rs`), forwards `Command::FrameCode` for a frame of the
+  stop and answers `{ body, bytecode, machineCode }`, each listing's
+  text as `ns-next run` prints it, `machineCode` `null` for a frame
+  without; an unknown frame id is refused, and so is a stop the program
+  has left meanwhile, with "the program went on"
+  ([debugger.md](debugger.md), "Launching, the start and the end").
+- **`debug_code(frame?)`**, the MCP server's tool (`mcp/tools.rs`,
+  `mcp/session.rs`), asks it for frame `frame`, the top one by default,
+  and answers the bytecode listing, then the machine code's listing or
+  `the frame goes on in the interpreter` ([debugger.md](debugger.md),
+  "The MCP server").
+- **The plugin's run configuration** passes the print options as it
+  passes `--trace`, as runtime options.
+
+### Tests
+
+`crates/ns-runtime/tests/printing.rs` collects listings with a sink of
+its own: bytecode at the sink's install, with no category, for a
+shipped module built on demand and for an installed edit, and nothing
+for a checked edit and for the debugger's metadata compile; and, in its
+module `code` (`cfg(ns_jit)`, the JIT on, a stress mode that would
+defeat what a test pins switched off by its debug-only setter), a
+baseline listing, a twin's, the data words, the filter, an optimized
+copy's scopes and positions -- every arithmetic node named in the
+straight line -- the scopes against the `inlined` events of the same
+compile, and the plan installed, refused in a zone sized one copy
+short, and with a decline in its scope. In the crate,
+`annotating_changes_no_byte` holds every body of the core library and
+the goldens, under all three conventions, lean and twin, to the same
+bytes with and without annotations; `positions_ascend_and_cover_the_code`
+does so for every tree of the inlining corpus;
+`a_listing_survives_a_compaction_before_its_flush` holds a listing to
+its install; and `bytecode.rs`'s tests pin the mark.
+`crates/ns-runtime/tests/debugger.rs` pins `FrameCode`: the marked
+bytecode under both lowerings, the refusals, and a caller in baseline
+code and in its twin. `crates/ns-cli/src/listing.rs`'s unit tests pin
+each kind's text, the mark and, on x64, the decoder's names;
+`listing/aarch64.rs`'s its own on AArch64; `tests/cli.rs` the options,
+their refusals, one write per listing beside the program's standard
+error, and the whole listing of a body without a send on Windows x64
+(`a_leafless_body_pins_its_listing`, its base masked);
+`tests/debug_adapter.rs` `nsNext/frameCode`; and `tests/mcp.rs`
+`debug_code`. A test of machine code asserts the lines that must occur,
+never a whole listing but that one, and the CLI's and the MCP server's
+tests strip every stress mode from the child and answer nothing without
+a JIT.
+
 ## Planned: the stages
-
-### Stage 2: printing code
-
-- `--print-bytecode`, `--print-code` (baseline and optimized, at install)
-  and `--print-inlining` (the plan as a tree of scopes, arms and declined
-  sites with stage 1's reasons), all selected by `--print-filter`, whose
-  patterns are the trace filter's (`--print-filter` given once for each
-  pattern, a prefix ending in `...`). Stage 1 leaves what this builds on:
-  the bodies' names (`trace_events/names.rs`), the filter
-  (`TraceFilter`), the plan's decisions with their reasons
-  (`PlanDecisions`, collected by every optimizing compile) and the events
-  of an install (`compiled`, `compiled-twin`, `optimized`), at whose
-  sites a listing is taken.
-- The runtime answers a listing: the body's name, its tier and, for an
-  optimized copy, its receiver application; its bytes and base address;
-  the bytecode index per machine offset; the named targets of its calls.
-  `ns-next` decodes it for the target it runs on, x64 or AArch64; a target
-  without a JIT prints bytecode only.
-- The agent answers a request for the code of a stopped frame -- the
-  body's bytecode, and the machine code the frame runs if any -- and the
-  MCP server's new tool asks it.
 
 ### Stage 3: the shell
 
@@ -451,9 +850,6 @@ and answer nothing on a target without a JIT.
 
 Each is decided in its stage's plan.
 
-- **Stage 2:** when a body's bytecode counts as made for
-  `--print-bytecode` (its mixin's compile, or its first entry); how an
-  optimized copy's inlined scopes are marked in its listing.
 - **Stage 3:** how an input is compiled -- a method on the workspace's
   mixin, as the Newspeak IDE does, or a block over a top-level activation
   (`FrameKind::TopLevel`) -- and how a new workspace variable becomes a

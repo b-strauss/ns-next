@@ -1749,7 +1749,8 @@ to run it and to recognise the configuration from the file. The arguments
 are one field, split as the platform splits program parameters
 (`ParametersListUtil`), and go after `--`. The **runtime options**
 (`runtimeOptions`) are another such field, options of ns-next itself --
-`--trace=compile --trace-filter=Demo>>...` and the statistics flags -- each
+`--trace=compile --trace-filter=Demo>>...`, `--print-code` and the
+statistics flags -- each
 token passed as is (`--trace-filter` is repeatable, one pattern per
 occurrence, quoting keeps a pattern with a space whole) and placed after the
 subcommand and `--debug-connect`, before `--script`

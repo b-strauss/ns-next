@@ -430,14 +430,19 @@ impl Step {
     /// `script` run by bash in a fresh x86_64 container of the gate image,
     /// the checkout the gate runs from mounted read-only beside its
     /// volumes. The container's exit status is the script's, so a failing
-    /// command fails the step.
+    /// command fails the step. Docker's init runs as the container's
+    /// process 1 and reaps the processes orphaned in it: bash runs a
+    /// script's last command in its own place, so that the command would
+    /// be process 1 and reap none, and an orphan that ended -- a program
+    /// whose MCP server a test killed -- would stay a zombie that still
+    /// answers a signal.
     fn docker(label: &str, script: &str) -> Step {
         let root = repository_root();
         let checkout = format!(
             "type=bind,source={},target={CHECKOUT_MOUNT},readonly",
             root.display()
         );
-        let mut arguments: Vec<String> = ["run", "--rm", "--platform", DOCKER_PLATFORM]
+        let mut arguments: Vec<String> = ["run", "--rm", "--init", "--platform", DOCKER_PLATFORM]
             .iter()
             .map(|argument| argument.to_string())
             .collect();
@@ -1353,8 +1358,8 @@ mod tests {
             for step in &steps[1..] {
                 assert_eq!(step.program, Program::Docker);
                 assert_eq!(
-                    step.arguments[..4],
-                    ["run", "--rm", "--platform", "linux/amd64"]
+                    step.arguments[..5],
+                    ["run", "--rm", "--init", "--platform", "linux/amd64"]
                 );
                 let root = repository_root();
                 let mounts = [

@@ -125,11 +125,121 @@ pub(crate) fn compile_tree_explained(
 /// `inlining` category: each scope the code lays out below the body's
 /// own -- its sender scope's body, the program counter of the send there
 /// and its own body -- and every callee the plan sent rather than inline,
-/// with why (`plan::InliningPlan::declined`).
+/// with why (`plan::InliningPlan::declined`), its scope numbered as the
+/// plan numbers it; and for a listing, the tree of the scopes the code
+/// lays out, the body's own first, numbered as the listing's positions
+/// name them (`scopes`, `number_of`).
 #[cfg(ns_jit)]
 pub(crate) struct PlanDecisions {
     pub(crate) inlined: Vec<(crate::heap::CodeId, u32, crate::heap::CodeId)>,
     pub(crate) declined: Vec<plan::Declined>,
+    /// The scopes the code lays out, in the order of the plan's scopes,
+    /// numbered from 0 without a gap.
+    pub(crate) scopes: Vec<PlannedScope>,
+    /// Each arm of the plan's type-cases, by its site's scope as the plan
+    /// numbers it and the send's program counter, in that order, then the
+    /// cache's: its receiver's dispatch id and what it runs, a scope by
+    /// its number among `scopes`. An arm whose callee's scope the code
+    /// lays out nothing for -- the graph sends instead -- has no number to
+    /// name it and is left out.
+    pub(crate) arms: Vec<(
+        graph::ScopeId,
+        u32,
+        crate::mixin::DispatchId,
+        crate::trace_events::ArmKind,
+    )>,
+    /// The number of each of the plan's scopes among `scopes`, by its
+    /// `ScopeId`; `None` for a scope the code lays out nothing for.
+    numbers: Vec<Option<u32>>,
+}
+
+#[cfg(ns_jit)]
+impl PlanDecisions {
+    /// The number among `scopes` of the plan's scope `scope` -- a
+    /// `plan::Declined`'s -- or `None` for one the code lays out nothing
+    /// for (`laid_out_scopes`).
+    pub(crate) fn number_of(&self, scope: graph::ScopeId) -> Option<u32> {
+        self.numbers.get(scope.0 as usize).copied().flatten()
+    }
+}
+
+/// A scope the code of a compile lays out: its number, its body and the
+/// scope it is inlined into, by number, with the program counter of the
+/// send there; `None` for the body's own, `s0`.
+#[cfg(ns_jit)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlannedScope {
+    pub(crate) number: u32,
+    pub(crate) code_id: crate::heap::CodeId,
+    pub(crate) parent: Option<(u32, u32)>,
+}
+
+/// The numbers of the scopes of `graph` that `laid_out` says the code
+/// lays out, by their `ScopeId`, from 0 without a gap -- a scope the
+/// graph sends instead has no code to name it -- and each such scope
+/// with its parent by number.
+#[cfg(ns_jit)]
+fn planned_scopes(
+    graph: &graph::Graph,
+    laid_out: &[bool],
+) -> (Vec<PlannedScope>, Vec<Option<u32>>) {
+    let mut numbers = Vec::with_capacity(laid_out.len());
+    let mut next = 0_u32;
+    for laid_out in laid_out {
+        numbers.push(laid_out.then(|| {
+            next += 1;
+            next - 1
+        }));
+    }
+    let scopes = graph
+        .scopes
+        .iter()
+        .zip(&numbers)
+        .filter_map(|(scope, number)| {
+            Some(PlannedScope {
+                number: (*number)?,
+                code_id: scope.code_id,
+                // A scope laid out lies in code of its sender's, which is
+                // laid out too.
+                parent: scope.parent.and_then(|(sender, program_counter)| {
+                    Some((numbers[sender.0 as usize]?, program_counter))
+                }),
+            })
+        })
+        .collect();
+    (scopes, numbers)
+}
+
+/// The arms of `plan`'s type-cases as `PlanDecisions::arms` keeps them,
+/// each inlined scope by its number in `numbers`.
+#[cfg(ns_jit)]
+fn planned_arms(
+    plan: &plan::InliningPlan,
+    numbers: &[Option<u32>],
+) -> Vec<(
+    graph::ScopeId,
+    u32,
+    crate::mixin::DispatchId,
+    crate::trace_events::ArmKind,
+)> {
+    use crate::trace_events::ArmKind;
+
+    let mut sites: Vec<(&(graph::ScopeId, u32), &plan::SitePlan)> = plan.sites.iter().collect();
+    sites.sort_by_key(|(key, _)| **key);
+    sites
+        .into_iter()
+        .flat_map(|(&(scope, program_counter), site)| {
+            site.arms.iter().filter_map(move |(guard, _, arm)| {
+                let inlined = match arm {
+                    plan::ArmPlan::Inline { callee } => {
+                        ArmKind::Scope(numbers.get(callee.0 as usize).copied().flatten()?)
+                    }
+                    plan::ArmPlan::Always(always) => ArmKind::Always(always.name()),
+                };
+                Some((scope, program_counter, *guard, inlined))
+            })
+        })
+        .collect()
 }
 
 /// `compile_tree`'s work, `decisions` filled once the plan is made and
@@ -162,6 +272,7 @@ fn compile_planned(
     // the trace reports are all read off it, so that none of them can
     // name a scope the others miss.
     let laid_out = laid_out_scopes(&graph);
+    let (planned, numbers) = planned_scopes(&graph, &laid_out);
     *decisions = Some(PlanDecisions {
         inlined: graph
             .scopes
@@ -174,6 +285,9 @@ fn compile_planned(
             })
             .collect(),
         declined: std::mem::take(&mut plan.declined),
+        scopes: planned,
+        arms: planned_arms(&plan, &numbers),
+        numbers: numbers.clone(),
     });
     let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
     // Each scope's facts, as its own baseline code would read them: an
@@ -213,7 +327,11 @@ fn compile_planned(
             }
         })
         .collect();
-    let (push_entry, polls) = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
+    let emit::Emitted {
+        push_entry,
+        polls,
+        positions,
+    } = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
     let eliminated = eliminated_blocks(&plan, tree);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
@@ -222,10 +340,17 @@ fn compile_planned(
     let twin_transfers = std::mem::take(&mut body.twin_transfers);
     #[cfg(test)]
     let small_integer_tag_tests = body.macro_assembler.small_integer_tag_tests();
-    let (code, site_labels) = body
+    let crate::jit::macro_assembler::Finished {
+        assembled: code,
+        sites: site_labels,
+        instructions_end,
+        annotations,
+        out_of_line,
+    } = body
         .macro_assembler
-        .finish_with_sites()
+        .finish_annotated()
         .map_err(|error| Refusal::Unassembled(Some(error)))?;
+    let positions = listed_positions(&code, &positions, &out_of_line, &numbers);
     let words = words
         .and_then(|label| code.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
@@ -258,6 +383,7 @@ fn compile_planned(
         code,
         returns,
         words,
+        instructions_end,
         twin_transfers,
         metadata,
         sites,
@@ -282,9 +408,67 @@ fn compile_planned(
         polls,
         type_case_arms: type_case_arms(&graph),
         inlined_sites: graph.inlined_sites,
+        annotations,
+        positions,
         #[cfg(test)]
         small_integer_tag_tests,
     })
+}
+
+/// A listing's positions of `code`: each recorded at a label of
+/// `emitted`, its scope numbered by `numbers`, and each start of code out
+/// of line the macro assembler laid out, `out_of_line`, by offset. Where
+/// two fall at one offset the later holds, since the earlier lowers no
+/// byte, and a position the code before it lowers too is left out.
+#[cfg(ns_jit)]
+fn listed_positions(
+    code: &ns_assembler::Assembled,
+    emitted: &[(ns_assembler::Label, emit::EmittedPosition)],
+    out_of_line: &[u32],
+    numbers: &[Option<u32>],
+) -> Vec<(u32, crate::trace_events::Position)> {
+    use crate::trace_events::Position;
+
+    let mut all: Vec<(u32, Position)> = emitted
+        .iter()
+        .map(|(label, position)| {
+            let offset =
+                code.label_offsets[label.index()].expect("internal: a position's label is bound");
+            let position = position.map_or(Position::OutOfLine, |(scope, program_counter)| {
+                let scope =
+                    numbers[scope.0 as usize].expect("internal: code lowers only a scope laid out");
+                Position::Instruction {
+                    scope,
+                    program_counter,
+                }
+            });
+            (offset, position)
+        })
+        .chain(
+            out_of_line
+                .iter()
+                .map(|offset| (*offset, Position::OutOfLine)),
+        )
+        .collect();
+    // Stable: the labels were bound in the order of their offsets, and
+    // the macro assembler's code out of line lies past them.
+    all.sort_by_key(|(offset, _)| *offset);
+    let mut positions: Vec<(u32, Position)> = Vec::with_capacity(all.len());
+    for (offset, position) in all {
+        if let Some(last) = positions.last_mut()
+            && last.0 == offset
+        {
+            *last = (offset, position);
+        } else {
+            positions.push((offset, position));
+        }
+        // A position the one before it repeats changes nothing.
+        let length = positions.len();
+        if length >= 2 && positions[length - 2].1 == positions[length - 1].1 {
+            positions.pop();
+        }
+    }
+    positions
 }
 
 /// The arms of every type-case `graph` lays out.

@@ -25,6 +25,7 @@ use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{CELL_BYTES, CELL_WORDS, ChainStart};
 use crate::interpreter::inline_cache::{CacheRule, RULE_TAG_BITS, rule_tag, site_index};
 use crate::mixin::DispatchId;
+use crate::trace_events::Annotation;
 
 use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;
@@ -873,7 +874,7 @@ pub(super) fn initialize(
             Operand::CodeAddress,
         ],
     );
-    call_decided(body, argument_base, count, destination);
+    call_decided(body, argument_base, count, destination, INITIALIZER_CALLEE);
     Lowering::Transfer
 }
 
@@ -884,12 +885,13 @@ pub(super) fn initialize(
 /// 0, an exit before anything is written but what the instruction placed
 /// for its callee, so that the interpreter decides the instruction again.
 /// The tail of an initializer invocation's call and of a future's forcing
-/// (`closures::resolve_future`).
+/// (`closures::resolve_future`), whose callee a listing names `callee`.
 pub(super) fn call_decided(
     body: &mut BodyAssembler,
     argument_base: u16,
     count: u16,
     destination: u16,
+    callee: &'static str,
 ) {
     let program_counter = body.program_counter;
     let macro_assembler = &mut body.macro_assembler;
@@ -918,7 +920,7 @@ pub(super) fn call_decided(
     );
     let slots = i32::from(argument_base) * REGISTER_BYTES;
     assembler.add_immediate(roles.frame, slots);
-    body.call_send(entry);
+    body.call_send(entry, Some(Annotation::Target(callee)));
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler
         .assembler()
@@ -987,6 +989,12 @@ fn copy_above_window(body: &mut BodyAssembler, argument_base: u16) {
         macro_assembler.store_frame_register(argument_base + argument, value);
     }
 }
+
+/// The name a listing gives the callee the initializer leaf decided.
+const INITIALIZER_CALLEE: &str = "initializer-callee";
+
+/// The name a listing gives the callee the forcing leaf decided.
+pub(super) const FORCING_CALLEE: &str = "forcing-callee";
 
 /// What a send's miss hands the polymorphic stub besides the cell and the
 /// guard (`jit::targets`): its key past the guard -- the selector's index
@@ -1185,14 +1193,22 @@ fn send_through_cell(
     assembler.move_immediate(key, 0);
     assembler.bind(missed);
     assembler.add_immediate(cells, cell);
-    assembler.load(Width::Word64, entry, polymorphic_stub);
+    macro_assembler.annotate(Annotation::Stub(BlockWord::PolymorphicStub.name()));
+    macro_assembler
+        .assembler()
+        .load(Width::Word64, entry, polymorphic_stub);
     let slots = i32::from(argument_base) * REGISTER_BYTES;
-    assembler.bind(call);
+    macro_assembler.assembler().bind(call);
     store_program_counter(body);
     body.macro_assembler
         .assembler()
         .add_immediate(roles.frame, slots);
-    body.call_send(entry);
+    body.call_send(
+        entry,
+        Some(Annotation::Cell {
+            site: call_site.number,
+        }),
+    );
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler
         .assembler()

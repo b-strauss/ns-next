@@ -57,11 +57,15 @@ use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBas
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 use crate::trace_events::{
-    CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, Revival,
-    TraceCategory,
+    CodeListing, CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind,
+    PendingListing, Revival, TraceCategory,
 };
 #[cfg(ns_jit)]
-use crate::trace_events::{Deferral, FreeCause, InvalidationCause, RecompileWalkEnd, RetireReason};
+use crate::trace_events::{
+    CodeTier, DataWord, Deferral, FreeCause, InlineDecline, InliningOutcome, InvalidationCause,
+    PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope, RecompileWalkEnd,
+    RetireReason,
+};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -1188,6 +1192,12 @@ impl ProgramCounterMap {
         self.starts.get(program_counter as usize).copied()
     }
 
+    /// Where each instruction's code starts, by program counter: what a
+    /// listing of the code names its positions by.
+    pub(crate) fn starts(&self) -> &[u32] {
+        &self.starts
+    }
+
     /// The instruction whose code starts at `machine_offset`, if one does.
     #[cfg_attr(
         not(test),
@@ -1517,6 +1527,10 @@ pub(crate) enum Tier {
 struct CompileSettings {
     counting: bool,
     futures_exit: bool,
+    /// Whether the code records its annotations for a listing
+    /// (`MacroAssembler::set_annotating`), which changes no byte of it: a
+    /// twin takes the state's at its own compile, not its lean body's.
+    annotate: bool,
 }
 
 /// A lean body's `MakeClosure` and its transfer word: the instruction's
@@ -4240,6 +4254,19 @@ impl JitState {
         })
     }
 
+    /// The listing `captured` makes of a body installed at `offset`: its
+    /// base address, the one fact the install decides.
+    #[cfg(ns_jit)]
+    fn installed_listing(&self, captured: PendingCode, offset: CodeOffset) -> PendingListing {
+        let Some(zone) = self.zone.as_ref() else {
+            unreachable!("internal: a body is installed into a zone");
+        };
+        PendingListing::Code(PendingCode {
+            base_address: zone.writer.zone().executable_address(offset) as u64,
+            ..captured
+        })
+    }
+
     /// The address of the miss stub, 0 where there is no zone.
     pub(crate) fn miss_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
@@ -4768,7 +4795,7 @@ fn compile_into_slot(
     // the trace says why it was not compiled at the entry it came due.
     if state.tracer.traces(TraceCategory::Compile) {
         let kind = match &outcome {
-            Ok((_, index)) => {
+            Ok((_, index, _)) => {
                 let body = &state.bodies[*index as usize];
                 PendingKind::Compiled {
                     trigger,
@@ -4785,7 +4812,11 @@ fn compile_into_slot(
             .record(Pending::about(TraceCategory::Compile, code, kind));
     }
     match outcome {
-        Ok((offsets, map)) => {
+        Ok((offsets, map, listing)) => {
+            // After the compile's event, which the listing follows.
+            if let Some(listing) = listing {
+                state.tracer.record_listing(code, listing);
+            }
             code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
             if state.tracer.is_on() {
@@ -4885,21 +4916,27 @@ pub(crate) fn after_compile_trigger_in_leaf(mutator: &mut Mutator<'_>) {
     }
 }
 
+/// What a compile answers: the body's offset and that of its instruction
+/// at program counter 0, its index among the installed bodies, and its
+/// listing when machine code is printed.
+type Compiled = ([CodeOffset; 2], u32, Option<PendingListing>);
+
 /// Compiles `code`, its sends' cells those of `feedback_base`'s range,
 /// and installs its lean body, answering its offset and that of its
-/// instruction at program counter 0 and its index among the installed
-/// bodies. Its twin waits for the first transfer or resumption that needs
-/// it (`compile_twin`).
+/// instruction at program counter 0, its index among the installed
+/// bodies and, when machine code is printed, its listing. Its twin waits
+/// for the first transfer or resumption that needs it (`compile_twin`).
 #[cfg(ns_jit)]
 fn compile(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32), Refusal> {
+) -> Result<Compiled, Refusal> {
     let settings = CompileSettings {
         counting: state.counting,
         futures_exit: state.futures_exit,
+        annotate: state.tracer.prints_code(),
     };
     let body = assemble(
         macro_assembler::Abi::host(),
@@ -4918,6 +4955,9 @@ fn compile(
         panic!("internal: a compiled body has no code for its first instruction");
     };
     let needed = needed_bytes(&body);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&body, CodeTier::Baseline));
     let map = match install_body(state, code, method, feedback_base, body, settings, None) {
         Ok(map) => map,
         Err(Refusal::ZoneFull) => {
@@ -4929,7 +4969,158 @@ fn compile(
     };
     let offset = CodeOffset(state.bodies[map as usize].start);
     let first_instruction = CodeOffset(offset.0 + first_instruction);
-    Ok(([offset, first_instruction], map))
+    let listing = captured.map(|captured| state.installed_listing(captured, offset));
+    Ok(([offset, first_instruction], map, listing))
+}
+
+/// The listing of `body`, compiled as its `tier`, as it was assembled: its
+/// bytes, its data words zeroed, and where they lie, its positions and
+/// its annotations -- every fact but its base address, which its install
+/// decides (`JitState::installed_listing`). Copied before the install,
+/// which takes the body, and kept apart from the zone, where the code may
+/// move or be freed before a flush delivers the listing.
+#[cfg(ns_jit)]
+fn captured_code(body: &baseline::BaselineBody, tier: CodeTier) -> PendingCode {
+    let bytes = body.code.bytes.clone();
+    let code_end = body.instructions_end;
+    let words = body.words.as_ref().map_or_else(Vec::new, |words| {
+        let named = |index: usize| {
+            if body.budget_word == Some(index) {
+                DataWord::Budget
+            } else if body
+                .dispatching
+                .is_some_and(|dispatching| dispatching.rows_word == index)
+            {
+                DataWord::DispatchingRows
+            } else if body
+                .dispatching
+                .is_some_and(|dispatching| dispatching.tail_word == index)
+            {
+                DataWord::DispatchingTail
+            } else if let Some(transfer) = body
+                .twin_transfers
+                .iter()
+                .find(|transfer| transfer.word == index)
+            {
+                DataWord::TwinTransfer {
+                    program_counter: transfer.program_counter,
+                }
+            } else {
+                DataWord::Other
+            }
+        };
+        (words.start..words.end)
+            .step_by(8)
+            .zip(0usize..)
+            .map(|(offset, index)| (offset, named(index)))
+            .collect()
+    });
+    PendingCode {
+        tier,
+        key: None,
+        architecture: macro_assembler::Abi::host().architecture(),
+        base_address: 0,
+        bytes,
+        code_end,
+        words,
+        positions: body.positions.clone(),
+        annotations: body.annotations.clone(),
+        scopes: Vec::new(),
+    }
+}
+
+/// The listing of the baseline code a return to `activation` resumes --
+/// a frame stopped in machine code (`Heap::activation_is_compiled`), named
+/// `name` -- marked at the return of the call it waits on, as `resumed`
+/// would find that code: its body's lean code compiled into this zone
+/// against the frame's feedback base, or that code's twin for a frame
+/// reified. `None` where `resumed` would go on interpreted, and for a
+/// reified frame whose twin is not compiled yet, which its resumption
+/// would compile: a listing compiles nothing, so that asking for it
+/// changes nothing it observes.
+///
+/// The bytes are read from the zone; the positions and the annotations,
+/// which an install keeps nowhere, are those of the same body assembled
+/// again with annotating on -- the precedent of the debugger's metadata,
+/// compiled again on demand -- which changes no byte of its code: a debug
+/// build checks that every byte up to the code's end is the zone's. The
+/// data words are listed by kind with their bytes zeroed, as an install's
+/// listing has them: the zone's hold addresses of the run.
+#[cfg(ns_jit)]
+pub(crate) fn frame_code_listing(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+    name: &str,
+) -> Option<CodeListing> {
+    let state = &mutator.jit;
+    let code = mutator.heap.activation_code(activation);
+    let Ok(program_counter) = u32::try_from(mutator.heap.activation_program_counter(activation))
+    else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let lean = state.installed(&code)?;
+    if lean.feedback_base != mutator.heap.activation_feedback_base(activation) {
+        return None;
+    }
+    let (body, tier, copy) = if mutator.heap.activation_reified(activation).is_some() {
+        let twin = state.live_body(lean.twin?)?;
+        (twin, CodeTier::Twin, baseline::BodyCopy::Twin)
+    } else {
+        (lean, CodeTier::Baseline, baseline::BodyCopy::Lean)
+    };
+    let method = match &body.method {
+        Some(method) => Some(method.upgrade()?),
+        None => None,
+    };
+    let settings = CompileSettings {
+        annotate: true,
+        ..body.settings
+    };
+    let assembled = assemble(
+        macro_assembler::Abi::host(),
+        settings,
+        &code,
+        body.feedback_base,
+        method.as_ref(),
+        copy,
+    )
+    .ok()?;
+    // A send's template makes one call, whose return is where the frame
+    // goes on; a second would leave the mark ambiguous.
+    let mut returns = body
+        .map
+        .returns
+        .iter()
+        .filter(|call| call.program_counter == program_counter);
+    let mark = returns.next()?.machine_offset;
+    debug_assert!(
+        returns.next().is_none(),
+        "internal: one call of a body returns into the send at a program counter"
+    );
+    let mut captured = captured_code(&assembled, tier);
+    let zone = state.zone.as_ref()?;
+    let code_end = captured.code_end;
+    let installed = zone.writer.bytes(body.start..body.start + code_end)?;
+    debug_assert_eq!(
+        installed[..],
+        captured.bytes[..code_end as usize],
+        "internal: a body assembled again is the body installed"
+    );
+    captured.bytes.splice(..code_end as usize, installed);
+    captured.base_address = zone
+        .writer
+        .zone()
+        .executable_address(CodeOffset(body.start)) as u64;
+    Some(captured.frame_listing(&code, name, mark))
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn frame_code_listing(
+    _mutator: &Mutator<'_>,
+    _activation: ActivationReference,
+    _name: &str,
+) -> Option<CodeListing> {
+    None
 }
 
 /// `code` assembled for `abi` as its body's `copy` under `settings`, for
@@ -4948,6 +5139,7 @@ fn assemble(
 ) -> Result<baseline::BaselineBody, Refusal> {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(settings.counting);
+    macro_assembler.set_annotating(settings.annotate);
     let role = baseline::BodyRole::of_code(code, method.is_some());
     baseline::compile(
         code,
@@ -5167,7 +5359,8 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     if let Some(twin) = body.twin {
         return Ok(twin);
     }
-    let (needed, settings) = (body.twin_needed, body.settings);
+    let (needed, mut settings) = (body.twin_needed, body.settings);
+    settings.annotate = state.tracer.prints_code();
     let Some(installed) = upgraded(body, lean) else {
         unreachable!("internal: a lean body running or resumed lives");
     };
@@ -5199,6 +5392,9 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         }
     };
     let needed = needed_bytes(&twin);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&twin, CodeTier::Twin));
     let installation = install_body(
         state,
         &installed.code,
@@ -5245,6 +5441,13 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             &installed.code,
             PendingKind::CompiledTwin { bytes },
         ));
+    }
+    // After the compile's event, which the listing follows; delivered at
+    // the next flush, which a twin compiled in its leaf waits for.
+    if let Some(captured) = captured {
+        let offset = CodeOffset(state.bodies[index as usize].start);
+        let listing = state.installed_listing(captured, offset);
+        state.tracer.record_listing(&installed.code, listing);
     }
     if state.tracer.is_on() {
         state.tracer.body_compiled(&installed.code, true);
@@ -6344,6 +6547,13 @@ fn optimize(
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
+    // The state's, not the baseline body's: a copy is listed if machine
+    // code is printed when it is compiled.
+    let settings = CompileSettings {
+        annotate: mutator.jit.tracer.prints_code(),
+        ..settings
+    };
+    macro_assembler.set_annotating(settings.annotate);
     // Under the invalidate stress mode the countdown's last point leaves
     // for the safepoint that runs its round (`invalidation_due_for_stress`).
     // The entry is a point of the countdown under both: a copy whose
@@ -6388,12 +6598,12 @@ fn optimize(
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
     if mutator.jit.tracer.traces(TraceCategory::Inlining)
-        && let Some(decisions) = decisions
+        && let Some(decisions) = decisions.as_ref()
     {
-        trace_inlining(mutator, code, key, &decisions);
+        trace_inlining(mutator, code, key, decisions);
     }
-    let index = match installation {
-        Ok(index) => index,
+    let (index, captured) = match installation {
+        Ok(installed) => installed,
         // No room is no reason to give the body up: as for a baseline
         // compile, the zone is compacted -- at this same safepoint, which
         // serves the compaction next -- and the body's budget armed
@@ -6406,6 +6616,13 @@ fn optimize(
                 mutator.jit.zone_exhausted = true;
             }
             defer_optimization(mutator, code, key, Deferral::ZoneFull);
+            record_plan(
+                mutator,
+                code,
+                key,
+                decisions.as_ref(),
+                InliningOutcome::Refused(CompileRefusal::ZoneFull),
+            );
             return;
         }
         Err(refusal) => {
@@ -6413,16 +6630,21 @@ fn optimize(
                 None => code.jit.optimized_refused.set(true),
                 Some(key) => code.jit.refuse_copy(key),
             }
+            let reason = CompileRefusal::from_refusal(refusal);
             if mutator.jit.tracer.traces(TraceCategory::Optimize) {
                 mutator.jit.tracer.record(Pending::about(
                     TraceCategory::Optimize,
                     code,
-                    PendingKind::OptimizationRefused {
-                        key,
-                        reason: CompileRefusal::from_refusal(refusal),
-                    },
+                    PendingKind::OptimizationRefused { key, reason },
                 ));
             }
+            record_plan(
+                mutator,
+                code,
+                key,
+                decisions.as_ref(),
+                InliningOutcome::Refused(reason),
+            );
             return;
         }
     };
@@ -6446,9 +6668,11 @@ fn optimize(
     statistics.type_case_arms += inlined.1;
     statistics.eliminated_blocks += inlined.2;
     statistics.inlined_sites += inlined.3;
-    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
+    let bytes = {
         let installed = &mutator.jit.bodies[index as usize];
-        let bytes = (installed.end - installed.start) as usize;
+        (installed.end - installed.start) as usize
+    };
+    if mutator.jit.tracer.traces(TraceCategory::Optimize) {
         mutator.jit.tracer.record(Pending::about(
             TraceCategory::Optimize,
             code,
@@ -6461,6 +6685,20 @@ fn optimize(
                 eliminated_blocks: inlined.2,
             },
         ));
+    }
+    // After the compile's event, which the listings follow: the plan, then
+    // the code whose positions name its scopes.
+    record_plan(
+        mutator,
+        code,
+        key,
+        decisions.as_ref(),
+        InliningOutcome::Installed { bytes },
+    );
+    if let Some(captured) = captured
+        && let Some(listing) = optimized_listing(mutator, index, captured, key, decisions.as_ref())
+    {
+        mutator.jit.tracer.record_listing(code, listing);
     }
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
@@ -6481,6 +6719,127 @@ fn optimize(
     if key.is_some() {
         rearm_optimization_budget(mutator, code, 0);
     }
+}
+
+/// The listing of the copy for `key` installed at `index`, captured as
+/// `captured`, with the tree of the scopes its plan, `decisions`, laid
+/// out: each inlined scope's body found in the heap, which registered it
+/// when the tree was taken at this safepoint, so that the listing holds
+/// it whatever becomes of its code id before the flush names it; `None`
+/// for a copy one of whose scopes' bodies the heap no longer names, which
+/// no compile at the tree's safepoint meets: `optimized_metadata` refuses
+/// such a copy, and a debug build says so.
+#[cfg(ns_jit)]
+fn optimized_listing(
+    mutator: &Mutator<'_>,
+    index: u32,
+    captured: PendingCode,
+    key: Option<CustomizationKey>,
+    decisions: Option<&optimizing::PlanDecisions>,
+) -> Option<PendingListing> {
+    let scopes = decisions.map_or_else(
+        || Some(Vec::new()),
+        |decisions| {
+            let scopes = inlined_scopes(mutator, decisions);
+            debug_assert!(
+                scopes.is_some(),
+                "internal: an inlined scope's body is registered while its copy installs"
+            );
+            scopes
+        },
+    )?;
+    let offset = CodeOffset(mutator.jit.bodies[index as usize].start);
+    Some(mutator.jit.installed_listing(
+        PendingCode {
+            key,
+            scopes,
+            ..captured
+        },
+        offset,
+    ))
+}
+
+/// The scopes `decisions` lays out below the body's own, each with its
+/// body, which the heap registered when the tree was taken at this
+/// safepoint, so that a listing holds it whatever becomes of its code id
+/// before the flush names it; `None` where the heap no longer names one.
+#[cfg(ns_jit)]
+fn inlined_scopes(
+    mutator: &Mutator<'_>,
+    decisions: &optimizing::PlanDecisions,
+) -> Option<Vec<PendingScope>> {
+    decisions
+        .scopes
+        .iter()
+        .skip(1)
+        .map(|scope| {
+            Some(PendingScope {
+                number: scope.number,
+                code: mutator.heap.code(scope.code_id)?,
+                parent: scope.parent,
+            })
+        })
+        .collect()
+}
+
+/// Records, when inlining plans are printed, the plan `decisions` of the
+/// compile of `code`'s copy for `key` with its `outcome`, once that is
+/// known, after the compile's events (decision 13). A compile refused
+/// before its plan was made has no plan to print, nor has one a scope of
+/// which the heap no longer names, which no compile at the tree's
+/// safepoint meets. An arm or a decline in a scope the code lays out
+/// nothing for -- the graph sends at that scope's site instead -- has no
+/// number to name its scope by and is left out: it is no part of the copy.
+#[cfg(ns_jit)]
+fn record_plan(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    decisions: Option<&optimizing::PlanDecisions>,
+    outcome: InliningOutcome,
+) {
+    if !mutator.jit.tracer.prints_inlining() {
+        return;
+    }
+    let Some(decisions) = decisions else {
+        return;
+    };
+    let Some(scopes) = inlined_scopes(mutator, decisions) else {
+        return;
+    };
+    let arms = decisions
+        .arms
+        .iter()
+        .filter_map(|&(scope, program_counter, receiver, inlined)| {
+            Some(PendingArm {
+                scope: decisions.number_of(scope)?,
+                program_counter,
+                receiver,
+                named: None,
+                inlined,
+            })
+        })
+        .collect();
+    let declined = decisions
+        .declined
+        .iter()
+        .filter_map(|declined| {
+            Some(PendingDecline {
+                scope: decisions.number_of(declined.scope)?,
+                program_counter: declined.program_counter,
+                callee: declined.callee.and_then(|callee| mutator.heap.code(callee)),
+                reason: declined.reason,
+            })
+        })
+        .collect();
+    let listing = PendingListing::Inlining(PendingInlining {
+        key,
+        scopes,
+        arms,
+        declined,
+        outcome,
+    });
+    mutator.jit.tracer.record_listing(code, listing);
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would
@@ -6512,9 +6871,11 @@ fn defer_optimization(
 /// Records the inlining plan's decisions for the copy of `code` for
 /// `key`: each scope the copy lays out below its own, by its sender
 /// scope's body, the send's program counter and its own body, and each
-/// callee the plan sent rather than inline (`PlanDecisions`). Bodies are
-/// named by their code ids at this safepoint, where the tree that
-/// registered them was taken; an id the heap no longer names is left out.
+/// callee the plan sent rather than inline (`PlanDecisions`), the
+/// callees that are no body folded into one event counting them by
+/// reason. Bodies are named by their code ids at this safepoint, where
+/// the tree that registered them was taken; an id the heap no longer
+/// names is left out, and a callee's such id counted as no body.
 #[cfg(ns_jit)]
 #[cold]
 #[inline(never)]
@@ -6540,11 +6901,15 @@ fn trace_inlining(
             },
         ));
     }
+    let mut no_body = Vec::new();
     for declined in &decisions.declined {
+        let Some(callee) = declined.callee.and_then(|callee| mutator.heap.code(callee)) else {
+            no_body.push(declined.reason);
+            continue;
+        };
         let Some(in_body) = mutator.heap.code(declined.scope_code) else {
             continue;
         };
-        let callee = declined.callee.and_then(|callee| mutator.heap.code(callee));
         mutator.jit.tracer.record(Pending::about(
             TraceCategory::Inlining,
             code,
@@ -6557,6 +6922,18 @@ fn trace_inlining(
             },
         ));
     }
+    // One event for the callees that are no body: each would name
+    // nothing, and every inlined `==` declines one.
+    if !no_body.is_empty() {
+        mutator.jit.tracer.record(Pending::about(
+            TraceCategory::Inlining,
+            code,
+            PendingKind::InlineDeclinedNoBody {
+                key,
+                reasons: InlineDecline::counted(no_body),
+            },
+        ));
+    }
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
@@ -6564,10 +6941,12 @@ fn trace_inlining(
 /// `bodies`, compiled against `feedback_base` under `settings` for `key`
 /// (`None` for the body's one uncustomized copy), with what it keeps of
 /// its inlining, `metadata`, and what it relied on, `dependencies`,
-/// answering its index among the installed bodies. Its call returns are recorded
-/// as the baseline's are, so that a leaf and the exit's walk find the
-/// send each of its calls returns to; its program-counter map has no
-/// instruction's start, since no frame goes on mid-body in optimized code.
+/// answering its index among the installed bodies and, when machine code
+/// is printed, its listing but for its base address, key and scopes. Its
+/// call returns are recorded as the baseline's are, so that a leaf and
+/// the exit's walk find the send each of its calls returns to; its
+/// program-counter map has no instruction's start, since no frame goes
+/// on mid-body in optimized code.
 #[cfg(ns_jit)]
 fn install_optimized(
     state: &mut JitState,
@@ -6581,16 +6960,19 @@ fn install_optimized(
     ),
     optimized: optimizing::emit::OptimizedBody,
     (metadata, dependencies): (Option<Rc<OptimizedMetadata>>, CopyDependencies),
-) -> Result<u32, Refusal> {
+) -> Result<(u32, Option<PendingCode>), Refusal> {
     let optimizing::emit::OptimizedBody {
         code: assembled,
         returns,
         words,
+        instructions_end,
         twin_transfers,
         push_entry,
         deepest_chain,
         deepest_extent,
         polls,
+        annotations,
+        positions,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -6611,11 +6993,17 @@ fn install_optimized(
         exits_at_once: false,
         reifies: false,
         words,
+        instructions_end,
         twin_transfers,
         budget_word: None,
         dispatching: None,
+        annotations,
+        positions,
     };
     let needed = needed_bytes(&body);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&body, CodeTier::Optimized));
     let index = install_body(
         state,
         code,
@@ -6642,7 +7030,7 @@ fn install_optimized(
     })?;
     state.bodies[index as usize].push_entry = push_entry;
     state.bodies[index as usize].key = key;
-    Ok(index)
+    Ok((index, captured))
 }
 
 /// What an install of optimized code takes beside its code: the lean
@@ -6789,7 +7177,7 @@ fn compile(
     _code: &Rc<CompiledCode>,
     _feedback_base: FeedbackBase,
     _method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32), Refusal> {
+) -> Result<Compiled, Refusal> {
     Err(Refusal::Unassembled(None))
 }
 
@@ -11281,6 +11669,107 @@ mod tests {
             assert_eq!(mutator.heap.activation_depth(), depth);
         }
 
+        /// A sink that keeps every listing it receives where the test
+        /// reads it.
+        #[cfg(debug_assertions)]
+        struct ListingCollector(Rc<std::cell::RefCell<Vec<crate::trace_events::Listing>>>);
+
+        #[cfg(debug_assertions)]
+        impl crate::trace_events::TraceSink for ListingCollector {
+            fn event(&mut self, _event: &crate::trace_events::TraceEvent) {}
+
+            fn listing(&mut self, listing: &crate::trace_events::Listing) {
+                self.0.borrow_mut().push(listing.clone());
+            }
+        }
+
+        /// A listing is captured at the install, not read at the flush: a
+        /// body whose code a compaction freed -- its bytes written over
+        /// with stops -- between its install and the flush lists the
+        /// bytes, the base address and the positions it was installed
+        /// with. The run loop's safepoint flushes before it compacts, so
+        /// only a body compiled in a leaf waits that long, and the test
+        /// makes the order itself, by the zone stress mode's compaction,
+        /// which frees every body no activation runs and exists only with
+        /// debug assertions.
+        #[cfg(debug_assertions)]
+        #[test]
+        fn a_listing_survives_a_compaction_before_its_flush() {
+            use crate::trace_events::{
+                CodeTier, Listing, Position, Printing, TraceCategories, TraceFilter, TraceSettings,
+            };
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            let listings = Rc::new(std::cell::RefCell::new(Vec::new()));
+            interpreter.set_trace(
+                TraceSettings {
+                    categories: TraceCategories::default(),
+                    filter: TraceFilter::everything(),
+                    printing: Printing {
+                        code: true,
+                        ..Printing::default()
+                    },
+                    print_filter: TraceFilter::everything(),
+                },
+                Box::new(ListingCollector(Rc::clone(&listings))),
+            );
+            let code = body();
+            let installed = interpreter.enter(|mutator| {
+                for _ in 0..2 {
+                    note_entry(
+                        &mut mutator.jit,
+                        &code,
+                        FeedbackBase::NOT_ASSIGNED,
+                        None,
+                        crate::trace_events::CompileTrigger::Entry,
+                    );
+                }
+                let installed = mutator
+                    .jit
+                    .installed(&code)
+                    .expect("compiled at the second entry");
+                let zone = mutator.jit.zone.as_ref().expect("a zone");
+                let base =
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(installed.start)) as u64;
+                let bytes = zone
+                    .writer
+                    .bytes(installed.start..installed.words)
+                    .expect("the body's code");
+                let starts = installed.map.starts().to_vec();
+                mutator.compact_code_zone_for_stress(false);
+                assert_eq!(
+                    mutator.jit.body_offset(&code),
+                    None,
+                    "the compaction freed the body no activation runs"
+                );
+                crate::trace_events::flush(mutator);
+                (base, bytes, starts)
+            });
+            let (base, bytes, starts) = installed;
+            let listings = listings.borrow();
+            let [Listing::Code(listing)] = listings.as_slice() else {
+                panic!("one code listing");
+            };
+            assert_eq!(listing.tier, CodeTier::Baseline);
+            assert_eq!(listing.base_address, base);
+            assert_eq!(
+                listing.bytes.get(..bytes.len()),
+                Some(bytes.as_slice()),
+                "the bytes as installed"
+            );
+            let instruction_starts: Vec<u32> = listing
+                .positions
+                .iter()
+                .filter_map(|(offset, position)| match position {
+                    Position::Instruction { .. } => Some(*offset),
+                    Position::OutOfLine => None,
+                })
+                .collect();
+            assert_eq!(instruction_starts, starts);
+        }
+
         /// A frame the interpreter reified -- as a sender walk, or the
         /// interpreter's run of a `MakeClosure` an exit handed over,
         /// reifies a frame an exit left -- goes on in machine code only in
@@ -12010,6 +12499,84 @@ mod cross_assembly_tests {
         bodies
     }
 
+    /// A listing's annotations cost the code nothing: every body of the
+    /// core library and the goldens assembles to the same bytes with and
+    /// without them, for every convention, lean and twin; and annotated,
+    /// it names each call and jump out of it.
+    #[test]
+    fn annotating_changes_no_byte() {
+        use crate::trace_events::{Annotation, Position};
+        let mut annotated = 0usize;
+        let (mut cells, mut exits) = (0usize, 0usize);
+        let mut targets = std::collections::BTreeSet::new();
+        for (code, method) in golden_bodies(Lowering::Optimized) {
+            for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+                for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
+                    let assembled = |annotate| {
+                        let settings = CompileSettings {
+                            counting: false,
+                            futures_exit: false,
+                            annotate,
+                        };
+                        assemble(
+                            abi,
+                            settings,
+                            &code,
+                            FeedbackBase::from_raw(0),
+                            method.as_ref(),
+                            copy,
+                        )
+                    };
+                    let (Ok(plain), Ok(listed)) = (assembled(false), assembled(true)) else {
+                        continue;
+                    };
+                    assert_eq!(
+                        plain.code.bytes,
+                        listed.code.bytes,
+                        "{abi:?} {copy:?}\n{}",
+                        crate::bytecode::disassemble(&code, "body")
+                    );
+                    assert!(plain.annotations.is_empty() && plain.positions.is_empty());
+                    let instructions = listed
+                        .positions
+                        .iter()
+                        .filter(|(_, position)| matches!(position, Position::Instruction { .. }))
+                        .count();
+                    assert_eq!(
+                        instructions,
+                        code.instruction_count(),
+                        "a position per instruction"
+                    );
+                    assert!(listed.positions.is_sorted_by_key(|(offset, _)| *offset));
+                    assert!(listed.annotations.is_sorted_by_key(|(offset, _)| *offset));
+                    cells += listed
+                        .annotations
+                        .iter()
+                        .filter(|(_, annotation)| matches!(annotation, Annotation::Cell { .. }))
+                        .count();
+                    exits += listed
+                        .annotations
+                        .iter()
+                        .filter(|(_, annotation)| matches!(annotation, Annotation::Exit { .. }))
+                        .count();
+                    targets.extend(listed.annotations.iter().filter_map(|(_, annotation)| {
+                        match annotation {
+                            Annotation::Target(name) => Some(*name),
+                            _ => None,
+                        }
+                    }));
+                    annotated += 1;
+                }
+            }
+        }
+        assert!(annotated > 10_000, "only {annotated} bodies");
+        assert!(cells > 0 && exits > 0, "{cells} cells, {exits} exits");
+        // Every indirect call or jump to no stub, leaf or cell is named.
+        for target in ["initializer-callee", "forcing-callee", "twin"] {
+            assert!(targets.contains(target), "{target} among {targets:?}");
+        }
+    }
+
     #[test]
     fn every_golden_body_compiles_for_aapcs64() {
         let mut compiled = 0usize;
@@ -12020,6 +12587,7 @@ mod cross_assembly_tests {
                     let settings = CompileSettings {
                         counting,
                         futures_exit: false,
+                        annotate: false,
                     };
                     for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
                         match assemble(

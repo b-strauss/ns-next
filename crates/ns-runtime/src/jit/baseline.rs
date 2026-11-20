@@ -23,6 +23,7 @@ use super::optimizing::snapshot::BodyFacts;
 use super::sends;
 use super::stubs::ExitKind;
 use super::{CallReturn, ProgramCounterMap, Refusal};
+use crate::trace_events::{Annotation, Position};
 
 /// A compiled body: its machine code, and where each instruction's code
 /// starts in it.
@@ -39,11 +40,15 @@ pub(crate) struct BaselineBody {
     /// Whether the code is a body's twin, which reifies its frame
     /// (`BodyCopy::Twin`).
     pub(crate) reifies: bool,
-    /// The offsets in the code of its first data word, past its last
-    /// instruction, and of the byte past its last, if it has any
+    /// The offsets in the code of its first data word -- past the
+    /// alignment padding that follows `instructions_end` -- and of the
+    /// byte past its last, if it has any
     /// (`MacroAssembler::take_body_words`): the alignment padding after
     /// them is no word's.
     pub(crate) words: Option<std::ops::Range<u32>>,
+    /// The offset past the code's last instruction
+    /// (`macro_assembler::Finished::instructions_end`).
+    pub(crate) instructions_end: u32,
     /// A lean body's transfers into its twin, one per `MakeClosure`: the instruction's
     /// program counter and the index of the data word that holds the
     /// address of its code in the twin (`closures::transfer_to_twin`). None in a
@@ -58,6 +63,14 @@ pub(crate) struct BaselineBody {
     /// A method's lean body's dispatching entry
     /// (`targets::emit_dispatching_entry`); `None` for every other code.
     pub(crate) dispatching: Option<DispatchingEntry>,
+    /// What each call or jump out of the code reaches, by its offset
+    /// (`MacroAssembler::annotate`); empty unless the code was assembled
+    /// annotating, for a listing of it.
+    pub(crate) annotations: Vec<(u32, Annotation)>,
+    /// Where each instruction's code starts and where code out of the
+    /// straight line does, ascending by offset; empty unless the code was
+    /// assembled annotating.
+    pub(crate) positions: Vec<(u32, Position)>,
 }
 
 /// Where a method's lean body's dispatching entry lies and which of its
@@ -473,6 +486,9 @@ impl BodyAssembler {
 
     /// The backward jumps `jump_to_if` set aside, each bound and taken.
     fn emit_backward_branches(&mut self) {
+        if !self.backward_branches.is_empty() {
+            self.macro_assembler.mark_out_of_line();
+        }
         for (label, target, distance) in std::mem::take(&mut self.backward_branches) {
             self.macro_assembler.assembler().bind(label);
             self.macro_assembler.count_back_edge();
@@ -1049,7 +1065,10 @@ impl BodyAssembler {
         let assembler = macro_assembler.assembler();
         assembler.move_immediate(roles.leaf_result, u64::from(program_counter));
         assembler.load(ns_assembler::Width::Word64, roles.idiom_scratch, stub);
-        assembler.call_register(roles.idiom_scratch);
+        macro_assembler.annotate(Annotation::Stub(super::stubs::BlockWord::CutStub.name()));
+        macro_assembler
+            .assembler()
+            .call_register(roles.idiom_scratch);
         macro_assembler.exit(ExitKind::Reexecute, program_counter);
         Lowering::Transfer
     }
@@ -1067,10 +1086,10 @@ impl BodyAssembler {
     /// limit"): an exit above the call materializes them, counted already,
     /// and the call's return takes them off. Clobbers the flags and the
     /// idiom scratch register when it adds anything.
-    pub(super) fn call_send(&mut self, target: Register) {
+    pub(super) fn call_send(&mut self, target: Register, annotation: Option<Annotation>) {
         let depth = i32::from(self.inlined_depth);
         self.macro_assembler.adjust_depth_count(depth);
-        let return_address = self.macro_assembler.call_returning(target);
+        let return_address = self.macro_assembler.call_returning(target, annotation);
         self.call_returns
             .push((return_address, self.program_counter));
         self.macro_assembler.adjust_depth_count(-depth);
@@ -1219,6 +1238,7 @@ pub(crate) fn compile(
     // `u16`.
     let count =
         u16::try_from(code.instruction_count()).map_err(|_| Refusal::TooManyInstructions)?;
+    let annotating = macro_assembler.is_annotating();
     let starts = (0..count)
         .map(|_| macro_assembler.assembler().label())
         .collect();
@@ -1284,6 +1304,7 @@ pub(crate) fn compile(
     let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
     let dispatching_entry = dispatching.map(|(start, rows_word)| {
+        body.macro_assembler.mark_out_of_line();
         let entry = body.macro_assembler.assembler().label();
         super::targets::emit_dispatching_entry(
             &mut body.macro_assembler,
@@ -1297,14 +1318,20 @@ pub(crate) fn compile(
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
         u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
-    let assembled = body
+    let finished = body
         .macro_assembler
-        .finish()
+        .finish_annotated()
         .map_err(|error| Refusal::Unassembled(Some(error)))?;
+    let assembled = finished.assembled;
     let words = words
         .and_then(|label| assembled.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
     let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
+    let positions = if annotating {
+        positions(&map, &finished.out_of_line)
+    } else {
+        Vec::new()
+    };
     let dispatching = dispatching_entry.map(|(entry, rows_word)| DispatchingEntry {
         entry: assembled.label_offsets[entry.index()]
             .expect("internal: the dispatching entry is bound"),
@@ -1317,10 +1344,44 @@ pub(crate) fn compile(
         exits_at_once,
         reifies: body.reifies,
         words,
+        instructions_end: finished.instructions_end,
         twin_transfers: body.twin_transfers,
         budget_word: body.budget_word,
         dispatching,
+        annotations: finished.annotations,
+        positions,
     })
+}
+
+/// A listing's positions of a body laid out as `map` says, its code out
+/// of the straight line starting at each of `out_of_line`: each
+/// instruction's start in the body's own scope, `s0`, and each start of
+/// code out of line, in the order of their offsets -- an instruction
+/// before code out of line at the same offset, which it precedes.
+fn positions(map: &ProgramCounterMap, out_of_line: &[u32]) -> Vec<(u32, Position)> {
+    let mut positions: Vec<(u32, Position)> = map
+        .starts()
+        .iter()
+        .zip(0u32..)
+        .map(|(offset, program_counter)| {
+            (
+                *offset,
+                Position::Instruction {
+                    scope: 0,
+                    program_counter,
+                },
+            )
+        })
+        .collect();
+    positions.extend(
+        out_of_line
+            .iter()
+            .map(|offset| (*offset, Position::OutOfLine)),
+    );
+    // Stable: the map's starts are ascending, and every start of code out
+    // of line lies past them.
+    positions.sort_by_key(|(offset, _)| *offset);
+    positions
 }
 
 /// The map of a body laid out as `assembled`: each instruction's start,
@@ -1841,7 +1902,7 @@ mod tests {
             body.program_counter = program_counter;
             let start = body.starts[program_counter as usize];
             body.macro_assembler.assembler().bind(start);
-            body.call_send(target);
+            body.call_send(target, None);
             body.macro_assembler.store_frame_register(3, target);
         }
         body.macro_assembler.exit(ExitKind::Reexecute, 1);
