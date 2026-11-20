@@ -651,13 +651,19 @@ mod code {
         interpreter.set_optimize_stress(false);
         // Off whatever the environment says: a body the breakpoint or
         // step stress mode patched loses its machine code at every
-        // statement, and the suspend stress mode serves a safepoint at
-        // the loop's backward jumps, so that the loop is never compiled.
+        // statement, the suspend stress mode serves a safepoint at the
+        // loop's backward jumps, so that the loop is never compiled, and
+        // the cache stress mode vacates the caches at every poll, so that
+        // the plan finds no receiver the caches saw, and the zone stress
+        // mode frees the loop's code at every safepoint, so that its
+        // budget never runs out.
         #[cfg(debug_assertions)]
         {
             interpreter.set_stress_breakpoints(false);
             interpreter.set_stress_step(false);
             interpreter.set_stress_suspend(false);
+            interpreter.set_stress_caches(false);
+            interpreter.set_stress_zone(false);
         }
         prepare(&mut interpreter);
         let class = interpreter.load_module(&resolved);

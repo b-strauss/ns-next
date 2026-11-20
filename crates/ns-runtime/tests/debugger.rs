@@ -3300,13 +3300,17 @@ fn a_caller_in_its_twin_lists_the_twin() {
 fn caller_listing(selector: &str, caller: &str) -> Box<CodeListing> {
     let (mut interpreter, instance, _) = compiled(FRAME_CODE, Lowering::Optimized);
     interpreter.set_jit_enabled(true);
-    // Off whatever the environment says: a body either mode patched
-    // loses its machine code at every statement. A build without debug
-    // assertions has neither mode.
+    // Off whatever the environment says: a body the breakpoint or step
+    // stress mode patched loses its machine code at every statement, and
+    // the zone and collect stress modes free the caller's code or its
+    // twin, so that the caller goes on interpreted. A build without
+    // debug assertions has none of the modes.
     #[cfg(debug_assertions)]
     {
         interpreter.set_stress_breakpoints(false);
         interpreter.set_stress_step(false);
+        interpreter.set_stress_zone(false);
+        interpreter.set_stress_collect(false);
     }
     assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 0);
     let offset = line_start(FRAME_CODE, "^total + 0");
