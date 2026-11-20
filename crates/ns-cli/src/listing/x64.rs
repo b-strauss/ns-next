@@ -7,7 +7,7 @@ use iced_x86::{
     SymbolResult,
 };
 
-use super::{Decoded, body_offset};
+use super::{Decoded, Extent};
 
 /// Decoding with the instruction pointer at 0 makes every address the
 /// decoder computes -- a branch's target, a `rip`-relative operand's -- an
@@ -18,11 +18,9 @@ const BODY_START: u64 = 0;
 const BITNESS: u32 = 64;
 
 /// The instructions of `code`, the first `code.len()` bytes of a body of
-/// `body_length` bytes, each target in the body named by its offset.
-pub(super) fn decoded(code: &[u8], body_length: usize) -> Vec<Decoded> {
-    let resolver = BodyOffsets {
-        length: u64::try_from(body_length).unwrap_or(u64::MAX),
-    };
+/// `extent`, each address in the body named as `extent` names it.
+pub(super) fn decoded(code: &[u8], extent: Extent) -> Vec<Decoded> {
+    let resolver = BodyOffsets { extent };
     let mut formatter = IntelFormatter::with_options(Some(Box::new(resolver)), None);
     let mut decoder = Decoder::with_ip(BITNESS, code, BODY_START, DecoderOptions::NONE);
     let mut instructions = Vec::new();
@@ -39,13 +37,14 @@ pub(super) fn decoded(code: &[u8], body_length: usize) -> Vec<Decoded> {
     instructions
 }
 
-/// Names an address in the body by its offset, where a branch reaches it
-/// or a `rip`-relative operand reads it: the address the decoder computes
-/// from 0 is the offset, and the run's own address would differ in every
-/// run. Every other number -- an immediate, a displacement from a
-/// register -- stays the decoder's.
+/// Names an address in the body -- an instruction's by its offset, a data
+/// word's by its offset from the first -- where a branch reaches it or a
+/// `rip`-relative operand reads it: the address the decoder computes from
+/// 0 is the offset, and the run's own address would differ in every run.
+/// Every other number -- an immediate, a displacement from a register --
+/// stays the decoder's.
 struct BodyOffsets {
-    length: u64,
+    extent: Extent,
 }
 
 impl SymbolResolver for BodyOffsets {
@@ -63,7 +62,10 @@ impl SymbolResolver for BodyOffsets {
             OpKind::Memory => instruction.is_ip_rel_memory_operand(),
             _ => false,
         };
-        (in_the_body && address < self.length)
-            .then(|| SymbolResult::with_string(address, body_offset(address)))
+        if !in_the_body {
+            return None;
+        }
+        let name = self.extent.name(address)?;
+        Some(SymbolResult::with_string(address, name))
     }
 }

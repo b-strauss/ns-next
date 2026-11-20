@@ -57,6 +57,48 @@ fn body_offset(offset: impl std::fmt::LowerHex) -> String {
     format!("+0x{offset:04x}")
 }
 
+/// A data word's address as a listing writes it, `data+0x` and its offset
+/// from the first data word, at least four hex digits (decision 14).
+fn data_offset(offset: impl std::fmt::LowerHex) -> String {
+    format!("data+0x{offset:04x}")
+}
+
+/// The extent of a listed body, by which a decoder names an address its
+/// code computes: an instruction's by its offset in the body, a data
+/// word's by its offset from the first data word.
+#[derive(Clone, Copy)]
+struct Extent {
+    /// The body's length in bytes.
+    length: u64,
+    /// The offset of the first data word; the length for a body without
+    /// data words.
+    data_start: u64,
+}
+
+impl Extent {
+    fn of_listing(code: &CodeListing) -> Extent {
+        let length = u64::try_from(code.bytes.len()).unwrap_or(u64::MAX);
+        let data_start = code
+            .words
+            .first()
+            .map_or(length, |(offset, _)| u64::from(*offset));
+        Extent { length, data_start }
+    }
+
+    /// The name of `address`, an offset from the body's start; `None`
+    /// for an address outside the body, which the decoder writes as it
+    /// computes it.
+    fn name(self, address: u64) -> Option<String> {
+        if address >= self.length {
+            None
+        } else if address >= self.data_start {
+            Some(data_offset(address - self.data_start))
+        } else {
+            Some(body_offset(address))
+        }
+    }
+}
+
 /// ` key={…}` and ` entered={…}`, each only where the listing has it, as
 /// the trace's events write a customization key.
 fn write_key(text: &mut String, key: Option<&(String, Option<String>)>) {
@@ -182,10 +224,25 @@ fn write_code(text: &mut String, code: &CodeListing) {
         }
         text.push('\n');
     }
-    if !code.words.is_empty() {
+    // Neither names an offset past the last instruction: the code's
+    // positions and annotations lie within it.
+    debug_assert!(
+        positions.next().is_none(),
+        "a position past the last instruction"
+    );
+    debug_assert!(
+        annotations.next().is_none(),
+        "an annotation past the last instruction"
+    );
+    if let Some((data_start, _)) = code.words.first() {
         text.push_str("data:\n");
         for (offset, word) in &code.words {
-            let _ = writeln!(text, "    {}  {}", body_offset(*offset), word_text(*word));
+            let _ = writeln!(
+                text,
+                "    {}  {}",
+                data_offset(offset - data_start),
+                word_text(*word)
+            );
         }
     }
 }
@@ -266,9 +323,9 @@ fn decoded(code: &CodeListing) -> Vec<Decoded> {
     let instructions = &code.bytes[..end];
     match code.architecture {
         #[cfg(target_arch = "x86_64")]
-        Architecture::X64 => x64::decoded(instructions, code.bytes.len()),
+        Architecture::X64 => x64::decoded(instructions, Extent::of_listing(code)),
         #[cfg(target_arch = "aarch64")]
-        Architecture::Aarch64 => aarch64::decoded(instructions, code.bytes.len()),
+        Architecture::Aarch64 => aarch64::decoded(instructions, Extent::of_listing(code)),
         _ => hex(instructions),
     }
 }
@@ -475,7 +532,7 @@ mod tests {
                  \x20   +0x0008  08 09 0a 0b\n\
                  \x20   +0x000c  0c 0d 0e 0f\n\
                  data:\n\
-                 \x20   +0x0010  twin transfer @3\n\
+                 \x20   data+0x0000  twin transfer @3\n\
                  --- end\n",
                 foreign_architecture().name()
             )
@@ -557,11 +614,11 @@ mod tests {
              \x20   +0x0008  call rbx  ; cell site 3\n\
              \x20   +0x000a  jmp rax  ; target twin\n\
              \x20 out of line\n\
-             \x20   +0x000c  mov rax,[+0x0014]\n\
+             \x20   +0x000c  mov rax,[data+0x0000]\n\
              \x20 @1  stmt 0  Return r1\n\
              \x20   +0x0013  ret\n\
              data:\n\
-             \x20   +0x0014  budget word\n\
+             \x20   data+0x0000  budget word\n\
              --- end\n"
         );
     }

@@ -950,10 +950,14 @@ fn listings(stderr: &str) -> Vec<Vec<&str>> {
 }
 
 /// Whether `line` is an instruction's or a data word's line of a code
-/// listing: four spaces, its offset in the body as `+0x` and four hex
+/// listing: four spaces, its offset -- an instruction's in the body as
+/// `+0x`, a data word's from the first as `data+0x` -- in four hex
 /// digits, two spaces.
 fn is_offset_line(line: &str) -> bool {
-    line.strip_prefix("    +0x").is_some_and(|rest| {
+    let offset = line
+        .strip_prefix("    +0x")
+        .or_else(|| line.strip_prefix("    data+0x"));
+    offset.is_some_and(|rest| {
         rest.len() > 6
             && rest[..4]
                 .chars()
@@ -1103,7 +1107,7 @@ const THE_CONSTANT_METHODS_LISTING_CHECKED: &str = r"--- code {Demo>>answer} bas
     +0x0071  mov ecx,28000001h
     +0x0076  add rdx,rcx
     +0x0079  mov [rbx+20h],rdx
-    +0x007d  mov r11,[+0x0210]
+    +0x007d  mov r11,[data+0x0010]
     +0x0084  sub qword ptr [r11],2
     +0x0088  jl +0x0171
   @0  stmt 0  LoadLiteral r13, 42
@@ -1120,8 +1124,8 @@ const THE_CONSTANT_METHODS_LISTING_CHECKED: &str = r"--- code {Demo>>answer} bas
     +0x00ba  mov [r11+8],rcx
     +0x00be  ret
   out of line
-    +0x00bf  mov r9,[+0x0200]
-    +0x00c6  mov rcx,[+0x0208]
+    +0x00bf  mov r9,[data+0x0000]
+    +0x00c6  mov rcx,[data+0x0008]
     +0x00cd  lea r10,[+0x0000]
     +0x00d4  jmp rcx  ; stub dispatching-stub
     +0x00d6  lea rdx,[+0x00dd]
@@ -1192,9 +1196,9 @@ const THE_CONSTANT_METHODS_LISTING_CHECKED: &str = r"--- code {Demo>>answer} bas
     +0x01ed  mov r11,[r14+60h]
     +0x01f1  jmp r11  ; exit dead-register @1
 data:
-    +0x0200  dispatching rows
-    +0x0208  dispatching tail
-    +0x0210  budget word
+    data+0x0000  dispatching rows
+    data+0x0008  dispatching tail
+    data+0x0010  budget word
 --- end
 ";
 
@@ -1218,7 +1222,7 @@ const THE_CONSTANT_METHODS_LISTING: &str = r"--- code {Demo>>answer} baseline x6
     +0x0035  mov [r11+8],rcx
     +0x0039  mov [rbx],rsi
     +0x003c  mov [rbx+8],rdi
-    +0x0040  mov r11,[+0x0190]
+    +0x0040  mov r11,[data+0x0010]
     +0x0047  sub qword ptr [r11],2
     +0x004b  jl +0x010d
   @0  stmt 0  LoadLiteral r13, 42
@@ -1232,8 +1236,8 @@ const THE_CONSTANT_METHODS_LISTING: &str = r"--- code {Demo>>answer} baseline x6
     +0x006a  mov [r11+8],rcx
     +0x006e  ret
   out of line
-    +0x006f  mov r9,[+0x0180]
-    +0x0076  mov rcx,[+0x0188]
+    +0x006f  mov r9,[data+0x0000]
+    +0x0076  mov rcx,[data+0x0008]
     +0x007d  lea r10,[+0x0000]
     +0x0084  jmp rcx  ; stub dispatching-stub
     +0x0086  lea rdx,[+0x008d]
@@ -1296,9 +1300,9 @@ const THE_CONSTANT_METHODS_LISTING: &str = r"--- code {Demo>>answer} baseline x6
     +0x0166  mov r11,[r14+60h]
     +0x016a  jmp r11  ; exit budget-spent @0
 data:
-    +0x0180  dispatching rows
-    +0x0188  dispatching tail
-    +0x0190  budget word
+    data+0x0000  dispatching rows
+    data+0x0008  dispatching tail
+    data+0x0010  budget word
 --- end
 ";
 

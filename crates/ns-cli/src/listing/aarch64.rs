@@ -5,15 +5,15 @@
 use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction, Opcode, Operand};
 
-use super::{Decoded, body_offset, hex_bytes};
+use super::{Decoded, Extent, hex_bytes};
 
 /// Every AArch64 instruction is one 32-bit word.
 const INSTRUCTION_BYTES: usize = 4;
 
 /// The instructions of `code`, the first `code.len()` bytes of a body of
-/// `body_length` bytes, each target in the body named by its offset; a
-/// word that decodes to nothing shown in hex.
-pub(super) fn decoded(code: &[u8], body_length: usize) -> Vec<Decoded> {
+/// `extent`, each address in the body named as `extent` names it; a word
+/// that decodes to nothing shown in hex.
+pub(super) fn decoded(code: &[u8], extent: Extent) -> Vec<Decoded> {
     let decoder = InstDecoder::default();
     code.chunks(INSTRUCTION_BYTES)
         .zip((0u32..).step_by(INSTRUCTION_BYTES))
@@ -24,7 +24,7 @@ pub(super) fn decoded(code: &[u8], body_length: usize) -> Vec<Decoded> {
                     .decode_into(&mut instruction, &mut U8Reader::new(word))
                     .is_ok();
             let text = if decodes {
-                with_body_offsets(&instruction, offset, body_length)
+                with_body_offsets(&instruction, offset, extent)
             } else {
                 hex_bytes(word)
             };
@@ -37,11 +37,11 @@ pub(super) fn decoded(code: &[u8], body_length: usize) -> Vec<Decoded> {
         .collect()
 }
 
-/// `instruction`'s text, at `offset` in a body of `body_length` bytes,
-/// its target relative to itself (`$+0x…`) rewritten to the offset in
+/// `instruction`'s text, at `offset` in a body of `extent`, its target
+/// relative to itself (`$+0x…`) rewritten to the name of the address in
 /// the body it reaches, as an x64 listing names it. An `adrp`'s target is
 /// a page of the run's own addresses, and stays as it is.
-fn with_body_offsets(instruction: &Instruction, offset: u32, body_length: usize) -> String {
+fn with_body_offsets(instruction: &Instruction, offset: u32, extent: Extent) -> String {
     let text = instruction.to_string();
     if instruction.opcode == Opcode::ADRP {
         return text;
@@ -58,12 +58,12 @@ fn with_body_offsets(instruction: &Instruction, offset: u32, body_length: usize)
         return text;
     };
     let target = i64::from(offset).saturating_add(relative);
-    let in_the_body = u64::try_from(target)
-        .is_ok_and(|target| target < u64::try_from(body_length).unwrap_or(u64::MAX));
-    if in_the_body {
-        text.replacen(&operand.to_string(), &body_offset(target), 1)
-    } else {
-        text
+    let name = u64::try_from(target)
+        .ok()
+        .and_then(|target| extent.name(target));
+    match name {
+        Some(name) => text.replacen(&operand.to_string(), &name, 1),
+        None => text,
     }
 }
 
@@ -71,8 +71,8 @@ fn with_body_offsets(instruction: &Instruction, offset: u32, body_length: usize)
 mod tests {
     use super::*;
 
-    /// A branch forward and a literal load into the body name the offsets
-    /// they reach.
+    /// A branch forward names the offset it reaches, and a literal load
+    /// of a data word the word's offset from the first.
     #[test]
     fn a_target_in_the_body_is_named_by_its_offset() {
         let code: Vec<u8> = [
@@ -84,12 +84,16 @@ mod tests {
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
-        let lines: Vec<String> = decoded(&code, 24)
+        let extent = Extent {
+            length: 24,
+            data_start: 16,
+        };
+        let lines: Vec<String> = decoded(&code, extent)
             .into_iter()
             .map(|instruction| instruction.text)
             .collect();
         assert_eq!(lines[0], "b +0x0008", "{lines:?}");
         assert_eq!(lines[1], "ret", "{lines:?}");
-        assert!(lines[2].ends_with("+0x0010"), "{lines:?}");
+        assert!(lines[2].ends_with(" data+0x0000"), "{lines:?}");
     }
 }

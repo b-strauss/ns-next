@@ -40,8 +40,9 @@ pub(crate) struct BaselineBody {
     /// Whether the code is a body's twin, which reifies its frame
     /// (`BodyCopy::Twin`).
     pub(crate) reifies: bool,
-    /// The offsets in the code of its first data word, past its last
-    /// instruction, and of the byte past its last, if it has any
+    /// The offsets in the code of its first data word -- past the
+    /// alignment padding that follows `instructions_end` -- and of the
+    /// byte past its last, if it has any
     /// (`MacroAssembler::take_body_words`): the alignment padding after
     /// them is no word's.
     pub(crate) words: Option<std::ops::Range<u32>>,
