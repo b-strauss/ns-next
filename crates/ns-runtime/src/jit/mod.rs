@@ -56,12 +56,15 @@ use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
 use crate::interpreter::{DEPTH_RESERVE, FeedbackBase, MAX_ACTIVATION_DEPTH, Mutator};
 use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
-use crate::trace_events::{
-    CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, Revival,
-    TraceCategory,
-};
 #[cfg(ns_jit)]
-use crate::trace_events::{Deferral, FreeCause, InvalidationCause, RecompileWalkEnd, RetireReason};
+use crate::trace_events::{
+    CodeTier, DataWord, Deferral, FreeCause, InvalidationCause, PendingCode, RecompileWalkEnd,
+    RetireReason,
+};
+use crate::trace_events::{
+    CompileRefusal, CompileTrigger, HoldReason, OsrRefusal, Pending, PendingKind, PendingListing,
+    Revival, TraceCategory,
+};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -1188,6 +1191,12 @@ impl ProgramCounterMap {
         self.starts.get(program_counter as usize).copied()
     }
 
+    /// Where each instruction's code starts, by program counter: what a
+    /// listing of the code names its positions by.
+    pub(crate) fn starts(&self) -> &[u32] {
+        &self.starts
+    }
+
     /// The instruction whose code starts at `machine_offset`, if one does.
     #[cfg_attr(
         not(test),
@@ -1517,6 +1526,10 @@ pub(crate) enum Tier {
 struct CompileSettings {
     counting: bool,
     futures_exit: bool,
+    /// Whether the code records its annotations for a listing
+    /// (`MacroAssembler::set_annotating`), which changes no byte of it: a
+    /// twin takes the state's at its own compile, not its lean body's.
+    annotate: bool,
 }
 
 /// A lean body's `MakeClosure` and its transfer word: the instruction's
@@ -4240,6 +4253,19 @@ impl JitState {
         })
     }
 
+    /// The listing `captured` makes of a body installed at `offset`: its
+    /// base address, the one fact the install decides.
+    #[cfg(ns_jit)]
+    fn installed_listing(&self, captured: PendingCode, offset: CodeOffset) -> PendingListing {
+        let Some(zone) = self.zone.as_ref() else {
+            unreachable!("internal: a body is installed into a zone");
+        };
+        PendingListing::Code(PendingCode {
+            base_address: zone.writer.zone().executable_address(offset) as u64,
+            ..captured
+        })
+    }
+
     /// The address of the miss stub, 0 where there is no zone.
     pub(crate) fn miss_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
@@ -4768,7 +4794,7 @@ fn compile_into_slot(
     // the trace says why it was not compiled at the entry it came due.
     if state.tracer.traces(TraceCategory::Compile) {
         let kind = match &outcome {
-            Ok((_, index)) => {
+            Ok((_, index, _)) => {
                 let body = &state.bodies[*index as usize];
                 PendingKind::Compiled {
                     trigger,
@@ -4785,7 +4811,11 @@ fn compile_into_slot(
             .record(Pending::about(TraceCategory::Compile, code, kind));
     }
     match outcome {
-        Ok((offsets, map)) => {
+        Ok((offsets, map, listing)) => {
+            // After the compile's event, which the listing follows.
+            if let Some(listing) = listing {
+                state.tracer.record_listing(code, listing);
+            }
             code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
             if state.tracer.is_on() {
@@ -4885,21 +4915,27 @@ pub(crate) fn after_compile_trigger_in_leaf(mutator: &mut Mutator<'_>) {
     }
 }
 
+/// What a compile answers: the body's offset and that of its instruction
+/// at program counter 0, its index among the installed bodies, and its
+/// listing when machine code is printed.
+type Compiled = ([CodeOffset; 2], u32, Option<PendingListing>);
+
 /// Compiles `code`, its sends' cells those of `feedback_base`'s range,
 /// and installs its lean body, answering its offset and that of its
-/// instruction at program counter 0 and its index among the installed
-/// bodies. Its twin waits for the first transfer or resumption that needs
-/// it (`compile_twin`).
+/// instruction at program counter 0, its index among the installed
+/// bodies and, when machine code is printed, its listing. Its twin waits
+/// for the first transfer or resumption that needs it (`compile_twin`).
 #[cfg(ns_jit)]
 fn compile(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32), Refusal> {
+) -> Result<Compiled, Refusal> {
     let settings = CompileSettings {
         counting: state.counting,
         futures_exit: state.futures_exit,
+        annotate: state.tracer.prints_code(),
     };
     let body = assemble(
         macro_assembler::Abi::host(),
@@ -4918,6 +4954,9 @@ fn compile(
         panic!("internal: a compiled body has no code for its first instruction");
     };
     let needed = needed_bytes(&body);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&body, CodeTier::Baseline));
     let map = match install_body(state, code, method, feedback_base, body, settings, None) {
         Ok(map) => map,
         Err(Refusal::ZoneFull) => {
@@ -4929,7 +4968,66 @@ fn compile(
     };
     let offset = CodeOffset(state.bodies[map as usize].start);
     let first_instruction = CodeOffset(offset.0 + first_instruction);
-    Ok(([offset, first_instruction], map))
+    let listing = captured.map(|captured| state.installed_listing(captured, offset));
+    Ok(([offset, first_instruction], map, listing))
+}
+
+/// The listing of `body`, compiled as its `tier`, as it was assembled: its
+/// bytes, its data words zeroed, and where they lie, its positions and
+/// its annotations -- every fact but its base address, which its install
+/// decides (`JitState::installed_listing`). Copied before the install,
+/// which takes the body, and kept apart from the zone, where the code may
+/// move or be freed before a flush delivers the listing.
+#[cfg(ns_jit)]
+fn captured_code(body: &baseline::BaselineBody, tier: CodeTier) -> PendingCode {
+    let bytes = body.code.bytes.clone();
+    let code_end = body.words.as_ref().map_or_else(
+        || u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+        |words| words.start,
+    );
+    let words = body.words.as_ref().map_or_else(Vec::new, |words| {
+        let named = |index: usize| {
+            if body.budget_word == Some(index) {
+                DataWord::Budget
+            } else if body
+                .dispatching
+                .is_some_and(|dispatching| dispatching.rows_word == index)
+            {
+                DataWord::DispatchingRows
+            } else if body
+                .dispatching
+                .is_some_and(|dispatching| dispatching.tail_word == index)
+            {
+                DataWord::DispatchingTail
+            } else if let Some(transfer) = body
+                .twin_transfers
+                .iter()
+                .find(|transfer| transfer.word == index)
+            {
+                DataWord::TwinTransfer {
+                    program_counter: transfer.program_counter,
+                }
+            } else {
+                DataWord::Other
+            }
+        };
+        (words.start..words.end)
+            .step_by(8)
+            .zip(0usize..)
+            .map(|(offset, index)| (offset, named(index)))
+            .collect()
+    });
+    PendingCode {
+        tier,
+        key: None,
+        architecture: macro_assembler::Abi::host().architecture(),
+        base_address: 0,
+        bytes,
+        code_end,
+        words,
+        positions: body.positions.clone(),
+        annotations: body.annotations.clone(),
+    }
 }
 
 /// `code` assembled for `abi` as its body's `copy` under `settings`, for
@@ -4948,6 +5046,7 @@ fn assemble(
 ) -> Result<baseline::BaselineBody, Refusal> {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(settings.counting);
+    macro_assembler.set_annotating(settings.annotate);
     let role = baseline::BodyRole::of_code(code, method.is_some());
     baseline::compile(
         code,
@@ -5167,7 +5266,8 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     if let Some(twin) = body.twin {
         return Ok(twin);
     }
-    let (needed, settings) = (body.twin_needed, body.settings);
+    let (needed, mut settings) = (body.twin_needed, body.settings);
+    settings.annotate = state.tracer.prints_code();
     let Some(installed) = upgraded(body, lean) else {
         unreachable!("internal: a lean body running or resumed lives");
     };
@@ -5199,6 +5299,9 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         }
     };
     let needed = needed_bytes(&twin);
+    let captured = settings
+        .annotate
+        .then(|| captured_code(&twin, CodeTier::Twin));
     let installation = install_body(
         state,
         &installed.code,
@@ -5245,6 +5348,13 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             &installed.code,
             PendingKind::CompiledTwin { bytes },
         ));
+    }
+    // After the compile's event, which the listing follows; delivered at
+    // the next flush, which a twin compiled in its leaf waits for.
+    if let Some(captured) = captured {
+        let offset = CodeOffset(state.bodies[index as usize].start);
+        let listing = state.installed_listing(captured, offset);
+        state.tracer.record_listing(&installed.code, listing);
     }
     if state.tracer.is_on() {
         state.tracer.body_compiled(&installed.code, true);
@@ -6614,6 +6724,8 @@ fn install_optimized(
         twin_transfers,
         budget_word: None,
         dispatching: None,
+        annotations: Vec::new(),
+        positions: Vec::new(),
     };
     let needed = needed_bytes(&body);
     let index = install_body(
@@ -6789,7 +6901,7 @@ fn compile(
     _code: &Rc<CompiledCode>,
     _feedback_base: FeedbackBase,
     _method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32), Refusal> {
+) -> Result<Compiled, Refusal> {
     Err(Refusal::Unassembled(None))
 }
 
@@ -11281,6 +11393,102 @@ mod tests {
             assert_eq!(mutator.heap.activation_depth(), depth);
         }
 
+        /// A sink that keeps every listing it receives where the test
+        /// reads it.
+        struct ListingCollector(Rc<std::cell::RefCell<Vec<crate::trace_events::Listing>>>);
+
+        impl crate::trace_events::TraceSink for ListingCollector {
+            fn event(&mut self, _event: &crate::trace_events::TraceEvent) {}
+
+            fn listing(&mut self, listing: &crate::trace_events::Listing) {
+                self.0.borrow_mut().push(listing.clone());
+            }
+        }
+
+        /// A listing is captured at the install, not read at the flush: a
+        /// body whose code a compaction freed -- its bytes written over
+        /// with stops -- between its install and the flush lists the
+        /// bytes, the base address and the positions it was installed
+        /// with. The run loop's safepoint flushes before it compacts, so
+        /// only a body compiled in a leaf waits that long, and the test
+        /// makes the order itself.
+        #[test]
+        fn a_listing_survives_a_compaction_before_its_flush() {
+            use crate::trace_events::{
+                CodeTier, Listing, Position, Printing, TraceCategories, TraceFilter, TraceSettings,
+            };
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            let listings = Rc::new(std::cell::RefCell::new(Vec::new()));
+            interpreter.set_trace(
+                TraceSettings {
+                    categories: TraceCategories::default(),
+                    filter: TraceFilter::everything(),
+                    printing: Printing {
+                        code: true,
+                        ..Printing::default()
+                    },
+                    print_filter: TraceFilter::everything(),
+                },
+                Box::new(ListingCollector(Rc::clone(&listings))),
+            );
+            let code = body();
+            let installed = interpreter.enter(|mutator| {
+                for _ in 0..2 {
+                    note_entry(
+                        &mut mutator.jit,
+                        &code,
+                        FeedbackBase::NOT_ASSIGNED,
+                        None,
+                        crate::trace_events::CompileTrigger::Entry,
+                    );
+                }
+                let installed = mutator
+                    .jit
+                    .installed(&code)
+                    .expect("compiled at the second entry");
+                let zone = mutator.jit.zone.as_ref().expect("a zone");
+                let base =
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(installed.start)) as u64;
+                let bytes = zone
+                    .writer
+                    .bytes(installed.start..installed.words)
+                    .expect("the body's code");
+                let starts = installed.map.starts().to_vec();
+                mutator.compact_code_zone_for_stress(false);
+                assert_eq!(
+                    mutator.jit.body_offset(&code),
+                    None,
+                    "the compaction freed the body no activation runs"
+                );
+                crate::trace_events::flush(mutator);
+                (base, bytes, starts)
+            });
+            let (base, bytes, starts) = installed;
+            let listings = listings.borrow();
+            let [Listing::Code(listing)] = listings.as_slice() else {
+                panic!("one code listing");
+            };
+            assert_eq!(listing.tier, CodeTier::Baseline);
+            assert_eq!(listing.base_address, base);
+            assert_eq!(
+                listing.bytes.get(..bytes.len()),
+                Some(bytes.as_slice()),
+                "the bytes as installed"
+            );
+            let instruction_starts: Vec<u32> = listing
+                .positions
+                .iter()
+                .filter_map(|(offset, position)| match position {
+                    Position::Instruction { .. } => Some(*offset),
+                    Position::OutOfLine => None,
+                })
+                .collect();
+            assert_eq!(instruction_starts, starts);
+        }
+
         /// A frame the interpreter reified -- as a sender walk, or the
         /// interpreter's run of a `MakeClosure` an exit handed over,
         /// reifies a frame an exit left -- goes on in machine code only in
@@ -12010,6 +12218,73 @@ mod cross_assembly_tests {
         bodies
     }
 
+    /// A listing's annotations cost the code nothing: every body of the
+    /// core library and the goldens assembles to the same bytes with and
+    /// without them, for every convention, lean and twin; and annotated,
+    /// it names each call and jump out of it.
+    #[test]
+    fn annotating_changes_no_byte() {
+        use crate::trace_events::{Annotation, Position};
+        let mut annotated = 0usize;
+        let (mut cells, mut exits) = (0usize, 0usize);
+        for (code, method) in golden_bodies(Lowering::Optimized) {
+            for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+                for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
+                    let assembled = |annotate| {
+                        let settings = CompileSettings {
+                            counting: false,
+                            futures_exit: false,
+                            annotate,
+                        };
+                        assemble(
+                            abi,
+                            settings,
+                            &code,
+                            FeedbackBase::from_raw(0),
+                            method.as_ref(),
+                            copy,
+                        )
+                    };
+                    let (Ok(plain), Ok(listed)) = (assembled(false), assembled(true)) else {
+                        continue;
+                    };
+                    assert_eq!(
+                        plain.code.bytes,
+                        listed.code.bytes,
+                        "{abi:?} {copy:?}\n{}",
+                        crate::bytecode::disassemble(&code, "body")
+                    );
+                    assert!(plain.annotations.is_empty() && plain.positions.is_empty());
+                    let instructions = listed
+                        .positions
+                        .iter()
+                        .filter(|(_, position)| matches!(position, Position::Instruction { .. }))
+                        .count();
+                    assert_eq!(
+                        instructions,
+                        code.instruction_count(),
+                        "a position per instruction"
+                    );
+                    assert!(listed.positions.is_sorted_by_key(|(offset, _)| *offset));
+                    assert!(listed.annotations.is_sorted_by_key(|(offset, _)| *offset));
+                    cells += listed
+                        .annotations
+                        .iter()
+                        .filter(|(_, annotation)| matches!(annotation, Annotation::Cell { .. }))
+                        .count();
+                    exits += listed
+                        .annotations
+                        .iter()
+                        .filter(|(_, annotation)| matches!(annotation, Annotation::Exit { .. }))
+                        .count();
+                    annotated += 1;
+                }
+            }
+        }
+        assert!(annotated > 10_000, "only {annotated} bodies");
+        assert!(cells > 0 && exits > 0, "{cells} cells, {exits} exits");
+    }
+
     #[test]
     fn every_golden_body_compiles_for_aapcs64() {
         let mut compiled = 0usize;
@@ -12020,6 +12295,7 @@ mod cross_assembly_tests {
                     let settings = CompileSettings {
                         counting,
                         futures_exit: false,
+                        annotate: false,
                     };
                     for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
                         match assemble(

@@ -123,8 +123,9 @@ fn print_bytecode(
 fn bytecode(listings: &[Listing]) -> Vec<&BytecodeListing> {
     listings
         .iter()
-        .map(|listing| match listing {
-            Listing::Bytecode(bytecode) => bytecode,
+        .filter_map(|listing| match listing {
+            Listing::Bytecode(bytecode) => Some(bytecode),
+            Listing::Code(_) => None,
         })
         .collect()
 }
@@ -266,4 +267,272 @@ fn the_debuggers_metadata_compile_prints_nothing() {
         before,
         "compiling the metadata again makes no body"
     );
+}
+
+/// The machine code of each body installed, listed as it was installed
+/// (`docs/design/developer-tool.md`, decisions 4, 5 and 14). These pin
+/// what the JIT installs, so they run with the JIT on whatever the
+/// environment says, as `tests/trace.rs` does.
+#[cfg(ns_jit)]
+mod code {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use indoc::indoc;
+    use ns_runtime::trace_events::{
+        Annotation, Architecture, CodeListing, CodeTier, DataWord, Listing, Position, Printing,
+        TraceSettings,
+    };
+    use ns_runtime::{Interpreter, Root, SourceOrigin, Symbol, TraceCategories, TraceFilter};
+
+    use super::{Collector, expect_ok};
+
+    /// A module whose `square:` sends `times:by:`, whose `total:` makes a
+    /// block and whose `cube:` is another body for the filter to leave
+    /// out, each entered by the unary method that sends it.
+    const HOT: &str = indoc! {"
+        class Demo = Object new () (
+          public square: number = (
+            ^self times: number by: number.
+          )
+
+          public cube: number = (
+            ^(self times: number by: number) * number.
+          )
+
+          public times: left by: right = (
+            ^left * right.
+          )
+
+          public total: list = (
+            | sum ::= 0. |
+            list do: [:each | sum:: sum + each].
+            ^sum.
+          )
+
+          public runSquare = (
+            ^self square: 7.
+          )
+
+          public runCube = (
+            ^self cube: 3.
+          )
+
+          public runTotal = (
+            ^self total: {1. 2. 3}.
+          )
+        )
+    "};
+
+    /// `HOT` loaded and instantiated with the JIT on, the machine code of
+    /// the bodies `pattern` selects printed into the listings answered.
+    fn hot(pattern: &str) -> (Interpreter, Root, Rc<RefCell<Vec<Listing>>>) {
+        let module = ns_syntax::parse(HOT).expect("parse");
+        let resolved =
+            ns_runtime::resolve(module, HOT.into(), SourceOrigin::File("demo.ns".into()))
+                .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        // On whatever the environment says, every body compiled at its
+        // second entry: the listings are the JIT's installs.
+        interpreter.set_jit_enabled(true);
+        interpreter.set_jit_stress(false);
+        // Off whatever the environment says: a body the breakpoint or
+        // step stress mode patched loses its machine code at every
+        // statement, and one the zone stress mode freed is compiled and
+        // listed again.
+        #[cfg(debug_assertions)]
+        {
+            interpreter.set_stress_breakpoints(false);
+            interpreter.set_stress_step(false);
+            interpreter.set_stress_zone(false);
+        }
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let listings = Rc::new(RefCell::new(Vec::new()));
+        interpreter.set_trace(
+            TraceSettings {
+                categories: TraceCategories::default(),
+                filter: TraceFilter::everything(),
+                printing: Printing {
+                    code: true,
+                    ..Printing::default()
+                },
+                print_filter: TraceFilter::parse(&[pattern]).expect("a valid filter"),
+            },
+            Box::new(Collector(Rc::clone(&listings))),
+        );
+        (interpreter, instance, listings)
+    }
+
+    /// Sends the unary `selector` to `instance` `times` times.
+    fn enter(interpreter: &mut Interpreter, instance: &Root, selector: &str, times: usize) {
+        for _ in 0..times {
+            expect_ok(
+                interpreter.send(instance, Symbol::intern(selector), &[]),
+                selector,
+            );
+        }
+    }
+
+    /// The code listings of `body` compiled as `tier`.
+    fn code_of(listings: &[Listing], body: &str, tier: CodeTier) -> Vec<CodeListing> {
+        listings
+            .iter()
+            .filter_map(|listing| match listing {
+                Listing::Code(code) if code.body == body && code.tier == tier => Some(code.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The host's architecture, as a listing names it.
+    fn host() -> Architecture {
+        if cfg!(target_arch = "aarch64") {
+            Architecture::Aarch64
+        } else {
+            Architecture::X64
+        }
+    }
+
+    #[test]
+    fn a_hot_method_prints_its_baseline_code() {
+        let (mut interpreter, instance, listings) = hot("Demo>>square:");
+        enter(&mut interpreter, &instance, "runSquare", 2);
+        let listings = listings.borrow();
+        let squares = code_of(&listings, "Demo>>square:", CodeTier::Baseline);
+        let [square] = squares.as_slice() else {
+            panic!("one baseline listing of the body, not {}", squares.len());
+        };
+        assert_eq!(square.architecture, host());
+        assert_ne!(square.base_address, 0);
+        assert_eq!(square.key, None);
+        assert_eq!(square.mark, None);
+        assert!(square.code_end as usize <= square.bytes.len());
+        let [scope] = square.scopes.as_slice() else {
+            panic!("a baseline listing has one scope");
+        };
+        assert_eq!((scope.number, scope.parent), (0, None));
+        assert_eq!(scope.body, "Demo>>square:");
+        assert!(
+            scope
+                .instructions
+                .iter()
+                .any(|line| line.contains("#times:by:")),
+            "{:?}",
+            scope.instructions
+        );
+        // A position at each instruction's start, in program-counter
+        // order, inside the code.
+        let program_counters: Vec<u32> = square
+            .positions
+            .iter()
+            .filter_map(|(offset, position)| match position {
+                Position::Instruction {
+                    scope: 0,
+                    program_counter,
+                } => {
+                    assert!(*offset < square.code_end);
+                    Some(*program_counter)
+                }
+                Position::Instruction { .. } => panic!("a baseline listing has one scope"),
+                Position::OutOfLine => None,
+            })
+            .collect();
+        let expected: Vec<u32> = (0..).take(scope.instructions.len()).collect();
+        assert_eq!(program_counters, expected);
+        assert!(square.positions.is_sorted_by_key(|(offset, _)| *offset));
+        assert!(
+            square
+                .annotations
+                .iter()
+                .any(|(_, annotation)| matches!(annotation, Annotation::Cell { site: 0 })),
+            "the send's call through its cell: {:?}",
+            square.annotations
+        );
+        assert!(
+            square
+                .annotations
+                .iter()
+                .all(|(offset, _)| *offset < square.code_end)
+        );
+    }
+
+    #[test]
+    fn a_twin_prints_as_a_twin() {
+        let (mut interpreter, instance, listings) = hot("Demo>>total:");
+        enter(&mut interpreter, &instance, "runTotal", 3);
+        let listings = listings.borrow();
+        let tier_at = |tier: CodeTier| {
+            listings
+                .iter()
+                .position(|listing| matches!(listing, Listing::Code(code) if code.tier == tier))
+        };
+        let (Some(lean), Some(twin)) = (tier_at(CodeTier::Baseline), tier_at(CodeTier::Twin))
+        else {
+            panic!("the lean body and its twin listed");
+        };
+        assert!(lean < twin, "the twin is compiled once the closure is made");
+        assert_eq!(
+            code_of(&listings, "Demo>>total:", CodeTier::Twin).len(),
+            1,
+            "the twin is compiled once"
+        );
+        let leans = code_of(&listings, "Demo>>total:", CodeTier::Baseline);
+        assert!(
+            leans[0]
+                .words
+                .iter()
+                .any(|(_, word)| matches!(word, DataWord::TwinTransfer { .. })),
+            "the lean body's transfer into its twin: {:?}",
+            leans[0].words
+        );
+    }
+
+    #[test]
+    fn a_data_word_is_named_not_shown() {
+        let (mut interpreter, instance, listings) = hot("Demo>>square:");
+        enter(&mut interpreter, &instance, "runSquare", 2);
+        let listings = listings.borrow();
+        let square = &code_of(&listings, "Demo>>square:", CodeTier::Baseline)[0];
+        let kinds: Vec<DataWord> = square.words.iter().map(|(_, word)| *word).collect();
+        for kind in [
+            DataWord::Budget,
+            DataWord::DispatchingRows,
+            DataWord::DispatchingTail,
+        ] {
+            assert!(kinds.contains(&kind), "{kind:?} among {kinds:?}");
+        }
+        let first = square
+            .words
+            .first()
+            .expect("a method's lean body has words")
+            .0;
+        assert_eq!(
+            first, square.code_end,
+            "the words begin where the code ends"
+        );
+        for (offset, _) in &square.words {
+            let start = *offset as usize;
+            assert_eq!(
+                square.bytes.get(start..start + 8),
+                Some([0u8; 8].as_slice()),
+                "a word's value is the run's, never shown"
+            );
+        }
+    }
+
+    #[test]
+    fn the_filter_selects_code_listings_by_body() {
+        let (mut interpreter, instance, listings) = hot("Demo>>square:");
+        enter(&mut interpreter, &instance, "runSquare", 2);
+        enter(&mut interpreter, &instance, "runCube", 2);
+        let listings = listings.borrow();
+        assert!(!listings.is_empty());
+        for listing in listings.iter() {
+            let Listing::Code(code) = listing else {
+                panic!("only machine code is printed");
+            };
+            assert_eq!(code.body, "Demo>>square:");
+        }
+    }
 }

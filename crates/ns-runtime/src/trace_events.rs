@@ -32,7 +32,13 @@ use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
 pub use filter::TraceFilter;
-pub use listings::{BytecodeListing, Listing};
+#[cfg(ns_jit)]
+pub(crate) use listings::PendingCode;
+pub(crate) use listings::PendingListing;
+pub use listings::{
+    Annotation, Architecture, BytecodeListing, CodeListing, DataWord, ListedScope, Listing,
+    Position,
+};
 use names::BodyNames;
 
 /// What a trace event is about, each switched on by its own flag.
@@ -144,9 +150,13 @@ impl Printing {
 /// `printing` names of the bodies `print_filter` selects. Empty
 /// categories and empty printing are no tracing.
 pub struct TraceSettings {
+    /// The categories whose events the sink receives.
     pub categories: TraceCategories,
+    /// The bodies whose events the sink receives.
     pub filter: TraceFilter,
+    /// The listings the sink receives.
     pub printing: Printing,
+    /// The bodies whose listings the sink receives.
     pub print_filter: TraceFilter,
 }
 
@@ -747,11 +757,15 @@ impl InvalidationCause {
     }
 }
 
-/// The tier whose machine code was freed.
+/// Which compile of a body machine code is: the tier whose code was
+/// freed -- a twin's freed with its lean body, as `Baseline` -- and the
+/// compile a listing shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeTier {
-    /// A body's baseline code, or its twin's.
+    /// A body's baseline code, its lean body.
     Baseline,
+    /// A body's twin, its baseline code that reifies its frame.
+    Twin,
     /// An optimized copy.
     Optimized,
 }
@@ -761,6 +775,7 @@ impl CodeTier {
     pub fn name(self) -> &'static str {
         match self {
             CodeTier::Baseline => "baseline",
+            CodeTier::Twin => "twin",
             CodeTier::Optimized => "optimized",
         }
     }
@@ -1000,6 +1015,9 @@ pub(crate) enum PendingKind {
     CachesVacated {
         cause: VacateCause,
     },
+    /// Not an event: a listing, queued among the events so that it keeps
+    /// its place after the event of the compile it shows.
+    Listing(PendingListing),
 }
 
 impl Pending {
@@ -1043,6 +1061,7 @@ impl PendingKind {
             | PendingKind::Invalidated { key, .. }
             | PendingKind::OptimizationDropped { key, .. }
             | PendingKind::Freed { key, .. } => *key,
+            PendingKind::Listing(listing) => listing.key(),
             PendingKind::Compiled { .. }
             | PendingKind::CompiledTwin { .. }
             | PendingKind::CompileRefused { .. }
@@ -1113,6 +1132,30 @@ impl EventTracer {
     #[inline]
     pub(crate) fn traces(&self, category: TraceCategory) -> bool {
         self.categories.contains(category)
+    }
+
+    /// Whether machine code is printed: what makes the JIT annotate the
+    /// code it assembles, and capture each body at its install.
+    #[inline]
+    pub(crate) fn prints_code(&self) -> bool {
+        self.printing.code
+    }
+
+    /// Records the listing of `code`, delivered at the next flush after
+    /// the events recorded before it. Not an event: no category selects
+    /// it, and it is not counted among the events recorded.
+    pub(crate) fn record_listing(&mut self, code: &Rc<CompiledCode>, listing: PendingListing) {
+        debug_assert!(
+            self.printing.code,
+            "internal: a listing nothing asked for was recorded"
+        );
+        self.pending.push(Pending {
+            // Unread: the print filter selects a listing, not a category.
+            category: TraceCategory::Compile,
+            body: Some(Rc::clone(code)),
+            kind: PendingKind::Listing(listing),
+            named_key: None,
+        });
     }
 
     /// Records `pending`, delivered at the next flush.
@@ -1296,6 +1339,13 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         named_key,
     } in pending
     {
+        if let PendingKind::Listing(listing) = kind {
+            if let Some(listing) = listing_delivered(mutator, &mut names, body, listing, named_key)
+            {
+                deliveries.push(Delivery::Listing(listing));
+            }
+            continue;
+        }
         let body = body.map(|code| names.name(mutator, &code));
         let passes = match (&mutator.jit.tracer.filter, &body) {
             (Some(filter), Some(body)) => filter.matches(body),
@@ -1319,6 +1369,35 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
             }
         }
     }
+}
+
+/// The listing `listing` of `body` delivers, its body and key named -- its
+/// key by `named_key` where it was named before the flush -- or `None`
+/// when the print filter refuses the body.
+fn listing_delivered(
+    mutator: &Mutator<'_>,
+    names: &mut BodyNames,
+    body: Option<Rc<CompiledCode>>,
+    listing: PendingListing,
+    named_key: Option<NamedKey>,
+) -> Option<Listing> {
+    let code = body?;
+    let name = names.name(mutator, &code);
+    let selected = mutator
+        .jit
+        .tracer
+        .print_filter
+        .as_ref()
+        .is_some_and(|filter| filter.matches(&name));
+    if !selected {
+        return None;
+    }
+    let key = match (listing.key(), named_key) {
+        (Some(_), Some(named)) => Some((named.key, named.entered)),
+        (Some(key), None) => Some(key_names(mutator, key)),
+        (None, _) => None,
+    };
+    Some(listing.delivered(&code, name, key))
 }
 
 /// The event a pending event's kind delivers, its bodies and keys named --
@@ -1511,6 +1590,9 @@ fn event_kind(
             receiver,
         },
         PendingKind::CachesVacated { cause } => TraceEventKind::CachesVacated { cause },
+        PendingKind::Listing(_) => {
+            unreachable!("internal: a flush delivers a listing before it names an event")
+        }
     }
 }
 

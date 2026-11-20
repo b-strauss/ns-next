@@ -147,6 +147,43 @@ impl BlockWord {
     pub(crate) fn displacement(self) -> i32 {
         self as i32 * 8
     }
+
+    /// The word's name, as a machine-code listing names a call or jump
+    /// through it: kebab case.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            BlockWord::Shim => "shim",
+            BlockWord::ObjectSpaceBase => "object-space-base",
+            BlockWord::StackBase => "stack-base",
+            BlockWord::RegisterBase => "register-base",
+            BlockWord::MachineEntry => "machine-entry",
+            BlockWord::ExitProgramCounter => "exit-program-counter",
+            BlockWord::ExitKind => "exit-kind",
+            BlockWord::SavedStackPointer => "saved-stack-pointer",
+            BlockWord::MachineWords => "machine-words",
+            BlockWord::ExitStub => "exit-stub",
+            BlockWord::EnteredByCall => "entered-by-call",
+            BlockWord::LeafStackPointer => "leaf-stack-pointer",
+            BlockWord::Cells => "cells",
+            BlockWord::PolymorphicStub => "polymorphic-stub",
+            BlockWord::WalkCursor => "walk-cursor",
+            BlockWord::ExitCodeAddress => "exit-code-address",
+            BlockWord::PolymorphicBlocks => "polymorphic-blocks",
+            BlockWord::GlobalRows => "global-rows",
+            BlockWord::GlobalMask => "global-mask",
+            BlockWord::EdenCursor => "eden-cursor",
+            BlockWord::DispatchedCalls => "dispatched-calls",
+            BlockWord::MachineEntries => "machine-entries",
+            BlockWord::CutStub => "cut-stub",
+            BlockWord::CutStackPointer => "cut-stack-pointer",
+            BlockWord::CutFrameRegister => "cut-frame-register",
+            BlockWord::CutValue => "cut-value",
+            BlockWord::CompiledCalls => "compiled-calls",
+            BlockWord::ExitRegister => "exit-register",
+            BlockWord::BackEdges => "back-edges",
+            BlockWord::ExitTrapSite => "exit-trap-site",
+        }
+    }
 }
 
 const _: () = assert!((BlockWord::ExitTrapSite as usize) < ENTRY_BLOCK_WORDS);
@@ -188,6 +225,22 @@ pub(crate) enum ExitKind {
     /// other activation. Counted against no exit budget: it says the body
     /// ran long, not that its code exits where it must.
     BudgetSpent = 6,
+}
+
+impl ExitKind {
+    /// The kind's name, as a machine-code listing names an exit of it:
+    /// kebab case.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            ExitKind::Reexecute => "reexecute",
+            ExitKind::Safepoint => "safepoint",
+            ExitKind::DeadRegister => "dead-register",
+            ExitKind::PushRefused => "push-refused",
+            ExitKind::Returned => "returned",
+            ExitKind::Trap => "trap",
+            ExitKind::BudgetSpent => "budget-spent",
+        }
+    }
 }
 
 /// An exit, decoded from the block and the kind `enter` answered.

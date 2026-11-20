@@ -25,6 +25,7 @@ use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{CELL_BYTES, CELL_WORDS, ChainStart};
 use crate::interpreter::inline_cache::{CacheRule, RULE_TAG_BITS, rule_tag, site_index};
 use crate::mixin::DispatchId;
+use crate::trace_events::Annotation;
 
 use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;
@@ -918,7 +919,7 @@ pub(super) fn call_decided(
     );
     let slots = i32::from(argument_base) * REGISTER_BYTES;
     assembler.add_immediate(roles.frame, slots);
-    body.call_send(entry);
+    body.call_send(entry, None);
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler
         .assembler()
@@ -1185,14 +1186,22 @@ fn send_through_cell(
     assembler.move_immediate(key, 0);
     assembler.bind(missed);
     assembler.add_immediate(cells, cell);
-    assembler.load(Width::Word64, entry, polymorphic_stub);
+    macro_assembler.annotate(Annotation::Stub(BlockWord::PolymorphicStub.name()));
+    macro_assembler
+        .assembler()
+        .load(Width::Word64, entry, polymorphic_stub);
     let slots = i32::from(argument_base) * REGISTER_BYTES;
-    assembler.bind(call);
+    macro_assembler.assembler().bind(call);
     store_program_counter(body);
     body.macro_assembler
         .assembler()
         .add_immediate(roles.frame, slots);
-    body.call_send(entry);
+    body.call_send(
+        entry,
+        Some(Annotation::Cell {
+            site: call_site.number,
+        }),
+    );
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler
         .assembler()

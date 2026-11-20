@@ -1729,29 +1729,52 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, 
     )
     .expect("writing to a String cannot fail");
     for (index, instruction) in code.instructions().iter().enumerate() {
-        let statement = code
-            .statement_program_counter
-            .iter()
-            .find(|(_, range)| range.contains(&index))
-            .map(|(statement_index, _)| format!("stmt {statement_index}"))
-            .unwrap_or_else(|| "-".to_string());
-        // The arrow takes the place of the index's two leading spaces, so
-        // that the marked line keeps its columns while the index fits.
-        let label = if mark.is_some_and(|mark| usize::try_from(mark).ok() == Some(index)) {
-            format!("->{index:>2}")
-        } else {
-            format!("{index:4}")
-        };
-        writeln!(
-            out,
-            "{pad}{label}  {statement:>7}  {}",
-            format_instruction(instruction)
-        )
-        .expect("writing to a String cannot fail");
+        let marked = mark.is_some_and(|mark| usize::try_from(mark).ok() == Some(index));
+        let line = instruction_line(code, index, instruction, marked);
+        writeln!(out, "{pad}{line}").expect("writing to a String cannot fail");
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             write_code(out, block, "block", indent + 8, None);
         }
     }
+}
+
+/// `code`'s instructions, one line per program counter, each as
+/// `disassemble` writes it -- its index, its statement, the instruction --
+/// without the head and without the blocks it makes: the lines a
+/// machine-code listing names an instruction by.
+pub fn instruction_lines(code: &CompiledCode) -> Vec<String> {
+    code.instructions()
+        .iter()
+        .enumerate()
+        .map(|(index, instruction)| instruction_line(code, index, instruction, false))
+        .collect()
+}
+
+/// The line of `instruction`, at `index` of `code`, `->` in place of its
+/// two leading spaces when `marked`.
+fn instruction_line(
+    code: &CompiledCode,
+    index: usize,
+    instruction: &Instruction,
+    marked: bool,
+) -> String {
+    let statement = code
+        .statement_program_counter
+        .iter()
+        .find(|(_, range)| range.contains(&index))
+        .map(|(statement_index, _)| format!("stmt {statement_index}"))
+        .unwrap_or_else(|| "-".to_string());
+    // The arrow takes the place of the index's two leading spaces, so
+    // that the marked line keeps its columns while the index fits.
+    let label = if marked {
+        format!("->{index:>2}")
+    } else {
+        format!("{index:4}")
+    };
+    format!(
+        "{label}  {statement:>7}  {}",
+        format_instruction(instruction)
+    )
 }
 
 fn registers(registers: &[u16]) -> String {
