@@ -193,7 +193,14 @@ a bit at every push, in the interpreter and in machine code, the hot
 path the `codegen` gate holds. HotSpot prints bytecode only on demand
 (`jdk/src/hotspot/share/oops/method.cpp:1988-1997`). What runs is the
 trace's to say (`[compile] … trigger=entry`). Compiling a body's
-debugger metadata again makes no body and prints nothing.
+debugger metadata again makes no body and prints nothing, nor does an
+edit only checked. A body is printed at the first flush of the trace
+after its mixin joined the heap's tables -- the index of new sides the
+trace's names already keep (`trace_events/names.rs`) -- so that the
+bodies the boot and the program's load made before the host installed
+its sink are printed when it does, in the order their mixins joined, a
+shipped module built on first demand at the next safepoint, and an
+installed edit's new versions likewise.
 
 **11. An optimized copy's listing heads with its tree of scopes; each
 stretch of code names its scope by number.** The head numbers the
@@ -244,7 +251,7 @@ one, which would make an absolute address in each line, as V8's
 stale. x64 is written in Intel syntax, AArch64 in the architecture's.
 
 **15. The agent answers a frame's code through a request of its own,
-`newspeak/frameCode`.** It answers the stopped frame's body's bytecode
+`nsNext/frameCode`.** It answers the stopped frame's body's bytecode
 and, if the frame runs machine code, that code's listing, in the format
 `--print-bytecode` and `--print-code` print, each marked where the frame
 stands; the MCP server's tool `debug_code` passes the text on. DAP's
@@ -512,7 +519,7 @@ and answer nothing on a target without a JIT.
   index per machine offset; the named targets of its calls and its data
   words. `ns-next` decodes it for the target it runs on, x64 or AArch64,
   in offsets (decision 14); a target without a JIT prints bytecode only.
-- The agent answers `newspeak/frameCode`, the code of a stopped frame --
+- The agent answers `nsNext/frameCode`, the code of a stopped frame --
   the body's bytecode, and the machine code the frame runs if any -- and
   the MCP server's new tool `debug_code` asks it (decision 15).
 
