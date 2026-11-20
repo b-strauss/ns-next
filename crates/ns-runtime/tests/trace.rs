@@ -11,7 +11,7 @@ use std::rc::Rc;
 use indoc::{formatdoc, indoc};
 use ns_runtime::trace_events::{
     CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, HoldReason,
-    InvalidationCause, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
+    InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState, VacateCause,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName, Root,
@@ -1731,6 +1731,322 @@ fn a_freed_copy_is_traced_with_its_key() {
                 tier: CodeTier::Optimized,
                 cause: FreeCause::Breakpoint,
             } if key == "Test"
+        )),
+        "{events:?}"
+    );
+}
+
+/// `maker:` makes four closures, each its frame's, once it is told to:
+/// its twin, which reifies the frame at every one, is larger than its
+/// lean body. Its first two entries, which compile it, make none, so
+/// that nothing but `maker:` is compiled before its twin is needed.
+const MAKING_CLOSURES: &str = indoc! {"
+    class Test = Object new () (
+      call: block = (
+        ^block value
+      )
+
+      maker: making = (
+        | sum ::= 0. |
+        making ifFalse: [^0].
+        sum:: sum + (self call: [1]).
+        sum:: sum + (self call: [2]).
+        sum:: sum + (self call: [3]).
+        sum:: sum + (self call: [4]).
+        ^sum.
+      )
+
+      public run = (
+        ^(self maker: false) + (self maker: false) + (self maker: true) + (self maker: true)
+      )
+    )
+"};
+
+/// The bytes `body`, of `source`, and its twin take, measured in a zone
+/// with room for both: the architecture's, and the build's.
+fn body_and_twin_bytes(source: &str, body: &str) -> (usize, usize) {
+    let events = traced(
+        source,
+        &[TraceCategory::Compile],
+        TraceFilter::everything(),
+        |_| {},
+    );
+    let compiled = about(&events, body);
+    let lean = compiled.iter().find_map(|event| match event.kind {
+        TraceEventKind::Compiled { bytes, .. } => Some(bytes),
+        _ => None,
+    });
+    let twin = compiled.iter().find_map(|event| match event.kind {
+        TraceEventKind::CompiledTwin { bytes } => Some(bytes),
+        _ => None,
+    });
+    let (Some(lean), Some(twin)) = (lean, twin) else {
+        panic!("`{body}` and its twin are compiled: {events:?}");
+    };
+    (lean, twin)
+}
+
+/// A zone with room for `maker:`'s lean body but not for its twin even
+/// empty: the compiler refuses the twin for good, and with it the body,
+/// whose machine code is freed -- every frame that makes a closure would
+/// exit -- traced as such in both categories.
+#[test]
+fn a_body_whose_twin_no_zone_holds_is_traced_refused_for_its_twin() {
+    let (lean, twin) = body_and_twin_bytes(MAKING_CLOSURES, "Test>>maker:");
+    assert!(twin > lean, "the twin reifies the frame inline");
+    let events = traced(
+        MAKING_CLOSURES,
+        &[TraceCategory::Compile, TraceCategory::CodeZone],
+        TraceFilter::everything(),
+        |interpreter| {
+            interpreter.set_jit_zone_bytes(1 << 20);
+            let stubs = interpreter.table_sizes().zone_used_bytes;
+            interpreter.set_jit_zone_bytes(stubs + (lean + twin) / 2);
+        },
+    );
+    let maker = about(&events, "Test>>maker:");
+    assert!(
+        maker
+            .iter()
+            .any(|event| event.category == TraceCategory::Compile
+                && event.kind == TraceEventKind::RefusedForItsTwin),
+        "{events:?}"
+    );
+    assert!(
+        maker
+            .iter()
+            .any(|event| event.category == TraceCategory::CodeZone
+                && matches!(
+                    event.kind,
+                    TraceEventKind::Freed {
+                        tier: CodeTier::Baseline,
+                        cause: FreeCause::RefusedForItsTwin,
+                        ..
+                    }
+                )),
+        "{events:?}"
+    );
+    assert!(
+        !maker
+            .iter()
+            .any(|event| matches!(event.kind, TraceEventKind::CompiledTwin { .. })),
+        "{events:?}"
+    );
+}
+
+/// `maker:` compiled first, and running while a recursion through more
+/// bodies than the zone holds fills it with active code, as in
+/// `a_compile_the_exhausted_zone_holds_is_traced_once`; at the
+/// recursion's end `maker:` runs again, makes a closure, which needs its
+/// twin, and loops.
+fn exhausting_maker(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            let next = if index + 1 == count {
+                "self maker: true".to_string()
+            } else {
+                format!("(self m{}) + 1", index + 1)
+            };
+            formatdoc! {"
+                  m{index} = (
+                    ^{next}
+                  )
+            "}
+        })
+        .collect();
+    formatdoc! {"
+        class Test = Object new () (
+        {methods}  call: block = (
+            ^block value
+          )
+
+          maker: deep = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            deep ifFalse: [^self m0].
+            sum:: self call: [1].
+            [index < 1000] whileTrue: [
+              sum:: sum + index.
+              index:: index + 1.
+            ].
+            ^sum
+          )
+
+          public run = (
+            ^self maker: false
+          )
+        ) : ()
+    "}
+}
+
+/// The exhausted zone holds `maker:`'s twin at its closure, traced once,
+/// and its frame, which the interpreter reified for the closure and runs
+/// on interpreted, cannot switch into the lean body at its loop's head:
+/// a reified frame enters the twin only, which the zone still holds.
+#[test]
+fn a_twin_the_exhausted_zone_holds_is_traced_held_and_refusing_osr() {
+    let source = exhausting_maker(300);
+    let (lean, twin) = body_and_twin_bytes(&source, "Test>>maker:");
+    let events = traced(
+        &source,
+        &[TraceCategory::Compile, TraceCategory::Osr],
+        TraceFilter::everything(),
+        |interpreter| {
+            interpreter.set_jit_zone_bytes(1 << 20);
+            let stubs = interpreter.table_sizes().zone_used_bytes;
+            // Room for `maker:`'s lean body, then for the bodies of the
+            // recursion that leave none for the twin, which an empty
+            // zone would hold.
+            interpreter.set_jit_zone_bytes(stubs + lean + twin);
+            interpreter.set_jit_stress(true);
+            // The zone stress mode's compactions make room at every
+            // safepoint, so that nothing need be held, and the suspend
+            // stress mode serves a safepoint at the loop's backward
+            // jumps, rebuilding the stack, after which the jump tries no
+            // switch.
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_zone(false);
+                interpreter.set_stress_suspend(false);
+            }
+        },
+    );
+    let maker = about(&events, "Test>>maker:");
+    assert_eq!(
+        maker
+            .iter()
+            .filter(|event| event.category == TraceCategory::Compile
+                && event.kind
+                    == TraceEventKind::TwinHeld {
+                        reason: HoldReason::ZoneFull
+                    })
+            .count(),
+        1,
+        "{events:?}"
+    );
+    assert!(
+        maker
+            .iter()
+            .any(|event| event.category == TraceCategory::Osr
+                && matches!(
+                    event.kind,
+                    TraceEventKind::OsrRefused {
+                        reason: OsrRefusal::TwinHeld,
+                        ..
+                    }
+                )),
+        "{events:?}"
+    );
+}
+
+/// `count`'s one backward jump spends its budget, a frame of `Cell` over
+/// `Narrow`'s application at a time: the run-out at that jump leaves the
+/// frame to the interpreter at the loop's head, whence it returns with
+/// no safepoint between, so that the run ends with the request for
+/// that key's copy pending.
+#[cfg(debug_assertions)]
+const ONE_BACK_JUMP_A_RUN: &str = indoc! {"
+    class Subject = Object new () (
+      class Narrow = Object new () ()
+
+      class Box on: base = Object new (
+        |
+          base = base.
+        |
+      ) (
+        public class Cell = base new () (
+          public count = (
+            | index ::= 0. |
+            [index < 1] whileTrue: [
+              index:: index + 1.
+            ].
+            ^index.
+          )
+        )
+      )
+
+      public narrow = (
+        ^(Box on: Narrow) Cell new.
+      )
+    ) : ()
+"};
+
+/// A collection between runs that reclaims `Cell` over `Narrow`'s
+/// application drops the request a run left pending for that key's
+/// copy, which the next safepoint would have compiled for the dead id:
+/// traced as dropped, naming the key's class as it was. Only a host's
+/// collection between runs falls in that window -- a program's runs at
+/// a safepoint, after the requests are compiled -- and it exists in a
+/// build with debug assertions only.
+#[cfg(debug_assertions)]
+#[test]
+fn a_request_a_reclaimed_id_drops_is_traced_dropped() {
+    let module = ns_syntax::parse(ONE_BACK_JUMP_A_RUN).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        ONE_BACK_JUMP_A_RUN.into(),
+        SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(false);
+    // The optimize stress mode's leaf requests at a spend in machine
+    // code, whose poll takes the safepoint at once.
+    interpreter.set_optimize_stress(false);
+    interpreter.set_optimization_budget(1);
+    // Each serves a safepoint, or frees the code or the key, before the
+    // collection this test makes.
+    interpreter.set_stress_breakpoints(false);
+    interpreter.set_stress_step(false);
+    interpreter.set_stress_zone(false);
+    interpreter.set_stress_collect(false);
+    interpreter.set_stress_suspend(false);
+    interpreter.set_trace(
+        TraceCategories::default().with(TraceCategory::Optimize),
+        TraceFilter::everything(),
+        Box::new(Collector(Rc::clone(&events))),
+    );
+    let class = interpreter.load_module(&resolved);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let cell = expect_ok(
+        interpreter.send(&subject, Symbol::intern("narrow"), &[]),
+        "narrow",
+    );
+    let requested = |events: &[TraceEvent]| {
+        events.iter().any(|event| {
+            event.body.as_deref() == Some("Subject/Box.Cell>>count")
+                && matches!(event.kind, TraceEventKind::OptimizationRequested { .. })
+        })
+    };
+    let mut runs = 0;
+    while !requested(&events.borrow()) {
+        assert!(runs < 100, "`count` is requested: {:?}", events.borrow());
+        expect_ok(
+            interpreter.send(&cell, Symbol::intern("count"), &[]),
+            "count",
+        );
+        runs += 1;
+    }
+    drop(cell);
+    interpreter.collect_now();
+    // A run delivers what the collection recorded.
+    expect_ok(
+        interpreter.send(&subject, Symbol::intern("narrow"), &[]),
+        "narrow",
+    );
+    let events = events.take();
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            TraceEventKind::OptimizationDropped {
+                key: Some(key),
+                cause: InvalidationCause::ReclaimedId,
+                ..
+            } if key == "Subject/Box.Cell"
         )),
         "{events:?}"
     );
