@@ -520,7 +520,9 @@ pub(crate) fn listing_record(listing: &Listing) -> Value {
 
 /// A `bytecode` record: each body of `bytecode`, the root first, with what
 /// the text listing's line above its instructions writes -- its kind, its
-/// arguments and its registers -- and its instructions.
+/// arguments and its registers --, a block's `in` and `at`, the number
+/// of the body that makes it and the index of the `MakeClosure` it is
+/// nested under there, and its instructions.
 fn bytecode_record(bytecode: &BytecodeListing) -> Value {
     let BytecodeListing {
         body,
@@ -544,6 +546,8 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
             json!({
                 "body": number(&listed.body),
                 "kind": listed.kind,
+                "in": listed.made_at.map(|made_at| made_at.maker),
+                "at": listed.made_at.map(|made_at| made_at.index),
                 "arguments": listed.argument_count,
                 "registers": listed.register_count,
                 "instructions": instructions,
@@ -792,7 +796,7 @@ mod tests {
     use crate::trace::tests::{every_event, split_outside_braces};
     use ns_runtime::trace_events::{
         Annotation, Architecture, CodeTier, CurrentText, DataWord, DescribedSend,
-        DescribedStatement, ListedBody, ListedInstruction,
+        DescribedStatement, ListedBody, ListedInstruction, MadeAt,
     };
 
     /// The fields whose values name a body, by the line's names.
@@ -952,6 +956,7 @@ mod tests {
                         name: "Demo>>run".to_string(),
                     },
                     kind: "method",
+                    made_at: None,
                     argument_count: 1,
                     register_count: 16,
                     instructions: vec![ListedInstruction {
@@ -966,6 +971,7 @@ mod tests {
                         name: "[] in Demo>>run".to_string(),
                     },
                     kind: "block",
+                    made_at: Some(MadeAt { maker: 1, index: 0 }),
                     argument_count: 0,
                     register_count: 14,
                     instructions: Vec::new(),
@@ -980,11 +986,13 @@ mod tests {
                 {
                     "body": 1,
                     "kind": "method",
+                    "in": null,
+                    "at": null,
                     "arguments": 1,
                     "registers": 16,
                     "instructions": [{"index": 0, "statement": 0, "text": "Return r0"}],
                 },
-                {"body": 2, "kind": "block", "arguments": 0, "registers": 14, "instructions": []},
+                {"body": 2, "kind": "block", "in": 1, "at": 0, "arguments": 0, "registers": 14, "instructions": []},
             ])
         );
     }

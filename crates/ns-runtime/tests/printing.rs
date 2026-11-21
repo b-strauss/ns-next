@@ -222,6 +222,14 @@ fn a_bytecode_listing_lists_each_body_structured() {
     assert_eq!(listing.bodies[0].kind, "method");
     assert_eq!(listing.bodies[1].kind, "block");
     assert_eq!(listing.bodies[1].argument_count, 1);
+    // The block is made, and nested, at its method's `MakeClosure`.
+    assert_eq!(listing.bodies[0].made_at, None);
+    let made_at = listing.bodies[1]
+        .made_at
+        .expect("a block names its MakeClosure");
+    assert_eq!(made_at.maker, listing.bodies[0].body.number);
+    let maker = &listing.bodies[0].instructions[usize::try_from(made_at.index).unwrap()];
+    assert!(maker.text.starts_with("MakeClosure"), "{}", maker.text);
 }
 
 #[test]

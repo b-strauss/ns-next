@@ -1814,12 +1814,7 @@ fn check_code_arity(
 ) -> Result<(), DecodeError> {
     if code.kind != kind {
         return Err(DecodeError::WrongCodeKind {
-            expected: match kind {
-                CodeKind::Method => "method",
-                CodeKind::Block => "block",
-                CodeKind::Initializer => "initializer",
-                CodeKind::SuperclassClause => "superclass clause",
-            },
+            expected: kind.word(),
         });
     }
     if code.argument_count as usize != parameters {

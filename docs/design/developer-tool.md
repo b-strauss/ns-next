@@ -1216,14 +1216,16 @@ The records:
   `selector` without the line's `#`; `declined-no-body`'s `reasons` an
   array of `{"reason":…,"count":n}` in the line's order; `retired`'s
   `version` `null` where the line writes `none`.
-- `{"kind":"bytecode","body":N,"bodies":[{"body":N,"kind":…,"arguments":a,"registers":r,"instructions":[{"index":i,"statement":s|null,"text":…}]}]}`,
+- `{"kind":"bytecode","body":N,"bodies":[{"body":N,"kind":…,"in":M|null,"at":i|null,"arguments":a,"registers":r,"instructions":[{"index":i,"statement":s|null,"text":…}]}]}`,
   a body's bytecode, the root and then the blocks it makes in the order
   the text listing nests them, each body with what the text's line above
-  its instructions writes -- its `kind` (`method`, `block`,
-  `initializer`, `superclass clause`) and its counts of arguments and
-  registers, a reader taking a body without them as one whose line has
-  none -- and each instruction's text as the text listing writes it
-  after its index and statement columns.
+  its instructions writes -- its `kind` (`CodeKind::word`: `method`,
+  `block`, `initializer`, `superclass clause`) and its counts of
+  arguments and registers, a reader taking a body without them as one
+  whose line has none --, a block's `in` and `at`, the body that makes
+  it and the index of its `MakeClosure` there, under which the text
+  nests it, `null` for the root, and each instruction's text as the
+  text listing writes it after its index and statement columns.
 - `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"base":address,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
   an install's machine code, decoded by `ns-cli` as the text listing
   decodes it (`listing::annotated`, the one walk that places the
@@ -1396,7 +1398,7 @@ categories the run's header lacks that the tier icons need
 (`TraceRun.missingTierCategories`): "No tier icons: trace … too"
 without `compile`, "No icons of baseline, twin or optimized code: …"
 without `code-zone`, "No icons of optimized copies, which show as their
-baseline tier: …" without `deoptimize`. Methods lists every method the
+baseline or twin tier: …" without `deoptimize`. Methods lists every method the
 run names -- described, or named by its number alone, `#<number>` as
 the events name it -- a block counted as its method's, with its state,
 blank for one the run has none of, copies, deoptimizations,
@@ -1410,8 +1412,14 @@ as the text trace's lines; it shows the events the run keeps, and says
 how many earlier ones were dropped. Code shows the bytecode and machine code of
 the body at the caret of a source editor, the innermost whose range
 holds it, with a chooser of its copies -- its bytecode, then each
-install, baseline, twin and optimized per key, the chooser as wide as
-its longest label but where the tab is narrower -- over a read-only
+install, baseline, twin and optimized per key, the chooser wide enough
+to paint every label whole (`CopyChooser`): the UI paints the closed
+value in the combo's width less its right inset, the arrow button the
+layout makes and the padding, and cuts a wider label, while its
+preferred width counts the arrow as a square button and the label with
+the renderer's border, so the chooser wants the widest label measured in
+its font without that border plus what the UI takes, bounded by the
+room the tab leaves but never below its shortest label's -- over a read-only
 viewer of the listing in the text listing's format, built from the
 records, a copy installed again under the same tier and key numbered
 (`baseline (2)`), so that the choice a batch keeps is the same install;
@@ -1425,8 +1433,8 @@ from six keys of the colour settings' own; only a Newspeak file's or a
 listing's caret moves the link, and an edit that makes a method stale
 takes its link away at once (`DecorationsService.addStalenessListener`). The plugin's
 listings are the text listing's: the bytecode with its body's line and
-each block nested eight columns deeper under its `MakeClosure`, the
-next block the record lists being the one a `MakeClosure` makes; the
+each block nested eight columns deeper under the `MakeClosure` the
+record names by `in` and `at`; the
 machine code's head with `base=` from the record's `base`; a first
 stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
@@ -1443,8 +1451,8 @@ decorates every open editor of a body's file, a program's or the core
 library's, from the selected run's records: an icon at each method's
 header (`StateGutterRenderer`) -- its state, badged when the method is
 watched, its tooltip the counts, the last deoptimization's reason and,
-for a method shown as its baseline tier because its optimized copies'
-end cannot be heard, the categories missing (`TraceRun.unheardCopies`),
+for a method shown as its baseline or twin tier because its optimized
+copies' end cannot be heard, the categories missing (`TraceRun.unheardCopies`),
 a click opening Watch or Unwatch, Show Code, Show Inlining and Open in
 Tool Window -- for a method the run says how it ran; a neutral icon
 with the same menu, "The run listed this method's code but traced
@@ -1468,7 +1476,8 @@ for the selected frame's code (`nsNext/frameCode`) and opens it in a
 read-only `CodeListingFile` tab, which `FrameCodeFollower` fills with
 the selected frame's code at every stop and every selection of another
 frame until the last editor of the tab closes -- a split's closing
-leaves it following -- or the session ends, replacing only the text
+leaves it following, which is decided once the close is done -- or the
+session ends, replacing only the text
 between the longest common start and end of the old and the new, so
 that a step leaves the view where the text is unchanged, then putting
 each editor's caret at the marked line and scrolling it into view only
@@ -1530,8 +1539,11 @@ its menu for a method only listed, the categories an optimized method
 shown as its baseline tier needs, none for a method a caches-only run
 or a filtered-out callee says nothing of, the hints, the eyes,
 staleness, the checksum over an emoji and over CRLF line ends, and a
-library file; `CodeTabTest` the caret's body, the chooser and its
-width, a copy installed again, the listings, the linked highlighting,
+library file; `CodeTabTest` the caret's body, the chooser, every label
+painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
+renderer and the chooser bounded by a narrow tab, a copy installed
+again, the listings, a block nested where the record names its
+`MakeClosure`, the linked highlighting,
 kept through another editor's caret and gone with an edit, and the
 editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, and only the tab's last editor

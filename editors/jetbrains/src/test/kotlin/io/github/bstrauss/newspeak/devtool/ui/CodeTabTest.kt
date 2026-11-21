@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
+import com.intellij.ide.ui.laf.darcula.ui.DarculaComboBoxUI
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -11,6 +12,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.ui.JBUI
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
@@ -18,12 +20,19 @@ import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.DeveloperToolDecorationsSettings
 import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
 import io.github.bstrauss.newspeak.devtool.editor.linkedColor
+import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.sourceChecksum
+import io.github.bstrauss.newspeak.devtool.model.Bytecode
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
 import java.nio.file.Path
+import java.awt.Rectangle
 import java.time.Instant
+import javax.swing.JComponent
+import javax.swing.JList
+import javax.swing.ListCellRenderer
+import javax.swing.UIManager
 
 class CodeTabTest : BasePlatformTestCase() {
     private lateinit var source: Path
@@ -77,7 +86,7 @@ class CodeTabTest : BasePlatformTestCase() {
                 """{"index":0,"statement":0,"text":"LoadLiteral r3, 1"},{"index":1,"statement":0,"text":"SendPublic r4 <- r0 #+ (r3) @0"},""" +
                 """{"index":2,"statement":0,"text":"StoreLocal r2 <- r4"},{"index":3,"statement":1,"text":"MakeClosure r5, [] -> copying r2"},""" +
                 """{"index":4,"statement":1,"text":"SendPublic r6 <- r5 #value () @1"},{"index":5,"statement":1,"text":"Return r6"}]},""" +
-                """{"body":2,"kind":"block","arguments":0,"registers":16,"instructions":[{"index":0,"statement":0,"text":"SendPublic r1 <- r0 #* (r2) @0"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
+                """{"body":2,"kind":"block","in":1,"at":3,"arguments":0,"registers":16,"instructions":[{"index":0,"statement":0,"text":"SendPublic r1 <- r0 #* (r2) @0"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
             """{"kind":"code","body":1,"tier":"baseline","key":null,"entered":null,"architecture":"x64","base":12288,"bytes":40,"instructions":[""" +
                 """{"offset":0,"text":"push rbp","scope":null,"at":null,"annotation":null},""" +
                 """{"offset":1,"text":"mov rax,1","scope":0,"at":0,"annotation":null},""" +
@@ -408,30 +417,104 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
     }
 
-    fun testTheChooserIsAsWideAsItsLongestLabel() {
+    fun testABlockIsNestedAtTheInstructionTheRecordNames() {
+        val listing = """{"kind":"bytecode","body":1,"bodies":[""" +
+            """{"body":1,"kind":"method","arguments":0,"registers":15,"instructions":[{"index":0,"statement":0,"text":"MakeClosure r1, [] ->"},{"index":1,"statement":0,"text":"Closure r2"},{"index":2,"statement":0,"text":"Return r2"}]},""" +
+            """{"body":2,"kind":"block","in":1,"at":1,"arguments":0,"registers":14,"instructions":[{"index":0,"statement":0,"text":"Return r0"}]}]}"""
+        val bytecode = TraceRecord.parse(listing) as Bytecode
+        val run = TraceRun("Demo", Instant.EPOCH)
+        // Nested where the record says, whatever the instruction's text.
+        assertEquals(
+            """
+            --- bytecode {#1}
+            method #1 (args 0, registers 15)
+               0   stmt 0  MakeClosure r1, [] ->
+               1   stmt 0  Closure r2
+                    block block (args 0, registers 14)
+                       0   stmt 0  Return r0
+               2   stmt 0  Return r2
+            --- end
+
+            """.trimIndent(),
+            bytecodeListing(run, bytecode).text,
+        )
+    }
+
+    /** The IDE's combo box UI, its current value's rectangle and padding opened to the test. */
+    private class ExposedComboBoxUI : DarculaComboBoxUI() {
+        fun currentValue(): Rectangle = rectangleForCurrentValue()
+
+        fun rightPadding(): Int = padding?.right ?: 0
+    }
+
+    /** A run whose method has a copy with the longest label a key and an entered application make. */
+    private fun runWithALongLabel(): TraceRun {
         val long = """{"kind":"code","body":1,"tier":"optimized","key":"newspeak.core.Kernel/Integer","entered":"newspeak.core.Kernel/Number","architecture":"x64","bytes":4,"instructions":[],"data":[],"scopes":[{"scope":0,"body":1,"parent":null}],"mark":null}"""
-        val run = tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(long)))) }
-        val tab = tab(run)
-        tab.setSize(2000, 400)
+        return tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(long)))) }
+    }
+
+    fun testTheChooserPaintsEveryLabelWhole() {
+        val tab = tab(runWithALongLabel())
+        val ui = ExposedComboBoxUI()
+        // A theme gives the padding, which a headless test's defaults leave out. The UI's preferred width counts
+        // the arrow as a square button as high as the value while the layout makes it the arrow area wide, and
+        // measures the label with its renderer's border, which the paint takes away: with the New UI's
+        // renderer and a narrow padding, the platform's own width leaves the longest label cut.
+        val padding = UIManager.get(PADDING)
+        UIManager.put(PADDING, JBUI.insets(1, 1))
+        try {
+            tab.chooser.setUI(ui)
+            tab.chooser.renderer = newUiRenderer()
+            checkLabelsPaintedWhole(tab, ui)
+        } finally {
+            UIManager.put(PADDING, padding)
+        }
+    }
+
+    /** The renderer the New UI's combo box UI makes (`DarculaComboBoxUI.createRenderer`), internal to the platform. */
+    private fun newUiRenderer(): ListCellRenderer<in CodeCopy> {
+        val constructor = Class.forName("com.intellij.ide.ui.laf.darcula.ui.DarculaComboBoxRenderer").getDeclaredConstructor()
+        constructor.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return constructor.newInstance() as ListCellRenderer<in CodeCopy>
+    }
+
+    private fun checkLabelsPaintedWhole(tab: CodeTab, ui: ExposedComboBoxUI) {
         // Measured first with the copies of a body whose labels are short.
         tab.show(3)
-        val short = tab.chooser.preferredSize.width
+        tab.chooser.preferredSize
         tab.show(1)
-        val list = javax.swing.JList<CodeCopy>()
-        val needed = (0 until tab.chooser.itemCount).map { index ->
-            val copy = tab.chooser.getItemAt(index)
-            copy.label to tab.chooser.renderer.getListCellRendererComponent(list, copy, -1, false, false).preferredSize.width
+        val list = JList<CodeCopy>()
+        val labels = (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index) }
+        assertTrue(labels.toString(), labels.any { copy -> copy.label == "optimized key=newspeak.core.Kernel/Integer entered=newspeak.core.Kernel/Number" })
+        tab.chooser.size = tab.chooser.preferredSize
+        tab.chooser.doLayout()
+        // The closed value is painted in this rectangle, less its right padding, and cut where the label is wider.
+        val available = ui.currentValue().width - ui.rightPadding()
+        for (copy in labels) {
+            // Measured as the UI paints it: in the combo's font, the renderer's border taken away.
+            val label = tab.chooser.renderer.getListCellRendererComponent(list, copy, -1, false, false) as JComponent
+            label.font = tab.chooser.font
+            label.border = JBUI.Borders.empty()
+            val width = label.preferredSize.width
+            assertTrue("${copy.label} needs $width, the chooser paints $available", width <= available)
         }
-        assertTrue(needed.toString(), needed.any { (label, _) -> label == "optimized key=newspeak.core.Kernel/Integer entered=newspeak.core.Kernel/Number" })
+    }
+
+    fun testATabNarrowerThanTheBarBoundsTheChooser() {
+        val tab = tab(runWithALongLabel())
+        tab.show(1)
         val wide = tab.chooser.preferredSize.width
-        for ((label, width) in needed) assertTrue("$label needs $width, the chooser wants $wide", wide > width)
-        assertTrue("$short, $wide", wide > short)
-        // A tab narrower than the bar bounds it.
         tab.setSize(300, 400)
-        assertTrue(tab.chooser.preferredSize.width.toString(), tab.chooser.preferredSize.width < 300)
+        val bounded = tab.chooser.preferredSize.width
+        assertTrue("$bounded of $wide", bounded < 300 && bounded < wide)
+        // A tab too narrow even for the title keeps a chooser that shows a short label.
+        tab.setSize(10, 400)
+        assertTrue(tab.chooser.preferredSize.width.toString(), tab.chooser.preferredSize.width > 40)
     }
 
     private companion object {
+        const val PADDING = "ComboBox.padding"
         const val FIRST = "y:: x + 1"
         const val SECOND = "^[y * 2] value"
         const val BLOCK = "[y * 2]"

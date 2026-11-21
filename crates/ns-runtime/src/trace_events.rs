@@ -38,7 +38,7 @@ pub(crate) use listings::PendingListing;
 pub use listings::{
     Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, DataWord, InliningListing,
     InliningOutcome, ListedArm, ListedBody, ListedDecline, ListedInstruction, ListedScope, Listing,
-    Position,
+    MadeAt, Position,
 };
 #[cfg(ns_jit)]
 pub(crate) use listings::{PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope};

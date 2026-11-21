@@ -32,11 +32,15 @@ import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
-import javax.swing.AbstractButton
+import java.awt.Font
+import javax.swing.ComboBoxModel
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
+import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.ListCellRenderer
+import javax.swing.UIManager
 
 /** A copy of a body the chooser offers: its [label] and how its listing is made. */
 class CodeCopy(val label: String, val listing: () -> CodeListing) {
@@ -74,25 +78,8 @@ class CodeTab(
     /** The read-only editor the listing is shown in. */
     val viewer: Editor = EditorFactory.getInstance().createViewer(document, project)
 
-    /**
-     * The copies of the body shown, as wide as its longest label -- a key
-     * and an entered application make an optimized copy's long --, never
-     * cut but where the tab is narrower than the bar would be.
-     */
-    val chooser: ComboBox<CodeCopy> = object : ComboBox<CodeCopy>() {
-        override fun getPreferredSize(): Dimension {
-            val size = super.getPreferredSize()
-            val list = JList<CodeCopy>()
-            val widest = (0 until itemCount).maxOfOrNull { index ->
-                renderer.getListCellRendererComponent(list, getItemAt(index), -1, false, false).preferredSize.width
-            } ?: 0
-            // The arrow and the border around the label.
-            val chrome = insets.left + insets.right + components.filterIsInstance<AbstractButton>().sumOf { button -> button.preferredSize.width }
-            val wanted = maxOf(size.width, widest + chrome)
-            val room = roomForChooser()
-            return Dimension(if (room > 0) minOf(wanted, room) else wanted, size.height)
-        }
-    }
+    /** The copies of the body shown, every label painted whole but where the tab is narrower ([CopyChooser]). */
+    val chooser = CopyChooser { roomForChooser() }
 
     private val title = JBLabel()
 
@@ -183,9 +170,6 @@ class CodeTab(
         shownBody = body
         title.text = bodyName(run, body)
         chooser.model = DefaultComboBoxModel(copies.toTypedArray())
-        // Another body's labels: the chooser takes their width, and the bar is laid out again.
-        bar.revalidate()
-        bar.repaint()
         val index = copies.indexOfFirst { copy -> copy.label == chosen }.takeIf { found -> found >= 0 } ?: 0
         if (copies.isNotEmpty()) chooser.selectedIndex = index
         showChosen()
@@ -222,12 +206,12 @@ class CodeTab(
         highlighting.refresh()
     }
 
-    /** The width the bar leaves the chooser beside the title and the button: the tab's, 0 before it was laid out. */
-    private fun roomForChooser(): Int {
-        if (width <= 0) return 0
+    /** The width the bar leaves the chooser beside the title and the button, which may be none; null before the tab was laid out. */
+    private fun roomForChooser(): Int? {
+        if (width <= 0) return null
         val layout = bar.layout as FlowLayout
         val gaps = layout.hgap * BAR_GAPS + bar.insets.left + bar.insets.right
-        return maxOf(width - title.preferredSize.width - openButton.preferredSize.width - gaps, 1)
+        return width - title.preferredSize.width - openButton.preferredSize.width - gaps
     }
 
     private fun active(): Boolean = tracedRuns.selected === run
@@ -278,5 +262,73 @@ class CodeTab(
         /** A flow layout's gaps around and between the bar's three components. */
         const val BAR_GAPS = 4
         const val NEWSPEAK_EXTENSION = "ns"
+    }
+}
+
+/**
+ * The Code tab's chooser of copies. The closed value is painted in the
+ * combo's width less what the UI takes beside it -- the right inset, the
+ * arrow button as wide as the layout makes it, the padding on both sides
+ * (`DarculaComboBoxUI.rectangleForCurrentValue` and `paintCurrentValue`)
+ * -- and a label wider than that is cut, while the UI's preferred width
+ * counts the arrow as square and so may leave less. So the chooser wants
+ * at least its widest label, measured in its own font without the
+ * renderer's border, as the UI paints it, plus what the UI takes; bounded
+ * by the [room] the tab leaves, null before it was laid out, but never
+ * below what its shortest label needs. The labels are measured once per
+ * model, font and renderer.
+ */
+class CopyChooser(private val room: () -> Int?) : ComboBox<CodeCopy>() {
+    /** The widths the shortest and the widest label need; null until measured. */
+    private var measured: Pair<Int, Int>? = null
+
+    override fun getPreferredSize(): Dimension {
+        val size = super.getPreferredSize()
+        val (shortest, widest) = measured ?: measure().also { widths -> measured = widths }
+        val wanted = maxOf(size.width, widest)
+        val bound = room()?.let { width -> maxOf(width, minOf(shortest, wanted)) } ?: wanted
+        return Dimension(minOf(wanted, bound), size.height)
+    }
+
+    override fun setModel(model: ComboBoxModel<CodeCopy>) {
+        measured = null
+        super.setModel(model)
+    }
+
+    override fun setFont(font: Font?) {
+        measured = null
+        super.setFont(font)
+    }
+
+    override fun setRenderer(renderer: ListCellRenderer<in CodeCopy>?) {
+        measured = null
+        super.setRenderer(renderer)
+    }
+
+    override fun updateUI() {
+        measured = null
+        super.updateUI()
+    }
+
+    /** The combo's width that paints the shortest and the widest label whole. */
+    private fun measure(): Pair<Int, Int> {
+        val list = JList<CodeCopy>()
+        val labels = (0 until itemCount).map { index ->
+            val component = renderer.getListCellRendererComponent(list, getItemAt(index), -1, false, false)
+            // The UI paints the value in the combo's font, its renderer's border taken away.
+            component.font = font
+            val insets = (component as? JComponent)?.insets
+            component.preferredSize.width - (insets?.let { taken -> taken.left + taken.right } ?: 0)
+        }
+        if (labels.isEmpty()) return 0 to 0
+        val padding = UIManager.getInsets(PADDING)
+        val arrow = components.filterIsInstance<JButton>().firstOrNull()?.preferredSize?.width ?: 0
+        val taken = insets.right + arrow + (padding?.let { inset -> inset.left + inset.right } ?: 0)
+        return labels.min() + taken to labels.max() + taken
+    }
+
+    private companion object {
+        /** The key the UI's padding is installed from (`BasicComboBoxUI.installDefaults`). */
+        const val PADDING = "ComboBox.padding"
     }
 }

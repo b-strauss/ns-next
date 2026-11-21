@@ -94,7 +94,7 @@ class RunPanel(project: Project, val run: TraceRun) : JPanel(BorderLayout()), Di
  * (`TraceRun.missingTierCategories`): without `compile` no icon shows how
  * a method ran, without `code-zone` none shows baseline, twin or optimized
  * code, and without `deoptimize` an optimized method shows as its baseline
- * tier; null where none is missing.
+ * or twin tier; null where none is missing.
  */
 fun tierNotice(missing: List<String>): String? {
     if (missing.isEmpty()) return null

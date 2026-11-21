@@ -48,28 +48,26 @@ pub struct BytecodeListing {
 }
 
 /// One body of a bytecode listing, its instructions apart, with what
-/// the text's line above them writes: `kind` its word there (`method`,
-/// `block`, `initializer` or `superclass clause`) and its counts of
-/// arguments and registers.
+/// the text's line above them writes: `kind` its word there
+/// (`CodeKind::word`) and its counts of arguments and registers; and,
+/// for a block, `made_at`, the `MakeClosure` that makes it, under which
+/// the text nests it -- `None` for the root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedBody {
     pub body: BodyName,
     pub kind: &'static str,
+    pub made_at: Option<MadeAt>,
     pub argument_count: u16,
     pub register_count: u16,
     pub instructions: Vec<ListedInstruction>,
 }
 
-/// The word `bytecode::disassemble` writes for `kind` at the start of a
-/// body's line, so that a reader of the structured listing writes the
-/// line the text has.
-fn kind_word(kind: bytecode::CodeKind) -> &'static str {
-    match kind {
-        bytecode::CodeKind::Method => "method",
-        bytecode::CodeKind::Block => "block",
-        bytecode::CodeKind::Initializer => "initializer",
-        bytecode::CodeKind::SuperclassClause => "superclass clause",
-    }
+/// Where a listed block is made: the number of the body that makes it,
+/// listed before it, and the index of its `MakeClosure` there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MadeAt {
+    pub maker: u32,
+    pub index: u32,
 }
 
 /// One instruction of a listed body: `text` is what `instruction_lines`
@@ -91,9 +89,10 @@ fn listed_bodies(
     root: &Rc<CompiledCode>,
 ) -> Vec<ListedBody> {
     let mut listed = Vec::new();
-    let mut pending = vec![Rc::clone(root)];
-    while let Some(code) = pending.pop() {
+    let mut pending = vec![(Rc::clone(root), None)];
+    while let Some((code, made_at)) = pending.pop() {
         let body = names.name(mutator, &code);
+        let maker = body.number;
         let instructions = bytecode::listed_instructions(&code)
             .into_iter()
             .map(|(index, statement, text)| ListedInstruction {
@@ -104,16 +103,24 @@ fn listed_bodies(
             .collect();
         listed.push(ListedBody {
             body,
-            kind: kind_word(code.kind),
+            kind: code.kind.word(),
+            made_at,
             argument_count: code.argument_count,
             register_count: code.register_count,
             instructions,
         });
-        let blocks: Vec<Rc<CompiledCode>> = code
+        let blocks: Vec<(Rc<CompiledCode>, Option<MadeAt>)> = code
             .instructions()
             .iter()
-            .filter_map(|instruction| match instruction {
-                bytecode::Instruction::MakeClosure { code: block, .. } => Some(Rc::clone(block)),
+            .enumerate()
+            .filter_map(|(index, instruction)| match instruction {
+                bytecode::Instruction::MakeClosure { code: block, .. } => Some((
+                    Rc::clone(block),
+                    Some(MadeAt {
+                        maker,
+                        index: u32::try_from(index).expect("a body has at most 2^32 instructions"),
+                    }),
+                )),
                 _ => None,
             })
             .collect();

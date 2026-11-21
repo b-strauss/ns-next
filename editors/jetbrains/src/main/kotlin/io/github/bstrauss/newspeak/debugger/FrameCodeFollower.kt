@@ -57,8 +57,13 @@ class FrameCodeFollower private constructor(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
                 override fun fileClosed(source: FileEditorManager, closed: VirtualFile) {
-                    // A split's editor closed while another still shows the tab: it goes on following.
-                    if (closesFollower(source, closed, file)) end()
+                    if (closed != file) return
+                    // Decided once the close is done, whatever the platform still counts open while it tells
+                    // of it: a split's editor closed while another still shows the tab goes on following.
+                    ApplicationManager.getApplication().invokeLater(
+                        { if (!ended && closesFollower(source, closed, file)) end() },
+                        ModalityState.any(),
+                    )
                 }
             },
         )

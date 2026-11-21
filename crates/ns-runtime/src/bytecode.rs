@@ -489,6 +489,21 @@ pub enum CodeKind {
     SuperclassClause,
 }
 
+impl CodeKind {
+    /// The word a listing names the kind by -- `disassemble`'s line above a
+    /// body's instructions, the trace's structured listing and the
+    /// decoder's refusal of a body of another kind -- so that every reader
+    /// of one finds the word the others write.
+    pub fn word(self) -> &'static str {
+        match self {
+            CodeKind::Method => "method",
+            CodeKind::Block => "block",
+            CodeKind::Initializer => "initializer",
+            CodeKind::SuperclassClause => "superclass clause",
+        }
+    }
+}
+
 /// How many register numbers a frame's header takes, between its arguments
 /// and the rest of its registers: registers `0 .. argument_count` are the
 /// arguments, `argument_count .. argument_count + HEADER_REGISTERS` are
@@ -1718,12 +1733,7 @@ pub fn disassemble_marked(code: &CompiledCode, name: &str, mark: Option<u32>) ->
 fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, mark: Option<u32>) {
     use std::fmt::Write;
     let pad = " ".repeat(indent);
-    let kind = match code.kind {
-        CodeKind::Method => "method",
-        CodeKind::Block => "block",
-        CodeKind::Initializer => "initializer",
-        CodeKind::SuperclassClause => "superclass clause",
-    };
+    let kind = code.kind.word();
     writeln!(
         out,
         "{pad}{kind} {name} (args {}, registers {})",

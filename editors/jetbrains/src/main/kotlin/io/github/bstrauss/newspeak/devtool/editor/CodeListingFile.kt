@@ -119,9 +119,11 @@ private fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name 
  * arguments and registers -- and its instructions, each block it makes
  * nested eight columns deeper under its `MakeClosure` with the line
  * `block block (args …, registers …)` the text names every block by, and
- * `--- end`. The record lists the blocks in the order the text nests them,
- * so the next block not yet written is the one a `MakeClosure` makes. A
- * record without the counts writes the line without them.
+ * `--- end`. The record lists the blocks in the order the text nests them
+ * and names each one's `MakeClosure` by its body and index, so the next
+ * block not yet written is nested at the instruction it names; a record
+ * that does not name it nests it at the next `MakeClosure`, and one
+ * without the counts writes the line without them.
  */
 fun bytecodeListing(run: TraceRun, bytecode: Bytecode): CodeListing {
     val writer = ListingWriter()
@@ -150,7 +152,13 @@ fun bytecodeListing(run: TraceRun, bytecode: Bytecode): CodeListing {
             val pad = " ".repeat(nested.depth * BLOCK_INDENT)
             writer.line(pad + instructionLine(instruction.index, instruction.statement, instruction.text), ListingPosition(nested.body.body, instruction.index))
             pending.addLast(NestedBody(nested.body, nested.position + 1, nested.depth))
-            if (instruction.text.startsWith(MAKE_CLOSURE) && next < bodies.size) begin(nested.depth + 1)
+            val block = bodies.getOrNull(next)
+            val makes = when {
+                block == null -> false
+                block.madeIn != null && block.at != null -> block.madeIn == nested.body.body && block.at == instruction.index
+                else -> instruction.text.startsWith(MAKE_CLOSURE)
+            }
+            if (makes) begin(nested.depth + 1)
         }
     }
     writer.line(END)

@@ -108,12 +108,16 @@ data class BytecodeInstruction(val index: Int, val statement: Int?, val text: St
  * One body of a bytecode listing, the root or a block it makes, with what
  * the text listing's line above its instructions writes: its [kind]
  * (`method`, `block`, `initializer`, `superclass clause`) and its counts of
- * [arguments] and [registers], each null in a record that does not give it.
+ * [arguments] and [registers]; and for a block, the body [madeIn], listed
+ * before it, whose `MakeClosure` at the index [at] makes it; each null in
+ * a record that does not give it, [madeIn] and [at] the root's too.
  */
 data class BytecodeBody(
     val body: Int,
     val instructions: List<BytecodeInstruction>,
     val kind: String? = null,
+    val madeIn: Int? = null,
+    val at: Int? = null,
     val arguments: Int? = null,
     val registers: Int? = null,
 )
@@ -238,6 +242,8 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
                     BytecodeInstruction(fields.requiredInteger("index"), fields.optionalInteger("statement"), fields.requiredText("text"))
                 },
                 kind = listed.optionalText("kind"),
+                madeIn = listed.optionalInteger("in"),
+                at = listed.optionalInteger("at"),
                 arguments = listed.optionalInteger("arguments"),
                 registers = listed.optionalInteger("registers"),
             )

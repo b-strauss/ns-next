@@ -198,7 +198,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
      * The categories [state] needs to show [body]'s optimized copies that
      * the header says are not traced, `deoptimize` or `code-zone`, where
      * its events say it runs optimized code and [state] shows its baseline
-     * tier, or nothing, for want of them; empty otherwise, a body whose
+     * or twin tier, or nothing, for want of them; empty otherwise, a body whose
      * events the filter withheld among them.
      */
     fun unheardCopies(body: Int): List<String> {

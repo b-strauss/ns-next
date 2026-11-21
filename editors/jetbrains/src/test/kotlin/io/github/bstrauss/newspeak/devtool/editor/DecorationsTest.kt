@@ -509,7 +509,7 @@ class DecorationsTest : BasePlatformTestCase() {
         tracedRuns.selected = run
         val square = icons(editor).single().second
         assertEquals(MethodState.BASELINE, square.state)
-        assertEquals("baseline · 0 copies · 0 deoptimizations · shown as its baseline tier: trace deoptimize too to see its optimized copies", square.tooltipText)
+        assertEquals("baseline · 0 copies · 0 deoptimizations · optimized, shown as baseline: trace deoptimize too to see its optimized copies", square.tooltipText)
     }
 
     private companion object {

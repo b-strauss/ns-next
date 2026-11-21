@@ -69,6 +69,9 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals("#40", undescribed.name)
         assertEquals(MethodState.BASELINE, undescribed.state)
         assertEquals(512, undescribed.baselineBytes)
+        // A body only a plan names has a row too.
+        val planned = fixtureRun("""{"kind":"inlining","body":41,"key":null,"entered":null,"scopes":[{"scope":0,"body":41,"parent":null}],"arms":[],"declined":[],"outcome":{"refused":"zone-full"}}""")
+        assertEquals("#41", MethodsTab(project, planned, testRootDisposable).model.items.single { row -> row.body == 41 }.name)
     }
 
     fun testMethodsSortByCopies() {
@@ -269,7 +272,7 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals("No icons of baseline, twin or optimized code: trace deoptimize and code-zone too", panel.shownTierNotice)
         // A listing-only run shows no tier at all.
         assertEquals("No tier icons: trace compile, deoptimize and code-zone too", tierNotice(listOf("compile", "deoptimize", "code-zone")))
-        assertEquals("No icons of optimized copies, which show as their baseline tier: trace deoptimize too", tierNotice(listOf("deoptimize")))
+        assertEquals("No icons of optimized copies, which show as their baseline or twin tier: trace deoptimize too", tierNotice(listOf("deoptimize")))
         assertNull(tierNotice(emptyList()))
         // Every category a tier needs traced: no line.
         val full = TraceRun("Full", Instant.EPOCH).also { traced -> traced.add(records(listOf(header(""""compile","deoptimize","code-zone"""")))) }

@@ -395,7 +395,7 @@ class DecorationsService internal constructor(
             if (reason != null) tooltip += NewspeakBundle.message("devtool.gutter.last", last.event, reason)
         }
         val unheard = traced.unheardCopies(root.number)
-        if (unheard.isNotEmpty()) tooltip += NewspeakBundle.message("devtool.gutter.unheard", categoryList(unheard))
+        if (unheard.isNotEmpty()) tooltip += NewspeakBundle.message("devtool.gutter.unheard", state.name.lowercase(), categoryList(unheard))
         return StateGutterRenderer(state, stale = false, watched = watched, tooltip, actions)
     }
 

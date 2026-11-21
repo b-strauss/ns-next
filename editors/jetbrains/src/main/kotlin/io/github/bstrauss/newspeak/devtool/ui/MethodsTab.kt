@@ -123,6 +123,7 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
             for (code in codes) install(root, code.tier, code.bytes)
         }
         for (number in run.bytecode.keys) methods += rootOf(run, number)
+        for (number in run.inlining.keys) methods += rootOf(run, number)
         return methods.map { body ->
             MethodRow(
                 body,
