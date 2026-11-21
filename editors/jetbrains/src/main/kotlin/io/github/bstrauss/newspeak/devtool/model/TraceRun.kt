@@ -13,7 +13,8 @@ enum class MethodState { INTERPRETED, BASELINE, TWIN, OPTIMIZED, DEOPTIMIZED, AB
 /**
  * What became of a send: [inlining] `inlined` or `declined: <reason>` by the
  * last optimizing compile that planned it and whose installed copy still
- * lives, in a run whose header does not leave `deoptimize` out, and
+ * lives, in a run whose header leaves neither `deoptimize` nor
+ * `code-zone` out, so that the copy's end would be heard, and
  * [cache] its inline cache's
  * state -- `mono`, `poly <n>` with the receivers it has seen since it was
  * last vacant, `mega` -- each null where the trace says nothing of it.
@@ -92,20 +93,40 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     val plans: List<Inlining> get() = plansInOrder
 
     /**
-     * [body]'s state after its events in their order -- its listed machine
-     * code counted among them where no event announced it but a
-     * deoptimization would be heard of --, and otherwise
-     * [MethodState.INTERPRETED] only where a compile would have been heard
-     * of -- `compile` traced and the body's own events passing the run's
-     * filter. Null where the trace knows nothing of how it ran: a body named
-     * only as a callee, a scope, a cache's family or by a bytecode listing,
-     * and one whose code was listed in a run that would never hear its copy
-     * retired.
+     * [body]'s state after its events in their order, its listed machine
+     * code counted among them where no event announced it -- and a tier
+     * only where its end can be heard, never one that may be over:
+     * optimized where `deoptimize` (a retirement, an invalidation) and
+     * `code-zone` (a copy freed, the zone replaced) are, baseline and twin
+     * where `compile` (an abandonment) and `code-zone` (the code freed, the
+     * zone replaced) are, interpreted where `compile` is, each for the
+     * body's own events passing the run's filter; deoptimized and
+     * abandoned as they are heard. An optimized body whose copies' end
+     * cannot be heard answers its baseline tier, if that one's can. Null
+     * where the trace cannot say how it runs: a body named only as a
+     * callee, a scope, a cache's family or by a bytecode listing, and one
+     * whose every tier may be over.
      */
-    fun state(body: Int): MethodState? = histories[body]?.state ?: MethodState.INTERPRETED.takeIf { heardOf(body, "compile") }
+    fun state(body: Int): MethodState? {
+        val history = histories[body] ?: return MethodState.INTERPRETED.takeIf { heardOf(body, "compile") }
+        return when (val state = history.state) {
+            MethodState.ABANDONED, MethodState.DEOPTIMIZED -> state
+            MethodState.OPTIMIZED -> if (copiesEndHeard(body)) state else baseState(body, history.base)
+            else -> baseState(body, state)
+        }
+    }
 
-    /** How many optimized copies of [body] are installed, as its events -- and its listings, where they count -- say. */
-    fun copies(body: Int): Int = histories[body]?.copies ?: 0
+    /** How many optimized copies of [body] are installed, as its events and listings say; 0 where their end cannot be heard. */
+    fun copies(body: Int): Int = histories[body]?.copies?.takeIf { copiesEndHeard(body) } ?: 0
+
+    /** Whether the end of [body]'s optimized copies would be heard: a retirement or an invalidation, a free or the zone's replacement. */
+    private fun copiesEndHeard(body: Int): Boolean = heardOf(body, "deoptimize") && heardOf(body, "code-zone")
+
+    /** [tier], interpreted, baseline or twin, where its end would be heard -- a compile, or an abandonment and a free -- and null otherwise. */
+    private fun baseState(body: Int, tier: MethodState): MethodState? = when (tier) {
+        MethodState.INTERPRETED -> tier.takeIf { heardOf(body, "compile") }
+        else -> tier.takeIf { heardOf(body, "compile") && heardOf(body, "code-zone") }
+    }
 
     /**
      * Whether an event of [category] about [body] would have reached the
@@ -122,14 +143,12 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     /**
      * Counts [code]'s install in its body's history where no event
-     * announced it -- `compile` or `optimize` not heard of for the body --
-     * and only where its end can be heard, a retirement or invalidation in
-     * `deoptimize`: an install nothing would ever take back would stand
-     * for good.
+     * announced it -- `compile` or `optimize` not heard of for the body --;
+     * [state] shows the tier only where its end can be heard.
      */
     private fun countListed(code: Code) {
         val announcing = if (code.tier == "optimized") "optimize" else "compile"
-        if (heardOf(code.body, announcing) || !heardOf(code.body, "deoptimize")) return
+        if (heardOf(code.body, announcing)) return
         val event = when (code.tier) {
             "optimized" -> "optimized"
             "twin" -> "compiled-twin"
@@ -144,8 +163,8 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         // A block's sites are numbered in its method's family, whose root the transitions name.
         val root = described.family ?: body
         val outcomes = LinkedHashMap<Int, SendOutcome>()
-        // A decision whose copy's retirement could never arrive would stand for good: none is shown.
-        val inliningEnds = categories?.contains("deoptimize") != false
+        // A decision whose copy's end -- a retirement, an invalidation, a free, the zone replaced -- could never arrive would stand for good: none is shown.
+        val inliningEnds = categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
         for (send in described.sends) {
             val inlining = inliningAtSends[SendKey(body, send.at)]?.takeIf { inliningEnds }
             val cache = send.site?.let { site -> caches[SendKey(root, site)]?.shortForm() }
@@ -270,6 +289,10 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         private var tier = MethodState.INTERPRETED
         private var abandoned = false
 
+        /** The tier of the body's baseline code beside its copies: interpreted, baseline or twin. */
+        var base = MethodState.INTERPRETED
+            private set
+
         var copies = 0
             private set
 
@@ -277,8 +300,14 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
         fun take(event: Event) {
             when (event.event) {
-                "compiled" -> if (copies == 0) tier = MethodState.BASELINE
-                "compiled-twin" -> if (copies == 0) tier = MethodState.TWIN
+                "compiled" -> {
+                    base = MethodState.BASELINE
+                    if (copies == 0) tier = MethodState.BASELINE
+                }
+                "compiled-twin" -> {
+                    base = MethodState.TWIN
+                    if (copies == 0) tier = MethodState.TWIN
+                }
                 "optimized" -> {
                     copies++
                     tier = MethodState.OPTIMIZED
@@ -287,12 +316,16 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                 "freed" -> when (event.text("tier")) {
                     "optimized" -> uncount()
                     // Its baseline code gone, the body runs interpreted until it is compiled again.
-                    else -> if (copies == 0) tier = MethodState.INTERPRETED
+                    else -> {
+                        base = MethodState.INTERPRETED
+                        if (copies == 0) tier = MethodState.INTERPRETED
+                    }
                 }
                 "abandoned" -> abandoned = true
                 // Revived, it counts its entries again, interpreted until compiled.
                 "revived" -> {
                     abandoned = false
+                    base = MethodState.INTERPRETED
                     if (copies == 0) tier = MethodState.INTERPRETED
                 }
             }
@@ -301,6 +334,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         /** Every machine code of the body dropped at once. */
         fun lose() {
             copies = 0
+            base = MethodState.INTERPRETED
             tier = MethodState.INTERPRETED
         }
 

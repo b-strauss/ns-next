@@ -162,9 +162,9 @@ class TraceRunTest {
 
     @Test fun testAPlanNoOutcomeCanConcludeIsTakenAtOnce() {
         val inlined = mapOf(3 to SendOutcome(inlining = "inlined", cache = null))
-        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining","deoptimize"]""", """["code"]""").sends(5))
-        assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize","deoptimize"]""", "[]").sends(5))
-        assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining","deoptimize"]""", """["inlining"]""").sends(5))
+        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining","deoptimize","code-zone"]""", """["code"]""").sends(5))
+        assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize","deoptimize","code-zone"]""", "[]").sends(5))
+        assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining","deoptimize","code-zone"]""", """["inlining"]""").sends(5))
         // A header that does not say is taken to trace an outcome.
         val unsaid = run()
         unsaid.add(
@@ -260,7 +260,7 @@ class TraceRunTest {
         assertNull("no retirement could ever take the copy back", listingsOnly.state(5))
         assertEquals(0, listingsOnly.copies(5))
 
-        val deoptimizations = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["deoptimize"],"listings":["code"]}""")
+        val deoptimizations = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["deoptimize","code-zone"],"listings":["code"]}""")
         deoptimizations.add(records(optimizedListing("Demo"), optimizedListing("Demo/Box")))
         assertEquals(MethodState.OPTIMIZED, deoptimizations.state(5))
         assertEquals(2, deoptimizations.copies(5))
@@ -281,7 +281,35 @@ class TraceRunTest {
             ),
         )
         assertEquals(emptyMap<Int, SendOutcome>(), traceRun.sends(5))
-        assertEquals("the state still says it ran optimized", MethodState.OPTIMIZED, traceRun.state(5))
+        assertNull("no tier whose end can be heard", traceRun.state(5))
+    }
+
+    /** A run whose header traces [categories], its body 5 compiled and optimized. */
+    private fun tiered(categories: String): TraceRun {
+        val traceRun = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":$categories,"listings":[]}""")
+        traceRun.add(
+            records(
+                event(5, "compile", "compiled", ""","trigger":"call","bytes":64"""),
+                event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900"""),
+                event(6, "compile", "compiled", ""","trigger":"call","bytes":64"""),
+            ),
+        )
+        return traceRun
+    }
+
+    @Test fun testATierIsShownOnlyWhereItsEndCanBeHeard() {
+        val withoutDeoptimize = tiered("""["compile","optimize","code-zone"]""")
+        assertEquals("the baseline tier beneath the copy, whose end can be heard", MethodState.BASELINE, withoutDeoptimize.state(5))
+        assertEquals(0, withoutDeoptimize.copies(5))
+        val withoutCodeZone = tiered("""["compile","optimize","deoptimize"]""")
+        assertNull("neither a copy nor baseline code whose free could be heard", withoutCodeZone.state(5))
+        assertNull(withoutCodeZone.state(6))
+        val all = tiered("""["compile","optimize","deoptimize","code-zone"]""")
+        assertEquals(MethodState.OPTIMIZED, all.state(5))
+        assertEquals(1, all.copies(5))
+        assertEquals(MethodState.BASELINE, all.state(6))
+        all.add(records(event(5, "deoptimize", "retired", ""","key":null,"entered":null,"reason":"exits","version":null""")))
+        assertEquals(MethodState.DEOPTIMIZED, all.state(5))
     }
 
     @Test fun testABodyWithoutADescriptionIsAccepted() {

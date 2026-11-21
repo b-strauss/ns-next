@@ -457,6 +457,6 @@ class DecorationsTest : BasePlatformTestCase() {
         /** FNV-1a 64 of [SMILE]'s UTF-8 bytes, computed outside the plugin. */
         const val SMILE_CHECKSUM = "365a1aecc2f3c0f7"
 
-        const val HEADER = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["compile","optimize","inlining","deoptimize","caches"],"listings":[]}"""
+        const val HEADER = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["compile","optimize","inlining","deoptimize","code-zone","caches"],"listings":[]}"""
     }
 }

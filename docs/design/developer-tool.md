@@ -1270,21 +1270,25 @@ by body number, the header's categories and the filters the run was
 started with, and decides each body's state from its events in order
 -- interpreted, baseline, twin, optimized with its copies counted,
 deoptimized once its last copy is gone, abandoned until revived --, a
-`code` record no event announced counted as its install only where the
-body's deoptimizations would be heard of, `deoptimize` traced and the
-body's name passing the events filter, since an install nothing could
-take back would stand for good; and otherwise interpreted only where a
-compile would have been heard of, `compile` traced and the name passing
-the filter. Any other body has no state, since a body is described
-whenever any delivery names it -- a callee, a scope, a cache's family,
-a bytecode listing -- in a run that may say nothing of how it ran. And
-each send's outcome: the inlining decision of the last optimizing
-compile that planned it and whose installed copy still lives -- held
-until the compile's outcome arrives unless the header says none can,
-gone with the copy's retirement, invalidation, freeing or the zone's
-replacement, and shown only where the header does not leave
-`deoptimize` out, since a retirement could not arrive otherwise --, and
-the state of its cache, `mono`, `poly <n>` with
+`code` record no event announced counted as its install. **A tier is
+shown only where its end can be heard**, never one that may be over:
+optimized, with its copies, only where `deoptimize` (a retirement, an
+invalidation) and `code-zone` (a copy freed, the zone replaced) are
+traced; baseline and twin only where `compile` (an abandonment) and
+`code-zone` (the code freed, the zone replaced) are; interpreted where
+`compile` is; deoptimized and abandoned as they are heard -- each for
+the body's own events passing the run's filter, and a header that does
+not name its categories taken to trace them all. An optimized body
+whose copies' end cannot be heard answers its baseline tier if that
+one's can, and a body whose every tier may be over has no state, as
+has a body the trace names only as a callee, a scope, a cache's family
+or by a bytecode listing, since a body is described whenever any
+delivery names it. By the same rule, each send's outcome: the inlining
+decision of the last optimizing compile that planned it and whose
+installed copy still lives -- held until the compile's outcome arrives
+unless the header says none can, gone with the copy's retirement,
+invalidation, freeing or the zone's replacement, and shown only where
+`deoptimize` and `code-zone` are traced --, and the state of its cache, `mono`, `poly <n>` with
 the receivers seen since it was last vacant, or `mega`, a block's
 sites by its family's root.
 
@@ -1372,9 +1376,9 @@ command line, its greying and the free field's refusal;
 and its filters; `TraceFileReaderTest` and `TraceRunTest` the records,
 a partial line, a refused version, a malformed line after records, a
 large file read in bounded batches, the states, a state only where the
-trace knows it, a listing counted only where its end can be heard, and
-a send's inlining going with its copy and shown only where its
-retirement can arrive; `TracedRunsTest` the tabs and the file's deletion;
+trace knows it, a tier only where its end can be heard, events and
+listings alike, and a send's inlining going with its copy and shown
+only where its end can be heard; `TracedRunsTest` the tabs and the file's deletion;
 `TabsTest` the four views, the inlining tree kept across a batch;
 `DecorationsTest` the icons, none for a method a caches-only run or a
 filtered-out callee says nothing of, the hints, the eyes, staleness,
@@ -1386,7 +1390,7 @@ with an edit, and the editor tab. `NewspeakDebugProcessTest`, in
 its refusal against a fake agent. And
 `TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`
 (`runsLikeUnitTests`, `debugsWithTheRuntime`), runs a configuration
-with `compile` and machine code checked and one method watched through
+with `compile`, `code-zone` and machine code checked and one method watched through
 the platform's runner with the debug build of `ns-next`: the program's
 output reaches the console without a trace line, the selected run has
 the method compiled with its `code` record, and the program's editor

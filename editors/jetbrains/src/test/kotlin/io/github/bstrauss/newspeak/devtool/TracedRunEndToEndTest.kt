@@ -37,7 +37,8 @@ import java.util.concurrent.TimeUnit
 /**
  * A traced run end to end, against the real runtime the build names in
  * `nsNext.runtime`: Run on a Newspeak run configuration whose Developer
- * Tool tab asks for the `compile` category and machine code, with one
+ * Tool tab asks for the `compile` and `code-zone` categories -- a baseline
+ * tier is shown only where its end can be heard -- and machine code, with one
  * method watched, through the platform's runner as the user starts it; the
  * trace file the runtime writes is read into the selected run, and the
  * editor of the program shows the method's state.
@@ -95,7 +96,7 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
         val configuration = NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
         configuration.name = "Demo"
         configuration.program = program.path
-        configuration.options.traceCategories = mutableListOf("compile")
+        configuration.options.traceCategories = mutableListOf("compile", "code-zone")
         configuration.options.printCode = true
         val output = StringBuffer()
         val standardOutput = StringBuffer()
