@@ -1493,8 +1493,8 @@ it is where no editor shows it, by the rule a view opens a file by, so
 that a body without a range in its file is opened nowhere, and a file
 found only after the toggle went off or the tab closed is not opened;
 each only where the lines are not shown already, and only once the
-editor's viewport shows -- a hidden tool window lays the viewer out
-with no extent. It scrolls and never moves a caret. Turning the toggle
+editor's viewport shows -- for the viewer, once it has an extent, which
+a tool window never shown leaves it without and a hidden one keeps. It scrolls and never moves a caret. Turning the toggle
 on brings the viewer to the source's caret at once. What its opening
 of a file sets off is not followed, so that neither direction sets the
 other off, at whatever time the platform finishes: everything within
@@ -1503,11 +1503,11 @@ the platform publishes from a coroutine, after the input that caused
 it, and none where the selection did not change; and, until the
 opening is over, every caret move in any editor of the file but one
 made by the user's click or key. The opening is over once the platform
-has told that it opened each composite the call made, in this window
-or another, which it does after restoring their editors' saved state
-(`EditorComposite.applyFileEditorsInEdt`), and the file's editors are
-loaded; a call that made none, which brought a tab forward, restores
-nothing. It is dropped when nothing opened, when the file is closed or
+has told that it opened the file, which it does after restoring the new
+composite's editors' saved state (`EditorComposite.applyFileEditorsInEdt`),
+and the file's editors are loaded; a file open before for which the
+call made no editor, a tab brought forward, restores nothing and waits
+for its editors alone. It is dropped when nothing opened, when the file is closed or
 when its editors are released first. The tab then follows the editors
 as any again, a debugger's step included, and scrolls them to the
 statement the viewer's caret names by then, queued in the editor's own
@@ -1654,7 +1654,8 @@ restored caret and to the viewer's statement of then, followed while
 its opening lasts in the user's input alone, in every editor of it,
 and in everything after, a file closed meanwhile followed when opened
 again, a file found after the toggle went off not opened, a viewer not
-shown scrolled once it shows, the toggle turned on scrolling at once,
+shown scrolled once it shows and a hidden one with its extent at once,
+the toggle turned on scrolling at once,
 everything followed again and nothing scrolled once the toggle is off
 or the tab gone, a line of no statement scrolling nothing, and the
 editor tab; `FrameCodeFollowerTest` the frame's code written as a

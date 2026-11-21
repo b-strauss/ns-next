@@ -138,13 +138,16 @@ class CodeTabTest : BasePlatformTestCase() {
         actions.forEach(Runnable::run)
     }
 
+    /** Whether a tab takes the production's test of a source viewport's readiness, which a headless editor never passes. */
+    private var productionReadiness = false
+
     private fun tab(run: TraceRun, parent: Disposable = testRootDisposable): CodeTab {
         tracedRuns.selected = run
         return CodeTab(
             project, run, parent, tracedRuns, decorations, { null }, { userInput },
             { _, action -> if (loadingDeferred) whenLoadedActions += action else action.run() },
             { _, action -> if (openedDeferred) whenOpenedActions += action else action.run() },
-        ) { editor -> editor.scrollingModel.visibleArea.height > 0 }
+        ) { editor -> !productionReadiness && editor.scrollingModel.visibleArea.height > 0 }
     }
 
     /** Whether the platform's word that it opened a file, after restoring its state, comes only when the test says so. */
@@ -986,6 +989,25 @@ class CodeTabTest : BasePlatformTestCase() {
         val height = tab.viewer.lineHeight * 2
         tab.viewer.component.setBounds(0, 0, VIEW_WIDTH, height + tab.viewer.component.height - tab.viewer.scrollingModel.visibleArea.height)
         layOut(tab.viewer.component)
+        assertEquals(tab.viewer.logicalPositionToXY(LogicalPosition(linked.first(), 0)).y, tab.viewer.scrollingModel.verticalScrollOffset)
+    }
+
+    /**
+     * A viewer laid out once and hidden now -- another inner tab in front --
+     * keeps its extent, is scrolled at once and shows the lines when shown
+     * again at its size, which no viewport change announces. A headless
+     * viewer is never showing, as a hidden one is.
+     */
+    fun testAHiddenViewerWithItsExtentIsScrolledAtOnce() {
+        productionReadiness = true
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        showLines(tab.viewer, 2)
+        assertFalse(tab.viewer.component.isShowing)
+        editor.caretAt("value", SECOND)
+        val linked = linkedViewerLines(tab)
         assertEquals(tab.viewer.logicalPositionToXY(LogicalPosition(linked.first(), 0)).y, tab.viewer.scrollingModel.verticalScrollOffset)
     }
 

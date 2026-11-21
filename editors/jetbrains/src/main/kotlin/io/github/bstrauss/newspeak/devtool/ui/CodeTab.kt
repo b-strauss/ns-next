@@ -69,6 +69,12 @@ private fun viewportShowing(editor: Editor): Boolean {
     return viewport.isShowing && viewport.extentSize.width > 0 && viewport.extentSize.height > 0
 }
 
+/** Whether [editor]'s viewport has an extent, shown or not: the viewer is scrolled by its own size alone. */
+private fun hasExtent(editor: Editor): Boolean {
+    val viewport = (editor as? EditorEx)?.scrollPane?.viewport ?: return true
+    return viewport.extentSize.width > 0 && viewport.extentSize.height > 0
+}
+
 /** A copy of a body the chooser offers: its [label] and how its listing is made. */
 class CodeCopy(val label: String, val listing: () -> CodeListing) {
     override fun toString(): String = label
@@ -436,8 +442,11 @@ class CodeTab(
 
     /**
      * Scrolls the viewer to the listing lines the selected statement links,
-     * once it shows -- a hidden tool window lays it out with no extent --
-     * and then to the statement selected by then; one wait at a time.
+     * once it has an extent -- a tool window never shown lays it out with
+     * none -- and then to the statement selected by then; one wait at a
+     * time. A viewer laid out once and hidden keeps its extent, and is
+     * scrolled at once: shown again at its size, it changes nothing a
+     * viewport listener would hear.
      */
     private fun scrollViewer() {
         viewerWait?.cancel()
@@ -448,7 +457,7 @@ class CodeTab(
                 scrollIntoView(viewer, viewer.document.getLineStartOffset(lines.first()), viewer.document.getLineEndOffset(lines.last()))
             }
         }
-        viewerWait = whenViewportShows(viewer) {
+        viewerWait = whenViewportShows(viewer, ::hasExtent) {
             viewerWait = null
             scroll()
         }
@@ -504,19 +513,20 @@ class CodeTab(
      * Opens [file] behind the viewer, or brings its tab forward, and
      * scrolls it to the viewer's statement once the opening is over
      * ([SyncOpening]); what the opening sets off in the editor is not
-     * followed ([fromSyncOpening], [selectionToken]). Where the call made no
-     * editor -- the file's tab was brought forward -- the platform restores
-     * nothing, and the opening is over once the editors are loaded; where it
-     * made some, in this window or another, the platform tells of each
-     * composite it opened once their state is restored. A file found only
+     * followed ([fromSyncOpening], [selectionToken]). Where the file was
+     * open before and the call made no editor -- its tab was brought
+     * forward -- the platform restores nothing, and the opening is over once
+     * the editors are loaded; otherwise the platform tells that it opened
+     * the file once the new composite's state is restored. A file found only
      * after the toggle went off or the tab was closed is not opened.
      */
     private fun openForSync(file: VirtualFile) {
         if (disposed || !syncWithEditor) return
         val manager = FileEditorManager.getInstance(project)
         val opening = SyncOpening(file)
+        val openBefore = manager.isFileOpen(file)
         val before = manager.getAllEditors(file).toSet()
-        val selectedBefore = manager.selectedEditors.toList()
+        val selectedBefore = manager.selectedEditors.toSet()
         // Before the call, which may restore the state and tell of the opening within it.
         syncOpenings += opening
         selectionToken = file
@@ -533,9 +543,12 @@ class CodeTab(
             return
         }
         // No selection changed, so none will come for the token to take.
-        if (manager.selectedEditors.toList() == selectedBefore) selectionToken = null
+        if (manager.selectedEditors.toSet() == selectedBefore) selectionToken = null
+        // A file not open before has its state restored whenever its composite gets its editors, and so
+        // has one the call made editors for in some window: both wait for the platform's word.
         val made = manager.getAllEditors(file).filterNot(before::contains)
-        if (made.isEmpty() || opening.told) startLoading(opening) else opening.waitsForTelling = true
+        val restores = !openBefore || made.isNotEmpty()
+        if (!restores || opening.told) startLoading(opening) else opening.waitsForTelling = true
     }
 
     /** Waits for the loading of [opening]'s file's editors, now that nothing is left to restore. */
@@ -606,23 +619,23 @@ class CodeTab(
                 scrollExpired,
             )
         }
-        whenViewportShows(editor, queue)
+        whenViewportShows(editor, action = queue)
     }
 
     /**
-     * Runs [action] once [editor]'s viewport is shown with an extent: at
-     * once where it is, else from a viewport listener, which the answered
-     * wait holds; null where it ran at once.
+     * Runs [action] once [editor]'s viewport is [ready] -- by default shown
+     * with an extent: at once where it is, else from a viewport listener,
+     * which the answered wait holds; null where it ran at once.
      */
-    private fun whenViewportShows(editor: Editor, action: () -> Unit): PendingScroll? {
+    private fun whenViewportShows(editor: Editor, ready: (Editor) -> Boolean = viewportReady, action: () -> Unit): PendingScroll? {
         val viewport = (editor as? EditorEx)?.scrollPane?.viewport
-        if (viewport == null || viewportReady(editor)) {
+        if (viewport == null || ready(editor)) {
             action()
             return null
         }
         val pending = PendingScroll(editor, viewport)
         pending.listener = ChangeListener {
-            if (viewportReady(editor)) {
+            if (ready(editor)) {
                 pending.cancel()
                 action()
             }
