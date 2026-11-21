@@ -503,6 +503,39 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- code {Demo>>run:} baseline x64 base=0x3000 bytes=40\n"))
     }
 
+    /**
+     * The listing's text is built off the EDT, with the read: what the
+     * delivery on the EDT receives is finished text, named as the run named
+     * its bodies when the copy was chosen. A body described anew between the
+     * read and the delivery -- which a listing built at the delivery would
+     * name -- leaves the delivered text as it was built.
+     */
+    fun testAListingsTextIsBuiltOffTheEventDispatchThread() {
+        val deliveries = ArrayList<Runnable>()
+        val builtOffTheEdt = AtomicReference<Boolean>()
+        val reads = RecordReads(
+            { task ->
+                AppExecutorUtil.getAppExecutorService().submit {
+                    builtOffTheEdt.set(!ApplicationManager.getApplication().isDispatchThread)
+                    task.run()
+                }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+            },
+            { task, _, _ -> deliveries += task },
+            { _, _, _ -> },
+        )
+        val run = tracedRun()
+        val tab = tab(run, reads = reads)
+        tab.show(1)
+        choose(tab, "optimized key=Demo")
+        assertEquals(true, builtOffTheEdt.get())
+        // Renamed after the read, before the delivery.
+        run.add(trace.records(body(2, "[] in Demo>>renamed", BLOCK, 1, """{"instructions":[0,2],"range":${range(BLOCK_STATEMENT, BLOCK)}}""")))
+        deliveries.single().run()
+        val text = checkNotNull(tab.listing).text
+        assertTrue(text, "{[] in Demo>>run:}" in text)
+        assertFalse(text, "renamed" in text)
+    }
+
     /** A read that takes long says so in the viewer once it has taken long, the text before it shown until then. */
     fun testASlowReadSaysSoOnceItTakesLong() {
         val reads = ArrayList<Runnable>()

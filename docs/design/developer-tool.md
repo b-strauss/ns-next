@@ -1738,7 +1738,8 @@ kept, linking nothing and opening nothing, and the notice of a slow read, a batc
 leaving the viewer alone, a read for a copy no longer chosen dropped, a
 listing whose file is gone saying so in words, a failed listing read
 again when chosen again and never by a batch, a read that throws shown
-as a failure, every label
+as a failure, a listing's text built off the event dispatch thread from
+the names that stood when it was chosen, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its
