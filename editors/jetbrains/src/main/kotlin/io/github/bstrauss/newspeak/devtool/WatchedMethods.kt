@@ -3,6 +3,7 @@ package io.github.bstrauss.newspeak.devtool
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.execution.RunManager
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.PersistentStateComponent
@@ -14,6 +15,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -33,6 +35,7 @@ import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 import org.eclipse.lsp4j.Position
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The project's one list of watched methods (`docs/design/developer-tool.md`,
@@ -64,7 +67,34 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
     /** The entries in the order they were made, replaced whole, so that a reader on another thread sees one list. */
     @Volatile
     var entries: List<Entry> = emptyList()
-        private set
+        private set(replacement) {
+            if (field == replacement) return
+            field = replacement
+            changed()
+        }
+
+    /** Told on the event dispatch thread whenever the entries change or a file's names arrive. */
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    /**
+     * Calls [listener] on the event dispatch thread whenever the entries
+     * change or a file's method names arrive, until [parent] is disposed:
+     * what the gutter's eyes follow.
+     */
+    fun addListener(listener: () -> Unit, parent: Disposable) {
+        listeners.add(listener)
+        Disposer.register(parent) { listeners.remove(listener) }
+    }
+
+    private fun changed() {
+        if (listeners.isEmpty()) return
+        val application = ApplicationManager.getApplication()
+        if (application.isDispatchThread) {
+            listeners.forEach { listener -> listener() }
+        } else {
+            application.invokeLater({ listeners.forEach { listener -> listener() } }, project.disposed)
+        }
+    }
 
     /** Asks the server for a file's methods; null with no client yet or no answer in time. Tests replace it. */
     @Volatile
@@ -160,6 +190,7 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
         val alias = projectAliasOf(file, project)
         val named = if (alias == null) answer else answer.map { method -> method.copy(name = withId(method.name, alias)) }
         answers[file.url] = named to stamp
+        changed()
         return named
     }
 

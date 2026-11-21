@@ -70,6 +70,13 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
         run.onChanged(parent) { refresh() }
     }
 
+    /** Selects the row of the method [body], if it has one, and scrolls to it. */
+    fun select(body: Int) {
+        table.selection = model.items.filter { row -> row.body == body }
+        val index = table.selectedRow
+        if (index >= 0) table.scrollRectToVisible(table.getCellRect(index, 0, true))
+    }
+
     /** Opens [row]'s method. */
     fun open(row: MethodRow) = navigate(project, run, row.body, null)
 

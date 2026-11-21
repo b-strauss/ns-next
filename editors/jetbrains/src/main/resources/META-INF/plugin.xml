@@ -129,6 +129,8 @@
         <!-- The shipped modules of the ns-next the settings name, under External Libraries. -->
         <additionalLibraryRootsProvider implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRootsProvider"/>
         <postStartupActivity implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryStartup"/>
+        <!-- The selected traced run's icons and hints, and the watched methods' eyes, in every editor. -->
+        <postStartupActivity implementation="io.github.bstrauss.newspeak.devtool.editor.DecorationsStartup"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

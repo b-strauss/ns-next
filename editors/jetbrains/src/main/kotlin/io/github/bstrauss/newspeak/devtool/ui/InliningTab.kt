@@ -13,6 +13,7 @@ import java.awt.event.MouseEvent
 import javax.swing.JPanel
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.TreePath
 
 /** A node of the inlining tree: its [label], and the [body] and send [at] a click opens, null where it opens nothing. */
 class InliningNode(val label: String, val body: Int?, val at: Int?) {
@@ -44,6 +45,16 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
         )
         refresh()
         run.onChanged(parent) { refresh() }
+    }
+
+    /** Selects the last plan of the method [body] -- of the method itself or a block of it -- if it has one. */
+    fun select(body: Int) {
+        val root = treeModel.root as DefaultMutableTreeNode
+        val plan = root.children().toList().map { node -> node as DefaultMutableTreeNode }
+            .lastOrNull { node -> (node.userObject as? InliningNode)?.body?.let { planned -> rootOf(run, planned) } == body } ?: return
+        val path = TreePath(plan.path)
+        tree.selectionPath = path
+        tree.scrollPathToVisible(path)
     }
 
     /** Opens what [node] stands for. */

@@ -85,6 +85,9 @@ class TracedRuns internal constructor(
             changed()
         }
 
+    /** [run]'s tab, null for a run without one: closed, or started while the project had no tool window. */
+    fun panel(run: TraceRun): RunPanel? = traced.firstOrNull { entry -> entry.run === run }?.panel
+
     /** The reader's error for [run], which ended its reading; null while it reads. */
     fun error(run: TraceRun): String? = traced.firstOrNull { entry -> entry.run === run }?.error
 
