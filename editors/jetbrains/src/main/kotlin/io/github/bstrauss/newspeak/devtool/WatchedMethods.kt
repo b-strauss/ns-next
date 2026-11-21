@@ -206,7 +206,13 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
      * a `:module:` the loader refuses. Waits, so never on the event
      * dispatch thread.
      */
-    fun moduleIdentity(file: VirtualFile): ModuleIdentity? {
+    fun moduleIdentity(file: VirtualFile): ModuleIdentity? = identifier(file)
+
+    /** Asks the server for a file's module identity, as [fetcher] asks for its methods. Tests replace it. */
+    @Volatile
+    internal var identifier: (VirtualFile) -> ModuleIdentity? = ::askIdentity
+
+    private fun askIdentity(file: VirtualFile): ModuleIdentity? {
         val client = client() ?: return null
         val parameters = ModuleIdentityParameters(client.getDocumentIdentifier(file))
         val answer = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
