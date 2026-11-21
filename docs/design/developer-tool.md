@@ -1532,7 +1532,9 @@ its font without that border plus what the UI takes, bounded by the
 room the tab leaves but never below its shortest label's -- over a read-only
 viewer of the listing in the text listing's format, built from the
 records, an install's listing read from the file when it is chosen,
-the text shown before it kept until it arrives, a read for a copy no
+the text shown before it kept until it arrives as text alone -- no line
+of it linked and "Open in Editor" off, so that nothing takes it for the
+chosen copy --, a read for a copy no
 longer chosen when it arrives dropped, and a batch that offers the
 copies again with the chosen install unchanged leaving the viewer's
 text, caret and scroll as they are and reading nothing, a copy
@@ -1592,8 +1594,9 @@ stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
 that the tree keeps its expansion and selection, each plan's root made
 from its entry and its nodes read from the file as it is first
-expanded and kept from then on, so that the tab holds the plans the user
-opened alone, its scopes nested
+expanded, a plan read kept from then on, so that the tab holds the plans
+the user opened alone, and one the file did not give read again at its
+next expansion, its scopes nested
 under the scope whose send inlined them, the arms and the declines
 under each, the outcome at the root, a click going to the send. A view
 opens a program body's file by its path and a shipped body's under the
@@ -1710,8 +1713,8 @@ running one, another configuration's nor the other executor's;
 `TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
 missing categories, the inlining tree kept across a batch, a plan read
-as it is first expanded, on a pooled thread, kept across a collapse and
-saying so where its file is gone, the Events
+as it is first expanded, on a pooled thread, kept across a collapse,
+saying so where its file is gone and read again after a failed read, the Events
 tab's oldest rows dropped with the run's; `EventsFixtureTest` the
 Events tab's text of every event of the fixture equal to its line;
 `DecorationsTest` the icons, a deoptimized one, the neutral icon and
@@ -1723,7 +1726,7 @@ or a filtered-out callee says nothing of, the hints, the eyes,
 staleness, the checksum over an emoji and over CRLF line ends, and a
 library file; `CodeTabTest` the caret's body, the chooser, a listing
 built once per choice and read on a pooled thread, the text before it
-kept and the notice of a slow read, a batch that keeps the chosen install
+kept, linking nothing and opening nothing, and the notice of a slow read, a batch that keeps the chosen install
 leaving the viewer alone, a read for a copy no longer chosen dropped, a
 listing whose file is gone saying so, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's

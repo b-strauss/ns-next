@@ -32,6 +32,7 @@ import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.DeveloperToolDecorationsSettings
 import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
 import io.github.bstrauss.newspeak.devtool.editor.linkedColor
+import io.github.bstrauss.newspeak.devtool.editor.listingOf
 import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.sourceChecksum
 import io.github.bstrauss.newspeak.devtool.model.Bytecode
@@ -578,6 +579,32 @@ class CodeTabTest : BasePlatformTestCase() {
         queued.toList().asReversed().forEach(Runnable::run)
         assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- code {Demo>>run:} optimized x64 key={Demo}"))
         assertEquals("Demo>>run: optimized key=Demo", checkNotNull(tab.listing).title)
+    }
+
+    /**
+     * While a chosen copy is read, the text shown before stays as text
+     * alone: no line of it is linked, it is no listing a caret or another
+     * view takes for the chosen copy, and "Open in Editor" is off until the
+     * chosen copy has arrived.
+     */
+    fun testAPendingReadLinksNothingAndOpensNothing() {
+        val reads = ArrayList<Runnable>()
+        val tab = tab(tracedRun(), reads = RecordReads({ task -> reads += task }, { task, _, _ -> task.run() }, { _, _, _ -> }))
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        assertEquals(3, highlightedLines(tab.viewer).size)
+        assertTrue(tab.openButton.isEnabled)
+        val bytecode = tab.viewer.document.text
+        choose(tab, "baseline")
+        assertEquals(bytecode, tab.viewer.document.text)
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
+        assertNull(listingOf(tab.viewer.document))
+        assertNull(tab.listing)
+        assertFalse(tab.openButton.isEnabled)
+        reads.single().run()
+        assertEquals("Demo>>run: baseline", checkNotNull(tab.listing).title)
+        assertTrue(tab.openButton.isEnabled)
+        assertTrue(highlightedLines(tab.viewer).isNotEmpty())
     }
 
     /** A listing whose file is gone says so in the viewer, and throws nothing. */

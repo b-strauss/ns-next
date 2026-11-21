@@ -33,10 +33,11 @@ class InliningNode(val label: String, val body: Int?, val at: Int?) {
  *
  * A plan's root is made from the entry the run keeps (decision 34); its
  * scopes, arms and declines are read from the run's file ([reads]) when
- * it is expanded, a node saying so until they arrive and saying why where
- * the file no longer gives them, and kept from then on, so that the tab
- * holds only the plans the user has opened and a collapsed one opens
- * again as it was, without a read.
+ * it is expanded, a node saying so until they arrive; a plan read is
+ * kept from then on, so that the tab holds only the plans the user has
+ * opened and a collapsed one opens again as it was, without a read,
+ * while one the file did not give says why and is read again at its next
+ * expansion.
  */
 class InliningTab(
     private val project: Project,
@@ -131,7 +132,8 @@ class InliningTab(
                 { plan -> addPlan(root, plan) },
                 { error -> root.add(DefaultMutableTreeNode(InliningNode(error.message.orEmpty(), null, null))) },
             )
-            root.filled = true
+            // A plan the file did not give is read again at its next expansion: the file may be readable then.
+            root.filled = outcome.isSuccess
             treeModel.nodeStructureChanged(root)
         }
     }

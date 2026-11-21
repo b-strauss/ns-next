@@ -182,6 +182,27 @@ class TabsTest : BasePlatformTestCase() {
         assertTrue(tab.tree.isExpanded(path))
     }
 
+    /** A plan whose read failed is read again at its next expansion; only a plan that was read keeps its nodes. */
+    fun testAPlanWhoseReadFailedIsReadAgain() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, counting)
+        val bytes = Files.readAllBytes(trace.file)
+        Files.delete(trace.file)
+        val plan = mainPlan(tab)
+        val path = TreePath(plan.path)
+        tab.tree.expandPath(path)
+        assertTrue(plan.firstChild.toString().startsWith(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), "")))
+        tab.tree.collapsePath(path)
+        Files.write(trace.file, bytes)
+        tab.tree.expandPath(path)
+        assertEquals(2, readCount)
+        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+        tab.tree.collapsePath(path)
+        tab.tree.expandPath(path)
+        assertEquals("a plan read is kept", 2, readCount)
+    }
+
     /** A plan whose file is gone says so in its place, and throws nothing. */
     fun testAPlanWhoseFileIsGoneSaysSo() {
         val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())

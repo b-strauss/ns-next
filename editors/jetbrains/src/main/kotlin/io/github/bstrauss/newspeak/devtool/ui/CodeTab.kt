@@ -144,7 +144,8 @@ class CodeTab(
 
     private val title = JBLabel()
 
-    private val openButton = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
+    /** Opens the listing shown in an editor tab; off while none is, a chosen copy's read pending among them. */
+    val openButton = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
         addActionListener { listing?.let(::openInEditor) }
     }
 
@@ -414,7 +415,10 @@ class CodeTab(
             display(copy?.bytecode?.let { bytecode -> bytecodeListing(run, bytecode) }, null)
             return
         }
-        // The text shown stays until the new one is read; only a read that takes long says so in its place.
+        // The text shown stays until the new one is read, but as text alone: no line of it is linked and
+        // "Open in Editor" is off until then, so that nothing takes the old copy for the chosen one.
+        // Only a read that takes long says so in its place.
+        suspendListing()
         reads.read(
             { !disposed && listingRequests == request },
             { run.readCode(install) },
@@ -424,9 +428,18 @@ class CodeTab(
         }
     }
 
+    /** Leaves the viewer's text as it is, but no longer as a listing: it links nothing and opens in no editor tab. */
+    private fun suspendListing() {
+        listing = null
+        showListing(document, null)
+        openButton.isEnabled = false
+        highlighting.refresh()
+    }
+
     /** Writes [shown] into the viewer, or [message] in its place where no listing is shown. */
     private fun display(shown: CodeListing?, message: String?) {
         listing = shown
+        openButton.isEnabled = shown != null
         listingMessage = message
         updating = true
         try {
