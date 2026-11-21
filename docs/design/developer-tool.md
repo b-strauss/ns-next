@@ -1228,10 +1228,12 @@ The records:
   --; `"current"`, the runtime's current text of the module, which an
   edit made and no file holds, so that a reader holding the file places
   nothing of the body there; `null` where every range is. A block whose
-  family's root was described is placed only in the text the root was
-  placed in, in none where the root is in none: its bytes alone may
-  stand in the file at its span inside the file's other version of a
-  method an edit replaced around it. A reader of a record without
+  family's root was described is placed only where the root was: in the
+  file at its distance inside the root there, never by its own span; in
+  the runtime's current text, the core library's among them, as the root
+  is; in none where the root is in none: its bytes alone may stand in
+  the file at its span inside the file's other version of a method an
+  edit replaced around it, or at another place altogether. A reader of a record without
   `placed` takes `"source"`.
   Three kinds of
   body take a number and no `body` record -- one no mixin holds, one
@@ -1554,12 +1556,14 @@ bodies numbered apart, and its line -- to what this build writes
 line, every record to one line, a range to UTF-16 columns counted in
 the file's text where it holds the body and else in the text the
 description hands, the file placing a moved body where it holds it,
-each record's `placed`, a block in its root's text, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
+each record's `placed`, a block in its root's text at its distance
+inside the root, a shipped block in the library's, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
 instructions to the text listing's, an out-of-line stretch told from
 no position; `tests/cli.rs` a run's file -- its header, every record
 parsed, every body number described before a record names it, an edit
 installed during the run and the bodies it superseded or moved each
-described in the text it was compiled from and said placed there, a recommented body's
+described in the text it was compiled from and said placed there, a
+library method's blocks placed in the library inside their root, a recommented body's
 statements at their file lines and a body a later edit moved where it
 stands -- and the two
 refusals. The analyzer's `tests/protocol.rs` pins

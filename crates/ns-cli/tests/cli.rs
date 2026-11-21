@@ -1511,6 +1511,64 @@ fn an_edited_body_is_described_in_its_own_text() {
     );
 }
 
+/// A program whose loop runs the core library's `inject:into:` and
+/// `collect:`, each with a block of its own.
+const A_LIBRARY_LOOP: &str = indoc! {"
+    class Demo = Object new () (
+      public main: platform args: arguments = (
+        |
+          sum ::= 0.
+          list = platform collections List new.
+        |
+        1 to: 10 do: [:index | list add: index].
+        1 to: 2000 do: [:round |
+          sum:: sum + (list inject: 0 into: [:total :each | total + each]).
+          sum:: sum + (list collect: [:each | each]) size].
+        platform transcript show: sum printString; newLine.
+      )
+    )
+"};
+
+/// A block of a core library method is placed in the library's text, as
+/// its root is, inside its root's range.
+#[test]
+fn a_library_block_is_placed_in_the_library() {
+    let bodies = described_bodies("trace-file-library-block", A_LIBRARY_LOOP, "130000\n");
+    let blocks: Vec<&serde_json::Value> = bodies
+        .iter()
+        .filter(|record| {
+            record["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("[] in newspeak.core."))
+        })
+        .collect();
+    assert!(!blocks.is_empty(), "a library block described: {bodies:?}");
+    for block in blocks {
+        assert_eq!(block["placed"], "source", "{block}");
+        assert!(block["source"]["library"].is_string(), "{block}");
+        let range = &block["range"];
+        assert!(range.is_array(), "{block}");
+        let root = bodies
+            .iter()
+            .find(|record| record["body"] == block["family"])
+            .unwrap_or_else(|| panic!("its root described: {block}"));
+        let position = |range: &serde_json::Value, index: usize| {
+            (
+                range[index].as_u64().unwrap(),
+                range[index + 1].as_u64().unwrap(),
+            )
+        };
+        assert!(
+            position(&root["range"], 0) <= position(range, 0),
+            "{block} in {root}"
+        );
+        assert!(
+            position(range, 2) <= position(&root["range"], 2),
+            "{block} in {root}"
+        );
+    }
+}
+
 /// `--trace-file` holds what a trace or a print option writes, so it is
 /// refused without one.
 #[test]

@@ -88,6 +88,19 @@ impl Placed {
     }
 }
 
+/// Where a family root was placed, which its blocks follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootPlace {
+    /// In the program file of that index, its source moved by `offset`
+    /// bytes from its own span: each block stands as far inside it.
+    File { index: usize, offset: i64 },
+    /// In the runtime's current text the description hands, the shipped
+    /// library's among them.
+    Text,
+    /// In no text: nor are its blocks.
+    Nowhere,
+}
+
 /// The text a body is placed in, its line index, where the body's source
 /// starts in it and which text it is.
 struct Placing<'sources> {
@@ -107,9 +120,9 @@ pub(crate) struct ModuleSources {
     /// `Rc`, and a text it makes again after an install, alike, finds its
     /// index by its contents.
     lines: Vec<(Rc<str>, LineIndex)>,
-    /// The text each family root described was placed in, by its number,
-    /// `None` for one placed in none, which its blocks are placed in too.
-    roots: HashMap<u32, Option<Placed>>,
+    /// Where each family root described was placed, by its number, which
+    /// its blocks are placed by.
+    roots: HashMap<u32, RootPlace>,
 }
 
 impl ModuleSources {
@@ -138,8 +151,9 @@ impl ModuleSources {
     /// around it -- or where the runtime's current text holds it, since
     /// that is the text a reader shows; else the runtime's current text,
     /// where the description says it holds that source; else none. A block
-    /// whose family's root was described is placed only in the text the
-    /// root was placed in.
+    /// whose family's root was described is placed only where the root
+    /// was: in the file at its distance inside the root there, in the
+    /// runtime's current text, or nowhere.
     fn placing<'sources>(
         &'sources mut self,
         description: &'sources BodyDescription,
@@ -149,47 +163,42 @@ impl ModuleSources {
                 .get(span.start as usize..span.end as usize)
                 .is_some_and(|bytes| source_checksum(bytes) == description.checksum)
         };
-        let spans = [
-            Some(description.source),
-            description.current.as_ref().map(|current| current.source),
-        ];
-        let held = description
-            .shipped_path
-            .is_none()
-            .then(|| {
-                self.program
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, program)| {
-                        let text = program.text.as_deref()?;
-                        (program.module == description.module)
-                            .then(|| spans.iter().flatten().find(|span| holds_at(text, **span)))
-                            .flatten()
-                            .map(|span| (index, span.start))
-                    })
-            })
-            .flatten();
-        // A block stands in the text its family's root was placed in, or in
-        // none: its bytes alone may stand in the file where the file holds
-        // another version of the method, which an edit replaced around it.
+        // A block stands where its family's root was placed, at its distance
+        // inside the root, or nowhere: its bytes alone may stand in the file
+        // where the file holds another version of the method, which an edit
+        // replaced around it, or at another place altogether.
         let root = description
             .family
             .as_ref()
             .and_then(|family| self.roots.get(&family.number).copied());
         let held = match root {
-            Some(None) => return None,
-            Some(Some(Placed::Current)) => None,
-            Some(Some(Placed::Source)) => Some(held?),
-            None => held,
+            Some(RootPlace::Nowhere) => return None,
+            Some(RootPlace::Text) => None,
+            Some(RootPlace::File { index, offset }) => {
+                let start = i64::from(description.source.start) + offset;
+                let start = u32::try_from(start).ok()?;
+                let span = Span::new(
+                    start,
+                    start + (description.source.end - description.source.start),
+                );
+                let text = self.program[index].text.as_deref()?;
+                if !holds_at(text, span) {
+                    return None;
+                }
+                Some((index, start))
+            }
+            None => self.held_in_file(description, holds_at),
         };
         if description.family.is_none() {
-            let placed = match held {
-                Some(_) => Some(Placed::Source),
-                None if description.current.is_none() => None,
-                None if description.shipped_path.is_some() => Some(Placed::Source),
-                None => Some(Placed::Current),
+            let place = match held {
+                Some((index, start)) => RootPlace::File {
+                    index,
+                    offset: i64::from(start) - i64::from(description.source.start),
+                },
+                None if description.current.is_none() => RootPlace::Nowhere,
+                None => RootPlace::Text,
             };
-            self.roots.insert(description.body.number, placed);
+            self.roots.insert(description.body.number, place);
         }
         match held {
             Some((index, start)) => {
@@ -221,6 +230,38 @@ impl ModuleSources {
                 })
             }
         }
+    }
+
+    /// Where a program file holds `description`'s body's own source, by
+    /// `holds_at`: the file's index and the source's start in it, at the
+    /// body's own span or at the span the runtime's current text holds it
+    /// at; `None` for a shipped body, whose text is the library's.
+    fn held_in_file(
+        &self,
+        description: &BodyDescription,
+        holds_at: impl Fn(&str, Span) -> bool,
+    ) -> Option<(usize, u32)> {
+        if description.shipped_path.is_some() {
+            return None;
+        }
+        let spans = [
+            Some(description.source),
+            description.current.as_ref().map(|current| current.source),
+        ];
+        self.program
+            .iter()
+            .enumerate()
+            .find_map(|(index, program)| {
+                let text = program.text.as_deref()?;
+                if program.module != description.module {
+                    return None;
+                }
+                spans
+                    .iter()
+                    .flatten()
+                    .find(|span| holds_at(text, **span))
+                    .map(|span| (index, span.start))
+            })
     }
 
     /// Where `description`'s body's source is, as a `body` record's
@@ -1460,6 +1501,97 @@ mod tests {
         let record = body_record(&block_of(4, 3), &mut sources);
         assert!(record["placed"].is_null(), "{record}");
         assert!(record["range"].is_null(), "{record}");
+    }
+
+    /// A block of a root the file holds only where the runtime's current
+    /// text holds it -- not at the root's own span -- is placed at its
+    /// distance inside the root there, even where the file holds the
+    /// block's own bytes at the block's own span, which lies outside it.
+    #[test]
+    fn a_block_stands_at_its_distance_inside_its_root() {
+        let file = "Demo = (\n  x = ( [:y | y] )\n  run = ( [:y | y] )\n)";
+        let offset_of = |part: &str| u32::try_from(file.find(part).unwrap()).unwrap();
+        let root_source = "run = ( [:y | y] )";
+        let root_length = u32::try_from(root_source.len()).unwrap();
+        let run = offset_of("run");
+        // The root's own span, as an edit left it, where the file holds
+        // `x`'s block eight bytes in, and so the block's own span is `x`'s.
+        let own = offset_of("[:y") - 8;
+        let mut sources = ModuleSources::new(vec![ProgramModule {
+            module: ModuleName::named("Demo"),
+            path: Some(PathBuf::from("/work/Demo.ns")),
+            identity: None,
+            text: Some(file.to_string()),
+        }]);
+        let root = BodyDescription {
+            source: Span::new(own, own + root_length),
+            current: current_at(file, Span::new(run, run + root_length)),
+            checksum: source_checksum(root_source.as_bytes()),
+            statements: Vec::new(),
+            ..run_in(file, 1)
+        };
+        let record = body_record(&root, &mut sources);
+        assert_eq!(record["range"], json!([2, 2, 2, 20]), "{record}");
+        let block = Span::new(own + 8, own + 16);
+        let described = BodyDescription {
+            body: BodyName {
+                number: 2,
+                name: "[] in Demo>>run".to_string(),
+            },
+            family: Some(BodyName {
+                number: 1,
+                name: "Demo>>run".to_string(),
+            }),
+            source: block,
+            current: current_at(file, Span::new(run + 8, run + 16)),
+            checksum: source_checksum(b"[:y | y]"),
+            statements: Vec::new(),
+            ..run_in(file, 2)
+        };
+        let record = body_record(&described, &mut sources);
+        assert_eq!(record["range"], json!([2, 10, 2, 18]), "{record}");
+        assert_eq!(record["placed"], "source", "{record}");
+    }
+
+    /// A block of a shipped root is placed in the library's text, as its
+    /// root is.
+    #[test]
+    fn a_shipped_block_is_placed_in_the_library() {
+        let text = "Time = ( now = ( ^[:x | x] ) )";
+        let offset_of = |part: &str| u32::try_from(text.find(part).unwrap()).unwrap();
+        let shipped = |number: u32, family: Option<u32>, span: Span| BodyDescription {
+            body: BodyName {
+                number,
+                name: "newspeak.core.TimeFactory>>now".to_string(),
+            },
+            family: family.map(|number| BodyName {
+                number,
+                name: "newspeak.core.TimeFactory>>now".to_string(),
+            }),
+            module: ModuleName::named("newspeak.core.TimeFactory"),
+            shipped_path: Some("platform/TimeFactory.ns".to_string()),
+            current: current_at(text, span),
+            source: span,
+            checksum: 1,
+            statements: Vec::new(),
+            sends: Vec::new(),
+        };
+        let mut sources = demo_sources();
+        let root = body_record(
+            &shipped(1, None, Span::new(offset_of("now"), offset_of(" )") + 2)),
+            &mut sources,
+        );
+        assert_eq!(root["placed"], "source", "{root}");
+        let block = body_record(
+            &shipped(
+                2,
+                Some(1),
+                Span::new(offset_of("[:x"), offset_of("[:x") + 8),
+            ),
+            &mut sources,
+        );
+        assert_eq!(block["placed"], "source", "{block}");
+        assert_eq!(block["range"], json!([0, 18, 0, 26]), "{block}");
     }
 
     /// A body's code on the architecture this binary decodes, as the
