@@ -410,6 +410,7 @@ mod tests {
         let listing = Listing::Bytecode(BytecodeListing {
             body: named("Demo>>sum:"),
             text: "method Demo>>sum: (args 1, registers 2)\n   0   stmt 0  Return r0\n".to_string(),
+            bodies: Vec::new(),
         });
         assert_eq!(
             text(&listing),

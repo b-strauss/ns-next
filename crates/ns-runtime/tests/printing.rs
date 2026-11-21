@@ -167,6 +167,42 @@ fn the_programs_bodies_print_when_the_sink_is_installed() {
 }
 
 #[test]
+fn a_bytecode_listing_lists_each_body_structured() {
+    let (mut interpreter, _) = instance();
+    let listings = print_bytecode(&mut interpreter, TraceCategories::default(), "Demo...");
+    let sums = listings_of(&listings.borrow(), "Demo>>sum:");
+    assert_eq!(sums.len(), 1);
+    let listing = &sums[0];
+    assert_eq!(listing.bodies.len(), 2, "the method and its one block");
+    assert_eq!(listing.bodies[0].body, listing.body);
+    assert_eq!(listing.bodies[1].body.name, "[] in Demo>>sum:");
+    assert_ne!(listing.bodies[1].body.number, 0);
+    assert_ne!(listing.bodies[1].body.number, listing.body.number);
+    // Each body's lines, formatted as `instruction_lines` does, appear in
+    // the text in order (a block's lines nested under its `MakeClosure`).
+    let text_lines: Vec<&str> = listing.text.lines().map(str::trim_start).collect();
+    for body in &listing.bodies {
+        let mut remaining = text_lines.iter();
+        for (expected, instruction) in body.instructions.iter().enumerate() {
+            assert_eq!(usize::try_from(instruction.index).unwrap(), expected);
+            let statement = instruction
+                .statement
+                .map_or("-".to_string(), |statement| format!("stmt {statement}"));
+            let line = format!(
+                "{:4}  {statement:>7}  {}",
+                instruction.index, instruction.text
+            );
+            assert!(
+                remaining.any(|actual| *actual == line.trim_start()),
+                "{line} is not in order in
+{}",
+                listing.text
+            );
+        }
+    }
+}
+
+#[test]
 fn printing_needs_no_trace_category() {
     let (mut interpreter, _) = instance();
     let listings = print_bytecode(&mut interpreter, TraceCategories::default(), "Demo...");

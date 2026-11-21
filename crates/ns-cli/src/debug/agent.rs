@@ -2176,6 +2176,7 @@ fn frame_code_body(body: String, bytecode: String, machine: Option<Box<CodeListi
             name: body.clone(),
         },
         text: bytecode,
+        bodies: Vec::new(),
     }));
     json!({ "body": body, "bytecode": bytecode, "machineCode": machine_code })
 }

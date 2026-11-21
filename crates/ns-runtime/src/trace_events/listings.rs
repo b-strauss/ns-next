@@ -41,6 +41,61 @@ pub enum Listing {
 pub struct BytecodeListing {
     pub body: BodyName,
     pub text: String,
+    /// The same listing per body, structured: the root first, then the
+    /// blocks it makes in the order `text` nests them. Empty where a
+    /// listing is built from text alone.
+    pub bodies: Vec<ListedBody>,
+}
+
+/// One body of a bytecode listing, its instructions apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedBody {
+    pub body: BodyName,
+    pub instructions: Vec<ListedInstruction>,
+}
+
+/// One instruction of a listed body: `text` is what `instruction_lines`
+/// prints after its index and statement columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedInstruction {
+    pub index: u32,
+    pub statement: Option<u32>,
+    pub text: String,
+}
+
+/// `root` and the blocks it makes, transitively, in the order
+/// `bytecode::disassemble` nests them, each numbered through `names`. A
+/// worklist, not recursion: an image's body chooses how deep its blocks
+/// nest.
+fn listed_bodies(
+    mutator: &Mutator<'_>,
+    names: &mut BodyNames,
+    root: &Rc<CompiledCode>,
+) -> Vec<ListedBody> {
+    let mut listed = Vec::new();
+    let mut pending = vec![Rc::clone(root)];
+    while let Some(code) = pending.pop() {
+        let body = names.name(mutator, &code);
+        let instructions = bytecode::listed_instructions(&code)
+            .into_iter()
+            .map(|(index, statement, text)| ListedInstruction {
+                index,
+                statement,
+                text,
+            })
+            .collect();
+        listed.push(ListedBody { body, instructions });
+        let blocks: Vec<Rc<CompiledCode>> = code
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                bytecode::Instruction::MakeClosure { code: block, .. } => Some(Rc::clone(block)),
+                _ => None,
+            })
+            .collect();
+        pending.extend(blocks.into_iter().rev());
+    }
+    listed
 }
 
 /// The bytecode listing of each of `roots` that `filter` selects, in
@@ -57,8 +112,9 @@ pub(crate) fn bytecode_listings(
         .filter(|root| filter.matches(&root.name))
         .map(|NamedRoot { code, name }| {
             let text = bytecode::disassemble(&code, &name);
+            let bodies = listed_bodies(mutator, names, &code);
             let body = names.name(mutator, &code);
-            Listing::Bytecode(BytecodeListing { body, text })
+            Listing::Bytecode(BytecodeListing { body, text, bodies })
         })
         .collect()
 }

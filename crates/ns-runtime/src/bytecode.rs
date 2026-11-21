@@ -1752,6 +1752,31 @@ pub fn instruction_lines(code: &CompiledCode) -> Vec<String> {
         .collect()
 }
 
+/// `code`'s instructions as `instruction_lines` formats them, kept apart:
+/// each program counter, the statement it belongs to and the instruction's
+/// text alone. One walk for the lines and the structured listing a trace
+/// file records, so that the two never differ.
+pub fn listed_instructions(code: &CompiledCode) -> Vec<(u32, Option<u32>, String)> {
+    code.instructions()
+        .iter()
+        .enumerate()
+        .map(|(index, instruction)| {
+            let index_word = u32::try_from(index).expect("a body has at most 2^32 instructions");
+            let statement = statement_of(code, index)
+                .map(|statement| u32::try_from(statement).expect("a statement index fits u32"));
+            (index_word, statement, format_instruction(instruction))
+        })
+        .collect()
+}
+
+/// The statement whose instructions include `index`, if any.
+fn statement_of(code: &CompiledCode, index: usize) -> Option<usize> {
+    code.statement_program_counter
+        .iter()
+        .find(|(_, range)| range.contains(&index))
+        .map(|(statement_index, _)| *statement_index)
+}
+
 /// The line of `instruction`, at `index` of `code`, marked when `marked`:
 /// `->` in place of the two spaces after the index.
 fn instruction_line(
@@ -1760,11 +1785,8 @@ fn instruction_line(
     instruction: &Instruction,
     marked: bool,
 ) -> String {
-    let statement = code
-        .statement_program_counter
-        .iter()
-        .find(|(_, range)| range.contains(&index))
-        .map(|(statement_index, _)| format!("stmt {statement_index}"))
+    let statement = statement_of(code, index)
+        .map(|statement_index| format!("stmt {statement_index}"))
         .unwrap_or_else(|| "-".to_string());
     // The arrow takes the two spaces that always follow the index, so
     // that a marked line keeps every column at every index.
