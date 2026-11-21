@@ -35,26 +35,25 @@ class TraceFiles internal constructor(private val directory: Path) {
 
     private val swept = AtomicBoolean()
 
-    /** Set once the directory exists, so that a run's start makes no file operation of its own. */
-    private val directoryMade = AtomicBoolean()
-
     /**
      * A new file's path, named live. Its name is new, so nothing stands at
-     * it for the reader to read before the runtime writes; the directory is
-     * made by the sweep, off the EDT, and here only by a start that comes
-     * before the sweep.
+     * it for the reader to read before the runtime writes. The directory is
+     * made again wherever it is missing -- before the sweep made it, or
+     * deleted while the IDE runs, as a cleaner of temporary files does --
+     * since the runtime creates the file but not its directory: one look
+     * at the directory, and on the EDT a single `createDirectories` only
+     * where it is missing.
      */
     fun newFile(): Path {
         val file = directory.resolve("trace-${UUID.randomUUID()}.jsonl")
         live.add(file)
-        if (!directoryMade.get()) makeDirectory()
+        if (!Files.isDirectory(directory)) makeDirectory()
         return file
     }
 
     private fun makeDirectory() {
         try {
             Files.createDirectories(directory)
-            directoryMade.set(true)
         } catch (exception: IOException) {
             // The runtime refuses a path it cannot create, which the run's console then says.
             thisLogger().warn("cannot make the trace directory $directory", exception)

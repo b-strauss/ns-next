@@ -126,6 +126,19 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertEmpty(tracedRuns.runs)
     }
 
+    fun testADirectoryDeletedWhileTheIdeRunsIsMadeAgain() {
+        val directory = Files.createTempDirectory("newspeak-trace").resolve("newspeak-trace")
+        val files = TraceFiles(directory)
+        files.sweepOnce()
+        assertTrue(Files.isDirectory(directory))
+        Files.delete(directory)
+        val file = files.newFile()
+        assertTrue("the run's file can be created", Files.isDirectory(file.parent))
+        Files.writeString(file, "")
+        files.release(file)
+        waitUntil { !Files.exists(file) }
+    }
+
     fun testTheSweepDeletesOnlyTheFilesNoLiveRunNames() {
         val directory = Files.createTempDirectory("newspeak-trace")
         val left = directory.resolve("trace-left.jsonl")
