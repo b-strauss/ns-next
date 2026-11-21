@@ -8,10 +8,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.FileEditorManagerEvent
-import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.TextEditor
-import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -122,9 +119,23 @@ class CodeTabTest : BasePlatformTestCase() {
     /** Whether the event being dispatched counts as the user's input, as a click or a key would. */
     private var userInput = false
 
+    /** Whether an editor's loading ends only when the test says so, as the platform's asynchronous loading may. */
+    private var loadingDeferred = false
+
+    /** What waits for an editor's loading to end while [loadingDeferred]. */
+    private val whenLoadedActions = ArrayList<Runnable>()
+
+    private fun endLoading() {
+        val actions = whenLoadedActions.toList()
+        whenLoadedActions.clear()
+        actions.forEach(Runnable::run)
+    }
+
     private fun tab(run: TraceRun): CodeTab {
         tracedRuns.selected = run
-        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput })
+        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput }) { _, action ->
+            if (loadingDeferred) whenLoadedActions += action else action.run()
+        }
     }
 
     private fun openSource(): Editor {
@@ -635,9 +646,16 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(blockLine(tab), tab.viewer.caretModel.logicalPosition.line)
     }
 
+    /** The opened editor's statement line in the source, and whether [editor] shows it without its first line. */
+    private fun showsTheBlockStatementOnly(editor: Editor): Boolean {
+        val statementLine = editor.document.getLineNumber(DEMO.indexOf(BLOCK_STATEMENT, DEMO.indexOf(BLOCK)))
+        return shows(editor, statementLine, statementLine) && !shows(editor, 0, 0)
+    }
+
     fun testAViewerCaretOpensTheSourceThatNoEditorShowsInTheBackground() {
         val tab = tab(tracedRun())
         tab.syncWithEditor = true
+        loadingDeferred = true
         val manager = FileEditorManager.getInstance(project)
         val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source))
         tab.show(1)
@@ -647,25 +665,56 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(manager.isFileOpen(file))
         val opened = checkNotNull(manager.getSelectedEditor(file) as? TextEditor).editor
         assertEquals("the opened editor's caret is not moved", 0, opened.caretModel.offset)
-        // The opening is followed by nothing: the listing, its body and the link are the viewer's.
+        // The opening is followed by nothing, its selection included: the listing, its body and the link are the viewer's.
         assertEquals(shown, tab.listingsShown)
         assertEquals(1, tab.shownBody)
         assertEquals(2 to 0, tab.highlighting.selected)
-        // Whenever the editor's loading ends, the state it restores -- a caret
-        // elsewhere, its selection -- is no input of the user's and is not followed.
+        // While the editor still loads, a caret the platform moves is the opening's and is not followed.
         opened.caretAt("value", SECOND)
-        project.messageBus.syncPublisher(FileEditorManagerListener.FILE_EDITOR_MANAGER)
-            .selectionChanged(FileEditorManagerEvent(manager, null, null, null, file, manager.getSelectedEditor(file), TextEditorProvider.getInstance()))
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-        assertEquals(1, tab.shownBody)
         assertEquals(2 to 0, tab.highlighting.selected)
-        // The user's first click or key there is followed, and so is everything after it.
+        // Once loaded, the editor is scrolled to the statement, its caret where it is.
+        showLines(opened, 1)
+        val caret = opened.caretModel.offset
+        endLoading()
+        assertTrue("scrolled to the block's statement", showsTheBlockStatementOnly(opened))
+        assertEquals(caret, opened.caretModel.offset)
+        // And followed as any editor: a caret the debugger moves at a step, no input of the user's.
+        opened.caretAt(OTHER_STATEMENT)
+        assertEquals(3, tab.shownBody)
+    }
+
+    fun testAUsersCaretInAnEditorStillLoadingIsFollowed() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        loadingDeferred = true
+        val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source))
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        val opened = checkNotNull(FileEditorManager.getInstance(project).getSelectedEditor(file) as? TextEditor).editor
         userInput = true
         opened.caretAt(OTHER_STATEMENT)
         assertEquals(3, tab.shownBody)
-        userInput = false
-        opened.caretAt(FIRST)
-        assertEquals(1, tab.shownBody)
+    }
+
+    fun testTurningTheToggleOffFollowsEveryCaretAgain() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        loadingDeferred = true
+        val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source))
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        val opened = checkNotNull(FileEditorManager.getInstance(project).getSelectedEditor(file) as? TextEditor).editor
+        opened.caretAt("value", SECOND)
+        assertEquals(2 to 0, tab.highlighting.selected)
+        // The editor is still loading, and the toggle goes off: today's behaviour, nothing filtered.
+        tab.syncWithEditor = false
+        opened.caretAt(OTHER_STATEMENT)
+        assertEquals(3, tab.shownBody)
+        // Its loading ending later scrolls nothing either.
+        showLines(opened, 1)
+        endLoading()
+        assertEquals(0, opened.scrollingModel.verticalScrollOffset)
     }
 
     fun testAViewerCaretBringsTheSourceInABackgroundTabForward() {
@@ -674,6 +723,7 @@ class CodeTabTest : BasePlatformTestCase() {
         val editor = openSource()
         editor.caretAt(FIRST)
         val caret = editor.caretModel.offset
+        showLines(editor, 1)
         val otherPath = source.resolveSibling("Unrelated.ns")
         Files.writeString(otherPath, "class Unrelated = () ()\n")
         val other = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(otherPath))
@@ -686,6 +736,7 @@ class CodeTabTest : BasePlatformTestCase() {
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
         assertTrue("the tab is brought forward", file in manager.selectedFiles)
         assertEquals("its caret is not moved", caret, checkNotNull(manager.getSelectedEditor(file) as? TextEditor).editor.caretModel.offset)
+        assertTrue("scrolled to the block's statement", showsTheBlockStatementOnly(editor))
         assertEquals(1, tab.shownBody)
         assertEquals(2 to 0, tab.highlighting.selected)
     }

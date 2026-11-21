@@ -95,6 +95,7 @@ class CodeTab(
     private val decorations: DecorationsService = DecorationsService.getInstance(project),
     private val libraryDirectory: () -> Path? = { project.service<NewspeakCoreLibrary>().directory },
     private val byUser: () -> Boolean = { IdeEventQueue.getInstance().trueCurrentEvent is InputEvent },
+    private val whenLoaded: (Editor, Runnable) -> Unit = { editor, action -> FileEditorManager.getInstance(project).runWhenLoaded(editor, action) },
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
 
@@ -157,10 +158,32 @@ class CodeTab(
      */
     var syncWithEditor: Boolean
         get() = PropertiesComponent.getInstance(project).getBoolean(SYNC_PROPERTY, false)
-        set(value) = PropertiesComponent.getInstance(project).setValue(SYNC_PROPERTY, value, false)
+        set(value) {
+            PropertiesComponent.getInstance(project).setValue(SYNC_PROPERTY, value, false)
+            // Off is today's behaviour: every caret and selection is followed again at once.
+            if (!value) endSyncOpenings()
+        }
 
     /** Set while [openForSync] opens a file, whose selection and caret then change without the user. */
     private var openingForSync = false
+
+    /**
+     * A file the tab brought forward or opened for a viewer's caret, until
+     * what the opening sets off is over: the platform's restore of a newly
+     * opened editor's state -- its caret and its selection, applied before
+     * the platform tells that the file was opened ([restored]) -- and the
+     * loading of its editors ([loaded]), after which the tab scrolls them.
+     */
+    private inner class SyncOpening(val file: VirtualFile, val body: Int, val range: SourceRange, var restored: Boolean) {
+        var editors: List<Editor> = emptyList()
+        var loaded = 0
+    }
+
+    /** The openings not over yet ([SyncOpening]). */
+    private val syncOpenings = ArrayList<SyncOpening>()
+
+    /** The file whose one selection change the opening makes is not followed: used up by that one event. */
+    private var selectionToken: VirtualFile? = null
 
     /** How many times the tab built a listing and wrote it into its viewer; tests read it. */
     internal var listingsShown = 0
@@ -191,8 +214,20 @@ class CodeTab(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
                 override fun selectionChanged(event: FileEditorManagerEvent) {
-                    if (openingForSync || (event.newEditor as? TextEditor)?.editor?.let(::fromSyncOpening) == true) return
+                    val token = selectionToken
+                    if (token != null && event.newFile == token) {
+                        selectionToken = null
+                        // The opening's own selection; one the user made meanwhile is followed.
+                        if (!byUser()) return
+                    }
                     followSelectedEditor()
+                }
+
+                override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
+                    for (opening in syncOpenings.filter { opening -> opening.file == file }) {
+                        opening.restored = true
+                        finishIfOver(opening)
+                    }
                 }
             },
         )
@@ -340,20 +375,17 @@ class CodeTab(
     }
 
     /**
-     * Whether a caret move or a selection of [editor] comes from the tab's
-     * own opening of its file, and so names nothing the user chose: the
-     * editor was brought forward for a viewer's caret, and what moves its
-     * caret or selects it now is no input of the user's -- the platform
-     * restoring the editor's state, whenever its loading ends. The user's
-     * first input there, a click or a key, ends that, and is followed.
+     * Whether a caret move in [editor] comes from the tab's own opening of
+     * its file, and so names nothing the user chose: within the opening
+     * call, and in an editor whose opening is not over ([SyncOpening]),
+     * every move but one made by the user's click or key. Once the opening
+     * is over, every move is followed -- a debugger's step among them.
      */
     private fun fromSyncOpening(editor: Editor): Boolean {
         // Within the opening call, before its new editor can be marked, everything is the opening's.
         if (openingForSync) return true
         if (editor.getUserData(OPENED_FOR_SYNC) != true) return false
-        if (!byUser()) return true
-        editor.putUserData(OPENED_FOR_SYNC, null)
-        return false
+        return !byUser()
     }
 
     /**
@@ -388,27 +420,58 @@ class CodeTab(
 
     /**
      * Opens [file] behind the viewer, or brings its tab forward, and
-     * scrolls it to [range] of [body] once its editor is loaded; what the
-     * opening sets off in the editor is not followed ([fromSyncOpening]).
+     * scrolls it to [range] of [body] once the opening is over
+     * ([SyncOpening]); what the opening sets off in the editor is not
+     * followed ([fromSyncOpening], [selectionToken]). A file already open
+     * has no state restored: its opening is over once its editors are
+     * loaded.
      */
     private fun openForSync(file: VirtualFile, body: Int, range: SourceRange) {
         val manager = FileEditorManager.getInstance(project)
-        // Marked before the opening, which may select the editor and restore its caret at once.
-        for (open in manager.getEditors(file).filterIsInstance<TextEditor>()) open.editor.putUserData(OPENED_FOR_SYNC, true)
+        val opening = SyncOpening(file, body, range, restored = manager.isFileOpen(file))
+        // Before the call, which may restore the state and tell of the opening within it.
+        syncOpenings += opening
+        selectionToken = file
         openingForSync = true
         val opened = try {
             manager.openFile(file, false).filterIsInstance<TextEditor>().map(TextEditor::getEditor)
         } finally {
             openingForSync = false
         }
+        opening.editors = opened
+        for (editor in opened) editor.putUserData(OPENED_FOR_SYNC, true)
+        if (opened.isEmpty()) {
+            finish(opening)
+            return
+        }
         for (editor in opened) {
-            editor.putUserData(OPENED_FOR_SYNC, true)
-            manager.runWhenLoaded(editor) {
-                if (editor.isDisposed) return@runWhenLoaded
-                val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == body }
-                placed?.place(range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+            whenLoaded(editor) {
+                opening.loaded++
+                finishIfOver(opening)
             }
         }
+    }
+
+    private fun finishIfOver(opening: SyncOpening) {
+        if (opening in syncOpenings && opening.restored && opening.loaded >= opening.editors.size && opening.editors.isNotEmpty()) finish(opening)
+    }
+
+    /** Scrolls the opening's editors to its statement, after the platform's restore, and follows them as any again. */
+    private fun finish(opening: SyncOpening) {
+        syncOpenings -= opening
+        for (editor in opening.editors) {
+            if (editor.isDisposed) continue
+            editor.putUserData(OPENED_FOR_SYNC, null)
+            val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == opening.body }
+            placed?.place(opening.range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+        }
+    }
+
+    /** Ends every opening without scrolling: nothing the openings set off is filtered any more. */
+    private fun endSyncOpenings() {
+        for (opening in syncOpenings) for (editor in opening.editors) editor.putUserData(OPENED_FOR_SYNC, null)
+        syncOpenings.clear()
+        selectionToken = null
     }
 
     /**
@@ -428,7 +491,7 @@ class CodeTab(
     private companion object {
         const val BYTECODE = "bytecode"
 
-        /** Marks an editor the tab brought forward until the user's first input in it ([fromSyncOpening]). */
+        /** Marks an editor the tab brought forward while its opening is not over ([SyncOpening]). */
         val OPENED_FOR_SYNC = Key.create<Boolean>("newspeak.devtool.code.openedForSync")
 
         /** The project's property that remembers [syncWithEditor]. */
