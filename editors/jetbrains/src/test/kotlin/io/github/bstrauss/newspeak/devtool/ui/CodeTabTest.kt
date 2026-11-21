@@ -607,6 +607,45 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(highlightedLines(tab.viewer).isNotEmpty())
     }
 
+    /**
+     * A listing whose read failed is read again when the user chooses it
+     * again, never by a batch, which would read it on every batch.
+     */
+    fun testAFailedListingIsReadAgainWhenChosenAgain() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val run = tracedRun()
+        val tab = tab(run, reads = counting)
+        tab.show(1)
+        val bytes = Files.readAllBytes(trace.file)
+        Files.delete(trace.file)
+        choose(tab, "baseline")
+        assertEquals(1, readCount)
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), tab.listingMessage)
+        Files.write(trace.file, bytes)
+        // A batch with another install of the body offers the copies again, the failed one still chosen.
+        run.add(
+            trace.records(
+                """{"kind":"code","body":1,"tier":"twin","key":null,"entered":null,"architecture":"x64","bytes":8,"instructions":[],"data":[],"scopes":[],"mark":null}""",
+            ),
+        )
+        assertEquals("a batch reads nothing again", 1, readCount)
+        assertNull(tab.listing)
+        choose(tab, "baseline")
+        assertEquals(2, readCount)
+        assertEquals("Demo>>run: baseline", checkNotNull(tab.listing).title)
+        assertNull(tab.listingMessage)
+    }
+
+    /** A read that fails otherwise than its file not giving the record is said so too, never left waiting. */
+    fun testAReadThatThrowsIsShownAsAFailure() {
+        val failure = IllegalStateException("broken")
+        val throwing = RecordReads({ task -> task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        var delivered: Result<String>? = null
+        throwing.read({ true }, { throw failure }) { outcome -> delivered = outcome }
+        assertEquals(NewspeakBundle.message("devtool.record.failed", failure.toString()), checkNotNull(delivered).exceptionOrNull()?.message)
+    }
+
     /** A listing whose file is gone says so in the viewer, and throws nothing. */
     fun testAListingWhoseFileIsGoneSaysSo() {
         val tab = tab(tracedRun())
@@ -615,7 +654,7 @@ class CodeTabTest : BasePlatformTestCase() {
         choose(tab, "baseline")
         assertNull(tab.listing)
         val message = checkNotNull(tab.listingMessage)
-        assertTrue(message, message.startsWith(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), "")))
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), message)
         assertEquals(message, tab.viewer.document.text)
         // The bytecode, which the run keeps, is still shown.
         choose(tab, "bytecode")

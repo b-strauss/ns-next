@@ -1,6 +1,5 @@
 package io.github.bstrauss.newspeak.devtool
 
-import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
@@ -100,6 +99,9 @@ class TracedRuns internal constructor(
     /** [run]'s tab, null for a run without one: closed, or started while the project had no tool window. */
     fun panel(run: TraceRun): RunPanel? = traced.firstOrNull { entry -> entry.run === run }?.panel
 
+    /** The id of the executor [run] ran under, by which a later run replaces it; null for a run without a tab of its own here. */
+    internal fun executorOf(run: TraceRun): String? = traced.firstOrNull { entry -> entry.run === run }?.executorId
+
     /** The reader's error for [run], which ended its reading; null while it reads. */
     fun error(run: TraceRun): String? = traced.firstOrNull { entry -> entry.run === run }?.error
 
@@ -113,7 +115,8 @@ class TracedRuns internal constructor(
     fun start(
         configuration: NewspeakRunConfiguration,
         filters: TraceFilters,
-        executorId: String = DefaultRunExecutor.EXECUTOR_ID,
+        // Required, so that every caller hands its executor's: a default would let a traced Debug replace a Run's tab.
+        executorId: String,
         startProcess: (traceFile: Path?) -> ProcessHandler,
     ): ProcessHandler {
         if (!writesTrace(configuration, filters)) return startProcess(null)
@@ -136,7 +139,7 @@ class TracedRuns internal constructor(
 
     /** [started], or, for a project closed since the process started, the file let go once the process has ended: no tab will ever own it. */
     private fun register(configuration: NewspeakRunConfiguration, executorId: String, file: Path, handler: ProcessHandler, filters: TraceFilters) {
-        if (disposed || project.isDisposed) releaseOnceEnded(file, handler) else started(configuration, file, handler, filters, executorId)
+        if (disposed || project.isDisposed) releaseOnceEnded(file, handler) else started(configuration, executorId, file, handler, filters)
     }
 
     /**
@@ -149,10 +152,10 @@ class TracedRuns internal constructor(
      */
     fun started(
         configuration: NewspeakRunConfiguration,
+        executorId: String,
         file: Path,
         handler: ProcessHandler,
         filters: TraceFilters = TraceFilters.EVERYTHING,
-        executorId: String = DefaultRunExecutor.EXECUTOR_ID,
     ): TraceRun {
         val startedAt = Instant.now()
         val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt, filters, file)

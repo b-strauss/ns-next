@@ -2,7 +2,10 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.Condition
+import io.github.bstrauss.newspeak.NewspeakBundle
 import com.intellij.util.concurrency.AppExecutorUtil
 import io.github.bstrauss.newspeak.devtool.model.UnreadableRecordException
 import java.util.concurrent.TimeUnit
@@ -33,7 +36,8 @@ class RecordReads(
     /**
      * Reads [read] off the EDT and hands its outcome to [deliver] on it --
      * the record, or the [UnreadableRecordException] that says why the file
-     * no longer gives it -- unless it is no longer [wanted]; and calls
+     * no longer gives it, any other failure of [read] delivered as one
+     * too -- unless it is no longer [wanted]; and calls
      * [slow], if given, where the outcome has not been delivered after
      * [SLOW_READ_MILLISECONDS], so that a view says it is reading only for
      * a read that takes long. Called on the EDT.
@@ -51,6 +55,11 @@ class RecordReads(
                     Result.success(read())
                 } catch (exception: UnreadableRecordException) {
                     Result.failure(exception)
+                } catch (exception: Exception) {
+                    failed(exception)
+                } catch (error: StackOverflowError) {
+                    // A record nested deeper than the parser's stack: a failure as any other, not a view left waiting.
+                    failed(error)
                 }
                 foreground(
                     Runnable {
@@ -62,6 +71,13 @@ class RecordReads(
                 )
             },
         )
+    }
+
+    /** [throwable] ended a read that a well-formed record never ends so: logged, and delivered as the view's failure. */
+    private fun <T> failed(throwable: Throwable): Result<T> {
+        if (throwable is ControlFlowException) throw throwable
+        thisLogger().warn("reading a record of a trace file failed", throwable)
+        return Result.failure(UnreadableRecordException(NewspeakBundle.message("devtool.record.failed", throwable.toString())))
     }
 
     companion object {

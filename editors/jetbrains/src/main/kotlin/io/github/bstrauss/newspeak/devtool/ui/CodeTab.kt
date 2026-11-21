@@ -38,6 +38,7 @@ import io.github.bstrauss.newspeak.devtool.editor.CodeListing
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.LinkedHighlighting
+import io.github.bstrauss.newspeak.devtool.editor.ListingNames
 import io.github.bstrauss.newspeak.devtool.editor.PlacedBody
 import io.github.bstrauss.newspeak.devtool.editor.bodySourcePath
 import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
@@ -259,6 +260,9 @@ class CodeTab(
     /** The install whose listing the viewer shows or is reading; null while it shows bytecode or nothing. */
     private var shownInstall: CodeEntry? = null
 
+    /** The install whose read failed, which the viewer says why of; null while none is. */
+    private var failedInstall: CodeEntry? = null
+
     /** The message the viewer shows in place of a listing -- while a read that takes long lasts, or why it cannot be -- null while none is. */
     var listingMessage: String? = null
         private set
@@ -278,7 +282,7 @@ class CodeTab(
         bar.add(toolbar.component)
         add(bar, BorderLayout.NORTH)
         add(viewer.component, BorderLayout.CENTER)
-        chooser.addActionListener { if (!offering) showChosen() }
+        chooser.addActionListener { if (!offering) showChosen(retry = true) }
         EditorFactory.getInstance().eventMulticaster.addCaretListener(
             object : CaretListener {
                 override fun caretPositionChanged(event: CaretEvent) {
@@ -381,7 +385,8 @@ class CodeTab(
         } finally {
             offering = false
         }
-        showChosen()
+        // A body shown afresh -- the gutter's Show Code, the caret's body -- reads a failed copy again; a batch never.
+        showChosen(retry = !keepChoice)
     }
 
     /** The bytecode listing holding [body] -- a block's is its method's -- and every install of [body]'s machine code. */
@@ -402,12 +407,17 @@ class CodeTab(
         return copies
     }
 
-    private fun showChosen() {
+    /**
+     * Shows the chosen copy: [retry] where the user chose it or the body was
+     * shown afresh, which reads again a copy whose read failed.
+     */
+    private fun showChosen(retry: Boolean) {
         val copy = chooser.selectedItem as? CodeCopy
         val install = copy?.install
         // The install shown, or being read, is left as it is: a batch that offers the body's copies again
         // keeps the viewer's text, caret and scroll, and reads nothing again.
-        if (install != null && install == shownInstall) return
+        if (install != null && install == shownInstall && !(retry && install == failedInstall)) return
+        failedInstall = null
         listingsShown++
         val request = ++listingRequests
         shownInstall = install
@@ -419,12 +429,21 @@ class CodeTab(
         // "Open in Editor" is off until then, so that nothing takes the old copy for the chosen one.
         // Only a read that takes long says so in its place.
         suspendListing()
+        // Built off the EDT too, from a copy of what it names: only the viewer's text is written on it.
+        val names = ListingNames.of(run)
         reads.read(
             { !disposed && listingRequests == request },
-            { run.readCode(install) },
+            { codeListing(names, run.readCode(install)) },
             { display(null, NewspeakBundle.message("devtool.record.reading")) },
         ) { outcome ->
-            outcome.fold({ code -> display(codeListing(run, code), null) }, { error -> display(null, error.message.orEmpty()) })
+            outcome.fold(
+                { shown -> display(shown, null) },
+                { error ->
+                    // A copy whose read failed is read again when it is chosen again, never by a batch.
+                    failedInstall = install
+                    display(null, error.message.orEmpty())
+                },
+            )
         }
     }
 

@@ -168,7 +168,8 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(NewspeakBundle.message("devtool.record.unreadable", file.toString(), NewspeakBundle.message("devtool.record.short")), shortened.message)
         Files.delete(file)
         val gone = unreadable(file, place)
-        assertTrue(checkNotNull(gone.message), checkNotNull(gone.message).startsWith(NewspeakBundle.message("devtool.record.unreadable", file.toString(), "")))
+        // Why, in words: the exception's own message is the path alone, which the sentence names already.
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", file.toString(), NewspeakBundle.message("devtool.record.gone")), gone.message)
     }
 
     /**

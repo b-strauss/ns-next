@@ -1492,12 +1492,17 @@ descriptions, one per body, the bytecode listings, one per body, and
 the events kept stay in memory. A view reads a record again from the
 file (`readRecord`, `TraceRun.readCode`, `TraceRun.readPlan`) with the
 reader's own parsing, on a pooled thread, since one listing's line can
-be a few MiB, its outcome delivered on the event dispatch thread in the
-modality it was asked in (`RecordReads`); it keeps what it shows until
-the record arrives, says in its place that it is reading only once a
-read has taken 300 ms (`SLOW_READ_MILLISECONDS`), and why it cannot where
-the file is gone, unreadable or shorter than the record; the file lives
-while the run's tab does.
+be a few MiB -- a machine-code listing's text built there too, from a
+copy of the names and bytecode it needs made on the event dispatch
+thread (`ListingNames`), so that only the viewer's text is written there,
+about 40 to 150 ms for 4 MiB in a test's IDE --, its outcome delivered
+on the event dispatch thread in the modality it was asked in
+(`RecordReads`); it keeps what it shows until the record arrives, says
+in its place that it is reading only once a read has taken 300 ms
+(`SLOW_READ_MILLISECONDS`), and why it cannot where the file is gone,
+unreadable or shorter than the record, any other failure of a read
+logged and said as one; a record whose read failed is read again when
+the user asks for it again; the file lives while the run's tab does.
 
 **The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
 traced run (`RunPanel`) of four views, above them the error that ended
@@ -1535,9 +1540,11 @@ records, an install's listing read from the file when it is chosen,
 the text shown before it kept until it arrives as text alone -- no line
 of it linked and "Open in Editor" off, so that nothing takes it for the
 chosen copy --, a read for a copy no
-longer chosen when it arrives dropped, and a batch that offers the
+longer chosen when it arrives dropped, a batch that offers the
 copies again with the chosen install unchanged leaving the viewer's
-text, caret and scroll as they are and reading nothing, a copy
+text, caret and scroll as they are and reading nothing, and a copy
+whose read failed read again when it is chosen again or its body shown
+afresh, never by a batch, a copy
 installed again under the same tier and key numbered
 (`baseline (2)`), so that the choice a batch keeps is the same install
 -- two `optimized` entries of one key are two installs of that copy,
@@ -1714,7 +1721,8 @@ running one, another configuration's nor the other executor's;
 every tier and a body the run did not describe, the run's line of
 missing categories, the inlining tree kept across a batch, a plan read
 as it is first expanded, on a pooled thread, kept across a collapse,
-saying so where its file is gone and read again after a failed read, the Events
+saying it reads only once a read takes long, saying why in words where
+its file is gone and read again after a failed read, the Events
 tab's oldest rows dropped with the run's; `EventsFixtureTest` the
 Events tab's text of every event of the fixture equal to its line;
 `DecorationsTest` the icons, a deoptimized one, the neutral icon and
@@ -1728,7 +1736,9 @@ library file; `CodeTabTest` the caret's body, the chooser, a listing
 built once per choice and read on a pooled thread, the text before it
 kept, linking nothing and opening nothing, and the notice of a slow read, a batch that keeps the chosen install
 leaving the viewer alone, a read for a copy no longer chosen dropped, a
-listing whose file is gone saying so, every label
+listing whose file is gone saying so in words, a failed listing read
+again when chosen again and never by a batch, a read that throws shown
+as a failure, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its
@@ -1761,8 +1771,10 @@ its refusal against a fake agent. And
 with `compile`, `code-zone` and machine code checked and one method watched through
 the platform's runner with the debug build of `ns-next`: the program's
 output reaches the console without a trace line, the selected run has
-the method compiled with its `code` record, and the program's editor
-shows the method's icon.
+the method compiled with its `code` record, read back from the file the
+runtime wrote at the place the reader counted, under the Run executor,
+and the program's editor shows the method's icon; and a traced Debug of
+it is told to the runs as Debug's.
 
 ## Planned: the stages
 

@@ -5,6 +5,7 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
@@ -32,6 +33,9 @@ fun readRecord(file: Path, place: RecordPlace): TraceRecord {
                 }
             }
         }
+    } catch (exception: NoSuchFileException) {
+        // Its message is the path alone, which the sentence names already.
+        throw UnreadableRecordException(NewspeakBundle.message("devtool.record.unreadable", file.toString(), NewspeakBundle.message("devtool.record.gone")))
     } catch (exception: IOException) {
         throw UnreadableRecordException(
             NewspeakBundle.message("devtool.record.unreadable", file.toString(), exception.message ?: exception.javaClass.simpleName),

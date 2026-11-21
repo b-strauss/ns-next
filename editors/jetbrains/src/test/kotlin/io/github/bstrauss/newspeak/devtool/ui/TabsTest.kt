@@ -155,7 +155,7 @@ class TabsTest : BasePlatformTestCase() {
         val tab = InliningTab(project, fixtureRun(), testRootDisposable, counting)
         val plan = mainPlan(tab)
         val path = TreePath(plan.path)
-        assertEquals(listOf(NewspeakBundle.message("devtool.record.reading")), plan.children().toList().map { node -> node.toString() })
+        assertEquals("nothing is said before a read has taken long", listOf(""), plan.children().toList().map { node -> node.toString() })
         tab.tree.expandPath(path)
         assertTrue(tab.tree.isExpanded(path))
         assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
@@ -183,6 +183,19 @@ class TabsTest : BasePlatformTestCase() {
     }
 
     /** A plan whose read failed is read again at its next expansion; only a plan that was read keeps its nodes. */
+    fun testAPlanSaysItIsReadOnlyOnceTheReadTakesLong() {
+        val reads = ArrayList<Runnable>()
+        val notices = ArrayList<Runnable>()
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, RecordReads({ task -> reads += task }, { task, _, _ -> task.run() }, { task, _, _ -> notices += task }))
+        val plan = mainPlan(tab)
+        tab.tree.expandPath(TreePath(plan.path))
+        assertEquals(listOf(""), plan.children().toList().map { node -> node.toString() })
+        notices.single().run()
+        assertEquals(listOf(NewspeakBundle.message("devtool.record.reading")), plan.children().toList().map { node -> node.toString() })
+        reads.single().run()
+        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+    }
+
     fun testAPlanWhoseReadFailedIsReadAgain() {
         var readCount = 0
         val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
@@ -192,7 +205,7 @@ class TabsTest : BasePlatformTestCase() {
         val plan = mainPlan(tab)
         val path = TreePath(plan.path)
         tab.tree.expandPath(path)
-        assertTrue(plan.firstChild.toString().startsWith(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), "")))
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), plan.firstChild.toString())
         tab.tree.collapsePath(path)
         Files.write(trace.file, bytes)
         tab.tree.expandPath(path)
@@ -210,7 +223,7 @@ class TabsTest : BasePlatformTestCase() {
         val plan = mainPlan(tab)
         tab.tree.expandPath(TreePath(plan.path))
         val message = plan.children().toList().single().toString()
-        assertTrue(message, message.startsWith(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), "")))
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), message)
     }
 
     fun testNavigationOpensALibraryFileUnderTheLibraryDirectory() {

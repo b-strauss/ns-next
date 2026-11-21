@@ -33,7 +33,7 @@ class InliningNode(val label: String, val body: Int?, val at: Int?) {
  *
  * A plan's root is made from the entry the run keeps (decision 34); its
  * scopes, arms and declines are read from the run's file ([reads]) when
- * it is expanded, a node saying so until they arrive; a plan read is
+ * it is expanded, a node saying so once a read has taken long; a plan read is
  * kept from then on, so that the tab holds only the plans the user has
  * opened and a collapsed one opens again as it was, without a read,
  * while one the file did not give says why and is read again at its next
@@ -111,11 +111,22 @@ class InliningTab(
         return PlanRoot(plan, InliningNode("${bodyName(run, plan.body)} -- $outcome", plan.body, null)).also(::unread)
     }
 
-    /** Leaves [root] with one child that says its plan is read when it is expanded, which makes it expandable. */
+    /**
+     * Leaves [root] with one child, which makes it expandable: blank, and
+     * saying that its plan is read once a read has taken long.
+     */
     private fun unread(root: PlanRoot) {
         root.removeAllChildren()
-        root.add(DefaultMutableTreeNode(InliningNode(NewspeakBundle.message("devtool.record.reading"), null, null)))
+        root.add(DefaultMutableTreeNode(InliningNode("", null, null)))
         root.filled = false
+    }
+
+    /** A read of [root]'s plan takes long: its one child says so, in place of nothing or of the last read's failure. */
+    private fun sayReading(root: PlanRoot) {
+        if (root.filled || root.parent == null || root.childCount != 1) return
+        val child = root.firstChild as DefaultMutableTreeNode
+        child.userObject = InliningNode(NewspeakBundle.message("devtool.record.reading"), null, null)
+        treeModel.nodeChanged(child)
     }
 
     /** [root] is being expanded: its plan is read, unless it is already shown or being read. */
@@ -123,7 +134,7 @@ class InliningTab(
         if (root.filled || root.reading != null) return
         val reading = Any()
         root.reading = reading
-        reads.read({ !disposed && root.reading === reading }, { run.readPlan(root.entry) }) { outcome ->
+        reads.read({ !disposed && root.reading === reading }, { run.readPlan(root.entry) }, { sayReading(root) }) { outcome ->
             root.reading = null
             // A plan removed since, with its tree, has no node to fill.
             if (root.parent == null) return@read

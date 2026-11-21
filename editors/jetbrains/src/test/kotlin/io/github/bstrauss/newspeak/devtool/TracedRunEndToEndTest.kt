@@ -4,6 +4,7 @@ import com.intellij.execution.ExecutionListener
 import com.intellij.execution.ExecutionManager
 import com.intellij.execution.ProgramRunnerUtil
 import com.intellij.execution.RunManager
+import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
@@ -21,6 +22,10 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.xdebugger.XDebugProcess
+import com.intellij.xdebugger.XDebugSession
+import com.intellij.xdebugger.XDebuggerManager
+import com.intellij.xdebugger.XDebuggerManagerListener
 import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.StateGutterRenderer
 import io.github.bstrauss.newspeak.devtool.model.MethodState
@@ -122,6 +127,14 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
         val method = checkNotNull(runInEdtAndGet { run.method("Demo>>run") })
         val state = runInEdtAndGet { run.state(method) }
         assertTrue("$state", state == MethodState.BASELINE || state == MethodState.OPTIMIZED)
+        assertEquals(DefaultRunExecutor.EXECUTOR_ID, runInEdtAndGet { TracedRuns.getInstance(project).executorOf(run) })
+        // The listing is read back from the file the runtime wrote, at the place the reader counted, off the EDT.
+        val entry = runInEdtAndGet { run.code.getValue(method).first() }
+        val code = run.readCode(entry)
+        assertEquals(entry.body, code.body)
+        assertEquals(entry.tier, code.tier)
+        assertEquals(entry.bytes, code.bytes)
+        assertTrue(code.instructions.isNotEmpty())
 
         val editor = runInEdtAndGet { checkNotNull(FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, program), false)) }
         val runLine = DEMO.lines().indexOfFirst { line -> line.trim().startsWith("run = (") }
@@ -129,6 +142,42 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
         assertEquals(state, icon.state)
         assertFalse(icon.stale)
         assertTrue(icon.watched)
+    }
+
+    /** A traced Debug is told to the runs as Debug's, so that it replaces no traced Run's tab. */
+    fun testATracedDebugRunsUnderItsExecutor() {
+        val program = program("Demo", DEMO)
+        val configuration = NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
+        configuration.name = "Demo"
+        configuration.program = program.path
+        configuration.options.traceCategories = mutableListOf("compile")
+        val output = StringBuffer()
+        val started = recordNextProcess { event, _ -> output.append(event.text) }
+        val session = CompletableFuture<XDebugSession>()
+        project.messageBus.connect(testRootDisposable).subscribe(
+            XDebuggerManager.TOPIC,
+            object : XDebuggerManagerListener {
+                override fun processStarted(debugProcess: XDebugProcess) {
+                    session.complete(debugProcess.session)
+                }
+            },
+        )
+        runInEdtAndWait {
+            val runManager = RunManager.getInstance(project)
+            val settings = runManager.createConfiguration(configuration, NewspeakConfigurationType.getInstance().factory)
+            ProgramRunnerUtil.executeConfiguration(settings, DefaultDebugExecutor.getDebugExecutorInstance())
+        }
+        val handler = started.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(output.toString(), handler.waitFor(WAIT_MILLISECONDS))
+        val run = waitFor("the traced run") { runInEdtAndGet { TracedRuns.getInstance(project).selected } }
+        assertEquals(DefaultDebugExecutor.EXECUTOR_ID, runInEdtAndGet { TracedRuns.getInstance(project).executorOf(run) })
+        // The session's console, which the light test's end finds unreleased otherwise.
+        val debugged = session.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        waitFor("the session's end") { debugged.isStopped.takeIf { stopped -> stopped } }
+        runInEdtAndWait {
+            debugged.consoleView?.let(Disposer::dispose)
+            Disposer.dispose(debugged.runContentDescriptor)
+        }
     }
 
     /** The number of the body named [name], once described; asked on the EDT, where the run is changed. */

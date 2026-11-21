@@ -149,7 +149,7 @@ class TracedRunsTest : BasePlatformTestCase() {
         val handler = NopProcessHandler().also { started -> started.startNotify() }
         // Started off the EDT, the run registers later on it -- by when its project has closed.
         ApplicationManager.getApplication().executeOnPooledThread {
-            tracedRuns.start(configuration, TraceFilters.EVERYTHING) { traceFile ->
+            tracedRuns.start(configuration, TraceFilters.EVERYTHING, DefaultRunExecutor.EXECUTOR_ID) { traceFile ->
                 // The runtime creates the file as it starts.
                 Files.writeString(checkNotNull(traceFile), "")
                 handed.set(traceFile)
@@ -367,7 +367,7 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertNull(start(configuration("Hello", traced = false)))
         // Watched methods that want no event of a run that lists nothing leave nothing to trace either.
         var handed: Path? = Path.of("unset")
-        tracedRuns.start(configuration("Hello"), TraceFilters(emptyList(), emptyList(), noEvents = true, noListings = false)) { traceFile ->
+        tracedRuns.start(configuration("Hello"), TraceFilters(emptyList(), emptyList(), noEvents = true, noListings = false), DefaultRunExecutor.EXECUTOR_ID) { traceFile ->
             handed = traceFile
             NopProcessHandler()
         }

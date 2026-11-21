@@ -8623,7 +8623,7 @@ code of `ns-memory` or `ns-assembler` and no decoder.
 - `04b373ba`, `8e555b5f` -- Show Frame Code.
 - `e6591aaa` -- a traced run end to end.
 - the last commit -- the documentation and the gate results.
-- `b9a81ae6`, `514bf770` and the batch's last commit -- a run's listings and plans
+- `b9a81ae6`, `514bf770`, `9ac09f16` and the batch's last commit -- a run's listings and plans
   as places in its file, and a rerun replacing its ended tab.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 4, the
