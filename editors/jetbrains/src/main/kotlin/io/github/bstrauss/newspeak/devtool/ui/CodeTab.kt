@@ -10,11 +10,15 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.editor.event.EditorFactoryEvent
+import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
@@ -23,7 +27,6 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.components.JBLabel
@@ -57,6 +60,14 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.UIManager
+import javax.swing.event.ChangeEvent
+import javax.swing.event.ChangeListener
+
+/** Whether [editor]'s viewport is shown with an extent: the platform's own test before it scrolls a restored editor. */
+private fun viewportShowing(editor: Editor): Boolean {
+    val viewport = (editor as? EditorEx)?.scrollPane?.viewport ?: return true
+    return viewport.isShowing && viewport.extentSize.width > 0 && viewport.extentSize.height > 0
+}
 
 /** A copy of a body the chooser offers: its [label] and how its listing is made. */
 class CodeCopy(val label: String, val listing: () -> CodeListing) {
@@ -96,6 +107,8 @@ class CodeTab(
     private val libraryDirectory: () -> Path? = { project.service<NewspeakCoreLibrary>().directory },
     private val byUser: () -> Boolean = { IdeEventQueue.getInstance().trueCurrentEvent is InputEvent },
     private val whenLoaded: (Editor, Runnable) -> Unit = { editor, action -> FileEditorManager.getInstance(project).runWhenLoaded(editor, action) },
+    private val whenOpened: ((VirtualFile, Runnable) -> Unit)? = null,
+    private val viewportReady: (Editor) -> Boolean = ::viewportShowing,
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
 
@@ -171,13 +184,21 @@ class CodeTab(
      * A file the tab brought forward or opened for a viewer's caret, until
      * what the opening sets off is over: the platform's restore of a newly
      * opened editor's state -- its caret and its selection, applied before
-     * the platform tells that the file was opened ([restored]) -- and the
-     * loading of its editors ([loaded]), after which the tab scrolls them.
+     * the platform tells that the file was opened -- and the loading of the
+     * editors the file has then ([editors], [loading]), after which the tab
+     * scrolls them. While it lasts, a caret move in any editor of the file
+     * is the opening's, whichever editors `openFile` answered.
      */
-    private inner class SyncOpening(val file: VirtualFile, val body: Int, val range: SourceRange, var restored: Boolean) {
-        var editors: List<Editor> = emptyList()
-        var loaded = 0
+    private inner class SyncOpening(val file: VirtualFile, val body: Int, val range: SourceRange) {
+        /** The file's editors once its state is restored; null before. */
+        var editors: MutableList<Editor>? = null
+
+        /** Those of [editors] whose loading has not ended. */
+        val loading = HashSet<Editor>()
     }
+
+    /** What waits for the platform to tell that it opened a file, which it does after restoring the file's editors' state. */
+    private val openedWaiters = HashMap<VirtualFile, MutableList<Runnable>>()
 
     /** The openings not over yet ([SyncOpening]). */
     private val syncOpenings = ArrayList<SyncOpening>()
@@ -224,12 +245,29 @@ class CodeTab(
                 }
 
                 override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
-                    for (opening in syncOpenings.filter { opening -> opening.file == file }) {
-                        opening.restored = true
-                        finishIfOver(opening)
+                    openedWaiters.remove(file)?.forEach(Runnable::run)
+                }
+
+                // A file closed before its opening was over is scrolled no more, nor filtered.
+                override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
+                    openedWaiters.remove(file)
+                    syncOpenings.removeAll { opening -> opening.file == file }
+                }
+            },
+        )
+        EditorFactory.getInstance().addEditorFactoryListener(
+            object : EditorFactoryListener {
+                // An editor released before its loading ended is waited for no more; an opening left with none is dropped.
+                override fun editorReleased(event: EditorFactoryEvent) {
+                    for (opening in syncOpenings.toList()) {
+                        val editors = opening.editors ?: continue
+                        if (!editors.remove(event.editor)) continue
+                        opening.loading.remove(event.editor)
+                        if (editors.isEmpty()) syncOpenings -= opening else finishIfOver(opening)
                     }
                 }
             },
+            parent,
         )
         // The caret stood in a method before the run described it: the records name its body now.
         run.onChanged(parent) { shownBody?.let { body -> offer(body, keepChoice = true) } ?: followSelectedEditor() }
@@ -377,14 +415,16 @@ class CodeTab(
     /**
      * Whether a caret move in [editor] comes from the tab's own opening of
      * its file, and so names nothing the user chose: within the opening
-     * call, and in an editor whose opening is not over ([SyncOpening]),
-     * every move but one made by the user's click or key. Once the opening
-     * is over, every move is followed -- a debugger's step among them.
+     * call, and in an editor of a file whose opening is not over
+     * ([SyncOpening]), every move but one made by the user's click or key.
+     * Once the opening is over, every move is followed -- a debugger's step
+     * among them.
      */
     private fun fromSyncOpening(editor: Editor): Boolean {
-        // Within the opening call, before its new editor can be marked, everything is the opening's.
         if (openingForSync) return true
-        if (editor.getUserData(OPENED_FOR_SYNC) != true) return false
+        if (syncOpenings.isEmpty()) return false
+        val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return false
+        if (syncOpenings.none { opening -> opening.file == file }) return false
         return !byUser()
     }
 
@@ -428,49 +468,99 @@ class CodeTab(
      */
     private fun openForSync(file: VirtualFile, body: Int, range: SourceRange) {
         val manager = FileEditorManager.getInstance(project)
-        val opening = SyncOpening(file, body, range, restored = manager.isFileOpen(file))
+        val opening = SyncOpening(file, body, range)
+        val restored = manager.isFileOpen(file)
         // Before the call, which may restore the state and tell of the opening within it.
         syncOpenings += opening
         selectionToken = file
+        if (!restored) afterOpened(file) { startLoading(opening) }
         openingForSync = true
-        val opened = try {
-            manager.openFile(file, false).filterIsInstance<TextEditor>().map(TextEditor::getEditor)
+        try {
+            manager.openFile(file, false)
         } finally {
             openingForSync = false
         }
-        opening.editors = opened
-        for (editor in opened) editor.putUserData(OPENED_FOR_SYNC, true)
-        if (opened.isEmpty()) {
-            finish(opening)
+        if (restored) startLoading(opening)
+    }
+
+    /** Runs [action] once the platform tells that it opened [file]. */
+    private fun afterOpened(file: VirtualFile, action: Runnable) {
+        val waiting = whenOpened
+        if (waiting != null) waiting(file, action) else openedWaiters.getOrPut(file, ::ArrayList) += action
+    }
+
+    /** Waits for the loading of the editors [opening]'s file has now that its state is restored. */
+    private fun startLoading(opening: SyncOpening) {
+        if (opening !in syncOpenings) return
+        val editors = FileEditorManager.getInstance(project).getEditors(opening.file).filterIsInstance<TextEditor>().map(TextEditor::getEditor)
+        if (editors.isEmpty()) {
+            syncOpenings -= opening
             return
         }
-        for (editor in opened) {
+        opening.editors = editors.toMutableList()
+        opening.loading += editors
+        for (editor in editors) {
             whenLoaded(editor) {
-                opening.loaded++
+                opening.loading -= editor
                 finishIfOver(opening)
             }
         }
     }
 
     private fun finishIfOver(opening: SyncOpening) {
-        if (opening in syncOpenings && opening.restored && opening.loaded >= opening.editors.size && opening.editors.isNotEmpty()) finish(opening)
+        if (opening in syncOpenings && opening.editors != null && opening.loading.isEmpty()) finish(opening)
     }
 
-    /** Scrolls the opening's editors to its statement, after the platform's restore, and follows them as any again. */
+    /**
+     * Ends [opening], so that its file's editors are followed as any again,
+     * and scrolls them to its statement once the platform's own scroll to
+     * the restored caret is done ([afterPlatformScroll]).
+     */
     private fun finish(opening: SyncOpening) {
         syncOpenings -= opening
-        for (editor in opening.editors) {
+        for (editor in opening.editors.orEmpty()) {
             if (editor.isDisposed) continue
-            editor.putUserData(OPENED_FOR_SYNC, null)
-            val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == opening.body }
-            placed?.place(opening.range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+            afterPlatformScroll(editor) {
+                val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == opening.body }
+                placed?.place(opening.range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+            }
         }
+    }
+
+    /**
+     * Runs [scroll] after the platform's scroll of a newly opened editor to
+     * its restored caret. The platform queues that scroll on the event
+     * dispatch thread when it restores the editor's state, before it tells
+     * that the file was opened, and makes it there at once if the editor's
+     * viewport is shown with an extent, else from a viewport listener when
+     * it is. So the tab waits for the same readiness and then queues
+     * [scroll]: queued after the platform's action, it runs after it, and
+     * queued from its own listener, it runs after every listener of that
+     * change -- whichever of the two listeners was added first, which
+     * matters since a viewport calls the last added first.
+     */
+    private fun afterPlatformScroll(editor: Editor, scroll: () -> Unit) {
+        val queue = { ApplicationManager.getApplication().invokeLater({ if (!editor.isDisposed) scroll() }, ModalityState.any(), project.disposed) }
+        val viewport = (editor as? EditorEx)?.scrollPane?.viewport
+        if (viewport == null || viewportReady(editor)) {
+            queue()
+            return
+        }
+        viewport.addChangeListener(
+            object : ChangeListener {
+                override fun stateChanged(event: ChangeEvent) {
+                    if (!viewportReady(editor)) return
+                    viewport.removeChangeListener(this)
+                    queue()
+                }
+            },
+        )
     }
 
     /** Ends every opening without scrolling: nothing the openings set off is filtered any more. */
     private fun endSyncOpenings() {
-        for (opening in syncOpenings) for (editor in opening.editors) editor.putUserData(OPENED_FOR_SYNC, null)
         syncOpenings.clear()
+        openedWaiters.clear()
         selectionToken = null
     }
 
@@ -490,9 +580,6 @@ class CodeTab(
 
     private companion object {
         const val BYTECODE = "bytecode"
-
-        /** Marks an editor the tab brought forward while its opening is not over ([SyncOpening]). */
-        val OPENED_FOR_SYNC = Key.create<Boolean>("newspeak.devtool.code.openedForSync")
 
         /** The project's property that remembers [syncWithEditor]. */
         const val SYNC_PROPERTY = "newspeak.devtool.code.scrollWithEditor"

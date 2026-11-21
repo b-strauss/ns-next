@@ -1495,13 +1495,16 @@ where the lines are not shown already. It scrolls and never moves a
 caret. What its opening of a file sets off is not followed, so that
 neither direction sets the other off, at whatever time the platform
 finishes: the one selection change the opening makes, and, until the
-opening is over, every caret move in the file's editors but one made
-by the user's click or key. The opening is over once the editors are
-loaded and, for a file not open before, the platform has told that it
-opened the file, which it does after restoring the editors' saved
-state (`EditorComposite.applyFileEditorsInEdt`); the tab then scrolls
-them, and follows them as any editor again, a debugger's step
-included. Turning the toggle off ends every opening at once. The plugin's
+opening is over, every caret move in any editor of the file but one
+made by the user's click or key. The opening is over once, for a file
+not open before, the platform has told that it opened the file, which
+it does after restoring the editors' saved state
+(`EditorComposite.applyFileEditorsInEdt`), and the editors the file has
+then are loaded; it is dropped when the file is closed or its editors
+are released first. The tab then follows the editors as any again, a
+debugger's step included, and scrolls them once their viewport shows,
+queued so that it comes after the platform's own scroll to the
+restored caret. Turning the toggle off ends every opening at once. The plugin's
 listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
@@ -1633,9 +1636,11 @@ again, the listings, a block nested where the record names its
 kept through another editor's caret and gone with an edit, scrolling
 with the editor in either direction, off by default and remembered,
 a background tab brought forward and scrolled, a file opened for it
-scrolled once loaded, followed while it loads in the user's input
-alone and in everything after, everything followed again once the
-toggle is off, a line of no statement scrolling nothing,
+scrolled once loaded and told opened, after the platform's scroll to
+the restored caret, followed while its opening lasts in the user's
+input alone, in every editor of it, and in everything after, a file
+closed meanwhile followed when opened again, everything followed again
+once the toggle is off, a line of no statement scrolling nothing,
 and the editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, that line alone coloured as the
 execution point in every editor of the tab, only the tab's last editor

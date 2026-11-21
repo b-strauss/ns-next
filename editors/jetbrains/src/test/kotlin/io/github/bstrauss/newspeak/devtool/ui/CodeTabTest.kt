@@ -6,8 +6,10 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
@@ -37,6 +39,8 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.ListCellRenderer
 import javax.swing.UIManager
+import javax.swing.event.ChangeEvent
+import javax.swing.event.ChangeListener
 
 class CodeTabTest : BasePlatformTestCase() {
     private lateinit var source: Path
@@ -133,9 +137,23 @@ class CodeTabTest : BasePlatformTestCase() {
 
     private fun tab(run: TraceRun): CodeTab {
         tracedRuns.selected = run
-        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput }) { _, action ->
-            if (loadingDeferred) whenLoadedActions += action else action.run()
-        }
+        return CodeTab(
+            project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput },
+            { _, action -> if (loadingDeferred) whenLoadedActions += action else action.run() },
+            if (openedDeferred) { _, action -> whenOpenedActions += action } else null,
+        ) { editor -> editor.scrollingModel.visibleArea.height > 0 }
+    }
+
+    /** Whether the platform's word that it opened a file, after restoring its state, comes only when the test says so. */
+    private var openedDeferred = false
+
+    /** What waits for that word while [openedDeferred]. */
+    private val whenOpenedActions = ArrayList<Runnable>()
+
+    private fun tellOpened() {
+        val actions = whenOpenedActions.toList()
+        whenOpenedActions.clear()
+        actions.forEach(Runnable::run)
     }
 
     private fun openSource(): Editor {
@@ -677,6 +695,7 @@ class CodeTabTest : BasePlatformTestCase() {
         showLines(opened, 1)
         val caret = opened.caretModel.offset
         endLoading()
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
         assertTrue("scrolled to the block's statement", showsTheBlockStatementOnly(opened))
         assertEquals(caret, opened.caretModel.offset)
         // And followed as any editor: a caret the debugger moves at a step, no input of the user's.
@@ -715,6 +734,92 @@ class CodeTabTest : BasePlatformTestCase() {
         showLines(opened, 1)
         endLoading()
         assertEquals(0, opened.scrollingModel.verticalScrollOffset)
+    }
+
+    /** Opens Demo.ns through the viewer's caret on the block's statement, and answers its editor. */
+    private fun openThroughTheViewer(tab: CodeTab): Editor {
+        tab.syncWithEditor = true
+        val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source))
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        return checkNotNull(FileEditorManager.getInstance(project).getSelectedEditor(file) as? TextEditor).editor
+    }
+
+    fun testTheOpeningWaitsForThePlatformToTellItOpenedTheFile() {
+        openedDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        showLines(opened, 1)
+        // Loaded, but the platform has not told yet that it opened the file, after restoring its state.
+        opened.caretAt("value", SECOND)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals("still the opening's", 2 to 0, tab.highlighting.selected)
+        assertEquals("not scrolled yet", 0, opened.scrollingModel.verticalScrollOffset)
+        tellOpened()
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue("scrolled to the block's statement", showsTheBlockStatementOnly(opened))
+        opened.caretAt(OTHER_STATEMENT)
+        assertEquals(3, tab.shownBody)
+    }
+
+    fun testThePlatformsScrollToTheRestoredCaretComesFirst() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        val viewport = (opened as EditorEx).scrollPane.viewport
+        // As the platform does for an editor it restores while loading: once the viewport shows, it scrolls to the restored caret.
+        val lastLine = opened.document.lineCount - 1
+        var restoredScroll = false
+        viewport.addChangeListener(
+            object : ChangeListener {
+                override fun stateChanged(event: ChangeEvent) {
+                    if (restoredScroll || opened.scrollingModel.visibleArea.height == 0) return
+                    restoredScroll = true
+                    opened.scrollingModel.scrollVertically(opened.logicalPositionToXY(LogicalPosition(lastLine, 0)).y)
+                }
+            },
+        )
+        endLoading()
+        // The viewport is not shown yet: nothing is scrolled while it is not.
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        showLines(opened, 1)
+        assertTrue(restoredScroll)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue("the tab's scroll comes after the platform's", showsTheBlockStatementOnly(opened))
+    }
+
+    fun testAFileClosedBeforeItsOpeningIsOverIsFollowedWhenOpenedAgain() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        val file = checkNotNull(opened.virtualFile)
+        val manager = FileEditorManager.getInstance(project)
+        manager.closeFile(file)
+        loadingDeferred = false
+        val again = checkNotNull(manager.openTextEditor(OpenFileDescriptor(project, file), false))
+        again.caretAt(OTHER_STATEMENT)
+        assertEquals(3, tab.shownBody)
+        // The loading the closed editor waited for, ending late, scrolls nothing and filters nothing.
+        endLoading()
+        again.caretAt(FIRST)
+        assertEquals(1, tab.shownBody)
+    }
+
+    fun testEveryEditorOfTheFileIsTheOpeningsWhileItLasts() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        // An editor of the file that the opening's call did not answer, as one made later would be.
+        val other = EditorFactory.getInstance().createEditor(opened.document, project)
+        try {
+            other.caretAt("value", SECOND)
+            assertEquals(2 to 0, tab.highlighting.selected)
+            endLoading()
+            other.caretAt(OTHER_STATEMENT)
+            assertEquals("followed once the opening is over", 3, tab.shownBody)
+        } finally {
+            EditorFactory.getInstance().releaseEditor(other)
+        }
     }
 
     fun testAViewerCaretBringsTheSourceInABackgroundTabForward() {
