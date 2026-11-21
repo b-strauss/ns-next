@@ -376,6 +376,8 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
     FactoryAgain {
         argument_count,
         metadata: Rc::new(BodyMetadata {
+            // A factory body has no source (`compiler::factory_body`).
+            source: Span::new(0, 0),
             statements: Box::new([]),
             sends: Box::new([]),
             block_sends: Box::new([]),

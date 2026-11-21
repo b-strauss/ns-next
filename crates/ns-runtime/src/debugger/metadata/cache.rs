@@ -149,7 +149,7 @@ impl Cache {
     /// shares it: the text kept for the root when it is `text`, else
     /// `text`, kept from here on. Compared rather than trusted, since a
     /// full collection may reclaim a root's id for another module.
-    pub(super) fn module_text(&mut self, root: MixinId, text: String) -> Rc<str> {
+    pub(crate) fn module_text(&mut self, root: MixinId, text: String) -> Rc<str> {
         if let Some(kept) = self.texts.get(&root)
             && **kept == *text
         {

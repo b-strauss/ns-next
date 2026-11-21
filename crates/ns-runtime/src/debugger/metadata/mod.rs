@@ -24,6 +24,11 @@ pub(crate) use cache::Cache;
 /// The tables of one compiled body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BodyMetadata {
+    /// The body's source in the text it was compiled again from: what
+    /// places the running body in its module's current text, where its own
+    /// `CompiledCode::source` counts in the text its version was read in.
+    /// Empty for a factory, as a factory body's own is.
+    pub(crate) source: Span,
     /// Every statement start in emission order: the body's own statements,
     /// its local, slot and simultaneous initializers and prologue entries
     /// (wherever `statement_program_counter` gets a range), and every

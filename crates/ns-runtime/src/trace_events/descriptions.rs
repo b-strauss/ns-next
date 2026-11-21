@@ -7,7 +7,11 @@
 //!
 //! Made at the flush, from the body's code and its mixin -- never a
 //! handle -- and only when the host asked for descriptions
-//! (`TraceSettings::describe_bodies`).
+//! (`TraceSettings::describe_bodies`). Every span of a description
+//! counts in the text it hands the host with it, the module's text as
+//! the runtime holds it at the flush, never a text the host read: an edit
+//! installed before or during the run changes the module's text, and only
+//! the runtime knows which text a body's source fits.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -38,10 +42,19 @@ pub struct BodyDescription {
     /// `platform/TimeFactory.ns`); `None` for a program's module, whose
     /// file the host knows.
     pub shipped_path: Option<String>,
-    /// The body's source, in bytes of the module's text.
+    /// The module's text every span of the description counts in, shared
+    /// with every other description made from it; `None` where the runtime
+    /// holds no text that places the body as it was compiled -- a body an
+    /// edit superseded, or one whose module's text changed around it --
+    /// and so the host places nothing of it.
+    pub text: Option<Rc<str>>,
+    /// The body's source, in bytes of `text`; unplaced where `text` is
+    /// `None`.
     pub source: Span,
-    /// `source_checksum` of the body's source: what tells a host whether
-    /// the text it holds is still the text the body was compiled from.
+    /// `source_checksum` of the body's source in `text`, or, where `text`
+    /// is `None`, of its own source as its version was read: what tells a
+    /// host whether the text it holds is still the text the body was
+    /// compiled from.
     pub checksum: u64,
     /// Every statement start of the body, in emission order; empty where
     /// the body compiled again does not compile alike, or has no text.
@@ -93,8 +106,17 @@ pub fn source_checksum(text: &[u8]) -> u64 {
 }
 
 /// The description of `code`, which `origin` names and the trace numbered
-/// `body`, a block of `family`'s where it is given; `None` for a body of a mixin no heap registered, or whose
-/// module has no text that holds its source.
+/// `body`, a block of `family`'s where it is given; `None` for a body of a
+/// mixin no heap registered, or whose source no text holds.
+///
+/// A body whose metadata compiles again alike from its module's current
+/// text is placed there by the body compiled again, whose source counts
+/// in that text where the running body's own may not: an edit elsewhere
+/// in the module moves a body it does not replace. Any other body is
+/// placed in the current text only where that text holds the body's own
+/// source -- the text its version was read in -- at the body's own span,
+/// and otherwise not at all; its checksum is that of its own source
+/// either way.
 pub(crate) fn describe(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
@@ -114,18 +136,26 @@ pub(crate) fn describe(
     });
     let shipped_path = shipped_path.flatten();
     let metadata = Cache::metadata_with_text(mutator, code, origin);
-    let text: Rc<str> = match &metadata {
-        Some((_, text)) => Rc::clone(text),
-        None if root.shipped => shipped_module_text(root.name.as_str()),
+    let (text, source, checksum) = match &metadata {
+        Some((metadata, text)) => {
+            let source = metadata.source;
+            let bytes = text.as_bytes().get(range_of(source))?;
+            (Some(Rc::clone(text)), source, source_checksum(bytes))
+        }
         None => {
-            let id = mutator.heap.known_mixin_id(&root)?;
-            Rc::from(mutator.heap.module_source(id)?)
+            let own = origin.mixin.text.as_ref()?.slice(code.source)?;
+            let current = if root.shipped {
+                Some(shipped_module_text(root.name.as_str()))
+            } else {
+                mutator.heap.known_mixin_id(&root).and_then(|id| {
+                    let text = mutator.heap.module_source(id)?;
+                    Some(mutator.debug_metadata.module_text(id, text))
+                })
+            };
+            let placed = current.filter(|text| text.get(range_of(code.source)) == Some(own));
+            (placed, code.source, source_checksum(own.as_bytes()))
         }
     };
-    let source = code.source;
-    let bytes = text
-        .as_bytes()
-        .get(source.start as usize..source.end as usize)?;
     let (statements, sends) = match metadata {
         Some((metadata, _)) => (
             metadata
@@ -157,11 +187,17 @@ pub(crate) fn describe(
         family,
         module,
         shipped_path,
+        text,
         source,
-        checksum: source_checksum(bytes),
+        checksum,
         statements,
         sends,
     })
+}
+
+/// `span` as a range of byte offsets.
+fn range_of(span: Span) -> Range<usize> {
+    span.start as usize..span.end as usize
 }
 
 #[cfg(test)]

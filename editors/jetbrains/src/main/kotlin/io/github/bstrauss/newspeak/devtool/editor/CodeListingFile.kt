@@ -111,8 +111,7 @@ fun bytecodeListing(run: TraceRun, bytecode: Bytecode): CodeListing {
  * [code]'s listing as the CLI writes it -- its head, an optimized copy's
  * scope tree, each stretch named where its scope or index changes, the
  * instructions at their offsets with their annotations, the data words --
- * but for the head's `base=`, since the trace file holds no address of the
- * run.
+ * but for the head's `base=`.
  */
 fun codeListing(run: TraceRun, code: Code): CodeListing {
     val writer = ListingWriter()
@@ -130,15 +129,16 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
         writeScopeTree(writer, run, code.scopes)
     }
     val scopeBodies = code.scopes.associate { scope -> scope.scope to scope.body }
-    var lastPosition: Pair<Int?, Int?>? = null
+    var lastPosition: Triple<Int?, Int?, Boolean>? = null
     for (instruction in code.instructions) {
-        val position = instruction.scope to instruction.at
+        val position = Triple(instruction.scope, instruction.at, instruction.outOfLine)
         val at = instruction.at
         // An instruction without a scope of its own stands in the body's.
         val linked = at?.let { index -> ListingPosition(instruction.scope?.let { scope -> scopeBodies[scope] } ?: code.body, index) }
-        // The record writes an out-of-line stretch and the code before the first position alike, both
-        // without scope and index, so a stretch without them is named out of line only after a position.
-        if (position != lastPosition && (lastPosition != null || at != null)) {
+        // The code before the first position is named by no line; a record without `out-of-line` writes an
+        // out-of-line stretch as it writes that code, so there a stretch without a position is named out of
+        // line only after a position.
+        if (position != lastPosition && (lastPosition != null || at != null || instruction.outOfLine)) {
             if (at == null) {
                 writer.line("  out of line")
             } else {

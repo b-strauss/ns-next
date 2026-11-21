@@ -219,6 +219,34 @@ class CodeTabTest : BasePlatformTestCase() {
         )
     }
 
+    /** Code that begins out of line, the record saying so, as a twin's transfer stub may. */
+    fun testAFirstStretchOutOfLineIsNamed() {
+        val run = tracedRun()
+        run.add(
+            listOf(
+                """{"kind":"code","body":3,"tier":"twin","key":null,"entered":null,"architecture":"x64","base":4096,"bytes":8,"instructions":[""" +
+                    """{"offset":0,"text":"jmp rbx","scope":null,"at":null,"out-of-line":true,"annotation":null},""" +
+                    """{"offset":2,"text":"mov rax,7","scope":0,"at":0,"out-of-line":false,"annotation":null}],""" +
+                    """"data":[],"scopes":[{"scope":0,"body":3,"parent":null}],"mark":null}""",
+            ).map { line -> checkNotNull(TraceRecord.parse(line)) },
+        )
+        val tab = tab(run)
+        tab.show(3)
+        choose(tab, "twin")
+        assertEquals(
+            """
+            --- code {Demo>>other} twin x64 bytes=8
+              out of line
+                +0x0000  jmp rbx
+              @0  stmt 0  LoadLiteral r1, 7
+                +0x0002  mov rax,7
+            --- end
+
+            """.trimIndent(),
+            tab.viewer.document.text,
+        )
+    }
+
     fun testAStatementHighlightsItsBytecodeAndItsMachineCode() {
         val tab = tab(tracedRun())
         val editor = openSource()

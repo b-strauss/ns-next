@@ -92,6 +92,7 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertNull(code.key)
         assertNull(code.entered)
         assertEquals("x64", code.architecture)
+        assertEquals(2_147_549_184L, code.base)
         assertEquals(5312, code.bytes)
         assertEquals(CodeInstruction(offset = 0, text = "mov r11,[r14+58h]", scope = null, at = null, annotation = null), code.instructions.first())
         assertEquals(listOf(DataWord(offset = 0, word = "budget word")), code.data)

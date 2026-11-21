@@ -100,7 +100,7 @@ pub(crate) fn execute(
         let categories = trace_categories.unwrap_or_default();
         let sink: Box<dyn TraceSink> = match trace_options.file {
             Some(path) => {
-                let modules = trace_file::ModuleTexts::new(program::debug_modules(&program));
+                let modules = trace_file::ModuleSources::new(program::debug_modules(&program));
                 match trace_file::create(path, modules, categories, printing) {
                     Ok(sink) => Box::new(sink),
                     Err(refusal) => return refuse_trace(&refusal),

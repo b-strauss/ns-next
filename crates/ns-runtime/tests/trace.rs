@@ -2218,6 +2218,16 @@ impl TraceSink for Describing {
 /// `categories`, the bodies described when `describe_bodies` says so, the
 /// JIT and optimize stress modes off as `traced` has them.
 fn received(source: &str, categories: &[TraceCategory], describe_bodies: bool) -> Vec<Received> {
+    received_made_by(source, Factory::Plain, categories, describe_bodies)
+}
+
+/// `received`, the instance made by `factory`.
+fn received_made_by(
+    source: &str,
+    factory: Factory,
+    categories: &[TraceCategory],
+    describe_bodies: bool,
+) -> Vec<Received> {
     let received = Rc::new(RefCell::new(Vec::new()));
     let sink = Box::new(Describing(Rc::clone(&received)));
     let categories = categories
@@ -2225,18 +2235,23 @@ fn received(source: &str, categories: &[TraceCategory], describe_bodies: bool) -
         .fold(TraceCategories::default(), |set, category| {
             set.with(*category)
         });
-    run_source(source, |interpreter| {
-        interpreter.set_jit_stress(false);
-        interpreter.set_optimize_stress(false);
-        interpreter.set_optimization_budget(i64::MAX);
-        interpreter.set_trace(
-            TraceSettings {
-                describe_bodies,
-                ..tracing(categories, TraceFilter::everything())
-            },
-            sink,
-        );
-    });
+    run_source_made_by(
+        source,
+        factory,
+        |interpreter| {
+            interpreter.set_jit_stress(false);
+            interpreter.set_optimize_stress(false);
+            interpreter.set_optimization_budget(i64::MAX);
+            interpreter.set_trace(
+                TraceSettings {
+                    describe_bodies,
+                    ..tracing(categories, TraceFilter::everything())
+                },
+                sink,
+            );
+        },
+        |_| false,
+    );
     received.take()
 }
 
@@ -2441,6 +2456,82 @@ fn a_description_carries_ranges_and_sends() {
         "the loop's send described: {:?}",
         selectors(each)
     );
+}
+
+/// A method an edit replaces, and a closure its old version made that
+/// runs on after the install, its sends filling caches before and after.
+const AN_EDITED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Subject = Object new () (
+        public maker = (
+          ^[:index | index max: 1].
+        )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods
+            addFromSource: 'public helper = ( ^0 )';
+            addFromSource: 'public maker = (
+          ^[:index | index max: 2] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A body is described in the text it was compiled from, whatever edit
+/// was installed before its description: the body an edit compiled is
+/// placed in the module's text as the edit left it, and a body the edit
+/// superseded, which that text no longer holds, is placed in no text,
+/// with the checksum of its own source.
+#[test]
+fn an_edited_module_describes_each_body_in_its_own_text() {
+    let received = received_made_by(
+        AN_EDITED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let makers: Vec<&BodyDescription> = received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) if description.body.name == "Demo/Subject>>maker" => {
+                Some(description)
+            }
+            _ => None,
+        })
+        .collect();
+    let placed = makers
+        .iter()
+        .find(|maker| maker.text.is_some())
+        .expect("the edit's maker described");
+    let text = placed.text.as_deref().unwrap();
+    let source = &text[placed.source.start as usize..placed.source.end as usize];
+    assert!(source.contains("index max: 2"), "{source}");
+    assert_eq!(placed.checksum, source_checksum(source.as_bytes()));
+    assert!(text.contains("public helper = ( ^0 )"), "{text}");
+    assert!(!placed.statements.is_empty(), "the statements described");
+    let superseded = makers
+        .iter()
+        .find(|maker| maker.text.is_none())
+        .expect("the superseded maker described");
+    // Its own source, as the program's text held it.
+    let own = &AN_EDITED_MAKER[superseded.source.start as usize..superseded.source.end as usize];
+    assert!(own.contains("index max: 1"), "{own}");
+    assert_eq!(superseded.checksum, source_checksum(own.as_bytes()));
+    assert!(superseded.statements.is_empty() && superseded.sends.is_empty());
 }
 
 /// A shipped body is described with its path among the library's files.

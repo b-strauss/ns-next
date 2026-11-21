@@ -1062,15 +1062,31 @@ With `TraceSettings::describe_bodies` set -- only `--trace-file` sets
 it -- the flush hands the sink a `BodyDescription`
 (`trace_events/descriptions.rs`, `TraceSink::body`) before the first
 delivery that names its number: a block's family root, the body's
-module, a shipped module's path among the library's files, its source
-span and its checksum (`source_checksum`, FNV-1a 64 over the source's
-UTF-8 bytes with every `\r` left out), and each statement's
-instructions and each send's index, site, call and selector tokens,
-from the debugger's metadata (`debugger/metadata/`), compiled again
-from the module's current text and kept in its weak cache. A
-description is made from the body's `Rc<CompiledCode>` and its mixin,
-never a handle, and never in a leaf; nothing on the hot path changes,
-since a site records only what it recorded before descriptions existed.
+module, a shipped module's path among the library's files, the text
+its spans count in, its source span and its checksum
+(`source_checksum`, FNV-1a 64 over the source's UTF-8 bytes with every
+`\r` left out), and each statement's instructions and each send's
+index, site, call and selector tokens, from the debugger's metadata
+(`debugger/metadata/`), compiled again from the module's current text
+and kept in its weak cache. The text is the runtime's, never one the
+host read, since an edit installed before or during the run changes the
+module's text and only the runtime knows which text a body fits: a body
+whose metadata compiles again alike is placed in the module's current
+text by the body compiled again (`BodyMetadata::source`), whose span
+counts there where the running body's own counts in the text its
+version was read in, which an edit elsewhere in the module moved; any
+other body -- one an edit superseded, or whose module changed around
+it -- is placed in the current text only where that text holds the
+body's own source at the body's own span, and otherwise in none, its
+checksum that of its own source either way. A block's family root is
+named even when its code is gone by the flush -- a collection reclaimed
+the version that held it while an event of the block waited -- by the
+number the root was given while it lived or one given then, which every
+block of the family shares; such a root is never described, since a
+description is made from the code. A description is made from the
+body's `Rc<CompiledCode>` and its mixin, never a handle, and never in a
+leaf; nothing on the hot path changes, since a site records only what it
+recorded before descriptions existed.
 A sink's `flushed`
 is called at the end of every flush's deliveries. A bytecode listing
 carries its bodies' instructions apart (`ListedBody`,
@@ -1127,8 +1143,9 @@ The records:
   trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,
   `family`, the number of its family's root -- the method, factory,
   initializer or superclass clause whose code created it, at any depth
-  --, which is described before it and which the cache transitions of
-  the block's sites name, `null` for a root; its module,
+  --, which is described before it unless its code was gone by then, and
+  which the cache transitions of the block's sites name, `null` for a
+  root; its module,
   and its source: `{"file":"<absolute path>"}` for a program's module,
   `{"library":"<path>"}` for a shipped one, its path among the core
   library's files (`platform/TimeFactory.ns`, as `ns-next
@@ -1146,11 +1163,17 @@ The records:
   instruction's index, its site as the `caches` category numbers it
   (`null` for a send no cache serves), the call from its receiver to its
   last argument and each token of its selector; both empty for a body
-  whose metadata the runtime could not compile again alike. A range is
-  `null` only where the host holds no text of the module. Two kinds of
-  body take a number and no `body` record -- one no mixin holds and one
-  whose range lies outside its module's text --, so a reader accepts a
-  number it has no description of.
+  whose metadata the runtime could not compile again alike. Every range
+  is counted in the text the runtime placed the body in (the
+  description's `text`), whatever an edit made of the module's file, and
+  every range is `null` for a body it placed in no text -- one an edit
+  superseded, or whose module's text changed around it --, whose
+  `checksum` is still that of its own source, so that a reader decorates
+  nothing of it rather than decorate the wrong place. Three kinds of
+  body take a number and no `body` record -- one no mixin holds, one
+  whose source no text holds, and a block's family root whose code was
+  gone by the flush --, so a reader accepts a number it has no
+  description of.
 - `{"kind":"event","category":…,"body":N|null,"event":…,…}`, an event:
   its category, its body, `null` for an event about none, its name as
   `TraceEventKind::name` answers it, and every value its line writes as a
@@ -1167,21 +1190,25 @@ The records:
   a body's bytecode, the root and then the blocks it makes, each
   instruction's text as the text listing writes it after its index and
   statement columns.
-- `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
+- `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"base":address,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
   an install's machine code, decoded by `ns-cli` as the text listing
   decodes it (`listing::annotated`, the one walk that places the
-  positions and the annotations on the instructions for both): each
-  instruction
-  `{"offset":o,"text":…,"scope":s|null,"at":pc|null,"annotation":…|null}`,
+  positions and the annotations on the instructions for both): `base`,
+  the address the code was installed at as a number, the text listing's
+  `base=` (decision 14), an address of the run, which nothing in the
+  record is placed by; each instruction
+  `{"offset":o,"text":…,"scope":s|null,"at":pc|null,"out-of-line":bool,"annotation":…|null}`,
   its offset in the body, its text, the scope and program counter of the
   stretch it stands in (`null` before the first position and out of
-  line), and what a call or jump out of it reaches as the text listing's
+  line), whether that stretch is out of line, which tells the two apart
+  -- so that a reader names a first stretch out of line as the text
+  listing does --, a reader taking a record without it as `false`, and
+  what a call or jump out of it reaches as the text listing's
   annotation writes it (`leaf miss`, `cell site 3`; two on one
   instruction joined by `; `); each data word `{"offset":o,"word":…}`,
   its offset from the first data word, as the instructions' texts name
   it (`data+0x0008`), and what it holds (`budget word`); each scope
-  `{"scope":s,"body":N,"parent":[scope,at]|null}`. The base address, an
-  address of the run, is left out.
+  `{"scope":s,"body":N,"parent":[scope,at]|null}`.
 - `{"kind":"inlining","body":N,"key":…|null,"entered":…|null,"scopes":[…],"arms":[…],"declined":[…],"outcome":…}`,
   an optimizing compile's plan: its scopes as a `code` record's; each
   arm `{"scope":s,"at":pc,"receiver":…,"inlined":{"scope":s}|{"always":"identity"}}`;
@@ -1193,14 +1220,9 @@ input exhaustively, so that a new kind of event or listing, or a new
 field of a description or a listing, does not compile until it has its
 record.
 
-The ranges are counted in the text the host read each module from
-(`ModuleTexts`), and the descriptions are made from the module's
-current text: a body of an edit installed during a traced run, and a
-body an edit superseded, are therefore described against a text their
-ranges and checksums do not fit, and the plugin shows them stale
-([OPEN-WORK.md](../OPEN-WORK.md), "What the developer tool's stage 3
-left"). A `code` record writes an out-of-line stretch's position as it
-writes one before any position, `null`.
+The host counts every range in the text the description hands it
+(`ModuleSources`, a line index kept per text the runtime shares), and
+names a program module's source by the file it was read from.
 
 ### The plugin's half
 
@@ -1317,7 +1339,10 @@ from six keys of the colour settings' own; only a Newspeak file's or a
 listing's caret moves the link, and an edit that makes a method stale
 takes its link away at once (`DecorationsService.addStalenessListener`). The plugin's bytecode
 listing has no method line and does not nest a block at its
-`MakeClosure`, as the text listing does. Inlining is a tree per
+`MakeClosure`, as the text listing does, and its machine-code listing's
+head writes no `base=`, which the record holds (`Code.base`); a first
+stretch out of line is named as the text listing names it, by the
+record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
 that the tree keeps its expansion and selection, its scopes nested
 under the scope whose send inlined them, the arms and the declines
@@ -1360,15 +1385,20 @@ as a notification of the plugin's group with the agent's words
 
 `crates/ns-runtime/tests/trace.rs` and `trace_events/names.rs`'s unit
 tests pin the numbers -- unique, and never a dead body's for the body
-that took its address -- and the descriptions;
+that took its address, a block's family named after its root's code is
+gone -- and the descriptions, an edited module's bodies each in its own
+text;
 `crates/ns-runtime/tests/printing.rs` the structured bytecode listing
 beside its text. `trace_file.rs`'s unit tests hold every event of
 `trace.rs`'s `every_event` to a record with every field its line
-writes, every record to one line, a range to UTF-16 columns, a shipped
-body to the library and a `code` record's instructions to the text
-listing's; `tests/cli.rs` a run's file -- its header, every record
-parsed, every body number described before a record names it -- and the
-two refusals. The analyzer's `tests/protocol.rs` pins
+writes, every record to one line, a range to UTF-16 columns counted in
+the text the description hands, a body placed in no text to `null`
+ranges, a shipped body to the library and a `code` record's
+instructions to the text listing's, an out-of-line stretch told from
+no position; `tests/cli.rs` a run's file -- its header, every record
+parsed, every body number described before a record names it, an edit
+installed during the run described in its own text -- and the two
+refusals. The analyzer's `tests/protocol.rs` pins
 `newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the
 command line, its greying and the free field's refusal;

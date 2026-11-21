@@ -2464,21 +2464,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     reviews), none of them a wrong decoration -- what the plugin cannot
     know it leaves out, and a body whose text does not fit is shown
     stale, never decorated in the wrong place:
-    - *An edited module is described against the wrong text*: the
-      runtime describes a body from its module's current text, while
-      the host counts the ranges in the text it read at the start, so a
-      body of an edit installed during a traced run, and a body an edit
-      superseded, get ranges and checksums that do not fit, and the
-      plugin shows them stale until the next run. A description could
-      carry the text's revision, or leave out the range of a body it
-      cannot place ([developer-tool.md](design/developer-tool.md), "The
-      trace file"; `trace_events/descriptions.rs`).
-    - *A first out-of-line stretch loses its line*: a `code` record
-      writes an out-of-line position as it writes "before any position",
-      `null`, so the plugin's listing cannot place the first stretch out
-      of line, whose line the text listing prints; a field of the format
-      would tell the two apart (`crates/ns-cli/src/trace_file.rs`;
-      [developer-tool.md](design/developer-tool.md), "The trace file").
     - *The first traced run can leave a watched method out*: with no
       language server client yet, `newspeak/moduleIdentity` has no
       answer, and a watched pattern naming a program module that no
@@ -2495,11 +2480,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       inlining, never a wrong one, and `plannedInlining` keeps them for
       the run's length, never pruned (`devtool/model/TraceRun.kt`,
       `outcomeCanArrive`; `jit/mod.rs`, `record_plan`).
-    - *A block whose root died has no family*: its description gives
-      `family` null when its root's code is gone by the flush, so its
-      sites' cache transitions, which name the root, never reach its
-      sends' hints (`trace_events/descriptions.rs`;
-      `devtool/model/TraceRun.kt`, `sends`).
     - *A project closed at a traced run's start leaves its file*: a
       project disposed between the process's start and the
       `invokeLater` that registers the run never deletes the run's trace
@@ -2549,10 +2529,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       `devtool/editor/CodeListingFile.kt`).
     - *The plugin's bytecode listing is flatter than the text one*: it
       has no method line and does not nest a block at its `MakeClosure`,
-      and the trace file carries no base address, so a machine-code
-      listing in the plugin has no `base=`
+      and its machine-code listing's head writes no `base=`, though the
+      `code` record gives the address as `base`
       ([developer-tool.md](design/developer-tool.md), "The plugin's
-      half", decision 14).
+      half", decision 14; `devtool/editor/CodeListingFile.kt`,
+      `codeListing`).
     - *The reader polls and does not pace a backlog*: it looks for
       appended bytes every 50 ms for the run's whole length, and a
       backlog -- a file written faster than read -- is published as

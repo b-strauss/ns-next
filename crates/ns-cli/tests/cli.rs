@@ -1221,6 +1221,100 @@ fn trace_file_holds_header_bodies_and_events() {
     assert_eq!(square["range"][0], 1, "{square}");
 }
 
+/// A program that replaces `maker` with a version a line shorter, preceded
+/// by an added method, while a closure the old version made runs on.
+const AN_EDITED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Subject = Object new () (
+        public maker = (
+          ^[:index |
+            index max: 1].
+        )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods
+            addFromSource: 'public helper = ( ^0 )';
+            addFromSource: 'public maker = ( ^[:index | index max: 2] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        platform transcript show: sum printString; newLine.
+      )
+    )
+"};
+
+/// The FNV-1a 64 of `text` with every `\r` left out, as a `body` record's
+/// checksum writes it.
+fn checksum_of(text: &str) -> String {
+    let hash = text
+        .bytes()
+        .filter(|byte| *byte != b'\r')
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("{hash:016x}")
+}
+
+/// A body an edit compiled during the traced run is described in the
+/// module's text as the edit left it -- its range one line, as its new
+/// source is, and its checksum that source's -- and the body the edit
+/// superseded, which that text no longer holds, with no range at all, so
+/// that a reader places neither in the file's text where it does not fit.
+#[test]
+fn an_edited_body_is_described_in_its_own_text() {
+    let directory = ScratchDirectory::new("trace-file-edit");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, AN_EDITED_MAKER).unwrap();
+    let file = directory.join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=caches".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1001001\n");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let makers: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["kind"] == "body" && record["name"] == "Demo/Subject>>maker")
+        .collect();
+    let placed = makers
+        .iter()
+        .find(|maker| !maker["range"].is_null())
+        .unwrap_or_else(|| panic!("the edit's maker described: {text}"));
+    let range = &placed["range"];
+    assert_eq!(range[0], range[2], "one line: {placed}");
+    let new_source = "public maker = ( ^[:index | index max: 2] )";
+    let candidates = [new_source, new_source.trim_start_matches("public ")];
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| placed["checksum"] == checksum_of(candidate)),
+        "{placed}"
+    );
+    let superseded = makers
+        .iter()
+        .find(|maker| maker["range"].is_null())
+        .unwrap_or_else(|| panic!("the superseded maker described: {text}"));
+    assert_eq!(
+        superseded["statements"],
+        serde_json::json!([]),
+        "{superseded}"
+    );
+}
+
 /// `--trace-file` holds what a trace or a print option writes, so it is
 /// refused without one.
 #[test]

@@ -112,10 +112,18 @@ data class Bytecode(val body: Int, val bodies: List<BytecodeBody>) : TraceRecord
 /**
  * An instruction of machine code: its [offset] in the body, its text, the
  * [scope] and bytecode index [at] of the stretch it stands in, both null
- * before the first position and out of line, and what a call or jump out of
- * it reaches.
+ * before the first position and out of line, whether it stands [outOfLine],
+ * which tells those two apart -- false where a record does not say -- and
+ * what a call or jump out of it reaches.
  */
-data class CodeInstruction(val offset: Int, val text: String, val scope: Int?, val at: Int?, val annotation: String?)
+data class CodeInstruction(
+    val offset: Int,
+    val text: String,
+    val scope: Int?,
+    val at: Int?,
+    val annotation: String?,
+    val outOfLine: Boolean = false,
+)
 
 /** A data word of machine code: its [offset] from the first data word and what it holds. */
 data class DataWord(val offset: Int, val word: String)
@@ -128,9 +136,10 @@ data class Scope(val scope: Int, val body: Int, val parent: ScopeParent?)
 
 /**
  * An install's machine code: its [tier] (`baseline`, `twin` or
- * `optimized`), an optimized copy's [key] and [entered] application, its
- * size in [bytes], its instructions, data words and scopes, and the offset
- * [mark]ed, null in a trace.
+ * `optimized`), an optimized copy's [key] and [entered] application, the
+ * address it was installed at, its [base], null where a record does not
+ * give it, its size in [bytes], its instructions, data words and scopes,
+ * and the offset [mark]ed, null in a trace.
  */
 data class Code(
     val body: Int,
@@ -138,6 +147,7 @@ data class Code(
     val key: String?,
     val entered: String?,
     val architecture: String,
+    val base: Long?,
     val bytes: Int,
     val instructions: List<CodeInstruction>,
     val data: List<DataWord>,
@@ -224,6 +234,7 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
         key = record.optionalText("key"),
         entered = record.optionalText("entered"),
         architecture = record.requiredText("architecture"),
+        base = record.optional("base")?.asLong,
         bytes = record.requiredInteger("bytes"),
         instructions = record.requiredArray("instructions").map { element ->
             val instruction = element.asJsonObject
@@ -233,6 +244,7 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
                 scope = instruction.optionalInteger("scope"),
                 at = instruction.optionalInteger("at"),
                 annotation = instruction.optionalText("annotation"),
+                outOfLine = instruction.optional("out-of-line")?.asBoolean ?: false,
             )
         },
         data = record.requiredArray("data").map { element ->

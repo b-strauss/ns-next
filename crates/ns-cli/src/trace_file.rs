@@ -9,6 +9,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use ns_runtime::ModuleName;
 use ns_runtime::trace_events::{
@@ -48,101 +49,72 @@ fn architecture() -> Option<&'static str> {
     }
 }
 
-/// A module's text with its line index, made when a body of the module
-/// is first described.
-struct Text {
-    text: String,
-    lines: Option<LineIndex>,
+/// How many module texts keep their line index: a run describes the
+/// bodies of a few modules at a time, and a text an edit replaced is
+/// asked for again only by the bodies described from it before.
+const KEPT_LINE_INDEXES: usize = 8;
+
+/// The files of the program's modules, by which a `body` record names its
+/// source, and the line indexes of the module texts the descriptions
+/// count their spans in, each made once for a text the runtime shares.
+pub(crate) struct ModuleSources {
+    program: Vec<(ModuleName, Option<PathBuf>)>,
+    /// The texts most recently counted in, the latest last, each told
+    /// apart by its allocation: the runtime hands every description made
+    /// from one text the same `Rc`.
+    lines: Vec<(Rc<str>, LineIndex)>,
 }
 
-impl Text {
-    fn new(text: String) -> Text {
-        Text { text, lines: None }
-    }
-
-    /// `span` as `[startLine, startColumn, endLine, endColumn]`.
-    fn range(&mut self, span: Span) -> Value {
-        let text = &self.text;
-        let lines = self.lines.get_or_insert_with(|| LineIndex::new(text));
-        let start = lines.position(text, span.start);
-        let end = lines.position(text, span.end);
-        json!([start.line, start.column, end.line, end.column])
-    }
-}
-
-/// A program's module the trace may describe a body of.
-struct ProgramText {
-    module: ModuleName,
-    path: Option<PathBuf>,
-    text: Text,
-}
-
-/// A file of the core library the trace may describe a body of.
-struct LibraryText {
-    path: &'static str,
-    text: Text,
-}
-
-/// The texts a body's positions are counted in: the program's modules by
-/// their names, with the files they were read from, and the core
-/// library's files by their paths.
-pub(crate) struct ModuleTexts {
-    program: Vec<ProgramText>,
-    library: Vec<LibraryText>,
-}
-
-impl ModuleTexts {
-    /// The texts of `modules`, as `program::debug_modules` gives them, and
-    /// of every file of the core library; a module without text has no
-    /// positions.
-    pub(crate) fn new(modules: Vec<ProgramModule>) -> ModuleTexts {
-        ModuleTexts {
+impl ModuleSources {
+    /// The files of `modules`, as `program::debug_modules` gives them.
+    pub(crate) fn new(modules: Vec<ProgramModule>) -> ModuleSources {
+        ModuleSources {
             program: modules
                 .into_iter()
-                .filter_map(|module| {
-                    Some(ProgramText {
-                        module: module.module,
-                        path: module.path,
-                        text: Text::new(module.text?),
-                    })
-                })
+                .map(|module| (module.module, module.path))
                 .collect(),
-            library: ns_runtime::shipped_source_files()
-                .into_iter()
-                .map(|file| LibraryText {
-                    path: file.path,
-                    text: Text::new(file.text.to_string()),
-                })
-                .collect(),
+            lines: Vec::new(),
         }
     }
 
     /// Where `description`'s body's source is, as a `body` record's
-    /// `source` gives it, and its module's text; `None` for a text this
-    /// host does not hold.
-    fn source_of(&mut self, description: &BodyDescription) -> (Value, Option<&mut Text>) {
+    /// `source` gives it.
+    fn source_of(&self, description: &BodyDescription) -> Value {
         if let Some(shipped_path) = &description.shipped_path {
-            let text = self
-                .library
-                .iter_mut()
-                .find(|library| library.path == shipped_path)
-                .map(|library| &mut library.text);
-            return (json!({ "library": shipped_path }), text);
+            return json!({ "library": shipped_path });
         }
         match self
             .program
-            .iter_mut()
-            .find(|program| program.module == description.module)
+            .iter()
+            .find(|(module, _)| *module == description.module)
         {
-            Some(program) => {
-                let source = match &program.path {
-                    Some(path) => json!({ "file": path.display().to_string() }),
-                    None => Value::Null,
-                };
-                (source, Some(&mut program.text))
-            }
-            None => (Value::Null, None),
+            Some((_, Some(path))) => json!({ "file": path.display().to_string() }),
+            Some((_, None)) | None => Value::Null,
         }
+    }
+
+    /// The line index of `text`, made on its first use.
+    fn lines_of(&mut self, text: &Rc<str>) -> &LineIndex {
+        match self
+            .lines
+            .iter()
+            .position(|(known, _)| Rc::ptr_eq(known, text))
+        {
+            Some(index) => {
+                let kept = self.lines.remove(index);
+                self.lines.push(kept);
+            }
+            None => {
+                if self.lines.len() == KEPT_LINE_INDEXES {
+                    self.lines.remove(0);
+                }
+                self.lines.push((Rc::clone(text), LineIndex::new(text)));
+            }
+        }
+        let Some((_, lines)) = self.lines.last() else {
+            unreachable!("internal: the text's index was just kept");
+        };
+        lines
     }
 }
 
@@ -160,22 +132,33 @@ fn module_record(module: &ModuleName) -> Value {
 }
 
 /// The `body` record of `description`: the body's number and name, a
-/// block's family root, its module, where its source is, its range there, its checksum and its
-/// statements and sends, every range counted in `texts`' text of its
-/// module; each range `null` where `texts` holds no such text.
-pub(crate) fn body_record(description: &BodyDescription, texts: &mut ModuleTexts) -> Value {
+/// block's family root, its module, where its source is, its range there,
+/// its checksum and its statements and sends, every range counted in the
+/// text the description hands with it -- the module's text the runtime
+/// placed the body in, whatever an edit made of the file -- and each
+/// `null` where it hands none.
+pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSources) -> Value {
     let BodyDescription {
         body,
         family,
         module,
         shipped_path: _,
+        text,
         source,
         checksum,
         statements,
         sends,
     } = description;
-    let (source_record, mut text) = texts.source_of(description);
-    let mut range = |span: Span| text.as_mut().map_or(Value::Null, |text| text.range(span));
+    let source_record = sources.source_of(description);
+    let lines = text.as_ref().map(|text| (text, sources.lines_of(text)));
+    let range = |span: Span| match &lines {
+        Some((text, lines)) => {
+            let start = lines.position(text, span.start);
+            let end = lines.position(text, span.end);
+            json!([start.line, start.column, end.line, end.column])
+        }
+        None => Value::Null,
+    };
     let range_record = range(*source);
     let statements: Vec<Value> = statements
         .iter()
@@ -491,16 +474,16 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
 
 /// A `code` record: `code`'s instructions decoded as its text listing
 /// decodes them, each with the scope and program counter of the stretch
-/// it stands in and what a call or jump out of it reaches.
+/// it stands in, or that it stands out of line, and what a call or jump
+/// out of it reaches; and the address the code was installed at, as the
+/// text listing's `base=` writes it.
 fn code_record(code: &CodeListing) -> Value {
     let CodeListing {
         body,
         tier,
         key,
         architecture,
-        // An address of the run: two runs of one program differ in it
-        // alone, and nothing in the record is placed by it.
-        base_address: _,
+        base_address,
         bytes,
         code_end: _,
         words,
@@ -519,12 +502,17 @@ fn code_record(code: &CodeListing) -> Value {
                 position,
                 annotations,
             } = annotated;
-            let (scope, program_counter) = match position {
+            // An out-of-line stretch has no scope or program counter, as
+            // the code before the first position has none: the flag tells
+            // the two apart, so that a reader names the first stretch out
+            // of line as the text listing does.
+            let (scope, program_counter, out_of_line) = match position {
                 Some(Position::Instruction {
                     scope,
                     program_counter,
-                }) => (Some(scope), Some(program_counter)),
-                Some(Position::OutOfLine) | None => (None, None),
+                }) => (Some(scope), Some(program_counter), false),
+                Some(Position::OutOfLine) => (None, None, true),
+                None => (None, None, false),
             };
             // Two annotations on one instruction, which the text listing
             // writes one after the other, are joined as it separates them.
@@ -540,6 +528,7 @@ fn code_record(code: &CodeListing) -> Value {
                 "text": instruction.text,
                 "scope": scope,
                 "at": program_counter,
+                "out-of-line": out_of_line,
                 "annotation": annotation,
             })
         })
@@ -561,6 +550,7 @@ fn code_record(code: &CodeListing) -> Value {
         "key": key,
         "entered": entered,
         "architecture": architecture.name(),
+        "base": base_address,
         "bytes": bytes.len(),
         "instructions": instructions,
         "data": data,
@@ -659,7 +649,7 @@ fn header_record(categories: TraceCategories, printing: Printing) -> Value {
 /// file.
 pub(crate) struct TraceFileSink {
     file: BufWriter<File>,
-    modules: ModuleTexts,
+    modules: ModuleSources,
 }
 
 /// Creates the trace file at `path`, replacing one there, and writes its
@@ -669,7 +659,7 @@ pub(crate) struct TraceFileSink {
 /// nothing.
 pub(crate) fn create(
     path: &Path,
-    modules: ModuleTexts,
+    modules: ModuleSources,
     categories: TraceCategories,
     printing: Printing,
 ) -> Result<TraceFileSink, String> {
@@ -808,13 +798,14 @@ mod tests {
         assert_eq!(nothing["listings"], json!([]));
     }
 
-    /// The texts of one program module, `Demo`, read from `/work/Demo.ns`.
-    fn demo_texts(text: &str) -> ModuleTexts {
-        ModuleTexts::new(vec![ProgramModule {
+    /// The sources of one program module, `Demo`, read from
+    /// `/work/Demo.ns`.
+    fn demo_sources() -> ModuleSources {
+        ModuleSources::new(vec![ProgramModule {
             module: ModuleName::named("Demo"),
             path: Some(PathBuf::from("/work/Demo.ns")),
             identity: None,
-            text: Some(text.to_string()),
+            text: Some("Demo = ()".to_string()),
         }])
     }
 
@@ -831,6 +822,7 @@ mod tests {
             family: None,
             module: ModuleName::named("Demo"),
             shipped_path: None,
+            text: Some(Rc::from(text)),
             source: Span::new(start("run"), start(" )\n)") + 2),
             checksum: 0x0123_4567_89ab_cdef,
             statements: vec![DescribedStatement {
@@ -844,7 +836,7 @@ mod tests {
                 selector: vec![Span::new(start("size"), start("size") + 4)],
             }],
         };
-        let record = body_record(&description, &mut demo_texts(text));
+        let record = body_record(&description, &mut demo_sources());
         // `'ä😀' ` is six UTF-16 units: the emoji counts two.
         assert_eq!(record["sends"][0]["selector"][0], json!([1, 16, 1, 20]));
         assert_eq!(record["sends"][0]["call"], json!([1, 10, 1, 20]));
@@ -876,12 +868,13 @@ mod tests {
             }),
             module: ModuleName::named("Demo"),
             shipped_path: None,
+            text: Some(Rc::from("Demo")),
             source: Span::new(0, 4),
             checksum: 1,
             statements: Vec::new(),
             sends: Vec::new(),
         };
-        let record = body_record(&description, &mut demo_texts("Demo"));
+        let record = body_record(&description, &mut demo_sources());
         assert_eq!(record["family"], 3, "{record}");
         assert_eq!(record["body"], 4, "{record}");
     }
@@ -896,18 +889,78 @@ mod tests {
             family: None,
             module: ModuleName::named("newspeak.core.TimeFactory"),
             shipped_path: Some("platform/TimeFactory.ns".to_string()),
+            text: Some(Rc::from("Time")),
             source: Span::new(0, 4),
             checksum: 1,
             statements: Vec::new(),
             sends: Vec::new(),
         };
-        let record = body_record(&description, &mut demo_texts(""));
+        let record = body_record(&description, &mut demo_sources());
         assert_eq!(
             record["source"],
             json!({ "library": "platform/TimeFactory.ns" })
         );
         assert!(record["range"].is_array(), "{record}");
         assert_eq!(record["checksum"], "0000000000000001");
+    }
+
+    /// A description of `Demo>>run` whose source is `run` in `text`.
+    fn run_in(text: &str, number: u32) -> BodyDescription {
+        let start = u32::try_from(text.find("run").unwrap()).unwrap();
+        BodyDescription {
+            body: BodyName {
+                number,
+                name: "Demo>>run".to_string(),
+            },
+            family: None,
+            module: ModuleName::named("Demo"),
+            shipped_path: None,
+            text: Some(Rc::from(text)),
+            source: Span::new(start, start + 3),
+            checksum: 1,
+            statements: vec![DescribedStatement {
+                instructions: 0..1,
+                span: Span::new(start, start + 3),
+            }],
+            sends: Vec::new(),
+        }
+    }
+
+    /// The ranges count in the text a description hands with it, the
+    /// module's text as the runtime placed the body in it, never in the
+    /// text the host read the file in: an edit installed during the run
+    /// moves a body the file does not.
+    #[test]
+    fn ranges_count_in_the_text_the_body_was_placed_in() {
+        let read = "Demo = (\n  run = ( )\n)";
+        let mut sources = demo_sources();
+        let before = body_record(&run_in(read, 1), &mut sources);
+        assert_eq!(before["range"], json!([1, 2, 1, 5]), "{before}");
+        let edited = "Demo = (\n  helper = ( )\n\n  run = ( )\n)";
+        let after = body_record(&run_in(edited, 2), &mut sources);
+        assert_eq!(after["range"], json!([3, 2, 3, 5]), "{after}");
+        assert_eq!(
+            after["statements"][0]["range"],
+            json!([3, 2, 3, 5]),
+            "{after}"
+        );
+        assert_eq!(after["source"], json!({ "file": "/work/Demo.ns" }));
+    }
+
+    /// A body the runtime placed in no text has every range `null`, and
+    /// keeps its checksum, so that a reader decorates nothing of it.
+    #[test]
+    fn a_body_placed_in_no_text_has_no_ranges() {
+        let text = "Demo = (\n  run = ( )\n)";
+        let description = BodyDescription {
+            text: None,
+            ..run_in(text, 1)
+        };
+        let record = body_record(&description, &mut demo_sources());
+        assert!(record["range"].is_null(), "{record}");
+        assert!(record["statements"][0]["range"].is_null(), "{record}");
+        assert_eq!(record["checksum"], "0000000000000001");
+        assert_eq!(record["source"], json!({ "file": "/work/Demo.ns" }));
     }
 
     /// A body's code on the architecture this binary decodes, as the
@@ -1016,6 +1069,9 @@ mod tests {
             assert_eq!(instruction["annotation"], json!(annotation), "{record}");
         }
         assert!(instructions[0]["scope"].is_null(), "{record}");
+        assert_eq!(instructions[0]["out-of-line"], false, "{record}");
+        assert_eq!(instructions[1]["out-of-line"], false, "{record}");
+        assert_eq!(record["base"], 0x4000, "{record}");
         assert_eq!(instructions[1]["annotation"], "leaf miss", "{record}");
         assert_eq!(instructions[1]["at"], 0, "{record}");
         assert_eq!(instructions[2]["at"], 1, "{record}");
@@ -1032,5 +1088,57 @@ mod tests {
             json!([{ "scope": 0, "body": 2, "parent": null }])
         );
         assert!(record["mark"].is_null() && record["key"].is_null());
+    }
+
+    /// An out-of-line stretch is told apart from the code before the first
+    /// position, which both have no scope and no program counter: the
+    /// first stretch out of line, which the text listing names, is so in
+    /// the record too.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn an_out_of_line_stretch_is_told_from_no_position() {
+        let (architecture, bytes, code_end, [second, third]) = native_code();
+        let body = BodyName {
+            number: 2,
+            name: "Demo>>answer".to_string(),
+        };
+        let code = CodeListing {
+            body: body.clone(),
+            tier: CodeTier::Baseline,
+            key: None,
+            architecture,
+            base_address: 0x4000,
+            bytes,
+            code_end,
+            words: vec![(code_end, DataWord::Budget)],
+            positions: vec![
+                (second, Position::OutOfLine),
+                (
+                    third,
+                    Position::Instruction {
+                        scope: 0,
+                        program_counter: 1,
+                    },
+                ),
+            ],
+            annotations: Vec::new(),
+            scopes: vec![ListedScope {
+                number: 0,
+                body,
+                parent: None,
+                instructions: Vec::new(),
+            }],
+            mark: None,
+        };
+        let listing = Listing::Code(code);
+        let text = listing::text(&listing);
+        assert!(text.contains("  out of line\n"), "{text}");
+        let record = listing_record(&listing);
+        let instructions = record["instructions"].as_array().unwrap();
+        assert_eq!(instructions[0]["out-of-line"], false, "{record}");
+        assert_eq!(instructions[1]["out-of-line"], true, "{record}");
+        assert!(instructions[1]["at"].is_null(), "{record}");
+        assert_eq!(instructions[2]["out-of-line"], false, "{record}");
+        assert_eq!(instructions[2]["at"], 1, "{record}");
     }
 }

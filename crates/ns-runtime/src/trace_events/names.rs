@@ -12,7 +12,7 @@
 //! body of every mixin the heap holds, kept between flushes and extended
 //! when a body is not in it by the mixins it has not indexed yet.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use super::BodyName;
@@ -75,9 +75,22 @@ struct Named {
     /// the body is; `None` for a body no mixin holds.
     origin: Option<(Weak<Mixin>, Member)>,
     /// A block's family root -- the method, factory, initializer or
-    /// superclass clause whose body created it, at any depth -- held
-    /// weakly; `None` for a root and a body no mixin holds.
-    root: Option<Weak<CompiledCode>>,
+    /// superclass clause whose body created it, at any depth; `None` for a
+    /// root and a body no mixin holds.
+    root: Option<FamilyRoot>,
+}
+
+/// A block's family root, held weakly as the block is, with its name: a
+/// block may outlive its root -- a collection reclaims the version that
+/// held the root while an event of the block waits for its flush -- and
+/// still names its family by the root's number, which the cache
+/// transitions of its sites carry. The `Weak` keeps the root's
+/// allocation, so that no other body takes the address the root's entry
+/// is kept under while the block's entry lives.
+#[derive(Clone)]
+struct FamilyRoot {
+    code: Weak<CompiledCode>,
+    name: String,
 }
 
 /// A body numbered and not yet described, with what its description is
@@ -122,14 +135,14 @@ impl BodyNames {
         // transitions of its sites name: numbered first, so that the root
         // is described before the block names it. Not otherwise, so that a
         // trace without descriptions numbers what it delivers alone.
-        let family = match self.names.get(&address(code)) {
-            Some(named) if self.describing && named.number.is_none() => named
-                .root
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .map(|root| self.name(mutator, &root)),
+        let root = match self.names.get(&address(code)) {
+            Some(named) if self.describing && named.number.is_none() => named.root.clone(),
             _ => None,
         };
+        let family = root.map(|root| match root.code.upgrade() {
+            Some(alive) => self.name(mutator, &alive),
+            None => self.dead_root_name(&root),
+        });
         let Some(named) = self.names.get_mut(&address(code)) else {
             unreachable!("internal: `text` made the body's entry");
         };
@@ -157,6 +170,38 @@ impl BodyNames {
                     });
                 }
                 number
+            }
+        };
+        BodyName {
+            number,
+            name: named.name.clone(),
+        }
+    }
+
+    /// The name and number of `root`, whose code is gone: the number its
+    /// entry was given while it lived, or one given now, kept in its entry
+    /// for the family's other blocks. Never described -- a description is
+    /// made from the code -- so a reader takes the number as one it has no
+    /// description of.
+    fn dead_root_name(&mut self, root: &FamilyRoot) -> BodyName {
+        let key = Weak::as_ptr(&root.code) as usize;
+        let fresh = || Named {
+            body: Weak::clone(&root.code),
+            name: root.name.clone(),
+            number: None,
+            origin: None,
+            root: None,
+        };
+        let named = self.names.entry(key).or_insert_with(fresh);
+        if !Weak::ptr_eq(&named.body, &root.code) {
+            *named = fresh();
+        }
+        let number = match named.number {
+            Some(number) => number,
+            None => {
+                self.last_number += 1;
+                named.number = Some(self.last_number);
+                self.last_number
             }
         };
         BodyName {
@@ -227,7 +272,18 @@ impl BodyNames {
         }
         self.indexed_at = Some(generations);
         if self.names.len() + self.indexed.len() >= self.prune_at.max(FIRST_PRUNE) {
-            self.names.retain(|_, named| named.body.strong_count() > 0);
+            // A dead root's entry stays while a block of its family lives,
+            // so that the block names the family by the number the root
+            // had (`dead_root_name`).
+            let roots: HashSet<usize> = self
+                .names
+                .values()
+                .filter(|named| named.body.strong_count() > 0)
+                .filter_map(|named| named.root.as_ref())
+                .map(|root| Weak::as_ptr(&root.code) as usize)
+                .collect();
+            self.names
+                .retain(|key, named| named.body.strong_count() > 0 || roots.contains(key));
             self.indexed.retain(|_, side| side.strong_count() > 0);
             self.prune_at = 2 * (self.names.len() + self.indexed.len());
         }
@@ -314,6 +370,10 @@ impl BodyNames {
         }
         for (root, name, member) in roots {
             let block_name = format!("[] in {name}");
+            let family = FamilyRoot {
+                code: Rc::downgrade(&root),
+                name: name.clone(),
+            };
             if self.insert(&root, name.clone(), side, &member, None) {
                 named.push(NamedRoot {
                     code: Rc::clone(&root),
@@ -324,7 +384,7 @@ impl BodyNames {
             let mut pending: Vec<Rc<CompiledCode>> = vec![Rc::clone(&root)];
             while let Some(code) = pending.pop() {
                 for block in code.body().created_blocks() {
-                    if self.insert(block.code, block_name.clone(), side, &member, Some(&root)) {
+                    if self.insert(block.code, block_name.clone(), side, &member, Some(&family)) {
                         pending.push(Rc::clone(block.code));
                     }
                 }
@@ -341,7 +401,7 @@ impl BodyNames {
         name: String,
         side: &Rc<Mixin>,
         member: &Member,
-        root: Option<&Rc<CompiledCode>>,
+        root: Option<&FamilyRoot>,
     ) -> bool {
         if self.cached(code).is_some() {
             return false;
@@ -353,7 +413,7 @@ impl BodyNames {
                 name,
                 number: None,
                 origin: Some((Rc::downgrade(side), member.clone())),
-                root: root.map(Rc::downgrade),
+                root: root.cloned(),
             },
         );
         true
@@ -785,6 +845,92 @@ mod tests {
         interpreter.enter(|mutator| {
             let loose = Rc::new(crate::compiler::factory_body(3));
             assert_eq!(name_of(mutator, &loose), "(unnamed)");
+        });
+    }
+
+    /// The entry of a block of `root`'s family, named `[] in Demo>>run`.
+    fn block_entry(block: &Rc<CompiledCode>, root: &Rc<CompiledCode>) -> Named {
+        Named {
+            root: Some(FamilyRoot {
+                code: Rc::downgrade(root),
+                name: "Demo>>run".to_string(),
+            }),
+            ..entry(Rc::downgrade(block), "[] in Demo>>run")
+        }
+    }
+
+    /// A block whose root's code is gone by the time a delivery first
+    /// names it still names its family: by the number the root was given
+    /// while it lived, which the cache transitions of the block's sites
+    /// carry, or else by one given now, which every other block of the
+    /// family shares -- and a collection's drop of dead entries keeps the
+    /// root's while a block of its family lives.
+    #[test]
+    fn a_block_whose_root_died_names_its_family() {
+        let (mut interpreter, _) = load(DEMO, None, "Account");
+        interpreter.enter(|mutator| {
+            let mut names = BodyNames::default();
+            names.describe_bodies();
+            let root = Rc::new(crate::compiler::factory_body(0));
+            let block = Rc::new(crate::compiler::factory_body(1));
+            names
+                .names
+                .insert(address(&root), entry(Rc::downgrade(&root), "Demo>>run"));
+            names
+                .names
+                .insert(address(&block), block_entry(&block, &root));
+            let numbered = names.name(mutator, &root);
+            names.take_minted();
+            let root_key = address(&root);
+            drop(root);
+            // Enough dead entries that the next look through the sides
+            // drops them.
+            let dead: Vec<Weak<CompiledCode>> = (0..FIRST_PRUNE)
+                .map(|_| Rc::downgrade(&Rc::new(crate::compiler::factory_body(0))))
+                .collect();
+            for (index, body) in dead.iter().enumerate() {
+                names
+                    .names
+                    .insert(usize::MAX - index, entry(Weak::clone(body), "dead"));
+            }
+            names.indexed_at = None;
+            names.index_new_sides(mutator);
+            assert!(
+                !names.names.contains_key(&usize::MAX),
+                "the dead entries dropped"
+            );
+            assert!(names.names.contains_key(&root_key), "the dead root's kept");
+            let block_name = names.name(mutator, &block);
+            assert_ne!(block_name.number, numbered.number);
+            let minted = names.take_minted();
+            let described = minted
+                .iter()
+                .find(|minted| minted.body.number == block_name.number)
+                .expect("the block minted");
+            assert_eq!(described.family.as_ref(), Some(&numbered));
+
+            // A root never numbered is numbered as its first block names it.
+            let unnamed_root = Rc::new(crate::compiler::factory_body(0));
+            let first = Rc::new(crate::compiler::factory_body(1));
+            let second = Rc::new(crate::compiler::factory_body(2));
+            for block in [&first, &second] {
+                names
+                    .names
+                    .insert(address(block), block_entry(block, &unnamed_root));
+            }
+            drop(unnamed_root);
+            names.name(mutator, &first);
+            names.name(mutator, &second);
+            let minted = names.take_minted();
+            assert_eq!(minted.len(), 2, "the dead root is not described");
+            let families: Vec<Option<BodyName>> =
+                minted.iter().map(|minted| minted.family.clone()).collect();
+            assert!(families[0].is_some(), "the family named");
+            assert_eq!(families[0], families[1], "one number for the family");
+            assert_eq!(
+                families[0].as_ref().map(|family| family.name.as_str()),
+                Some("Demo>>run")
+            );
         });
     }
 
