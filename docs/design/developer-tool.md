@@ -1531,7 +1531,9 @@ session ends, replacing only the text
 between the longest common start and end of the old and the new, so
 that a step leaves the view where the text is unchanged, then putting
 each editor's caret at the marked line and scrolling it into view only
-where it is not shown, its lifetime the
+where it is not shown, that one line coloured whole in every editor of
+the tab as the debugger's execution point is in a source editor, until
+a text marks none or the follower ends, its lifetime the
 session's (`NewspeakDebugProcess.sessionLifetime`); a refusal is shown
 as a notification of the plugin's group with the agent's words
 ([debugger.md](debugger.md), "The JetBrains plugin").
@@ -1607,7 +1609,8 @@ again, the listings, a block nested where the record names its
 `MakeClosure`, the linked highlighting,
 kept through another editor's caret and gone with an edit, and the
 editor tab; `FrameCodeFollowerTest` the frame's code written as a
-change that shows the marked line, only the tab's last editor
+change that shows the marked line, that line alone coloured as the
+execution point in every editor of the tab, only the tab's last editor
 ending the follower, and a deferred step expiring with its lifetime. `NewspeakDebugProcessTest`, in
 `debugProcessTest`, runs Show Frame Code against the real runtime, and
 its refusal against a fake agent. And

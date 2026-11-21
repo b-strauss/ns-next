@@ -2,12 +2,17 @@ package io.github.bstrauss.newspeak.debugger
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.openapi.editor.impl.DocumentMarkupModel
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.xdebugger.ui.DebuggerColors
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 
 class FrameCodeFollowerTest : BasePlatformTestCase() {
@@ -41,6 +46,40 @@ class FrameCodeFollowerTest : BasePlatformTestCase() {
         assertEquals(5, editor.caretModel.logicalPosition.line)
         assertFalse(file.isWritable)
     }
+
+    fun testTheMarkedLineIsColouredAsTheExecutionPointOneLineAtATime() {
+        val file = CodeListingFile(FrameCodeFollower.TITLE, listing(mark = 2))
+        val manager = FileEditorManager.getInstance(project)
+        manager.openTextEditor(OpenFileDescriptor(project, file), true)
+        val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
+        // The text the tab opened with, written again unchanged, as the follower's first refresh does.
+        FrameCodeFollower.write(project, file, listing(mark = 2))
+        assertEquals(listOf(3), executionLines(document))
+        FrameCodeFollower.write(project, file, listing(mark = 40))
+        assertEquals("the colour moves with the mark", listOf(41), executionLines(document))
+        // A second editor of the tab, as a split opens it, shows the same one line.
+        val second = EditorFactory.getInstance().createViewer(document, project)
+        try {
+            val shown = (second as EditorEx).filteredDocumentMarkupModel.allHighlighters
+                .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+            assertEquals(1, shown.size)
+        } finally {
+            EditorFactory.getInstance().releaseEditor(second)
+        }
+        FrameCodeFollower.write(project, file, "method Demo>>run (args 0, registers 16)\nno mark\n")
+        assertEquals("a text without a mark colours no line", emptyList<Int>(), executionLines(document))
+        FrameCodeFollower.write(project, file, listing(mark = 7))
+        assertEquals(listOf(8), executionLines(document))
+        // The follower's end.
+        FrameCodeFollower.clearMarkedLine(project, file)
+        assertEquals(emptyList<Int>(), executionLines(document))
+    }
+
+    /** The lines of [document] coloured as the execution point, in every editor of it. */
+    private fun executionLines(document: Document): List<Int> =
+        DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+            .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+            .map { highlighter -> document.getLineNumber(highlighter.startOffset) }
 
     fun testTheMachineCodesMarkIsFoundWithoutABytecodeMark() {
         val text = "--- code {Demo>>run} baseline x64 base=0x1000 bytes=8\n  @0  stmt 0  Return r1\n    +0x0000  mov rax,1\n  ->+0x0004  ret\n--- end\n"

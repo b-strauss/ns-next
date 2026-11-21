@@ -6159,7 +6159,11 @@ connection's thread and writes the answer on the event dispatch thread,
 only the latest request's, since several selections' answers arrive in
 no fixed order, as the change between the old text and the new alone,
 each editor's caret then at the marked line, so that a step never
-scrolls the tab to its start (`FrameCodeFollowerTest`); it ends when the
+scrolls the tab to its start, and that line alone coloured whole, in
+every editor of the tab, as the scheme colours the debugger's execution
+point in a source editor (`DebuggerColors.EXECUTIONPOINT_ATTRIBUTES`),
+the colour gone where a text marks no line and when the follower ends
+(`FrameCodeFollowerTest`); it ends when the
 tab's last editor closes -- not one split of it -- or the session stops, its
 lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
 disposed with the project at the latest), and is not made for a session

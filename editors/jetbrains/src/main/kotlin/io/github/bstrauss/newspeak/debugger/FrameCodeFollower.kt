@@ -8,15 +8,19 @@ import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.ScrollType
+import com.intellij.openapi.editor.impl.DocumentMarkupModel
+import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Condition
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebugSessionListener
+import com.intellij.xdebugger.ui.DebuggerColors
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,7 +36,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * of several selections made in a row arrive in no fixed order. A text
  * written replaces only what changed, so that a step leaves the view
  * where the text is the same, and each editor of the tab then shows the
- * marked line, never the start.
+ * marked line, never the start, coloured as the debugger colours its
+ * execution point in a source editor.
  */
 class FrameCodeFollower private constructor(
     private val session: XDebugSession,
@@ -98,6 +103,10 @@ class FrameCodeFollower private constructor(
         ended = true
         if (process.frameCodeFollower === this) process.frameCodeFollower = null
         Disposer.dispose(lifetime)
+        // After every write queued before the end, which the end has made do nothing; a tab
+        // kept open after the session shows its last text, no longer an execution point.
+        val project = session.project
+        ApplicationManager.getApplication().invokeLater({ clearMarkedLine(project, file) }, ModalityState.any(), project.disposed)
     }
 
     companion object {
@@ -123,12 +132,18 @@ class FrameCodeFollower private constructor(
          * in each editor; then puts each editor's caret at the marked line
          * -- the frame's instruction in the bytecode, else the machine
          * code's -- and scrolls it into view only where it is not shown.
-         * A text that is the document's already is not written.
+         * The marked line is highlighted in every editor of the tab
+         * ([highlightMarkedLine]). A text that is the document's already
+         * is not written, and leaves the carets where they are.
          */
         internal fun write(project: Project, file: CodeListingFile, text: String) {
             val document = FileDocumentManager.getInstance().getDocument(file) ?: return
             val old = document.charsSequence
-            if (old.contentEquals(text)) return
+            if (old.contentEquals(text)) {
+                // The text the tab opened with is written by nobody, and its line is coloured all the same.
+                highlightMarkedLine(project, file, markedLine(text))
+                return
+            }
             val prefix = commonPrefixLength(old, text)
             val suffix = minOf(commonSuffixLength(old, text), old.length - prefix, text.length - prefix)
             // No undo step: the user never typed it.
@@ -145,12 +160,43 @@ class FrameCodeFollower private constructor(
                     }
                 }
             }
-            val marked = markedLine(text) ?: return
+            val marked = markedLine(text)
+            highlightMarkedLine(project, file, marked)
+            if (marked == null) return
             for (editor in EditorFactory.getInstance().getEditors(document, project)) {
                 editor.caretModel.moveToLogicalPosition(LogicalPosition(marked, 0))
                 editor.scrollingModel.scrollToCaret(ScrollType.MAKE_VISIBLE)
             }
         }
+
+        /**
+         * Colours [line] of [file] whole as the scheme colours the
+         * debugger's execution point, in the document's markup, so that
+         * every editor of the tab shows it -- a split opened later too --
+         * and takes the colour off the line it stood on before: one line
+         * at a time, none for a null [line].
+         */
+        internal fun highlightMarkedLine(project: Project, file: CodeListingFile, line: Int?) {
+            val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+            val current = file.getUserData(MARKED_LINE_HIGHLIGHTER)
+            if (current != null && current.isValid && line != null && document.getLineNumber(current.startOffset) == line) return
+            clearMarkedLine(project, file)
+            if (line == null || line >= document.lineCount) return
+            val markup = DocumentMarkupModel.forDocument(document, project, true)
+            val highlighter = markup.addLineHighlighter(DebuggerColors.EXECUTIONPOINT_ATTRIBUTES, line, DebuggerColors.EXECUTION_LINE_HIGHLIGHTERLAYER)
+            file.putUserData(MARKED_LINE_HIGHLIGHTER, highlighter)
+        }
+
+        /** Takes the marked line's colour off [file]'s editors. */
+        internal fun clearMarkedLine(project: Project, file: CodeListingFile) {
+            val highlighter = file.getUserData(MARKED_LINE_HIGHLIGHTER) ?: return
+            file.putUserData(MARKED_LINE_HIGHLIGHTER, null)
+            val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+            DocumentMarkupModel.forDocument(document, project, false)?.removeHighlighter(highlighter)
+        }
+
+        /** The highlighter of a tab's marked line, held by the tab's file: one tab, one line. */
+        private val MARKED_LINE_HIGHLIGHTER = Key.create<RangeHighlighter>("newspeak.frameCode.markedLine")
 
         /** The line of [text] a listing marks: the bytecode's `   7->`, else the machine code's `  ->+0x…`; null for none. */
         internal fun markedLine(text: String): Int? {
