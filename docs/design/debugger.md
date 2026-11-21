@@ -5917,7 +5917,10 @@ time:
   Cursor names a library file the same way. The pass count
   (`NewspeakLineBreakpointProperties`, edited in the breakpoint's
   properties) is sent as the `hitCondition`, in the agent's forms ("Hit
-  counts and temporary breakpoints"). The handler marks each breakpoint
+  counts and temporary breakpoints"); the type makes the properties a
+  breakpoint restored from the workspace loads its saved ones into
+  (`createProperties`), so that the pass count and a block variant's
+  column outlive the IDE's restart (`testARestoredLineBreakpointKeepsItsProperties`). The handler marks each breakpoint
   verified, or, where the agent set it at another line, verified with the
   line it stops at (`updateBreakpointPresentation`) -- the breakpoint
   stays where the user put it -- or invalid with the agent's message, as
