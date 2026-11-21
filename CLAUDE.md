@@ -470,7 +470,12 @@ Read `docs/design/README.md` first — it maps the living design documents and s
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology.
 `docs/OPEN-WORK.md`'s "Next" names the next piece of work, and the rest of it
 lists everything still to be done: remove an item when work closes it, add one
-when a review, measurement or design leaves something open.
+when a review, measurement or design leaves something open that belongs to a
+future topic or to none the branch works on. A finding the branch's own work
+caused that belongs to its topic -- a small defect, a missing test, a gap a
+review names -- is fixed on that branch before it is merged, not written there;
+whether one more fix round is worth it is decided case by case, without letting
+the rounds run on.
 
 ## Invariants that are easy to break
 

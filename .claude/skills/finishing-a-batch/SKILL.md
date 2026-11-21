@@ -63,9 +63,14 @@ Create a todo for each item.
    run without the JIT), and prints each
    summary line; each must report every test passed, and `run-corpus` "ran 6,
    failed 0, skipped 205". Report failures with their output.
-3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;
-   add every item a review, measurement or design discussion left open, with a
-   pointer to where it is explained.
+3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed.
+   Before adding anything, sort what the reviews, measurements and design
+   discussions left open: a finding the batch's own work caused that belongs
+   to its topic -- small defects, missing tests, gaps a review names, Minors
+   included -- is fixed on the branch now, a further fix round decided case by
+   case without letting the rounds run on; only what belongs to a future topic
+   or to none the batch works on is added, with a pointer to where it is
+   explained.
 4. **Progress.** Update `docs/PROGRESS.md`: the milestone's entry and the
    milestone table; and `docs/OPEN-WORK.md`'s "Next", which must agree with
    the table.
@@ -89,3 +94,6 @@ Create a todo for each item.
   downloads several IDEs for nothing.
 - **Leaving an open item only in a PROGRESS.md entry.** It belongs in
   `docs/OPEN-WORK.md`.
+- **Parking an in-topic finding in OPEN-WORK to save a fix round.** A small
+  gap the branch made in its own topic is fixed on the branch; OPEN-WORK is
+  for future topics and unrelated ones.
