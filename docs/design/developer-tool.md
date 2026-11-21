@@ -17,8 +17,9 @@ compile, and the debugger answers a stopped frame's code
 (`nsNext/frameCode`, `debug_code`). Stage 3, the developer tool in the
 JetBrains plugin -- the trace and the listings switched on from the run
 configuration and the editor, read from a file of JSON lines and shown
-in a tool window, the gutter and inlay hints --, is designed here and
-next; the shell is stage 4 ("Planned: the stages"). The profiler
+in a tool window, the gutter and inlay hints --, is designed here, its
+trace file built ("Stage 3: the developer tool in the IDE"); the shell
+is stage 4 ("Planned: the stages"). The profiler
 is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## What exists
@@ -1014,16 +1015,129 @@ never a whole listing but that one, and the CLI's and the MCP server's
 tests strip every stress mode from the child and answer nothing without
 a JIT.
 
+## Stage 3: the developer tool in the IDE
+
+**Partial.** The runtime's half of the trace file is built: `ns-next run
+--trace-file=<path>` writes the trace and the listings as JSON lines, a
+body described once with its source positions. The plugin's half --
+the "Developer Tool" tab, the watched methods, the reader, the tool
+window, the gutter icons, the inlay hints, the code's editor tabs and
+"Show Frame Code" -- is not built yet ("Planned: the stages").
+
+### The trace file
+
+`ns-next run --trace-file=<path>` (`crates/ns-cli/src/trace_file.rs`,
+`TraceFileSink`) writes every delivery the runtime hands its sink into
+the file at `<path>`, replacing a file there, instead of on standard
+error, which then holds the program's own lines only (decision 20). It
+needs `--trace` or a print option, which clap enforces; the filters
+select as they do on standard error. The file is created once every
+option is checked and the program is loaded, before anything of it
+runs; a path no file can be created at is refused, naming it, with
+exit status 2, as a malformed filter is (`commands/run.rs`). With a
+file, the trace's settings set `describe_bodies`, so that the runtime
+hands the sink each body's description (decision 18,
+`trace_events/descriptions.rs`).
+
+Each record is one JSON object on one line, ended by a newline and
+written with one `write_all`; the file is flushed at the end of every
+flush's deliveries (`TraceSink::flushed`), so that a reader following
+it is current at every safepoint and every stop, and never sees half a
+record a flush wrote. A file that can no longer be written loses the
+trace, never the run. A record's keys are the text trace's names, in
+its kebab case; the order of the keys within an object is no part of
+the format. Every body is named by its number: unique for the run,
+never reused, and never 0, which names a body outside the trace
+(`debug_assert!`ed where a record is written). A range is `[startLine,
+startColumn, endLine, endColumn]`, counted from 0, the columns in
+UTF-16 code units of the module's text (`ns_tooling::lines::LineIndex`,
+the language server's and the DAP agent's count).
+
+The records:
+
+- `{"kind":"header","format":"ns-next-trace","version":1,"architecture":…}`,
+  the first line: the format's name and version, which a reader that
+  does not know them refuses, and the architecture the file's `code`
+  records are instructions of, `"x64"` or `"aarch64"`, `null` for a
+  binary without a JIT.
+- `{"kind":"body","body":N,"name":…,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
+  before the first record that names `N`: the body's name as the text
+  trace writes it (`Demo>>main:args:`, `[] in Demo>>run`), its module,
+  and its source: `{"file":"<absolute path>"}` for a program's module,
+  `{"library":"<path>"}` for a shipped one, its path among the core
+  library's files (`platform/TimeFactory.ns`, as `ns-next
+  shipped-sources` lays them out), `null` for a module read from no file
+  (the embedded manifest). `range` is the body's source; `checksum` is
+  the FNV-1a 64 of that source's UTF-8 bytes (offset basis
+  `0xcbf29ce484222325`, prime `0x100000001b3`), sixteen lower-case hex
+  digits, by which a reader tells whether the text it holds is the text
+  the body was compiled from. `statements` are
+  `{"instructions":[from,to],"range":[…]}`, each statement's
+  instructions and source in emission order, and `sends` are
+  `{"at":index,"site":n|null,"call":[…],"selector":[[…],…]}`, each send
+  instruction's index, its site as the `caches` category numbers it
+  (`null` for a send no cache serves), the call from its receiver to its
+  last argument and each token of its selector; both empty for a body
+  whose metadata the runtime could not compile again alike. A range is
+  `null` only where the host holds no text of the module. Two kinds of
+  body take a number and no `body` record -- one no mixin holds and one
+  whose range lies outside its module's text --, so a reader accepts a
+  number it has no description of.
+- `{"kind":"event","category":…,"body":N|null,"event":…,…}`, an event:
+  its category, its body, `null` for an event about none, its name as
+  `TraceEventKind::name` answers it, and every value its line writes as a
+  field of the line's name ("The events and their lines"): a number as a
+  number, a reason as its kebab-case name, a body (`in-body`, `callee`,
+  `spent-by`) as its number, a class (`key`, `entered`, `receiver`) as
+  its name, `key` and `entered` `null` where the line leaves them out. A
+  cache transition, whose line spells its two states as the event word,
+  is the event `transition` with the fields `before` and `after`, its
+  `selector` without the line's `#`; `declined-no-body`'s `reasons` an
+  array of `{"reason":…,"count":n}` in the line's order; `retired`'s
+  `version` `null` where the line writes `none`.
+- `{"kind":"bytecode","body":N,"bodies":[{"body":N,"instructions":[{"index":i,"statement":s|null,"text":…}]}]}`,
+  a body's bytecode, the root and then the blocks it makes, each
+  instruction's text as the text listing writes it after its index and
+  statement columns.
+- `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
+  an install's machine code, decoded by `ns-cli` as the text listing
+  decodes it (`listing::decoded`): each instruction
+  `{"offset":o,"text":…,"scope":s|null,"at":pc|null,"annotation":…|null}`,
+  its offset in the body, its text, the scope and program counter of the
+  stretch it stands in (`null` before the first position and out of
+  line), and what a call or jump out of it reaches as the text listing's
+  annotation writes it (`leaf miss`, `cell site 3`; two on one
+  instruction joined by `; `); each data word `{"offset":o,"word":…}`,
+  its offset from the first data word, as the instructions' texts name
+  it (`data+0x0008`), and what it holds (`budget word`); each scope
+  `{"scope":s,"body":N,"parent":[scope,at]|null}`. The base address, an
+  address of the run, is left out.
+- `{"kind":"inlining","body":N,"key":…|null,"entered":…|null,"scopes":[…],"arms":[…],"declined":[…],"outcome":…}`,
+  an optimizing compile's plan: its scopes as a `code` record's; each
+  arm `{"scope":s,"at":pc,"receiver":…,"inlined":{"scope":s}|{"always":"identity"}}`;
+  each decline `{"scope":s,"at":pc,"callee":N|null,"reason":…}`; and
+  `{"installed":bytes}` or `{"refused":"<reason>"}`.
+
+`event_record`, `listing_record` and `body_record` each match their
+input exhaustively, so that a new kind of event or listing, or a new
+field of a description or a listing, does not compile until it has its
+record. `trace_file.rs`'s unit tests hold every event of `trace.rs`'s
+`every_event` to a record with every field its line writes, every
+record to one line, a range to UTF-16 columns, a shipped body to the
+library and a `code` record's instructions to the text listing's;
+`tests/cli.rs` a run's file -- its header, every record parsed, every
+body number described before a record names it -- and the two
+refusals.
+
 ## Planned: the stages
 
 ### Stage 3: the developer tool in the IDE
 
-Decisions 17 to 33. The runtime's half: `--trace-file` and its records
-(`ns-cli`, beside `trace.rs` and `listing.rs`), the bodies' descriptions
-with their positions and checksums (the runtime, from the debugger's
-metadata, at the flush). The plugin's half: the "Developer Tool" tab and
-the watched methods, the reader, the tool window, the gutter icons and
-inlay hints, the code's editor tabs and "Show Frame Code".
+Decisions 17 to 33. The runtime's half, `--trace-file` and its records
+with the bodies' descriptions, is built ("Stage 3: the developer tool in
+the IDE"). The plugin's half: the "Developer Tool" tab and the watched
+methods, the reader, the tool window, the gutter icons and inlay hints,
+the code's editor tabs and "Show Frame Code".
 
 ### Stage 4: the shell
 

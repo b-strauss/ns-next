@@ -44,10 +44,10 @@ pub(crate) fn text(listing: &Listing) -> String {
 
 /// An instruction decoded: its offset in the body, its length in bytes
 /// and its text, every target in the body named by its offset.
-struct Decoded {
-    offset: u32,
-    length: u32,
-    text: String,
+pub(crate) struct Decoded {
+    pub(crate) offset: u32,
+    pub(crate) length: u32,
+    pub(crate) text: String,
 }
 
 /// An offset in the body as a listing writes it, `+0x` and at least four
@@ -296,7 +296,7 @@ fn write_position(text: &mut String, code: &CodeListing, position: Position, opt
 
 /// What a call or jump out of the body reaches, named so that no address
 /// of the run appears.
-fn annotation_text(annotation: &Annotation) -> String {
+pub(crate) fn annotation_text(annotation: &Annotation) -> String {
     match annotation {
         Annotation::Leaf(name) => format!("leaf {name}"),
         Annotation::Stub(name) => format!("stub {name}"),
@@ -311,7 +311,7 @@ fn annotation_text(annotation: &Annotation) -> String {
 
 /// What a data word holds, by its kind: its value is an address of the
 /// run.
-fn word_text(word: DataWord) -> String {
+pub(crate) fn word_text(word: DataWord) -> String {
     match word {
         DataWord::Budget => "budget word".to_string(),
         DataWord::DispatchingRows => "dispatching rows".to_string(),
@@ -326,7 +326,7 @@ fn word_text(word: DataWord) -> String {
 /// The instructions of `code`'s bytes before its data words, decoded by
 /// the decoder of the target this binary runs on; in hex for any other
 /// target, which a run never lists.
-fn decoded(code: &CodeListing) -> Vec<Decoded> {
+pub(crate) fn decoded(code: &CodeListing) -> Vec<Decoded> {
     let end = usize::try_from(code.code_end)
         .unwrap_or(usize::MAX)
         .min(code.bytes.len());

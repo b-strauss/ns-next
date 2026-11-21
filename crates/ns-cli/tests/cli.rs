@@ -1119,6 +1119,145 @@ fn a_print_filter_needs_a_print_option() {
     assert!(stderr.contains("--print-filter"), "stderr: {stderr}");
 }
 
+/// Every body number `record` names, at any depth: a record's `body`, an
+/// event's `in-body`, `callee` and `spent-by`, a listing's bodies and
+/// scopes and a decline's callee.
+fn body_numbers(record: &serde_json::Value, numbers: &mut Vec<u64>) {
+    match record {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                match (name.as_str(), value.as_u64()) {
+                    ("body" | "in-body" | "callee" | "spent-by", Some(number)) => {
+                        numbers.push(number);
+                    }
+                    _ => body_numbers(value, numbers),
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                body_numbers(value, numbers);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `--trace-file` writes the trace and the listings into the file, not on
+/// stderr: a header first, then every body described before any record
+/// names its number.
+#[test]
+fn trace_file_holds_header_bodies_and_events() {
+    let Some((directory, program)) = hot_method_program("trace-file") else {
+        return;
+    };
+    let file = directory.join("trace.jsonl");
+    let stderr = traced_stderr(
+        &program,
+        &[
+            "--trace=compile",
+            "--print-bytecode",
+            "--print-filter=Demo...",
+            &format!("--trace-file={}", file.display()),
+        ],
+    );
+    assert!(!stderr.contains("[compile]"), "stderr: {stderr}");
+    assert!(!stderr.contains("--- bytecode"), "stderr: {stderr}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.ends_with('\n'), "{text}");
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}")))
+        .collect();
+    assert_eq!(records[0]["kind"], "header", "{text}");
+    assert_eq!(records[0]["format"], "ns-next-trace", "{text}");
+    assert_eq!(records[0]["version"], 1, "{text}");
+    let mut described = std::collections::BTreeMap::new();
+    let mut compiled_square = false;
+    let mut listed_demo = false;
+    for record in &records[1..] {
+        if record["kind"] == "body" {
+            let number = record["body"].as_u64().unwrap();
+            assert!(
+                described.insert(number, record.clone()).is_none(),
+                "described twice: {record}"
+            );
+            continue;
+        }
+        let mut numbers = Vec::new();
+        body_numbers(record, &mut numbers);
+        for number in numbers {
+            assert!(
+                described.contains_key(&number),
+                "body {number} named before it is described: {record}"
+            );
+        }
+        let name_of = |key: &str| {
+            record[key]
+                .as_u64()
+                .and_then(|number| described.get(&number))
+                .map(|body| body["name"].clone())
+        };
+        if record["kind"] == "event" && record["event"] == "compiled" {
+            compiled_square |= name_of("body").is_some_and(|name| name == "Demo>>square:");
+        }
+        if record["kind"] == "bytecode" {
+            let name = name_of("body").unwrap();
+            assert!(name.as_str().unwrap().starts_with("Demo"), "{record}");
+            listed_demo = true;
+        }
+    }
+    assert!(compiled_square, "{text}");
+    assert!(listed_demo, "{text}");
+    let square = described
+        .values()
+        .find(|body| body["name"] == "Demo>>square:")
+        .unwrap();
+    assert_eq!(
+        square["source"]["file"],
+        std::path::absolute(&program).unwrap().display().to_string(),
+        "{square}"
+    );
+    assert_eq!(square["range"][0], 1, "{square}");
+}
+
+/// `--trace-file` holds what a trace or a print option writes, so it is
+/// refused without one.
+#[test]
+fn trace_file_needs_something_to_trace() {
+    let stderr = refused_stderr("trace-file-alone", &["--trace-file=x.jsonl"]);
+    assert!(stderr.contains("--trace-file"), "stderr: {stderr}");
+}
+
+/// A trace file that cannot be created is refused, naming it, before the
+/// program runs.
+#[test]
+fn an_uncreatable_trace_file_is_refused() {
+    let directory = ScratchDirectory::new("trace-file-uncreatable");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let file = directory.join("missing").join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=compile".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("`{}`", file.display())),
+        "stderr: {stderr}"
+    );
+    assert!(!file.exists());
+}
+
 /// A method that answers a constant, sent a hundred times so that the
 /// baseline JIT compiles it.
 #[cfg(all(target_arch = "x86_64", target_os = "windows"))]

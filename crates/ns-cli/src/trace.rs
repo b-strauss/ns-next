@@ -350,7 +350,7 @@ impl TraceSink for StandardErrorSink {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ns_runtime::trace_events::{
         BodyName, CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
@@ -391,7 +391,7 @@ mod tests {
     /// One event of every kind with the line it is written as. The match
     /// in `every_kind_is_listed` makes a new kind fail to compile until it
     /// has a line here.
-    fn every_event() -> Vec<(TraceEvent, &'static str)> {
+    pub(crate) fn every_event() -> Vec<(TraceEvent, &'static str)> {
         use TraceCategory::{Caches, CodeZone, Compile, Deoptimize, Inlining, Optimize, Osr};
         vec![
             (
@@ -836,7 +836,7 @@ mod tests {
     }
 
     /// `text` split at every space outside braces.
-    fn split_outside_braces(text: &str) -> Vec<&str> {
+    pub(crate) fn split_outside_braces(text: &str) -> Vec<&str> {
         let mut parts = Vec::new();
         let mut depth = 0usize;
         let mut start = 0;

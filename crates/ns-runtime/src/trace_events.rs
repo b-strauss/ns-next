@@ -934,6 +934,11 @@ pub trait TraceSink {
     fn body(&mut self, description: &BodyDescription) {
         let _ = description;
     }
+
+    /// Called once a flush has handed over its last delivery, so that a
+    /// sink that buffers -- a file a reader follows while the program
+    /// runs -- is current at every safepoint and every stop.
+    fn flushed(&mut self) {}
 }
 
 /// An event recorded and not yet delivered: the bodies it names held as
@@ -1455,6 +1460,7 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
                 Delivery::Body(description) => sink.body(description),
             }
         }
+        sink.flushed();
     }
 }
 
