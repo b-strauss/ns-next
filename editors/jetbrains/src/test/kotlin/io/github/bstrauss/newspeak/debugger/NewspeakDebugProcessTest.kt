@@ -25,6 +25,7 @@ import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -73,6 +74,7 @@ import com.intellij.xdebugger.impl.settings.XDebuggerSettingManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
+import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRoots
@@ -865,6 +867,59 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             listOf("""{"frameId":2,"expression":"3 + 4"}""", """{"frameId":2}"""),
             agent.requests("nsNext/forceReturn").map(JsonObject::toString),
         )
+    }
+
+    /**
+     * Show Frame Code opens a read-only tab with the selected frame's
+     * bytecode, marked where the frame stands, and the tab follows: the
+     * caller's frame, selected, shows the caller's body, and a step moves
+     * the mark.
+     */
+    fun testShowFrameCodeOpensTheFramesCodeAndFollowsSteps() {
+        val program = program("Restarting", RESTARTING)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val session = debugging.session
+        val frames = framesOf(session)
+
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        val event = TestActionEvent.createTestEvent(action, context)
+        action.update(event)
+        assertTrue(event.presentation.isEnabled)
+        onEdt { action.actionPerformed(event) }
+
+        fun text(): String? = ReadAction.compute<String?, Throwable> {
+            FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().singleOrNull()
+                ?.let { file -> FileDocumentManager.getInstance().getDocument(file)?.text }
+        }
+        fun shown(what: String, accepts: (String) -> Boolean): String {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (true) {
+                text()?.takeIf(accepts)?.let { return it }
+                if (System.nanoTime() > deadline) throw AssertionError("$what not shown within $WAIT_SECONDS s: ${text()}")
+                Thread.sleep(POLL_MILLISECONDS)
+            }
+        }
+        fun mark(listing: String): Int? = Regex("""(\d+)->""").find(listing.substringBefore("--- end"))?.groupValues?.get(1)?.toInt()
+
+        val callee = shown("the callee's bytecode") { listing -> listing.contains("--- bytecode {Restarting>>compute:") }
+        val before = checkNotNull(mark(callee)) { callee }
+        assertTrue(callee, callee.contains(NewspeakBundle.message("devtool.frame.interpreted")) || callee.contains("--- code {"))
+
+        onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frames[1]) }
+        shown("the caller's bytecode") { listing -> listing.contains("--- bytecode {Restarting>>main:args:") }
+
+        onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frames[0]) }
+        shown("the callee's bytecode again") { listing -> listing.contains("--- bytecode {Restarting>>compute:") }
+        onEdt { session.stepOver(false) }
+        debugging.nextPause()
+        val after = shown("a moved mark") { listing -> listing.contains("Restarting>>compute:") && mark(listing) != before }
+        assertTrue(after, mark(after)!! > before)
+
+        onEdt { session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
     }
 
     /**

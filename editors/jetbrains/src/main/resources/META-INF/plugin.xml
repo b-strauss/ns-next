@@ -176,6 +176,12 @@
                 class="io.github.bstrauss.newspeak.debugger.NewspeakForceReturnAction">
             <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
         </action>
+        <!-- The frame's bytecode and machine code in a tab that follows the selected frame. -->
+        <action id="io.github.bstrauss.newspeak.ShowFrameCode"
+                class="io.github.bstrauss.newspeak.debugger.ShowFrameCodeAction">
+            <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
+            <add-to-group group-id="XDebugger.ToolWindow.TopToolbar" anchor="last"/>
+        </action>
         <!-- On a value of a Newspeak session's trees, where the platform's own Mark Object stays hidden. -->
         <action id="io.github.bstrauss.newspeak.MarkObject"
                 class="io.github.bstrauss.newspeak.debugger.NewspeakMarkObjectAction">
