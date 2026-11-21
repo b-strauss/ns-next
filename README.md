@@ -15,11 +15,11 @@ instance, metaclasses, value objects, simultaneous and lazy slots, §8.6's excep
 integers of any size, the bytecode compiler and a register VM with inline caches, a
 second, deliberately naive lowering the compiler is checked against, a mark-compact
 garbage collector, a core library written in Newspeak over one VM mirror, a
-source-free image format, a baseline JIT for x64 and AArch64, and the first two
-stages of an optimizing JIT above it, which keeps values in machine registers
-across a body, compiles a method a copy per receiver class and level, reading its slots
-at fixed offsets, and traps where the feedback says a path never ran; it
-inlines nothing yet.
+source-free image format, a baseline JIT for x64 and AArch64, and an
+optimizing JIT above it, which keeps values in machine registers across a
+body, compiles a method a copy per receiver class and level, reading its
+slots at fixed offsets, traps where the feedback says a path never ran, and
+inlines its callees, accessors and blocks.
 Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
@@ -47,6 +47,14 @@ Not built yet, and the limits worth knowing before trying it on real code:
   marked objects and a memory view, the shipped modules as a library;
   `ns-next mcp` serves the same to an agent. Hot swap and
   edit-and-continue come next (`docs/design/debugger.md`).
+- **A developer tool for the JIT.** `ns-next run --trace=<categories>`
+  reports what the JIT does -- compiles, on-stack replacement,
+  optimization, inlining, deoptimization, the code zone and the caches --
+  and `--print-bytecode`, `--print-code` and `--print-inlining` list a
+  body's bytecode, its machine code and its inlining plan;
+  `--trace-file` writes all of it as JSON lines, which the JetBrains
+  plugin shows in its "Newspeak JIT" tool window and in the editor
+  (`docs/design/developer-tool.md`).
 
 `docs/design/` describes how the system works and how much of each aspect exists;
 `docs/PROGRESS.md` is the milestone chronology beside it, and `docs/OPEN-WORK.md`
@@ -101,6 +109,20 @@ mislead:
 cargo build --workspace --release
 ```
 
+The MCP server `.mcp.json` registers runs from a copy of the debug build in
+`target/mcp/`, so that a running server never keeps cargo from writing
+`target/debug/ns-next` (`docs/design/debugger.md`, "The MCP server",
+"Starting it"). The copy is put once, after a build:
+
+```bash
+# copy target/debug/ns-next to target/mcp/ns-next, unless a copy is there;
+# builds nothing and starts nothing
+cargo build -p ns-cli
+cargo xtask mcp
+# to refresh it: with no server running from it, delete target/mcp/, run
+# the task again and reconnect the MCP client
+```
+
 On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
 `ns-next.exe` and `ns-next-analyzer.exe` are each one self-contained file: they
 need no Rust installation and no VC++ redistributable on the machine that runs
@@ -148,9 +170,13 @@ cargo xtask gates codegen
 cargo xtask gates stress
 # the JetBrains plugin against several IDEs, which it downloads
 cargo xtask gates plugin-verification
-# images, caches, benchmarks, release-checks, codegen, stress, linux and
-# aarch64, for a batch that changed the runtime
+# images, caches, benchmarks, release-checks, codegen and stress, for a
+# batch that changed the runtime
 cargo xtask gates end-of-batch
+# in Docker, on demand: the suite for x86_64 Linux, and for AArch64 Linux
+# under QEMU
+cargo xtask gates linux
+cargo xtask gates aarch64
 # write the embedded shipped code (every gate call also does this first)
 cargo xtask shipped-code
 # only say whether the embedded shipped code is current
@@ -244,6 +270,14 @@ cargo run -p ns-analyzer -- inspect app.img --full
 ```
 
 ```bash
+# what the JIT does while the program runs, one line per event on stderr;
+# --trace=all for every category, --trace-filter to narrow it to methods
+cargo run --release -p ns-cli -- run --trace=compile,optimize,deoptimize benchmarks/are-we-fast-yet/newspeak -- Richards
+# a method's bytecode and machine code, each listing between `--- <kind>` and `--- end`
+cargo run --release -p ns-cli -- run --print-bytecode --print-code "--print-filter=Richards>>..." benchmarks/are-we-fast-yet/newspeak -- Richards
+```
+
+```bash
 # time main:args: alone, a fresh application assembled untimed for every
 # sample; measure with --release, never a debug build
 cargo run --release -p ns-cli -- bench benchmarks/micro/bench_loop.ns --iterations 30
@@ -261,7 +295,7 @@ cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet/newspeak -- Ri
 # let the harness measure itself: runs per second after a warm-up
 cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/newspeak -- --timed
 # the same, as tests: every benchmark verified at its full size
-cargo nextest run -p ns-cli --profile benchmarks
+cargo nextest run -p ns-cli --profile benchmarks-verify
 ```
 
 `ns-next <command> --help` and `ns-next-analyzer <command> --help` document the
@@ -275,10 +309,13 @@ crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core librar
 crates/ns-cli        the `ns-next` binary: runs, packages and times programs
 crates/ns-analyzer   the `ns-next-analyzer` binary: the language server, parse, disasm, inspect; never runs a program
 crates/ns-tooling    what both binaries share: loading and resolving a source, collecting `.ns` files, diagnostics
-crates/ns-memory     reserved, committed and protected memory: the only crate with unsafe
+crates/ns-memory     reserved, committed and protected memory, the JIT's code zone: the only crate with unsafe
+crates/ns-assembler  the JIT's machine operations and their x64 and AArch64 encoders
+xtask/               the repository's own tasks: the gates, shipped-code, mcp
 editors/jetbrains/   the JetBrains plugin, over ns-next-analyzer (see its README.md)
 corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
+benchmarks/          Are We Fast Yet with its Java and Python counterparts, and the microbenchmarks
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology

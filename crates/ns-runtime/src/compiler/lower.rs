@@ -2785,6 +2785,7 @@ impl<'a> Lowerer<'a> {
             return super::body_too_large(self.kind, self.argument_count, source, limit);
         }
         let metadata = self.collected.take().map(|collected| BodyMetadata {
+            source,
             variables: self.collected_variables(&collected.names).into(),
             statements: collected.statements.into(),
             sends: collected.sends.into(),

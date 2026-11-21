@@ -7,6 +7,7 @@ import com.intellij.openapi.options.colors.ColorDescriptor
 import com.intellij.openapi.options.colors.ColorSettingsPage
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakIcons
+import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
 import javax.swing.Icon
 
 class NewspeakColorSettingsPage : ColorSettingsPage {
@@ -44,6 +45,12 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.class"), NewspeakColors.CLASS_NAME),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.method.declaration"), NewspeakColors.METHOD_DECLARATION),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.send"), NewspeakColors.SEND),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.1"), LINKED_STATEMENT_COLORS[0]),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.2"), LINKED_STATEMENT_COLORS[1]),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.3"), LINKED_STATEMENT_COLORS[2]),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.4"), LINKED_STATEMENT_COLORS[3]),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.5"), LINKED_STATEMENT_COLORS[4]),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("devtool.linked.6"), LINKED_STATEMENT_COLORS[5]),
     )
 
     override fun getAdditionalHighlightingTagToDescriptorMap(): Map<String, TextAttributesKey> = mapOf(

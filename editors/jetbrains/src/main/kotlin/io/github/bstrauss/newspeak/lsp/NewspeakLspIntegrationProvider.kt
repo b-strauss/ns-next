@@ -39,11 +39,14 @@ class NewspeakLspIntegrationProvider : LspIntegrationProvider, PluginAware {
      * Newspeak file merely selected in the project view would otherwise find
      * no server to ask for its structure. `LspClientManager.startClientsIfNeeded`
      * is no help there: it calls `fileOpened` for the files open in editors
-     * only. Starting a client already running does nothing.
+     * only. Starting a client already running does nothing. Answers false
+     * where no server binary is found, which a notice then says, and
+     * nothing will start.
      */
-    fun startClient(project: Project) {
-        val descriptor = descriptorFor(project) ?: return
+    fun startClient(project: Project): Boolean {
+        val descriptor = descriptorFor(project) ?: return false
         LspClientManager.getInstance(project).ensureClientStarted(NewspeakLspIntegrationProvider::class.java, descriptor)
+        return true
     }
 
     private fun descriptorFor(project: Project): NewspeakLspClientDescriptor? =

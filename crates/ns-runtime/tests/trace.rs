@@ -9,10 +9,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use indoc::{formatdoc, indoc};
+use ns_runtime::trace_events::descriptions::source_checksum;
 use ns_runtime::trace_events::{
-    CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause, HoldReason,
-    InlineDecline, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason, SiteState,
-    VacateCause,
+    BodyDescription, BodyName, CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger,
+    Deferral, FreeCause, HoldReason, InlineDecline, InvalidationCause, OsrRefusal,
+    RecompileWalkEnd, RetireReason, SiteState, VacateCause,
 };
 use ns_runtime::{
     Command, DebugRemote, HostResult, HostSignal, Interpreter, LineBreakpoint, ModuleName,
@@ -37,6 +38,7 @@ fn tracing(categories: TraceCategories, filter: TraceFilter) -> TraceSettings {
         filter,
         printing: Printing::default(),
         print_filter: TraceFilter::everything(),
+        describe_bodies: false,
     }
 }
 
@@ -251,7 +253,7 @@ fn traced_made_by(
 fn about<'events>(events: &'events [TraceEvent], body: &str) -> Vec<&'events TraceEvent> {
     events
         .iter()
-        .filter(|event| event.body.as_deref() == Some(body))
+        .filter(|event| event.body.as_ref().map(|body| body.name.as_str()) == Some(body))
         .collect()
 }
 
@@ -502,7 +504,7 @@ fn the_filter_keeps_one_body() {
     assert!(
         events
             .iter()
-            .all(|event| event.body.as_deref() == Some("Test>>a")),
+            .all(|event| event.body.as_ref().map(|body| body.name.as_str()) == Some("Test>>a")),
         "{events:?}"
     );
 }
@@ -642,7 +644,7 @@ fn a_hot_loop_is_traced_requested_and_optimized() {
                 && matches!(
                     &event.kind,
                     TraceEventKind::Inlined { in_body, callee, .. }
-                        if in_body == "Test>>run" && callee == "Test>>step:"
+                        if in_body.name == "Test>>run" && callee.name == "Test>>step:"
                 )),
         "{events:?}"
     );
@@ -762,7 +764,7 @@ fn declines_of_no_body_are_folded_per_copy() {
                 callee,
                 reason: InlineDecline::OverWeight,
                 ..
-            } if callee == "[] in Test>>run"
+            } if callee.name == "[] in Test>>run"
         )),
         "the heavy block declined on its own: {events:?}"
     );
@@ -1799,7 +1801,7 @@ fn a_compile_the_exhausted_zone_holds_is_traced_once() {
     // Between two holds of one body, a compile of it.
     let mut held_since_compiled: HashSet<&str> = HashSet::new();
     for event in &events {
-        let Some(body) = event.body.as_deref() else {
+        let Some(body) = event.body.as_ref().map(|body| body.name.as_str()) else {
             continue;
         };
         match event.kind {
@@ -2157,7 +2159,7 @@ fn a_request_a_reclaimed_id_drops_is_traced_dropped() {
     );
     let requested = |events: &[TraceEvent]| {
         events.iter().any(|event| {
-            event.body.as_deref() == Some("Subject/Box.Cell>>count")
+            event.body.as_ref().map(|body| body.name.as_str()) == Some("Subject/Box.Cell>>count")
                 && matches!(event.kind, TraceEventKind::OptimizationRequested { .. })
         })
     };
@@ -2188,5 +2190,630 @@ fn a_request_a_reclaimed_id_drops_is_traced_dropped() {
             } if key == "Subject/Box.Cell"
         )),
         "{events:?}"
+    );
+}
+
+/// What a describing sink received, in order.
+enum Received {
+    Body(BodyDescription),
+    Event(TraceEvent),
+}
+
+/// A sink that keeps every description and event it receives, in order.
+struct Describing(Rc<RefCell<Vec<Received>>>);
+
+impl TraceSink for Describing {
+    fn event(&mut self, event: &TraceEvent) {
+        self.0.borrow_mut().push(Received::Event(event.clone()));
+    }
+
+    fn body(&mut self, description: &BodyDescription) {
+        self.0
+            .borrow_mut()
+            .push(Received::Body(description.clone()));
+    }
+}
+
+/// What `source`'s `run` delivers to a describing sink, the events of
+/// `categories`, the bodies described when `describe_bodies` says so, the
+/// JIT and optimize stress modes off as `traced` has them.
+fn received(source: &str, categories: &[TraceCategory], describe_bodies: bool) -> Vec<Received> {
+    received_made_by(source, Factory::Plain, categories, describe_bodies)
+}
+
+/// `received`, the instance made by `factory`.
+fn received_made_by(
+    source: &str,
+    factory: Factory,
+    categories: &[TraceCategory],
+    describe_bodies: bool,
+) -> Vec<Received> {
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::new(Describing(Rc::clone(&received)));
+    let categories = categories
+        .iter()
+        .fold(TraceCategories::default(), |set, category| {
+            set.with(*category)
+        });
+    run_source_made_by(
+        source,
+        factory,
+        |interpreter| {
+            interpreter.set_jit_stress(false);
+            interpreter.set_optimize_stress(false);
+            interpreter.set_optimization_budget(i64::MAX);
+            interpreter.set_trace(
+                TraceSettings {
+                    describe_bodies,
+                    ..tracing(categories, TraceFilter::everything())
+                },
+                sink,
+            );
+        },
+        |_| false,
+    );
+    received.take()
+}
+
+/// The events of `received`, in order.
+fn events_of(received: &[Received]) -> Vec<&TraceEvent> {
+    received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Event(event) => Some(event),
+            Received::Body(_) => None,
+        })
+        .collect()
+}
+
+/// The description of the body named `name` in `received`.
+fn description_of<'received>(
+    received: &'received [Received],
+    name: &str,
+) -> &'received BodyDescription {
+    received
+        .iter()
+        .find_map(|item| match item {
+            Received::Body(description) if description.body.name == name => Some(description),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{name}` is described"))
+}
+
+/// A method with two blocks, each sent often enough to be compiled.
+const TWO_BLOCKS: &str = indoc! {"
+    class Demo = Object new () (
+      public run = (
+        | sum ::= 0. count ::= 0. |
+        self each: [:each | sum:: sum + each].
+        self each: [:each | count:: count + 1].
+        ^sum + count.
+      )
+
+      each: block = (
+        1 to: 1000 do: [:index | block value: index].
+      )
+    )
+"};
+
+/// Every body the trace names carries one number, which no other body
+/// carries, and the first number is 1.
+#[test]
+fn bodies_are_numbered_once_per_run() {
+    let events = traced(
+        HOT,
+        &[TraceCategory::Compile],
+        TraceFilter::everything(),
+        |_| {},
+    );
+    let bodies: Vec<&BodyName> = events
+        .iter()
+        .filter_map(|event| event.body.as_ref())
+        .collect();
+    assert!(!bodies.is_empty(), "{events:?}");
+    let mut by_name = std::collections::HashMap::new();
+    let mut by_number = std::collections::HashMap::new();
+    for body in &bodies {
+        assert_eq!(
+            *by_name.entry(body.name.as_str()).or_insert(body.number),
+            body.number,
+            "one name, one number: {events:?}"
+        );
+        assert_eq!(
+            *by_number.entry(body.number).or_insert(body.name.as_str()),
+            body.name,
+            "one number, one name: {events:?}"
+        );
+    }
+    assert_eq!(by_number.keys().min(), Some(&1), "{events:?}");
+}
+
+/// Two blocks of one method share a name, `[] in Demo>>run`, and each
+/// has a number of its own.
+#[test]
+fn blocks_of_one_method_get_numbers_of_their_own() {
+    let events = traced(
+        TWO_BLOCKS,
+        &[TraceCategory::Compile],
+        TraceFilter::everything(),
+        |_| {},
+    );
+    let numbers: HashSet<u32> = about(&events, "[] in Demo>>run")
+        .into_iter()
+        .filter(|event| matches!(event.kind, TraceEventKind::Compiled { .. }))
+        .filter_map(|event| event.body.as_ref().map(|body| body.number))
+        .collect();
+    assert_eq!(numbers.len(), 2, "{events:?}");
+}
+
+/// A body is described before the first event that names it, and once.
+#[test]
+fn a_description_precedes_the_first_mention() {
+    let received = received(
+        TWO_BLOCKS,
+        &[TraceCategory::Compile, TraceCategory::Osr],
+        true,
+    );
+    let mut described = HashSet::new();
+    let mut named = 0;
+    for item in &received {
+        match item {
+            Received::Body(description) => {
+                assert!(
+                    described.insert(description.body.number),
+                    "{} described twice",
+                    description.body.number
+                );
+            }
+            Received::Event(event) => {
+                if let Some(body) = &event.body {
+                    named += 1;
+                    assert!(
+                        described.contains(&body.number),
+                        "{event:?} before its body's description"
+                    );
+                }
+            }
+        }
+    }
+    assert!(named > 0, "an event names a body");
+}
+
+/// A block's description names its family's root, which the cache
+/// transitions of the block's sites name, and which is described before
+/// it; a root's names none.
+#[test]
+fn a_block_is_described_with_its_family() {
+    let received = received(
+        TWO_BLOCKS,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let run = description_of(&received, "Demo>>run");
+    assert_eq!(run.family, None);
+    let blocks: Vec<&BodyDescription> = received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) if description.body.name == "[] in Demo>>run" => {
+                Some(description)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocks.len(), 2, "both blocks described");
+    for block in &blocks {
+        assert_eq!(block.family.as_ref(), Some(&run.body), "{block:?}");
+    }
+    let position = |number: u32| {
+        received.iter().position(
+            |item| matches!(item, Received::Body(description) if description.body.number == number),
+        )
+    };
+    assert!(position(run.body.number) < position(blocks[0].body.number));
+}
+
+/// A program's body is described with its module, its source, its
+/// checksum, its statements and its sends, every span in bytes of the
+/// module's text.
+#[test]
+fn a_description_carries_ranges_and_sends() {
+    // `run`, entered once, is named by its sites' transitions.
+    let received = received(
+        TWO_BLOCKS,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let run = description_of(&received, "Demo>>run");
+    assert_eq!(run.module.id, "Demo");
+    assert_eq!(run.module.version, None);
+    assert_eq!(run.shipped_path, None);
+    let text = TWO_BLOCKS;
+    let slice = |span: ns_syntax::Span| &text[span.start as usize..span.end as usize];
+    let source = slice(run.source);
+    assert!(
+        source.contains("run = (") && source.ends_with(')'),
+        "{source}"
+    );
+    assert_eq!(run.checksum, source_checksum(source.as_bytes()));
+    assert!(!run.statements.is_empty(), "the statements described");
+    let selectors = |description: &BodyDescription| -> Vec<Vec<&str>> {
+        description
+            .sends
+            .iter()
+            .map(|send| send.selector.iter().map(|span| slice(*span)).collect())
+            .collect()
+    };
+    assert!(
+        run.sends
+            .iter()
+            .any(|send| slice(send.call).starts_with("self each:") && send.site.is_some()),
+        "the sends described: {:?}",
+        selectors(run)
+    );
+    let each = description_of(&received, "Demo>>each:");
+    assert!(
+        selectors(each).contains(&vec!["to:", "do:"]),
+        "the loop's send described: {:?}",
+        selectors(each)
+    );
+}
+
+/// A method an edit replaces, and a closure its old version made that
+/// runs on after the install, its sends filling caches before and after.
+const AN_EDITED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Subject = Object new () (
+        public maker = (
+          ^[:index | index max: 1].
+        )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods
+            addFromSource: 'public helper = ( ^0 )';
+            addFromSource: 'public maker = (
+          ^[:index | index max: 2] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        ^sum + (self later: 1000).
+      )
+
+      later: count = (
+        | total ::= 0. |
+        1 to: count do: [:index | total:: total + (index max: 3)].
+        ^total.
+      )
+    ) : ()
+"};
+
+/// The descriptions of the bodies named `name` in `received`, in order.
+fn descriptions_of<'received>(
+    received: &'received [Received],
+    name: &str,
+) -> Vec<&'received BodyDescription> {
+    received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) if description.body.name == name => Some(description),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `span`, a span of `description`'s own text, in the module's current
+/// text the description hands, where it holds the body's source.
+fn in_current(description: &BodyDescription, span: ns_syntax::Span) -> &str {
+    let current = description
+        .current
+        .as_ref()
+        .expect("the current text handed");
+    let start = span.start - description.source.start + current.source.start;
+    let end = span.end - description.source.start + current.source.start;
+    &current.text[start as usize..end as usize]
+}
+
+/// A body is described in the text it was compiled from, whatever edit
+/// was installed before its description, with its statements and sends:
+/// the body an edit compiled in the module's text as the edit left it,
+/// which the description hands; a body the edit superseded, which that
+/// text no longer holds, in the program's text, by its own spans,
+/// compiled again from its own source; and a body below the edit, which
+/// it moved, in the program's text too, the current text handed with
+/// where it holds the body now.
+#[test]
+fn an_edited_module_describes_each_body_in_its_own_text() {
+    let received = received_made_by(
+        AN_EDITED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let makers = descriptions_of(&received, "Demo/Subject>>maker");
+    let placed = makers
+        .iter()
+        .find(|maker| maker.current.is_some())
+        .expect("the edit's maker described");
+    let current = placed.current.as_ref().unwrap();
+    assert_eq!(
+        current.source, placed.source,
+        "the edit's own text is current"
+    );
+    let source = in_current(placed, placed.source);
+    assert!(source.contains("index max: 2"), "{source}");
+    assert_eq!(placed.checksum, source_checksum(source.as_bytes()));
+    assert!(current.text.contains("public helper = ( ^0 )"));
+    assert!(!placed.statements.is_empty(), "the statements described");
+    let slice = |span: ns_syntax::Span| &AN_EDITED_MAKER[span.start as usize..span.end as usize];
+    let superseded = makers
+        .iter()
+        .find(|maker| maker.current.is_none())
+        .expect("the superseded maker described");
+    let own = slice(superseded.source);
+    assert!(own.contains("index max: 1"), "{own}");
+    assert_eq!(superseded.checksum, source_checksum(own.as_bytes()));
+    assert!(
+        superseded
+            .statements
+            .iter()
+            .any(|statement| slice(statement.span).starts_with("^[:index | index max: 1]")),
+        "compiled again from its own source: {superseded:?}"
+    );
+    // First described after the install, which added lines above it.
+    let later = description_of(&received, "Demo>>later:");
+    let own = slice(later.source);
+    assert!(own.starts_with("later: count = ("), "{own}");
+    assert_eq!(later.checksum, source_checksum(own.as_bytes()));
+    assert_ne!(
+        later.current.as_ref().map(|current| current.source),
+        Some(later.source),
+        "the edit moved it"
+    );
+    assert_eq!(in_current(later, later.source), own);
+    assert!(
+        later
+            .sends
+            .iter()
+            .any(|send| slice(send.call).starts_with("1 to: count do:")
+                && send
+                    .selector
+                    .iter()
+                    .map(|token| slice(*token))
+                    .eq(["to:", "do:"])),
+        "the loop's send in the program's text: {later:?}"
+    );
+    assert!(
+        later
+            .statements
+            .iter()
+            .any(|statement| slice(statement.span) == "^total"),
+        "{later:?}"
+    );
+}
+
+/// A method an edit replaces with one that differs only in its comment,
+/// while a closure the old version made runs on.
+const A_RECOMMENTED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Subject = Object new () (
+        public maker = (
+          (* the first *)
+          ^[:index | index max: 1].
+        )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods addFromSource: 'public maker = (
+          (* the second, which is longer *)
+          ^[:index | index max: 1] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A body whose current counterpart compiles alike but is laid out
+/// otherwise -- a comment edited inside it -- is described with its
+/// statements and sends counted in its own source, compiled again from
+/// it, never moved across the text laid out differently.
+#[test]
+fn a_body_whose_counterpart_differs_in_layout_keeps_its_metadata() {
+    let received = received_made_by(
+        A_RECOMMENTED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let slice =
+        |span: ns_syntax::Span| &A_RECOMMENTED_MAKER[span.start as usize..span.end as usize];
+    let old = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_none())
+        .expect("the superseded maker described");
+    assert!(slice(old.source).contains("the first"), "{old:?}");
+    assert!(
+        old.statements
+            .iter()
+            .any(|statement| slice(statement.span) == "^[:index | index max: 1]"),
+        "{old:?}"
+    );
+    let old_block = descriptions_of(&received, "[] in Demo/Subject>>maker")
+        .into_iter()
+        .find(|block| block.current.is_none())
+        .expect("the superseded maker's block described");
+    assert!(
+        old_block
+            .sends
+            .iter()
+            .any(|send| slice(send.call) == "index max: 1"
+                && send.selector.iter().map(|token| slice(*token)).eq(["max:"])),
+        "{old_block:?}"
+    );
+    let new = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_some())
+        .expect("the edit's maker described");
+    assert!(in_current(new, new.source).contains("the second"));
+    assert!(
+        new.statements
+            .iter()
+            .any(|statement| in_current(new, statement.span) == "^[:index | index max: 1]"),
+        "{new:?}"
+    );
+}
+
+/// A method one edit compiles, which a later edit of a class above it
+/// moves down in the module's text before it first runs.
+const A_MOVED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Earlier = Object new () (
+        public first = ( ^1 )
+      )
+
+      class Subject = Object new () (
+        public maker = ( ^[:index | index max: 1] )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          sum ::= 0.
+        |
+        self install: Subject with: 'public maker = ( ^[:index | index max: 2] )'.
+        self install: Earlier with: 'public second = (
+          ^2 )'.
+        1 to: 1000 do: [:index | sum:: sum + (subject maker value: index)].
+        ^sum.
+      )
+
+      install: class with: source = (
+        | builder = (ClassMirror reflecting: class) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: source.
+        builder install.
+      )
+    ) : ()
+"};
+
+/// A body one edit compiled and a later edit moved -- its own text held
+/// nowhere, its source the same -- is handed the module's current text
+/// with where its member's declaration there holds its source, its
+/// statements and sends with it.
+#[test]
+fn a_body_a_later_edit_moved_is_placed_where_its_source_stands() {
+    let received = received_made_by(
+        A_MOVED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let maker = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_some())
+        .expect("the first edit's maker described");
+    let current = maker.current.as_ref().unwrap();
+    assert_ne!(current.source, maker.source, "the second edit moved it");
+    assert!(current.text.contains("public second = ("));
+    let source = in_current(maker, maker.source);
+    assert_eq!(source, "public maker = ( ^[:index | index max: 2] )");
+    assert_eq!(maker.checksum, source_checksum(source.as_bytes()));
+    assert!(
+        maker
+            .statements
+            .iter()
+            .any(|statement| in_current(maker, statement.span) == "^[:index | index max: 2]"),
+        "{maker:?}"
+    );
+    let block = descriptions_of(&received, "[] in Demo/Subject>>maker")
+        .into_iter()
+        .find(|block| block.current.is_some())
+        .expect("its block described");
+    assert!(
+        block
+            .sends
+            .iter()
+            .any(|send| in_current(block, send.call) == "index max: 2"),
+        "{block:?}"
+    );
+}
+
+/// A shipped body is described with its path among the library's files.
+#[test]
+fn a_shipped_body_names_its_library_path() {
+    let source = indoc! {"
+        class Demo = Object new () (
+          public run = (
+            | sum ::= 0. |
+            1 to: 1000 do: [:index | sum:: sum + (index max: 3)].
+            ^sum.
+          )
+        )
+    "};
+    let received = received(source, &[TraceCategory::Compile], true);
+    let compiled = events_of(&received)
+        .into_iter()
+        .find_map(|event| match (&event.body, &event.kind) {
+            (Some(body), TraceEventKind::Compiled { .. })
+                if body.name.starts_with("newspeak.core.Kernel/") =>
+            {
+                Some(body.number)
+            }
+            _ => None,
+        })
+        .expect("a kernel body compiled");
+    let description = received
+        .iter()
+        .find_map(|item| match item {
+            Received::Body(description) if description.body.number == compiled => Some(description),
+            _ => None,
+        })
+        .expect("the kernel body described");
+    assert_eq!(description.shipped_path.as_deref(), Some("Kernel.ns"));
+    assert_eq!(description.module.id, "newspeak.core.Kernel");
+}
+
+/// Without `describe_bodies`, no body is described, and the events still
+/// number their bodies.
+#[test]
+fn nothing_is_described_unless_asked() {
+    let received = received(HOT, &[TraceCategory::Compile], false);
+    assert!(
+        received
+            .iter()
+            .all(|item| matches!(item, Received::Event(_))),
+        "a body described"
+    );
+    let events = events_of(&received);
+    assert!(events.iter().any(|event| event.body.is_some()));
+    assert!(
+        events
+            .iter()
+            .filter_map(|event| event.body.as_ref())
+            .all(|body| body.number >= 1)
     );
 }

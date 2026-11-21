@@ -54,12 +54,14 @@ class PassCountPanel<P, B : XBreakpoint<P>> : XBreakpointCustomPropertiesPanel<B
 
     override fun getComponent(): JComponent = panel
 
+    // A breakpoint the platform made without properties -- of a type that
+    // answered none -- shows no pass count and keeps none.
     override fun loadFrom(breakpoint: B) {
-        field.text = breakpoint.properties.passCount.orEmpty()
+        field.text = breakpoint.properties?.passCount.orEmpty()
     }
 
     override fun saveTo(breakpoint: B) {
-        val properties = breakpoint.properties
+        val properties: P = breakpoint.properties ?: return
         val passCount = field.text.trim().takeIf(String::isNotEmpty)
         if (properties.passCount == passCount) return
         properties.passCount = passCount

@@ -1119,6 +1119,493 @@ fn a_print_filter_needs_a_print_option() {
     assert!(stderr.contains("--print-filter"), "stderr: {stderr}");
 }
 
+/// Every body number `record` names, at any depth: a record's `body`, an
+/// event's `in-body`, `callee` and `spent-by`, a listing's bodies and
+/// scopes and a decline's callee.
+fn body_numbers(record: &serde_json::Value, numbers: &mut Vec<u64>) {
+    match record {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                match (name.as_str(), value.as_u64()) {
+                    ("body" | "in-body" | "callee" | "spent-by", Some(number)) => {
+                        numbers.push(number);
+                    }
+                    _ => body_numbers(value, numbers),
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                body_numbers(value, numbers);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `--trace-file` writes the trace and the listings into the file, not on
+/// stderr: a header first, then every body described before any record
+/// names its number.
+#[test]
+fn trace_file_holds_header_bodies_and_events() {
+    let Some((directory, program)) = hot_method_program("trace-file") else {
+        return;
+    };
+    let file = directory.join("trace.jsonl");
+    let stderr = traced_stderr(
+        &program,
+        &[
+            "--trace=compile",
+            "--print-bytecode",
+            "--print-filter=Demo...",
+            &format!("--trace-file={}", file.display()),
+        ],
+    );
+    assert!(!stderr.contains("[compile]"), "stderr: {stderr}");
+    assert!(!stderr.contains("--- bytecode"), "stderr: {stderr}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.ends_with('\n'), "{text}");
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}")))
+        .collect();
+    assert_eq!(records[0]["kind"], "header", "{text}");
+    assert_eq!(records[0]["format"], "ns-next-trace", "{text}");
+    assert_eq!(records[0]["version"], 1, "{text}");
+    let mut described = std::collections::BTreeMap::new();
+    let mut compiled_square = false;
+    let mut listed_demo = false;
+    for record in &records[1..] {
+        if record["kind"] == "body" {
+            let number = record["body"].as_u64().unwrap();
+            assert!(
+                described.insert(number, record.clone()).is_none(),
+                "described twice: {record}"
+            );
+            continue;
+        }
+        let mut numbers = Vec::new();
+        body_numbers(record, &mut numbers);
+        for number in numbers {
+            assert!(
+                described.contains_key(&number),
+                "body {number} named before it is described: {record}"
+            );
+        }
+        let name_of = |key: &str| {
+            record[key]
+                .as_u64()
+                .and_then(|number| described.get(&number))
+                .map(|body| body["name"].clone())
+        };
+        if record["kind"] == "event" && record["event"] == "compiled" {
+            compiled_square |= name_of("body").is_some_and(|name| name == "Demo>>square:");
+        }
+        if record["kind"] == "bytecode" {
+            let name = name_of("body").unwrap();
+            assert!(name.as_str().unwrap().starts_with("Demo"), "{record}");
+            listed_demo = true;
+        }
+    }
+    assert!(compiled_square, "{text}");
+    assert!(listed_demo, "{text}");
+    let square = described
+        .values()
+        .find(|body| body["name"] == "Demo>>square:")
+        .unwrap();
+    assert_eq!(
+        square["source"]["file"],
+        std::path::absolute(&program).unwrap().display().to_string(),
+        "{square}"
+    );
+    assert_eq!(square["range"][0], 1, "{square}");
+    assert_eq!(square["placed"], "source", "{square}");
+}
+
+/// A program that replaces `maker` with a version a line shorter, preceded
+/// by an added method, while a closure the old version made runs on, and
+/// then first runs `later:`, which the edit moved down in the module's
+/// text and left as the file has it.
+const AN_EDITED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Subject = Object new () (
+        public maker = (
+          ^[:index |
+            index max: 1].
+        )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods
+            addFromSource: 'public helper = ( ^0 )';
+            addFromSource: 'public maker = ( ^[:index | index max: 2] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        platform transcript show: (sum + (later: 1000)) printString; newLine.
+      )
+
+      later: count = (
+        | total ::= 0. |
+        1 to: count do: [:index | total:: total + (index max: 3)].
+        ^total.
+      )
+    )
+"};
+
+/// The FNV-1a 64 of `text` with every `\r` left out, as a `body` record's
+/// checksum writes it.
+fn checksum_of(text: &str) -> String {
+    let hash = text
+        .bytes()
+        .filter(|byte| *byte != b'\r')
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("{hash:016x}")
+}
+
+/// Where `part` starts in `AN_EDITED_MAKER`, as a range's line and
+/// column count it.
+fn edited_maker_position(part: &str) -> (usize, usize) {
+    position_in(AN_EDITED_MAKER, part)
+}
+
+/// Where `part` starts in `text`, as a range's line and column count it.
+fn position_in(text: &str, part: &str) -> (usize, usize) {
+    let offset = text.find(part).unwrap();
+    let before = &text[..offset];
+    let line = before.matches('\n').count();
+    let column = offset - before.rfind('\n').map_or(0, |end| end + 1);
+    (line, column)
+}
+
+/// The `body` records of a traced run of `source`, which prints
+/// `stdout`, with `--trace=compile,caches`.
+fn described_bodies(name: &str, source: &str, stdout: &str) -> Vec<serde_json::Value> {
+    let directory = ScratchDirectory::new(name);
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, source).unwrap();
+    let file = directory.join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=compile,caches".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
+    std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["kind"] == "body")
+        .collect()
+}
+
+/// A program whose `maker` an edit replaces with one that differs only
+/// in its comment, while a closure the old version made runs on.
+const A_RECOMMENTED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Subject = Object new () (
+        public maker = (
+          (* the first *)
+          ^[:index | index max: 1].
+        )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods addFromSource: 'public maker = (
+          (* the second, which is longer *)
+          ^[:index | index max: 1] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        platform transcript show: sum printString; newLine.
+      )
+    )
+"};
+
+/// The body an edit that changed only a comment superseded keeps its
+/// statements and sends, at their lines in the file.
+#[test]
+fn a_recommented_body_keeps_its_statements_in_the_file() {
+    let bodies = described_bodies("trace-file-recomment", A_RECOMMENTED_MAKER, "1001000\n");
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "public maker");
+    let old = bodies
+        .iter()
+        .find(|record| record["name"] == "Demo/Subject>>maker" && record["range"][0] == line)
+        .unwrap_or_else(|| panic!("the superseded maker at its file line: {bodies:?}"));
+    assert_eq!(old["range"][1], column, "{old}");
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "^[:index | index max: 1].");
+    assert!(
+        old["statements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|statement| statement["range"][0] == line && statement["range"][1] == column),
+        "its statement at its file line: {old}"
+    );
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "index max: 1].\n");
+    assert!(
+        bodies.iter().any(|record| {
+            record["name"] == "[] in Demo/Subject>>maker"
+                && record["sends"].as_array().unwrap().iter().any(|send| {
+                    send["call"] == serde_json::json!([line, column, line, column + 12])
+                })
+        }),
+        "its block's send at its file line: {bodies:?}"
+    );
+}
+
+/// A program whose `maker` one edit compiles and an edit of the class
+/// above moves down before it first runs.
+const A_MOVED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Earlier = Object new () (
+        public first = ( ^1 )
+      )
+
+      class Subject = Object new () (
+        public maker = ( ^[:index | index max: 1] )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          sum ::= 0.
+        |
+        self install: Subject with: 'public maker = ( ^[:index | index max: 2] )' using: ClassMirror.
+        self install: Earlier with: 'public second = (
+          ^2 )' using: ClassMirror.
+        1 to: 1000 do: [:index | sum:: sum + (subject maker value: index)].
+        platform transcript show: sum printString; newLine.
+      )
+
+      install: class with: source using: ClassMirror = (
+        | builder = (ClassMirror reflecting: class) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: source.
+        builder install.
+      )
+    )
+"};
+
+/// A body one edit compiled and a later edit moved, whose text the file
+/// never held, is placed where the module's current text holds it, its
+/// statements and its block's send with it, each within its line.
+#[test]
+fn a_moved_body_is_placed_where_its_source_stands() {
+    let bodies = described_bodies("trace-file-moved", A_MOVED_MAKER, "500501\n");
+    let source = "public maker = ( ^[:index | index max: 2] )";
+    let maker = bodies
+        .iter()
+        .find(|record| {
+            record["name"] == "Demo/Subject>>maker" && record["checksum"] == checksum_of(source)
+        })
+        .unwrap_or_else(|| panic!("the first edit's maker described: {bodies:?}"));
+    let range = &maker["range"];
+    assert!(range.is_array(), "{maker}");
+    assert_eq!(maker["placed"], "current", "{maker}");
+    assert_eq!(range[0], range[2], "one line: {maker}");
+    let start = range[1].as_u64().unwrap();
+    assert_eq!(range[3].as_u64().unwrap() - start, source.len() as u64);
+    let statement = &maker["statements"][0]["range"];
+    assert_eq!(statement[0], range[0], "{maker}");
+    let offset = source.find("^[").unwrap() as u64;
+    assert_eq!(statement[1].as_u64().unwrap(), start + offset, "{maker}");
+}
+
+/// Every body is described in the text it was compiled from, whatever
+/// edit was installed during the traced run: the body the edit compiled
+/// in the module's text as the edit left it -- its range one line, as its
+/// new source is, and its checksum that source's -- and the body the edit
+/// superseded and a body the edit moved down, both compiled from the file,
+/// at their lines in the file, so that a reader places each where its
+/// text stands.
+#[test]
+fn an_edited_body_is_described_in_its_own_text() {
+    let directory = ScratchDirectory::new("trace-file-edit");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, AN_EDITED_MAKER).unwrap();
+    let file = directory.join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=caches".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1501504\n");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let bodies: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["kind"] == "body")
+        .collect();
+    let makers: Vec<&serde_json::Value> = bodies
+        .iter()
+        .filter(|record| record["name"] == "Demo/Subject>>maker")
+        .collect();
+    let new_source = "public maker = ( ^[:index | index max: 2] )";
+    let placed = makers
+        .iter()
+        .find(|maker| maker["checksum"] == checksum_of(new_source))
+        .unwrap_or_else(|| panic!("the edit's maker described: {text}"));
+    let range = &placed["range"];
+    assert!(range.is_array(), "{placed}");
+    // Its ranges count in the edited text, which the file does not hold.
+    assert_eq!(placed["placed"], "current", "{placed}");
+    assert_eq!(range[0], range[2], "one line: {placed}");
+    assert_eq!(
+        range[3].as_u64().unwrap() - range[1].as_u64().unwrap(),
+        new_source.len() as u64,
+        "{placed}"
+    );
+    let old_source = "public maker = (\n      ^[:index |\n        index max: 1].\n    )";
+    let superseded = makers
+        .iter()
+        .find(|maker| maker["checksum"] == checksum_of(old_source))
+        .unwrap_or_else(|| panic!("the superseded maker described: {text}"));
+    let (line, column) = edited_maker_position("public maker");
+    assert_eq!(
+        superseded["range"],
+        serde_json::json!([line, column, line + 3, 5]),
+        "{superseded}"
+    );
+    assert_eq!(superseded["placed"], "source", "{superseded}");
+    let later = bodies
+        .iter()
+        .find(|record| record["name"] == "Demo>>later:")
+        .unwrap_or_else(|| panic!("`later:` described: {text}"));
+    let (line, column) = edited_maker_position("later: count");
+    assert_eq!(later["range"][0], line, "the file's line: {later}");
+    assert_eq!(later["range"][1], column, "{later}");
+    assert_eq!(later["placed"], "source", "{later}");
+    let (loop_line, loop_column) = edited_maker_position("1 to: count");
+    assert!(
+        later["sends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|send| send["call"][0] == loop_line && send["call"][1] == loop_column),
+        "the loop's send at its line in the file: {later}"
+    );
+}
+
+/// A program whose loop runs the core library's `inject:into:` and
+/// `collect:`, each with a block of its own.
+const A_LIBRARY_LOOP: &str = indoc! {"
+    class Demo = Object new () (
+      public main: platform args: arguments = (
+        |
+          sum ::= 0.
+          list = platform collections List new.
+        |
+        1 to: 10 do: [:index | list add: index].
+        1 to: 2000 do: [:round |
+          sum:: sum + (list inject: 0 into: [:total :each | total + each]).
+          sum:: sum + (list collect: [:each | each]) size].
+        platform transcript show: sum printString; newLine.
+      )
+    )
+"};
+
+/// A block of a core library method is placed in the library's text, as
+/// its root is, inside its root's range.
+#[test]
+fn a_library_block_is_placed_in_the_library() {
+    let bodies = described_bodies("trace-file-library-block", A_LIBRARY_LOOP, "130000\n");
+    let blocks: Vec<&serde_json::Value> = bodies
+        .iter()
+        .filter(|record| {
+            record["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("[] in newspeak.core."))
+        })
+        .collect();
+    assert!(!blocks.is_empty(), "a library block described: {bodies:?}");
+    for block in blocks {
+        assert_eq!(block["placed"], "source", "{block}");
+        assert!(block["source"]["library"].is_string(), "{block}");
+        let range = &block["range"];
+        assert!(range.is_array(), "{block}");
+        let root = bodies
+            .iter()
+            .find(|record| record["body"] == block["family"])
+            .unwrap_or_else(|| panic!("its root described: {block}"));
+        let position = |range: &serde_json::Value, index: usize| {
+            (
+                range[index].as_u64().unwrap(),
+                range[index + 1].as_u64().unwrap(),
+            )
+        };
+        assert!(
+            position(&root["range"], 0) <= position(range, 0),
+            "{block} in {root}"
+        );
+        assert!(
+            position(range, 2) <= position(&root["range"], 2),
+            "{block} in {root}"
+        );
+    }
+}
+
+/// `--trace-file` holds what a trace or a print option writes, so it is
+/// refused without one.
+#[test]
+fn trace_file_needs_something_to_trace() {
+    let stderr = refused_stderr("trace-file-alone", &["--trace-file=x.jsonl"]);
+    assert!(stderr.contains("--trace-file"), "stderr: {stderr}");
+}
+
+/// A trace file that cannot be created is refused, naming it, before the
+/// program runs.
+#[test]
+fn an_uncreatable_trace_file_is_refused() {
+    let directory = ScratchDirectory::new("trace-file-uncreatable");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let file = directory.join("missing").join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=compile".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("`{}`", file.display())),
+        "stderr: {stderr}"
+    );
+    assert!(!file.exists());
+}
+
 /// A method that answers a constant, sent a hundred times so that the
 /// baseline JIT compiles it.
 #[cfg(all(target_arch = "x86_64", target_os = "windows"))]

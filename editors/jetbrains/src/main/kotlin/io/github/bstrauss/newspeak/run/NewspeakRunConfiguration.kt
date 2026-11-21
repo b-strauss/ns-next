@@ -14,20 +14,44 @@ import com.intellij.execution.process.KillableColoredProcessHandler
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.SettingsEditor
+import com.intellij.openapi.options.SettingsEditorGroup
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.lsp.api.LspClient
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.NewspeakDebuggeeProcessHandler
+import io.github.bstrauss.newspeak.devtool.DEVELOPER_TOOL_OPTION_PREFIXES
+import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
+import io.github.bstrauss.newspeak.devtool.LISTING_KINDS
+import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
+import io.github.bstrauss.newspeak.devtool.TraceFilters
+import io.github.bstrauss.newspeak.devtool.TracedRuns
+import io.github.bstrauss.newspeak.devtool.WatchedMethods
+import io.github.bstrauss.newspeak.devtool.programModules
+import io.github.bstrauss.newspeak.devtool.projectModuleEntries
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** The ns-next subcommand a Newspeak run configuration starts. */
 enum class NewspeakCommand(val subcommand: String) {
@@ -46,16 +70,22 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     var script by string()
     var programArguments by string()
 
-    /** Options of ns-next itself, placed before the program: `--trace=…`, `--trace-filter=…`, `--print-code`. */
+    /** Options of ns-next itself, placed before the program, but for those the Developer Tool tab owns. */
     var runtimeOptions by string()
     var iterations by property(10)
+
+    /** The names of the trace categories a run asks for, of `TRACE_CATEGORIES`. */
+    var traceCategories by list<String>()
+    var printBytecode by property(false)
+    var printCode by property(false)
+    var printInlining by property(false)
 }
 
 /** Runs `ns-next run` or `ns-next bench` on a project or a module, with the runtime the plugin's settings name. */
 class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, name: String) :
     RunConfigurationBase<NewspeakRunConfigurationOptions>(project, factory, name) {
 
-    override fun getOptions(): NewspeakRunConfigurationOptions = super.getOptions() as NewspeakRunConfigurationOptions
+    public override fun getOptions(): NewspeakRunConfigurationOptions = super.getOptions() as NewspeakRunConfigurationOptions
 
     var program: String?
         get() = options.program
@@ -116,9 +146,28 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         false
     }
 
-    override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> = NewspeakRunConfigurationEditor()
+    /** Whether a run of this configuration, never a benchmark, asks ns-next for a trace or a listing. */
+    fun tracesAnything(): Boolean = command == NewspeakCommand.RUN && (
+        options.traceCategories.isNotEmpty() || options.printBytecode || options.printCode || options.printInlining
+        )
+
+    override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
+        SettingsEditorGroup<NewspeakRunConfiguration>().apply {
+            val editor = NewspeakRunConfigurationEditor()
+            val tab = DeveloperToolTab(project)
+            editor.onCommandChanged(tab::showCommand)
+            addEditor(NewspeakBundle.message("run.configuration.editor.tab.title"), editor)
+            addEditor(NewspeakBundle.message("devtool.tab.title"), tab)
+        }
 
     override fun checkConfiguration() {
+        // The tab owns these; the same option twice would trace twice, or be refused by ns-next at the start.
+        val owned = ParametersListUtil.parse(runtimeOptions.orEmpty()).firstOrNull { token ->
+            DEVELOPER_TOOL_OPTION_PREFIXES.any(token::startsWith)
+        }
+        if (owned != null) {
+            throw RuntimeConfigurationError(NewspeakBundle.message("run.configuration.error.developer.tool.option", owned.substringBefore('=')))
+        }
         val runtime = locateRuntime(NewspeakSettings.getInstance().state.runtimePath)
         if (runtime !is RuntimeLocation.Found) {
             throw RuntimeConfigurationError(runtimeProblem(runtime), ::openNewspeakSettings)
@@ -173,13 +222,127 @@ class NewspeakRunState(
      */
     var debugSecret: String? = null
 
+    /** Under Run and Debug alike: the debug runner starts its process through this state too. */
     override fun startProcess(): ProcessHandler {
-        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress)
-        debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
-        val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
-        ProcessTerminatedListener.attach(handler)
-        return handler
+        val filters = watchedFilters()
+        return TracedRuns.getInstance(configuration.project).start(configuration, filters) { traceFile ->
+            val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, traceFile, filters)
+            debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
+            val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
+            ProcessTerminatedListener.attach(handler)
+            handler
+        }
     }
+
+    /**
+     * The watched methods as they stand at the start, a later change
+     * applying to the next run, narrowed to the patterns this run's
+     * program and the binary have a module for, which ns-next would
+     * refuse otherwise. Asking the server for the program's modules may
+     * wait for it to start, once for the whole start: on the event dispatch
+     * thread under a modal progress, and on another thread, where a wait is
+     * possible, under a background progress that says why and can be
+     * cancelled.
+     */
+    private fun watchedFilters(): TraceFilters {
+        val watched = WatchedMethods.getInstance(configuration.project)
+        if (watched.entries.isEmpty() || !configuration.tracesAnything()) return TraceFilters.EVERYTHING
+        val programFile = programFilePath(configuration)?.let(LocalFileSystem.getInstance()::findFileByNioFile)
+        val identities = watched.moduleIdentities()
+        val read = { programModules(programFile, identities) }
+        val modules = when {
+            ApplicationManager.getApplication().isDispatchThread -> ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                ThrowableComputable<Map<String, Set<String>>, RuntimeException> { read() },
+                NewspeakBundle.message("devtool.watched.methods.reading"),
+                true,
+                configuration.project,
+            )
+            watched.mayWaitForServer() -> readUnderProgress(read, readBound(programFile)) { programModules(programFile) { null } }
+            else -> read()
+        }
+        val filters = watched.filters(modules)
+        nothingTracedNotice(configuration, filters, watched.droppedPatterns(modules))?.let { content ->
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("Newspeak")
+                .createNotification(NewspeakBundle.message("devtool.watched.nothing.traced.title"), content, NotificationType.WARNING)
+                .notify(configuration.project)
+        }
+        return filters
+    }
+
+    /**
+     * [read] under a background progress, cancellable, waited for here at
+     * most [boundMilliseconds]; [cancelled] where the progress was
+     * cancelled before it ran, or did not end in time.
+     */
+    private fun readUnderProgress(
+        read: () -> Map<String, Set<String>>,
+        boundMilliseconds: Long,
+        cancelled: () -> Map<String, Set<String>>,
+    ): Map<String, Set<String>> {
+        val result = CompletableFuture<Map<String, Set<String>>>()
+        object : Task.Backgroundable(configuration.project, NewspeakBundle.message("devtool.watched.methods.reading"), true) {
+            override fun run(indicator: ProgressIndicator) {
+                try {
+                    result.complete(read())
+                } catch (exception: Throwable) {
+                    // A cancelled read leaves the modules unknown, as a cancelled wait does; any other failure is the start's.
+                    if (exception is ProcessCanceledException) result.complete(cancelled()) else result.completeExceptionally(exception)
+                    throw exception
+                }
+            }
+
+            override fun onCancel() {
+                if (!result.isDone) result.complete(cancelled())
+            }
+        }.queue()
+        return awaitRead(result, boundMilliseconds, cancelled)
+    }
+}
+
+/**
+ * The longest a run's start waits for its program's modules to be read
+ * through the server: its start's wait and a request for each module
+ * [programFile] names, and a second for the task to be scheduled.
+ */
+internal fun readBound(programFile: VirtualFile?): Long {
+    val modules = if (programFile?.name == PROJECT_FILE_NAME) projectModuleEntries(programFile)?.size ?: 0 else 1
+    return WatchedMethods.CLIENT_START_MILLISECONDS + modules * LspClient.DEFAULT_REQUEST_TIMEOUT_MS + SCHEDULING_MILLISECONDS
+}
+
+/** What [readBound] allows a background task to start in. */
+private const val SCHEDULING_MILLISECONDS = 1_000L
+
+/**
+ * [result] once it is done, waited for at most [boundMilliseconds]: a
+ * task the platform dropped without running it or telling of its cancel
+ * -- its project disposed before it started -- answers [cancelled], as a
+ * cancel does, rather than hold the start for ever. A failed read's error
+ * is the start's.
+ */
+internal fun awaitRead(
+    result: CompletableFuture<Map<String, Set<String>>>,
+    boundMilliseconds: Long,
+    cancelled: () -> Map<String, Set<String>>,
+): Map<String, Set<String>> = try {
+    result.get(boundMilliseconds, TimeUnit.MILLISECONDS)
+} catch (_: TimeoutException) {
+    cancelled()
+} catch (exception: java.util.concurrent.ExecutionException) {
+    throw exception.cause ?: exception
+}
+
+/**
+ * What the run says where the watched entries it [dropped] -- those that
+ * name no module the run knows of -- leave [filters] tracing and listing
+ * nothing that [configuration] asks for: the entries named, as
+ * notification text; null where the run traces something, or traces
+ * nothing by its own settings.
+ */
+fun nothingTracedNotice(configuration: NewspeakRunConfiguration, filters: TraceFilters, dropped: List<String>): String? {
+    if (dropped.isEmpty() || !configuration.tracesAnything() || writesTrace(configuration, filters)) return null
+    val named = dropped.joinToString(", ") { pattern -> StringUtil.escapeXmlEntities(pattern) }
+    return NewspeakBundle.message("devtool.watched.nothing.traced.content", named)
 }
 
 /** `crates/ns-cli/src/debug/agent.rs`'s `SECRET_VARIABLE`: where ns-next --debug-connect takes the secret it returns. */
@@ -260,8 +423,14 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
 }
 
 /** The process a Newspeak run configuration starts: [newspeakCommandLine], in the program file's directory. */
-fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): GeneralCommandLine =
-    GeneralCommandLine(newspeakCommandLine(runtime, configuration, debugAddress))
+fun newspeakProcessCommandLine(
+    runtime: Path,
+    configuration: NewspeakRunConfiguration,
+    debugAddress: String? = null,
+    traceFile: Path? = null,
+    filters: TraceFilters = TraceFilters.EVERYTHING,
+): GeneralCommandLine =
+    GeneralCommandLine(newspeakCommandLine(runtime, configuration, debugAddress, traceFile, filters))
         .withWorkDirectory(workingDirectory(configuration)?.toFile())
         // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
         .withCharset(StandardCharsets.UTF_8)
@@ -271,12 +440,20 @@ fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfigur
  * is tested without starting anything. With [debugAddress], ns-next
  * connects to the debugger listening there (`--debug-connect`) rather than
  * listening itself, so that no port of the program is open to another
- * process.
+ * process. The Developer Tool tab's options follow, narrowed by [filters],
+ * with the record of the trace in [traceFile]; `bench` takes none of them.
  */
-fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): List<String> = buildList {
+fun newspeakCommandLine(
+    runtime: Path,
+    configuration: NewspeakRunConfiguration,
+    debugAddress: String? = null,
+    traceFile: Path? = null,
+    filters: TraceFilters = TraceFilters.EVERYTHING,
+): List<String> = buildList {
     add(runtime.toString())
     add(configuration.command.subcommand)
     debugAddress?.let { address -> add("--debug-connect=$address") }
+    if (configuration.command == NewspeakCommand.RUN) addAll(developerToolOptions(configuration, traceFile, filters))
     // Each token as is: `--trace-filter` is repeatable, one pattern per occurrence.
     addAll(ParametersListUtil.parse(configuration.runtimeOptions.orEmpty()))
     // One token, so a name starting with `-` is not read as an option.
@@ -289,4 +466,46 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, 
         add("--")
         addAll(arguments)
     }
+}
+
+/**
+ * Whether a run of [configuration] narrowed by [filters] traces or lists
+ * anything, and so writes a trace file: ns-next refuses one otherwise.
+ */
+fun writesTrace(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    configuration.command == NewspeakCommand.RUN && (tracesEvents(configuration, filters) || printsListings(configuration, filters))
+
+private fun tracedCategories(configuration: NewspeakRunConfiguration): List<String> =
+    TRACE_CATEGORIES.filter { name -> name in configuration.options.traceCategories }
+
+private fun listedKinds(configuration: NewspeakRunConfiguration): List<String> {
+    val options = configuration.options
+    return LISTING_KINDS.filter { kind ->
+        when (kind) {
+            "bytecode" -> options.printBytecode
+            "code" -> options.printCode
+            else -> options.printInlining
+        }
+    }
+}
+
+private fun tracesEvents(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    tracedCategories(configuration).isNotEmpty() && !filters.noEvents
+
+private fun printsListings(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    listedKinds(configuration).isNotEmpty() && !filters.noListings
+
+/** The options of the Developer Tool tab; each filter follows only the kind it narrows, which ns-next refuses to filter otherwise. */
+private fun developerToolOptions(configuration: NewspeakRunConfiguration, traceFile: Path?, filters: TraceFilters): List<String> = buildList {
+    val categories = tracedCategories(configuration)
+    if (tracesEvents(configuration, filters)) {
+        add(if (categories.size == TRACE_CATEGORIES.size) "--trace=all" else "--trace=${categories.joinToString(",")}")
+        filters.events.forEach { pattern -> add("--trace-filter=$pattern") }
+    }
+    if (printsListings(configuration, filters)) {
+        listedKinds(configuration).forEach { kind -> add("--print-$kind") }
+        filters.listings.forEach { pattern -> add("--print-filter=$pattern") }
+    }
+    // ns-next refuses a trace file when nothing is traced or printed.
+    if (traceFile != null && writesTrace(configuration, filters)) add("--trace-file=$traceFile")
 }

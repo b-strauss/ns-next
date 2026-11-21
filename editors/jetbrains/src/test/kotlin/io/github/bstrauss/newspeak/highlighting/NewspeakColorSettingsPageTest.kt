@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.highlighting
 
 import com.intellij.psi.TokenType
+import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
 import io.github.bstrauss.newspeak.lexer.lexAll
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -35,6 +36,6 @@ class NewspeakColorSettingsPageTest {
 
     @Test fun everyKeyHasADescriptor() {
         val described = page.getAttributeDescriptors().map { descriptor -> descriptor.key }.toSet()
-        assertEquals(NewspeakColors.ALL.toSet(), described)
+        assertEquals((NewspeakColors.ALL + LINKED_STATEMENT_COLORS).toSet(), described)
     }
 }

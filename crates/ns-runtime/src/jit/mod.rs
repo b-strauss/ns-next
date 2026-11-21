@@ -6599,6 +6599,14 @@ fn optimize(
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
     if mutator.jit.tracer.traces(TraceCategory::Inlining)
         && let Some(decisions) = decisions.as_ref()
+        // Where plans are printed, the events go wherever their plan goes:
+        // a compile whose plan `record_plan` withholds traces none, since
+        // where the plan is the only outcome a reader hears, a withheld one
+        // would leave them waiting for the next compile of the same copy,
+        // whose plan would conclude both (`developer-tool.md`, "The
+        // inlining events and a withheld plan").
+        && (!mutator.jit.tracer.prints_inlining()
+            || inlined_scopes(mutator, decisions).is_some())
     {
         trace_inlining(mutator, code, key, decisions);
     }
@@ -11710,6 +11718,7 @@ mod tests {
                         ..Printing::default()
                     },
                     print_filter: TraceFilter::everything(),
+                    describe_bodies: false,
                 },
                 Box::new(ListingCollector(Rc::clone(&listings))),
             );

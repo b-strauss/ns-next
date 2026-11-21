@@ -563,6 +563,34 @@ class NewspeakDebugProcess(
         return client.request("nsNext/forceReturn", arguments).whenComplete { _, failure -> if (failure != null) refused(failure) }
     }
 
+    /**
+     * The code [frame] stands in, as the agent lists it (`nsNext/frameCode`):
+     * its bytecode marked where the frame stands and, where it goes on in
+     * machine code, that code marked where its call returns. The future
+     * completes on the connection's thread; a refusal -- a frame the stop
+     * no longer has -- fails it.
+     */
+    internal fun frameCode(frame: NewspeakStackFrame): CompletableFuture<FrameCode> {
+        val client = client ?: return CompletableFuture.failedFuture(IllegalStateException("not connected"))
+        return client.request("nsNext/frameCode", JsonObject().apply { addProperty("frameId", frame.id) }).thenApply { response ->
+            FrameCode(
+                response.get("body").asString,
+                response.get("bytecode").asString,
+                response.get("machineCode")?.takeUnless { element -> element.isJsonNull }?.asString,
+            )
+        }
+    }
+
+    /** The frame-code tab that follows the session's selected frame, none while there is none. */
+    internal var frameCodeFollower: FrameCodeFollower? = null
+
+    /**
+     * What lasts while the session does -- the frame-code tab's follower --:
+     * disposed at its `stop()`, and with the project at the latest, so that
+     * a project closed without a stop leaks nothing.
+     */
+    internal val sessionLifetime = Disposer.newDisposable(NewspeakSkippedClasses.getInstance(session.project), "Newspeak debug session")
+
     override fun startPausing() {
         val client = client ?: return
         client.request("pause", JsonObject().apply { addProperty("threadId", THREAD_ID) })
@@ -627,6 +655,7 @@ class NewspeakDebugProcess(
     override fun stop() {
         ended = true
         Disposer.dispose(stepFiltersSubscription)
+        Disposer.dispose(sessionLifetime)
         Disposer.dispose(memoryView)
         handler.terminateThroughDebugger = null
         serverSocket.close()
@@ -735,3 +764,6 @@ object NewspeakDebuggerEditorsProvider : XDebuggerEditorsProvider() {
         mode: EvaluationMode,
     ): Document = EditorFactory.getInstance().createDocument(expression.expression)
 }
+
+/** A frame's code as the agent lists it: the [body]'s name, its [bytecode] and its [machineCode], null for a frame that goes on in the interpreter. */
+data class FrameCode(val body: String, val bytecode: String, val machineCode: String?)

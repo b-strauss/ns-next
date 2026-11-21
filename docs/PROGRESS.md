@@ -67,7 +67,7 @@ first.
 | The debugger: designed in seventeen decisions and six stages; stage 1, the debugging API at the safepoint -- a remote that pauses the program from another thread wherever it runs, the poll words as atomics and the request word as a set of bits, one arming lock per interpreter, the commands served while running, the stop that deoptimizes an optimized poll, the stack and values read at it, continue and terminate, the pause stress mode; stage 2, the metadata -- selector spans in the syntax tree, both lowerers collecting statement starts, sends and variables over a block's whole lexical chain, a declaration's level compiled again and paired by its code, the weak per-body cache, frames named and placed with named variables, the oracle over every golden and shipped body; stage 3, breakpoints and stepping -- slots patched in place with their originals beside them, line breakpoints pending until their module is built and set again at an install, the machine code a patch frees and the fast path it switches off, step over, into and out by one-shot breakpoints and a held request, the step filters, a step whose frame leaves otherwise going on as a step into, the value of the last call, named by its call, run to cursor, method breakpoints, exception breakpoints and `halt`, the breakpoint and step stress modes; stage 4, the debugger in the IDE -- `ns-next run` and `load` with `--debug` behind a token and `--debug-connect`, the DAP agent in `ns-cli` over the remote's two halves, hit counts counted by the VM, a module's text by revision, the language server's breakable lines, the agent's writes through a writer thread of each connection's, every write and frame bounded, and the plugin's DAP client, `XDebugProcess`, which trusts only the process it started, by its PID and a one-time secret, and line, method and exception breakpoints; then four bugs the user met in the IDE fixed -- Debug at the play button, an instance's fields named by their slots, a step out of a block leaving the send that took it, a step passing over the factory and going on in the program's next host run; then the header stops and the core library in the IDE; then the returned value named by its call and the step filters chosen per project; stage 5, evaluation and what rests on it -- an expression compiled as a block standing at a stopped frame's program counter and pushed above it, its depth reserve and its abort, setting a variable and the refusal of one a block may have copied, conditions and logpoints decided where the hit is counted, restart frame and force return through the one unwinder, smart step into, marks, the memory view and the shipped frames folded, in the VM, the DAP agent and the plugin, and `ns-next mcp`, through which an agent debugs a program | In progress | 2026-11-11 (stage 1), 2026-11-12 (stage 2), 2026-11-13 (stage 3), 2026-11-14 (stage 4), 2026-11-15 (the IDE fixes, the header stops, the returned value's name), 2026-11-17 (stage 5) | [debugger-stage-1](superpowers/plans/2026-11-10-2318-debugger-stage-1.md), [debugger-stage-2](superpowers/plans/2026-11-12-0030-debugger-stage-2.md), [debugger-stage-3](superpowers/plans/2026-11-12-2359-debugger-stage-3.md), [debugger-stage-4](superpowers/plans/2026-11-14-1235-debugger-stage-4.md), [debugger-header-stops](superpowers/plans/2026-11-15-1326-debugger-header-stops.md), [debugger-stage-5](superpowers/plans/2026-11-16-2110-debugger-stage-5.md) |
 | Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
-| The developer tool: designed in fifteen decisions and three stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace` and the plugin's runtime options; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code` | Partial (stages 1 and 2 of 3) | 2026-11-20 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md) |
+| The developer tool: designed in thirty-three decisions and four stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace`; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code`; stage 3, the IDE -- bodies numbered and described with their source positions, `ns-next run --trace-file`'s typed JSON lines, the analyzer's `newspeak/methodNames` and `newspeak/moduleIdentity`, and in the plugin the "Developer Tool" tab, watched methods, the "Newspeak JIT" tool window (Methods, Events, Code, Inlining), gutter state icons, inlay hints at the sends, code editor tabs linked to the source and Show Frame Code; then what the user met in the IDE -- closable run tabs that drop their data, the Code tab shown at once, its chooser's labels whole, its scroll with the editor in both directions on request, the frame's line coloured as the execution point, and a restored line breakpoint that keeps its properties | Partial (stages 1 to 3 of 4) | 2026-11-21 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md), [developer-tool-stage-3-the-ide](superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8527,3 +8527,92 @@ What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
 shell, next; the stress modes never asking a frame's code; the
 `inlining` category's and the plan's decline of every leaf the graph
 does not express; what the stage's reviews left.
+
+## The developer tool's stage 3: the IDE (2026-11-21)
+
+[developer-tool.md](design/developer-tool.md), decisions 17 to 33,
+"Stage 3: the developer tool in the IDE";
+[editor-support.md](design/editor-support.md), "Method names", "The
+project file and running projects"; [debugger.md](design/debugger.md),
+"The JetBrains plugin".
+
+Designed with the user on 2026-11-21, in seventeen decisions: the third
+of the developer tool's four stages, inserted before the shell, brings
+the trace and the listings into the JetBrains plugin. The runtime
+numbers every body a trace names, unique for the run and never reused
+for a body that took a dead one's address (`BodyName`, `BodyNames`), and
+on request -- `TraceSettings::describe_bodies`, which only the file sets
+-- describes each once before its first mention: its family root, its
+module and source, its range, a checksum of its source with every `\r`
+left out, and each statement's instructions and each send's site, call
+and selector, from the debugger's metadata. Nothing on the hot path
+changed: numbers are minted and descriptions made at the flush.
+`ns-next run --trace-file=<path>` writes the events and the listings
+into the file instead of standard error, one JSON object a line,
+flushed at the end of every flush, a path no file can be created at
+refused with exit status 2; the text trace and the listings are byte for
+byte what they were. The analyzer answers `newspeak/methodNames`, a
+document's methods by the tools' names, and `newspeak/moduleIdentity`.
+
+In the plugin, a run configuration's "Developer Tool" tab chooses the
+categories and listings a run asks for, the free field "Further runtime
+options" refusing the options the tab owns; a project-wide list of
+watched methods, made in the editor's and the gutter's menus and as an
+intention, narrows them, every pattern naming no module of the run's
+program left out. Run and Debug hand a traced run a temporary file,
+which a reader follows into a `TraceRun` off the event dispatch thread,
+shown in a tab of the "Newspeak JIT" tool window -- Methods, Events,
+Code, Inlining -- and in the editor as a state icon at each method's
+header and inlay hints at the sends, both riding on range markers and
+stale by the bodies' checksums; the Code tab and its editor tabs link
+the source, the bytecode and the machine code statement by statement;
+and Show Frame Code opens a stopped frame's code in a tab that follows
+the selected frame.
+
+No golden, `run-corpus` outcome, image or instruction encoding changed.
+`crates/ns-runtime/tests/trace.rs` pins the numbers and descriptions,
+`crates/ns-cli/src/trace_file.rs` and `tests/cli.rs` the records,
+`crates/ns-analyzer/tests/protocol.rs` the two requests, the plugin's
+tests under `test` the tab, the watched methods, the reader, the model,
+the tool window's views and the decorations, `debugProcessTest` Show
+Frame Code, and `traceFileTest`, a task of its own, a traced run end to
+end with the real runtime.
+
+The commit gates passed on every commit (`commit`, with `analyzer`
+where the analyzer changed). The end-of-batch gates passed on the final
+tree at their first run, nothing to fix:
+- `images` 2,196 tests;
+- `caches` 549;
+- `benchmarks` 177;
+- `release-checks` 7,624, with both lints;
+- `codegen`, every budget held;
+- `stress`: the suite under the fifteen stress modes and with
+  `NS_NEXT_NO_JIT=1`, 3,880 tests each (WIDE 5,683), and `run-corpus`
+  "ran 6, failed 0, skipped 205" plain and under each mode;
+- `plugin-verification`, compatible with all six IDEs it checks.
+
+The Docker groups did not run: the stage changed no machine code, no
+code of `ns-memory` or `ns-assembler` and no decoder.
+
+- `794fd46a`, `6556831e` -- the decisions and the plan
+  (`docs/superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md`).
+- `f55c342a` -- the trace numbers its bodies and describes them on
+  request.
+- `9769f761` -- a bytecode listing lists each body's instructions.
+- `41de95bd`, `9727823f` -- `ns-next run --trace-file`.
+- `cd8aa8a0`, `0e737b1a` -- the run configuration's "Developer Tool" tab.
+- `33bc4d0f`, `01fb88cc` -- watched methods, named by the analyzer.
+- `8c103968`, `0c746d88`, `bb968e65` -- the trace file's reader and a
+  run's model.
+- `bf60a874` -- traced runs and the "Newspeak JIT" tool window.
+- `793ea55d`, `7113b499` -- the Methods, Events and Inlining tabs.
+- `40eac4cd`, `1fd1ba33`, `0ce1519a` -- gutter state icons and inlay
+  hints.
+- `39f0ff70`, `fa222e5e` -- the Code tab and the code editor tabs.
+- `04b373ba`, `8e555b5f` -- Show Frame Code.
+- `e6591aaa` -- a traced run end to end.
+- the last commit -- the documentation and the gate results.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 4, the
+shell, next; the MCP server and the trace file; what the stage's reviews
+left ("What the developer tool's stage 3 left").

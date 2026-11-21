@@ -3,19 +3,22 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use ns_runtime::{Printing, TraceFilter, TraceSettings};
+use ns_runtime::{Printing, TraceFilter, TraceSettings, TraceSink};
 
 use crate::debug::{self, DebugOptions, HostLink, HostStart};
-use crate::{entry, program, trace};
+use crate::{entry, program, trace, trace_file};
 
-/// `--trace`, `--trace-filter`, the print options and `--print-filter`
-/// as given: the categories, one pattern for each `--trace-filter`, the
-/// listings asked for, and one pattern for each `--print-filter`.
+/// `--trace`, `--trace-filter`, the print options, `--print-filter` and
+/// `--trace-file` as given: the categories, one pattern for each
+/// `--trace-filter`, the listings asked for, one pattern for each
+/// `--print-filter`, and the file the trace goes to instead of standard
+/// error.
 pub(crate) struct TraceOptions<'text> {
     pub(crate) categories: Option<&'text str>,
     pub(crate) filter: Vec<&'text str>,
     pub(crate) printing: Printing,
     pub(crate) print_filter: Vec<&'text str>,
+    pub(crate) file: Option<&'text Path>,
 }
 
 /// The status a refused option exits with, as the command line's own
@@ -89,14 +92,31 @@ pub(crate) fn execute(
                 return refuse_trace(&refusal);
             }
         }
+        // Created once every option is known good and before anything of
+        // the program runs, so that a path no file can be created at is
+        // refused as a malformed filter is. The file replaces standard
+        // error (decision 20), and only its reader needs the bodies'
+        // positions.
+        let categories = trace_categories.unwrap_or_default();
+        let sink: Box<dyn TraceSink> = match trace_options.file {
+            Some(path) => {
+                let modules = trace_file::ModuleSources::new(program::debug_modules(&program));
+                match trace_file::create(path, modules, categories, printing) {
+                    Ok(sink) => Box::new(sink),
+                    Err(refusal) => return refuse_trace(&refusal),
+                }
+            }
+            None => Box::new(trace::StandardErrorSink),
+        };
         loaded.interpreter.set_trace(
             TraceSettings {
-                categories: trace_categories.unwrap_or_default(),
+                categories,
                 filter: trace_filter,
                 printing,
                 print_filter,
+                describe_bodies: trace_options.file.is_some(),
             },
-            Box::new(trace::StandardErrorSink),
+            sink,
         );
     }
     let link = match &debug {

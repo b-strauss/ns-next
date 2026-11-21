@@ -21,6 +21,7 @@ import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.util.xmlb.XmlSerializer
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebugSessionListener
@@ -31,6 +32,8 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.SuspendPolicy
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
+import com.intellij.xdebugger.impl.BreakpointManagerState
+import com.intellij.xdebugger.impl.breakpoints.XBreakpointManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
@@ -237,6 +240,70 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
             ),
             session.calls,
         )
+    }
+
+    // ---- What the workspace keeps ----
+
+    /**
+     * A line breakpoint restored from the workspace's state, as at the
+     * IDE's start, keeps its pass count and its block's column, and its
+     * properties panel loads and saves it.
+     */
+    fun testARestoredLineBreakpointKeepsItsProperties() {
+        val file = program("Lines", LINES)
+        addLineBreakpoint(file, 3, NewspeakLineBreakpointProperties().apply {
+            passCount = "3"
+            column = BLOCK_COLUMN
+        })
+        val manager = breakpoints as XBreakpointManagerImpl
+        val saved = runInEdtAndGet {
+            val state = manager.saveState(BreakpointManagerState())
+            // Through the XML the workspace file holds, so that nothing but what is written survives.
+            XmlSerializer.deserialize(XmlSerializer.serialize(state), BreakpointManagerState::class.java)
+        }
+        runInEdtAndWait {
+            WriteAction.run<Throwable> {
+                breakpoints.getBreakpoints(lineType()).toList().forEach(breakpoints::removeBreakpoint)
+            }
+            manager.loadState(saved)
+        }
+
+        val restored = runInEdtAndGet { breakpoints.getBreakpoints(lineType()).single() }
+        assertEquals(3, restored.line)
+        val properties = checkNotNull(restored.properties) { "the restored breakpoint has no properties" }
+        assertEquals("3", properties.passCount)
+        assertEquals(BLOCK_COLUMN, properties.column)
+
+        runInEdtAndWait {
+            val panel = PassCountPanel<NewspeakLineBreakpointProperties, XLineBreakpoint<NewspeakLineBreakpointProperties>>()
+            panel.loadFrom(restored)
+            panel.saveTo(restored)
+        }
+        assertEquals("3", restored.properties.passCount)
+        assertEquals(BLOCK_COLUMN, restored.properties.column)
+    }
+
+    /** A line breakpoint the platform made without properties shows the line and no pass count, and is sent as the line. */
+    fun testALineBreakpointWithoutPropertiesFailsNowhere() {
+        val file = program("Lines", LINES)
+        val bare = runInEdtAndGet {
+            WriteAction.compute<XLineBreakpoint<NewspeakLineBreakpointProperties>, Throwable> {
+                breakpoints.addLineBreakpoint(lineType(), file.url, 4, null)
+            }
+        }
+        assertNull(bare.properties)
+        runInEdtAndWait {
+            val panel = PassCountPanel<NewspeakLineBreakpointProperties, XLineBreakpoint<NewspeakLineBreakpointProperties>>()
+            panel.loadFrom(bare)
+            panel.saveTo(bare)
+            assertFalse(lineType().getDisplayText(bare).contains("block"))
+            assertNull(lineType().getHighlightRange(bare))
+        }
+        val agent = RecordingAgent { _ -> JsonParser.parseString("""{"breakpoints":[{"id":1,"verified":true,"line":5}]}""").asJsonObject }
+        val handler = NewspeakLineBreakpointHandler(RecordingSession().proxy)
+        handler.registerBreakpoint(bare)
+        handler.sendAll(agent.client).forEach { answer -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS) }
+        assertEquals(JsonParser.parseString("""[{"line":5}]"""), agent.requests("setBreakpoints").last().getAsJsonArray("breakpoints"))
     }
 
     fun testAMethodBreakpointIsSentByItsName() {

@@ -29,7 +29,7 @@ pub(crate) fn text(listing: &Listing) -> String {
     let mut text = String::new();
     match listing {
         Listing::Bytecode(bytecode) => {
-            let _ = writeln!(text, "--- bytecode {{{}}}", bytecode.body);
+            let _ = writeln!(text, "--- bytecode {{{}}}", bytecode.body.name);
             text.push_str(&bytecode.text);
             if !text.ends_with('\n') {
                 text.push('\n');
@@ -44,10 +44,10 @@ pub(crate) fn text(listing: &Listing) -> String {
 
 /// An instruction decoded: its offset in the body, its length in bytes
 /// and its text, every target in the body named by its offset.
-struct Decoded {
-    offset: u32,
-    length: u32,
-    text: String,
+pub(crate) struct Decoded {
+    pub(crate) offset: u32,
+    pub(crate) length: u32,
+    pub(crate) text: String,
 }
 
 /// An offset in the body as a listing writes it, `+0x` and at least four
@@ -122,7 +122,7 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
         .collect();
     while let Some((scope, depth)) = pending.pop() {
         let indent = "  ".repeat(depth);
-        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body);
+        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body.name);
         if let Some((parent, program_counter)) = scope.parent {
             let _ = write!(text, " at s{parent}@{program_counter}");
         }
@@ -142,7 +142,7 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
 }
 
 fn write_inlining(text: &mut String, inlining: &InliningListing) {
-    let _ = write!(text, "--- inlining {{{}}}", inlining.body);
+    let _ = write!(text, "--- inlining {{{}}}", inlining.body.name);
     write_key(text, inlining.key.as_ref());
     text.push('\n');
     write_scope_tree(text, &inlining.scopes);
@@ -163,7 +163,10 @@ fn write_inlining(text: &mut String, inlining: &InliningListing) {
             "  s{}@{} declined callee={{{}}} reason={}",
             declined.scope,
             declined.program_counter,
-            declined.callee.as_deref().unwrap_or(""),
+            declined
+                .callee
+                .as_ref()
+                .map_or("", |callee| callee.name.as_str()),
             declined.reason.name()
         );
     }
@@ -179,7 +182,7 @@ fn write_code(text: &mut String, code: &CodeListing) {
     let _ = write!(
         text,
         "--- code {{{}}} {} {}",
-        code.body,
+        code.body.name,
         code.tier.name(),
         code.architecture.name()
     );
@@ -197,18 +200,20 @@ fn write_code(text: &mut String, code: &CodeListing) {
         text.push_str("scopes:\n");
         write_scope_tree(text, &code.scopes);
     }
-    let mut positions = code.positions.iter().peekable();
-    let mut annotations = code.annotations.iter().peekable();
     let mut last_position = None;
-    for instruction in decoded(code) {
-        while let Some((_, position)) =
-            positions.next_if(|(offset, _)| *offset <= instruction.offset)
-        {
+    for AnnotatedInstruction {
+        instruction,
+        reached,
+        annotations,
+        ..
+    } in annotated(code)
+    {
+        for position in reached {
             // A stretch is named where its scope or program counter
             // changes; an instruction that emits no code leaves its
             // position beside the next one's, both named.
             if last_position != Some(position) {
-                write_position(text, code, *position, optimized);
+                write_position(text, code, position, optimized);
                 last_position = Some(position);
             }
         }
@@ -225,22 +230,11 @@ fn write_code(text: &mut String, code: &CodeListing) {
             body_offset(instruction.offset),
             instruction.text
         );
-        let end = instruction.offset.saturating_add(instruction.length);
-        while let Some((_, annotation)) = annotations.next_if(|(offset, _)| *offset < end) {
+        for annotation in annotations {
             let _ = write!(text, "  ; {}", annotation_text(annotation));
         }
         text.push('\n');
     }
-    // Neither names an offset past the last instruction: the code's
-    // positions and annotations lie within it.
-    debug_assert!(
-        positions.next().is_none(),
-        "a position past the last instruction"
-    );
-    debug_assert!(
-        annotations.next().is_none(),
-        "an annotation past the last instruction"
-    );
     if let Some((data_start, _)) = code.words.first() {
         text.push_str("data:\n");
         for (offset, word) in &code.words {
@@ -252,6 +246,63 @@ fn write_code(text: &mut String, code: &CodeListing) {
             );
         }
     }
+}
+
+/// An instruction of a code listing with what the listing says of it.
+pub(crate) struct AnnotatedInstruction<'code> {
+    pub(crate) instruction: Decoded,
+    /// The positions that start at or before the instruction and after
+    /// the one before it, in order: more than one where instructions
+    /// emitted no code.
+    pub(crate) reached: Vec<Position>,
+    /// The position in force at the instruction: the last one reached at
+    /// it or before; `None` before the first.
+    pub(crate) position: Option<Position>,
+    /// What each call or jump out of the instruction reaches, in order.
+    pub(crate) annotations: Vec<&'code Annotation>,
+}
+
+/// `code`'s instructions decoded, each with the positions and the
+/// annotations that fall to it: the one walk by which the text listing
+/// and the trace file both place them, so that the two never disagree.
+pub(crate) fn annotated(code: &CodeListing) -> Vec<AnnotatedInstruction<'_>> {
+    let mut positions = code.positions.iter().peekable();
+    let mut annotations = code.annotations.iter().peekable();
+    let mut position = None;
+    let walked = decoded(code)
+        .into_iter()
+        .map(|instruction| {
+            let mut reached = Vec::new();
+            while let Some((_, next)) =
+                positions.next_if(|(offset, _)| *offset <= instruction.offset)
+            {
+                reached.push(*next);
+                position = Some(*next);
+            }
+            let end = instruction.offset.saturating_add(instruction.length);
+            let mut falling = Vec::new();
+            while let Some((_, annotation)) = annotations.next_if(|(offset, _)| *offset < end) {
+                falling.push(annotation);
+            }
+            AnnotatedInstruction {
+                instruction,
+                reached,
+                position,
+                annotations: falling,
+            }
+        })
+        .collect();
+    // Neither names an offset past the last instruction: the code's
+    // positions and annotations lie within it.
+    debug_assert!(
+        positions.next().is_none(),
+        "a position past the last instruction"
+    );
+    debug_assert!(
+        annotations.next().is_none(),
+        "an annotation past the last instruction"
+    );
+    walked
 }
 
 /// The line that names the stretch of code from `position` on: its scope
@@ -271,7 +322,7 @@ fn write_position(text: &mut String, code: &CodeListing, position: Position, opt
     let listed = code.scopes.iter().find(|listed| listed.number == scope);
     text.push_str("  ");
     if optimized {
-        let body = listed.map_or("", |listed| listed.body.as_str());
+        let body = listed.map_or("", |listed| listed.body.name.as_str());
         let _ = write!(text, "s{scope} {{{body}}} ");
     }
     let _ = write!(text, "@{program_counter}");
@@ -293,7 +344,7 @@ fn write_position(text: &mut String, code: &CodeListing, position: Position, opt
 
 /// What a call or jump out of the body reaches, named so that no address
 /// of the run appears.
-fn annotation_text(annotation: &Annotation) -> String {
+pub(crate) fn annotation_text(annotation: &Annotation) -> String {
     match annotation {
         Annotation::Leaf(name) => format!("leaf {name}"),
         Annotation::Stub(name) => format!("stub {name}"),
@@ -308,7 +359,7 @@ fn annotation_text(annotation: &Annotation) -> String {
 
 /// What a data word holds, by its kind: its value is an address of the
 /// run.
-fn word_text(word: DataWord) -> String {
+pub(crate) fn word_text(word: DataWord) -> String {
     match word {
         DataWord::Budget => "budget word".to_string(),
         DataWord::DispatchingRows => "dispatching rows".to_string(),
@@ -363,10 +414,18 @@ fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use ns_runtime::trace_events::{
-        Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, CodeTier, CompileRefusal,
-        DataWord, InlineDecline, InliningListing, InliningOutcome, ListedArm, ListedDecline,
-        ListedScope, Position,
+        Annotation, Architecture, ArmKind, BodyName, BytecodeListing, CodeListing, CodeTier,
+        CompileRefusal, DataWord, InlineDecline, InliningListing, InliningOutcome, ListedArm,
+        ListedDecline, ListedScope, Position,
     };
+
+    /// `name`, numbered as a trace's first body is.
+    fn named(name: &str) -> BodyName {
+        BodyName {
+            number: 1,
+            name: name.to_string(),
+        }
+    }
 
     /// A scope numbered `number`, its body `body`, inlined at `parent`,
     /// with `instructions`' lines.
@@ -378,7 +437,7 @@ mod tests {
     ) -> ListedScope {
         ListedScope {
             number,
-            body: body.to_string(),
+            body: named(body),
             parent,
             instructions: instructions.iter().map(ToString::to_string).collect(),
         }
@@ -397,8 +456,9 @@ mod tests {
     #[test]
     fn a_bytecode_listing_is_the_disassembly_between_its_head_and_end() {
         let listing = Listing::Bytecode(BytecodeListing {
-            body: "Demo>>sum:".to_string(),
+            body: named("Demo>>sum:"),
             text: "method Demo>>sum: (args 1, registers 2)\n   0   stmt 0  Return r0\n".to_string(),
+            bodies: Vec::new(),
         });
         assert_eq!(
             text(&listing),
@@ -411,7 +471,7 @@ mod tests {
     #[test]
     fn an_inlining_listing_is_its_tree_its_arms_its_declines_and_its_outcome() {
         let mut inlining = InliningListing {
-            body: "Demo>>total".to_string(),
+            body: named("Demo>>total"),
             key: Some(("Demo/Account".to_string(), Some("Demo/Base".to_string()))),
             scopes: vec![
                 scope(0, "Demo>>total", None, &[]),
@@ -437,7 +497,7 @@ mod tests {
                 ListedDecline {
                     scope: 0,
                     program_counter: 11,
-                    callee: Some("Demo>>helper".to_string()),
+                    callee: Some(named("Demo>>helper")),
                     reason: InlineDecline::OverWeight,
                 },
                 ListedDecline {
@@ -482,7 +542,7 @@ mod tests {
     #[test]
     fn an_optimized_listing_names_its_scopes_and_shows_foreign_bytes_in_hex() {
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>total".to_string(),
+            body: named("Demo>>total"),
             tier: CodeTier::Optimized,
             key: Some(("Demo".to_string(), None)),
             architecture: foreign_architecture(),
@@ -551,7 +611,7 @@ mod tests {
     #[test]
     fn a_frame_s_listing_marks_the_instruction_it_returns_to() {
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>main:args:".to_string(),
+            body: named("Demo>>main:args:"),
             tier: CodeTier::Baseline,
             key: None,
             architecture: foreign_architecture(),
@@ -607,7 +667,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // the data word
         ];
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>square:".to_string(),
+            body: named("Demo>>square:"),
             tier: CodeTier::Baseline,
             key: None,
             architecture: Architecture::X64,

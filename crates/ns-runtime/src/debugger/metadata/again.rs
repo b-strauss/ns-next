@@ -43,13 +43,7 @@ pub(crate) struct BodyOrigin {
 pub(crate) enum Member {
     /// A method, or a lazy slot's getter, of the mixin's side.
     Method(Symbol),
-    Initializer(
-        #[expect(
-            dead_code,
-            reason = "a frame is named alike for every initializer body; a breakpoint's path is to name which"
-        )]
-        InitializerBody,
-    ),
+    Initializer(InitializerBody),
     SuperclassClause,
     /// The primary factory, whose body is synthesized from its arity
     /// (`compiler::factory_body`), so that a frame of it may run a body no
@@ -109,17 +103,42 @@ pub(crate) fn compile_level(
     running: &Rc<Mixin>,
     lowering: Lowering,
 ) -> Option<LevelAgain> {
+    compile_level_in(mutator, running, lowering, None).map(|(level, _)| level)
+}
+
+/// `compile_level`, from `text` in place of the module's current text
+/// where it is given -- a program module's text with one member's source
+/// replaced, which no cache keeps -- with the level compiled again beside
+/// it, which says where each member stands in the text. A shipped
+/// module's text is the binary's and is never replaced: `None` for one
+/// given another.
+pub(crate) fn compile_level_in(
+    mutator: &mut Mutator<'_>,
+    running: &Rc<Mixin>,
+    lowering: Lowering,
+    text: Option<String>,
+) -> Option<(LevelAgain, Mixin)> {
     let instance_id = declaration_id(mutator, running)?;
     let (module_root, path) = mutator.path_from_module_root(instance_id);
     // Asked of the module's root, not of `running`: a class side
     // synthesized for a shipped declaration is not marked shipped.
     let root_mixin = mutator.heap.mixin(module_root)?;
     let (resolved, source, module_text) = if root_mixin.shipped {
+        if text.is_some() {
+            return None;
+        }
         shipped_resolution(root_mixin.name.as_str())?
     } else {
-        let text = mutator.heap.module_source(module_root)?;
+        let (text, given) = match text {
+            Some(text) => (text, true),
+            None => (mutator.heap.module_source(module_root)?, false),
+        };
         let module = ns_syntax::parse(&text).ok()?;
-        let text = mutator.debug_metadata.module_text(module_root, text);
+        let text = if given {
+            Rc::from(text)
+        } else {
+            mutator.debug_metadata.module_text(module_root, text)
+        };
         // Never `resolve_kernel`: only shipped source records mirror
         // sends.
         let resolved = crate::resolver::resolve(
@@ -165,11 +184,28 @@ pub(crate) fn compile_level(
             pairing.side(&class_side, fresh.class_side.as_deref());
         }
     }
-    Some(LevelAgain {
-        pairs: pairing.pairs,
-        factory,
-        text: module_text,
-    })
+    let pairs = pairing.pairs;
+    Some((
+        LevelAgain {
+            pairs,
+            factory,
+            text: module_text,
+        },
+        fresh,
+    ))
+}
+
+/// The root body of `member` in `side`; `None` for the factory, whose
+/// body is synthesized from its arity and has no source.
+pub(crate) fn member_code(side: &Mixin, member: &Member) -> Option<Rc<CompiledCode>> {
+    match member {
+        Member::Method(selector) => side
+            .compiled_method(*selector)
+            .map(|method| Rc::clone(&method.code)),
+        Member::Initializer(kind) => kind.code_of(side),
+        Member::SuperclassClause => side.superclass_clause_code.clone(),
+        Member::Factory => None,
+    }
 }
 
 /// Every body of `declaration`'s level -- its methods, initializer
@@ -376,6 +412,8 @@ fn factory_again(declaration: &ast::ClassDeclaration) -> FactoryAgain {
     FactoryAgain {
         argument_count,
         metadata: Rc::new(BodyMetadata {
+            // A factory body has no source (`compiler::factory_body`).
+            source: Span::new(0, 0),
             statements: Box::new([]),
             sends: Box::new([]),
             block_sends: Box::new([]),

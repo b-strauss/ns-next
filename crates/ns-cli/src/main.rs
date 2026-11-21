@@ -18,6 +18,7 @@ mod program;
 mod project;
 mod target_runner;
 mod trace;
+mod trace_file;
 
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
@@ -71,6 +72,11 @@ enum Command {
             .multiple(true)
             .args(["print_bytecode", "print_code", "print_inlining"])
     ))]
+    #[command(group(
+        ArgGroup::new("traced")
+            .multiple(true)
+            .args(["trace", "print_bytecode", "print_code", "print_inlining"])
+    ))]
     Run {
         /// A `.ns` source file, a project directory or its `newspeak.json`;
         /// the current directory when omitted.
@@ -120,6 +126,11 @@ enum Command {
         /// the option is given, in `--trace-filter`'s syntax.
         #[arg(long, value_name = "PATTERN", requires = "printing")]
         print_filter: Vec<String>,
+        /// Write the trace and the listings into the file at PATH, one
+        /// JSON object a line, instead of on stderr: a body described
+        /// once with its source positions, then named by its number.
+        #[arg(long, value_name = "PATH", requires = "traced")]
+        trace_file: Option<PathBuf>,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -303,6 +314,7 @@ fn execute(command: Command) -> ExitCode {
             print_code,
             print_inlining,
             print_filter,
+            trace_file,
             script,
             debug,
             debug_connect,
@@ -322,6 +334,7 @@ fn execute(command: Command) -> ExitCode {
                     inlining: print_inlining,
                 },
                 print_filter: print_filter.iter().map(String::as_str).collect(),
+                file: trace_file.as_deref(),
             },
             script.as_deref(),
             debug::DebugOptions::from_arguments(debug, debug_connect),

@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.debugger
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
@@ -25,7 +26,10 @@ import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.impl.DocumentMarkupModel
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.xdebugger.ui.DebuggerColors
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.ui.TestDialogManager
@@ -39,6 +43,7 @@ import com.intellij.psi.PsiFileSystemItem
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
 import com.intellij.util.ThreeState
 import com.intellij.ui.ColoredTextContainer
@@ -73,6 +78,7 @@ import com.intellij.xdebugger.impl.settings.XDebuggerSettingManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
+import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRoots
@@ -868,6 +874,148 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
     }
 
     /**
+     * Show Frame Code opens a read-only tab with the selected frame's
+     * bytecode, marked where the frame stands, and the tab follows: the
+     * caller's frame, selected, shows the caller's body, and a step moves
+     * the mark.
+     */
+    fun testShowFrameCodeOpensTheFramesCodeAndFollowsSteps() {
+        val program = program("Restarting", RESTARTING)
+        toggleBreakpoint(program, line = 6)
+        val debugging = debug(program)
+        debugging.nextPause()
+        val session = debugging.session
+        val frames = framesOf(session)
+
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        val event = TestActionEvent.createTestEvent(action, context)
+        action.update(event)
+        assertTrue(event.presentation.isEnabled)
+        onEdt { action.actionPerformed(event) }
+
+        fun text(): String? = ReadAction.compute<String?, Throwable> {
+            FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().singleOrNull()
+                ?.let { file -> FileDocumentManager.getInstance().getDocument(file)?.text }
+        }
+        fun shown(what: String, accepts: (String) -> Boolean): String {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (true) {
+                text()?.takeIf(accepts)?.let { return it }
+                if (System.nanoTime() > deadline) throw AssertionError("$what not shown within $WAIT_SECONDS s: ${text()}")
+                Thread.sleep(POLL_MILLISECONDS)
+            }
+        }
+        fun mark(listing: String): Int? = Regex("""(\d+)->""").find(listing.substringBefore("--- end"))?.groupValues?.get(1)?.toInt()
+
+        val callee = shown("the callee's bytecode") { listing -> listing.contains("--- bytecode {Restarting>>compute:") }
+        val before = checkNotNull(mark(callee)) { callee }
+        assertTrue(callee, callee.contains(NewspeakBundle.message("devtool.frame.interpreted")) || callee.contains("--- code {"))
+
+        onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frames[1]) }
+        shown("the caller's bytecode") { listing -> listing.contains("--- bytecode {Restarting>>main:args:") }
+
+        onEdt { session.setCurrentStackFrame(checkNotNull(session.suspendContext).activeExecutionStack!!, frames[0]) }
+        shown("the callee's bytecode again") { listing -> listing.contains("--- bytecode {Restarting>>compute:") }
+        onEdt { session.stepOver(false) }
+        debugging.nextPause()
+        val after = shown("a moved mark") { listing -> listing.contains("Restarting>>compute:") && mark(listing) != before }
+        assertTrue(after, mark(after)!! > before)
+        // The marked line is coloured as the execution point, the one line.
+        val tab = runInEdtAndGet { FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().single() }
+        fun executionLines(): List<Int> = runInEdtAndGet {
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(tab))
+            DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+                .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+                .map { highlighter -> document.getLineNumber(highlighter.startOffset) }
+        }
+        assertEquals(listOf(FrameCodeFollower.markedLine(after)), executionLines())
+
+        onEdt { session.resume() }
+        debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        // The follower's end takes the colour away; the tab stays open with its last text.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (executionLines().isNotEmpty()) {
+            if (System.nanoTime() > deadline) throw AssertionError("the execution point's colour stays after the session's end")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+        assertTrue(runInEdtAndGet { FileEditorManager.getInstance(project).isFileOpen(tab) })
+    }
+
+    /** The frame-code tab colours no line while the program runs, and colours the marked one again at the next stop. */
+    fun testTheFrameCodeLineIsUncolouredWhileTheProgramRuns() {
+        val faked = fakeSession()
+        val listing = "--- bytecode {Demo>>run}\n   0   stmt 0  LoadLiteral r1, 1\n   1-> stmt 0  Return r1\n--- end\n"
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/frameCode" -> JsonObject().apply {
+                    addProperty("body", "Demo>>run")
+                    addProperty("bytecode", listing)
+                    add("machineCode", JsonNull.INSTANCE)
+                }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        framesOf(session)
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        onEdt { action.actionPerformed(TestActionEvent.createTestEvent(action, context)) }
+        fun executionLines(): List<Int> = runInEdtAndGet {
+            val tab = FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().singleOrNull()
+                ?: return@runInEdtAndGet emptyList()
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(tab))
+            DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+                .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+                .map { highlighter -> document.getLineNumber(highlighter.startOffset) }
+        }
+        fun awaitLines(what: String, expected: List<Int>) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (executionLines() != expected) {
+                if (System.nanoTime() > deadline) throw AssertionError("$what: ${executionLines()}")
+                Thread.sleep(POLL_MILLISECONDS)
+            }
+        }
+        val marked = listOf(checkNotNull(FrameCodeFollower.markedLine(FrameCodeFollower.text(FrameCode("Demo>>run", listing, null)))))
+        awaitLines("the stop's line coloured", marked)
+        onEdt { session.resume() }
+        awaitLines("no line coloured while the program runs", emptyList())
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        awaitLines("the next stop's line coloured again", marked)
+    }
+
+    /** A refused frame code is told in a notification with the agent's words, and opens no tab. */
+    fun testShowFrameCodeRefusedIsNotified() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/frameCode" -> null
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        framesOf(session)
+        val reported = notifications()
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        onEdt { action.actionPerformed(TestActionEvent.createTestEvent(action, context)) }
+        val text = reported.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(text, REFUSAL in text)
+        assertTrue(runInEdtAndGet { FileEditorManager.getInstance(project).openFiles.none { file -> file is CodeListingFile } })
+    }
+
+    /**
      * The core library's frames are library frames: the session respects
      * the frames view's Show Library Frames, and while it is off each run
      * of them below the top frame is folded into one line that counts
@@ -1374,7 +1522,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
     }
 
     /** A fake agent that names the session's own process and returns its secret, as `ns-next`'s does. */
-    private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject): FakeAgent =
+    private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject?): FakeAgent =
         FakeAgent(
             faked.port,
             onAttach = {
@@ -1392,14 +1540,15 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     /**
      * A scripted agent in place of `ns-next`'s: it answers every request
-     * with what [answer] gives, a success, and after `attach` sends what
-     * [onAttach] sends. Its connection writes in order, so its events
-     * follow its answers as the real agent's do.
+     * with what [answer] gives, a success, or a refusal with [REFUSAL] where
+     * it gives null, and after `attach` sends what [onAttach] sends. Its
+     * connection writes in order, so its events follow its answers as the
+     * real agent's do.
      */
     private inner class FakeAgent(
         port: Int,
         private val onAttach: FakeAgent.() -> Unit,
-        private val answer: (String, JsonObject) -> JsonObject = { _, _ -> JsonObject() },
+        private val answer: (String, JsonObject) -> JsonObject? = { _, _ -> JsonObject() },
     ) {
         private val received = CopyOnWriteArrayList<JsonObject>()
         private val connection: DapConnection
@@ -1416,7 +1565,17 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                     received.add(request)
                     val command = request.get("command").asString
                     val arguments = request.getAsJsonObject("arguments") ?: JsonObject()
-                    connection.send(response(request).apply { add("body", answer(command, arguments)) })
+                    val body = answer(command, arguments)
+                    connection.send(
+                        response(request).apply {
+                            if (body != null) {
+                                add("body", body)
+                            } else {
+                                addProperty("success", false)
+                                addProperty("message", REFUSAL)
+                            }
+                        },
+                    )
                     if (command == "attach") onAttach()
                     if (command == "configurationDone") configured.complete(Unit)
                 },
@@ -1730,6 +1889,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     private companion object {
         const val WAIT_SECONDS = 30L
+
+        /** What a fake agent's refusal says. */
+        const val REFUSAL = "no frame 1 at this stop"
 
         /** The secret the fake sessions' processes were given, which an identified fake agent returns. */
         const val SECRET = "00112233445566778899aabbccddeeff"

@@ -17,6 +17,7 @@
 //! collection reclaims is named in the collection (`name_freed_keys`),
 //! while the id still names its class.
 
+pub mod descriptions;
 mod filter;
 mod listings;
 mod names;
@@ -31,11 +32,13 @@ use crate::jit::CustomizationKey;
 use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
+pub use descriptions::{BodyDescription, CurrentText, DescribedSend, DescribedStatement};
 pub use filter::TraceFilter;
 pub(crate) use listings::PendingListing;
 pub use listings::{
     Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, DataWord, InliningListing,
-    InliningOutcome, ListedArm, ListedDecline, ListedScope, Listing, Position,
+    InliningOutcome, ListedArm, ListedBody, ListedDecline, ListedInstruction, ListedScope, Listing,
+    MadeAt, Position,
 };
 #[cfg(ns_jit)]
 pub(crate) use listings::{PendingArm, PendingCode, PendingDecline, PendingInlining, PendingScope};
@@ -158,16 +161,34 @@ pub struct TraceSettings {
     pub printing: Printing,
     /// The bodies whose listings the sink receives.
     pub print_filter: TraceFilter,
+    /// Whether the sink receives each body's description before the first
+    /// event or listing that names it (`TraceSink::body`): what a trace
+    /// file needs, which places a body in its source by the description
+    /// alone (`docs/design/developer-tool.md`, decision 18). Made at the
+    /// flush, never at a site.
+    pub describe_bodies: bool,
+}
+
+/// A body as an event or a listing names it: its name, as the debugger
+/// names a frame -- `Demo/Account>>deposit:`, `(unnamed)` for one no mixin
+/// holds -- and its number, which tells apart the bodies a name does not:
+/// every block of a method is `[] in <method>`, and a class's initializer
+/// bodies share one name. Numbers start at 1, in the order the trace
+/// first names the bodies, and no number is given two bodies of one sink,
+/// even when one dies and the other takes its address; 0 names a body
+/// outside the trace, as a stopped frame's code does.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BodyName {
+    pub number: u32,
+    pub name: String,
 }
 
 /// One event, as the sink receives it: its category, the body it is
-/// about -- named as the debugger names a frame, `Demo/Account>>deposit:`,
-/// `(unnamed)` for one no mixin holds -- or `None` for an event about no
-/// body, and what happened.
+/// about, or `None` for an event about no body, and what happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceEvent {
     pub category: TraceCategory,
-    pub body: Option<String>,
+    pub body: Option<BodyName>,
     pub kind: TraceEventKind,
 }
 
@@ -236,7 +257,7 @@ pub enum TraceEventKind {
     /// only where it is another; both `None` for a body optimized as one
     /// copy.
     OptimizationRequested {
-        spent_by: String,
+        spent_by: BodyName,
         walk_end: RecompileWalkEnd,
         key: Option<String>,
         entered: Option<String>,
@@ -247,7 +268,7 @@ pub enum TraceEventKind {
     /// (`not-due`): `spent_by`'s budget stays parked until the next
     /// safepoint arms it afresh.
     OptimizationNotDue {
-        spent_by: String,
+        spent_by: BodyName,
         walk_end: RecompileWalkEnd,
         key: Option<String>,
         entered: Option<String>,
@@ -291,9 +312,9 @@ pub enum TraceEventKind {
     Inlined {
         key: Option<String>,
         entered: Option<String>,
-        in_body: String,
+        in_body: BodyName,
         program_counter: u32,
-        callee: String,
+        callee: BodyName,
     },
     /// The plan of the body's copy sent the callee at the send at
     /// `program_counter` (the line's `at=`) in the scope running `in_body`
@@ -303,9 +324,9 @@ pub enum TraceEventKind {
     InlineDeclined {
         key: Option<String>,
         entered: Option<String>,
-        in_body: String,
+        in_body: BodyName,
         program_counter: u32,
-        callee: String,
+        callee: BodyName,
         reason: InlineDecline,
     },
     /// The plan of the body's copy sent, rather than inline, callees that
@@ -905,6 +926,19 @@ pub trait TraceSink {
     fn listing(&mut self, listing: &Listing) {
         let _ = listing;
     }
+
+    /// Receives the description of a body, once per body number, before
+    /// the first event or listing that names it, and only when
+    /// `TraceSettings::describe_bodies` is set. A body no mixin holds, or
+    /// one whose module has no text, is never described.
+    fn body(&mut self, description: &BodyDescription) {
+        let _ = description;
+    }
+
+    /// Called once a flush has handed over its last delivery, so that a
+    /// sink that buffers -- a file a reader follows while the program
+    /// runs -- is current at every safepoint and every stop.
+    fn flushed(&mut self) {}
 }
 
 /// An event recorded and not yet delivered: the bodies it names held as
@@ -1334,9 +1368,13 @@ impl EventTracer {
             filter,
             printing,
             print_filter,
+            describe_bodies,
         } = settings;
         if categories.is_empty() && printing.is_empty() {
             return;
+        }
+        if describe_bodies {
+            self.names.describe_bodies();
         }
         self.categories = categories;
         self.filter = Some(filter);
@@ -1350,28 +1388,32 @@ impl EventTracer {
 enum Delivery {
     Event(TraceEvent),
     Listing(Listing),
+    Body(Box<BodyDescription>),
 }
 
 /// Delivers every pending event: names each body it holds, drops what the
 /// filter refuses, hands the rest to the sink in order and empties the
 /// queue. When bytecode is printed, the bodies made since the last flush
-/// are listed first, so that a body's listing precedes its events.
+/// are listed first, so that a body's listing precedes its events. When
+/// bodies are described, each body numbered here is described just before
+/// the first delivery that names it, in the order of the numbers.
 #[cold]
 #[inline(never)]
 pub(crate) fn flush(mutator: &mut Mutator<'_>) {
     let pending = std::mem::take(&mut mutator.jit.tracer.pending);
     let mut names = std::mem::take(&mut mutator.jit.tracer.names);
-    let mut deliveries = Vec::with_capacity(pending.len());
+    // Each delivery, with how many bodies were numbered once it was made:
+    // the bodies numbered since the delivery before it are those it is the
+    // first to name.
+    let mut deliveries: Vec<(Delivery, usize)> = Vec::with_capacity(pending.len());
     if mutator.jit.tracer.printing.bytecode {
         // Indexed before any event is named: naming indexes the same
         // sides, which would then be listed by no flush.
         let made = names.index_new_sides(mutator);
         if let Some(filter) = &mutator.jit.tracer.print_filter {
-            deliveries.extend(
-                listings::bytecode_listings(made, filter)
-                    .into_iter()
-                    .map(Delivery::Listing),
-            );
+            for listing in listings::bytecode_listings(mutator, &mut names, made, filter) {
+                deliveries.push((Delivery::Listing(listing), names.minted_count()));
+            }
         }
     }
     for Pending {
@@ -1384,33 +1426,70 @@ pub(crate) fn flush(mutator: &mut Mutator<'_>) {
         if let PendingKind::Listing(listing) = kind {
             if let Some(listing) = listing_delivered(mutator, &mut names, body, listing, named_key)
             {
-                deliveries.push(Delivery::Listing(listing));
+                deliveries.push((Delivery::Listing(listing), names.minted_count()));
             }
             continue;
         }
-        let body = body.map(|code| names.name(mutator, &code));
+        // Filtered by the name alone, so that a body only refused events
+        // name takes no number.
         let passes = match (&mutator.jit.tracer.filter, &body) {
-            (Some(filter), Some(body)) => filter.matches(body),
+            (Some(filter), Some(code)) => filter.matches(&names.text(mutator, code)),
             _ => true,
         };
         if passes {
+            let body = body.map(|code| names.name(mutator, &code));
             let kind = event_kind(mutator, &mut names, kind, named_key);
-            deliveries.push(Delivery::Event(TraceEvent {
-                category,
-                body,
-                kind,
-            }));
+            deliveries.push((
+                Delivery::Event(TraceEvent {
+                    category,
+                    body,
+                    kind,
+                }),
+                names.minted_count(),
+            ));
         }
     }
+    let minted = names.take_minted();
     mutator.jit.tracer.names = names;
+    let deliveries = with_descriptions(mutator, deliveries, minted);
     if let Some(sink) = mutator.jit.tracer.sink.as_mut() {
         for delivery in &deliveries {
             match delivery {
                 Delivery::Event(event) => sink.event(event),
                 Delivery::Listing(listing) => sink.listing(listing),
+                Delivery::Body(description) => sink.body(description),
             }
         }
+        sink.flushed();
     }
+}
+
+/// `deliveries` in order, each preceded by the description of every body
+/// of `minted` it is the first to name -- those numbered after the
+/// delivery before it was made and by the time it was -- in the order of
+/// their numbers. `minted` is empty unless bodies are described.
+fn with_descriptions(
+    mutator: &mut Mutator<'_>,
+    deliveries: Vec<(Delivery, usize)>,
+    minted: Vec<names::Minted>,
+) -> Vec<Delivery> {
+    let mut described = Vec::with_capacity(deliveries.len() + minted.len());
+    let mut minted = minted.into_iter();
+    let mut taken = 0;
+    for (delivery, numbered) in deliveries {
+        for body in minted.by_ref().take(numbered - taken) {
+            if let Some(origin) = &body.origin
+                && let Some(description) =
+                    descriptions::describe(mutator, &body.code, origin, body.body, body.family)
+            {
+                described.push(Delivery::Body(Box::new(description)));
+            }
+        }
+        taken = numbered;
+        described.push(delivery);
+    }
+    mutator.debug_metadata.end_placements();
+    described
 }
 
 /// The listing `listing` of `body` delivers, its body and key named -- its
@@ -1424,16 +1503,16 @@ fn listing_delivered(
     named_key: Option<NamedKey>,
 ) -> Option<Listing> {
     let code = body?;
-    let name = names.name(mutator, &code);
     let selected = mutator
         .jit
         .tracer
         .print_filter
         .as_ref()
-        .is_some_and(|filter| filter.matches(&name));
+        .is_some_and(|filter| filter.matches(&names.text(mutator, &code)));
     if !selected {
         return None;
     }
+    let name = names.name(mutator, &code);
     let key = match (listing.key(), named_key) {
         (Some(_), Some(named)) => Some((named.key, named.entered)),
         (Some(key), None) => Some(key_names(mutator, key)),

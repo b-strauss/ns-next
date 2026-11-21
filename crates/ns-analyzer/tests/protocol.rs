@@ -1343,3 +1343,130 @@ fn a_reserved_id_is_the_core_library_s_by_the_document_s_place() {
     );
     shut_down(&client, server_thread);
 }
+
+#[track_caller]
+fn method_names(client: &Connection, id: i32, uri: &str) -> Value {
+    request(
+        client,
+        id,
+        "newspeak/methodNames",
+        json!({ "textDocument": { "uri": uri } }),
+    )
+}
+
+/// A method's tool name, its range and its pattern's, each range
+/// `(start line, start character, end line, end character)`.
+fn method_name(name: &str, range: (u32, u32, u32, u32), selection: (u32, u32, u32, u32)) -> Value {
+    let range_of =
+        |(start_line, start_character, end_line, end_character): (u32, u32, u32, u32)| {
+            json!({
+                "start": { "line": start_line, "character": start_character },
+                "end": { "line": end_line, "character": end_character },
+            })
+        };
+    json!({ "name": name, "range": range_of(range), "selectionRange": range_of(selection) })
+}
+
+/// Every method of a document in the tools' syntax, in source order: the
+/// id the loader gives the module -- the `:module:` id without its
+/// version, else the class's name --, the path to an inner class and
+/// ` class` for the class side.
+#[test]
+fn method_names_answer_the_tool_names() {
+    let (client, server_thread) = initialized_server();
+    let declared = "file:///C:/work/Demo.ns";
+    open_document(
+        &client,
+        declared,
+        indoc! {"
+            (* :module: com.acme.Demo@1.2.0 *)
+            class Demo = () (
+              public run = (^1)
+              class Account = () (
+                public deposit: amount = (^amount)
+              ) : (
+                public create = (^self new)
+              )
+            ) : ()
+        "},
+    );
+    assert_eq!(
+        method_names(&client, 2, declared),
+        json!([
+            method_name("com.acme.Demo>>run", (2, 2, 2, 19), (2, 9, 2, 12)),
+            method_name(
+                "com.acme.Demo/Account>>deposit:",
+                (4, 4, 4, 38),
+                (4, 11, 4, 26)
+            ),
+            method_name(
+                "com.acme.Demo/Account class>>create",
+                (6, 4, 6, 31),
+                (6, 11, 6, 17)
+            ),
+        ])
+    );
+    let undeclared = "file:///C:/work/Plain.ns";
+    open_document(
+        &client,
+        undeclared,
+        indoc! {"
+            class Demo = () (
+              public run = (^1)
+            ) : ()
+        "},
+    );
+    assert_eq!(
+        method_names(&client, 3, undeclared),
+        json!([method_name("Demo>>run", (1, 2, 1, 19), (1, 9, 1, 12))])
+    );
+    shut_down(&client, server_thread);
+}
+
+/// A module's id and version as the loader gives them; `null` for a
+/// `:module:` the loader refuses.
+#[test]
+fn module_identity_answers_the_loader_s_id_and_version() {
+    let (client, server_thread) = initialized_server();
+    let identity = |id: i32, uri: &str, text: &str| {
+        open_document(&client, uri, text);
+        request(
+            &client,
+            id,
+            "newspeak/moduleIdentity",
+            json!({ "textDocument": { "uri": uri } }),
+        )
+    };
+    assert_eq!(
+        identity(
+            2,
+            "file:///C:/work/Demo.ns",
+            indoc! {"
+                (* :module: com.acme.Demo@1.2.0 *)
+                class Demo = () ()
+            "}
+        ),
+        json!({ "id": "com.acme.Demo", "version": "1.2.0" })
+    );
+    assert_eq!(
+        identity(
+            3,
+            "file:///C:/work/Plain.ns",
+            "class Plain = () ()
+"
+        ),
+        json!({ "id": "Plain", "version": null })
+    );
+    assert_eq!(
+        identity(
+            4,
+            "file:///C:/work/Wrong.ns",
+            indoc! {"
+                (* :module: com.acme.Other *)
+                class Wrong = () ()
+            "}
+        ),
+        Value::Null
+    );
+    shut_down(&client, server_thread);
+}

@@ -5917,7 +5917,11 @@ time:
   Cursor names a library file the same way. The pass count
   (`NewspeakLineBreakpointProperties`, edited in the breakpoint's
   properties) is sent as the `hitCondition`, in the agent's forms ("Hit
-  counts and temporary breakpoints"). The handler marks each breakpoint
+  counts and temporary breakpoints"). The type answers
+  `createProperties`, into which the platform loads the saved
+  properties of a breakpoint it restores from the workspace, so that the
+  pass count and a block variant's column outlive the IDE's restart
+  (`testARestoredLineBreakpointKeepsItsProperties`). The handler marks each breakpoint
   verified, or, where the agent set it at another line, verified with the
   line it stops at (`updateBreakpointPresentation`) -- the breakpoint
   stays where the user put it -- or invalid with the agent's message, as
@@ -6140,6 +6144,37 @@ uses no
 internal API: where only internal API offers a feature -- the platform's
 Mark Object labels, its fold of hidden frames -- the plugin builds its
 own.
+
+Show Frame Code (`ShowFrameCodeAction`), in the frames' context menu
+(`XDebugger.Frames.Tree.Popup`) and the debug tool window's toolbar,
+shown for a Newspeak session and enabled at a stop on one of its frames,
+asks the agent for the selected frame's code, `nsNext/frameCode`
+("Launching, the start and the end"), and opens it in a read-only
+editor tab of the developer tool's listings (`CodeListingFile`;
+[developer-tool.md](developer-tool.md), decision 31, "The plugin's
+half"): the frame's bytecode, marked where it stands, then the machine
+code it goes on in, or "This frame goes on in the interpreter." An
+agent that refuses is answered with a notification of the plugin's
+"Newspeak" group naming its message, and no tab opens
+(`testShowFrameCodeRefusedIsNotified`).
+`FrameCodeFollower` then keeps the tab on the selected frame: at every
+stop and every selection of another frame it asks again on the
+connection's thread and writes the answer on the event dispatch thread,
+only the latest request's, since several selections' answers arrive in
+no fixed order, as the change between the old text and the new alone,
+each editor's caret then at the marked line, so that a step never
+scrolls the tab to its start, and that line alone coloured whole, in
+every editor of the tab, as the scheme colours the debugger's execution
+point in a source editor (`DebuggerColors.EXECUTIONPOINT_ATTRIBUTES`),
+the colour gone while the program runs, where a text marks no line
+and when the follower's lifetime ends, however it ends
+(`FrameCodeFollowerTest`, `testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`,
+`testTheFrameCodeLineIsUncolouredWhileTheProgramRuns`); it ends when the
+tab's last editor closes -- not one split of it -- or the session stops, its
+lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
+disposed with the project at the latest), and is not made for a session
+that stopped while the first answer was on its way
+(`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`).
 
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of

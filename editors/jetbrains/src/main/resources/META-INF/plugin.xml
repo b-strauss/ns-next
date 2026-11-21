@@ -74,6 +74,10 @@
                   fieldName="INSTANCE"
                   language="Newspeak"
                   extensions="ns"/>
+        <!-- The developer tool's read-only listings, plain text, which no file on disk is. -->
+        <fileType name="Newspeak Code Listing"
+                  implementationClass="io.github.bstrauss.newspeak.devtool.editor.CodeListingFileType"
+                  fieldName="INSTANCE"/>
         <lang.parserDefinition language="Newspeak"
                                implementationClass="io.github.bstrauss.newspeak.parser.NewspeakParserDefinition"/>
         <lang.syntaxHighlighterFactory language="Newspeak"
@@ -81,6 +85,9 @@
         <platform.backend.documentation.inlineDocumentationProvider
                 implementation="io.github.bstrauss.newspeak.editor.NewspeakInlineDocumentationProvider"/>
         <colorSettingsPage implementation="io.github.bstrauss.newspeak.highlighting.NewspeakColorSettingsPage"/>
+        <!-- The linked statements' colours of the developer tool's Code tab, keys of their own. -->
+        <additionalTextAttributes scheme="Default" file="colorSchemes/NewspeakDefault.xml"/>
+        <additionalTextAttributes scheme="Darcula" file="colorSchemes/NewspeakDarcula.xml"/>
         <lang.braceMatcher language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakBraceMatcher"/>
         <lang.commenter language="Newspeak"
@@ -129,12 +136,32 @@
         <!-- The shipped modules of the ns-next the settings name, under External Libraries. -->
         <additionalLibraryRootsProvider implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryRootsProvider"/>
         <postStartupActivity implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryStartup"/>
+        <!-- The selected traced run's icons and hints, and the watched methods' eyes, in every editor. -->
+        <postStartupActivity implementation="io.github.bstrauss.newspeak.devtool.editor.DecorationsStartup"/>
+        <!-- The traced runs' files an earlier run of the IDE left behind, deleted once per IDE start. -->
+        <postStartupActivity implementation="io.github.bstrauss.newspeak.devtool.TraceFilesSweep"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client
              (NewspeakDocumentSymbols). -->
         <lang.psiStructureViewFactory language="Newspeak"
                                       implementationClass="io.github.bstrauss.newspeak.structure.NewspeakStructureViewFactory"/>
+        <!-- A tab per traced run, which TracedRuns adds and closing drops with its data; at the bottom, beside Run and Debug, whose
+             consoles it follows, and never shown on its own, which would hide theirs. -->
+        <toolWindow id="Newspeak JIT"
+                    anchor="bottom"
+                    secondary="false"
+                    canCloseContents="true"
+                    icon="AllIcons.Toolwindows.ToolWindowProfiler"
+                    factoryClass="io.github.bstrauss.newspeak.devtool.ui.DeveloperToolWindowFactory"/>
+        <!-- Alt+Enter on a method: watch or unwatch it, as the context menus' action does. -->
+        <intentionAction>
+            <language>Newspeak</language>
+            <className>io.github.bstrauss.newspeak.devtool.WatchMethodIntention</className>
+            <bundleName>messages.NewspeakBundle</bundleName>
+            <categoryKey>devtool.watch.method.category</categoryKey>
+            <skipBeforeAfter>true</skipBeforeAfter>
+        </intentionAction>
     </extensions>
 
     <actions>
@@ -152,10 +179,22 @@
                 class="io.github.bstrauss.newspeak.debugger.NewspeakForceReturnAction">
             <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
         </action>
+        <!-- The frame's bytecode and machine code in a tab that follows the selected frame. -->
+        <action id="io.github.bstrauss.newspeak.ShowFrameCode"
+                class="io.github.bstrauss.newspeak.debugger.ShowFrameCodeAction">
+            <add-to-group group-id="XDebugger.Frames.Tree.Popup" anchor="last"/>
+            <add-to-group group-id="XDebugger.ToolWindow.TopToolbar" anchor="last"/>
+        </action>
         <!-- On a value of a Newspeak session's trees, where the platform's own Mark Object stays hidden. -->
         <action id="io.github.bstrauss.newspeak.MarkObject"
                 class="io.github.bstrauss.newspeak.debugger.NewspeakMarkObjectAction">
             <add-to-group group-id="XDebugger.ValueGroup" anchor="after" relative-to-action="Debugger.MarkObject"/>
+        </action>
+        <!-- The method at the caret or on the gutter's line, into or out of the project's watched methods. -->
+        <action id="io.github.bstrauss.newspeak.WatchMethod"
+                class="io.github.bstrauss.newspeak.devtool.WatchMethodAction">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorGutterPopupMenu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>

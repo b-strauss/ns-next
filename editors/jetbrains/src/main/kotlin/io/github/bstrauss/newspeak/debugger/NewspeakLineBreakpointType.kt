@@ -40,6 +40,14 @@ class NewspeakLineBreakpointType :
         NewspeakLineBreakpointProperties()
 
     /**
+     * The properties a breakpoint restored from the workspace's state loads
+     * its saved ones into: the platform asks this, not
+     * [createBreakpointProperties], and a type answering none restores
+     * every breakpoint without its pass count and its block's column.
+     */
+    override fun createProperties(): NewspeakLineBreakpointProperties = NewspeakLineBreakpointProperties()
+
+    /**
      * The line itself and each block whose first statement starts on it,
      * but a block whose first statement is the line's first: there the two
      * stop at the same statement. None for a line with no such block, which

@@ -113,6 +113,7 @@ fn print_bytecode(
                 ..Printing::default()
             },
             print_filter: TraceFilter::parse(&[pattern]).expect("a valid filter"),
+            describe_bodies: false,
         },
         Box::new(Collector(Rc::clone(&listings))),
     );
@@ -134,7 +135,7 @@ fn bytecode(listings: &[Listing]) -> Vec<&BytecodeListing> {
 fn listings_of(listings: &[Listing], body: &str) -> Vec<BytecodeListing> {
     bytecode(listings)
         .into_iter()
-        .filter(|listing| listing.body == body)
+        .filter(|listing| listing.body.name == body)
         .cloned()
         .collect()
 }
@@ -149,7 +150,7 @@ fn assert_lists_sum(listings: &[Listing]) {
     assert!(
         bytecode(listings)
             .iter()
-            .all(|listing| !listing.body.contains("newspeak.core")),
+            .all(|listing| !listing.body.name.contains("newspeak.core")),
         "the filter selects the program's bodies only"
     );
 }
@@ -163,6 +164,72 @@ fn the_programs_bodies_print_when_the_sink_is_installed() {
         "Demo...",
     );
     assert_lists_sum(&listings.borrow());
+}
+
+#[test]
+fn a_bytecode_listing_lists_each_body_structured() {
+    let (mut interpreter, _) = instance();
+    let listings = print_bytecode(&mut interpreter, TraceCategories::default(), "Demo...");
+    let sums = listings_of(&listings.borrow(), "Demo>>sum:");
+    assert_eq!(sums.len(), 1);
+    let listing = &sums[0];
+    assert_eq!(listing.bodies.len(), 2, "the method and its one block");
+    assert_eq!(listing.bodies[0].body, listing.body);
+    assert_eq!(listing.bodies[1].body.name, "[] in Demo>>sum:");
+    assert_ne!(listing.bodies[1].body.number, 0);
+    assert_ne!(listing.bodies[1].body.number, listing.body.number);
+    // Each body's lines, formatted as `instruction_lines` does, appear in
+    // the text in order (a block's lines nested under its `MakeClosure`).
+    let text_lines: Vec<&str> = listing.text.lines().map(str::trim_start).collect();
+    for body in &listing.bodies {
+        let mut remaining = text_lines.iter();
+        for (expected, instruction) in body.instructions.iter().enumerate() {
+            assert_eq!(usize::try_from(instruction.index).unwrap(), expected);
+            let statement = instruction
+                .statement
+                .map_or("-".to_string(), |statement| format!("stmt {statement}"));
+            let line = format!(
+                "{:4}  {statement:>7}  {}",
+                instruction.index, instruction.text
+            );
+            assert!(
+                remaining.any(|actual| *actual == line.trim_start()),
+                "{line} is not in order in
+{}",
+                listing.text
+            );
+        }
+    }
+    // Each body's line above its instructions is the text's: the root's
+    // first, named as the trace names it, a block's as the text names it.
+    let lines: Vec<&str> = listing.text.lines().map(str::trim_start).collect();
+    for (position, body) in listing.bodies.iter().enumerate() {
+        let name = if position == 0 {
+            listing.body.name.as_str()
+        } else {
+            "block"
+        };
+        let line = format!(
+            "{} {name} (args {}, registers {})",
+            body.kind, body.argument_count, body.register_count
+        );
+        assert!(
+            lines.contains(&line.as_str()),
+            "{line} is not in\n{}",
+            listing.text
+        );
+    }
+    assert_eq!(listing.bodies[0].kind, "method");
+    assert_eq!(listing.bodies[1].kind, "block");
+    assert_eq!(listing.bodies[1].argument_count, 1);
+    // The block is made, and nested, at its method's `MakeClosure`.
+    assert_eq!(listing.bodies[0].made_at, None);
+    let made_at = listing.bodies[1]
+        .made_at
+        .expect("a block names its MakeClosure");
+    assert_eq!(made_at.maker, listing.bodies[0].body.number);
+    let maker = &listing.bodies[0].instructions[usize::try_from(made_at.index).unwrap()];
+    assert!(maker.text.starts_with("MakeClosure"), "{}", maker.text);
 }
 
 #[test]
@@ -191,7 +258,7 @@ fn a_shipped_module_built_on_demand_prints_at_the_next_flush() {
     assert!(
         bytecode(&listings.borrow())
             .iter()
-            .any(|listing| listing.body.starts_with("newspeak.core.TimeFactory/")),
+            .any(|listing| listing.body.name.starts_with("newspeak.core.TimeFactory/")),
         "the time module's bodies listed after the run"
     );
 }
@@ -362,6 +429,7 @@ mod code {
                     ..Printing::default()
                 },
                 print_filter: TraceFilter::parse(&[pattern]).expect("a valid filter"),
+                describe_bodies: false,
             },
             Box::new(Collector(Rc::clone(&listings))),
         );
@@ -383,7 +451,9 @@ mod code {
         listings
             .iter()
             .filter_map(|listing| match listing {
-                Listing::Code(code) if code.body == body && code.tier == tier => Some(code.clone()),
+                Listing::Code(code) if code.body.name == body && code.tier == tier => {
+                    Some(code.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -416,7 +486,7 @@ mod code {
             panic!("a baseline listing has one scope");
         };
         assert_eq!((scope.number, scope.parent), (0, None));
-        assert_eq!(scope.body, "Demo>>square:");
+        assert_eq!(scope.body.name, "Demo>>square:");
         assert!(
             scope
                 .instructions
@@ -553,7 +623,7 @@ mod code {
             let Listing::Code(code) = listing else {
                 panic!("only machine code is printed");
             };
-            assert_eq!(code.body, "Demo>>square:");
+            assert_eq!(code.body.name, "Demo>>square:");
         }
         // The same run with the filter on `cube:` lists it: the body the
         // first filter left out was compiled.
@@ -677,6 +747,7 @@ mod code {
                 filter: TraceFilter::everything(),
                 printing,
                 print_filter: TraceFilter::parse(&["Demo>>total"]).expect("a valid filter"),
+                describe_bodies: false,
             },
             Box::new(Recorder(Rc::clone(&received))),
         );
@@ -693,7 +764,7 @@ mod code {
             .iter()
             .filter_map(|item| match item {
                 Received::Listing(Listing::Code(code))
-                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                    if code.body.name == "Demo>>total" && code.tier == CodeTier::Optimized =>
                 {
                     Some(code.clone())
                 }
@@ -712,13 +783,13 @@ mod code {
         assert!(listing.code_end as usize <= listing.bytes.len());
         let root = &listing.scopes[0];
         assert_eq!(
-            (root.number, root.body.as_str(), root.parent),
+            (root.number, root.body.name.as_str(), root.parent),
             (0, "Demo>>total", None)
         );
         let Some(balance) = listing
             .scopes
             .iter()
-            .find(|scope| scope.body == "Demo/Account>>balance")
+            .find(|scope| scope.body.name == "Demo/Account>>balance")
         else {
             panic!("`balance` inlined as a scope: {:?}", listing.scopes);
         };
@@ -822,14 +893,21 @@ mod code {
         let mut compared = 0;
         for item in &received {
             match item {
-                Received::Event(event) if event.body.as_deref() == Some("Demo>>total") => {
+                Received::Event(event)
+                    if event.body.as_ref().map(|body| body.name.as_str())
+                        == Some("Demo>>total") =>
+                {
                     match &event.kind {
                         TraceEventKind::Inlined {
                             in_body,
                             program_counter,
                             callee,
                             ..
-                        } => window.push((in_body.clone(), *program_counter, callee.clone())),
+                        } => window.push((
+                            in_body.name.clone(),
+                            *program_counter,
+                            callee.name.clone(),
+                        )),
                         TraceEventKind::Optimized { .. } => {
                             planned = Some(std::mem::take(&mut window));
                         }
@@ -838,7 +916,7 @@ mod code {
                     }
                 }
                 Received::Listing(Listing::Code(code))
-                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                    if code.body.name == "Demo>>total" && code.tier == CodeTier::Optimized =>
                 {
                     let Some(mut planned) = planned.take() else {
                         panic!("the listing follows its compile's event");
@@ -849,9 +927,9 @@ mod code {
                         .filter_map(|scope| {
                             let (parent, program_counter) = scope.parent?;
                             Some((
-                                code.scopes[parent as usize].body.clone(),
+                                code.scopes[parent as usize].body.name.clone(),
                                 program_counter,
-                                scope.body.clone(),
+                                scope.body.name.clone(),
                             ))
                         })
                         .collect();
@@ -880,7 +958,7 @@ mod code {
         received
             .iter()
             .filter_map(|item| match item {
-                Received::Listing(Listing::Inlining(plan)) if plan.body == "Demo>>total" => {
+                Received::Listing(Listing::Inlining(plan)) if plan.body.name == "Demo>>total" => {
                     Some(plan.clone())
                 }
                 _ => None,
@@ -897,13 +975,13 @@ mod code {
         };
         assert_eq!(plan.key, Some(("Demo".to_string(), None)));
         assert_eq!(
-            (plan.scopes[0].number, plan.scopes[0].body.as_str()),
+            (plan.scopes[0].number, plan.scopes[0].body.name.as_str()),
             (0, "Demo>>total")
         );
         let Some(balance) = plan
             .scopes
             .iter()
-            .find(|scope| scope.body == "Demo/Account>>balance")
+            .find(|scope| scope.body.name == "Demo/Account>>balance")
         else {
             panic!("`balance` inlined as a scope: {:?}", plan.scopes);
         };
@@ -936,7 +1014,7 @@ mod code {
         // The listing follows the compile's event, and says what it said.
         let optimized = received.iter().position(|item| {
             matches!(item, Received::Event(event)
-                if event.body.as_deref() == Some("Demo>>total")
+                if event.body.as_ref().map(|body| body.name.as_str()) == Some("Demo>>total")
                     && matches!(event.kind, TraceEventKind::Optimized { .. }))
         });
         let listed = received
@@ -1000,7 +1078,7 @@ mod code {
                 && plan
                     .scopes
                     .iter()
-                    .any(|scope| scope.body == "Demo/Account>>balance")),
+                    .any(|scope| scope.body.name == "Demo/Account>>balance")),
             "the plan of the copy no room held: {:?}",
             plans.iter().map(|plan| &plan.outcome).collect::<Vec<_>>()
         );
@@ -1058,7 +1136,8 @@ mod code {
                 .any(|plan| plan.declined.iter().any(|declined| {
                     declined.scope == 0
                         && declined.reason == InlineDecline::OverWeight
-                        && declined.callee.as_deref() == Some("[] in Demo>>total")
+                        && declined.callee.as_ref().map(|callee| callee.name.as_str())
+                            == Some("[] in Demo>>total")
                 })),
             "the block declined in the body's own scope: {:?}",
             plans.iter().map(|plan| &plan.declined).collect::<Vec<_>>()

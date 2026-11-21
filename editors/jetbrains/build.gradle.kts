@@ -114,16 +114,18 @@ val LEXER_COMPARISON_TEST = "io.github.bstrauss.newspeak.lexer.LexerComparisonTe
 val DAP_SESSION_TEST = "io.github.bstrauss.newspeak.debugger.DapSessionTest"
 val DEBUG_PROCESS_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakDebugProcessTest"
 val BREAKPOINT_TYPES_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakBreakpointTypesTest"
+val TRACED_RUN_END_TO_END_TEST = "io.github.bstrauss.newspeak.devtool.TracedRunEndToEndTest"
 
 tasks.test {
     description = "Runs the plugin's tests that start no workspace binary."
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
-    // See `lexerComparisonTest`, `dapSessionTest`, `debugProcessTest` and `breakpointTypesTest`.
+    // See `lexerComparisonTest`, `dapSessionTest`, `debugProcessTest`, `breakpointTypesTest` and `traceFileTest`.
     filter {
         excludeTestsMatching(LEXER_COMPARISON_TEST)
         excludeTestsMatching(DAP_SESSION_TEST)
         excludeTestsMatching(DEBUG_PROCESS_TEST)
         excludeTestsMatching(BREAKPOINT_TYPES_TEST)
+        excludeTestsMatching(TRACED_RUN_END_TO_END_TEST)
     }
     // The directories `NewspeakDocCommentAgreementTest`, `LexerRestartTest`
     // and `NewspeakHighlightingLexerTest` walk.
@@ -276,8 +278,20 @@ val breakpointTypesTest = tasks.register<Test>("breakpointTypesTest") {
     mustRunAfter(lexerComparisonTest, dapSessionTest, debugProcessTest)
 }
 
+/**
+ * A traced run end to end, as a task of its own: Run with the Developer
+ * Tool's options against the real runtime, its trace file read into the
+ * tool and the editor decorated from it.
+ */
+val traceFileTest = tasks.register<Test>("traceFileTest") {
+    description = "Runs a traced Newspeak run configuration with ns-next and reads its trace file into the developer tool."
+    runsLikeUnitTests(TRACED_RUN_END_TO_END_TEST)
+    debugsWithTheRuntime()
+    mustRunAfter(lexerComparisonTest, dapSessionTest, debugProcessTest, breakpointTypesTest)
+}
+
 tasks.check {
-    dependsOn(lexerComparisonTest, dapSessionTest, debugProcessTest, breakpointTypesTest)
+    dependsOn(lexerComparisonTest, dapSessionTest, debugProcessTest, breakpointTypesTest, traceFileTest)
 }
 
 tasks.withType<PrepareSandboxTask>().configureEach {

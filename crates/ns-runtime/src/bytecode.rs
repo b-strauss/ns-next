@@ -489,6 +489,21 @@ pub enum CodeKind {
     SuperclassClause,
 }
 
+impl CodeKind {
+    /// The word a listing names the kind by -- `disassemble`'s line above a
+    /// body's instructions, the trace's structured listing and the
+    /// decoder's refusal of a body of another kind -- so that every reader
+    /// of one finds the word the others write.
+    pub fn word(self) -> &'static str {
+        match self {
+            CodeKind::Method => "method",
+            CodeKind::Block => "block",
+            CodeKind::Initializer => "initializer",
+            CodeKind::SuperclassClause => "superclass clause",
+        }
+    }
+}
+
 /// How many register numbers a frame's header takes, between its arguments
 /// and the rest of its registers: registers `0 .. argument_count` are the
 /// arguments, `argument_count .. argument_count + HEADER_REGISTERS` are
@@ -1718,21 +1733,16 @@ pub fn disassemble_marked(code: &CompiledCode, name: &str, mark: Option<u32>) ->
 fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, mark: Option<u32>) {
     use std::fmt::Write;
     let pad = " ".repeat(indent);
-    let kind = match code.kind {
-        CodeKind::Method => "method",
-        CodeKind::Block => "block",
-        CodeKind::Initializer => "initializer",
-        CodeKind::SuperclassClause => "superclass clause",
-    };
+    let kind = code.kind.word();
     writeln!(
         out,
         "{pad}{kind} {name} (args {}, registers {})",
         code.argument_count, code.register_count
     )
     .expect("writing to a String cannot fail");
-    for (index, instruction) in code.instructions().iter().enumerate() {
-        let marked = mark.is_some_and(|mark| usize::try_from(mark).ok() == Some(index));
-        let line = instruction_line(code, index, instruction, marked);
+    let listed = listed_instructions(code);
+    for (instruction, (index, statement, text)) in code.instructions().iter().zip(listed) {
+        let line = listed_line(index, statement, &text, mark == Some(index));
         writeln!(out, "{pad}{line}").expect("writing to a String cannot fail");
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             write_code(out, block, "block", indent + 8, None);
@@ -1745,32 +1755,49 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, 
 /// without the head and without the blocks it makes: the lines a
 /// machine-code listing names an instruction by.
 pub fn instruction_lines(code: &CompiledCode) -> Vec<String> {
-    code.instructions()
-        .iter()
-        .enumerate()
-        .map(|(index, instruction)| instruction_line(code, index, instruction, false))
+    listed_instructions(code)
+        .into_iter()
+        .map(|(index, statement, text)| listed_line(index, statement, &text, false))
         .collect()
 }
 
-/// The line of `instruction`, at `index` of `code`, marked when `marked`:
-/// `->` in place of the two spaces after the index.
-fn instruction_line(
-    code: &CompiledCode,
-    index: usize,
-    instruction: &Instruction,
-    marked: bool,
-) -> String {
-    let statement = code
-        .statement_program_counter
+/// `code`'s instructions as `instruction_lines` formats them, kept apart:
+/// each program counter, the statement it belongs to and the instruction's
+/// text alone: the one walk that both the lines and the structured listing
+/// a trace file records are made from, so that the two never differ.
+pub fn listed_instructions(code: &CompiledCode) -> Vec<(u32, Option<u32>, String)> {
+    code.instructions()
+        .iter()
+        .enumerate()
+        .map(|(index, instruction)| {
+            let index_word = u32::try_from(index).expect("a body has at most 2^32 instructions");
+            let statement = statement_of(code, index)
+                .map(|statement| u32::try_from(statement).expect("a statement index fits u32"));
+            (index_word, statement, format_instruction(instruction))
+        })
+        .collect()
+}
+
+/// The statement whose instructions include `index`, if any.
+fn statement_of(code: &CompiledCode, index: usize) -> Option<usize> {
+    code.statement_program_counter
         .iter()
         .find(|(_, range)| range.contains(&index))
-        .map(|(statement_index, _)| format!("stmt {statement_index}"))
+        .map(|(statement_index, _)| *statement_index)
+}
+
+/// The line of the instruction at `index`, of `statement` and written
+/// `text`, as `listed_instructions` answers them, marked when `marked`:
+/// `->` in place of the two spaces after the index.
+fn listed_line(index: u32, statement: Option<u32>, text: &str, marked: bool) -> String {
+    let statement = statement
+        .map(|statement_index| format!("stmt {statement_index}"))
         .unwrap_or_else(|| "-".to_string());
     // The arrow takes the two spaces that always follow the index, so
     // that a marked line keeps every column at every index.
     let gap = if marked { "->" } else { "  " };
     let label = format!("{index:4}{gap}");
-    format!("{label}{statement:>7}  {}", format_instruction(instruction))
+    format!("{label}{statement:>7}  {text}")
 }
 
 fn registers(registers: &[u16]) -> String {
